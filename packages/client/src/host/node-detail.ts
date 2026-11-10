@@ -1,4 +1,10 @@
 import {
+  nodeSubagentCard,
+  type AgentCard,
+  type SubagentReader,
+  transcriptNodes,
+} from "./subagent-model.js";
+import {
   compareSequence,
   nodeDetailEventNodeId,
   type AgentEventView as AgentEvent,
@@ -30,7 +36,7 @@ export interface NodeDetailSnapshot {
   readonly nodeId: string;
   readonly threadId: string;
   readonly node: NodeEntry | null;
-  readonly status: "unavailable" | "loading" | "ready" | "error" | "closed";
+  readonly status: "unavailable" | "loading" | "ready" | "error" | "missing" | "closed";
   readonly entries: readonly NodeDetailEntry[];
   readonly hasMore: boolean;
   readonly loadingOlder: boolean;
@@ -42,6 +48,7 @@ export interface NodeDetailSubscription {
   getSnapshot(): NodeDetailSnapshot;
   subscribe(listener: () => void): () => void;
   loadOlder(): Promise<void>;
+  retry(): void;
   release(): void;
 }
 
@@ -123,6 +130,12 @@ export class NodeDetailStore {
         };
       },
       loadOlder: () => this.#loadOlder(watch),
+      retry: () => {
+        if (this.#current !== watch) return;
+        watch.epoch += 1;
+        watch.sent = false;
+        this.#send(watch);
+      },
       release: () => {
         if (this.#current === watch) this.clear();
       },
@@ -374,7 +387,13 @@ export class NodeDetailStore {
       if (watch !== this.#current || epoch !== watch.epoch) return;
       this.#set(watch, {
         ...watch.snapshot,
-        status: "error",
+        status:
+          error !== null &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error.code === "not_found" || error.code === "forbidden")
+            ? "missing"
+            : "error",
         entries: [],
         node: null,
         error: error instanceof Error ? error.message : "Could not load this subagent.",
@@ -509,4 +528,86 @@ export class NodeDetailStore {
     watch.snapshot = snapshot;
     for (const listener of watch.listeners) listener();
   }
+}
+
+export type SubagentDetailEntry =
+  | { readonly kind: "message"; readonly id: string; readonly text: string }
+  | { readonly kind: "reasoning"; readonly id: string; readonly text: string }
+  | ToolEntry
+  | { readonly kind: "agent"; readonly card: AgentCard };
+export interface SubagentDetail {
+  readonly state: "loading" | "ready" | "summary-only" | "error" | "unavailable" | "missing";
+  readonly card: AgentCard;
+  readonly prompt: string | null;
+  readonly parent: { readonly threadId: string; readonly title: string; readonly nodeId?: string };
+  readonly entries: readonly SubagentDetailEntry[];
+  readonly result: string | null;
+  readonly hasEarlier: boolean;
+  readonly loadingEarlier: boolean;
+}
+export function subagentDetail(
+  snapshot: NodeDetailSnapshot,
+  summary: NodeEntry,
+  reader: SubagentReader,
+): SubagentDetail {
+  const node = snapshot.node ?? summary;
+  const nodes = [
+    ...new Map(
+      [
+        ...transcriptNodes(reader.transcripts[snapshot.threadId] ?? []),
+        ...snapshot.entries.filter((entry): entry is NodeEntry => entry.kind === "node"),
+      ].map((entry) => [entry.nodeId, entry]),
+    ).values(),
+  ];
+  const card = nodeSubagentCard(node, snapshot.threadId, nodes, reader);
+  if (!card) throw new Error("Background tasks do not have subagent views.");
+  const parentNode = nodes.find((candidate) => candidate.nodeId === node.parentNodeId);
+  const entries: SubagentDetailEntry[] = snapshot.entries.flatMap(
+    (entry): SubagentDetailEntry[] => {
+      switch (entry.kind) {
+        case "node-message":
+          return [{ kind: "message", id: entry.id, text: entry.text }];
+        case "reasoning":
+          return [{ kind: "reasoning", id: entry.id, text: entry.text }];
+        case "tool":
+          return [entry];
+        case "node": {
+          if (node.nodeKind === "workflow") return [];
+          const child = nodeSubagentCard(entry, snapshot.threadId, nodes, reader);
+          return child ? [{ kind: "agent", card: child }] : [];
+        }
+        case "node-result":
+          return [];
+      }
+    },
+  );
+  const lastMessage = entries.findLast((entry) => entry.kind === "message");
+  const result =
+    lastMessage?.kind === "message" && lastMessage.text === node.result ? null : node.result;
+  const state =
+    snapshot.status === "closed"
+      ? "missing"
+      : snapshot.status === "ready" &&
+          node.status !== "running" &&
+          !snapshot.hasMore &&
+          !entries.some((entry) => entry.kind !== "agent")
+        ? "summary-only"
+        : snapshot.status;
+  return {
+    state,
+    card,
+    prompt: node.prompt,
+    parent: {
+      threadId: snapshot.threadId,
+      title:
+        parentNode?.title ??
+        reader.threads.find((thread) => thread.id === snapshot.threadId)?.title ??
+        "Parent conversation",
+      ...(parentNode ? { nodeId: parentNode.nodeId } : {}),
+    },
+    entries,
+    result,
+    hasEarlier: snapshot.hasMore,
+    loadingEarlier: snapshot.loadingOlder,
+  };
 }

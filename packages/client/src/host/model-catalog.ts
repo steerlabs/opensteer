@@ -1,3 +1,4 @@
+import type { EnvironmentSummary } from "./client.js";
 import { catalogDefaultModelSelection, rankedChatModelSelection } from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
@@ -517,4 +518,22 @@ export function executionSelectionForPlacement(
     harnessInstanceId: placement.harnessInstanceId,
     modelSelection: placement.modelSelection,
   };
+}
+
+export function catalogModelDisplayName(
+  modelId: string,
+  environments: readonly EnvironmentSummary[],
+  providerId?: string,
+): string | null {
+  for (const environment of environments)
+    for (const catalog of environment.harnessCatalogs) {
+      if (catalog.status !== "ready") continue;
+      const model = catalog.models.find(
+        (candidate) =>
+          candidate.modelId === modelId &&
+          (providerId === undefined || candidate.providerId === providerId),
+      );
+      if (model) return model.displayName;
+    }
+  return null;
 }

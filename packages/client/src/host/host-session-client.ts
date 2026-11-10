@@ -1,3 +1,4 @@
+import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
 import { AppTabSchema } from "@opensteer/protocol";
@@ -7562,17 +7563,10 @@ function modelLabel(
   selection: Thread["modelSelection"],
   environments: readonly EnvironmentSummary[],
 ): string {
-  for (const environment of environments) {
-    for (const catalog of environment.harnessCatalogs) {
-      if (catalog.status !== "ready") continue;
-      const model = catalog.models.find(
-        (candidate) =>
-          candidate.providerId === selection.providerId && candidate.modelId === selection.modelId,
-      );
-      if (model) return model.displayName;
-    }
-  }
-  return selection.modelId;
+  return (
+    catalogModelDisplayName(selection.modelId, environments, selection.providerId) ??
+    selection.modelId
+  );
 }
 
 function patchThread(

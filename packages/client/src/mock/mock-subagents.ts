@@ -98,7 +98,7 @@ export function seedMockSubagents(snapshot: HostSnapshot): {
   });
   const workflow = node("Verify every surface", 26, {
     nodeKind: "workflow",
-    phases: ["Inspect", "Validate"],
+    phases: ["Inspect", "Validate", "Ship"],
   });
   const first = node("Inspect shared state", 26, {
     parentNodeId: workflow.nodeId,
@@ -112,6 +112,17 @@ export function seedMockSubagents(snapshot: HostSnapshot): {
     phaseIndex: 1,
     progress: "Opening the node transcript over a slow connection",
   });
+  const failed = node("Check unavailable files", 27, {
+    status: "failed",
+    completedAt: at(29),
+    result: "Couldn't read the requested directory.",
+  });
+  const stopped = node("Inspect the old approach", 27, {
+    status: "interrupted",
+    completedAt: at(29),
+    result: "Stopped with the parent run.",
+  });
+  const blocked = node("Wait for another reader", 28, { model: null, effort: null });
   const task = node("Watch the build", 29, { nodeKind: "task", progress: "Waiting for the build" });
   const workerId = createId("thread");
   const workerRunId = createId("run");
@@ -225,6 +236,9 @@ export function seedMockSubagents(snapshot: HostSnapshot): {
     first,
     second,
     task,
+    failed,
+    stopped,
+    blocked,
   ];
   let sequence = 100;
   const events: AgentEvent[] = [];
@@ -304,7 +318,18 @@ export function seedMockSubagents(snapshot: HostSnapshot): {
         ...snapshot.runQueue,
         { id: runId, threadId, runOrdinal: 1, createdAt: at(23), status: "running" },
       ],
-      requests: { ...snapshot.requests, [threadId]: [request] },
+      requests: {
+        ...snapshot.requests,
+        [threadId]: [
+          request,
+          {
+            ...request,
+            id: createId("request"),
+            originatingNodeId: ExecutionNodeIdSchema.parse(blocked.nodeId),
+            requestedBy: createId("user"),
+          },
+        ],
+      },
       transcripts: {
         ...snapshot.transcripts,
         [threadId]: entries,

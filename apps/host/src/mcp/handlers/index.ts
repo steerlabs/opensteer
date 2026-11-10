@@ -8,6 +8,8 @@ import { requireRun } from "../operations.js";
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
 import type { TriggerToolHandlers } from "./triggers.js";
+import type { KnowledgeManager } from "../../knowledge/knowledge-manager.js";
+import { OpensteerError } from "@opensteer/core";
 
 type ToolByName = { [T in AgentTool as T["name"]]: T };
 export type ToolInput<Name extends AgentTool["name"]> = z.output<ToolByName[Name]["input"]>;
@@ -35,6 +37,7 @@ export function agentToolHandlers(options: {
     scope: RunToolScope,
     directory: string,
   ) => Promise<Record<string, unknown>>;
+  readonly knowledge?: Pick<KnowledgeManager, "sql"> | undefined;
 }): AgentToolHandlers {
   const p = options.product,
     i = options.integrations,
@@ -106,6 +109,19 @@ export function agentToolHandlers(options: {
     computer: async (c) => await i.computer(c),
     integration_request: async (c) => await i.integration_request(c),
     integration_propose: async (c) => await i.integration_propose(c),
+    sql: async (c) => {
+      if (!options.knowledge)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This tool is unavailable to this caller",
+        });
+      return await options.knowledge.sql({
+        caller: c.caller,
+        input: c.input,
+        operationKey: c.operationKey,
+        ...(c.checkLive ? { checkLive: c.checkLive } : {}),
+      });
+    },
   };
   return handlers;
 }

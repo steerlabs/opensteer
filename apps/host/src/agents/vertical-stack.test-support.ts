@@ -92,6 +92,7 @@ const testAgentSkills = {
     "opensteer:devices": join(agentSkillsRoot, "skills", "devices"),
     "opensteer:skills": join(agentSkillsRoot, "skills", "skills"),
     "opensteer:memory": join(agentSkillsRoot, "skills", "memory"),
+    "opensteer:knowledge": join(agentSkillsRoot, "skills", "knowledge"),
     "opensteer:integrations": join(agentSkillsRoot, "skills", "integrations"),
     "opensteer:threads": join(agentSkillsRoot, "skills", "threads"),
     "opensteer:triggers": join(agentSkillsRoot, "skills", "triggers"),

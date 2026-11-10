@@ -1,4 +1,5 @@
 import * as migrations from "@opensteer/database";
+
 import { createDatabase } from "@opensteer/database";
 import { failDatabaseContainment } from "@opensteer/database/test-support/database";
 import { sql } from "kysely";
@@ -68,6 +69,23 @@ integration("production startup migrations", () => {
       expect((await sql`select value from startup_sentinel`.execute(database)).rows).toEqual([
         { value: "preserved" },
       ]);
+      // The knowledge trial is off: nothing about it may exist in this database.
+      expect(
+        (
+          await sql<{ trace: string }>`
+            select 'schema' as trace from pg_catalog.pg_namespace where nspname = 'knowledge'
+            union all
+            select 'login ' || rolname from pg_catalog.pg_roles
+            where rolname = 'opensteer_knowledge_executor_' || (
+              select oid from pg_catalog.pg_database where datname = current_database())
+            union all
+            select 'grant or object of ' || r.rolname from pg_catalog.pg_shdepend d
+            join pg_catalog.pg_roles r on r.oid = d.refobjid
+            where d.dbid = (select oid from pg_catalog.pg_database where datname = current_database())
+              and r.rolname like 'opensteer\\_knowledge\\_%'
+          `.execute(database)
+        ).rows,
+      ).toEqual([]);
       await runtime.close();
       runtime = undefined;
       runtime = await createHostRuntime(config);
@@ -90,6 +108,68 @@ integration("production startup migrations", () => {
       console.info(`Startup migration evidence: ${evidence}`);
     },
   );
+
+  it("leaves the schema main creates when it upgrades a database with the knowledge trial off", async (context) => {
+    const url = new URL(process.env.OPENSTEER_TEST_DATABASE_URL!);
+    url.pathname = "/postgres";
+    const admin = createDatabase({ connectionString: url.toString(), maxConnections: 1 });
+    const names = [0, 1].map(() => `opensteer_schema_${randomUUID().replaceAll("-", "")}`);
+    const databases = names.map((name) => {
+      url.pathname = `/${name}`;
+      return {
+        name,
+        url: url.toString(),
+        database: createDatabase({ connectionString: url.toString() }),
+      };
+    });
+    const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-schema-host-"));
+    let runtime: Awaited<ReturnType<typeof createHostRuntime>> | undefined;
+    context.onTestFinished(async () => {
+      try {
+        await runtime?.close();
+        for (const { database, name } of databases)
+          await closeStartupDatabase(database, admin, name);
+      } finally {
+        await admin.destroy();
+        await rm(dataDirectory, { recursive: true, force: true });
+      }
+    });
+    for (const { name } of databases)
+      await sql`create database ${sql.id(name)} template template0`.execute(admin);
+    const [mainCreated, branchUpgraded] = databases as [
+      (typeof databases)[number],
+      (typeof databases)[number],
+    ];
+    const migrationNames = Object.keys(await migrations.migrationProvider().getMigrations()).sort();
+    // main's startup runs these same migrations with no knowledge step; the branch adds none.
+    expect(
+      (
+        await new Migrator({
+          db: mainCreated.database,
+          provider: migrations.migrationProvider(),
+        }).migrateToLatest()
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await new Migrator({
+          db: branchUpgraded.database,
+          provider: migrations.migrationProvider(),
+        }).migrateTo(migrationNames.at(-2)!)
+      ).error,
+    ).toBeUndefined();
+    runtime = await createHostRuntime({
+      ...machineAccessHostConfig(
+        await freePort(),
+        dataDirectory,
+        new URL("http://127.0.0.1:9"),
+        branchUpgraded.url,
+        "invite-only",
+      ),
+      knowledge: false,
+    });
+    expect(await schemaOf(branchUpgraded.database)).toEqual(await schemaOf(mainCreated.database));
+  });
 
   it("waits for closing clients before dropping a startup database", async (context) => {
     const name = `opensteer_startup_${randomUUID().replaceAll("-", "")}`;
@@ -157,4 +237,40 @@ async function closeStartupDatabase(
   } catch (error) {
     failDatabaseContainment(error);
   }
+}
+
+/** Every object and dependency a database holds, without names that vary per database. */
+async function schemaOf(database: ReturnType<typeof createDatabase>) {
+  const { rows } = await sql<{ entry: string }>`
+    select format('namespace %s', nspname) as entry from pg_catalog.pg_namespace
+    where nspname not like 'pg\_%' and nspname <> 'information_schema'
+    union all
+    select format('column %s.%s.%s %s %s %s', table_schema, table_name, column_name, data_type,
+      is_nullable, coalesce(column_default, '')) from information_schema.columns
+    where table_schema not in ('pg_catalog', 'information_schema')
+    union all
+    select format('constraint %s %s %s', conrelid::regclass, conname, pg_get_constraintdef(oid))
+    from pg_catalog.pg_constraint where connamespace not in
+      (select oid from pg_catalog.pg_namespace where nspname in ('pg_catalog', 'information_schema'))
+    union all
+    select format('index %s.%s %s', schemaname, indexname, indexdef) from pg_catalog.pg_indexes
+    where schemaname not in ('pg_catalog', 'information_schema')
+    union all
+    select format('function %s', p.oid::regprocedure) from pg_catalog.pg_proc p
+    join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+    where n.nspname not in ('pg_catalog', 'information_schema')
+    union all
+    select format('trigger %s %s', tgrelid::regclass, tgname) from pg_catalog.pg_trigger
+    where not tgisinternal
+    union all
+    select format('policy %s.%s %s', schemaname, tablename, policyname) from pg_catalog.pg_policies
+    union all
+    select format('role dependency %s %s', r.rolname, d.deptype) from pg_catalog.pg_shdepend d
+    join pg_catalog.pg_roles r on r.oid = d.refobjid
+    where d.dbid = (select oid from pg_catalog.pg_database where datname = current_database())
+    union all
+    select format('migration %s', name) from kysely_migration
+    order by 1
+  `.execute(database);
+  return rows.map(({ entry }) => entry);
 }

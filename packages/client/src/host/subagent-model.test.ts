@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { groupTranscriptEntries, turnWords, workSummary } from "./agent-activity-model.js";
+import { groupTranscriptEntries } from "./agent-activity-model.js";
 import {
+  assignmentSubagentCard,
   conversationSubagents,
   foldedSubagentSummary,
   nodeSubagentCard,
   subagentGroup,
+  subagentPreview,
+  subagentTitle,
   subagentTurnModel,
+  visibleAgentMembers,
 } from "./subagent-model.js";
 import type { NodeEntry } from "./client.js";
-
 const clients: MockHostClient[] = [];
 afterEach(() => {
   for (const client of clients.splice(0)) client.dispose();
@@ -21,129 +24,208 @@ function fixture() {
   const thread = snapshot.threads.find((thread) => thread.title === "Subagents everywhere")!;
   const entries = snapshot.transcripts[thread.id]!;
   const nodes = entries.filter((entry): entry is NodeEntry => entry.kind === "node");
-  return { client, snapshot, thread, entries, nodes };
+  const node = nodes.find((node) => node.title === "Trace the client")!;
+  const turn = groupTranscriptEntries(entries).findLast((group) => group.kind === "turn")!;
+  if (turn.kind !== "turn") throw new Error("Missing turn");
+  return { snapshot, thread, entries, nodes, node, turn: turn.turn };
 }
-
-describe("shared subagent presentation", () => {
-  it("counts each status once and uses progress, results and errors in a card", () => {
-    const { nodes, thread, snapshot } = fixture();
-    const running = nodes.find((node) => node.title === "Trace the client")!;
+describe("shared agent contract", () => {
+  it("uses answerable requests only for Needs you and retains stale words without motion", () => {
+    const { snapshot, nodes, thread, node } = fixture();
     const waiting = nodes.find((node) => node.title === "Review the experience")!;
-    const done = nodes.find((node) => node.title === "Research the reference")!;
-    const cards = [
-      running,
-      waiting,
-      done,
-      { ...done, id: "failure", status: "failed" as const, result: "Cannot read the file" },
-      { ...done, id: "stopped", status: "interrupted" as const },
-    ].map((node) =>
-      nodeSubagentCard(node, thread.id, nodes, Object.values(snapshot.requests).flat())!,
+    const card = nodeSubagentCard(waiting, thread.id, nodes, snapshot)!;
+    expect(card).toMatchObject({
+      tone: "needs-you",
+      word: "Needs you",
+      moving: false,
+      line: { kind: "question", text: "Which surface should I inspect first?" },
+    });
+    expect(card.requestId).not.toBeNull();
+    expect(
+      nodeSubagentCard(waiting, thread.id, nodes, { ...snapshot, waitingRequests: [] }),
+    ).toMatchObject({ tone: "waiting", word: "Waiting", requestId: null });
+    for (const [status, tone, word] of [
+      ["running", "working", "Working"],
+      ["completed", "finished", "Finished"],
+      ["failed", "failed", "Couldn't finish"],
+      ["interrupted", "stopped", "Stopped"],
+    ] as const) {
+      expect(nodeSubagentCard({ ...node, status }, thread.id, nodes, snapshot)).toMatchObject({
+        tone,
+        word,
+        moving: status === "running",
+      });
+    }
+    expect(
+      nodeSubagentCard(node, thread.id, nodes, { ...snapshot, network: "offline" }),
+    ).toMatchObject({ word: "Last known: Working", moving: false });
+    expect(
+      nodeSubagentCard({ ...node, status: "completed" }, thread.id, nodes, {
+        ...snapshot,
+        network: "offline",
+      })?.word,
+    ).toBe("Finished");
+  });
+  it("uses only summary data for lines and catalog names for models", () => {
+    const { snapshot, nodes, thread, node } = fixture();
+    const card = (patch: Partial<NodeEntry>) =>
+      nodeSubagentCard({ ...node, ...patch }, thread.id, nodes, snapshot)!;
+    expect(card({ progress: "**Reading** `files`" }).line).toEqual({
+      kind: "progress",
+      text: "Reading files",
+    });
+    expect(card({ progress: null, prompt: "# Check this\nsecond line" }).line).toEqual({
+      kind: "prompt",
+      text: "Check this",
+    });
+    expect(card({ status: "completed", result: "[Done](https://example.com)" }).line).toEqual({
+      kind: "result",
+      text: "Done",
+    });
+    expect(card({ status: "failed", result: "Failure" }).line).toEqual({
+      kind: "error",
+      text: "Failure",
+    });
+    expect(card({ status: "failed", result: null, prompt: "Fallback" }).line).toEqual({
+      kind: "prompt",
+      text: "Fallback",
+    });
+    expect(card({ model: "unknown-model" }).modelLabel).toBeNull();
+    const catalog = snapshot.environments
+      .flatMap((env) => env.harnessCatalogs)
+      .flatMap((catalog) => catalog.models)[0]!;
+    expect(card({ model: catalog.modelId, effort: "high" }).modelLabel).toBe(
+      `${catalog.displayName} · High`,
     );
-    expect(subagentGroup(cards)).toMatchObject({
-      summary: "5 subagents · 1 working · 1 waiting · 1 done · 1 failed · 1 stopped",
-      counts: { total: 5, active: 2, working: 1, waiting: 1, done: 1, failed: 1, stopped: 1 },
+    expect(subagentTitle("Subagent: /root/check_the-tests")).toBe("Check The Tests");
+    expect(subagentPreview("👩‍💻".repeat(281))).toBe("👩‍💻".repeat(279) + "…");
+  });
+  it("builds the spec summaries and defaults expansion to live", () => {
+    const { node, thread } = fixture();
+    const card = nodeSubagentCard(node, thread.id)!;
+    const cards = (tones: (typeof card.tone)[]) =>
+      tones.map((tone, index) => ({ ...card, key: `node:${index}`, tone }));
+    expect(subagentGroup(cards(["working", "waiting", "finished"]))).toMatchObject({
+      summary: "3 subagents · 2 working · 1 finished",
+      live: true,
+      key: "node:0",
+      endedAt: null,
     });
-    expect(cards[0]).toMatchObject({
-      line: running.progress,
-      modelLabel: "gpt-6.1-sol",
-      effortLabel: "high",
-      open: { kind: "node-detail", nodeId: running.nodeId },
+    expect(
+      subagentGroup(cards(["needs-you", "working", "working", "working", "working"])).summary,
+    ).toBe("5 subagents · 1 needs you · 4 working");
+    expect(
+      subagentGroup(
+        cards(["finished", "finished"]).map((card) => ({ ...card, origin: "task" as const })),
+      ),
+    ).toMatchObject({ summary: "2 tasks · 2 finished", live: false });
+    const many = cards(Array.from({ length: 12 }, (_, i) => (i === 10 ? "needs-you" : "working")));
+    expect(visibleAgentMembers(many)).toMatchObject({
+      cards: [...many.slice(0, 8), many[10]],
+      remaining: 3,
     });
-    expect(cards[1]).toMatchObject({ status: "waiting", waitingOnPerson: true });
-    expect(cards[2]).toMatchObject({ status: "done", line: done.result });
-    expect(cards[3]).toMatchObject({ status: "failed", line: "Cannot read the file" });
   });
-
-  it("groups workflow phases without counting members or background tasks as loose helpers", () => {
-    const { snapshot, thread, entries, nodes } = fixture();
-    const roster = conversationSubagents(snapshot, thread.id);
-    const workflow = roster.cards.find((card) => card.kind === "workflow")!;
-    expect(workflow.phases).toMatchObject([
-      { index: 0, title: "Inspect", settled: 1, total: 1, status: "done" },
-      { index: 1, title: "Validate", settled: 0, total: 1, status: "working" },
-    ]);
-    const memberIds = workflow.phases.flatMap((phase) => phase.members.map((card) => card.id));
-    expect(roster.cards.every((card) => !memberIds.includes(card.id))).toBe(true);
-    expect(roster.cards).toHaveLength(7);
-    const background = nodes.find((node) => node.nodeKind === "task")!;
-    expect(nodeSubagentCard(background, thread.id)).toBeNull();
-    expect(roster.cards.some((card) => card.id === background.id)).toBe(false);
-    const turn = groupTranscriptEntries(entries).findLast((group) => group.kind === "turn")!;
-    if (turn.kind !== "turn") throw new Error("Missing turn");
-    const model = subagentTurnModel(turn.turn, thread.id, snapshot);
-    expect(model.helperCount).toBe(5);
-    expect(model.rows.filter((row) => row.kind === "subagents")).toHaveLength(1);
-    expect(model.rows).toContainEqual({ kind: "work", entry: background });
-    expect(model.outsideFold.flatMap((group) => group.cards).map((card) => card.title)).toEqual([
-      "Trace the client",
-      "Review the experience",
-      "Verify every surface",
-    ]);
-  });
-
-  it("keeps prose between helper groups even when their timestamps are equal", () => {
-    const { snapshot, thread, entries, nodes } = fixture();
-    const first = nodes.find((node) => node.title === "Trace the client")!;
-    const second = nodes.find((node) => node.title === "Review the experience")!;
-    const note = entries.find((entry) => entry.kind === "message")!;
-    if (note.kind !== "message") throw new Error("Missing note");
-    const middle = {
-      ...note,
-      id: "between-helpers",
-      runId: first.runId,
-      createdAt: first.createdAt,
-    };
-    const work = [first, middle, { ...second, createdAt: first.createdAt }];
-    const reader = { ...snapshot, transcripts: { ...snapshot.transcripts, [thread.id]: work } };
-    const group = groupTranscriptEntries(work)[0]!;
-    if (group.kind !== "turn") throw new Error("Missing turn");
-    expect(subagentTurnModel(group.turn, thread.id, reader).rows.map((row) => row.kind)).toEqual([
-      "subagents",
-      "work",
-      "subagents",
-    ]);
-  });
-
-  it("keeps older running helpers visible when a new Run is queued and orders the full roster", () => {
-    const { snapshot, thread } = fixture();
-    const queued = {
-      ...snapshot,
-      runQueue: [
-        ...snapshot.runQueue,
-        {
-          id: "new-run",
-          threadId: thread.id,
-          status: "queued" as const,
-          createdAt: "2026-11-10T15:00:00.000Z",
-          runOrdinal: 2,
-        },
+  it("keeps workflows separate, chooses the open phase, and places nested nodes only in their own view", () => {
+    const { snapshot, thread, turn, node, nodes } = fixture();
+    const model = subagentTurnModel(turn, thread.id, snapshot);
+    expect(model.rows.filter((row) => row.kind === "workflow")).toHaveLength(1);
+    expect(
+      model.groups
+        .flatMap((group) => group.cards)
+        .some((card) => card.title === "Check the tool output"),
+    ).toBe(false);
+    const workflow = conversationSubagents(snapshot, thread.id).now.find(
+      (card) => card.kind === "workflow",
+    )!.workflow!;
+    expect(workflow).toMatchObject({
+      openPhase: 1,
+      summary: "Phase 2 of 3 · Validate · 0 of 1 finished",
+      phases: [
+        { settled: 1, total: 1, word: "Finished", tone: "finished" },
+        { settled: 0, total: 1, word: "Working", tone: "working" },
+        { settled: 0, total: 0, word: "Not started", tone: "pending" },
       ],
-    };
-    const roster = conversationSubagents(queued, thread.id);
-    expect(roster.cards.map((card) => card.title)).toEqual([
-      "Trace the client",
-      "Review the experience",
-      "Verify every surface",
-      "Review the release notes",
-      "Research the reference",
-      "Check the tool output",
-      "Inspect the contract",
-    ]);
-    expect(roster.pill).toMatchObject({ label: "3/7 agents" });
-    expect(roster.cards.find((card) => card.origin === "assignment")).toMatchObject({
-      open: { kind: "conversation" },
-      status: "done",
-      line: "Release notes reviewed; all surfaces are covered.",
     });
+    const parent = nodes.find((n) => n.nodeKind === "workflow")!;
+    const failed = nodes.map((n) =>
+      n.parentNodeId === parent.nodeId ? { ...n, status: "failed" as const } : n,
+    );
+    expect(
+      nodeSubagentCard({ ...parent, status: "failed" }, thread.id, failed, snapshot)?.workflow,
+    ).toMatchObject({
+      openPhase: 0,
+      phases: [
+        { word: "1 failed", tone: "failed" },
+        { word: "1 failed", tone: "failed" },
+        { word: "Not started", tone: "pending" },
+      ],
+    });
+    expect(
+      subagentTurnModel(
+        {
+          ...turn,
+          run: { ...turn.run!, status: "completed", endedAt: "2026-11-10T15:00:00.000Z" },
+        },
+        thread.id,
+        snapshot,
+      ).foldLabel,
+    ).toContain("8 subagents · 1 task");
+    expect(foldedSubagentSummary("Worked for 22m", 3, 1)).toBe(
+      "Worked for 22m · 3 subagents · 1 task",
+    );
+    expect(foldedSubagentSummary("Worked", 1)).toBe("Worked · 1 subagent");
+    const folded = subagentTurnModel(turn, thread.id, snapshot, { folded: true, keptKeys: [] });
+    expect(folded.keptOutside?.cards.some((card) => card.key === `node:${node.nodeId}`)).toBe(true);
+    const settled = {
+      ...turn,
+      work: turn.work.map((entry) =>
+        entry.id === node.id ? { ...node, status: "completed" as const } : entry,
+      ),
+    };
+    const retained = subagentTurnModel(settled, thread.id, snapshot, {
+      folded: true,
+      keptKeys: folded.keptKeys,
+    });
+    expect(
+      retained.keptOutside?.cards.find((card) => card.key === `node:${node.nodeId}`)?.tone,
+    ).toBe("finished");
+    expect(
+      subagentTurnModel(settled, thread.id, snapshot, { folded: false, keptKeys: folded.keptKeys })
+        .keptOutside,
+    ).toBeNull();
   });
-
-  it("names helpers in a folded finished turn and leaves running cards outside its words", () => {
-    const { entries, nodes } = fixture();
-    const turn = groupTranscriptEntries(entries).find((group) => group.kind === "turn")!;
-    if (turn.kind !== "turn") throw new Error("Missing turn");
-    expect(workSummary(turn.turn)?.label).toBe("Worked for 22m · 1 subagent");
-    expect(foldedSubagentSummary("Worked 22m", 3)).toBe("Worked 22m · 3 subagents");
-    const live = nodes.find((node) => node.title === "Trace the client")!;
-    expect(turnWords({ ...turn.turn, work: [...turn.turn.work, live] })).toContainEqual(live);
+  it("orders the roster, includes nested helpers, and hides a settled pill", () => {
+    const { snapshot, thread } = fixture();
+    const roster = conversationSubagents(snapshot, thread.id);
+    expect(roster.now.map((card) => card.title)).toEqual([
+      "Review the experience",
+      "Trace the client",
+      "Verify every surface",
+      "Validate phone behavior",
+      "Wait for another reader",
+    ]);
+    expect(roster.earlier.some((card) => card.title === "Check the tool output")).toBe(true);
+    expect(roster.pill).toEqual({ live: 5, total: 12, needsYou: 1 });
+    const settled = {
+      ...snapshot,
+      transcripts: {
+        ...snapshot.transcripts,
+        [thread.id]: snapshot.transcripts[thread.id]!.map((entry) =>
+          entry.kind === "node" ? { ...entry, status: "completed" as const } : entry,
+        ),
+      },
+    };
+    expect(conversationSubagents(settled, thread.id).pill).toBeNull();
+    const assignment = Object.values(snapshot.assignments).find(
+      (a) => a.parentThreadId === thread.id,
+    )!;
+    expect(assignmentSubagentCard(assignment, snapshot)).toMatchObject({
+      origin: "task",
+      word: "Finished",
+      tone: "finished",
+      task: { assignmentId: assignment.id, menu: true },
+      opens: { kind: "thread" },
+      line: { kind: "result", text: assignment.resultPreview },
+    });
   });
 });
