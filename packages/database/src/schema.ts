@@ -818,7 +818,6 @@ interface SecurityAuditTable {
 }
 
 interface SecurityEffectTable {
-  accessRoot: ColumnType<unknown | null, unknown | null | undefined, unknown | null>;
   membershipGenerationCutoff: ColumnType<string, number | string | undefined, number | string>;
   causeId: Generated<string | null>;
   id: SecurityEffectId;
