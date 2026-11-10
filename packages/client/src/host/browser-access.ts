@@ -1,4 +1,6 @@
 import type { BrowserAccessSuggestion, RequestResponse } from "@opensteer/core";
+import type { Request } from "@opensteer/core";
+import { profileHomeChoice, type ProfileHomeChoice } from "./browser-profile-settings.js";
 import type { HostSnapshot } from "./client.js";
 
 /**
@@ -10,10 +12,14 @@ import type { HostSnapshot } from "./client.js";
 export type BrowserAccessSelection =
   { readonly kind: "existing"; readonly profileId: string } | { readonly kind: "new" };
 
-/** No selection declines; declining never takes away access the Workspace already has. */
+/**
+ * No selection declines; declining never takes away access the Workspace
+ * already has. A new profile goes to `home` when the person was offered one.
+ */
 export function browserAccessResponse(
   selection: BrowserAccessSelection | null,
   name: string,
+  home: string | null = null,
 ): RequestResponse {
   if (selection === null) return { kind: "external", value: { decision: "declined" } };
   if (selection.kind === "existing") {
@@ -24,8 +30,32 @@ export function browserAccessResponse(
   }
   return {
     kind: "external",
-    value: { createProfile: { name: name.trim() }, decision: "fulfilled" },
+    value: {
+      createProfile: { name: name.trim(), ...(home ? { homeRunnerId: home } : {}) },
+      decision: "fulfilled",
+    },
   };
+}
+
+/**
+ * Where a profile made by approving this Request can live, starting where the
+ * Host would put it: the computer the asking agent works on, else the main
+ * computer. Null when there is nothing to choose.
+ */
+export function browserAccessHomeChoice(
+  snapshot: Pick<
+    HostSnapshot,
+    "browserProfileHomes" | "deploymentShape" | "environments" | "machines" | "threads"
+  >,
+  hereId: string | null,
+  request: Pick<Request, "originatingThreadId">,
+): ProfileHomeChoice | null {
+  if ((snapshot.browserProfileHomes?.length ?? 0) < 2) return null;
+  const environmentId = snapshot.threads.find(
+    ({ id }) => id === request.originatingThreadId,
+  )?.environmentId;
+  const runnerId = snapshot.environments.find(({ id }) => id === environmentId)?.runnerId ?? null;
+  return profileHomeChoice(snapshot, hereId, { runnerId });
 }
 
 export function browserAccessInitialSelection(

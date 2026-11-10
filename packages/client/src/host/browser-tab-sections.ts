@@ -134,6 +134,14 @@ export function browserTabSections(input: {
   };
 }
 
+/**
+ * A row's name in its section. A phone lends its whole screen, so under its
+ * own heading its one row is that screen rather than its name again.
+ */
+export function tabSectionPlaceTitle(place: PlaceItem, headed: boolean): string {
+  return headed && place.kind === "phone" ? "Screen" : place.title;
+}
+
 function pendingDevice(
   pending: PendingBrowserTab,
   sessions: ReadonlyMap<string, PlaceItem["device"]>,
