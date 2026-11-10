@@ -96,7 +96,7 @@ export function assertDevelopmentWorkspaceEnvironment(environment: NodeJS.Proces
   if (
     !kind.success ||
     !deploymentPolicy({ kind: kind.data, defaultWorkspaceBacking: "local-directory" }).configuration
-      .accountAttachment
+      .serverTooling
   ) {
     throw new Error("pnpm dev requires OPENSTEER_DEPLOYMENT_KIND=server");
   }

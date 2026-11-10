@@ -205,7 +205,9 @@ export async function createWorkspace(
         ? await transaction.selectFrom("deployments").select("deploymentShape").executeTakeFirst()
         : undefined;
     const consent = (
-      deployment ? deploymentPolicy(deployment.deploymentShape).ownership === "single-user" : false
+      deployment
+        ? deploymentPolicy(deployment.deploymentShape).projectConsent === "owner-wide"
+        : false
     )
       ? await transaction
           .selectFrom("pluginOwnerSettings")

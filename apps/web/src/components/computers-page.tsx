@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import type { DeploymentClientPolicy } from "@opensteer/core";
 import { Link } from "react-router";
 import { ComputerAppsSection } from "./computer-apps/computer-apps-section.js";
@@ -122,7 +123,10 @@ export function currentDeviceMachineId(input: {
   readonly machines: readonly MachineSummary[];
 }): string | null {
   if (input.localRunnerId !== null) return input.localRunnerId;
-  if (!input.hostsDeploymentOnThisComputer || input.deploymentPolicy?.ownership !== "single-user")
+  if (
+    !input.hostsDeploymentOnThisComputer ||
+    input.deploymentPolicy?.deploymentOwnsMainComputer !== true
+  )
     return null;
   return (
     input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy))?.id ?? null
@@ -155,7 +159,7 @@ export function ComputersPage() {
     snapshot,
   } = useShell();
   const deploymentName = useDeploymentName();
-  const deploymentPolicy = snapshot.deploymentPolicy ?? null;
+  const deploymentPolicy = hostDeploymentPolicy(snapshot) ?? null;
   const hereId = currentDeviceMachineId({
     deploymentPolicy,
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
@@ -261,14 +265,14 @@ export function ComputersPage() {
         {/* A Personal Opensteer's services are the app's own business; a
             server's administrator may need to rename or retire one. */}
         {administrator &&
-        deploymentPolicy?.ownership === "members" &&
+        deploymentPolicy?.serviceManagement === true &&
         overview.services.length > 0 ? (
           <Services client={hostClient} services={overview.services} />
         ) : null}
         {/* The question people most often bring here belongs next door:
             computers are what agents use, devices are where you open Opensteer. */}
         <p className="settings-footnote">
-          {deploymentPolicy?.ownership === "single-user" ? (
+          {deploymentPolicy?.personalRemoteAccess === true ? (
             <>
               To open {homeName} on your phone or another device, use{" "}
               <Link to="/settings/devices">Remote access</Link>.
@@ -774,7 +778,7 @@ export function computerDetailLead(input: {
   if (hostsDeployment(machine, input.deploymentPolicy)) {
     return `Your Opensteer runs here. Keep ${machine.name} on and awake so agents can keep working while you’re away.`;
   }
-  if (input.deploymentPolicy?.ownership === "single-user") {
+  if (input.deploymentPolicy?.runnerEnrollmentMode === "reach-only") {
     return `Agents work on ${input.homeName}. Choose what they can use on ${machine.name}.`;
   }
   if (machine.ownership === "other") {
@@ -800,7 +804,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   } = useShell();
   const navigate = useNavigate();
   const deploymentName = useDeploymentName();
-  const deploymentPolicy = snapshot.deploymentPolicy ?? null;
+  const deploymentPolicy = hostDeploymentPolicy(snapshot) ?? null;
   const hereId = currentDeviceMachineId({
     deploymentPolicy,
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
@@ -1050,7 +1054,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             decide, so their page only says so when agents do work there. */}
         {!phone &&
         !iphone &&
-        deploymentPolicy?.ownership === "members" &&
+        deploymentPolicy?.localRunnerDefaultModules?.includes("agents") === true &&
         machine.status !== "pending" &&
         (machine.ownership !== "other" || machine.modules.agents) ? (
           <section aria-labelledby="runs-agents-title" className="computers-section">

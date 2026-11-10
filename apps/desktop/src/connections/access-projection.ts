@@ -1,5 +1,6 @@
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
+import { deploymentPolicy, type DeploymentPolicy } from "@opensteer/core";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 import { describeConnectionAccess, type LocalHostRuntime } from "@opensteer/client/connections";
 import type { DeploymentCatalogStore } from "@opensteer/client/connections";
@@ -15,6 +16,7 @@ import type {
  * this person may drop.
  */
 export interface DeploymentAccessCatalogDeployment extends DesktopDeploymentSummary {
+  readonly deploymentPolicy?: DeploymentPolicy;
   readonly capabilities?: readonly HostCapability[] | null;
   readonly accountAccess: "owner" | "member" | null;
   readonly accountLivenessExpiresAt: string | null;
@@ -69,6 +71,10 @@ export class DesktopAccessProjection {
         const fromAccount = connection.source.kind === "account";
         return {
           access: facts.access,
+          deploymentPolicy: deploymentPolicy({
+            kind: document.deploymentShape.kind,
+            defaultWorkspaceBacking: "local-directory",
+          }),
           capabilities: facts.key === null ? null : (connection.capabilities ?? null),
           // The Account relation, not a route: it says what this Account may do
           // with the listing, which the live access kind never answers.

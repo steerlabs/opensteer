@@ -264,6 +264,11 @@ export class DeploymentAccessService {
     this.#attachSelectedReturningDeployment();
   }
 
+  deploymentPolicy(deploymentId: string) {
+    return this.#catalog.deployments.find((deployment) => deployment.id === deploymentId)
+      ?.deploymentPolicy;
+  }
+
   snapshot(): DeploymentAccessSnapshot {
     const personal = this.#personalSetup();
     return freezeSnapshot(
@@ -277,6 +282,7 @@ export class DeploymentAccessService {
             hasAccountConnectRoute: _hasAccountConnectRoute,
             hasVerifiedAccountRoute: _hasVerifiedAccountRoute,
             key: _key,
+            deploymentPolicy: _deploymentPolicy,
             ...publicDeployment
           } = deployment;
           return {

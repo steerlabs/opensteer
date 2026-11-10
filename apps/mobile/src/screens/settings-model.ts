@@ -371,7 +371,7 @@ export function passwordsSettingsModel(input: {
   readonly deploymentName: string;
   readonly machines: readonly MachineSummary[];
 }): PasswordsSettingsModel {
-  const personal = input.deploymentPolicy?.ownership === "single-user";
+  const personal = input.deploymentPolicy?.nativePasswords === true;
   const homeName =
     input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy))?.name ??
     input.deploymentName;

@@ -618,6 +618,7 @@ function accessOperationMocks() {
     checkDeployments: operation(),
     connectPrivate: operation(),
     createPersonalDeployment: operation(),
+    deploymentPolicy: vi.fn(() => undefined),
     linkPersonal: operation(),
     reauthorize: operation(),
     refreshDirectory: operation(),

@@ -67,6 +67,7 @@ export interface DesktopBridgeOptions {
     | "checkDeployments"
     | "connectPrivate"
     | "createPersonalDeployment"
+    | "deploymentPolicy"
     | "linkPersonal"
     | "reauthorize"
     | "refreshDirectory"

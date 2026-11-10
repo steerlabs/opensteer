@@ -39,6 +39,16 @@ describe("machineReachOptions", () => {
       machineReachOptions({
         deploymentPolicy: {
           ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
           localRunnerDefaultModules: ["agents", "browser", "shell"],
         },
         deploymentName: "Acme",
@@ -53,7 +63,20 @@ describe("machineReachOptions", () => {
     // too. Reading ownership alone is what used to hide the choice.
     expect(
       machineReachOptions({
-        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         deploymentName: "Acme",
         ownerReachAvailable: true,
         ownership: "deployment",
@@ -66,6 +89,7 @@ describe("machineReachOptions", () => {
       machineReachOptions({
         deploymentPolicy: {
           ownership: deploymentKind === "personal" ? "single-user" : "members",
+          sharing: deploymentKind === "server",
           localRunnerDefaultModules: [],
         },
         deploymentName: "Acme",
@@ -75,6 +99,16 @@ describe("machineReachOptions", () => {
 
     expect(forKind("server")).toEqual(["nobody", "owner", "deployment"]);
     expect(forKind("personal")).toEqual(["nobody", "owner"]);
+  });
+
+  it.each([true, false])("uses sharing rather than ownership: %s", (sharing) => {
+    const options = machineReachOptions({
+      deploymentPolicy: { ownership: sharing ? "single-user" : "members", sharing },
+      deploymentName: "Acme",
+      ownerReachAvailable: true,
+      ownership: "mine",
+    });
+    expect(options.some((option) => option.reach === "deployment")).toBe(sharing);
   });
 });
 
@@ -589,6 +623,16 @@ function sectionElement(input: {
       client={input.client}
       deploymentPolicy={{
         ownership: "members",
+        personalRemoteAccess: false,
+        nativeWebLinks: false,
+        localOwnerClaim: false,
+        deploymentOwnsMainComputer: false,
+        nativePasswords: false,
+        deploymentComputerAccess: false,
+        sharing: true,
+        serviceManagement: true,
+        runnerEnrollmentMode: "unrestricted",
+        projectConsent: "per-project",
         localRunnerDefaultModules: ["agents", "browser", "shell"],
       }}
       deploymentName="Acme"

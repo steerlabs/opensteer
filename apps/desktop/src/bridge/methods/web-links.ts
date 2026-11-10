@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import type { DeploymentPolicy } from "@opensteer/core";
 import type { DesktopWebLink, DesktopWebLinkDelivery } from "@opensteer/protocol/desktop";
 import type { DesktopWebLinks } from "../../app/web-links.js";
 import { desktopBridgeChannels } from "../desktop-bridge-channels.js";
@@ -8,10 +9,13 @@ import type { DeploymentAccessSnapshot } from "@opensteer/protocol/desktop";
 export function personalWebLinksAvailable(
   snapshot: DeploymentAccessSnapshot,
   deploymentId: string,
+  policy: Pick<DeploymentPolicy, "nativeWebLinks"> | undefined,
 ): boolean {
   const selected = snapshot.deployments.find((d) => d.id === snapshot.selectedDeploymentId);
   return (
-    selected?.id === deploymentId && selected.kind === "personal" && selected.status === "connected"
+    selected?.id === deploymentId &&
+    policy?.nativeWebLinks === true &&
+    selected.status === "connected"
   );
 }
 

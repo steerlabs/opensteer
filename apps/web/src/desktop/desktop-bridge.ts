@@ -54,5 +54,7 @@ export function localJoinOffer(input: {
   const { deploymentPolicy, status } = input;
   if (status === null || !status.available || status.runner.enrolled) return null;
   if (status.platform !== "windows") return { runAgents: false };
-  return deploymentPolicy?.ownership === "members" ? { runAgents: true } : null;
+  return deploymentPolicy?.localRunnerDefaultModules?.includes("agents") === true
+    ? { runAgents: true }
+    : null;
 }

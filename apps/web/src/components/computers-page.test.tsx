@@ -73,7 +73,20 @@ describe("currentDeviceMachineId", () => {
 
     expect(
       currentDeviceMachineId({
-        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         hostsDeploymentOnThisComputer: true,
         localRunnerId: null,
         machines,
@@ -81,7 +94,20 @@ describe("currentDeviceMachineId", () => {
     ).toBe(macMiniId);
     expect(
       currentDeviceMachineId({
-        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         hostsDeploymentOnThisComputer: false,
         localRunnerId: null,
         machines,
@@ -844,6 +870,16 @@ function serverSnapshot(client: MockHostClient): ShellContext["snapshot"] {
     deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
     deploymentPolicy: {
       ownership: "members",
+      personalRemoteAccess: false,
+      nativeWebLinks: false,
+      localOwnerClaim: false,
+      deploymentOwnsMainComputer: false,
+      nativePasswords: false,
+      deploymentComputerAccess: false,
+      sharing: true,
+      serviceManagement: true,
+      runnerEnrollmentMode: "unrestricted",
+      projectConsent: "per-project",
       localRunnerDefaultModules: ["agents", "browser", "shell"],
     },
   };

@@ -592,7 +592,7 @@ function readyStage({
             → USB debugging.
           </p>
         </details>
-        {deploymentPolicy?.ownership === "single-user" ? (
+        {deploymentPolicy?.personalRemoteAccess === true ? (
           <p>
             Needs remote access on for {homeName}.{" "}
             <Link to="/settings/account/remote-access">Open Remote access</Link>

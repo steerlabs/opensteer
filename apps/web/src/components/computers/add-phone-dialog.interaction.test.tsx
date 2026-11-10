@@ -113,6 +113,16 @@ describe("AddPhoneDialog setup lifecycle", () => {
             client={client}
             deploymentPolicy={{
               ownership: "members",
+              personalRemoteAccess: false,
+              nativeWebLinks: false,
+              localOwnerClaim: false,
+              deploymentOwnsMainComputer: false,
+              nativePasswords: false,
+              deploymentComputerAccess: false,
+              sharing: true,
+              serviceManagement: true,
+              runnerEnrollmentMode: "unrestricted",
+              projectConsent: "per-project",
               localRunnerDefaultModules: ["agents", "browser", "shell"],
             }}
             deploymentName="My Opensteer"

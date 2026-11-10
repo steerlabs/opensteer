@@ -246,7 +246,7 @@ export async function deploymentOwnedExecutionIsAvailableToUser(
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
   if (!deployment) return false;
-  if (deploymentPolicy(deployment.deploymentShape).ownership === "members") return true;
+  if (deploymentPolicy(deployment.deploymentShape).executionAccess === "member") return true;
   const user = await database
     .selectFrom("users")
     .select("instanceRole")

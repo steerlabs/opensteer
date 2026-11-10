@@ -347,7 +347,12 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
     ? new WebLinkDeliveryOwner(
         options.webLinks,
         (sender) => options.isWorkspaceContents?.(sender) === true,
-        (deploymentId) => personalWebLinksAvailable(options.access.snapshot(), deploymentId),
+        (deploymentId) =>
+          personalWebLinksAvailable(
+            options.access.snapshot(),
+            deploymentId,
+            options.access.deploymentPolicy(deploymentId),
+          ),
       )
     : null;
   register(desktopBridgeChannels.webLinkDelivery, (event, envelope) => {

@@ -126,7 +126,7 @@ export function hostsDeployment(
   deploymentPolicy: DeploymentClientPolicy | null,
 ): boolean {
   return (
-    deploymentPolicy?.ownership === "single-user" &&
+    deploymentPolicy?.deploymentOwnsMainComputer === true &&
     machine.ownership === "deployment" &&
     !isServiceMachine(machine)
   );

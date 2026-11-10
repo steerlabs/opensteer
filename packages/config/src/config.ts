@@ -377,7 +377,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
   if (
     config.acceptsExternalRunners &&
-    deploymentPolicy(config.workspace.shape).runnerEnrollment.mode === "reach-only"
+    !deploymentPolicy(config.workspace.shape).configuration.externalRunners
   ) {
     throw new Error("Only a Server Deployment can accept external Runners");
   }
@@ -395,7 +395,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
   if (
     config.mode === "production" &&
-    deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
+    deploymentPolicy(config.workspace.shape).configuration.packagedWebDistribution &&
     config.exposure === "loopback" &&
     !config.webDistribution
   ) {
@@ -406,7 +406,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
   if (config.personalAccountIssuer) {
     if (
-      deploymentPolicy(config.workspace.shape).ownership !== "single-user" ||
+      !deploymentPolicy(config.workspace.shape).configuration.personalAccountIssuer ||
       config.exposure !== "loopback" ||
       config.account !== undefined
     ) {
@@ -418,7 +418,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   }
   if (config.deploymentIdentity && !config.account) {
     if (
-      deploymentPolicy(config.workspace.shape).ownership !== "single-user" ||
+      !deploymentPolicy(config.workspace.shape).configuration.explicitIdentityWithoutAccount ||
       config.exposure !== "loopback"
     ) {
       throw new Error(
@@ -427,7 +427,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
     }
   }
   const requiresLocalOwnerClaim =
-    deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
+    deploymentPolicy(config.workspace.shape).configuration.localOwnerClaim &&
     config.exposure === "loopback" &&
     config.account === undefined;
   if (requiresLocalOwnerClaim !== (config.identity.localOwnerClaimToken !== undefined)) {
@@ -487,7 +487,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_CANONICAL_ORIGIN",
     {
       allowLoopback:
-        deploymentPolicy(deploymentShape).ownership === "single-user" &&
+        deploymentPolicy(deploymentShape).configuration.insecureLoopbackOrigins &&
         isLoopbackBindAddress(parsed.OPENSTEER_BIND_ADDRESS),
     },
   );
@@ -504,7 +504,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
   );
   requireSecureServiceUrl(parsed.OPENSTEER_MODE, runtimeOrigin.origin, "OPENSTEER_RUNTIME_ORIGIN", {
     allowLoopback:
-      deploymentPolicy(deploymentShape).ownership === "single-user" &&
+      deploymentPolicy(deploymentShape).configuration.insecureLoopbackOrigins &&
       isLoopbackBindAddress(parsed.OPENSTEER_BIND_ADDRESS),
   });
   const exposure = deriveHostExposure({

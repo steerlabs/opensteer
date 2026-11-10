@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
 import {
@@ -67,7 +68,7 @@ export function SettingsShell() {
             administrator: shell.snapshot.user?.instanceRole === "administrator",
             deployment,
             kind,
-            deploymentPolicy: shell.snapshot.deploymentPolicy,
+            deploymentPolicy: hostDeploymentPolicy(shell.snapshot),
             machineOwner: identity?.machineOwner === true,
             name: settingsDeploymentName({ deployment, identityConfig: identity }),
             facts: {
@@ -90,7 +91,7 @@ export function SettingsShell() {
       deployment,
       identity,
       kind,
-      shell.snapshot.deploymentPolicy,
+      hostDeploymentPolicy(shell.snapshot),
       shell.desktopBridge,
       shell.snapshot.connection,
       shell.snapshot.sessionSurface,
@@ -120,7 +121,7 @@ export function SettingsShell() {
   }, [mobile, navigationOpen]);
 
   const home = shell.snapshot.machines.find((machine) =>
-    hostsDeployment(machine, shell.snapshot.deploymentPolicy ?? null),
+    hostsDeployment(machine, hostDeploymentPolicy(shell.snapshot) ?? null),
   );
   if (!view || !context)
     return (
@@ -301,7 +302,7 @@ export function SettingsSectionRoute({
       ) : (
         <>
           <AccountSection />
-          {view.deploymentPolicy?.ownership === "single-user" && view.administrator ? (
+          {view.deploymentPolicy?.personalRemoteAccess === true && view.administrator ? (
             <RemoteAccessSection view={view} compact />
           ) : null}
           <SignedInDevicesSection view={view} />

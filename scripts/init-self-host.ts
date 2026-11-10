@@ -56,7 +56,7 @@ export function selfHostWorkspaceBacking(environment: NodeJS.ProcessEnv): SelfHo
   if (
     !kind.success ||
     !deploymentPolicy({ kind: kind.data, defaultWorkspaceBacking: "local-directory" }).configuration
-      .accountAttachment
+      .serverTooling
   ) {
     throw new Error("init:self-host requires OPENSTEER_DEPLOYMENT_KIND=server");
   }

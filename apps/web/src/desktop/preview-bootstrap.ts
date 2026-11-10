@@ -22,8 +22,34 @@ export function previewBootstrap(
   return {
     deploymentPolicy:
       selected.kind === "personal"
-        ? { ownership: "single-user", localRunnerDefaultModules: ["shell"] }
-        : { ownership: "members", localRunnerDefaultModules: ["agents", "browser", "shell"] },
+        ? {
+            ownership: "single-user",
+            personalRemoteAccess: true,
+            nativeWebLinks: true,
+            localOwnerClaim: true,
+            deploymentOwnsMainComputer: true,
+            nativePasswords: true,
+            deploymentComputerAccess: true,
+            sharing: false,
+            serviceManagement: false,
+            runnerEnrollmentMode: "reach-only",
+            projectConsent: "owner-wide",
+            localRunnerDefaultModules: ["shell"],
+          }
+        : {
+            ownership: "members",
+            personalRemoteAccess: false,
+            nativeWebLinks: false,
+            localOwnerClaim: false,
+            deploymentOwnsMainComputer: false,
+            nativePasswords: false,
+            deploymentComputerAccess: false,
+            sharing: true,
+            serviceManagement: true,
+            runnerEnrollmentMode: "unrestricted",
+            projectConsent: "per-project",
+            localRunnerDefaultModules: ["agents", "browser", "shell"],
+          },
     deploymentId: selected.id,
     notificationPreferences: [{ workspaceId: workspace.id, muted: false, revision: "0" }],
     browser: {

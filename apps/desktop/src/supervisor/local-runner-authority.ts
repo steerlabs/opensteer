@@ -64,7 +64,7 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
       deploymentPolicy({
         kind: connection.authority.document.deploymentShape.kind,
         defaultWorkspaceBacking: "local-directory",
-      }).ownership === "single-user" &&
+      }).deploymentOwnsMainComputer &&
       (await this.#supervisedDeploymentId()) === expected
     ) {
       throw new Error("This Mac hosts this Deployment, so it already runs as its Main Runner.");
@@ -81,11 +81,10 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
       hostUrl: resolved.origin,
       key: resolved.key,
       // Personal grants every computer but the Main exactly `shell`.
-      mayRunAgents:
-        deploymentPolicy({
-          kind: connection.authority.document.deploymentShape.kind,
-          defaultWorkspaceBacking: "local-directory",
-        }).runnerEnrollment.mode === "unrestricted",
+      mayRunAgents: deploymentPolicy({
+        kind: connection.authority.document.deploymentShape.kind,
+        defaultWorkspaceBacking: "local-directory",
+      }).localRunnerDefaultModules.includes("agents"),
     };
   }
 

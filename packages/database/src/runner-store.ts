@@ -460,7 +460,7 @@ async function requireRunnerIsRevocable(
   if (
     runnerRunsItsDeployment({
       deploymentIsPersonal: deployment
-        ? deploymentPolicy(deployment.deploymentShape).ownership === "single-user"
+        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
         : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,
@@ -767,7 +767,7 @@ export async function upgradeLegacyPersonalMainRunnerBrowserGrant(
       .selectFrom("deployments")
       .select("deploymentShape")
       .executeTakeFirst(databaseOperationOptions());
-    if (!deployment || deploymentPolicy(deployment.deploymentShape).ownership !== "single-user")
+    if (!deployment || !deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer)
       return false;
 
     await transaction

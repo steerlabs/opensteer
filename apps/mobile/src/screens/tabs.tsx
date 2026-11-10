@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
   placeAgents,
@@ -528,7 +529,7 @@ function selectCanOpen(snapshot: HostSnapshot): boolean {
       machine.computerUse !== undefined &&
       machine.computerUse !== null &&
       (machine.ownership === "mine" ||
-        (snapshot.deploymentPolicy?.ownership === "single-user" &&
+        (hostDeploymentPolicy(snapshot)?.deploymentComputerAccess === true &&
           machine.ownership === "deployment")),
   );
 }

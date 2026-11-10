@@ -2,6 +2,32 @@ import { describe, expect, it } from "vitest";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { createId } from "@opensteer/core";
 import { localJoinOffer } from "./desktop-bridge.js";
+import { hostDeploymentPolicy } from "@opensteer/client/host";
+
+it.each(["personal", "server"] as const)(
+  "keeps Windows offers compatible with an older %s Host",
+  (kind) => {
+    const bootstrap = { deploymentShape: { kind } };
+    expect(
+      localJoinOffer({
+        deploymentPolicy: hostDeploymentPolicy(bootstrap) ?? null,
+        status: onPlatform("windows"),
+      }),
+    ).toEqual(kind === "server" ? { runAgents: true } : null);
+  },
+);
+
+it.each([true, false])("uses agent modules, not ownership, for a Windows offer: %s", (allowed) => {
+  expect(
+    localJoinOffer({
+      deploymentPolicy: {
+        ownership: allowed ? "single-user" : "members",
+        localRunnerDefaultModules: allowed ? ["agents"] : ["shell"],
+      },
+      status: onPlatform("windows"),
+    }),
+  ).toEqual(allowed ? { runAgents: true } : null);
+});
 
 function onPlatform(
   platform: DesktopLocalExecutionStatus["platform"],
@@ -30,6 +56,16 @@ describe("localJoinOffer", () => {
       localJoinOffer({
         deploymentPolicy: {
           ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
           localRunnerDefaultModules: ["agents", "browser", "shell"],
         },
         status: onPlatform("macos"),
@@ -39,7 +75,20 @@ describe("localJoinOffer", () => {
     });
     expect(
       localJoinOffer({
-        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         status: onPlatform("linux"),
       }),
     ).toEqual({
@@ -53,6 +102,16 @@ describe("localJoinOffer", () => {
       localJoinOffer({
         deploymentPolicy: {
           ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
           localRunnerDefaultModules: ["agents", "browser", "shell"],
         },
         status: onPlatform("windows"),
@@ -66,7 +125,20 @@ describe("localJoinOffer", () => {
     // Personal admits other computers only to be reached, and this one cannot.
     expect(
       localJoinOffer({
-        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         status: onPlatform("windows"),
       }),
     ).toBeNull();
@@ -78,6 +150,16 @@ describe("localJoinOffer", () => {
       localJoinOffer({
         deploymentPolicy: {
           ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
           localRunnerDefaultModules: ["agents", "browser", "shell"],
         },
         status: null,
@@ -87,6 +169,16 @@ describe("localJoinOffer", () => {
       localJoinOffer({
         deploymentPolicy: {
           ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
           localRunnerDefaultModules: ["agents", "browser", "shell"],
         },
         status: { ...onPlatform("macos"), available: false },
@@ -97,6 +189,16 @@ describe("localJoinOffer", () => {
       localJoinOffer({
         deploymentPolicy: {
           ownership: "members",
+          personalRemoteAccess: false,
+          nativeWebLinks: false,
+          localOwnerClaim: false,
+          deploymentOwnsMainComputer: false,
+          nativePasswords: false,
+          deploymentComputerAccess: false,
+          sharing: true,
+          serviceManagement: true,
+          runnerEnrollmentMode: "unrestricted",
+          projectConsent: "per-project",
           localRunnerDefaultModules: ["agents", "browser", "shell"],
         },
         status: { ...joined, runner: { ...joined.runner, enrolled: true } },

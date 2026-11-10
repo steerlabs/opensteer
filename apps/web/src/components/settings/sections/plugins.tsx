@@ -377,7 +377,7 @@ function PluginCatalog({
           }}
         >
           <PluginAddSheet
-            personal={view.deploymentPolicy?.ownership === "single-user"}
+            personal={view.deploymentPolicy?.projectConsent === "owner-wide"}
             product={adding}
           />
         </Dialog>
@@ -513,7 +513,7 @@ function OverviewRow({
               : state.label
             : [
                 row.accountCount > 1 ? `${row.accountCount} accounts` : null,
-                pluginPlacementLabel(row, view.deploymentPolicy?.ownership === "single-user"),
+                pluginPlacementLabel(row, view.deploymentPolicy?.projectConsent === "owner-wide"),
               ]
                 .filter(Boolean)
                 .join(" · ")}
@@ -604,7 +604,7 @@ function PluginDetail({
           <Placement
             detail={data}
             reload={detail.reload}
-            personal={view.deploymentPolicy?.ownership === "single-user"}
+            personal={view.deploymentPolicy?.projectConsent === "owner-wide"}
           />
           {data.permissions.length ? (
             <section className="settings-group">

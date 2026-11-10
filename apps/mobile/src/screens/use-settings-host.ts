@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 interface EngineInstallationRow {
@@ -61,7 +62,7 @@ export function useSettingsHost(hostClient: HostClient | null): SettingsHost | n
         : installations;
     const next: SettingsHost = {
       deploymentShape: snapshot.deploymentShape,
-      deploymentPolicy: snapshot.deploymentPolicy,
+      deploymentPolicy: hostDeploymentPolicy(snapshot),
       engineInstallations,
       harnessUpdateAvailable: snapshot.harnessUpdateAvailable === true,
       hostConnected: canRespondToRequests(snapshot),

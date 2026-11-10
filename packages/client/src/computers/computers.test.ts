@@ -1,4 +1,21 @@
 import type { MachineSummary } from "@opensteer/protocol";
+import { hostDeploymentPolicy } from "../host/deployment-policy.js";
+
+it.each(["personal", "server"] as const)(
+  "keeps computer grouping for an older %s bootstrap",
+  (kind) => {
+    const bootstrap = { deploymentShape: { kind } };
+    const overview = computersOverview({
+      deploymentPolicy: hostDeploymentPolicy(bootstrap) ?? null,
+      deploymentName: "Computer",
+      hereId: null,
+      machines: [],
+      publicOrigin: null,
+    });
+    expect(overview.home.kind).toBe(kind === "personal" ? "mac" : "server");
+    expect(overview.addTo).toBe(kind === "personal" ? "others" : "yours");
+  },
+);
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   computerGlyph,
@@ -8,8 +25,19 @@ import {
   computerUses,
   computerUsesPhrase,
   isServiceMachine,
+  hostsDeployment,
   type ComputerAppsData,
 } from "./computers.js";
+
+it("uses Main-computer policy rather than ownership", () => {
+  const main = machine({ ownership: "deployment", allowedModules: ["agents"] });
+  expect(hostsDeployment(main, { ownership: "members", deploymentOwnsMainComputer: true })).toBe(
+    true,
+  );
+  expect(
+    hostsDeployment(main, { ownership: "single-user", deploymentOwnsMainComputer: false }),
+  ).toBe(false);
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -100,7 +128,20 @@ describe("computersOverview", () => {
 
   it("puts the Mac a Personal Opensteer runs on at the top, never among the others", () => {
     const overview = computersOverview({
-      deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+      deploymentPolicy: {
+        ownership: "single-user",
+        personalRemoteAccess: true,
+        nativeWebLinks: true,
+        localOwnerClaim: true,
+        deploymentOwnsMainComputer: true,
+        nativePasswords: true,
+        deploymentComputerAccess: true,
+        sharing: false,
+        serviceManagement: false,
+        runnerEnrollmentMode: "reach-only",
+        projectConsent: "owner-wide",
+        localRunnerDefaultModules: ["shell"],
+      },
       deploymentName: "Mac mini",
       hereId: null,
       machines: [machine({ id: "rnr_laptop" }), home, service],
@@ -117,7 +158,20 @@ describe("computersOverview", () => {
   it("names a Personal Opensteer whose Mac has not connected by the Opensteer's name", () => {
     expect(
       computersOverview({
-        deploymentPolicy: { ownership: "single-user", localRunnerDefaultModules: ["shell"] },
+        deploymentPolicy: {
+          ownership: "single-user",
+          personalRemoteAccess: true,
+          nativeWebLinks: true,
+          localOwnerClaim: true,
+          deploymentOwnsMainComputer: true,
+          nativePasswords: true,
+          deploymentComputerAccess: true,
+          sharing: false,
+          serviceManagement: false,
+          runnerEnrollmentMode: "reach-only",
+          projectConsent: "owner-wide",
+          localRunnerDefaultModules: ["shell"],
+        },
         deploymentName: "Studio",
         hereId: null,
         machines: [],
@@ -136,6 +190,16 @@ describe("computersOverview", () => {
     const overview = computersOverview({
       deploymentPolicy: {
         ownership: "members",
+        personalRemoteAccess: false,
+        nativeWebLinks: false,
+        localOwnerClaim: false,
+        deploymentOwnsMainComputer: false,
+        nativePasswords: false,
+        deploymentComputerAccess: false,
+        sharing: true,
+        serviceManagement: true,
+        runnerEnrollmentMode: "unrestricted",
+        projectConsent: "per-project",
         localRunnerDefaultModules: ["agents", "browser", "shell"],
       },
       deploymentName: "Acme",

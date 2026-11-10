@@ -96,7 +96,7 @@ export interface MachineProjectionInput {
   >;
   readonly computerUseDisplayStreamSupported?: ReadonlyMap<string, boolean>;
   readonly computerUseSessions?: ReadonlyMap<string, readonly ComputerUseSessionSummary[]>;
-  readonly deploymentOwnership: "single-user" | "members";
+  readonly deploymentOwnsMainComputer: boolean;
   /**
    * Every local-directory Workspace these machines' environments own. A row
    * counts the folders its machine advertised that none of these claims — the
@@ -123,10 +123,10 @@ function isoOrNull(value: Date | null): string | null {
  */
 function isPersonalMainRunner(
   runner: MachineRunnerInput,
-  deploymentOwnership: "single-user" | "members",
+  deploymentOwnsMainComputer: boolean,
 ): boolean {
   return runnerRunsItsDeployment({
-    deploymentIsPersonal: deploymentOwnership === "single-user",
+    deploymentIsPersonal: deploymentOwnsMainComputer,
     ownerKind: runner.ownerKind,
     runnerKind: runner.kind,
   });
@@ -323,7 +323,7 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
 
   for (const runner of input.runners) {
     if (runner.revokedAt !== null) continue;
-    const personalMain = isPersonalMainRunner(runner, input.deploymentOwnership);
+    const personalMain = isPersonalMainRunner(runner, input.deploymentOwnsMainComputer);
     const stakes = machineStakes(runner, input);
     const apps = input.apps.get(runner.id);
     machines.push({

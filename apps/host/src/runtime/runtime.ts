@@ -35,7 +35,6 @@ import {
   type RunnerId,
   type UserId,
   type Workspace,
-  deploymentSupportsSharing,
 } from "@opensteer/core";
 import {
   AccountDirectoryStore,
@@ -528,12 +527,11 @@ export async function createHostRuntime(
         providerId: oidcIdentityProviderId(accountOidcProvider),
       });
     }
-    const localSetupToken =
-      deploymentPolicy(config.workspace.shape).ownership === "single-user"
-        ? config.identity.localOwnerClaimToken
-        : config.exposure === "loopback"
-          ? deriveLocalSetupToken(config.authSecret)
-          : undefined;
+    const localSetupToken = deploymentPolicy(config.workspace.shape).configuration.localOwnerClaim
+      ? config.identity.localOwnerClaimToken
+      : config.exposure === "loopback"
+        ? deriveLocalSetupToken(config.authSecret)
+        : undefined;
     const initialOwnerEnrollment = config.identity.initialOwnerEnrollment
       ? {
           expiresAt: new Date(
@@ -576,7 +574,7 @@ export async function createHostRuntime(
         realtime.closeSession(sessionId);
         closeBrowserSession(sessionId);
       },
-      ...(localSetupToken && deploymentPolicy(config.workspace.shape).ownership === "single-user"
+      ...(localSetupToken && deploymentPolicy(config.workspace.shape).configuration.localOwnerClaim
         ? {
             localMachineOwner: {
               displayName: "You",
@@ -757,7 +755,7 @@ export async function createHostRuntime(
       deploymentId: deployment.id,
       repository: store,
       baseUrl: config.canonicalOrigin,
-      ...(deploymentPolicy(deployment.deploymentShape).ownership === "single-user"
+      ...(deploymentPolicy(deployment.deploymentShape).services.localBrowserProfileInventory
         ? { beforeProfileOpen: () => runnerBrowsers.requirePersonalProfileInventory() }
         : {}),
       onReconciled: async (profileId) => {
@@ -805,7 +803,7 @@ export async function createHostRuntime(
     const browser = new BrowserService({
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
-      personal: deploymentPolicy(deployment.deploymentShape).ownership === "single-user",
+      personal: deploymentPolicy(deployment.deploymentShape).browserPersonalMode,
       localProfiles,
       eraseLocalProfiles: (runnerId) => runnerBrowsers.resumeDeletions(runnerId),
       passkeys: config.passkeys === true,
@@ -903,7 +901,7 @@ export async function createHostRuntime(
     const passwordSignIns = new PasswordSignInService({
       authority: computerApps,
       resolveAuthority: async (ownerId) => {
-        if (deploymentPolicy(config.workspace.shape).ownership !== "single-user") return null;
+        if (!deploymentPolicy(config.workspace.shape).nativePasswords) return null;
         let after: RunnerId | undefined;
         do {
           const page = await store.listRunners({
@@ -999,7 +997,7 @@ export async function createHostRuntime(
       return resolveIntegrationDeploymentPosture({
         accountReachability: config.account?.reachability ?? null,
         personalAccountLinked:
-          deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
+          deploymentPolicy(config.workspace.shape).integrationAccountBinding === "personal-link" &&
           (await database
             .selectFrom("personalRemoteAccountLink")
             .select("singletonKey")
@@ -1136,7 +1134,7 @@ export async function createHostRuntime(
       shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
       resolveOwnerEnvironmentId: async (ownerId) => {
         if (
-          deploymentPolicy(config.workspace.shape).ownership === "single-user" &&
+          deploymentPolicy(config.workspace.shape).workspaceNamespace === "single-owner" &&
           storage.kind === "local-directory"
         )
           return storage.ownerEnvironmentId;
@@ -1419,7 +1417,7 @@ export async function createHostRuntime(
     };
     const integrationPlatform = new IntegrationPlatformService({
       longRequestHold: (run) => longRequestHold(run.runId),
-      personal: deploymentPolicy(config.workspace.shape).ownership === "single-user",
+      personal: deploymentPolicy(config.workspace.shape).retainLocalIntegrationApproval,
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
@@ -2344,8 +2342,8 @@ export async function createHostRuntime(
     const localBootstrap = localSetupToken
       ? new LocalBootstrapService({
           publicUrl: config.runtimeOrigin,
-          requireSetupCredential:
-            deploymentPolicy(config.workspace.shape).ownership === "single-user",
+          requireSetupCredential: deploymentPolicy(config.workspace.shape).configuration
+            .localOwnerClaim,
           runners: runnerAuthenticator,
           setupToken: localSetupToken,
           store,
@@ -2506,7 +2504,7 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
-        appRealOrigins: !deploymentSupportsSharing(config.workspace.shape),
+        appRealOrigins: hostAppRealOrigins(config.workspace.shape),
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
@@ -3048,4 +3046,8 @@ export async function ensureDefaultHarnesses(
       stateKind,
     });
   }
+}
+
+export function hostAppRealOrigins(shape: import("@opensteer/core").DeploymentShape): boolean {
+  return deploymentPolicy(shape).appOrigins === "real";
 }

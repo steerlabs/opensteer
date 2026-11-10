@@ -86,7 +86,7 @@ export class MockComputerViews {
         !machine ||
         (machine.ownership !== "mine" &&
           !(
-            snapshot.deploymentPolicy?.ownership === "single-user" &&
+            snapshot.deploymentPolicy?.deploymentComputerAccess === true &&
             machine.ownership === "deployment" &&
             machine.access?.ownerReachAvailable === true
           ))
@@ -132,7 +132,7 @@ export class MockComputerViews {
       !machine ||
       (machine.ownership !== "mine" &&
         !(
-          snapshot.deploymentPolicy?.ownership === "single-user" &&
+          snapshot.deploymentPolicy?.deploymentComputerAccess === true &&
           machine.ownership === "deployment" &&
           machine.access?.ownerReachAvailable === true
         ))

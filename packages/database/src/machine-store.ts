@@ -805,7 +805,7 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
   return deployment
-    ? deploymentPolicy(deployment.deploymentShape).ownership === "single-user"
+    ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
     : false;
 }
 

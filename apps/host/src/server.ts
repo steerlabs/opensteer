@@ -942,7 +942,7 @@ export async function createHostServer(
 
   const machineRegistryRows = async (
     session: NonNullable<HostApiServerContext["session"]>,
-  ): Promise<Omit<MachineProjectionInput, "deploymentOwnership">> => {
+  ): Promise<Omit<MachineProjectionInput, "deploymentOwnsMainComputer">> => {
     const ownerId = session.user.id;
     const includeDeployment = session.user.instanceRole === "administrator";
     const [runnerPage, pendingRunners] = await Promise.all([
@@ -1131,10 +1131,10 @@ export async function createHostServer(
   const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) =>
     projectMachines({
       ...(await machineRegistryRows(session)),
-      deploymentOwnership: deploymentPolicy({
+      deploymentOwnsMainComputer: deploymentPolicy({
         kind: dependencies.discovery.document.deploymentShape.kind,
         defaultWorkspaceBacking: "local-directory",
-      }).ownership,
+      }).deploymentOwnsMainComputer,
     });
 
   const coreRpcHandlers = {

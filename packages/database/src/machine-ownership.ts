@@ -40,7 +40,7 @@ export async function machineOwnershipIn(
   if (
     !runnerRunsItsDeployment({
       deploymentIsPersonal: deployment
-        ? deploymentPolicy(deployment.deploymentShape).ownership === "single-user"
+        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
         : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,

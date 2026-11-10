@@ -62,7 +62,7 @@ export function AddComputerDialog({
   const { deploymentAccess, desktopBridge } = useShell();
   const accountAvailable = !desktopBridge || deploymentAccess?.account.available !== false;
   const adding = localExecutionAction?.kind === "add";
-  const personal = deploymentPolicy?.ownership === "single-user";
+  const personal = deploymentPolicy?.personalRemoteAccess === true;
   const reachable = usePersonalReachable({ hostedOnThisComputer, personal });
 
   return (
@@ -135,7 +135,7 @@ export function AddComputerDialog({
         ) : null}
       </section>
 
-      {deploymentPolicy?.ownership === "members" ? (
+      {deploymentPolicy?.runnerEnrollmentMode === "unrestricted" ? (
         <details className="add-computer__advanced">
           <summary>A server without a screen</summary>
           <HeadlessEnrollment client={client} snapshot={snapshot} />

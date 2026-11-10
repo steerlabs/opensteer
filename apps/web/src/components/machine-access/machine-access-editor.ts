@@ -47,7 +47,7 @@ export function machineReachOptions(input: {
       reach: "owner",
     });
   }
-  if (input.ownership === "deployment" || input.deploymentPolicy?.ownership === "members") {
+  if (input.ownership === "deployment" || input.deploymentPolicy?.sharing === true) {
     options.push({
       detail: "Agents working for anyone in this deployment.",
       label: `Everyone in ${input.deploymentName}`,

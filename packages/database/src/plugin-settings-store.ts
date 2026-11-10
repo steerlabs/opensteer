@@ -546,7 +546,7 @@ export class PluginSettingsStore {
           .executeTakeFirstOrThrow();
         if (
           command.personalEverywhere &&
-          deploymentPolicy(deployment.deploymentShape).ownership !== "single-user"
+          deploymentPolicy(deployment.deploymentShape).projectConsent !== "owner-wide"
         )
           throw new OpensteerError({
             code: "forbidden",

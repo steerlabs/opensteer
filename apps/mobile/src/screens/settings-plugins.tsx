@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   localMcpSecretServers,
@@ -157,7 +158,7 @@ function Plugins({
       setAddEntry(entry);
       if (add?.product.id !== product.id) {
         setAddPlaces([]);
-        setAddEverywhere(host.getSnapshot().deploymentPolicy?.ownership === "single-user");
+        setAddEverywhere(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide");
       }
       addConsent.current = null;
       setAddInstalled(false);
@@ -491,7 +492,7 @@ function Plugins({
             ]),
         })),
 
-        ...(host.getSnapshot().deploymentPolicy?.ownership === "single-user"
+        ...(hostDeploymentPolicy(host.getSnapshot())?.ownership === "single-user"
           ? [
               {
                 key: "everywhere",
@@ -645,7 +646,7 @@ function Plugins({
               ? pluginState(row).label
               : pluginPlacementLabel(
                   row,
-                  host.getSnapshot().deploymentPolicy?.ownership === "single-user",
+                  hostDeploymentPolicy(host.getSnapshot())?.ownership === "single-user",
                 ),
           ),
         );
@@ -868,7 +869,7 @@ function Plugins({
                 key: "places",
                 title: "Where it’s on",
                 rows: [
-                  ...(host.getSnapshot().deploymentPolicy?.ownership === "single-user"
+                  ...(hostDeploymentPolicy(host.getSnapshot())?.ownership === "single-user"
                     ? [
                         {
                           key: "everywhere",

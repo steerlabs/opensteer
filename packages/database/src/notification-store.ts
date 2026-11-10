@@ -626,7 +626,10 @@ async function personalLinkSubjectForOwner(
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  if (!deployment || deploymentPolicy(deployment.deploymentShape).ownership !== "single-user")
+  if (
+    !deployment ||
+    deploymentPolicy(deployment.deploymentShape).integrationAccountBinding !== "personal-link"
+  )
     return null;
   const owner = await transaction
     .selectFrom("users")

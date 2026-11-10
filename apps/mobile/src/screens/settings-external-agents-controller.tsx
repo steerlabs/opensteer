@@ -1,3 +1,4 @@
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import {
   arrivedConnection,
   connectionDetail,
@@ -24,7 +25,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const { selection } = useMobileState();
   const host = selection.hostClient;
   const snapshot = useSettingsHost(host);
-  const personal = snapshot?.deploymentPolicy?.ownership === "single-user";
+  const personal = hostDeploymentPolicy(snapshot)?.personalRemoteAccess === true;
   // Both read only while this page is open, never on attach.
   const agents = useConnectedAgents(host);
   const remote = usePersonalRemoteAccess(personal ? host : null);
