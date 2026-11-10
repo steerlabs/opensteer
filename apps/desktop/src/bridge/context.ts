@@ -67,7 +67,6 @@ export interface DesktopBridgeOptions {
     | "checkDeployments"
     | "connectPrivate"
     | "createPersonalDeployment"
-    | "deploymentPolicy"
     | "linkPersonal"
     | "reauthorize"
     | "refreshDirectory"
@@ -160,6 +159,7 @@ export interface DesktopBridgeOptions {
   };
   readonly hostTransport: Pick<
     DesktopHostTransport,
+    | "attachedDeploymentPolicy"
     | "closeSocketsForOwner"
     | "closeBinaryForOwner"
     | "openBinary"

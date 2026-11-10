@@ -29,6 +29,44 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it("retains Host policy for the attachment, not the signed shape or another route", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const other = deployment("Other", "https://other.connect.opensteer.test");
+    const deploymentId = selected.authority.document.deploymentId;
+    const catalog = catalogStore([selected, other], deploymentId);
+    let policy: unknown = { nativeWebLinks: true };
+    const transport = desktopHostTransport({
+      catalog,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                deploymentId,
+                deploymentShape: selected.authority.document.deploymentShape,
+                deploymentPolicy: policy,
+              },
+            }),
+          ),
+      },
+    });
+    expect(transport.attachedDeploymentPolicy(deploymentId)).toBeUndefined();
+    const read = () =>
+      transport.request({ headers: {}, method: "POST", path: "/v1/rpc/bootstrap.get", body: "{}" });
+    await read();
+    expect(transport.attachedDeploymentPolicy(deploymentId)).toEqual({ nativeWebLinks: true });
+    for (policy of [null, [], "future-format", { nativeWebLinks: false }]) {
+      await read();
+      expect(transport.attachedDeploymentPolicy(deploymentId)?.nativeWebLinks === true).toBe(false);
+    }
+    policy = undefined;
+    await read();
+    expect(transport.attachedDeploymentPolicy(deploymentId)?.nativeWebLinks).toBe(false);
+    await transport.select({ deploymentId: other.authority.document.deploymentId });
+    expect(transport.attachedDeploymentPolicy(deploymentId)).toBeUndefined();
+  });
   it.each([false, true])(
     "bounds silence while buffering a slow desktop response; stall: %s",
     async (stall) => {

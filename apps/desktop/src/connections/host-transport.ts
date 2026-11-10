@@ -1,4 +1,8 @@
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
+import { z } from "zod";
+import { HostBootstrapSchema } from "@opensteer/protocol";
+import { hostDeploymentPolicy } from "@opensteer/client/host";
+import type { DeploymentClientPolicy } from "@opensteer/core";
 import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { ensurePrivateDirectory, setPrivateFileMode } from "@opensteer/shared/privateFiles";
@@ -65,6 +69,14 @@ export type DesktopBrowserControlObservation =
       ));
 
 const maximumHostResponseBytes = 16 * 1_024 * 1_024;
+const attachedBootstrapPolicySchema = z.object({
+  ok: z.literal(true),
+  data: HostBootstrapSchema.pick({
+    deploymentId: true,
+    deploymentShape: true,
+    deploymentPolicy: true,
+  }),
+});
 const maximumBinaryBytes = 25 * 1_024 * 1_024;
 const binaryChunkBytes = 256 * 1_024;
 const maximumBinaryTransfers = 8;
@@ -123,6 +135,8 @@ type OutboundSocketEvent = DesktopHostWebSocketEvent extends infer Event
  * renderers, so a socket belongs to exactly one of them and dies with it.
  */
 export class DesktopHostTransport extends HostTransport {
+  #attachedPolicy: { key: string; deploymentId: string; policy: DeploymentClientPolicy } | null =
+    null;
   readonly #surfaceDiagnosticKey = randomBytes(32);
   readonly #log:
     ((event: string, fields: Record<string, string | number | boolean>) => void) | undefined;
@@ -161,6 +175,16 @@ export class DesktopHostTransport extends HostTransport {
     this.#log = options.log;
     this.#catalog = options.catalog;
     this.#projection = options.projection;
+    this.onAttachmentInvalidated(() => {
+      this.#attachedPolicy = null;
+    });
+  }
+
+  attachedDeploymentPolicy(deploymentId: string): DeploymentClientPolicy | undefined {
+    return this.#attachedPolicy?.key === this.currentKey() &&
+      this.#attachedPolicy.deploymentId === deploymentId
+      ? this.#attachedPolicy.policy
+      : undefined;
   }
 
   /** Refreshes the attachment fence and republishes the catalog projection. */
@@ -225,7 +249,7 @@ export class DesktopHostTransport extends HostTransport {
         }
       }
     }
-    return this.exchange(request, async (response, progress) =>
+    const result = await this.exchange(request, async (response, progress) =>
       DesktopHostHttpResponseSchema.parse({
         body: await readBoundedText(response, {
           ...progress,
@@ -239,6 +263,27 @@ export class DesktopHostTransport extends HostTransport {
         status: response.status,
       }),
     );
+    if (request.path.split("?")[0] === "/v1/rpc/bootstrap.get") {
+      this.#attachedPolicy = null;
+      if (result.status === 200) {
+        try {
+          const bootstrap = attachedBootstrapPolicySchema.safeParse(JSON.parse(result.body));
+          const key = this.currentKey();
+          if (bootstrap.success && key !== null) {
+            const policy = hostDeploymentPolicy(bootstrap.data.data);
+            if (policy)
+              this.#attachedPolicy = {
+                key,
+                deploymentId: bootstrap.data.data.deploymentId,
+                policy,
+              };
+          }
+        } catch {
+          this.#attachedPolicy = null;
+        }
+      }
+    }
+    return result;
   }
 
   /** Main-process app traffic keeps the attachment fence until its streamed body ends. */

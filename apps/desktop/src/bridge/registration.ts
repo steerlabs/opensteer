@@ -351,7 +351,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
           personalWebLinksAvailable(
             options.access.snapshot(),
             deploymentId,
-            options.access.deploymentPolicy(deploymentId),
+            options.hostTransport.attachedDeploymentPolicy(deploymentId),
           ),
       )
     : null;
