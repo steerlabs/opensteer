@@ -598,6 +598,7 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     intendedEmail: z.email().max(320),
     memberKind: MemberKindSchema,
     validFor: z.enum(["1d", "7d"]),
+    trustedComputerConfirmed: z.boolean().optional(),
   }),
   MutationBaseSchema.extend({ type: z.literal("team.invitation.revoke"), invitationId: uuid }),
 ]);

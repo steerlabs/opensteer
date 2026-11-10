@@ -2132,6 +2132,7 @@ export interface AgentConnectionTable {
 }
 
 export interface TeamInvitationTable {
+  trustedComputerConfirmedAt: ColumnType<Date | null, Date | null | undefined, Date | null>;
   id: string;
   selector: string;
   tokenHash: string;
