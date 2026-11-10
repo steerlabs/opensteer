@@ -1,3 +1,4 @@
+import { createProjectIdentityFixture } from "@opensteer/database/test-support/project";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
@@ -21,7 +22,7 @@ import { TeamAdministrationService } from "./team-administration-service.js";
 
 const origin = "http://127.0.0.1:4310";
 async function setup(fixture: StoreFixture) {
-  const run = await fixture.createRunFixture("team-host", null, "project");
+  const run = await createProjectIdentityFixture(fixture, "team-host");
   const database = fixture.database;
   const identity = new IdentityService(database, {
     deployment: { kind: "self-hosted", name: null },
@@ -46,7 +47,6 @@ async function setup(fixture: StoreFixture) {
   const admin = await signup("administrator");
   const manager = await signup("manager");
   const pending = await signup("pending");
-  await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
   await database
     .updateTable("users")
     .set({ admittedAt: new Date(), instanceRole: "administrator" })
@@ -147,25 +147,28 @@ describeStore("team administration Host boundary", (it) => {
     }
   });
 
-  it("refuses the real service on both model-1 kinds before a target lookup or read transaction", async ({
-    storeFixture,
-  }) => {
-    const run = await storeFixture.createRunFixture("team-dormancy", null, "project");
-    const database = storeFixture.database;
-    const service = new TeamAdministrationService({
-      database,
-      identity: {} as IdentityService,
-      teamName: "Dormant",
-      runnerIsConnected: () => false,
-      invalidate: () => undefined,
-    });
-    const transactions = vi.spyOn(database, "transaction");
-    const context = testHostApiContext(run.userId);
-    for (const kind of ["server", "personal"] as const) {
-      await database
-        .updateTable("deployments")
-        .set({ deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" } })
-        .execute();
+  for (const kind of ["server", "personal"] as const)
+    it(`refuses the real service on model-1 ${kind} before a target lookup or read transaction`, async ({
+      storeFixture,
+    }) => {
+      const run = await storeFixture.createRunFixture(
+        "team-dormancy",
+        {
+          deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+          workspaceBacking: "local-directory",
+        },
+        "project",
+      );
+      const database = storeFixture.database;
+      const service = new TeamAdministrationService({
+        database,
+        identity: {} as IdentityService,
+        teamName: "Dormant",
+        runnerIsConnected: () => false,
+        invalidate: () => undefined,
+      });
+      const transactions = vi.spyOn(database, "transaction");
+      const context = testHostApiContext(run.userId);
       await expect(
         service.read("team.member.get", { userId: createId("user") }, context),
       ).rejects.toMatchObject({ reason: "team-unavailable" });
@@ -182,8 +185,7 @@ describeStore("team administration Host boundary", (it) => {
         ),
       ).rejects.toMatchObject({ reason: "team-unavailable" });
       expect(transactions).not.toHaveBeenCalled();
-    }
-  });
+    });
 
   it("separates metadata and content, scopes paging and summary revisions, and refuses agent credentials at both boundaries", async ({
     storeFixture,

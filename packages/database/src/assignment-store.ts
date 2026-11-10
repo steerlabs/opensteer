@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "./execution-authority.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
 import {
@@ -177,9 +178,13 @@ export async function assignmentEventsInTransaction(
     (await threadExecutionIsAvailableToUser(
       transaction,
       row.childThreadId,
-      requester.requestedBy,
+      requireHumanRequester(requester.requestedBy),
     )) &&
-    (await threadExecutionIsAvailableToUser(transaction, row.parentThreadId, requester.requestedBy))
+    (await threadExecutionIsAvailableToUser(
+      transaction,
+      row.parentThreadId,
+      requireHumanRequester(requester.requestedBy),
+    ))
   ) {
     events.push(
       await appendHostWorkspaceEvent(transaction, {

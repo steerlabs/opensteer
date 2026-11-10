@@ -1,3 +1,4 @@
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
   isMemoryPassWake,
@@ -139,7 +140,7 @@ import {
 
 function canManageQueuedInput(
   row: {
-    readonly requestedBy: UserId;
+    readonly requestedBy: UserId | null;
     readonly authoritySource: Readonly<Record<string, unknown>>;
   },
   request: {
@@ -214,7 +215,8 @@ export async function readThreadInputQueue(
     active.requestedBy === request.requestedBy &&
     active.environmentId === thread.environmentId &&
     active.harnessInstanceId === thread.harnessInstanceId &&
-    safeGeneration(active.membershipGeneration) === safeGeneration(membership.generation) &&
+    safeGeneration(requireHumanMembershipGeneration(active.membershipGeneration)) ===
+      safeGeneration(membership.generation) &&
     (await steerRoute(transaction, active.id)) !== null &&
     (await threadExecutionIsAvailableToUser(
       transaction,
@@ -252,7 +254,8 @@ export async function readThreadInputQueue(
         canSteer: Boolean(
           steerable &&
           own &&
-          safeGeneration(row.membershipGeneration) === safeGeneration(membership.generation) &&
+          safeGeneration(requireHumanMembershipGeneration(row.membershipGeneration)) ===
+            safeGeneration(membership.generation) &&
           isDeepStrictEqual(row.replyTarget, active.replyTarget),
         ),
       };
@@ -521,8 +524,8 @@ export async function deliverConversationInputsInTransaction(
     !(await threadExecutionIsAvailableToUser(
       transaction,
       thread.id,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
+      requireHumanRequester(run.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
     ))
   )
     return none;
@@ -883,8 +886,10 @@ export async function steerThreadInputInTransaction(
     run.requestedBy !== request.requestedBy ||
     run.environmentId !== thread.environmentId ||
     run.harnessInstanceId !== thread.harnessInstanceId ||
-    safeGeneration(run.membershipGeneration) !== safeGeneration(membership.generation) ||
-    safeGeneration(row.membershipGeneration) !== safeGeneration(membership.generation) ||
+    safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)) !==
+      safeGeneration(membership.generation) ||
+    safeGeneration(requireHumanMembershipGeneration(row.membershipGeneration)) !==
+      safeGeneration(membership.generation) ||
     !isDeepStrictEqual(run.replyTarget, row.replyTarget) ||
     !(await threadExecutionIsAvailableToUser(
       transaction,
@@ -2039,7 +2044,7 @@ async function lockThreadInputPreconditions(
     executionValid,
     membershipGeneration: membership
       ? safeGeneration(membership.generation)
-      : safeGeneration(sourceRun!.membershipGeneration),
+      : safeGeneration(requireHumanMembershipGeneration(sourceRun!.membershipGeneration)),
     prelockedActiveRunId: observedActive?.id ?? null,
     thread,
   };
@@ -2408,7 +2413,8 @@ export async function enqueueThreadInputInTransaction(
     activeRun !== undefined &&
     activeRun.id === prelockedActiveRunId &&
     activeRun.requestedBy === request.requestedBy &&
-    safeGeneration(activeRun.membershipGeneration) === membershipGeneration &&
+    safeGeneration(requireHumanMembershipGeneration(activeRun.membershipGeneration)) ===
+      membershipGeneration &&
     isDeepStrictEqual(activeRun.replyTarget, facts.replyTarget)
       ? await steerRoute(transaction, activeRun.id)
       : null;
@@ -3338,8 +3344,8 @@ export async function ensureQueuedRun(
     const authorityValid = await threadExecutionIsAvailableToUser(
       transaction,
       thread.id,
-      candidate.requestedBy,
-      safeGeneration(candidate.membershipGeneration),
+      requireHumanRequester(candidate.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(candidate.membershipGeneration)),
     );
     if (!authorityValid) {
       const cancelled = await transaction
@@ -3753,7 +3759,7 @@ async function deliverAssignmentReturnTransaction(
     (await threadExecutionIsAvailableToUser(
       transaction,
       parent.id,
-      requester.requestedBy,
+      requireHumanRequester(requester.requestedBy),
       safeGeneration(membership.generation),
     ));
   if (!executionValid || !membership) {

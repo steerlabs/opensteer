@@ -14,6 +14,26 @@ import type { DatabaseSchema } from "./schema.js";
 
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
+export function requireHumanRequester(requestedBy: UserId | null): UserId {
+  if (requestedBy === null) refuseUnattendedHumanPath();
+  return requestedBy;
+}
+
+export function requireHumanMembershipGeneration(
+  generation: string | number | null,
+): string | number {
+  if (generation === null) refuseUnattendedHumanPath();
+  return generation;
+}
+
+function refuseUnattendedHumanPath(): never {
+  throw new OpensteerError({
+    code: "conflict",
+    message: "This path does not support unattended Project work yet",
+    reason: "unattended-project-work-unsupported",
+  });
+}
+
 interface ThreadExecutionAdmission {
   readonly environmentId: EnvironmentId;
   readonly membershipGeneration: number;
@@ -87,13 +107,14 @@ export async function assertActiveExecutionBinding(
     binding.providerSessionStatus !== "stopped" &&
     binding.providerSessionStatus !== "broken" &&
     (input.membershipGeneration === undefined ||
-      safeGeneration(binding.membershipGeneration) === input.membershipGeneration) &&
+      safeGeneration(requireHumanMembershipGeneration(binding.membershipGeneration)) ===
+        input.membershipGeneration) &&
     (input.lostExecution === true ||
       (await threadExecutionIsAvailableToUser(
         database,
         binding.threadId,
-        binding.requestedBy,
-        safeGeneration(binding.membershipGeneration),
+        requireHumanRequester(binding.requestedBy),
+        safeGeneration(requireHumanMembershipGeneration(binding.membershipGeneration)),
       )));
   if (!valid) {
     throw new OpensteerError({

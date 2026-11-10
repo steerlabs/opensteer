@@ -180,7 +180,7 @@ export function runFromRow(row: {
   readonly failure: RunFailure | null;
   readonly harnessInstanceId: HarnessInstanceId;
   readonly modelSelection: ModelSelection;
-  readonly requestedBy: UserId;
+  readonly requestedBy: UserId | null;
   readonly replyTarget: ReplyTarget | null;
   readonly runOrdinal: number;
   readonly status: string;

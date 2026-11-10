@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "./execution-authority.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { isPlaceContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -1052,7 +1053,7 @@ export async function commitRunnerEvent(
           : {}),
         bindingGeneration: event.bindingGeneration,
         environmentId: input.environmentId,
-        requestedBy: run.requestedBy,
+        requestedBy: requireHumanRequester(run.requestedBy),
         runId: event.runId,
         runnerBootId: input.runnerBootId,
         runnerId: input.runnerId,

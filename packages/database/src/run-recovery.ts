@@ -1,3 +1,4 @@
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import { createHash } from "node:crypto";
 import {
   createId,
@@ -109,8 +110,8 @@ export async function recoverLostRunTransaction(
     !(await threadExecutionIsAvailableToUser(
       transaction,
       run.threadId,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
+      requireHumanRequester(run.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
     ))
   ) {
     return fail("failed", {
@@ -317,7 +318,9 @@ export async function recoverLostRunTransaction(
         causalChainId: run.causalChainId,
         deliveredAt: null,
         idempotencyKey: `run-recovery:${lost.id}`,
-        membershipGeneration: safeGeneration(run.membershipGeneration),
+        membershipGeneration: safeGeneration(
+          requireHumanMembershipGeneration(run.membershipGeneration),
+        ),
         messageId,
         policy: "queue",
         queueRank: thread.nextMessageSequence,

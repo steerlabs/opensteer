@@ -1,3 +1,4 @@
+import { createProjectIdentityFixture } from "./project-work.test-support.js";
 import { randomUUID } from "node:crypto";
 import { createId, type AccessMutation } from "@opensteer/core";
 import { expect } from "vitest";
@@ -5,8 +6,7 @@ import { describeStore, type StoreFixture } from "./store.integration.test-suppo
 import { mutateAccess, previewAccess } from "./access-store.js";
 
 async function setup(fixture: StoreFixture) {
-  const run = await fixture.createRunFixture("team-administration", null, "project");
-  await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+  const run = await createProjectIdentityFixture(fixture, "team-administration");
   await fixture.database
     .updateTable("users")
     .set({ admittedAt: new Date(), instanceRole: "administrator" })

@@ -1,3 +1,4 @@
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
@@ -515,7 +516,9 @@ export async function loadRunDispatchContext(
           omittedCount: runRow.reportContext.omittedCount,
           throughSequence: runRow.reportContext.throughSequence,
         },
-    membershipGeneration: safeGeneration(runRow.membershipGeneration),
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(runRow.membershipGeneration),
+    ),
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
     ...(runRow.voiceSessionId
@@ -583,7 +586,10 @@ export async function acquireExecutionBinding(
         message: "Run is not awaiting an execution binding",
       });
     }
-    if (safeGeneration(run.membershipGeneration) !== input.membershipGeneration) {
+    if (
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)) !==
+      requireHumanMembershipGeneration(input.membershipGeneration)
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run membership generation does not match its dispatch capability",
@@ -594,7 +600,7 @@ export async function acquireExecutionBinding(
       !(await threadExecutionIsAvailableToUser(
         transaction,
         run.threadId,
-        run.requestedBy,
+        requireHumanRequester(run.requestedBy),
         input.membershipGeneration,
       ))
     ) {
@@ -967,8 +973,8 @@ export async function bindProviderSession(
       !(await threadExecutionIsAvailableToUser(
         transaction,
         run.threadId,
-        run.requestedBy,
-        safeGeneration(run.membershipGeneration),
+        requireHumanRequester(run.requestedBy),
+        safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
       ))
     ) {
       throw new OpensteerError({
@@ -1064,8 +1070,10 @@ export async function runCapabilityScope(
     ...(row.specialistId ? { specialistId: row.specialistId } : {}),
     environmentId: row.environmentId,
     grantId: row.grantId,
-    membershipGeneration: safeGeneration(row.membershipGeneration),
-    requestedBy: row.requestedBy,
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(row.membershipGeneration),
+    ),
+    requestedBy: requireHumanRequester(row.requestedBy),
     runId,
     runnerBootId: row.runnerBootId,
     runnerId: row.runnerId,
@@ -1100,8 +1108,8 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     !(await threadExecutionIsAvailableToUser(
       database,
       threadId,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
+      requireHumanRequester(run.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
     ))
   )
     return null;
@@ -1152,7 +1160,9 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     sourceMessageId: firstAuthored.id,
     principalId: run.actorPrincipalId,
     requestedBy: run.requestedBy,
-    membershipGeneration: safeGeneration(run.membershipGeneration),
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(run.membershipGeneration),
+    ),
     environmentId: run.environmentId,
     harnessInstanceId: run.harnessInstanceId,
     modelSelection: run.modelSelection,
