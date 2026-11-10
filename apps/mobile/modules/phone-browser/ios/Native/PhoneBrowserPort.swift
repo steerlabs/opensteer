@@ -188,7 +188,7 @@ struct BrowserWireInput: Record, BrowserReference {
   }
 
   func portMount(_ input: BrowserMountInput) async throws -> [String: Any] {
-    let tab = try checked(input)
+    let tab = try checked(input, live: false)
     _ = try await mount(input)
     _ = try checked(input)
     return portMetadata(tab)

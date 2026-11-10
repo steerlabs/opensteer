@@ -114,7 +114,7 @@ import WebKit
     try gate.perform(input.epoch) {
       let tab = try tab(input.tabId)
       guard tab.presentationGeneration == input.presentationGeneration else { throw BrowserRefusal.notActionable }
-      try coverTab(tab.id)
+      try parkView(tab)
       _ = geometry(tab)
     }
   }

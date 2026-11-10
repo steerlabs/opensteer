@@ -38,7 +38,7 @@ export interface PhoneSession {
 }
 export interface PhoneChannel {
   readonly id: BrowserChannelId;
-  readonly capability: BrowserCapabilityReference;
+  capability: BrowserCapabilityReference;
   readonly session: PhoneSession;
   readonly epoch: number;
   readonly claims: BrowserAttachTicketClaims;

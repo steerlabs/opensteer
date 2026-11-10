@@ -47,6 +47,7 @@ type Input<Method extends keyof PhoneBrowserNativePort> = PhoneBrowserNativePort
   : never;
 type FakeTab = {
   sessionId: string;
+  presentationGeneration: number;
   state: "live" | "retained" | "discarded";
   metadata: NativeTabMetadata;
   loads: number;
@@ -243,6 +244,7 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     };
     this.tabs.set(input.tabId, {
       sessionId: input.sessionId,
+      presentationGeneration: 0,
       metadata,
       state: input.state,
       loads: 1,
@@ -259,6 +261,9 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async resumeTab(input: Input<"resumeTab">) {
     const tab = this.#tab(input, "resumeTab");
+    return this.#activate(tab);
+  }
+  #activate(tab: FakeTab) {
     if (tab.state === "discarded") {
       tab.metadata = {
         ...tab.metadata,
@@ -276,7 +281,11 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
   async mountTab(input: Input<"mountTab">) {
     if (this.mountError) throw this.mountError;
-    return this.#tab(input, "mountTab").metadata;
+    const tab = this.#tab(input, "mountTab");
+    if (input.presentationGeneration < tab.presentationGeneration)
+      throw new PhoneBrowserError("not-actionable", "The presentation was superseded.");
+    tab.presentationGeneration = input.presentationGeneration;
+    return this.#activate(tab);
   }
   async unmountTab(input: Input<"unmountTab">) {
     this.#tab(input, "unmountTab");

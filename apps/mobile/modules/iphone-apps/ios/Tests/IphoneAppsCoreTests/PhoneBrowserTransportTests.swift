@@ -198,7 +198,7 @@ final class PhoneBrowserTransportTests: XCTestCase {
     XCTAssertEqual(events.last!["leaseDeadline"] as? Int64, now + 1000)
     defer { connection.offline(reason: "test-finished") }
     let fence = fenceFixture["fence"] as! [String: Any]
-    let capability: [String: Any] = ["capabilityGeneration": 1, "capabilityLeaseId": "bcl_11111111-1111-4111-8111-111111111111", "runtimeId": "phone"]
+    var capability: [String: Any] = ["capabilityGeneration": 1, "capabilityLeaseId": "bcl_11111111-1111-4111-8111-111111111111", "runtimeId": "phone"]
     let lease = capability.merging(["expiresAt": "2026-11-09T12:00:01.000Z"]) { _, next in next }
     try connection.receive(fence.merging(["type": "capability.grant", "lease": lease, "requestId": "grant"]) { _, next in next })
     let token = (ticketFixture["cases"] as! [[String: Any]])[0]["token"] as! String
@@ -238,6 +238,11 @@ final class PhoneBrowserTransportTests: XCTestCase {
     try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability, "message": opening]) { _, next in next })
     XCTAssertEqual(try connection.permit("action:opening", epoch: 0).claimsDigest, verified["claimsDigest"] as! String)
     let observedRequest = actionRequest["request"] as! [String: Any]
+    let originalEpoch = connection.epoch
+    capability["capabilityGeneration"] = 2
+    capability["capabilityLeaseId"] = "bcl_22222222-2222-4222-8222-222222222222"
+    try connection.receive(fence.merging(["type": "capability.grant", "requestId": "renew", "lease": capability.merging(["expiresAt": "2026-11-09T12:00:01.000Z"]) { _, next in next }]) { _, next in next })
+    XCTAssertEqual(connection.epoch, originalEpoch)
     XCTAssertNoThrow(try connection.checkAction(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor, requestId: "observed", request: observedRequest))
     var changedRequest = observedRequest
     changedRequest["surfaceId"] = "another-tab"
@@ -282,12 +287,16 @@ final class PhoneBrowserTransportTests: XCTestCase {
       XCTAssertFalse(delivered); stalePicture.fulfill()
     }
     await fulfillment(of: [stalePicture], timeout: 2)
-    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
-      "message": ["type": "agent.detach", "sessionId": sessionId, "attachmentId": attachment]]) { _, next in next })
-    let detachedPicture = expectation(description: "Detached agents cannot deliver a completed screenshot")
-    writer.writePixelResult(message: ["type": "agent.result", "requestId": "observed", "attachmentId": attachment, "result": ["type": "page.capture"]],
-      dataPath: ["result", "data"], pixels: Data([1])) { delivered in
-      XCTAssertFalse(delivered); detachedPicture.fulfill()
+    let detachedPicture = expectation(description: "An agent detached while its screenshot is queued cannot deliver it")
+    do {
+      queue.suspend()
+      defer { queue.resume() }
+      writer.writePixelResult(message: ["type": "agent.result", "requestId": "observed", "attachmentId": attachment, "result": ["type": "page.capture"]],
+        dataPath: ["result", "data"], pixels: Data([1])) { delivered in
+        XCTAssertFalse(delivered); detachedPicture.fulfill()
+      }
+      try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+        "message": ["type": "agent.detach", "sessionId": sessionId, "attachmentId": attachment]]) { _, next in next })
     }
     await fulfillment(of: [detachedPicture], timeout: 2)
     try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
