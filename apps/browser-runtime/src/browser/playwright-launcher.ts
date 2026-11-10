@@ -551,8 +551,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           // Chromium can retain background shutdown work after Browser.close.
           // Only its captured child may be forced, and the directory remains
           // owned until the OS confirms that child exited.
-          let forced = false;
-          let failure: unknown;
+          let exitProven = false;
           const closing = (async () => {
             try {
               await context.close();
@@ -560,12 +559,12 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
               await browser.close();
             }
           })();
-          void closing.catch((error: unknown) => {
-            if (!forced) failure = error;
-          });
+          const protocolClosed = closing.then(
+            () => ({ status: "fulfilled" as const }),
+            (reason: unknown) => ({ status: "rejected" as const, reason }),
+          );
           const force = setTimeout(() => {
             if (ownedProcess.exitCode !== null || ownedProcess.signalCode !== null) return;
-            forced = true;
             try {
               // Pinned Playwright starts POSIX browsers as process-group leaders.
               if (process.platform === "win32") ownedProcess.kill("SIGKILL");
@@ -576,26 +575,33 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           }, 1_000);
           force.unref?.();
           try {
-            await withTimeout(exited, 1_800, {
-              timeoutError: () =>
-                new Error("Native Chromium did not exit after owned-process shutdown."),
-            });
-            if (failure) throw failure;
+            await withTimeout(
+              (async () => {
+                await exited;
+                exitProven = true;
+                const result = await protocolClosed;
+                if (result.status === "rejected") throw result.reason;
+              })(),
+              1_800,
+              {
+                timeoutError: () =>
+                  new Error(
+                    exitProven
+                      ? "Native Chromium protocol close did not finish after process exit."
+                      : "Native Chromium did not exit after owned-process shutdown.",
+                  ),
+              },
+            );
           } finally {
             clearTimeout(force);
-          }
-        })()
-          .then(
-            () => {
+            if (exitProven) {
               this.nativeBrowsers.delete(directory);
-            },
-            (error) => {
-              // An unproved process exit fences subsequent acquisition and erasure.
+              this.nativeCloseFailures.delete(directory);
+            } else {
               this.nativeCloseFailures.add(directory);
-              throw error;
-            },
-          )
-          .finally(() => signal?.removeEventListener("abort", abort));
+            }
+          }
+        })().finally(() => signal?.removeEventListener("abort", abort));
         return stopped;
       },
     };
@@ -750,8 +756,18 @@ class PlaywrightLaunchedBrowser implements LaunchedBrowser {
    */
   private async closeOnce(): Promise<void> {
     const stopped = this.owner.close();
-    await (this.cdp as PlaywrightBrowserCdpBackend).close();
-    await stopped;
+    const results = await Promise.allSettled([
+      withTimeout((this.cdp as PlaywrightBrowserCdpBackend).close(), 500, {
+        timeoutError: () => new Error("Browser CDP detach did not finish."),
+      }),
+      stopped,
+    ]);
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length === 1) throw failures[0];
+    if (failures.length)
+      throw new AggregateError(failures, "Browser close did not complete cleanly.");
   }
 }
 
