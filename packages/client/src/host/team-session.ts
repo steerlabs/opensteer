@@ -20,6 +20,12 @@ export interface TeamSessionState {
    * verifier exists nowhere else and is forgotten with the identity.
    */
   readonly links: ReadonlyMap<string, string>;
+  /**
+   * Keeps or forgets a link for this identity only. Taken when a screen
+   * renders, so an answer that arrives after a change of person is refused.
+   */
+  readonly holdLink: (invitationId: string, url: string) => void;
+  readonly forgetLink: (invitationId: string) => void;
 }
 
 export function teamIdentity(snapshot: HostSnapshot): string | null {
@@ -37,6 +43,8 @@ const signedOut: TeamSessionState = {
   loading: false,
   generation: 0,
   links: new Map(),
+  holdLink: () => {},
+  forgetLink: () => {},
 };
 
 /**
@@ -89,18 +97,6 @@ export class TeamSession {
     if (this.#state.team) void this.#load();
   };
 
-  holdLink = (invitationId: string, url: string): void => {
-    if (!this.#state.team) return;
-    this.#set({ links: new Map([...this.#state.links, [invitationId, url]]) });
-  };
-
-  forgetLink = (invitationId: string): void => {
-    if (!this.#state.links.has(invitationId)) return;
-    const links = new Map(this.#state.links);
-    links.delete(invitationId);
-    this.#set({ links });
-  };
-
   /** Moves to the current identity; true when that dropped the previous one. */
   #sync(): boolean {
     const identity = teamIdentity(this.#port.getSnapshot());
@@ -118,7 +114,24 @@ export class TeamSession {
       this.#set({ generation: this.#state.generation + 1 });
       void this.#load();
     });
-    this.#state = { ...signedOut, identity, team, loading: true };
+    // Bound to this identity, never to whichever one is current when called.
+    const mine = () => this.#state.team === team;
+    this.#state = {
+      ...signedOut,
+      identity,
+      team,
+      loading: true,
+      holdLink: (invitationId, url) => {
+        if (!mine()) return;
+        this.#set({ links: new Map([...this.#state.links, [invitationId, url]]) });
+      },
+      forgetLink: (invitationId) => {
+        if (!mine() || !this.#state.links.has(invitationId)) return;
+        const links = new Map(this.#state.links);
+        links.delete(invitationId);
+        this.#set({ links });
+      },
+    };
     if (this.#started) queueMicrotask(() => void this.#load());
     return true;
   }

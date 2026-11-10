@@ -14,7 +14,7 @@ import {
   type HostClient,
   type TeamAccess,
 } from "@opensteer/client/host";
-import { useHostRead, useHostSnapshot, useTeam } from "@opensteer/client/react";
+import { useHostRead, useHostSnapshot, usePagedList, useTeam } from "@opensteer/client/react";
 import { HarnessInstanceIdSchema, type ThreadAccessMode } from "@opensteer/core";
 import type {
   AccessChange,
@@ -43,6 +43,7 @@ import { Symbol } from "../ui/symbol.js";
 import { DeploymentGate, useAttachedHost } from "../screens/deployment-gate.js";
 import {
   Avatar,
+  ShowMoreRow,
   CanLine,
   Pill,
   ReadState,
@@ -202,20 +203,21 @@ function People(props: {
   readonly hostClient: HostClient;
 }): ReactNode {
   const navigation = useNavigation();
-  const { team, summary, generation, links, forgetLink } = useTeam(props.hostClient);
+  const { team, summary, generation, identity, links, forgetLink } = useTeam(props.hostClient);
   const [query, setQuery] = useState("");
   const [state, setState] = useState<"all" | "active" | "suspended" | "removed">("all");
   const debounced = useDebounced(query);
-  const read = useHostRead(
+  const read = usePagedList(
     team
-      ? () =>
+      ? (cursor: string | null) =>
           team.people({
             limit: 30,
+            ...(cursor ? { cursor } : {}),
             ...(debounced ? { query: debounced } : {}),
             ...(state === "all" ? {} : { state }),
           })
       : null,
-    `team-people:${debounced}:${state}:${generation}`,
+    `team-people:${identity}:${debounced}:${state}:${generation}`,
   );
   const teamName = summary?.team.name ?? "the team";
   return (
@@ -259,9 +261,9 @@ function People(props: {
         label="Find people"
       />
       <RowGroup>
-        {read.data
-          ? read.data.items.length
-            ? read.data.items.map((person) => (
+        {read.first
+          ? read.items.length
+            ? read.items.map((person) => (
                 <NavRow
                   avatar={person.name}
                   chips={<MemberPills member={person} />}
@@ -285,11 +287,13 @@ function People(props: {
               ]
           : [<ReadState error={read.error} key="state" onRetry={read.reload} team={teamName} />]}
       </RowGroup>
+      <ShowMoreRow list={read} team={teamName} />
       {team && summary?.can.invite.allowed ? (
         <Invitations
           deploymentId={props.deploymentId}
           forgetLink={forgetLink}
           generation={generation}
+          identity={identity}
           links={links}
           team={team}
           teamName={teamName}
@@ -309,6 +313,7 @@ const invitationStateLabel = {
 function Invitations(props: {
   readonly deploymentId: string;
   readonly generation: number;
+  readonly identity: string | null;
   readonly links: ReadonlyMap<string, string>;
   readonly forgetLink: (invitationId: string) => void;
   readonly team: TeamAccess;
@@ -316,11 +321,11 @@ function Invitations(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const { team, teamName } = props;
-  const read = useHostRead(
-    () => team.invitations({ limit: 30 }),
-    `team-invitations:${props.generation}`,
+  const read = usePagedList(
+    (cursor: string | null) => team.invitations({ limit: 30, ...(cursor ? { cursor } : {}) }),
+    `team-invitations:${props.identity}:${props.generation}`,
   );
-  const list = read.data;
+  const list = read.first;
   const day = (value: string) =>
     new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(value));
   return (
@@ -330,8 +335,8 @@ function Invitations(props: {
     >
       <RowGroup>
         {list
-          ? list.items.length
-            ? list.items.map((invitation) => {
+          ? read.items.length
+            ? read.items.map((invitation) => {
                 const link =
                   invitation.state === "open" ? props.links.get(invitation.id) : undefined;
                 return (
@@ -410,6 +415,7 @@ function Invitations(props: {
               ]
           : [<ReadState error={read.error} key="state" onRetry={read.reload} team={teamName} />]}
       </RowGroup>
+      <ShowMoreRow list={read} team={teamName} />
     </TeamSection>
   );
 }
@@ -434,14 +440,38 @@ function Person(props: {
   readonly userId: string;
 }): ReactNode {
   const navigation = useNavigation();
-  const { team, summary, generation } = useTeam(props.hostClient);
+  const { team, summary, generation, identity } = useTeam(props.hostClient);
   const { snapshot } = useHostSnapshot(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
   const read = useHostRead(
     team ? () => team.member({ userId: props.userId }) : null,
-    `team-member:${props.userId}:${generation}`,
+    `team-member:${identity}:${props.userId}:${generation}`,
   );
   const person = read.data;
+  // The person's own read is the first page of each list; "Show more" reads on from it.
+  const loaded = `${identity}:${props.userId}:${generation}:${person ? "read" : "waiting"}`;
+  const groups = usePagedList(
+    team && person
+      ? (cursor: string | null) =>
+          cursor
+            ? team
+                .member({ userId: props.userId, groupPage: { cursor } })
+                .then((next) => next.groups)
+            : Promise.resolve(person.groups)
+      : null,
+    `team-member-groups:${loaded}`,
+  );
+  const connections = usePagedList(
+    team && person
+      ? (cursor: string | null) =>
+          cursor
+            ? team
+                .member({ userId: props.userId, connectionPage: { cursor } })
+                .then((next) => next.connections)
+            : Promise.resolve(person.connections)
+      : null,
+    `team-member-connections:${loaded}`,
+  );
   if (!team || !person)
     return (
       <RowGroup>
@@ -595,9 +625,9 @@ function Person(props: {
         </RowGroup>
       </TeamSection>
       <TeamSection label="Groups">
-        {person.groups.items.length ? (
+        {groups.items.length ? (
           <View style={styles.chips}>
-            {person.groups.items.map((group) => (
+            {groups.items.map((group) => (
               <Pressable
                 key={group.id}
                 onPress={() =>
@@ -614,19 +644,20 @@ function Person(props: {
               </Pressable>
             ))}
           </View>
-        ) : (
+        ) : groups.first ? (
           <AppText role="caption" tone="muted">
             Not in any group.
           </AppText>
-        )}
+        ) : null}
+        <ShowMoreRow list={groups} team={teamName} />
       </TeamSection>
       <TeamSection
         footer={`Disconnecting one stops it acting for ${person.name}; they stay a member.`}
         label="Connected agents"
       >
         <RowGroup>
-          {person.connections.items.length
-            ? person.connections.items.map((connection) => (
+          {connections.items.length || !connections.first
+            ? connections.items.map((connection) => (
                 <View key={connection.id} style={styles.row}>
                   <View style={styles.grow}>
                     <AppText numberOfLines={1} role="body">
@@ -675,6 +706,7 @@ function Person(props: {
                 </View>,
               ]}
         </RowGroup>
+        <ShowMoreRow list={connections} team={teamName} />
       </TeamSection>
       <TeamSection label="Role and access">
         <RowGroup>
@@ -861,14 +893,16 @@ function Groups(props: {
   readonly hostClient: HostClient;
 }): ReactNode {
   const navigation = useNavigation();
-  const { team, summary, generation } = useTeam(props.hostClient);
+  const { team, summary, generation, identity } = useTeam(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
-  const read = useHostRead(
-    team ? () => team.groups({ limit: 100 }) : null,
-    `team-groups:${generation}`,
+  const read = usePagedList(
+    team
+      ? (cursor: string | null) => team.groups({ limit: 100, ...(cursor ? { cursor } : {}) })
+      : null,
+    `team-groups:${identity}:${generation}`,
   );
   const [name, setName] = useState("");
-  const list = read.data;
+  const list = read.first;
   return (
     <>
       <AppText role="secondary" tone="muted">
@@ -877,7 +911,7 @@ function Groups(props: {
       </AppText>
       <RowGroup>
         {list
-          ? list.items.map((group) => (
+          ? read.items.map((group) => (
               <NavRow
                 avatar={group.name}
                 chips={group.builtin ? <Pill label="Built in" /> : null}
@@ -899,6 +933,7 @@ function Groups(props: {
             ))
           : [<ReadState error={read.error} key="state" onRetry={read.reload} team={teamName} />]}
       </RowGroup>
+      <ShowMoreRow list={read} team={teamName} />
       {list?.can.create.allowed && team ? (
         <TeamSection label="New group">
           <Field
@@ -948,14 +983,26 @@ function Group(props: {
   readonly hostClient: HostClient;
 }): ReactNode {
   const navigation = useNavigation();
-  const { team, summary, generation } = useTeam(props.hostClient);
+  const { team, summary, generation, identity } = useTeam(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
   const read = useHostRead(
     team ? () => team.group({ groupId: props.groupId, limit: 100 }) : null,
-    `team-group:${props.groupId}:${generation}`,
+    `team-group:${identity}:${props.groupId}:${generation}`,
   );
   const [renaming, setRenaming] = useState<string | null>(null);
   const group = read.data;
+  // The group's own read is the first page of its members; "Show more" reads on from it.
+  const members = usePagedList(
+    team && group
+      ? (cursor: string | null) =>
+          cursor
+            ? team
+                .group({ groupId: props.groupId, limit: 100, cursor })
+                .then((next) => next.directMembers)
+            : Promise.resolve(group.directMembers)
+      : null,
+    `team-group-members:${identity}:${props.groupId}:${generation}:${group ? "read" : "waiting"}`,
+  );
   if (!team || !group)
     return (
       <RowGroup>
@@ -1037,8 +1084,8 @@ function Group(props: {
         label="Members"
       >
         <RowGroup>
-          {group.directMembers.items.length
-            ? group.directMembers.items.map((member) => (
+          {members.items.length || !members.first
+            ? members.items.map((member) => (
                 <View key={subjectKey(member)} style={styles.row}>
                   <Avatar group={member.kind === "group"} name={member.name} />
                   <View style={styles.grow}>
@@ -1088,6 +1135,7 @@ function Group(props: {
                 </View>,
               ]}
         </RowGroup>
+        <ShowMoreRow list={members} team={teamName} />
         <CanLine can={group.can.editMembers} team={teamName} />
       </TeamSection>
       {group.can.delete.allowed ? (
