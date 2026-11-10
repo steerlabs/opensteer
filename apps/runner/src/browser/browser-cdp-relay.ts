@@ -3,7 +3,9 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { once } from "node:events";
 import type { RunnerConfig } from "@opensteer/config";
 import { allowsPlaintextRunnerTransport } from "@opensteer/core";
-import { BrowserSessionIdSchema } from "@opensteer/protocol";
+import { BrowserSessionIdSchema, HostApiErrorSchema } from "@opensteer/protocol";
+import { readBoundedJson } from "@opensteer/shared/boundedJson";
+import { z } from "zod";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
@@ -82,7 +84,22 @@ export class BrowserCdpRelay {
             return;
           }
           if (!upstream.ok) {
-            response.writeHead(upstream.status).end();
+            const refusal = await readBoundedJson(upstream, { maximumBytes: 16_384 })
+              .then((body) => z.object({ error: HostApiErrorSchema }).safeParse(body))
+              .catch(() => undefined);
+            if (controller.signal.aborted || this.#suspended || this.#closed) {
+              response.writeHead(403).end();
+              return;
+            }
+            response.writeHead(upstream.status, {
+              "content-type": "application/json",
+              "cache-control": "no-store",
+            });
+            response.end(
+              refusal?.success
+                ? JSON.stringify({ error: { message: refusal.data.error.message } })
+                : undefined,
+            );
             return;
           }
           const backend = BrowserAgentBackendSchema.parse(await upstream.json());
