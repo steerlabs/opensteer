@@ -795,6 +795,8 @@ export interface ThreadTable {
   accessMode: Generated<ThreadAccessMode>;
   specialistId: Generated<string | null>;
   inheritsMain: boolean;
+  /** The owner started this Thread in their own session, as did every Thread up its lineage. */
+  ownerStarted: Generated<boolean>;
   role: Generated<ThreadRole>;
   id: ThreadId;
   lineageRootThreadId: ThreadId;
