@@ -75,6 +75,7 @@ async function mount(
     empty?: boolean;
     configure?: (client: MockHostClient) => Promise<void>;
     client?: MockHostClientOptions;
+    policy?: SettingsView["deploymentPolicy"];
   } = {},
 ) {
   client = new MockHostClient({ latencyMs: 0, ...options.client });
@@ -112,7 +113,9 @@ async function mount(
           {gmail ? (
             <PluginAddSheet personal={false} product={gmail} />
           ) : (
-            <PluginsSection view={view} />
+            <PluginsSection
+              view={{ ...view, deploymentPolicy: options.policy ?? view.deploymentPolicy }}
+            />
           )}
         </ToastProvider>
       </MemoryRouter>,
@@ -126,6 +129,39 @@ async function mount(
   return node;
 }
 describe("Plugins settings", () => {
+  it.each([true, false])(
+    "labels owner-wide placement independently of ownership: %s",
+    async (ownerWide) => {
+      const node = await mount("/settings/plugins", {
+        policy: {
+          ownership: ownerWide ? "members" : "single-user",
+          projectConsent: ownerWide ? "owner-wide" : "per-project",
+        },
+        configure: async (host) => {
+          const original = host.rpc;
+          const overview = unwrapRpcResult(await original["plugins.overview.get"]({}));
+          Object.defineProperty(host, "rpc", {
+            value: new Proxy(original, {
+              get: (target, key) =>
+                key === "plugins.overview.get"
+                  ? async () => ({
+                      ok: true,
+                      data: {
+                        ...overview,
+                        rows: overview.rows.map((row) => ({
+                          ...row,
+                          placement: { ...row.placement, personalEverywhere: true },
+                        })),
+                      },
+                    })
+                  : Reflect.get(target, key),
+            }),
+          });
+        },
+      });
+      expect(node.textContent?.includes("Everywhere")).toBe(ownerWide);
+    },
+  );
   it("restores only reviewed placement after the Host confirms an OAuth return", async () => {
     const attemptId = "ioa_00000000-0000-4000-8000-0000000000a1";
     let key = "";

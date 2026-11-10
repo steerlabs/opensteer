@@ -118,7 +118,7 @@ export function AgentDevicesSection() {
             <Link className="card__row-body" to={`/settings/devices/computers/${device.id}`}>
               <span className="card__row-title">
                 {device.name}
-                {hostDeploymentPolicy(snapshot)?.ownership === "single-user" &&
+                {hostDeploymentPolicy(snapshot)?.deploymentOwnsMainComputer === true &&
                 device.ownership === "deployment" &&
                 device.allowedModules.includes("agents") ? (
                   <span className="chip">Main</span>

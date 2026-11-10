@@ -65,6 +65,31 @@ describe("computerAppRoute", () => {
 });
 
 describe("currentDeviceMachineId", () => {
+  it.each([true, false])(
+    "uses Main ownership for join guidance independently of grouping: %s",
+    (ownsMain) => {
+      const client = new MockHostClient({ latencyMs: 0 });
+      try {
+        const snapshot = serverSnapshot(client);
+        const markup = renderPage({
+          client,
+          desktopBridge: {} as OpensteerDesktopBridge,
+          localExecutionStatus: localStatus({ enrolled: false }),
+          snapshot: {
+            ...snapshot,
+            deploymentPolicy: {
+              ...snapshot.deploymentPolicy,
+              ownership: ownsMain ? "members" : "single-user",
+              deploymentOwnsMainComputer: ownsMain,
+            },
+          },
+        });
+        expect(markup.includes("Add it and agents on")).toBe(ownsMain);
+      } finally {
+        client.dispose();
+      }
+    },
+  );
   it("uses the hosting desktop's positive fact for a Personal Main with no local Runner slot", () => {
     const machines = [
       machineFixture({ id: laptopId, ownership: "mine" }),

@@ -231,7 +231,7 @@ export function ComputersPage() {
             adding={localExecutionAction?.kind === "add"}
             computerName={localExecutionStatus.computerName}
             error={localExecutionError}
-            homeName={deploymentPolicy?.ownership === "single-user" ? homeName : null}
+            homeName={deploymentPolicy?.deploymentOwnsMainComputer === true ? homeName : null}
             onAdd={() =>
               void addThisComputer({
                 kind: "add",

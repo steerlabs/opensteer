@@ -492,7 +492,7 @@ function Plugins({
             ]),
         })),
 
-        ...(hostDeploymentPolicy(host.getSnapshot())?.ownership === "single-user"
+        ...(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide"
           ? [
               {
                 key: "everywhere",
@@ -646,7 +646,7 @@ function Plugins({
               ? pluginState(row).label
               : pluginPlacementLabel(
                   row,
-                  hostDeploymentPolicy(host.getSnapshot())?.ownership === "single-user",
+                  hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide",
                 ),
           ),
         );
@@ -869,7 +869,7 @@ function Plugins({
                 key: "places",
                 title: "Where it’s on",
                 rows: [
-                  ...(hostDeploymentPolicy(host.getSnapshot())?.ownership === "single-user"
+                  ...(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide"
                     ? [
                         {
                           key: "everywhere",
