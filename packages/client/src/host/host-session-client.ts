@@ -126,6 +126,7 @@ import type {
   TranscriptEntry,
   WorkspaceFilePreview,
   WorkspaceSummary,
+  WorkspaceTabActivationOptions,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import type { ExecutionChoice, ExecutionSelection } from "./execution-preferences.js";
@@ -817,8 +818,8 @@ export class HttpHostClient {
   }
 
   readonly #workspaceTabActivations: WorkspaceTabActivations;
-  activateWorkspaceTab(tabId: string) {
-    return this.#workspaceTabActivations.activate(tabId);
+  activateWorkspaceTab(tabId: string, options?: WorkspaceTabActivationOptions) {
+    return this.#workspaceTabActivations.activate(tabId, options);
   }
 
   #applyWorkspaceTabActivation(

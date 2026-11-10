@@ -4188,8 +4188,10 @@ export class MockHostClient implements HostClient {
     this.#dormantBrowser.finish(error);
   }
 
-  readonly activateWorkspaceTab: NonNullable<HostClient["activateWorkspaceTab"]> = (tabId) =>
-    this.#workspaceTabActivations.activate(tabId);
+  readonly activateWorkspaceTab: NonNullable<HostClient["activateWorkspaceTab"]> = (
+    tabId,
+    options,
+  ) => this.#workspaceTabActivations.activate(tabId, options);
 
   /** Connection, closure and lasting reasons can change while a saved tab waits. */
   setDormantBrowserState(change: {
