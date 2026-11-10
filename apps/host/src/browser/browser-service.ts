@@ -151,6 +151,7 @@ export class BrowserCdpConnectionEnded extends Error {
  * control only the Host itself issues, so it is never relayed from a consumer.
  */
 const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set([
+  "autofill.fill",
   "cursor.query",
   "cursor.reset",
   "input.command",
@@ -453,6 +454,7 @@ export interface BrowserRuntimeConnection {
 }
 
 export interface BrowserRuntimeTarget {
+  readonly personFill?: boolean;
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
@@ -698,6 +700,7 @@ export class BrowserService {
       }) => boolean)
     | undefined;
   readonly #passkeys: boolean;
+  readonly #personal: boolean;
   readonly #passkeyOwnOrigins: () => readonly string[];
   readonly #authConsumers = new Map<AuthSessionId, Set<BrowserConsumerPeer>>();
   readonly #connectTimeoutMs: number;
@@ -734,6 +737,7 @@ export class BrowserService {
     this.#localProfiles = options.localProfiles;
     this.#eraseLocalProfiles = options.eraseLocalProfiles;
     this.#passkeys = options.passkeys === true;
+    this.#personal = options.personal === true;
     this.#passkeyOwnOrigins = options.passkeyOwnOrigins ?? (() => [options.hostOrigin.origin]);
     this.#history =
       options.history ??
@@ -3386,6 +3390,7 @@ export class BrowserService {
       readonly mode: BrowserConsumerMode;
       readonly passkeys?: PasskeyMode | undefined;
       readonly popups?: boolean | undefined;
+      readonly autofill?: boolean | undefined;
       readonly editing?: 1 | 2 | undefined;
       /**
        * Whether the login that opened the socket is still signed in. Read once,
@@ -3445,6 +3450,7 @@ export class BrowserService {
         options.popups === true,
         ownerId,
         options.signedIn,
+        options.autofill === true,
       );
     } catch (error) {
       detachAuth();
@@ -3738,6 +3744,7 @@ export class BrowserService {
         : {}),
       access: "read-write",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
+      ...(target.personFill && this.#personal ? { personFillVersion: 1 } : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
       ...(target.popupFollowVersion ? { popupFollowVersion: 1 } : {}),
@@ -4800,6 +4807,7 @@ class HostedBrowserBroker {
     popups: boolean,
     userId: UserId,
     signedIn: () => Promise<boolean>,
+    autofill = false,
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
     if (!this.#snapshot || !this.#runtimeReady) {
@@ -4831,6 +4839,7 @@ class HostedBrowserBroker {
     outlet.userId = userId;
     outlet.passkeys = this.passkeys ? passkeys : undefined;
     outlet.popups = popups && mode === "control";
+    outlet.autofill = autofill && mode === "control";
     outlet.authorized = async () => (await stillVisible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
@@ -4847,6 +4856,7 @@ class HostedBrowserBroker {
             outlet.passkeys,
             outlet.clipboardToken,
             outlet.popups,
+            outlet.autofill,
           ),
         ),
       );
@@ -5352,6 +5362,15 @@ class HostedBrowserBroker {
     const [unaddressedAuthor, ...otherSenders] = this.#unaddressedKeySenders;
     for (const consumer of this.#consumers.values()) {
       if (
+        message.type.startsWith("browser.autofill.") &&
+        (!this.#snapshot?.personFillVersion ||
+          !consumer.autofill ||
+          consumer.mode !== "control" ||
+          !("consumerToken" in message) ||
+          message.consumerToken !== consumer.clipboardToken)
+      )
+        continue;
+      if (
         message.type === "browser.cursor" &&
         (consumer.mode !== "control" ||
           consumer.clipboardToken !== message.consumerToken ||
@@ -5459,6 +5478,7 @@ class HostedBrowserBroker {
               consumer.passkeys,
               consumer.clipboardToken,
               consumer.popups,
+              consumer.autofill,
             ),
           ),
         )
@@ -5587,6 +5607,10 @@ class HostedBrowserBroker {
     }
     if (message.type === "passkey.result" || message.type === "passkey.cancel")
       return Promise.reject(new Error("Viewer cannot answer a runtime ceremony."));
+    if (message.type === "autofill.fill") {
+      if (!outlet.autofill || outlet.mode !== "control" || this.#snapshot?.personFillVersion !== 1)
+        return Promise.reject(new Error("Browser autofill was not negotiated."));
+    }
     outlet.recordEditing(message.type);
     if (
       message.type === "clipboard.part" &&
@@ -6105,7 +6129,10 @@ class HostedBrowserBroker {
               inputSequenceStart: _inputSequenceStart,
               ...legacy
             } = compatible;
-            compatible = legacy;
+            compatible =
+              message.type === "autofill.fill"
+                ? { ...legacy, producerId: message.producerId }
+                : legacy;
             if (legacy.type === "input.pointer") {
               const {
                 geometryRevision: _revision,
@@ -6302,6 +6329,7 @@ export class BrowserConsumerOutlet {
   passkeys: PasskeyMode | undefined;
   /** Understands `browser.popup.opened`, and hears its own token for reporting native input. */
   popups = false;
+  autofill = false;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);

@@ -76,6 +76,7 @@ function runnerTarget(options: {
   readonly navigationAttributionVersion?: boolean;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
+  readonly personFill?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
@@ -132,6 +133,7 @@ function runnerTarget(options: {
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
+            personFill: options.personFill === true,
             cdpBoundary: true,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
             sharedControl: options.sharedControl ?? true,
@@ -5172,6 +5174,8 @@ function freshService(options: {
   readonly onError?: (error: unknown) => void;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
+  readonly personFill?: boolean;
+  readonly personal?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
@@ -5187,6 +5191,7 @@ function freshService(options: {
   const service = new BrowserService({
     ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,
+    personal: options.personal === true,
     ...profileStateOptions,
     ...(options.history ? { history: options.history } : {}),
     ...(options.onHistoryChanged ? { onHistoryChanged: options.onHistoryChanged } : {}),
@@ -5211,6 +5216,7 @@ function freshService(options: {
       targetControl: options.targetControl ?? false,
       rasterDemand: options.rasterDemand ?? false,
       passkeys: options.passkeys === true,
+      personFill: options.personFill === true,
       editing: options.editing,
       clipboard: options.clipboard,
     }),
@@ -6123,6 +6129,7 @@ async function startFakeRuntime(
           ...(claims.navigationAttributionVersion === 1 && options.navigationAttribution !== false
             ? { navigationAttributionVersion: 1 }
             : {}),
+          ...(claims.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
@@ -6722,4 +6729,163 @@ it("delivers cursor hints only to their controller and refuses Watch cursor quer
     other.close();
     watching.close();
   }
+});
+
+it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+] as const)(
+  "negotiates autofill only for Personal with an advertising runtime (personal=%s, advertised=%s)",
+  async (personal, personFill) => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      personal,
+      personFill,
+    });
+    const opened = await service.openAgentSession({
+      ownerId,
+      workspaceId,
+      agentBindingId: "autofill",
+      fresh: true,
+    });
+    expect(runtime.lastClaims()?.personFillVersion).toBe(personal && personFill ? 1 : undefined);
+    const peer = new RecordingPeer("autofill-negotiation");
+    const attachment = await service.attach(ownerId, opened.session.id, peer, {
+      ...consumerOptions(),
+      autofill: true,
+    });
+    expect(peer.text()[0]).toMatchObject(personal && personFill ? { personFillVersion: 1 } : {});
+    if (!(personal && personFill)) {
+      expect(peer.text()[0]).not.toHaveProperty("personFillVersion");
+      await expect(
+        attachment.handle(
+          Buffer.from(
+            JSON.stringify({
+              type: "autofill.fill",
+              surfaceId: "page-1",
+              offerId: randomUUID(),
+              loginId: randomUUID(),
+              revision: 1,
+            }),
+          ),
+          false,
+        ),
+      ).rejects.toThrow("autofill was not negotiated");
+    }
+  },
+);
+
+it("routes ephemeral autofill only to its opted-in controlling consumer and stamps choices", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const service = freshService({
+    keys,
+    runtime,
+    repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    personal: true,
+    personFill: true,
+  });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "autofill",
+    fresh: true,
+  });
+  const attach = async (id: string, autofill: boolean, mode: "control" | "watch" = "control") => {
+    const peer = new RecordingPeer(id);
+    const attachment = await service.attach(ownerId, opened.session.id, peer, {
+      ...consumerOptions(),
+      mode,
+      autofill,
+      popups: true,
+    });
+    const snapshot = BrowserServerMessageSchema.parse(peer.text()[0]);
+    if (snapshot.type !== "browser.snapshot") throw new Error("Missing snapshot");
+    return { peer, attachment, token: snapshot.consumerToken };
+  };
+  const actor = await attach("actor", true),
+    bystander = await attach("bystander", true),
+    old = await attach("old", false),
+    watch = await attach("watch", true, "watch");
+  expect(old.peer.text()[0]).not.toHaveProperty("personFillVersion");
+  expect(watch.peer.text()[0]).not.toHaveProperty("personFillVersion");
+  const offerId = randomUUID(),
+    loginId = randomUUID();
+  const offer = {
+    type: "browser.autofill.offer",
+    surfaceId: "page-1",
+    consumerToken: actor.token,
+    offerId,
+    role: "username",
+    geometryRevision: 0,
+    anchor: { x: 0.2, y: 0.3, width: 0.1, height: 0.05 },
+    accounts: [{ id: loginId, revision: 1, username: "fixture", label: null, ready: false }],
+  };
+  runtime.sendServer(offer);
+  runtime.sendServer({
+    type: "browser.autofill.result",
+    surfaceId: "page-1",
+    consumerToken: actor.token,
+    offerId,
+    status: "filled",
+  });
+  runtime.sendServer({
+    type: "browser.autofill.withdrawn",
+    surfaceId: "page-1",
+    consumerToken: actor.token,
+    offerId,
+  });
+  runtime.sendServer({
+    type: "browser.error",
+    error: { code: "conflict", message: "autofill-route-marker", retryable: false },
+  });
+  for (const viewer of [actor, bystander, old, watch]) {
+    await vi.waitFor(() =>
+      expect(viewer.peer.text(), "Viewer never received the routing barrier").toContainEqual(
+        expect.objectContaining({ type: "browser.error" }),
+      ),
+    );
+  }
+  const messages = (viewer: typeof actor) =>
+    viewer.peer.text().filter((message) => message.type.startsWith("browser.autofill."));
+  expect(messages(actor)).toHaveLength(3);
+  expect(messages(bystander)).toEqual([]);
+  expect(messages(old)).toEqual([]);
+  expect(messages(watch)).toEqual([]);
+  const late = await attach("late", true);
+  expect(messages(late)).toEqual([]);
+  const fill = {
+    type: "autofill.fill",
+    surfaceId: "page-1",
+    offerId,
+    loginId,
+    revision: 1,
+    producerId: randomUUID(),
+  };
+  const send = (viewer: typeof actor) =>
+    viewer.attachment.handle(Buffer.from(JSON.stringify(fill)), false);
+  await expect(send(old)).rejects.toThrow("autofill was not negotiated");
+  await expect(send(watch)).rejects.toThrow("autofill was not negotiated");
+  await send(actor);
+  await vi.waitFor(() =>
+    expect(
+      runtime.receivedCommands().some((command) => command.type === "autofill.fill"),
+      "Runtime never received the chosen account",
+    ).toBe(true),
+  );
+  expect(runtime.receivedCommands().filter((command) => command.type === "autofill.fill")).toEqual([
+    expect.objectContaining({ ...fill, producerId: actor.token }),
+  ]);
 });

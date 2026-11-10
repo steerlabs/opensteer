@@ -19,11 +19,13 @@ export function browserViewerMessage(
   passkeys?: "native" | "notice",
   consumerToken?: string,
   popups = false,
+  autofill = false,
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
     const {
       navigationAttributionVersion: _navigationAttributionVersion,
       editingVersion: _editingVersion,
+      personFillVersion: _personFillVersion,
       clipboard: _clipboard,
       passkeys: _passkeys,
       passkeyConsumerToken: _passkeyConsumerToken,
@@ -41,6 +43,7 @@ export function browserViewerMessage(
           : baseline;
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
     if (popups) message = { ...message, consumerToken };
+    if (autofill && _personFillVersion === 1) message = { ...message, personFillVersion: 1 };
   }
   if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
     return message;
