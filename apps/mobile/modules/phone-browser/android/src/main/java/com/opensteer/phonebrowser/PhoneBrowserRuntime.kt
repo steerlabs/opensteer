@@ -51,7 +51,7 @@ internal class PhoneBrowserRuntime(
       else qualified + mapOf("browser" to false, "sharedControl" to false, "cdpBoundary" to false, "fileStaging" to false)
     ) as JsonObject
     override fun fence(epoch: Int) = adoptFence(epoch)
-    override fun eraseDeployment(deploymentId: String, epoch: Int): CompletableFuture<JsonArray> = CompletableFuture.supplyAsync({
+    override fun eraseDeployment(deploymentId: String, runnerId: String, epoch: Int): CompletableFuture<JsonArray> = CompletableFuture.supplyAsync({
       gate.check(epoch)
       val entries = pool.ui(epoch) { profiles().manifest.all().filter { it.binding.deploymentId == deploymentId } }
       for (entry in entries) pool.await(pool.ui(epoch) { profiles().erase(entry.binding, entry.deletionId ?: UUID.randomUUID().toString(), ::closeProfile) })
@@ -59,7 +59,7 @@ internal class PhoneBrowserRuntime(
       pool.ui(epoch) {
         downloads.bind(deploymentId); downloads.erase()
         if (entries.any { it.guest && !profiles().manifest.byHandle(it.handle).deleted }) throw BrowserFailure("profile-erasure-pending")
-        nativeJson(profiles().list(deploymentId)) as JsonArray
+        nativeJson(profiles().list(deploymentId, runnerId)) as JsonArray
       }
     }, popupWorker)
   }
@@ -164,7 +164,7 @@ internal class PhoneBrowserRuntime(
   }
   fun list(input: DeploymentRecord): List<Map<String, Any?>> = pool.ui(input.epoch) {
     if (input.deploymentId != deploymentId) throw BrowserFailure("forbidden")
-    profiles().list(input.deploymentId, runnerId)
+    profiles().list(input.deploymentId, runnerId ?: throw BrowserFailure("forbidden"))
   }
   fun erase(input: ProfileRecord): String {
     gate.check(input.epoch)

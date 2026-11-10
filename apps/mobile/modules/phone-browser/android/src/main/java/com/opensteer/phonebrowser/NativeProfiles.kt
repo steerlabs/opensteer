@@ -127,7 +127,7 @@ internal class NativeProfiles(context: Context) {
     return result
   }
 
-  fun list(deploymentId: String, runnerId: String? = null) = manifest.all().filter { it.binding.deploymentId == deploymentId && (runnerId == null || it.binding.runnerId == runnerId) && !it.guest }.map { entry ->
+  fun list(deploymentId: String, runnerId: String) = manifest.inventory(deploymentId, runnerId).map { entry ->
     if (entry.deletionId == null) mapOf("phase" to "ready", "binding" to entry.binding.fields())
     else mapOf("phase" to "deleted", "binding" to entry.binding.fields(), "deletionId" to entry.deletionId, "erasure" to if (entry.deleted) "deleted" else "pending-restart")
   }

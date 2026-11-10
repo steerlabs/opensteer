@@ -21,7 +21,8 @@ export type PhoneConnectionPort = Pick<
   | "closeChannel"
 >;
 
-interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent"> {
+interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent" | "sendRelay"> {
+  sendRelay(input: { readonly epoch: number; readonly message: string }): Promise<void>;
   now(): number;
   getSnapshot(): IphoneAppsSnapshot;
   prepare: IphoneAppsBridge["prepare"];
@@ -66,7 +67,8 @@ export const phoneConnection: PhoneConnectionPort = {
   setForeground: (input) => connection().setForeground(input),
   verifyAttach: (input) => connection().verifyAttach(input),
   commitAttach: (input) => connection().commitAttach(input),
-  sendRelay: (input) => connection().sendRelay(input),
+  sendRelay: (input) =>
+    connection().sendRelay({ epoch: input.epoch, message: JSON.stringify(input.message) }),
   closeChannel: (input) => connection().closeChannel(input),
   onEvent: (listener) => {
     let subscribed = true;
