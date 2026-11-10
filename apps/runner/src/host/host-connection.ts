@@ -223,6 +223,8 @@ export interface RunnerLogger {
  * to advertise, and no browser of its own to relay (`docs/computers.md#runner-and-desktop`).
  */
 export interface RunnerAgentsConnection {
+  /** This Runner loaded the `opensteer:knowledge` skill, so the Host may plan it. */
+  readonly knowledgeSkill?: true;
   readonly runFileOptions?: { readonly dataDirectory: string; readonly helperBinary: string };
   readonly earlierBootsContained?: boolean;
   /**
@@ -785,6 +787,7 @@ export class ReconnectingHostConnection {
       localStorage: (await agents.localWorkspaces?.inventory()) ?? null,
       loginFill: 1,
       computerTool: 1,
+      ...(agents.knowledgeSkill ? { knowledgeSkill: 1 as const } : {}),
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
       providerStateModes: [...agents.runtime.providerStateModes()],

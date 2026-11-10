@@ -146,7 +146,7 @@ async function fixture(options: { knowledge?: boolean; statementTimeoutMs?: numb
       handlers,
       publicUrl: url,
       onToolError,
-      knowledge: manager !== undefined,
+      ...(manager ? { knowledgeFor: async (caller: AgentCaller) => caller.kind === "run" } : {}),
       store: {
         requests: { get: async () => null },
         getThreadForOwner: async () => null,

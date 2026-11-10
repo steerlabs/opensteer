@@ -749,6 +749,7 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
+        knowledgeSkill: true,
         localWorkspaces: (() => {
           const local = localStorageFixture(environmentId);
           local.service.scanSkills = async () => {
@@ -802,6 +803,7 @@ describe("runnerWebSocketUrl", () => {
             agents: {
               environmentIds: [environmentId],
               computerTool: 1,
+              knowledgeSkill: 1,
               harnessDrivers: [],
               localStorage: expect.objectContaining({
                 bindings: [expect.objectContaining({ state: "ready" })],

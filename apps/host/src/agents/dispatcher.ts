@@ -1,3 +1,4 @@
+import { knowledgeEligible } from "../knowledge/knowledge-eligibility.js";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
@@ -490,6 +491,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       workspace: context.workspace,
     });
 
+    const knowledge =
+      this.#knowledge &&
+      knowledgeEligible({
+        enabled: true,
+        thread: await this.#store.threadProvenance(context.thread.id),
+        agents: identity.modules.agents,
+      });
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
@@ -590,7 +598,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           role: context.thread.role,
           accessMode: context.thread.accessMode,
           reach: threadReachScope(context.thread).kind,
-          knowledge: this.#knowledge,
+          knowledge,
         }),
         browserCdp: { url: this.#agentBrowserCdpUrl },
         ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),

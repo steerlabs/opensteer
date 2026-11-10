@@ -4720,6 +4720,7 @@ export function migrationProvider() {
         "0166_memory_pass_activity": memoryPassActivityMigration,
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
+        "0169_thread_owner_started": threadOwnerStartedMigration,
       };
     },
   };
@@ -7684,5 +7685,16 @@ export const devicesMigration: Migration = {
       await sql.raw(`alter table public.requests drop constraint ${name}`).execute(database);
       await sql.raw(`alter table public.requests add constraint ${name} ${next}`).execute(database);
     }
+  },
+};
+
+/** Who started a Thread's lineage, recorded where an agent's own calls cannot reach. */
+export const threadOwnerStartedMigration: Migration = {
+  async up(database: Kysely<unknown>): Promise<void> {
+    await sql`
+      alter table public.threads add column owner_started boolean not null default false;
+      update public.threads set owner_started = true
+      where id in (select home_thread_id from public.workspaces where kind = 'main');
+    `.execute(database);
   },
 };

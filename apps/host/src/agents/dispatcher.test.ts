@@ -606,6 +606,34 @@ describe("HostCommandDispatcher model selection", () => {
     );
   });
 
+  it.each([
+    { ownerStarted: true, advertised: true, offered: true },
+    { ownerStarted: false, advertised: true, offered: false },
+    { ownerStarted: true, advertised: false, offered: false },
+  ])(
+    "plans knowledge only for owner-started Main work on a Runner that advertises it: %o",
+    async ({ ownerStarted, advertised, offered }) => {
+      const planFor = async (
+        knowledge: NonNullable<Parameters<typeof dispatchRun>[0]["knowledge"]>,
+      ) => {
+        const { dispatch, run } = dispatchRun({
+          models: [gpt5],
+          modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+          knowledge,
+        });
+        await run();
+        const command = dispatch.mock.lastCall![0];
+        if (command.type !== "run.execute") throw new Error("Expected run.execute");
+        return RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools);
+      };
+      const plan = await planFor({ enabled: true, ownerStarted, advertised });
+      expect(plan.skills.includes("opensteer:knowledge")).toBe(offered);
+      expect(plan.tools.includes("sql")).toBe(offered);
+      const off = await planFor({ enabled: false, ownerStarted, advertised });
+      expect(plan.toolsRevision === off.toolsRevision).toBe(!offered);
+    },
+  );
+
   it("refuses the new tool plan on an old Runner with a visible update reason", async () => {
     const { dispatch, run } = dispatchRun({
       capabilities: [
@@ -756,6 +784,11 @@ describe("HostCommandDispatcher model selection", () => {
     readonly models: readonly unknown[];
     readonly modelSelection: unknown;
     readonly requesterTimeZone?: string | null;
+    readonly knowledge?: {
+      readonly enabled: boolean;
+      readonly ownerStarted: boolean;
+      readonly advertised: boolean;
+    };
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
@@ -806,6 +839,9 @@ describe("HostCommandDispatcher model selection", () => {
           ],
           name: "Run computer",
           runnerId: createId("runner"),
+          modules: {
+            agents: input.knowledge?.advertised ? { knowledgeSkill: 1 } : {},
+          },
         }),
         inspectHarnesses: async () => [
           { continuationIdentity: "continuation-test", models, status: "ready" },
@@ -848,7 +884,7 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: {
-            inheritsMain: false,
+            inheritsMain: input.knowledge !== undefined,
             ...(input.specialistId ? { specialistId: input.specialistId } : {}),
             id: threadId,
             role: input.role ?? "work",
@@ -856,6 +892,10 @@ describe("HostCommandDispatcher model selection", () => {
           workspace: { id: createId("workspace"), kind: "project", status: "ready" },
         }),
         notificationState: { timeZoneFor },
+        threadProvenance: async () =>
+          input.knowledge
+            ? { inheritsMain: true, ownerStarted: input.knowledge.ownerStarted }
+            : { inheritsMain: false, ownerStarted: false },
         recordHarnessCatalogs: async ({
           catalogs,
         }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
@@ -865,6 +905,7 @@ describe("HostCommandDispatcher model selection", () => {
       triggers: {} as never,
       workspaces: { ensureExecutionReady: async () => undefined } as never,
       workspaceAccess: { plan: async () => ({ kind: "test-plan" }) } as never,
+      ...(input.knowledge?.enabled ? { knowledge: true } : {}),
     });
     const command = {
       ...steerCommand(),

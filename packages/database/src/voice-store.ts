@@ -101,6 +101,7 @@ async function ensureVoiceThread(
       harnessInstanceId: input.harnessInstanceId,
       ...(input.accessMode ? { accessMode: input.accessMode } : {}),
       idempotencyKey: `voice-thread:${input.ownerId}`,
+      ownerSession: true,
       modelSelection,
       title: "Voice",
       voice: true,

@@ -20,6 +20,7 @@ type ThreadValues = Omit<
   keyof ThreadParents | "titleSource" | "color" | "createdAt" | "askedAt"
 > & {
   readonly titleSource: ThreadTitleSource;
+  readonly ownerStarted: boolean;
 };
 
 export function harnessRevisionChanged() {

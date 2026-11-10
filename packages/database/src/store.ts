@@ -1505,6 +1505,19 @@ export class OpensteerStore {
     return threadStore.readThreadForOwner(this.#database, threadId, ownerId, maxMessages);
   }
 
+  /** Who started the Thread's lineage, from what the Host recorded when it created each link. */
+  async threadProvenance(
+    threadId: ThreadId,
+  ): Promise<{ readonly inheritsMain: boolean; readonly ownerStarted: boolean } | null> {
+    return (
+      (await this.#database
+        .selectFrom("threads")
+        .select(["inheritsMain", "ownerStarted"])
+        .where("id", "=", threadId)
+        .executeTakeFirst()) ?? null
+    );
+  }
+
   async createThread(input: CreateThreadInput): Promise<ThreadCreationResult> {
     return threadStore.createThread(this.#database, input);
   }
