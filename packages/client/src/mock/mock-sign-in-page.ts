@@ -2,8 +2,8 @@ import type { PersonFillAccountView } from "@opensteer/protocol";
 import type { BrowserCommand } from "../host/client.js";
 import { BrowserEditingStore } from "../host/browser-editing.js";
 
-/** The mock page whose fields are a sign-in form, so clients can show filling without a Mac. */
-export const mockSignInPageTitle = "Confirm your reservation";
+/** The Chat's mock page, whose fields act as a sign-in form so clients can show filling without a Mac. */
+export const mockSignInPageTitle = "Weekend ideas";
 const consumerToken = "00000000-0000-4000-8000-000000000001";
 const logins: readonly Omit<PersonFillAccountView, "ready">[] = [
   {
