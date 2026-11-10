@@ -107,12 +107,6 @@ function ToolDetail(props: {
   const status = [toolStatusLabel(tool), head.duration].filter(Boolean).join(" · ");
   return (
     <Frame label={head.label} status={status} tone={head.tone === "error" ? "amber" : "muted"}>
-      {detail.loading ? <ActivityIndicator accessibilityLabel="Loading output" /> : null}
-      {detail.error ? (
-        <Pressable onPress={detail.reload}>
-          <AppText>Could not load output. Retry</AppText>
-        </Pressable>
-      ) : null}
       {body.summary ? (
         <AppText role="body" selectable tone="soft">
           {body.summary}
@@ -122,9 +116,18 @@ function ToolDetail(props: {
       {body.argumentsText ? (
         <Verbatim collapsed={body.collapsed} label="Input" text={body.argumentsText} />
       ) : null}
-      {body.output && !detail.loading && !detail.error ? (
+      {detail.loading ? (
+        <ActivityIndicator accessibilityLabel="Loading output" color={color.muted} />
+      ) : detail.error ? (
+        <Notice
+          action={{ label: "Try again", onPress: detail.reload }}
+          detail="The rest of this step is still here."
+          title="Couldn't load this output"
+          tone="neutral"
+        />
+      ) : body.output ? (
         <Verbatim collapsed={body.collapsed} label={body.outputLabel} text={body.output} />
-      ) : tool.state === "running" || body.summary || detail.loading || detail.error ? null : (
+      ) : tool.state === "running" || body.summary ? null : (
         <AppText role="secondary" tone="muted">
           No output
         </AppText>

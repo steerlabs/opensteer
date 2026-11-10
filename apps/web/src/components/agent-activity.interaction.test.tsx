@@ -1042,8 +1042,8 @@ it("loads output only on expansion, retries a failure, and reuses it when reopen
   expect(read).not.toHaveBeenCalled();
   await act(async () => click(container.querySelector(".trace-step__head")));
   expect(read).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain("Could not load output");
-  await act(async () => click(button(container, "Retry")));
+  expect(container.textContent).toContain("Couldn't load this output.");
+  await act(async () => click(button(container, "Try again")));
   expect(container.textContent).toContain("whole lazy output");
   click(container.querySelector(".trace-step__head"));
   await act(async () => click(container.querySelector(".trace-step__head")));

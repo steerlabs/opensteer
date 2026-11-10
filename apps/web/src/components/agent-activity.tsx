@@ -103,6 +103,7 @@ import {
 import { CopyMark } from "./copy-mark.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
+import { LoadingRows } from "./loading-rows.js";
 import { Popover } from "./popover.js";
 import { SiteMark } from "./site-mark.js";
 import {
@@ -1828,21 +1829,29 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   const Section = body.collapsed ? DisclosedSection : OpenSection;
   return (
     <div className="trace-step__body">
-      {detail.loading ? <span role="status">Loading output…</span> : null}
-      {detail.error ? (
-        <button onClick={detail.reload} type="button">
-          Could not load output. Retry
-        </button>
-      ) : null}
       {body.summary ? <p className="trace-step__summary">{body.summary}</p> : null}
       {body.command ? <pre className="trace-code trace-code--command">{body.command}</pre> : null}
       {body.argumentsText ? <Section label="Input" text={body.argumentsText} /> : null}
-      {body.output && !detail.loading && !detail.error ? (
+      {detail.loading ? (
+        <LoadingRows label="Loading output" rows={2} />
+      ) : detail.error ? (
+        <div className="run-note" role="alert">
+          <Icon name="alert-circle" />
+          <div>
+            <strong>Couldn't load this output.</strong>
+            <div>
+              <button className="btn" onClick={detail.reload} type="button">
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : body.output ? (
         <>
           <CopyMark label="Copy output" text={tool.output?.text ?? body.output} />
           <Section label={body.outputLabel} text={body.output} />
         </>
-      ) : tool.state === "running" || body.summary || detail.loading || detail.error ? null : (
+      ) : tool.state === "running" || body.summary ? null : (
         <span className="trace-step__empty">No output</span>
       )}
     </div>
