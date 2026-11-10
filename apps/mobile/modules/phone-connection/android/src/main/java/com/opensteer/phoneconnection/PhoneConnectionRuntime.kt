@@ -328,7 +328,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         if (qualified["fileStaging"] == JsonPrimitive(true)) browser["fileStaging"] = JsonPrimitive(true)
         return Wire.fields("bootId" to JsonPrimitive(bootId), "runnerId" to current.getValue("runnerId"), "runnerKind" to JsonPrimitive("local"),
             "runtimeVersion" to JsonPrimitive(version), "name" to current.getValue("name"), "capabilities" to JsonArray(emptyList()),
-            "device" to Wire.fields("form" to JsonPrimitive("phone"), "platform" to JsonPrimitive("android")), "modules" to Wire.fields("browser" to JsonObject(browser)))
+            "device" to Wire.fields("app" to JsonPrimitive("opensteer"), "form" to JsonPrimitive("phone"), "platform" to JsonPrimitive("android")), "modules" to Wire.fields("browser" to JsonObject(browser)))
     }
     private fun primaryFrame(socket: WebSocket, frame: JsonObject, attempt: Long) {
         refusal(frame)

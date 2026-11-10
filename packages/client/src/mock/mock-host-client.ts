@@ -37,6 +37,7 @@ import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
 import { RunPlaceStore } from "../host/run-place.js";
 import { compareTaskOrder } from "../host/task-entries.js";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
+import { isAgentPhone } from "../integrations/computer-use.js";
 import { PendingBrowserTabs } from "../host/pending-browser-tabs.js";
 import { BrowserPasskeys } from "../host/browser-passkeys.js";
 import { BrowserPreferences } from "../host/browser-preferences.js";
@@ -8495,7 +8496,7 @@ class MockHostState {
       input.definitionId === androidPhoneDefinitionId &&
       input.app === null &&
       machine.device?.form === "phone" &&
-      machine.device?.platform === "android";
+      isAgentPhone(machine);
     if (input.definitionId === androidPhoneDefinitionId && !phone) {
       throw new Error("That is not an Android phone connection.");
     }
@@ -9347,7 +9348,11 @@ class MockHostState {
               status: "online",
               expiresAt: null,
               revocable: true,
-              device: { form: "phone", platform: input.platform ?? "ios" },
+              device: {
+                form: "phone",
+                platform: input.platform ?? "ios",
+                ...(input.platform === "android" ? { app: "opensteer" as const } : {}),
+              },
               computerUse: null,
               lastSeenAt: this.now().toISOString(),
               apps: !(input.modules ?? ["integrations"]).includes("integrations")

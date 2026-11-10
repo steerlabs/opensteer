@@ -221,6 +221,7 @@ async function activateRunnerConnection(
     .selectFrom("runners")
     .select([
       "deviceProfile",
+      "device",
       "allowedModules",
       "id",
       "kind",
@@ -291,7 +292,12 @@ async function activateRunnerConnection(
     .set({
       capabilities: jsonValue(descriptor.capabilities),
       connectionGeneration: sql`connection_generation + 1`,
-      device: descriptor.device ? jsonValue(descriptor.device) : null,
+      device:
+        existing.device?.app === "opensteer"
+          ? jsonValue(existing.device)
+          : descriptor.device
+            ? jsonValue(descriptor.device)
+            : null,
       lastSeenAt: seenAt,
       maxConcurrentRuns: descriptor.modules.agents?.maxConcurrentRuns ?? null,
       moduleDescriptors: jsonValue(descriptor.modules),

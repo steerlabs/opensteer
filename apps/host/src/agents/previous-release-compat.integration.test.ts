@@ -160,10 +160,26 @@ integration.sequential("previous public release client journeys", () => {
             : ["browser"],
           modules: { browser: { runtimeId: runnerId, wireVersion: 2 } },
         });
+        if (name === "First home")
+          await active.host.store.database
+            .updateTable("runners")
+            .set({
+              device: sql`'{"form":"phone","platform":"android","app":"opensteer"}'::jsonb`,
+            })
+            .where("id", "=", runnerId)
+            .execute();
       }
       const current = new HttpHostClient(options);
       clients.push(current);
       await current.load();
+      expect(
+        current.getSnapshot().machines.find(({ name }) => name === "First home")?.device,
+      ).toEqual({ form: "phone", platform: "android", app: "opensteer" });
+      await old.refresh();
+      expect(old.getSnapshot().machines.find(({ name }) => name === "First home")?.device).toEqual({
+        form: "phone",
+        platform: "android",
+      });
       const threadId = await active.createThread({
         modelSelection,
         title: "Profile request",
