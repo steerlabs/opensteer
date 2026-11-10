@@ -511,12 +511,16 @@ describe("BrowserService", () => {
     held.set(first.sessionId, browserSessionTabLimit - 1);
     const reused = open();
     const request = await runtime.nextCommand();
-    runtime.sendServer({ type: "cdp.result", requestId: request.requestId, result: { tabId: "bsf_reused" } });
+    // The open still in flight holds the last place, so a concurrent one goes elsewhere.
+    const concurrent = await open();
+    expect(concurrent.browserStarted).toBe(true);
+    expect(concurrent.sessionId).not.toBe(first.sessionId);
+    runtime.sendServer({
+      type: "cdp.result",
+      requestId: request.requestId,
+      result: { tabId: "bsf_reused" },
+    });
     expect((await reused).sessionId).toBe(first.sessionId);
-    held.set(first.sessionId, browserSessionTabLimit);
-    const next = await open();
-    expect(next.browserStarted).toBe(true);
-    expect(next.sessionId).not.toBe(first.sessionId);
   });
 
   it("keeps an unanswered additional tab recoverable by its original key", async () => {

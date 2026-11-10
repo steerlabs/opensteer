@@ -711,6 +711,7 @@ export class BrowserService {
   readonly #onPresenceChanged: NonNullable<BrowserServiceOptions["onPresenceChanged"]>;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
+  readonly #reservedTabs = new Map<BrowserSessionId, number>();
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
   readonly #actorMetadataTimeoutMs: number;
@@ -1623,6 +1624,8 @@ export class BrowserService {
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
       budget.signal.throwIfAborted();
       let admitted: BrowserTabOpenBinding | undefined;
+      // Until its page is recorded, an open counts against the session it chose.
+      let reserved: BrowserSessionId | undefined;
       try {
         let pendingFinish: (() => Promise<void>) | undefined;
         const select = async () => {
@@ -1679,9 +1682,13 @@ export class BrowserService {
               );
             record = null;
             for (const candidate of candidates) {
-              const held = (await this.#workspaceTabs?.heldBy(candidate.id)) ?? 0;
+              const held =
+                ((await this.#workspaceTabs?.heldBy(candidate.id)) ?? 0) +
+                (this.#reservedTabs.get(candidate.id) ?? 0);
               if (held < browserSessionTabLimit) {
                 record = candidate;
+                reserved = candidate.id;
+                this.#reservedTabs.set(reserved, (this.#reservedTabs.get(reserved) ?? 0) + 1);
                 break;
               }
             }
@@ -1774,6 +1781,12 @@ export class BrowserService {
           if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
         }
         throw error;
+      } finally {
+        if (reserved) {
+          const left = (this.#reservedTabs.get(reserved) ?? 1) - 1;
+          if (left > 0) this.#reservedTabs.set(reserved, left);
+          else this.#reservedTabs.delete(reserved);
+        }
       }
     });
   }
