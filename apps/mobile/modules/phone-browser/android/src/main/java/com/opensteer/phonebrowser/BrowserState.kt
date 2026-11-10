@@ -38,6 +38,25 @@ internal class EpochGate {
 
 internal enum class TabState { LIVE, RETAINED, DISCARDED }
 
+internal object RetainedTabAdoption {
+  fun require(epoch: Int, allocationEpoch: Int, state: TabState, session: String, generation: Int,
+    previousSession: String, previousGeneration: Int, store: String, requestedStore: String?, guestOwner: String?) {
+    if (epoch <= allocationEpoch || state == TabState.LIVE || session != previousSession || generation != previousGeneration ||
+      (if (requestedStore == null) guestOwner != previousSession else requestedStore != store || guestOwner != null)) throw BrowserFailure("forbidden")
+  }
+}
+
+internal data class BrowserQualification(val browser: Boolean, val sharedControl: Boolean, val fileStaging: Boolean, val cdpBoundary: Boolean) {
+  companion object {
+    fun from(receipts: Map<String, Any?>, release: Boolean, disabled: Boolean): BrowserQualification {
+      val browser = receipts["native browser"] == true
+      val shared = browser && receipts["native input"] == true && receipts["native picture"] == true
+      return BrowserQualification(browser, shared, browser && receipts["native staging"] == true,
+        shared && release && disabled && receipts["passed"] == true && receipts["clipboard denial"] == true)
+    }
+  }
+}
+
 internal class PoolLedger(private val liveLimit: Int = 2, private val retainedLimit: Int = 4) {
   private val states = linkedMapOf<String, TabState>()
   private val retained = linkedSetOf<String>()

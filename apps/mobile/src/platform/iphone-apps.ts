@@ -51,6 +51,7 @@ export interface IphoneAppsApproval {
   readonly expiresAt: string;
 }
 export interface IphoneAppsSnapshot {
+  readonly pendingErasure?: boolean;
   readonly revision: number;
   readonly supported: boolean;
   readonly unsupportedReason: "not-ios" | "not-iphone" | "ios-version" | null;

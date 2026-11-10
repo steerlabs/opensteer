@@ -1,6 +1,7 @@
 import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 import type { HostClient } from "@opensteer/client/host";
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import type {
   PhoneBrowserNativeEvent,
   PhoneBrowserNativePort,
@@ -20,7 +21,8 @@ export type PhoneConnectionPort = Pick<
   | "closeChannel"
 >;
 
-interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent"> {
+interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent" | "sendRelay"> {
+  sendRelay(input: { readonly epoch: number; readonly message: string }): Promise<void>;
   now(): number;
   getSnapshot(): IphoneAppsSnapshot;
   prepare: IphoneAppsBridge["prepare"];
@@ -28,6 +30,7 @@ interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent"> {
   retarget: IphoneAppsBridge["retarget"];
   disconnect: IphoneAppsBridge["disconnect"];
   enrollFromHost(input: {
+    readonly apiVersion: number;
     readonly origin: string;
     readonly authorization: string;
     readonly deploymentId: string;
@@ -64,17 +67,13 @@ export const phoneConnection: PhoneConnectionPort = {
   setForeground: (input) => connection().setForeground(input),
   verifyAttach: (input) => connection().verifyAttach(input),
   commitAttach: (input) => connection().commitAttach(input),
-  sendRelay: (input) => connection().sendRelay(input),
+  sendRelay: (input) =>
+    connection().sendRelay({ epoch: input.epoch, message: JSON.stringify(input.message) }),
   closeChannel: (input) => connection().closeChannel(input),
   onEvent: (listener) => {
-    let pending = Promise.resolve();
     let subscribed = true;
     const subscription = connection().addListener("onEvent", (event) => {
-      pending = pending
-        .then(async () => {
-          if (subscribed) await listener(event);
-        })
-        .catch(() => undefined);
+      if (subscribed) void listener(event).catch(() => undefined);
     });
     return () => {
       subscribed = false;
@@ -82,6 +81,10 @@ export const phoneConnection: PhoneConnectionPort = {
     };
   },
 };
+
+export async function retryPhoneRetirement(): Promise<void> {
+  if (connection().getSnapshot().pendingErasure) await connection().completeRetirement();
+}
 
 export const phoneConnectionClock = {
   now: () => connection().now(),
@@ -122,6 +125,7 @@ export async function enrollAndroidPhone(input: {
   const host = await phoneEnrollmentHost(input.hostClient, input.deploymentId);
   return connection().enrollFromHost({
     ...host,
+    apiVersion: hostApiVersion,
     deploymentId: input.deploymentId,
     name: input.name,
   });

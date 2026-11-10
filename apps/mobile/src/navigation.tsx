@@ -459,7 +459,7 @@ const RootStack = createNativeStackNavigator({
         presentation: screenPresentations.AddIphone,
         sheetAllowedDetents: [0.95],
         sheetGrabberVisible: true,
-        title: "Add this iPhone",
+        title: "Add this phone",
       }),
     },
     // Asked once, over Chat, the first time this phone reaches a computer. It

@@ -177,7 +177,7 @@ export interface PhoneBrowserNativePort {
   initialize(
     input: Epoch & { deploymentId: string; runnerId: string },
   ): Promise<NativeQualification>;
-  /** Stops admission/captures/pipes and cancels dialogs/choosers; reports unavailable before draining. */
+  /** Stops remote work and dialogs/agent choosers; a person's picker survives for its original page. */
   fence(reason: string): number;
   setForeground(input: Epoch & { active: boolean }): Promise<void>;
   onEvent(listener: (event: PhoneBrowserNativeEvent) => Promise<void>): () => void;

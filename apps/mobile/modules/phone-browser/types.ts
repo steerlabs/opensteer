@@ -10,6 +10,10 @@ import type {
 } from "@opensteer/protocol/browser";
 import type { EditingContext } from "@opensteer/protocol/editing";
 import type { NativeSyntheticEvent, ViewProps } from "react-native";
+import type {
+  NativeViewerMessage,
+  PhoneBrowserNativePort as ManagerPort,
+} from "../../src/phone-browser/native-port.js";
 
 export interface Epoch {
   readonly epoch: number;
@@ -96,6 +100,17 @@ export type PhoneBrowserNativeEvent =
       readonly channelId: string;
       readonly context: EditingContext;
     })
+  | (NativeDocumentRef & {
+      readonly type: "serverMessage";
+      readonly channelId: string;
+      readonly message: NativeViewerMessage;
+    })
+  | (Epoch & {
+      readonly type: "cdpEvent";
+      readonly pipeHandle: string;
+      readonly method: string;
+      readonly params: Readonly<Record<string, unknown>>;
+    })
   | (Epoch & {
       readonly type: "agentEvent";
       readonly attachmentId: string;
@@ -104,7 +119,16 @@ export type PhoneBrowserNativeEvent =
   | (Epoch & { readonly type: "memoryPressure"; readonly level: "warning" | "critical" })
   | (Epoch & { readonly type: "rendererGone"; readonly tabs: readonly NativeTabRef[] });
 
-export interface PhoneBrowserNativePort {
+export interface PhoneBrowserNativePort extends Pick<
+  ManagerPort,
+  | "attachAgent"
+  | "detachAgent"
+  | "authorizeCdp"
+  | "openCdpPipe"
+  | "sendCdp"
+  | "closeCdpPipe"
+  | "releaseCdp"
+> {
   initialize(
     input: Epoch & { deploymentId: string; runnerId: string },
   ): Promise<NativeQualification>;

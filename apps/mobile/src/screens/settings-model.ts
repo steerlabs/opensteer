@@ -416,6 +416,8 @@ export type ComputerSettingsDestination =
  * on a phone that cannot, which then has no row of its own.
  */
 export interface ThisIphoneSettings {
+  readonly browserOnly?: boolean;
+  readonly pendingErasure?: boolean;
   /** Requests waiting for an answer on this iPhone. */
   readonly approvals: number;
   /** Whether the open Deployment's Host can take an iPhone. */
@@ -575,6 +577,14 @@ function thisIphoneRow(
 ): ComputerSettingsRow {
   const opensteer = `Opensteer on ${here.deploymentName}`;
   const held = here.heldBy;
+  if (here.pendingErasure)
+    return {
+      detail: "You're here · Restart Opensteer to finish erasing browser profiles",
+      key: "this-iphone",
+      name: here.deviceName,
+      opens: { kind: "add-iphone" },
+      symbol: "smartphone",
+    };
   if (held !== null && held.deploymentId !== here.selectedDeploymentId) {
     const machineId = held.state === "pending" ? held.enrollmentId : held.runnerId;
     return {
@@ -607,14 +617,16 @@ function thisIphoneRow(
     ? {
         detail: here.removed
           ? `You're here · Removed from ${opensteer}`
-          : "You're here · Share its Calendar, Contacts and more",
+          : here.browserOnly
+            ? "You're here · Add this phone’s browser"
+            : "You're here · Share its Calendar, Contacts and more",
         key: "this-iphone",
         name: here.deviceName,
         opens: { kind: "add-iphone" },
         symbol: "smartphone",
       }
     : {
-        detail: `You're here · Update ${opensteer} to add this iPhone`,
+        detail: `You're here · Update ${opensteer} to add this phone`,
         key: "this-iphone",
         name: here.deviceName,
         opens: null,

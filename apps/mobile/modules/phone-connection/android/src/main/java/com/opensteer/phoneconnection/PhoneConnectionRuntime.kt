@@ -18,7 +18,7 @@ import java.util.concurrent.ScheduledFuture
 interface PhoneBrowserEndpoint {
     fun qualification(deploymentId: String, runnerId: String): JsonObject
     fun fence(epoch: Int)
-    fun eraseDeployment(deploymentId: String, epoch: Int): CompletableFuture<JsonArray>
+    fun eraseDeployment(deploymentId: String, runnerId: String, epoch: Int): CompletableFuture<JsonArray>
 }
 
 class PhoneConnectionRuntime private constructor(context: Context) {
@@ -113,7 +113,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         publish()
         return Wire.fields("runnerId" to current.getValue("runnerId"), "mintKey" to current.getValue("mintKey"))
     }
-    fun enrollFromHost(origin: String, authorization: String, deploymentId: String, name: String): CompletableFuture<JsonObject> {
+    fun enrollFromHost(origin: String, authorization: String, deploymentId: String, name: String, apiVersion: Int): CompletableFuture<JsonObject> {
         val result = CompletableFuture<JsonObject>()
         val (expected, enrollmentGeneration) = synchronized(this) {
             Wire.requireThat(foreground && identity?.text("deploymentId") == deploymentId, "not-foreground")
@@ -125,10 +125,10 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         worker.execute {
             try {
                 synchronized(this) { Wire.requireThat(identity == expected && foreground && generation == enrollmentGeneration, "retired-enrollment") }
-                val response = try { request(target + "/v1/rpc/commands.dispatch", command, authorization, 65536) }
+                val response = try { request(target + "/v1/rpc/commands.dispatch", command, authorization, 65536, apiVersion) }
                     catch (_: java.io.IOException) {
                         synchronized(this) { Wire.requireThat(identity == expected && foreground && generation == enrollmentGeneration, "retired-enrollment") }
-                        request(target + "/v1/rpc/commands.dispatch", command, authorization, 65536)
+                        request(target + "/v1/rpc/commands.dispatch", command, authorization, 65536, apiVersion)
                     }
                 if (response["ok"] != JsonPrimitive(true)) {
                     val reason = ((response["error"] as? JsonObject)?.get("reason") as? JsonPrimitive)?.content
@@ -201,7 +201,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         erase = { deploymentId ->
             val browser = synchronized(this) { endpoint ?: throw Refused("erasure-pending") }
             val epoch = synchronized(this) { admission.epoch }
-            browser.eraseDeployment(deploymentId, epoch).thenApply { remaining ->
+            browser.eraseDeployment(deploymentId, current.text("runnerId"), epoch).thenApply { remaining ->
                 Wire.requireThat(remaining.size <= 128, "erasure-unavailable")
                 remaining.all {
                     val profile = it as? JsonObject ?: throw Refused("erasure-unavailable")
@@ -284,6 +284,8 @@ class PhoneConnectionRuntime private constructor(context: Context) {
     @Synchronized private fun connect() {
         val current = identity ?: return
         if (!foreground || primary != null || current.text("state") !in setOf("pending", "enrolled") || transport == null) return
+        val qualification = endpoint?.qualification(current.text("deploymentId"), current.text("runnerId")) ?: return
+        if (qualification["browser"] != JsonPrimitive(true) || qualification["sharedControl"] != JsonPrimitive(true)) return
         val attempt = ++generation
         connection = "connecting"; issue = null
         worker.execute {
@@ -463,9 +465,10 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         })
     }
     private fun send(socket: WebSocket, message: JsonObject) { Wire.requireThat(socket.send(message.toString()), "stream-gone") }
-    private fun request(url: String, body: JsonObject?, authorization: String?, maxBytes: Int): JsonObject {
+    private fun request(url: String, body: JsonObject?, authorization: String?, maxBytes: Int, apiVersion: Int? = null): JsonObject {
         val request = Request.Builder().url(url).header("Accept", "application/json").apply {
             if (authorization != null) header("Authorization", authorization)
+            if (apiVersion != null) header("x-opensteer-api-version", apiVersion.toString())
             if (body != null) post(body.toString().toRequestBody("application/json".toMediaType()))
         }.build()
         return http.newCall(request).execute().use { response ->

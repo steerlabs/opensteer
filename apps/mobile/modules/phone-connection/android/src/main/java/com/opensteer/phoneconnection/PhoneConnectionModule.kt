@@ -33,7 +33,7 @@ class PhoneConnectionModule : Module() {
           admitted {
             val value = input.objectValue()
             finish(promise, runtime().enrollFromHost(value.text("origin", max = 8192), value.text("authorization", max = 16384),
-                value.text("deploymentId"), value.text("name", max = 120))) { it.native() }
+                value.text("deploymentId"), value.text("name", max = 120), value.number("apiVersion", min = 1, max = Int.MAX_VALUE.toLong()).toInt())) { it.native() }
           }
         }
         AsyncFunction("discardPendingEnrollment") { admitted { runtime().discardPendingEnrollment().native() } }
@@ -72,7 +72,7 @@ class PhoneConnectionModule : Module() {
         AsyncFunction("sendRelay") { input: Map<String, Any?> ->
           admitted {
             val value = input.objectValue()
-            runtime().browser().send(value.number("epoch", max = Int.MAX_VALUE.toLong()).toInt(), value.obj("message"))
+            runtime().browser().send(value.number("epoch", max = Int.MAX_VALUE.toLong()).toInt(), Wire.parse(value.text("message", max = 16 * 1024 * 1024), 16 * 1024 * 1024))
           }
         }
         AsyncFunction("closeChannel") { input: Map<String, Any?> ->

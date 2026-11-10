@@ -254,11 +254,23 @@ sheets without keyboard handling.
 Android's everyday app lends only its browser, not the screen or integrations of the separate
 Agent Phone app. Its phone enrollment grant still includes `browser, integrations`; advertising
 only browser does not broaden that grant. Enrollment tokens are minted and redeemed natively.
+Settings adds it as “This phone” through the same enrollment flow as iPhone. The shared phone
+manager joins its native connection and WebView pool; viewing another Deployment does not retarget
+the enrolled identity. Native registration and pending erasure finish before identity preparation,
+and the connection advertises only after the WebView's qualification completes.
+Debug builds and providers that keep web debugging reachable can still offer the browser, pictures,
+basic input and staged files when those checks pass. They omit agent CDP rather than disabling the
+whole browser. A release build alone does not prove that debugging can be disabled.
 To support Android 24 and later, a Keystore AES-GCM key seals the native Ed25519 seed in
 no-backup storage; this is not a hardware-backed, non-exportable Ed25519 key.
 Removing the phone or signing out fences admission before erasure. A durable denial marker keeps
 its enrollment unusable until all that Deployment's profiles are physically deleted, including
 loaded Android profiles that require a process restart. Sign-out does not wait for that restart.
+“Pending restart” is not completed erasure: the native startup gate deletes tombstoned stores before
+loading any page. Android Guest uses an app-private throwaway disk profile, never a reusable or
+RAM-only store. Ending it clears cookies and web storage, but service workers and caches can remain
+until that startup deletion. The person's system file picker may survive backgrounding for its
+original page; agent-staged choosers cannot.
 
 ## This iPhone's apps
 
