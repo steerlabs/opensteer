@@ -327,13 +327,14 @@ vi.mock("react-native-reanimated", () => {
     LayoutAnimationConfig: (props: Children) => <>{props.children}</>,
     LinearTransition: transition,
     useAnimatedStyle: () => ({}),
+    useEvent: () => () => undefined,
     useReducedMotion: () => true,
     useSharedValue: <T,>(value: T) => ({ value }),
     withRepeat: <T,>(value: T) => value,
     withSpring: <T,>(value: T) => value,
     withTiming: <T,>(value: T) => value,
     cancelAnimation: () => undefined,
-    Easing: { inOut: () => () => 0, quad: () => 0 },
+    Easing: { cubic: () => 0, inOut: () => () => 0, out: () => () => 0, quad: () => 0 },
   };
 });
 vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
