@@ -31,6 +31,7 @@ vi.mock("react-native", () => ({
     },
   },
   AppState: { addEventListener: () => ({ remove: () => undefined }), currentState: "active" },
+  KeyboardAvoidingView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Platform: { OS: "ios" },
   useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
   Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,

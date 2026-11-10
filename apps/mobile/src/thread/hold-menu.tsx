@@ -1,6 +1,6 @@
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import * as Haptics from "expo-haptics";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   LinkHoldContext,
@@ -30,6 +30,9 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
   const links = useConversationLinks();
   const menu = useRef<MenuComponentRef>(null);
   const [held, setHeld] = useState<{ readonly url: string | null } | null>(null);
+  // Android selects the word under a held link in selectable words, and keeps its bar after
+  // the link's menu closes; drawn again, the words drop that selection.
+  const [linkHolds, setLinkHolds] = useState(0);
   useEffect(() => {
     if (held) menu.current?.show();
   }, [held]);
@@ -40,6 +43,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
         if (links === null || links.menu(url).length === 0) return;
         void Haptics.selectionAsync();
         setHeld({ url });
+        setLinkHolds((count) => count + 1);
       },
     }),
     [links],
@@ -60,7 +64,7 @@ export function HoldMenu(props: HoldMenuProps): ReactNode {
       style={({ pressed }) => [props.style, pressed && props.actions.length > 0 && styles.pressed]}
     >
       <LinkHoldContext.Provider value={links ? linkHold : null}>
-        {props.children}
+        <Fragment key={linkHolds}>{props.children}</Fragment>
       </LinkHoldContext.Provider>
       {held ? (
         <MenuView
