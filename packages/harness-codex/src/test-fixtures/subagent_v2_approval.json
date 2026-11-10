@@ -182,9 +182,7 @@
       "item": {
         "type": "reasoning",
         "id": "rs_03696b8961937e5c016ab6d989e28087d0ba611ea28e22e961",
-        "summary": [
-          "**Waiting for agent**"
-        ],
+        "summary": ["**Waiting for agent**"],
         "content": []
       },
       "threadId": "$root",
@@ -237,9 +235,7 @@
       "item": {
         "type": "reasoning",
         "id": "rs_0ea6a125bc4e7661016ab6d98afc1c87d08fca86b24dc3e360",
-        "summary": [
-          "**Preparing fixture creation**"
-        ],
+        "summary": ["**Preparing fixture creation**"],
         "content": []
       },
       "threadId": "01a0da41-bc86-72e1-a30c-e59a4079f55a",

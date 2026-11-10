@@ -241,9 +241,7 @@
       "item": {
         "id": "continued-thought",
         "type": "reasoning",
-        "content": [
-          "Check the answer."
-        ],
+        "content": ["Check the answer."],
         "summary": []
       }
     }

@@ -140,9 +140,7 @@
       "item": {
         "type": "reasoning",
         "id": "rs_08ebdfd40cabefd2016ab5c274f8b887d08dceb98b3b249e2b",
-        "summary": [
-          "**Waiting for child**"
-        ],
+        "summary": ["**Waiting for child**"],
         "content": []
       },
       "threadId": "$root",

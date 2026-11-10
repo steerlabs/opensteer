@@ -214,9 +214,7 @@
       "item": {
         "type": "reasoning",
         "id": "rs_0ba1362cab9dfd00016ab6f17719f487d08420405d4a6fdd4b",
-        "summary": [
-          "**Waiting for input**"
-        ],
+        "summary": ["**Waiting for input**"],
         "content": []
       },
       "threadId": "$root",
