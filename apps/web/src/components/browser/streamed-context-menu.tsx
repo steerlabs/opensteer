@@ -8,6 +8,7 @@ export function StreamedContextMenu({
   editable,
   selection,
   canCut = true,
+  basicInput = false,
   linkUrl,
   onAction,
   onDismiss,
@@ -17,6 +18,7 @@ export function StreamedContextMenu({
   readonly editable: boolean;
   readonly selection: boolean;
   readonly canCut?: boolean;
+  readonly basicInput?: boolean;
   readonly linkUrl?: string | undefined;
   readonly onAction: (action: StreamedMenuAction) => void;
   readonly onDismiss: () => void;
@@ -31,7 +33,9 @@ export function StreamedContextMenu({
     return () => document.removeEventListener("pointerdown", dismiss);
   }, [onDismiss]);
   const items: readonly { label: string; action: StreamedMenuAction; disabled?: boolean }[] = [
-    { label: "Cut", action: "cut", disabled: !canCut || !editable || !selection },
+    ...(basicInput
+      ? []
+      : [{ label: "Cut", action: "cut" as const, disabled: !canCut || !editable || !selection }]),
     { label: "Copy", action: "copy", disabled: !selection },
     { label: "Paste", action: "paste", disabled: !editable },
     { label: "Select All", action: "select-all" },

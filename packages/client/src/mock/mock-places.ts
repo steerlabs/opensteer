@@ -46,6 +46,7 @@ import { HostClientRequestError } from "../host/client.js";
 import { PlaceActivityStore } from "../host/place-activity.js";
 import { placeList } from "../host/places.js";
 import { mockBrowserPageImage } from "./mock-browser-frames.js";
+import { MockBrowserInput } from "./mock-browser-input.js";
 
 /** The person's iPhone in the mock world: a device that holds browser profiles. */
 export const mockIphoneRunnerId = "rnr_55555555-5555-4555-8555-555555555555";
@@ -77,6 +78,7 @@ function decodedPageImage(title: string): Uint8Array<ArrayBuffer> {
 }
 const sessionId = (index: number) =>
   `bsn_00000000-0000-4000-8000-${String(800 + index).padStart(12, "0")}`;
+const sessionIdForBasicInput = sessionId(11);
 /**
  * `busy` is the decisive world of the approved design: 21 tabs over two
  * computers, two Work browsers and two separate Guest browsers. `stress`
@@ -306,17 +308,16 @@ export function seedMockPlaces(
       placement: { kind: "runner", runnerId: "rnr_88888888-8888-4888-8888-888888888888" },
     };
   }
+  add(11, "workspace", [
+    { title: "Running shoes – Allbirds", site: "https://www.allbirds.com", occupants: [] },
+    ...(busy ? [{ title: "Cart – Target", site: "https://www.target.com", occupants: [] }] : []),
+  ]);
+  sessions[sessions.length - 1] = {
+    ...sessions[sessions.length - 1]!,
+    placement: { kind: "runner", runnerId: mockIphoneRunnerId },
+    profileId: "bpr_00000000-0000-4000-8000-000000000003",
+  };
   if (busy) {
-    // Tabs on the person's iPhone, and one on a Mac that is asleep, which waits for it.
-    add(11, "workspace", [
-      { title: "Running shoes – Allbirds", site: "https://www.allbirds.com", occupants: [] },
-      { title: "Cart – Target", site: "https://www.target.com", occupants: [] },
-    ]);
-    sessions[sessions.length - 1] = {
-      ...sessions[sessions.length - 1]!,
-      placement: { kind: "runner", runnerId: mockIphoneRunnerId },
-      profileId: "bpr_00000000-0000-4000-8000-000000000003",
-    };
     add(12, "workspace", [
       { title: "Lisbon itinerary – TripIt", site: "https://www.tripit.com", occupants: [] },
     ]);
@@ -585,6 +586,7 @@ export interface MockPlaceScript {
 
 /** All animation derives from elapsed injected-clock time and stable fixture IDs. */
 export class MockPlaceWorld {
+  readonly input = new MockBrowserInput((sessionId, command) => this.command(sessionId, command));
   readonly #history = new Map<string, BrowserHistory>();
   readonly #historyChanged: (profileId: string) => void;
   readonly #entered: (runId: string, threadId: string, data: EventData<"place.entered">) => void;
@@ -883,6 +885,7 @@ export class MockPlaceWorld {
     };
   };
   retain(sessionId: string, surfaceId: string): () => void {
+    if (sessionId === sessionIdForBasicInput) this.input.retain(sessionId, surfaceId);
     const key = this.#key(sessionId, surfaceId);
     const watch = this.#watches.get(key) ?? { holds: 0, state: emptyWatch, awaiting: null };
     watch.holds++;
@@ -917,6 +920,13 @@ export class MockPlaceWorld {
       )
         return;
       throw new Error("The browser is unavailable.");
+    }
+    if (
+      sessionId === sessionIdForBasicInput &&
+      (command.type.startsWith("input.") || command.type.startsWith("clipboard."))
+    ) {
+      this.input.command(sessionId, command);
+      return;
     }
     if (command.type === "surface.close") {
       void this.close(sessionId, command.surfaceId, session.tabCatalog, false);
@@ -1672,6 +1682,7 @@ export class MockPlaceWorld {
       const capture = this.#crops.get(key);
       const picture = ++this.#pictures;
       watch.state = {
+        ...(sessionId === sessionIdForBasicInput ? { input: "basic" as const } : {}),
         status: "live",
         error: null,
         frame: {
@@ -1842,6 +1853,7 @@ export class MockPlaceWorld {
     this.#frames();
   }
   dispose(): void {
+    this.input.dispose();
     if (this.#timer !== null) clearInterval(this.#timer);
     for (const load of this.#loads.values()) clearTimeout(load);
     this.#loads.clear();
