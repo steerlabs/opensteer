@@ -676,6 +676,24 @@ integration("knowledge storage", () => {
     expect(await context.count()).toBe(5);
   });
 
+  it("bounds a whole result to 1 MB inside PostgreSQL, before the rows reach the Host", async () => {
+    const context = await fixture();
+    const near = await select(
+      context,
+      "select repeat('x', 340000) as a from generate_series(1, 3)",
+    );
+    expect(rowsOf(near).map((row) => (row[0] as string).length)).toEqual([340000, 340000, 340000]);
+    expect(near).toMatchObject({ columns: [{ name: "a", postgresType: "text" }] });
+    for (const statement of [
+      "select repeat('x', 200000) as a from generate_series(1, 201)",
+      "select 1 as q, repeat('x', 400000) as a from generate_series(1, 3)",
+    ])
+      await expect(select(context, statement), statement).rejects.toMatchObject({
+        code: "resource_exhausted",
+        reason: "knowledge-result-too-large",
+      });
+  });
+
   it("bounds a result row to 512 KB and a fact value to 64 KB inside PostgreSQL", async () => {
     const context = await fixture();
     expect(rowsOf(await select(context, "select length(repeat('x', 524000))"))).toEqual([[524000]]);

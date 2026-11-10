@@ -106,6 +106,8 @@ export type KnowledgeResult =
 
 const rowLimit = 200;
 const rowBytes = 524_288;
+/** Above the manager's 512 KB encoded result, so this bound only keeps the Host from receiving far more. */
+const resultBytes = 1_048_576;
 
 /** Seeds one open topic for a Personal owner, once, on a knowledge base that has none. */
 export async function ensureKnowledgeGeneralTopic(
@@ -222,13 +224,15 @@ async function run(
   if (statement.kind === "select") {
     const result = await query(
       client,
-      `select q.* from (\n${statement.text}\n) as q
+      `select q.*, case when sum(octet_length((q.*)::text)) over (rows unbounded preceding)
+         > ${resultBytes} then knowledge.result_too_large() end
+       from (\n${statement.text}\n) as q
        where octet_length((q.*)::text) <= ${rowBytes} or knowledge.result_row_too_large()
        limit ${rowLimit + 1}`,
       parameters,
     );
     await client.query("rollback");
-    return { kind: "select", ...(await rows(client, result, names)) };
+    return { kind: "select", ...(await rows(client, result, names, 1)) };
   }
   const hash = createHash("sha256")
     .update(JSON.stringify([statement.text, parameters, statement.onlyIfUnchanged]))
@@ -313,8 +317,11 @@ async function rows(
   client: PoolClient,
   result: QueryArrayResult<unknown[]>,
   names: Map<number, string>,
+  /** Columns the store appended after the statement's own. */
+  appended = 0,
 ): Promise<KnowledgeRows> {
-  const unknown = [...new Set(result.fields.map((field: FieldDef) => field.dataTypeID))].filter(
+  const fields = result.fields.slice(0, result.fields.length - appended);
+  const unknown = [...new Set(fields.map((field: FieldDef) => field.dataTypeID))].filter(
     (oid) => !names.has(oid),
   );
   if (unknown.length) {
@@ -325,11 +332,13 @@ async function rows(
     for (const { oid, name } of found) names.set(oid, name);
   }
   return {
-    columns: result.fields.map((field) => ({
+    columns: fields.map((field) => ({
       name: field.name,
       postgresType: names.get(field.dataTypeID) ?? "unknown",
     })),
-    rows: result.rows.slice(0, rowLimit) as KnowledgeJson[][],
+    rows: result.rows
+      .slice(0, rowLimit)
+      .map((row) => row.slice(0, fields.length)) as KnowledgeJson[][],
     truncated: result.rows.length > rowLimit,
   };
 }
@@ -427,6 +436,12 @@ function knowledgeError(error: unknown, kind: KnowledgeStatement["kind"]): Opens
         "conflict",
         "knowledge-operation-key-reused",
         "This operation key was already used for a different write.",
+      );
+    case "KB009":
+      return refuse(
+        "resource_exhausted",
+        "knowledge-result-too-large",
+        "The result is over 512 KB.",
       );
     case "KB007":
       return refuse(

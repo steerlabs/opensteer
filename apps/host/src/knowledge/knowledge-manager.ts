@@ -300,6 +300,7 @@ function failure(error: unknown): OpensteerError {
     case "knowledge-resource-limit":
     case "knowledge-row-too-large":
     case "knowledge-message-too-large":
+    case "knowledge-result-too-large":
       return again(
         "Filter by topic and key, select fewer or smaller columns, or aggregate, and call sql again.",
       );

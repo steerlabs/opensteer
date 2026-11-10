@@ -90,7 +90,7 @@ export async function ensureKnowledgeExecutor(
       grant select on knowledge.fact_log, knowledge.facts, knowledge.fact_history to ${name};
       grant insert (topic, thing, property, value, seen_fact_id) on knowledge.facts to ${name};
       grant execute on function knowledge.begin_operation(text), knowledge.complete_operation(),
-        knowledge.result_row_too_large() to ${name};`,
+        knowledge.result_row_too_large(), knowledge.result_too_large() to ${name};`,
     )
     .execute(database);
   const { rows } = await sql<{ count: string }>`
@@ -325,6 +325,12 @@ export const knowledgeMigration: Migration = {
           raise exception using errcode = 'KB007', message = 'A result row is over 512 KB.';
         end $fn$;
 
+        create function knowledge.result_too_large() returns boolean
+        language plpgsql volatile set search_path = pg_catalog, pg_temp as $fn$
+        begin
+          raise exception using errcode = 'KB009', message = 'A result is over 1 MB.';
+        end $fn$;
+
         alter table knowledge.topics owner to ${knowledgeOwnerRole};
         alter table knowledge.operations owner to ${knowledgeOwnerRole};
         alter table knowledge.fact_log owner to ${knowledgeOwnerRole};
@@ -335,9 +341,10 @@ export const knowledgeMigration: Migration = {
         alter function knowledge.append_fact() owner to ${knowledgeOwnerRole};
         alter function knowledge.complete_operation() owner to ${knowledgeOwnerRole};
         alter function knowledge.result_row_too_large() owner to ${knowledgeOwnerRole};
+        alter function knowledge.result_too_large() owner to ${knowledgeOwnerRole};
         revoke all on function knowledge.require_read_committed(), knowledge.begin_operation(text),
-          knowledge.append_fact(), knowledge.complete_operation(), knowledge.result_row_too_large()
-          from public;`,
+          knowledge.append_fact(), knowledge.complete_operation(), knowledge.result_row_too_large(),
+          knowledge.result_too_large() from public;`,
       )
       .execute(database);
     await ensureKnowledgeExecutor(database);
