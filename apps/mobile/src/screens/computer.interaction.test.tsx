@@ -91,6 +91,7 @@ vi.mock("../iphone-apps/context.js", () => ({
   useIphoneApps: () => null,
   useIphoneAppsState: () => ({ snapshot: { enrollment: null } }),
 }));
+vi.mock("../computers/device-browser-row.js", () => ({ DeviceBrowserRow: () => null }));
 vi.mock("../iphone-apps/iphone-apps-block.js", () => ({ IphoneAppsBlock: () => null }));
 vi.mock("../iphone-apps/remote-iphone-apps-block.js", () => ({
   RemoteIphoneAppsBlock: () => null,
