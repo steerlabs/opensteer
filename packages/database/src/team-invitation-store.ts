@@ -5,6 +5,7 @@ import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
 import {
+  lockTeamHuman,
   requireTeamAuthority,
   requireTeamHuman,
   teamRefusal,
@@ -90,6 +91,7 @@ export async function mutateTeamInvitation(
     if (prior) {
       if (prior.metadata.fingerprint !== fingerprint)
         teamRefusal("idempotency-conflict", "conflict");
+      await lockTeamHuman(transaction, actor, true);
       return { accessRevision, result: resultSchema.parse(prior.metadata.result) };
     }
     if (accessRevision !== command.expectedRevision)
@@ -167,6 +169,7 @@ export async function mutateTeamInvitation(
         metadata: jsonValue({ fingerprint, result }),
       })
       .execute();
+    await lockTeamHuman(transaction, actor, true);
     return { accessRevision, result };
   });
 }

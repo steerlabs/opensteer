@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { createId, OpensteerError, type AuthenticatedHuman } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { requireTeamHuman, teamRefusal } from "./team-administration-authority.js";
+import { lockTeamHuman, requireTeamHuman, teamRefusal } from "./team-administration-authority.js";
 import { RequestLockSetChanged, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import type { AccessWorkRevocationPort, AccessWorkRevocationRoot } from "./access-store.js";
 import { nonTerminalRunStatuses } from "@opensteer/core";
@@ -89,20 +89,7 @@ export async function revokeTeamConnection(
     async (transaction) => {
       const plan = plans.get(transaction)!;
       if (plan.roots.length) await work?.cancel(transaction, plan.roots);
-      await transaction
-        .selectFrom("users")
-        .select("id")
-        .where("id", "=", actor.userId)
-        .forShare()
-        .executeTakeFirstOrThrow();
-      if (actor.sessionId)
-        await transaction
-          .selectFrom("authSessions")
-          .select("id")
-          .where("id", "=", actor.sessionId)
-          .forShare()
-          .executeTakeFirst();
-      await requireTeamHuman(transaction, actor);
+      await lockTeamHuman(transaction, actor);
       if (plan.replay) return { accessRevision: plan.revision, revoked: true as const };
       await transaction
         .updateTable("agentConnections")

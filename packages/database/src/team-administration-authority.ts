@@ -1,6 +1,6 @@
 import { OpensteerError, type AuthenticatedHuman } from "@opensteer/core";
 import type { TeamReason } from "@opensteer/protocol";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { readDeploymentAuthority } from "./deployment-execution-authority.js";
 import type { DatabaseSchema } from "./schema.js";
 import { safeGeneration } from "./store-primitives.js";
@@ -64,4 +64,25 @@ export async function requireTeamHuman(
   }
   if (administrator && user.instanceRole !== "administrator") teamRefusal("team-admin-required");
   return user;
+}
+
+export async function lockTeamHuman(
+  transaction: Transaction<DatabaseSchema>,
+  actor: AuthenticatedHuman,
+  administrator = false,
+) {
+  await transaction
+    .selectFrom("users")
+    .select("id")
+    .where("id", "=", actor.userId)
+    .forShare()
+    .executeTakeFirst();
+  if (actor.sessionId)
+    await transaction
+      .selectFrom("authSessions")
+      .select("id")
+      .where("id", "=", actor.sessionId)
+      .forShare()
+      .executeTakeFirst();
+  return requireTeamHuman(transaction, actor, administrator);
 }
