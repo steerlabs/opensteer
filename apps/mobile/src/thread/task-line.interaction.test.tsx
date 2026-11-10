@@ -20,6 +20,8 @@ vi.mock("react-native", () => {
     Platform: { OS: "ios", Version: "26" },
     AccessibilityInfo: { announceForAccessibility: vi.fn() },
     Alert: { alert: vi.fn() },
+    FlatList: () => null,
+    useWindowDimensions: () => ({ fontScale: 1, height: 844, scale: 3, width: 390 }),
     Pressable: (
       props: Children & {
         readonly accessibilityLabel?: string;
@@ -35,10 +37,23 @@ vi.mock("react-native", () => {
         {props.children}
       </button>
     ),
-    StyleSheet: { create: <T,>(styles: T) => styles },
+    StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
     View: ({ children }: Children) => <div>{children}</div>,
   };
 });
+vi.mock("react-native-reanimated", () => ({
+  default: { View: ({ children }: { readonly children?: ReactNode }) => <div>{children}</div> },
+  LayoutAnimationConfig: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
+}));
+vi.mock("react-native-safe-area-context", () => ({
+  useSafeAreaFrame: () => ({ height: 844, width: 390, x: 0, y: 0 }),
+}));
+vi.mock("../ui/motion.js", () => ({
+  appear: undefined,
+  enter: undefined,
+  exit: undefined,
+  move: undefined,
+}));
 vi.mock("@expo/ui/community/menu", () => ({
   MenuView: (props: {
     readonly children?: ReactNode;
@@ -63,9 +78,17 @@ vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
   StatusDot: (props: {
     readonly live?: boolean;
+    readonly ring?: boolean;
     readonly size?: number;
     readonly tone: string;
-  }) => <i data-dot={props.tone} data-live={props.live === true} data-size={props.size} />,
+  }) => (
+    <i
+      data-dot={props.tone}
+      data-live={props.live === true}
+      data-ring={props.ring === true}
+      data-size={props.size}
+    />
+  ),
 }));
 vi.mock("../ui/action-review.js", () => ({
   ActionReviewSheet: (props: {
@@ -86,7 +109,7 @@ vi.mock("../client/mobile-client.js", () => ({
   operationDetail: (_error: unknown, fallback: string) => fallback,
 }));
 
-const { AssignmentLines, TaskScopeContext } = await import("./task-line.js");
+const { TaskCards, TaskScopeContext } = await import("./task-line.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -150,8 +173,16 @@ async function linesFor(
   }));
   await act(async () =>
     root.render(
-      <TaskScopeContext value={{ dockedRequestId: null, hostClient: client, onViewWork }}>
-        <AssignmentLines entries={entries} />
+      <TaskScopeContext
+        value={{
+          focused: true,
+          hostClient: client,
+          onOpenSubagent: () => undefined,
+          onViewWork,
+          threadId: made[0]!.parentThreadId,
+        }}
+      >
+        <TaskCards entries={entries} live />
       </TaskScopeContext>,
     ),
   );
@@ -198,37 +229,44 @@ function asking(client: MockHostClient, task: AssignmentSummary, title: string):
   });
 }
 
-const line = (node: HTMLElement) => node.querySelector<HTMLButtonElement>("button[aria-label]")!;
+const card = (node: HTMLElement) =>
+  node.querySelector<HTMLButtonElement>('button[aria-label$="Open task"]')!;
 
-// Ways a task's line can fail on a phone: two states read alike, a working
-// task stops breathing (or a settled one keeps on), the question it waits on
-// is not said where the task is, or a tap no longer opens the task.
-describe("a task's line on a phone", () => {
+// Ways a task's card can fail on a phone: two states read alike or by colour
+// alone, a working task stops breathing (or a settled one keeps on), the
+// question it waits on is not said on it, or a tap no longer opens the task.
+describe("a task's card on a phone", () => {
   it.each([
-    ["working", { currentRunStatus: "running" as const }, "Working", "ember", true],
-    ["done", settled("completed"), "Finished", "muted", false],
-    ["failed", settled("failed"), "Couldn’t finish", "red", false],
-    ["stopped", settled("cancelled"), "Stopped", "muted", false],
-  ] as const)("reads a %s task as its word and dot alone", async (_, change, word, dot, live) => {
-    const { node, onViewWork, tasks } = await linesFor((seeded) => [variant(seeded, 0, change)]);
-    const open = line(node);
-    expect(open.textContent).toBe(`${tasks[0]!.workerThread.title}${word}`);
-    const shown = open.querySelector<HTMLElement>("[data-dot]")!;
-    expect([shown.dataset.dot, shown.dataset.live, shown.dataset.size]).toEqual([
-      dot,
-      String(live),
-      "6",
-    ]);
-    await act(async () => open.click());
-    expect(onViewWork).toHaveBeenCalledExactlyOnceWith(tasks[0]!.workerThread.id);
-  });
+    ["working", { currentRunStatus: "running" as const }, "Working", "ember", true, false],
+    ["done", settled("completed"), "Finished", "muted", false, false],
+    ["failed", settled("failed"), "Couldn’t finish", "red", false, false],
+    ["stopped", settled("cancelled"), "Stopped", "muted", false, true],
+  ] as const)(
+    "reads a %s task by its word and dot, and opens it",
+    async (_, change, word, dot, live, ring) => {
+      const { node, onViewWork, tasks } = await linesFor((seeded) => [variant(seeded, 0, change)]);
+      const open = card(node);
+      expect(open.getAttribute("aria-label")).toBe(
+        `${tasks[0]!.workerThread.title}, task, ${word}. Open task`,
+      );
+      expect(open.textContent).toContain(`Task${word}`);
+      const shown = open.querySelector<HTMLElement>("[data-dot]")!;
+      expect([shown.dataset.dot, shown.dataset.live, shown.dataset.ring]).toEqual([
+        dot,
+        String(live),
+        String(ring),
+      ]);
+      await act(async () => open.click());
+      expect(onViewWork).toHaveBeenCalledExactlyOnceWith(tasks[0]!.workerThread.id);
+    },
+  );
 
-  it("keeps the line for a decision and asks its question under the title", async () => {
+  it("says the question it waits on as its one line", async () => {
     const { node } = await linesFor(
       (seeded) => [variant(seeded, 0, { currentRunStatus: "waiting" })],
       (client, [task]) => [asking(client, task!, "Book the 7:00 PM table at Adda?")],
     );
-    const open = line(node);
+    const open = card(node);
     expect(open.querySelector<HTMLElement>("[data-dot]")?.dataset.dot).toBe("amber");
     expect(open.textContent).toContain("Needs you");
     expect(open.textContent?.endsWith("Book the 7:00 PM table at Adda?")).toBe(true);
@@ -250,13 +288,11 @@ describe("a task's line on a phone", () => {
   });
 });
 
-// Ways a group can fail on a phone: tasks one turn handed out stack into a
-// list again, it hides that one needs the reader, or it does not open.
-// Ways it can fail: tasks one turn handed out hide behind a count the reader
-// has to open, one that needs the reader is not said on its own line, or a
-// task that ends is announced twice or not at all.
+// Ways a group can fail on a phone: its count disagrees with its cards, a
+// live group hides its members behind a tap, one that needs the reader is not
+// said, or a task that ends is announced twice or not at all.
 describe("tasks one turn handed out together, on a phone", () => {
-  it("read as a line each, every one saying where it stands and opening its task", async () => {
+  it("share a group that counts them and stands open while any is live", async () => {
     const { node } = await linesFor(
       (seeded) => [
         variant(seeded, 0, settled("completed")),
@@ -265,16 +301,31 @@ describe("tasks one turn handed out together, on a phone", () => {
       ],
       (client, [, task]) => [asking(client, task!, "Which quarter should I use?")],
     );
-    expect(node.querySelector("button[aria-expanded]")).toBeNull();
+    const head = node.querySelector("button[aria-expanded]")!;
+    expect(head.getAttribute("aria-label")).toBe("3 tasks · 1 needs you · 1 working · 1 finished");
+    expect(head.getAttribute("aria-expanded")).toBe("true");
     expect(node.querySelectorAll('[data-menu-action="open"]')).toHaveLength(3);
-    const labels = [...node.querySelectorAll("button[aria-label]")].map((line) =>
-      line.getAttribute("aria-label"),
-    );
-    expect(labels).toEqual([
-      expect.stringMatching(/, Finished/u),
-      expect.stringMatching(/, Needs you · Which quarter should I use\?$/u),
-      expect.stringMatching(/, Working$/u),
+    expect(
+      [...node.querySelectorAll('button[aria-label$="Open task"]')].map((line) =>
+        line.getAttribute("aria-label"),
+      ),
+    ).toEqual([
+      expect.stringMatching(/, task, Finished\. Open task$/u),
+      expect.stringMatching(/, task, Needs you\. Open task$/u),
+      expect.stringMatching(/, task, Working\. Open task$/u),
     ]);
+  });
+
+  it("start closed once all are settled, and open on a tap", async () => {
+    const { node } = await linesFor((seeded) => [
+      variant(seeded, 0, settled("completed")),
+      variant(seeded, 1, settled("failed")),
+    ]);
+    const head = node.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+    expect(head.getAttribute("aria-label")).toBe("2 tasks · 1 finished · 1 failed");
+    expect(node.querySelectorAll('button[aria-label$="Open task"]')).toHaveLength(0);
+    await act(async () => head.click());
+    expect(node.querySelectorAll('button[aria-label$="Open task"]')).toHaveLength(2);
   });
 
   it("says when one of them ends, once", async () => {

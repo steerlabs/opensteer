@@ -1,4 +1,5 @@
 import {
+  conversationSubagents,
   conversationSurfaces,
   conversationThreadIds,
   surfaceDestination,
@@ -75,6 +76,7 @@ describe("around a conversation", () => {
     });
     const worker = titled("Book a table for Friday");
     expect(glance(source, worker)).toEqual({
+      agents: null,
       family: null,
       from: { threadId: home, title: "Chat" },
       placeGlyph: null,
@@ -125,12 +127,51 @@ describe("around a conversation", () => {
   });
 
   it("pluralizes place and earlier-task counts without announcing zero sections", () => {
-    const empty = { places: 0, placesWorking: 0, placeGlyph: null, from: null, family: null };
+    const empty = {
+      agents: null,
+      places: 0,
+      placesWorking: 0,
+      placeGlyph: null,
+      from: null,
+      family: null,
+    };
     expect(aroundLabel(empty)).toBe("");
     expect(aroundLabel({ ...empty, places: 2, placesWorking: 1 })).toBe("2 places open, 1 working");
     const family = { marks: [], running: 0, needsYou: false, automations: 0, earlier: 1 };
     expect(aroundLabel({ ...empty, family })).toBe("1 earlier task");
     expect(aroundLabel({ ...empty, family: { ...family, earlier: 2 } })).toBe("2 earlier tasks");
+    expect(aroundLabel({ ...empty, agents: { live: 1, needsYou: 0, total: 3 } })).toBe(
+      "1 agent working",
+    );
+    expect(aroundLabel({ ...empty, agents: { live: 2, needsYou: 1, total: 3 } })).toBe(
+      "2 agents working, 1 needs you",
+    );
+  });
+
+  // Failure: the roster becomes unreachable once the dock's pill leaves, or the
+  // header counts a settled helper as live.
+  it("names a conversation's live subagents in the header, from the shared roster", () => {
+    const threadId = titled("Subagents everywhere");
+    const live = conversationSubagents(source, threadId).now.filter(
+      ({ origin }) => origin === "subagent",
+    );
+    expect(live.length).toBeGreaterThan(0);
+    expect(glance(source, threadId)?.agents).toMatchObject({
+      live: live.length,
+      needsYou: live.filter(({ tone }) => tone === "needs-you").length,
+    });
+    const settled = {
+      ...source,
+      transcripts: {
+        ...source.transcripts,
+        [threadId]: (source.transcripts[threadId] ?? []).map((entry) =>
+          entry.kind === "node" && entry.status === "running"
+            ? { ...entry, completedAt: entry.createdAt, status: "completed" as const }
+            : entry,
+        ),
+      },
+    };
+    expect(glance(settled, threadId)?.agents ?? null).toBeNull();
   });
 
   // Failure: a streamed token publishes a snapshot that reads as a new glance.
@@ -191,32 +232,47 @@ describe("the sheet's sections", () => {
     ...patch,
   });
   const empty: TaskFamily = { automations: [], earlier: [], running: [] };
+  const roster = conversationSubagents(source, titled("Subagents everywhere"));
+  const nobody = { earlier: [], now: [] };
+  const asking = { ...nobody, now: [{ ...roster.now[0]!, tone: "needs-you" as const }] };
+  const working = { ...nobody, now: [{ ...roster.now[0]!, tone: "working" as const }] };
 
   // Failure: a tile stands for a section with nothing in it, or tiles change order.
   it("offers only the sections with something in them, in the button's order", () => {
-    expect(aroundSections([], empty)).toEqual([]);
-    expect(aroundSections([idle], { ...family, earlier: [task({})] })).toEqual([
+    expect(aroundSections([], empty, nobody)).toEqual([]);
+    expect(aroundSections([idle], { ...family, earlier: [task({})] }, roster)).toEqual([
       "places",
       "tasks",
+      "agents",
       "earlier",
       "schedules",
     ]);
-    expect(aroundSections([], { ...empty, automations: family.automations })).toEqual([
+    expect(aroundSections([], { ...empty, automations: family.automations }, nobody)).toEqual([
       "schedules",
     ]);
+    expect(aroundSections([], empty, { ...nobody, earlier: roster.earlier })).toEqual(["agents"]);
   });
 
   // Failure: the sheet opens on Places while a task waits on the reader, or on
   // an empty section.
   it("opens on what needs the reader, then on where an agent works, then on the first section", () => {
     const waiting = { ...empty, running: [task({}), task({ needsYou: true })] };
-    expect(openingSection([place], waiting)).toBe("tasks");
-    expect(openingSection([idle, place], { ...waiting, running: [task({})] })).toBe("places");
-    expect(openingSection([idle], { ...empty, running: [task({})] })).toBe("places");
+    expect(openingSection([place], waiting, asking)).toBe("tasks");
+    expect(openingSection([place], { ...waiting, running: [task({})] }, asking)).toBe("agents");
+    expect(openingSection([idle, place], { ...waiting, running: [task({})] }, working)).toBe(
+      "places",
+    );
+    expect(openingSection([idle], { ...empty, running: [task({})] }, nobody)).toBe("places");
     expect(
-      openingSection([], { ...empty, earlier: [task({})], automations: family.automations }),
+      openingSection(
+        [],
+        { ...empty, earlier: [task({})], automations: family.automations },
+        nobody,
+      ),
     ).toBe("earlier");
-    expect(openingSection([], empty)).toBeNull();
+    expect(openingSection([], empty, nobody)).toBeNull();
+    // The pill asks for Agents by name, over anything else waiting.
+    expect(openingSection([place], waiting, roster, "agents")).toBe("agents");
   });
 
   // Failure: the chosen section jumps as data changes, or a section that

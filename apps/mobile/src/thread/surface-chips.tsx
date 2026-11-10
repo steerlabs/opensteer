@@ -88,7 +88,7 @@ function IncludedPages(props: {
  * The pages its Run used and apps and phones its steps used, under the reply.
  * Three show; the rest fold behind "+N", which opens them in place.
  */
-type SurfaceTurn = Pick<Turn, "runId" | "subagentWork" | "work">;
+type SurfaceTurn = Pick<Turn, "runId" | "work">;
 
 export function ReplySurfaces(props: {
   readonly turn: SurfaceTurn;
