@@ -311,6 +311,21 @@ describe("an Android phone in the list", () => {
 });
 
 describe("computerStatus", () => {
+  it.each(["needs-update", "updating", "update-pending"] as const)(
+    "names the installed app for an Android device that is %s",
+    (status) => {
+      const android = { form: "phone", platform: "android" } as const;
+      expect(computerStatus(machine({ device: android, name: "Pixel 7", status })).label).toBe(
+        "Update Agent Phone on Pixel 7.",
+      );
+      expect(
+        computerStatus(
+          machine({ device: { ...android, app: "opensteer" }, name: "Pixel 9", status }),
+        ).label,
+      ).toBe("Update Opensteer on Pixel 9.");
+    },
+  );
+
   it("counts down a pending computer's code, and dates an absent one", () => {
     const now = new Date("2026-09-13T12:00:00.000Z");
 

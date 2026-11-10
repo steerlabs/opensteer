@@ -8,6 +8,7 @@ import { unwrapRpcResult } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { SettingsSignOut } from "../primitives.js";
 import { revokeCurrentSession } from "./devices.js";
+import { createId } from "@opensteer/core";
 
 describe("device disconnection", () => {
   it("revokes the current authenticated Host session", async () => {
@@ -71,6 +72,20 @@ vi.mock("../../app-shell.js", () => ({ useShell: () => shell.value }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("opens inline device enrollment without leaving the device list", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
+  const enrollment = await client.dispatch({
+    type: "runner.enrollment.createPhone",
+    profile: "iphone",
+    idempotencyKey: "android-browser-only",
+    name: "Pixel 9",
+  });
+  if (enrollment.type !== "runner.enrollment.createPhone") throw new Error("Expected enrollment");
+  client.mockConnectIphone({
+    enrollmentId: enrollment.enrollmentId,
+    runnerId: createId("runner"),
+    name: "Pixel 9",
+    platform: "android",
+    modules: ["browser"],
+  });
   const rpc = client.rpc;
   const read = vi.fn(rpc["devices.overview.get"]);
   Object.defineProperty(client, "rpc", {
@@ -103,6 +118,11 @@ it("opens inline device enrollment without leaving the device list", async () =>
       root.render(createElement(MemoryRouter, null, createElement(AgentDevicesSection))),
     );
     expect(read).toHaveBeenCalledTimes(1);
+    const pixel = [...node.querySelectorAll(".settings-device-list > li")].find((row) =>
+      row.textContent?.includes("Pixel 9"),
+    );
+    expect(pixel?.textContent).toContain("Browser");
+    expect(pixel?.textContent).not.toContain("Agent Phone");
     const add = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Add device",
     )!;

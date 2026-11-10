@@ -104,6 +104,30 @@ describe("machineRemovalPrompt", () => {
 });
 
 describe("ComputersPage", () => {
+  it("shows an Android Opensteer phone's browser without Agent Phone setup", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const phone = machineFixture({
+      allowedModules: ["browser", "integrations"],
+      device: { app: "opensteer", form: "phone", platform: "android" },
+      id: "rnr_99999999-9999-4999-8999-999999999999",
+      modules: { browser: { checkedAt: null, detail: null, readiness: "ready" } },
+      name: "Pixel 9",
+      status: "needs-update",
+    });
+    const snapshot = serverSnapshot(client);
+    const page = await interactivePage({
+      client,
+      path: `/settings/devices/computers/${phone.id}`,
+      snapshot: { ...snapshot, machines: [...snapshot.machines, phone] },
+    });
+    const text = page.container.textContent ?? "";
+    expect(text).toContain("Update Opensteer on Pixel 9.");
+    expect(text).toContain("Opensteer browsers");
+    expect(text).not.toContain("Agent Phone");
+    expect(text).not.toContain("USB");
+    expect(text).not.toContain("phone’s screen");
+  });
+
   it("offers the Mac in front of the reader by name, and adds it", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const performLocalExecutionAction = vi.fn(async () => undefined);

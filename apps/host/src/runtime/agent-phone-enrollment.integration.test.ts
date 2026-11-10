@@ -17,7 +17,7 @@ import {
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { phoneUpdateRelease } from "../agent-phone/update-release.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
@@ -80,6 +80,78 @@ integration.sequential("An Android phone joining a Deployment", () => {
   });
   afterAll(async () => {
     await isolated?.drop();
+  }, 120_000);
+
+  it("retains an Opensteer phone's signed identity through enrollment, reconnect and update refusal", async () => {
+    host = await startMachineAccessHost(isolated!.url);
+    const active = host;
+    const runnerId = createId("runner");
+    const device = { app: "opensteer", form: "phone", platform: "android" } as const;
+    const descriptor = RunnerDescriptorSchema.parse({
+      ...phoneDescriptor(runnerId),
+      device,
+      modules: { browser: { runtimeId: runnerId, wireVersion: 1 } },
+    });
+    const machine = async () => {
+      const result = await testRpcData(
+        active.origin,
+        "machines.list",
+        {},
+        {
+          headers: active.ownerHeaders,
+        },
+      );
+      return result.machines.find(({ id }) => id === runnerId);
+    };
+    const minted = await mintPhone(active, "opensteer-android");
+    const enrolled = await presentPhone(
+      active,
+      descriptor,
+      { token: minted.token },
+      undefined,
+      async () => {
+        expect(await machine()).toMatchObject({ device, status: "online", computerUse: null });
+      },
+    );
+    expect(enrolled.welcome).not.toBeNull();
+    await vi.waitFor(
+      async () => expect(await machine()).toMatchObject({ device, status: "offline" }),
+      {
+        timeout: 5_000,
+      },
+    );
+    expect(
+      await active.store.database
+        .selectFrom("runners")
+        .select("device")
+        .where("id", "=", runnerId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ device });
+    const olderDescriptor = { ...descriptor, device: { form: "phone", platform: "android" } };
+    const reconnected = await presentPhone(active, olderDescriptor, {
+      privateKey: enrolled.privateKey,
+    });
+    expect(reconnected.welcome).not.toBeNull();
+    await vi.waitFor(
+      async () => expect(await machine()).toMatchObject({ device, status: "offline" }),
+      {
+        timeout: 5_000,
+      },
+    );
+    const identity = await active.store.runnerForAuthentication(runnerId);
+    expect(
+      await active.store.recordRunnerUpdateRequired({
+        runnerId,
+        connectionGeneration: identity!.connectionGeneration,
+        reason: "runner-outdated",
+      }),
+    ).toBe(true);
+    expect(await machine()).toMatchObject({
+      device,
+      status: "needs-update",
+      detail: "Update Opensteer on Pixel 8.",
+      computerUse: null,
+    });
   }, 120_000);
 
   it("admits whole signed v2 advertisements and refuses mixed formats without consuming enrollment", async () => {

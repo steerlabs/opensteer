@@ -57,7 +57,7 @@ import type { ComputerAppSetupSummary as ComputerAppSetupRequest } from "@openst
 import { computerIcon, type PlaceArt } from "./computers/device-art.js";
 import {
   computerAppRows,
-  isAndroidPhone,
+  isAgentPhone,
   isIphone,
   ownsComputerApps,
   phoneUseIntroduction,
@@ -554,7 +554,7 @@ function ComputerRow({
   readonly role: ReturnType<typeof computerRole>;
   readonly uses: readonly ComputerUse[];
 }) {
-  const status = isAndroidPhone(machine) ? phoneStatus(machine) : computerStatus(machine);
+  const status = isAgentPhone(machine) ? phoneStatus(machine) : computerStatus(machine);
   return (
     <Link
       className={`computer-row${status.tone === "offline" ? " computer-row--away" : ""}`}
@@ -769,7 +769,7 @@ export function computerDetailLead(input: {
       ? `Waiting for ${machine.name} to connect. Open Opensteer on it to finish adding it.`
       : `Waiting for ${machine.name} to connect. Finish setting it up on that computer.`;
   }
-  if (isAndroidPhone(machine)) return phoneUseIntroduction;
+  if (isAgentPhone(machine)) return phoneUseIntroduction;
   if (isIphone(machine) && machine.ownership !== "other") {
     return `Agents can use only the apps turned on for ${machine.name}, and only while Opensteer is open on it.`;
   }
@@ -843,7 +843,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   const approval = useComputerAppApproval(hostClient);
   // A phone lends only its screen: agents never work on it, it has no files or
   // commands to share, and no Mac permissions to give.
-  const phone = isAndroidPhone(machine);
+  const phone = isAgentPhone(machine);
   // An iPhone lends only its own apps, which its apps section covers.
   const iphone = isIphone(machine);
   const homeName =

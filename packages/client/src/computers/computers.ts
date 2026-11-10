@@ -7,7 +7,7 @@ import { formatRelativeTime } from "../host/thread-list-model.js";
 import { computerAppRows } from "../integrations/computer-apps.js";
 import {
   computerUseView,
-  isAndroidPhone,
+  isAgentPhone,
   isIphone,
   phoneUseView,
 } from "../integrations/computer-use.js";
@@ -307,7 +307,7 @@ export function serviceLabel(machine: MachineSummary): string {
 
 /**
  * One thing agents can use on a computer, as its row and its page draw it.
- * `screen` is an Android phone's whole screen, the one thing a phone lends.
+ * `screen` is an Agent Phone's whole screen.
  */
 export type ComputerUse =
   | { readonly definitionId: string; readonly kind: "app"; readonly name: string }
@@ -417,7 +417,7 @@ export function computerStatus(machine: MachineSummary, now = new Date()): Compu
     return {
       label:
         machine.detail ??
-        `Update ${isAndroidPhone(machine) ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
+        `Update ${isAgentPhone(machine) ? "Agent Phone" : "Opensteer"} on ${machine.name}.`,
       tone: "waiting",
     };
   if (machine.status === "online") return { label: "Online", tone: "online" };

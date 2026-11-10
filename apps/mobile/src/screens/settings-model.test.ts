@@ -210,6 +210,27 @@ describe("computers in settings", () => {
  * - the footer never says this iPhone can be added.
  */
 describe("this iPhone in settings", () => {
+  it("names Opensteer when another Android phone needs an update", () => {
+    const rows = computersSettingsRows({
+      ...server,
+      here: null,
+      machines: [
+        {
+          ...iphoneMachine,
+          device: { app: "opensteer", form: "phone", platform: "android" },
+          name: "Pixel 9",
+          status: "needs-update",
+          modules: {},
+        },
+      ],
+    });
+    expect(rows.at(-1)).toMatchObject({
+      name: "Pixel 9",
+      symbol: "smartphone",
+      detail: "Nothing shared yet · Update Opensteer on Pixel 9.",
+    });
+  });
+
   const selected = "dep_0192f4a1-1111-4000-8000-000000000001";
   const other = "dep_0192f4a1-4444-4000-8000-000000000004";
   const runnerId = "rnr_77777777-7777-4777-8777-777777777777";

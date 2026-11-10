@@ -17,7 +17,7 @@ import {
   passwordsSettingsLabel,
   passwordsSettingsSubtitle,
 } from "@opensteer/client/host";
-import { computerUseMachineLine, isAndroidPhone } from "@opensteer/client/integrations";
+import { computerUseMachineLine, isAgentPhone } from "@opensteer/client/integrations";
 import { otherDeviceLine, type OtherDeviceLine } from "@opensteer/client/settings";
 import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
 import type { HarnessInstallation, MachineSummary, OtherDevice } from "@opensteer/protocol";
@@ -300,17 +300,17 @@ function computerUseNow(machine: MachineSummary, hostConnected: boolean): string
   if (!report || machine.status !== "online") return null;
   return report.sessions.length > 0 ||
     report.state === "permission-required" ||
-    (report.state === "unavailable" && isAndroidPhone(machine))
+    (report.state === "unavailable" && isAgentPhone(machine))
     ? computerUseMachineLine(machine, hostConnected)
     : null;
 }
 
 /**
- * A computer is added from itself and an Android phone from a computer it is
+ * A computer is added from itself and an Agent Phone from a computer it is
  * plugged into — never from this app — so the section says where.
  */
 export const computersSettingsFooter =
-  "To add a computer, open Opensteer on it and choose Add. To add an Android phone, plug it into a computer and choose Add a phone.";
+  "To add a computer, open Opensteer on it and choose Add. To add an Agent Phone, plug it into a computer and choose Add a phone.";
 
 export const browserProfilesSettingsRow = {
   detail: "Separate browsers with their own sign-ins",
