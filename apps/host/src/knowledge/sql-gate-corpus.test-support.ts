@@ -471,8 +471,8 @@ export const prototypeCorpus: readonly GateCase[] = [
   ["TRUNCATE fact_history", "statement", "prototype refused"],
   [
     "SELECT format('%s','x')",
-    "admit",
-    "prototype refused; the review's everyday list admits format",
+    "function",
+    "format's width specifiers build huge strings from a short call; concat and || cover it",
   ],
   [
     "SELECT * FROM jsonb_to_record('{}'::jsonb) AS parsed(secret text)",
@@ -678,6 +678,9 @@ export const grammarDecisions: readonly GateCase[] = [
 ];
 
 export const otherDecisions: readonly GateCase[] = [
+  ["SELECT lpad(thing, 10) FROM facts", "function", "lpad pads to any width in one call"],
+  ["SELECT rpad(thing, 10, '.') FROM facts", "function", "rpad pads to any width in one call"],
+  ["SELECT format('%1000000000s', '')", "function", "format with a width"],
   [
     "SELECT * FROM facts WHERE thing IN (SELECT jsonb_array_elements_text($1::jsonb))",
     "admit",
