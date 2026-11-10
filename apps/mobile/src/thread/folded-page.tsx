@@ -20,6 +20,10 @@ import {
 
 /** Small enough to sit in the bar, so it asks for a small picture. */
 const size = { height: 24, width: 38 } as const;
+const inset = space[4];
+
+/** What the folded page takes in the bar. */
+export const foldedPageWidth = size.width + 2 * inset;
 
 /**
  * A conversation's Run page, folded into the bar beside Around: a small live
@@ -93,7 +97,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     minHeight: touchTarget,
-    paddingHorizontal: space[4],
+    paddingHorizontal: inset,
   },
   pressed: { opacity: 0.6 },
   picture: { ...size, borderRadius: pictureRadius, overflow: "hidden" },
