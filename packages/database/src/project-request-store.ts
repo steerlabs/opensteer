@@ -101,6 +101,7 @@ export async function eligibleProjectRequestManagers(
   database: Kysely<DatabaseSchema>,
   workspaceId: WorkspaceId,
 ): Promise<readonly UserId[]> {
+  await assertProjectAuthority(database);
   const members = await database
     .selectFrom("workspaceMemberships")
     .innerJoin("users", "users.id", "workspaceMemberships.userId")
