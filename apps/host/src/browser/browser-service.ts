@@ -5316,10 +5316,21 @@ class HostedBrowserBroker {
     return new Promise<BrowserActionResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pendingActions.delete(message.requestId);
+        const observation = [
+          "session.tabs",
+          "page.info",
+          "page.wait",
+          "dom.snapshot",
+          "dom.query",
+          "dom.wait",
+          "page.capture",
+        ].includes(message.request.action.type);
         reject(
           browserActionFailure(
-            "outcome-unknown",
-            "The browser action did not answer before its deadline. Do not retry input.",
+            observation ? "timeout" : "outcome-unknown",
+            observation
+              ? "The browser observation did not answer before its deadline."
+              : "The browser action did not answer before its deadline. Do not retry input.",
           ),
         );
       }, message.request.timeoutMs);

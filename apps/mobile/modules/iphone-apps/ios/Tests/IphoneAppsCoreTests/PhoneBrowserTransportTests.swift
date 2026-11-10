@@ -183,7 +183,10 @@ final class PhoneBrowserTransportTests: XCTestCase {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
     let ledger = try PhoneBrowserReplayLedger(directory: directory)
-    let connection = PhoneBrowserConnection(now: { now })
+    let clock = BrowserTestClock(now)
+    let queue = DispatchQueue(label: "test.browser-pixels")
+    var detached: [String] = []
+    let connection = PhoneBrowserConnection(now: { clock.now }, queue: queue, onDetach: { _, attachment in detached.append(attachment) })
     try connection.configure(epoch: 0, runtimeId: "phone", ledger: ledger)
     var welcome = fenceFixture["welcome"] as! [String: Any]
     welcome["browserWireVersion"] = 1
@@ -213,34 +216,95 @@ final class PhoneBrowserTransportTests: XCTestCase {
     XCTAssertEqual(try ledger.snapshot().entries.count, 0)
     let permit = try connection.commitAttach(epoch: 0, attachHandle: handle, claimsDigest: verified["claimsDigest"] as! String, replayTransition: proposed)
     XCTAssertEqual(try connection.permit(permit, epoch: 0).claimsDigest, verified["claimsDigest"] as! String)
+    let claims = verified["claims"] as! [String: Any]
+    let sessionId = claims["sessionId"] as! String
+    let actor = UUID().uuidString
+    let attachment = UUID().uuidString
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor))
+    let agentAttach: [String: Any] = ["type": "agent.attach", "sessionId": sessionId, "attachmentId": attachment, "actorToken": actor, "backend": "actions"]
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": agentAttach]) { _, next in next })
+    XCTAssertNoThrow(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor))
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: "another-session", attachmentId: attachment, actorToken: actor))
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: UUID().uuidString))
+    XCTAssertThrowsError(try connection.checkAction(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor, requestId: "unobserved"))
+    let actionRequest: [String: Any] = ["type": "agent.action", "attachmentId": attachment,
+      "actorToken": actor, "requestId": "observed", "request": ["sessionId": sessionId, "surfaceId": "tab", "documentId": "document", "timeoutMs": 1, "action": ["type": "page.capture"]]]
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability, "message": actionRequest]) { _, next in next })
+    XCTAssertNoThrow(try connection.checkAction(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor, requestId: "observed"))
+    XCTAssertThrowsError(try connection.permit("action:observed", epoch: 0))
+    let opening: [String: Any] = ["type": "agent.action", "attachmentId": attachment,
+      "actorToken": actor, "requestId": "opening", "request": ["sessionId": sessionId, "timeoutMs": 30000, "action": ["type": "surface.open"]]]
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability, "message": opening]) { _, next in next })
+    XCTAssertEqual(try connection.permit("action:opening", epoch: 0).claimsDigest, verified["claimsDigest"] as! String)
+    let observedRequest = actionRequest["request"] as! [String: Any]
+    XCTAssertNoThrow(try connection.checkAction(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor, requestId: "observed", request: observedRequest))
+    var changedRequest = observedRequest
+    changedRequest["surfaceId"] = "another-tab"
+    XCTAssertThrowsError(try connection.checkAction(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor, requestId: "observed", request: changedRequest))
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": ["type": "agent.detach", "sessionId": sessionId, "attachmentId": attachment]]) { _, next in next })
+    XCTAssertThrowsError(try connection.checkAgent(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor))
+    XCTAssertThrowsError(try connection.checkAction(epoch: 0, channelId: channelId, sessionId: sessionId, attachmentId: attachment, actorToken: actor, requestId: "observed"))
+    XCTAssertTrue(detached.contains(attachment))
+    XCTAssertThrowsError(try connection.permit("action:opening", epoch: 0))
     XCTAssertThrowsError(try connection.commitAttach(epoch: 0, attachHandle: handle, claimsDigest: verified["claimsDigest"] as! String, replayTransition: proposed))
     let writer = try connection.frameWriter(epoch: 0, channelId: channelId)
     var header = try vector("frames")["header"] as! [String: Any]
     let watchToken = UUID().uuidString
     header["watchToken"] = watchToken
-    let sent = expectation(description: "Native frame delivered without JavaScript")
+    let hostToken = expectation(description: "Host-only Watch tokens cannot be sent by the phone runtime")
+    writer.writeFrame(header: header, pixels: Data([0xff])) { delivered in XCTAssertFalse(delivered); hostToken.fulfill() }
+    await fulfillment(of: [hostToken], timeout: 2)
+    header.removeValue(forKey: "watchToken")
+    let sent = expectation(description: "Native frame delivered without JavaScript or a Host Watch token")
     writer.writeFrame(header: header, pixels: Data([0xff, 0xd8, 0xff, 0xd9])) { delivered in XCTAssertTrue(delivered); sent.fulfill() }
     await fulfillment(of: [sent], timeout: 2)
-    let denied = expectation(description: "Unacknowledged frame credit refuses another frame")
+    let duplicate = expectation(description: "The same native frame cannot be replayed")
+    writer.writeFrame(header: header, pixels: Data([0xff])) { delivered in XCTAssertFalse(delivered); duplicate.fulfill() }
+    await fulfillment(of: [duplicate], timeout: 2)
     header["frameId"] = 8
-    writer.writeFrame(header: header, pixels: Data([0xff])) { delivered in XCTAssertFalse(delivered); denied.fulfill() }
-    await fulfillment(of: [denied], timeout: 2)
-    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
-      "message": ["type": "stream.ack", "token": UUID().uuidString]]) { _, next in next })
-    let wrongAck = expectation(description: "Wrong Watch token cannot restore frame credit")
-    writer.writeFrame(header: header, pixels: Data([0xff])) { delivered in XCTAssertFalse(delivered); wrongAck.fulfill() }
-    await fulfillment(of: [wrongAck], timeout: 2)
-    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
-      "message": ["type": "stream.ack", "token": watchToken]]) { _, next in next })
-    let nextFrame = expectation(description: "Exact Watch acknowledgement restores credit")
-    header["watchToken"] = UUID().uuidString
+    let nextFrame = expectation(description: "Socket completion, not a viewer Watch acknowledgement, admits the next native frame")
     writer.writeFrame(header: header, pixels: Data([0xff])) { delivered in XCTAssertTrue(delivered); nextFrame.fulfill() }
     await fulfillment(of: [nextFrame], timeout: 2)
     XCTAssertEqual(sends.binarySequences(), [1, 2])
     let result = expectation(description: "One-shot pixels are encoded only on the native socket writer")
-    writer.writePixelResult(message: ["type": "agent.result", "result": ["type": "page.capture"]],
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": agentAttach]) { _, next in next })
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": actionRequest]) { _, next in next })
+    writer.writePixelResult(message: ["type": "agent.result", "requestId": "observed", "attachmentId": attachment, "result": ["type": "page.capture"]],
       dataPath: ["result", "data"], pixels: Data([1, 2, 3])) { delivered in XCTAssertTrue(delivered); result.fulfill() }
     await fulfillment(of: [result], timeout: 2)
+    let stalePicture = expectation(description: "A document or geometry fence refuses captured pixels before socket submission")
+    writer.writePixelResult(message: ["type": "agent.result", "requestId": "observed", "attachmentId": attachment, "result": ["type": "page.capture"]],
+      dataPath: ["result", "data"], pixels: Data([1]), withValidity: { _ in false }) { delivered in
+      XCTAssertFalse(delivered); stalePicture.fulfill()
+    }
+    await fulfillment(of: [stalePicture], timeout: 2)
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": ["type": "agent.detach", "sessionId": sessionId, "attachmentId": attachment]]) { _, next in next })
+    let detachedPicture = expectation(description: "Detached agents cannot deliver a completed screenshot")
+    writer.writePixelResult(message: ["type": "agent.result", "requestId": "observed", "attachmentId": attachment, "result": ["type": "page.capture"]],
+      dataPath: ["result", "data"], pixels: Data([1])) { delivered in
+      XCTAssertFalse(delivered); detachedPicture.fulfill()
+    }
+    await fulfillment(of: [detachedPicture], timeout: 2)
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": agentAttach]) { _, next in next })
+    var expiring = actionRequest
+    expiring["requestId"] = "expiring"
+    try connection.receive(fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
+      "message": expiring]) { _, next in next })
+    let expiredPicture = expectation(description: "A screenshot queued past its request deadline is never submitted")
+    queue.suspend()
+    writer.writePixelResult(message: ["type": "agent.result", "requestId": "expiring", "attachmentId": attachment, "result": ["type": "page.capture"]],
+      dataPath: ["result", "data"], pixels: Data([1])) { delivered in
+      XCTAssertFalse(delivered); expiredPicture.fulfill()
+    }
+    clock.advance(2)
+    queue.resume()
+    await fulfillment(of: [expiredPicture], timeout: 2)
     let command = fence.merging(["type": "browser.client-message", "channelId": channelId, "capability": capability,
       "message": ["type": "cdp.command", "requestId": "open", "command": ["method": "Opensteer.openTab", "parameters": ["operationAuthority": token, "idempotencyKey": "open"]]]]) { _, next in next }
     try connection.receive(command)
@@ -335,4 +399,12 @@ private final class BrowserSentMessages: @unchecked Sendable {
       return (try? PhoneBrowserFrames.decodeRelay(bytes).header["sequence"]) as? Int
     }
   }
+}
+
+private final class BrowserTestClock: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value: Int64
+  init(_ value: Int64) { self.value = value }
+  var now: Int64 { lock.lock(); defer { lock.unlock() }; return value }
+  func advance(_ milliseconds: Int64) { lock.lock(); value += milliseconds; lock.unlock() }
 }

@@ -2,6 +2,19 @@ import XCTest
 @testable import PhoneBrowserCore
 
 final class StorageAndCaptureTests: XCTestCase {
+  func testReenrollmentDoesNotAdvertiseTheRemovedRunnersErasureRecords() throws {
+    var manifest = ProfileManifest()
+    let removed = ProfileBinding(deploymentId: "deployment", profileId: "old", runnerId: "removed",
+      storageInstanceId: manifest.storageInstanceId, bindingId: UUID(), engine: "wkwebview")
+    var current = removed
+    current.profileId = "new"; current.runnerId = "current"; current.bindingId = UUID()
+    _ = try manifest.ensure(removed, initialized: false, identifiers: [])
+    try manifest.beginErasure(removed, deletionId: UUID())
+    _ = try manifest.ensure(current, initialized: false, identifiers: [])
+    manifest = try JSONDecoder().decode(ProfileManifest.self, from: JSONEncoder().encode(manifest))
+    XCTAssertEqual(manifest.inventory(deploymentId: "deployment", runnerId: "current").map(\.binding), [current])
+    XCTAssertTrue(manifest.entries.contains { $0.binding == removed && $0.deletionId != nil })
+  }
   func testManifestSurvivesRestartAndNeverRecreatesDeletedOrMissingStorage() throws {
     let binding = ProfileBinding(deploymentId: "deployment", profileId: "profile", runnerId: "runner",
       storageInstanceId: UUID(), bindingId: UUID(), engine: "wkwebview")

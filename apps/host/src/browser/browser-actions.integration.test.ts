@@ -166,6 +166,26 @@ async function setup(surfaceState = true) {
 }
 
 integration("session-scoped browser agent backends", () => {
+  it("reports an observation deadline as timeout and never treats uncertain input as retryable", async () => {
+    const fixture = await setup();
+    const socket = await fixture.actions();
+    expect(
+      await fixture.act(
+        socket,
+        {
+          type: "dom.wait",
+          locator: { by: "css", value: "#missing" },
+          state: "visible",
+          timeout: 30,
+        },
+        { timeoutMs: 30 },
+      ),
+    ).toMatchObject({ error: { code: "timeout" } });
+    expect(
+      await fixture.act(socket, { type: "text.insert", text: "once" }, { timeoutMs: 30 }),
+    ).toMatchObject({ error: { code: "outcome-unknown" } });
+  });
+
   it("activates a sleeping surface in place, projects its state with notices, and preserves agent resume", async () => {
     const f = await setup();
     const tabId = BrowserSurfaceIdSchema.parse("page-integration");

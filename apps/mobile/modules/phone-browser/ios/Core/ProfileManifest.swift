@@ -24,6 +24,10 @@ public struct ProfileManifest: Codable, Sendable {
   public private(set) var entries: [ProfileEntry] = []
   public init() {}
 
+  public func inventory(deploymentId: String, runnerId: String) -> [ProfileEntry] {
+    entries.filter { $0.binding.deploymentId == deploymentId && $0.binding.runnerId == runnerId }
+  }
+
   public mutating func ensure(_ binding: ProfileBinding, initialized: Bool, identifiers: Set<UUID>) throws -> UUID {
     guard binding.version == 1, binding.engine == "wkwebview", !binding.deploymentId.isEmpty,
       !binding.profileId.isEmpty, !binding.runnerId.isEmpty else { throw BrowserRefusal.bindingMismatch }

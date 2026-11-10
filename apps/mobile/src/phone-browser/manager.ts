@@ -133,6 +133,7 @@ export class PhoneBrowserManager {
   readonly #opening = new Set<string>();
   readonly #clipboard = new Map<string, { tab: PhoneTab; documentId: string }>();
   readonly #retiredConnections = new Set<string>();
+  #inventoryConnection: string | null = null;
   readonly #unsubscribe: () => void;
   #qualification: NativeQualification | null = null;
   #capability: BrowserCapabilityLease | null = null;
@@ -183,6 +184,26 @@ export class PhoneBrowserManager {
 
   getTabPresentation = (surfaceId: string): PhoneTabPresentation | null =>
     this.#presentations.get(surfaceId) ?? null;
+
+  localPresentation(deploymentId: string, surfaceId: string): PhonePresentationAdmission | null {
+    const tab = this.#tabs.get(surfaceId);
+    if (
+      deploymentId !== this.#deploymentId ||
+      !tab ||
+      tab.state === "closed" ||
+      !this.#qualification
+    )
+      return null;
+    const identity = this.#sessions.get(tab.sessionId)?.claims.identity;
+    if (!identity) return null;
+    return {
+      sessionId: tab.sessionId,
+      surfaceId,
+      runtimeId: this.#qualification.runtimeId,
+      bindingId: identity.kind === "profile-local" ? identity.binding.bindingId : null,
+      targetControl: 1,
+    };
+  }
 
   subscribeTab = (surfaceId: string, listener: () => void): (() => void) => {
     let listeners = this.#listeners.get(surfaceId);
@@ -248,8 +269,9 @@ export class PhoneBrowserManager {
     await this.#bounded(epoch, () => turn);
   }
 
-  async hideTab(surfaceId: string): Promise<void> {
+  async hideTab(surfaceId: string, hostId?: string): Promise<void> {
     await this.#coveredTurn(async () => {
+      if (hostId && this.#selected?.hostId !== hostId) return;
       const tab = this.#tabs.get(surfaceId);
       if (!tab || this.#visible !== surfaceId) return;
       this.#selected = null;
@@ -397,6 +419,10 @@ export class PhoneBrowserManager {
     }
     const tab = session.tabs.get(event.tabId);
     if (!tab || tab.state === "closed" || event.generation !== tab.metadata.generation) return;
+    if (event.type === "closed") {
+      await this.#closeTab(session, tab, true);
+      return;
+    }
     if (
       event.type === "tabChanged" ||
       event.type === "documentChanged" ||
@@ -764,6 +790,11 @@ export class PhoneBrowserManager {
         ),
       Math.max(0, deadline - this.#clock.now()),
     );
+    for (const id of claims.dormantSurfaceIds ?? []) {
+      const held = this.#tabs.get(id);
+      if (held && held.state !== "closed" && held.sessionId !== claims.sessionId)
+        await this.#createTab(session, id, held.metadata.url, claims.viewport);
+    }
     this.#sessions.set(claims.sessionId, session);
     return session;
   }
@@ -1069,6 +1100,7 @@ export class PhoneBrowserManager {
   }
 
   async #action(channel: PhoneChannel, message: AgentAction): Promise<void> {
+    const deadline = this.#clock.now() + message.request.timeoutMs;
     try {
       const attachment = this.#attachments.get(message.attachmentId);
       if (
@@ -1099,12 +1131,24 @@ export class PhoneBrowserManager {
       if (action.type === "session.tabs")
         result = { type: "session.tabs", tabs: [...session.tabs.values()].map(actionBinding) };
       else if (action.type === "surface.open") {
-        const opened = await this.#createTab(
-          session,
-          `bsf_${this.#uuid()}`,
-          action.url ?? "about:blank",
-          action.viewport,
-        );
+        let opened!: PhoneTab;
+        await this.#coveredTurn(async () => {
+          const owner = { channel, attachmentId: message.attachmentId };
+          await this.#vacateCovered(owner, channel);
+          opened = await this.#createTab(
+            session,
+            `bsf_${this.#uuid()}`,
+            action.url ?? "about:blank",
+            action.viewport,
+            undefined,
+            `action:${message.requestId}`,
+          );
+          this.#assertEpoch(channel.epoch);
+          if (this.#attachments.get(message.attachmentId)?.channel !== channel)
+            throw new PhoneBrowserError("forbidden", "The agent connection ended.");
+          this.#covered = { tabId: opened.id, owner };
+          await this.#makeLive(opened, "live-covered");
+        });
         result = { type: "surface.open", binding: actionBinding(opened) };
       } else {
         const tab = this.#requireTab(session, request.surfaceId);
@@ -1162,7 +1206,6 @@ export class PhoneBrowserManager {
               action.type === "page.wait" ||
               action.type === "page.capture";
             const captured = this.#ref(tab);
-            const deadline = this.#clock.now() + request.timeoutMs;
             const nativeResult = await this.#tabOperation(
               tab,
               () =>
@@ -1202,13 +1245,36 @@ export class PhoneBrowserManager {
         result,
       });
     } catch (error) {
+      const code = error instanceof PhoneBrowserError ? error.code : "forbidden";
+      const tab = message.request.surfaceId ? this.#tabs.get(message.request.surfaceId) : undefined;
+      if (code === "dialog-open" && tab && !tab.dialog) {
+        let stop = () => {};
+        try {
+          await this.#bounded(
+            channel.epoch,
+            () =>
+              new Promise<void>((resolve) => {
+                stop = this.subscribeTab(tab.id, () => {
+                  if (tab.dialog || tab.state === "closed") resolve();
+                });
+                if (tab.dialog || tab.state === "closed") resolve();
+              }),
+            Math.max(1, deadline - this.#clock.now()),
+          );
+        } catch {
+        } finally {
+          stop();
+        }
+      }
+      const dialog = tab?.dialog;
       await this.#send(channel, {
         type: "agent.error",
         attachmentId: message.attachmentId,
         requestId: message.requestId,
         error: {
-          code: error instanceof PhoneBrowserError ? error.code : "forbidden",
+          code: code === "dialog-open" && !dialog ? "outcome-unknown" : code,
           message: phoneBrowserMessage(error),
+          ...(code === "dialog-open" && dialog ? { dialog } : {}),
         },
       });
     }
@@ -1320,12 +1386,31 @@ export class PhoneBrowserManager {
     url: string,
     viewport = { width: 390, height: 760 },
     navigationId?: string,
+    allocationPermit = session.allocationPermit,
   ): Promise<PhoneTab> {
     BrowserSurfaceIdSchema.parse(id);
     if (session.closing)
       throw new PhoneBrowserError("target-closed", "The browser session is closing.");
     if (url !== "about:blank") phoneNavigationUrl(url);
-    if (session.closed.has(id) || this.#tabs.has(id) || this.#opening.has(id))
+    const retained = this.#tabs.get(id);
+    const previous = retained ? this.#sessions.get(retained.sessionId) : undefined;
+    const restore =
+      retained &&
+      previous &&
+      !previous.channels.size &&
+      !isLive(retained) &&
+      previous !== session &&
+      JSON.stringify(
+        previous.claims.identity.kind === "profile-local"
+          ? previous.claims.identity.binding
+          : "fresh",
+      ) ===
+        JSON.stringify(
+          session.claims.identity.kind === "profile-local"
+            ? session.claims.identity.binding
+            : "fresh",
+        );
+    if (session.closed.has(id) || (retained && !restore) || this.#opening.has(id))
       throw new PhoneBrowserError("target-closed", "The surface ID was already used.");
     if (session.tabs.size >= 64)
       throw new PhoneBrowserError("too-large", "The session has too many tabs.");
@@ -1336,14 +1421,35 @@ export class PhoneBrowserManager {
         epoch,
         tabId: id,
         sessionId: session.claims.sessionId,
-        allocationPermit: session.allocationPermit,
+        allocationPermit,
         storeHandle: session.storeHandle,
         state: "retained",
+        ...(restore
+          ? {
+              restoreFrom: {
+                sessionId: retained.sessionId,
+                generation: retained.metadata.generation,
+              },
+            }
+          : {}),
         viewport,
         url,
         ...(navigationId ? { navigationId } : {}),
       }),
     ).finally(() => this.#opening.delete(id));
+    if (restore) {
+      previous.tabs.delete(id);
+      if (!previous.tabs.size) {
+        this.#sessions.delete(previous.claims.sessionId);
+        await this.#native.finishSessionFiles({ epoch, sessionId: previous.claims.sessionId });
+      }
+      const selected = this.#selected;
+      if (selected?.admission.surfaceId === id)
+        this.#selected = {
+          ...selected,
+          admission: { ...selected.admission, sessionId: session.claims.sessionId },
+        };
+    }
     if (session.closed.has(id) || session.closing) {
       session.closed.add(id);
       await this.#native.destroyTab({
@@ -1354,7 +1460,17 @@ export class PhoneBrowserManager {
       });
       throw new PhoneBrowserError("target-closed", "The tab closed while opening.");
     }
-    const tab = this.#newTab(session, id, metadata, null);
+    const tab = this.#newTab(
+      session,
+      id,
+      metadata,
+      null,
+      restore ? retained.lastDocumentId : undefined,
+    );
+    if (restore && retained.state === "discarded") {
+      tab.state = "discarded";
+      this.#publishTab(tab);
+    }
     await this.#trimRetained();
     return tab;
   }
@@ -1364,8 +1480,9 @@ export class PhoneBrowserManager {
     id: string,
     metadata: NativeTabMetadata,
     openerId: string | null,
+    lastDocumentId = metadata.documentId,
   ): PhoneTab {
-    if (!metadata.documentId)
+    if (!lastDocumentId)
       throw new PhoneBrowserError("stale-document", "A committed document is required.");
     const tab: PhoneTab = {
       id,
@@ -1373,6 +1490,7 @@ export class PhoneBrowserManager {
       order: session.revision,
       openerId,
       metadata,
+      lastDocumentId,
       state: "retained",
       dialog: null,
       lastUsed: ++this.#lru,
@@ -1437,31 +1555,7 @@ export class PhoneBrowserManager {
           this.#covered.owner = owner;
         return;
       }
-      const previous = this.#covered;
-      if (
-        previous?.owner &&
-        (!owner ||
-          previous.owner.channel !== owner.channel ||
-          previous.owner.attachmentId !== owner.attachmentId)
-      )
-        throw new PhoneBrowserError(
-          "target-suspended",
-          owner
-            ? "Another agent is using this phone's browser."
-            : "An agent is using this phone's browser.",
-        );
-      if (previous && !previous.owner && !owner && this.#hasReceivers(previous.tabId))
-        throw new PhoneBrowserError(
-          "target-suspended",
-          "Another device is using this phone's browser.",
-        );
-      if (previous) {
-        const held = this.#tabs.get(previous.tabId);
-        if (held) {
-          await this.#retain(held);
-          await this.#publish(this.#requireSession(held.sessionId));
-        }
-      }
+      await this.#vacateCovered(owner, channel);
       this.#assertEpoch(epoch);
       if (this.#channels.get(channel.id) !== channel)
         throw new PhoneBrowserError("forbidden", "The browser connection ended.");
@@ -1474,6 +1568,36 @@ export class PhoneBrowserManager {
         throw error;
       }
     });
+  }
+
+  async #vacateCovered(owner: CoveredOwner | null, channel: PhoneChannel): Promise<void> {
+    if (this.#channels.get(channel.id) !== channel)
+      throw new PhoneBrowserError("forbidden", "The browser connection ended.");
+    const previous = this.#covered;
+    if (
+      previous?.owner &&
+      (!owner ||
+        previous.owner.channel !== owner.channel ||
+        previous.owner.attachmentId !== owner.attachmentId)
+    )
+      throw new PhoneBrowserError(
+        "target-suspended",
+        owner
+          ? "Another agent is using this phone's browser."
+          : "An agent is using this phone's browser.",
+      );
+    if (previous && !previous.owner && !owner && this.#hasReceivers(previous.tabId))
+      throw new PhoneBrowserError(
+        "target-suspended",
+        "Another device is using this phone's browser.",
+      );
+    if (previous) {
+      const held = this.#tabs.get(previous.tabId);
+      if (held) {
+        await this.#retain(held);
+        await this.#publish(this.#requireSession(held.sessionId));
+      }
+    }
   }
 
   #releaseCovered(
@@ -1573,10 +1697,11 @@ export class PhoneBrowserManager {
     for (const tab of retained.slice(0, Math.max(0, retained.length - 4))) await this.#discard(tab);
   }
 
-  async #closeTab(session: PhoneSession, tab: PhoneTab): Promise<void> {
+  async #closeTab(session: PhoneSession, tab: PhoneTab, nativeClosed = false): Promise<void> {
     if (session.closed.has(tab.id)) return;
     session.closed.add(tab.id);
     session.tabs.delete(tab.id);
+    this.#tabs.delete(tab.id);
     session.revision++;
     tab.state = "closed";
     tab.dialog = null;
@@ -1585,7 +1710,7 @@ export class PhoneBrowserManager {
     if (session.activeId === tab.id) session.activeId = session.tabs.keys().next().value ?? null;
     if (this.#selected?.admission.surfaceId === tab.id) this.#selected = null;
     this.#publishTab(tab);
-    await this.#native.destroyTab(this.#ref(tab));
+    if (!nativeClosed) await this.#native.destroyTab(this.#ref(tab));
     await this.#publish(session);
   }
 
@@ -1660,6 +1785,7 @@ export class PhoneBrowserManager {
       tab.editingContextId = null;
     }
     tab.metadata = metadata;
+    if (metadata.documentId) tab.lastDocumentId = metadata.documentId;
     return true;
   }
 
@@ -1717,7 +1843,7 @@ export class PhoneBrowserManager {
       active: session.activeId === tab.id,
       title: tab.metadata.title,
       url: tab.metadata.url,
-      documentId: tab.metadata.documentId,
+      ...(tab.metadata.documentId ? { documentId: tab.metadata.documentId } : {}),
       geometryRevision: tab.metadata.geometryRevision,
       loading: tab.metadata.loading,
       navigationFailed: tab.metadata.navigationFailed,
@@ -1807,6 +1933,8 @@ export class PhoneBrowserManager {
 
   async #inventory(): Promise<void> {
     if (!this.#connection || !this.#qualification || !this.descriptor) return;
+    const connection = connectionKey(this.#connection.fence);
+    if (this.#inventoryConnection === connection) return;
     await this.#readProfiles(this.#epoch);
     await this.#sendRelay({
       ...this.#connection.fence,
@@ -1817,6 +1945,7 @@ export class PhoneBrowserManager {
       complete: true,
       profiles: [...this.#profiles.values()],
     });
+    this.#inventoryConnection = connection;
   }
 
   #assertBinding(binding: LocalProfileBinding): void {
@@ -2050,7 +2179,7 @@ function connectionKey(fence: RunnerAuxiliaryFrameFence): string {
 function actionBinding(tab: PhoneTab): z.infer<typeof BrowserActionBindingSchema> {
   return {
     surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
-    documentId: tab.metadata.documentId,
+    documentId: tab.metadata.documentId || tab.lastDocumentId,
     geometryRevision: tab.metadata.geometryRevision,
     state: isLive(tab) ? "live" : "suspended",
     title: tab.metadata.title,

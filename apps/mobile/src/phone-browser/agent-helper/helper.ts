@@ -212,6 +212,32 @@ const contains = (ancestor: Element, element: Element): boolean => {
 export function createAgentHelper(documentId: string) {
   const pending = new Map<string, (error?: PhoneHelperError) => void>();
   const operations = new Map<string, AbortController>();
+  const textPlans = new Map<string, { element: Element; text: string; clear: boolean }>();
+  let textPlanSequence = 0;
+  const activations = new Map<
+    string,
+    {
+      element: Element;
+      x: number;
+      y: number;
+      count: number;
+      kind: "file" | "click" | "tap";
+      rect: DOMRect;
+    }
+  >();
+  let activationSequence = 0;
+  const planActivation = (
+    element: Element,
+    x: number,
+    y: number,
+    count: number,
+    kind: "file" | "click" | "tap",
+  ) => {
+    activations.clear();
+    const planId = String(++activationSequence);
+    activations.set(planId, { element, x, y, count, kind, rect: element.getBoundingClientRect() });
+    return { kind: "script-activation" as const, planId };
+  };
   let disposed = false;
 
   const walk = (root: Document | ShadowRoot | Element, budget = { visited: 0 }): Element[] => {
@@ -767,7 +793,10 @@ export function createAgentHelper(documentId: string) {
       )
         fail("not-actionable", "Use check, selectOption or the native file chooser for this field");
       focus(element);
-      return { kind: "native-text" as const, clear: true, text: value };
+      textPlans.clear();
+      const planId = String(++textPlanSequence);
+      textPlans.set(planId, { element, text: value, clear: action.kind === "clear" });
+      return { kind: "native-text" as const, clear: true, text: value, planId };
     }
     if (["check", "uncheck", "setChecked"].includes(action.kind)) {
       if (!(element instanceof HTMLInputElement) || !["checkbox", "radio"].includes(element.type))
@@ -826,7 +855,7 @@ export function createAgentHelper(documentId: string) {
         values: Array.from(element.selectedOptions).map((option) => option.value),
       };
     }
-    return click(element, x, y, action.clickCount ?? 1);
+    return planActivation(element, x, y, action.clickCount ?? 1, "click");
   };
   const click = (element: Element, x: number, y: number, clickCount: number) => {
     let submitted = false;
@@ -868,7 +897,14 @@ export function createAgentHelper(documentId: string) {
       for (let count = 1; count <= clickCount; count++) {
         const pointer = dispatch("pointerdown", count, 1);
         const mouse = pointer && dispatch("mousedown", count, 1);
-        if (mouse && element instanceof HTMLElement) element.focus({ preventScroll: true });
+        if (
+          mouse &&
+          element instanceof HTMLElement &&
+          (element instanceof HTMLInputElement ||
+            element instanceof HTMLTextAreaElement ||
+            element.isContentEditable)
+        )
+          element.focus({ preventScroll: true });
         dispatch("pointerup", count, 0);
         if (pointer) dispatch("mouseup", count, 0);
         dispatch("click", count, 0);
@@ -906,8 +942,7 @@ export function createAgentHelper(documentId: string) {
       Math.abs(before.height - rect.height) > 0.5
     )
       fail("not-actionable", "The point's target moved or changed; inspect again");
-    click(element, action.x, action.y, action.count);
-    return { kind: "untrusted-tap" as const, trusted: false };
+    return planActivation(element, action.x, action.y, action.count, "tap");
   };
   const wait = (args: WaitArguments) => {
     if (pending.size >= 32 || pending.has(args.id))
@@ -980,14 +1015,29 @@ export function createAgentHelper(documentId: string) {
     const request = fields(input, ["documentId", "operationId", "name", "args"]);
     string(request.documentId, 1, 255);
     string(request.name, 1, 32);
-    oneOf(request.name, ["query", "snapshot", "act", "tap", "focus", "scroll", "wait", "cancel"]);
+    oneOf(request.name, [
+      "query",
+      "snapshot",
+      "act",
+      "tap",
+      "focus",
+      "scroll",
+      "wait",
+      "cancel",
+      "fileChoose",
+      "textResult",
+      "textFocus",
+      "commit",
+    ]);
     if (request.operationId !== undefined) string(request.operationId, 1, 255);
     if (disposed || request.documentId !== documentId)
       fail("stale-document", "The helper belongs to another document");
     const { name: functionName, args } = request;
     const controller = new AbortController();
     const operationId = request.operationId;
-    const mutating = functionName === "act" || functionName === "focus" || functionName === "tap";
+    const mutating = ["act", "focus", "tap", "fileChoose", "textFocus", "commit"].includes(
+      functionName,
+    );
     if (mutating) {
       if (!operationId)
         fail("unsupported-operation", "Async input requires a native operationId for cancellation");
@@ -997,7 +1047,34 @@ export function createAgentHelper(documentId: string) {
     }
     try {
       let result: unknown;
-      if (functionName === "cancel") {
+      if (functionName === "commit") {
+        const commit = fields(args, ["planId"]);
+        string(commit.planId, 1, 255);
+        const plan = activations.get(commit.planId);
+        activations.delete(commit.planId);
+        if (!plan || !plan.element.isConnected || !visible(plan.element) || !enabled(plan.element))
+          fail("not-actionable", "The prepared target changed");
+        const rect = plan.element.getBoundingClientRect();
+        const hit = hitAt(plan.x, plan.y);
+        if (
+          Math.abs(rect.x - plan.rect.x) > 0.5 ||
+          Math.abs(rect.y - plan.rect.y) > 0.5 ||
+          Math.abs(rect.width - plan.rect.width) > 0.5 ||
+          Math.abs(rect.height - plan.rect.height) > 0.5 ||
+          !hit ||
+          !contains(plan.element, hit)
+        )
+          fail("not-actionable", "The prepared target moved");
+        if (plan.kind === "file") {
+          if (!(plan.element instanceof HTMLInputElement) || plan.element.type !== "file")
+            fail("not-actionable", "The prepared input changed");
+          plan.element.click();
+          result = { chosen: true };
+        } else {
+          result = click(plan.element, plan.x, plan.y, plan.count);
+          if (plan.kind === "tap") result = { kind: "untrusted-tap", trusted: false };
+        }
+      } else if (functionName === "cancel") {
         const cancel = fields(args, ["id"]);
         string(cancel.id, 1, 255);
         if (bytes(input) > browserActionMaxBytes)
@@ -1007,6 +1084,26 @@ export function createAgentHelper(documentId: string) {
         );
         operations.get(cancel.id)?.abort();
         result = { canceled: true };
+      } else if (functionName === "textResult" || functionName === "textFocus") {
+        const verification = fields(args, ["planId"]);
+        string(verification.planId, 1, 255);
+        const plan = textPlans.get(verification.planId);
+        if (functionName === "textResult") textPlans.delete(verification.planId);
+        if (!plan || !plan.element.isConnected)
+          fail("not-actionable", "The original text field is no longer available");
+        if (functionName === "textFocus") {
+          if (!visible(plan.element) || !enabled(plan.element))
+            fail("not-actionable", "The original text field is not actionable");
+          focus(plan.element);
+          return { focused: true };
+        }
+        const value =
+          plan.element instanceof HTMLInputElement || plan.element instanceof HTMLTextAreaElement
+            ? plan.element.value
+            : rawText(plan.element);
+        if (value !== plan.text)
+          fail("not-actionable", "The page did not accept the requested text");
+        result = { type: "dom.act", outcome: plan.clear ? "cleared" : "filled", trusted: true };
       } else if (functionName === "wait") {
         const waiting = fields(args, ["id", "locator", "state"]);
         string(waiting.id, 1, 255);
@@ -1015,6 +1112,42 @@ export function createAgentHelper(documentId: string) {
         if (bytes(input) > browserActionMaxBytes)
           fail("too-large", "Helper arguments exceed 432 KiB");
         result = await wait(args as WaitArguments);
+      } else if (functionName === "fileChoose") {
+        const target = fields(args, ["locator", "point"]);
+        if ((target.locator === undefined) === (target.point === undefined))
+          fail("unsupported-operation", "Choose one file target");
+        let element: Element;
+        if (target.locator !== undefined) {
+          checkLocator(target.locator);
+          element = (await prepare(target.locator, controller.signal)).element;
+        } else {
+          const point = fields(target.point, ["x", "y"]);
+          number(point.x, 0, 32768);
+          number(point.y, 0, 32768);
+          const found = document.elementFromPoint(point.x as number, point.y as number);
+          if (!found) fail("not-actionable", "The file target is not visible");
+          element = found;
+        }
+        if (bytes(input) > browserActionMaxBytes)
+          fail("too-large", "Helper arguments exceed 432 KiB");
+        if (controller.signal.aborted || disposed)
+          fail("timeout", "Native canceled file selection");
+        if (
+          !(element instanceof HTMLInputElement) ||
+          element.type !== "file" ||
+          !visible(element) ||
+          !enabled(element)
+        )
+          fail("not-actionable", "The target is not an actionable file input");
+        const rect = element.getBoundingClientRect();
+        const point = target.point as { x: number; y: number } | undefined;
+        result = planActivation(
+          element,
+          point?.x ?? rect.x + rect.width / 2,
+          point?.y ?? rect.y + rect.height / 2,
+          1,
+          "file",
+        );
       } else if (functionName === "focus") {
         const focusing = fields(args, ["locator"]);
         checkLocator(focusing.locator);
@@ -1090,6 +1223,8 @@ export function createAgentHelper(documentId: string) {
   };
   const dispose = () => {
     disposed = true;
+    textPlans.clear();
+    activations.clear();
     for (const operation of operations.values()) operation.abort();
     for (const finish of pending.values())
       finish(new PhoneHelperError("stale-document", "Document was replaced"));

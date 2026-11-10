@@ -3,6 +3,7 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
+  BrowserDialogSchema,
   BrowserServerMessageSchema,
   LocalProfileBindingSchema,
   type BrowserClientMessage,
@@ -228,6 +229,7 @@ async function setup(
     });
   };
   return {
+    deploymentId,
     native,
     clock,
     manager,
@@ -250,7 +252,7 @@ async function setup(
     attachmentId,
     attach,
     relay,
-    reconnect: async () => {
+    reconnect: async (patch: Record<string, unknown> = {}) => {
       await native.emit({
         type: "connection",
         state: "offline",
@@ -274,18 +276,165 @@ async function setup(
       };
       await relay({ ...fence, requestId: uuid(), type: "capability.grant", lease });
       channelId = BrowserChannelIdSchema.parse(`bch_${uuid()}`);
-      await attach();
+      await attach(patch);
     },
     currentEnvelope: () => ({ ...fence, capability: capability(), channelId }),
   };
 }
 
 describe("phone browser manager", () => {
+  test("a new Host session adopts the retained surface after foreground return without reloading", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    const original = fixture.native.tabs.get(fixture.surfaceId)!;
+    original.form = "verification code";
+    await fixture.open("discarded");
+    await fixture.native.emit({
+      type: "memoryPressure",
+      epoch: fixture.reference().epoch,
+      level: "critical",
+    });
+    const discarded = fixture.native.tabs.get("discarded")!;
+    discarded.metadata = { ...discarded.metadata, documentId: "" };
+    await fixture.native.emit({
+      type: "documentChanged",
+      ...fixture.reference("discarded"),
+      metadata: discarded.metadata,
+    });
+    await fixture.open("dormant");
+    fixture.native.tabs.get("dormant")!.form = "second form";
+    const generation = original.metadata.generation;
+    await fixture.manager.setForeground(false);
+    await fixture.manager.setForeground(true);
+    const sessionId = `bsn_${uuid()}`;
+    await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
+    expect(fixture.presentation("discarded").state).toBe("discarded");
+    expect(fixture.native.tabs.get("discarded")!.loads).toBe(1);
+    expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
+      sessionId,
+      form: "verification code",
+      loads: 1,
+    });
+    expect(fixture.native.tabs.get(fixture.surfaceId)!.metadata.generation).toBeGreaterThan(
+      generation,
+    );
+    expect(
+      fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)?.sessionId,
+    ).toBe(sessionId);
+    expect(fixture.manager.localPresentation(fixture.deploymentId, "dormant")?.sessionId).toBe(
+      sessionId,
+    );
+    expect(fixture.native.tabs.get("dormant")).toMatchObject({
+      sessionId,
+      form: "second form",
+      loads: 1,
+    });
+    expect(fixture.server()).toContainEqual(
+      expect.objectContaining({
+        type: "browser.snapshot",
+        sessionId,
+        surfaces: expect.arrayContaining([expect.objectContaining({ id: fixture.surfaceId })]),
+      }),
+    );
+  });
+  test("sends a completed profile inventory once per native connection, not after each attachment", async () => {
+    const fixture = await setup();
+    await fixture.attach();
+    const inventories = () =>
+      fixture.native.calls.filter(
+        ({ method, input }) =>
+          method === "sendRelay" &&
+          (input as { message: { type: string } }).message.type === "browser.profile.inventory",
+      );
+    expect(inventories()).toHaveLength(1);
+    await fixture.reconnect();
+    await fixture.attach();
+    expect(inventories()).toHaveLength(2);
+  });
+  test("an old host unmount cannot retain a tab moved to a second host", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.manager.presentTab(
+      {
+        sessionId: fixture.sessionId,
+        surfaceId: fixture.surfaceId,
+        runtimeId: "phone-runtime",
+        bindingId: fixture.binding.bindingId,
+        targetControl: 1,
+      },
+      "native-host-2",
+    );
+    await fixture.manager.hideTab(fixture.surfaceId, "native-host-1");
+    expect(fixture.presentation().state).toBe("live-visible");
+    expect(fixture.native.tabs.get(fixture.surfaceId)?.loads).toBe(1);
+    await fixture.manager.hideTab(fixture.surfaceId, "native-host-2");
+    expect(fixture.presentation().state).toBe("retained");
+  });
+
+  test("a native dialog interruption includes its answer-once dialog in the typed error", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.agentAttach();
+    const dialog = BrowserDialogSchema.parse({
+      id: uuid(),
+      surfaceId: fixture.surfaceId,
+      type: "confirm",
+      message: "Continue?",
+    });
+    fixture.native.actionGate = async () => {
+      await fixture.native.emit({ ...fixture.reference(), type: "dialog", dialog });
+      throw new PhoneBrowserError("dialog-open", "The page opened a dialog.");
+    };
+    await fixture.action({
+      type: "dom.act",
+      kind: "click",
+      locator: { by: "role", value: "button", name: "Go" },
+    });
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.error",
+      error: { code: "dialog-open", dialog },
+    });
+    fixture.native.actionGate = null;
+    await fixture.action({ type: "dialog.respond", dialogId: dialog.id, accept: false });
+    expect(fixture.native.dialogsAnswered).toEqual([dialog.id]);
+  });
+
+  test("a dialog interruption waits for its separately delivered native event without replay", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.agentAttach();
+    const dialog = BrowserDialogSchema.parse({
+      id: uuid(),
+      surfaceId: fixture.surfaceId,
+      type: "confirm",
+      message: "Continue?",
+    });
+    const entered = Promise.withResolvers<void>();
+    fixture.native.actionGate = async () => {
+      entered.resolve();
+      throw new PhoneBrowserError("dialog-open", "A dialog interrupted this action.");
+    };
+    const action = fixture.action({
+      type: "dom.act",
+      kind: "click",
+      locator: { by: "css", value: "button" },
+    });
+    await entered.promise;
+    await fixture.native.emit({ ...fixture.reference(), type: "dialog", dialog });
+    await action;
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.error",
+      error: { code: "dialog-open", dialog },
+    });
+    expect(fixture.native.calls.filter(({ method }) => method === "performAction")).toHaveLength(1);
+  });
+
   test("session actions need no surface or document, including opening the first tab after an empty inventory", async () => {
     const fixture = await setup();
     await fixture.agentAttach();
     await fixture.action({ type: "surface.close" });
     expect(fixture.presentation().state).toBe("closed");
+    expect(fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)).toBeNull();
     expect(fixture.native.tabs.size).toBe(0);
     await fixture.sessionAction({ type: "session.tabs" });
     expect(fixture.server().at(-1)).toMatchObject({
@@ -298,7 +447,7 @@ describe("phone browser manager", () => {
       type: "agent.result",
       result: {
         type: "surface.open",
-        binding: { state: "suspended", url: "https://first.example/" },
+        binding: { state: "live", url: "https://first.example/" },
       },
     });
     if (opened?.type !== "agent.result" || opened.result.type !== "surface.open")
@@ -568,6 +717,48 @@ describe("phone browser manager", () => {
     expect(fixture.native.tabs.get("second")?.loads).toBe(1);
   });
 
+  test("a native page close frees its place once and ignores stale native generations", async () => {
+    const fixture = await setup();
+    await fixture.open("second");
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" });
+    const event = { ...fixture.reference(), type: "closed" as const };
+    await fixture.native.emit({ ...event, generation: event.generation - 1 });
+    expect(fixture.presentation().state).toBe("live-covered");
+    fixture.native.tabs.delete(fixture.surfaceId);
+    await fixture.native.emit(event);
+    await fixture.native.emit(event);
+    expect(fixture.presentation().state).toBe("closed");
+    expect(fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId)).toBeNull();
+    expect(fixture.native.calls.filter(({ method }) => method === "destroyTab")).toHaveLength(0);
+    await fixture.action({ type: "session.tabs" }, "second");
+    expect(fixture.server().at(-1)).toMatchObject({
+      type: "agent.result",
+      result: { tabs: [{ surfaceId: "second" }] },
+    });
+    await fixture.action({ type: "surface.resume" }, "second");
+    expect(fixture.presentation("second").state).toBe("live-covered");
+  });
+
+  test("opening another agent tab releases its own covered view before native allocation", async () => {
+    const fixture = await setup();
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" });
+    fixture.native.tabs.get(fixture.surfaceId)!.form = "unsent form";
+    await fixture.sessionAction({ type: "surface.open", url: "https://second.example/" });
+    expect(fixture.presentation().state).toBe("retained");
+    const opened = fixture.server().at(-1);
+    expect(opened).toMatchObject({
+      type: "agent.result",
+      result: { type: "surface.open", binding: { state: "live" } },
+    });
+    await fixture.action({ type: "surface.resume" });
+    expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
+      form: "unsent form",
+      loads: 1,
+    });
+  });
+
   test("people cannot displace a watched tab or an agent, and detach hands a watched tab to people", async () => {
     const fixture = await setup();
     await fixture.open("second");
@@ -710,6 +901,24 @@ describe("phone browser manager", () => {
     });
     expect(fixture.presentation().state).toBe("live-visible");
     expect(fixture.presentation("second").state).toBe("live-covered");
+  });
+
+  test("local opening recognizes retained tabs without claiming the agent's covered place", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    await fixture.manager.hideTab(fixture.surfaceId);
+    await fixture.open("second");
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.resume" }, "second");
+    expect(
+      fixture.manager.localPresentation(fixture.deploymentId, fixture.surfaceId),
+    ).toMatchObject({ sessionId: fixture.sessionId, surfaceId: fixture.surfaceId });
+    expect(fixture.manager.localPresentation("another-deployment", fixture.surfaceId)).toBeNull();
+    expect(fixture.manager.localPresentation(fixture.deploymentId, "unheld-tab")).toBeNull();
+    await fixture.present();
+    expect(fixture.presentation().state).toBe("live-visible");
+    expect(fixture.presentation("second").state).toBe("live-covered");
+    expect(fixture.native.calls.filter(({ method }) => method === "createTab")).toHaveLength(2);
   });
 
   test("switching waits for submitted input and fences queued input even after switching back", async () => {
@@ -1362,6 +1571,13 @@ test("descriptors declare only the actually qualified platform abilities", () =>
       phoneBrowserDescriptor({ ...native.qualification, cdpBoundary: false }),
     ).not.toHaveProperty("cdpBoundary");
     expect(phoneBrowserDescriptor({ ...native.qualification, browser: false })).toBeUndefined();
+    const viewingOnly = phoneBrowserDescriptor({
+      ...native.qualification,
+      agentActions: false,
+      fileStaging: true,
+    });
+    expect(viewingOnly).toMatchObject({ sharedControl: 1, basicInput: 1, fileStaging: true });
+    expect(viewingOnly).not.toHaveProperty("agentActions");
     const runner = phoneBrowserRunnerDescriptor(native.qualification, {
       runnerId: fences.fence.runnerId as never,
       bootId: fences.fence.bootId as never,

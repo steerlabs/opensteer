@@ -156,6 +156,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
     selection: { deploymentId: state.deploymentId, hostClient: state.hostClient },
   }),
 }));
+vi.mock("../phone-browser/runtime.js", () => ({ usePhoneBrowserManager: () => null }));
 vi.mock("react-native", () => ({
   PixelRatio: { get: () => 3 },
   AccessibilityInfo: { announceForAccessibility: vi.fn(async () => undefined) },

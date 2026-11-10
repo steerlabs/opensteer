@@ -9,7 +9,7 @@ import type {
 
 type ConnectionMethods = Pick<
   PhoneBrowserNativePort,
-  "verifyAttach" | "commitAttach" | "sendRelay" | "closeChannel"
+  "verifyAttach" | "commitAttach" | "sendRelay" | "closeChannel" | "attachAgent" | "detachAgent"
 >;
 
 export interface IphoneBrowserConnectionPort extends ConnectionMethods {
@@ -52,6 +52,8 @@ export function createIphoneBrowserConnection(): IphoneBrowserConnectionPort | n
     commitAttach: (input) => native.commitAttach(input),
     sendRelay: (input) => native.sendRelay(input),
     closeChannel: (input) => native.closeChannel(input),
+    attachAgent: (input) => native.attachAgent(input),
+    detachAgent: (input) => native.detachAgent(input),
     onEvent: (listener) => {
       let turn = Promise.resolve();
       const subscription = native.addListener("onBrowserEvent", (event) => {

@@ -80,6 +80,8 @@ import { color, space } from "./theme.js";
 import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
+import { startPhoneBrowserRuntime } from "./phone-browser/runtime.js";
+import { createIphoneBrowserPlatform } from "./phone-browser/iphone-platform.js";
 import { androidPhoneBridge, enrollAndroidPhone } from "./platform/phone-connection.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./iphone-apps/fake-bridge.js";
 import { iphoneNotTold, opensteerOn } from "./iphone-apps/model.js";
@@ -178,6 +180,10 @@ function mobileClient(): MobileRoot {
       privateFiles,
     }),
   });
+  if (!configuration.mock) {
+    const phoneBrowserPlatform = createIphoneBrowserPlatform(iphoneApps);
+    if (phoneBrowserPlatform) startPhoneBrowserRuntime(phoneBrowserPlatform);
+  }
   const lifecycle = createMobileLifecycle({ appState: AppState, network: Network });
   const platform = Platform.OS === "android" ? "android" : "ios";
   const port = configuration.mock

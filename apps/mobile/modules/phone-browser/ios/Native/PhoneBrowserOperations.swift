@@ -86,6 +86,8 @@ import WebKit
   func invalidateWork(before epoch: Int) {
     files.invalidate(before: epoch)
     for tab in tabs.values {
+      tab.captureGate.advance()
+      tab.clipboardPastes = tab.clipboardPastes.filter { $0.value.epoch >= epoch }
       cancelAgent(tab)
       if let dialog = tab.pendingDialog, dialog.epoch < epoch { cancelDialog(tab) }
       if tab.externalEpoch < epoch { tab.externalPrompt?.dismiss(animated: false); tab.externalPrompt = nil }
@@ -95,6 +97,7 @@ import WebKit
       if tab.captureEpoch < epoch { tab.capture.clear() }
       for id in Array(tab.pendingCalls.keys) where (tab.callEpochs[id] ?? -1) < epoch {
         tab.callEpochs.removeValue(forKey: id)
+        tab.callOwners.removeValue(forKey: id)
         tab.pendingCalls.removeValue(forKey: id)?(BrowserRefusal.staleEpoch)
       }
       for id in Array(tab.readyWaiters.keys) where (tab.readyEpochs[id] ?? -1) < epoch {
@@ -240,6 +243,9 @@ import WebKit
   }
 
   func webViewDidClose(_ webView: WKWebView) {
-    if let tab = tabs.values.first(where: { $0.webView === webView }) { destroy(tab.id) }
+    guard let tab = tabs.values.first(where: { $0.webView === webView }) else { return }
+    let event = reference(tab)
+    destroy(tab.id)
+    emit?("closed", event)
   }
 }

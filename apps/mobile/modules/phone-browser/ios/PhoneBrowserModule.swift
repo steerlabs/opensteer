@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import IphoneApps
 
 private func browserAsyncFunction<Input: AnyArgument, Output>(_ name: String,
   _ body: sending @escaping @Sendable (Input) async throws -> sending Output) -> ConcurrentFunctionDefinition<Input, Input, Output> {
@@ -32,12 +33,18 @@ struct BrowserTabInput: Record {
   @Field var generation: Int = -1
 }
 
+struct BrowserRestoreRef: Record {
+  @Field var sessionId: String = ""
+  @Field var generation: Int = -1
+}
+
 struct BrowserCreateInput: Record {
   @Field var epoch: Int = -1
   @Field var tabId: String = ""
   @Field var sessionId: String = ""
   @Field var storeHandle: String?
   @Field var allocationPermit: String = ""
+  @Field var restoreFrom: BrowserRestoreRef?
   @Field var state: String = "live"
   @Field var navigationId: String?
   @Field var viewport: BrowserViewport = BrowserViewport()
@@ -75,6 +82,7 @@ public final class PhoneBrowserModule: Module {
       Task { @MainActor in
         if #available(iOS 17, *) {
           let pool = PhoneBrowserPool.shared
+          do { try PhoneBrowserServices.shared.install() } catch { return }
           pool.emit = { [weak self] name, body in
             for event in pool.portEvents(name, body) { self?.sendEvent("event", event) }
           }
@@ -83,7 +91,8 @@ public final class PhoneBrowserModule: Module {
     }
     OnDestroy {
       if #available(iOS 17, *) {
-        let epoch = PhoneBrowserPool.epochGate.advance()
+        let epoch = IphoneBrowserTransport.shared.connection.fence()
+        PhoneBrowserServices.shared.fence(epoch: epoch, reason: "module-destroyed")
         Task { @MainActor in
           let pool = PhoneBrowserPool.shared
           pool.invalidateWork(before: epoch)
@@ -96,8 +105,8 @@ public final class PhoneBrowserModule: Module {
     }
     Function("fence") { (_: String) -> Int in
       guard #available(iOS 17, *) else { return 0 }
-      let epoch = PhoneBrowserPool.epochGate.advance()
-      Task { @MainActor in PhoneBrowserPool.shared.invalidateWork(before: epoch) }
+      let epoch = IphoneBrowserTransport.shared.connection.fence()
+      PhoneBrowserServices.shared.fence(epoch: epoch, reason: "manager-fenced")
       return epoch
     }
     browserAsyncFunction("initialize") { (input: BrowserInitializeInput) async throws -> [String: Any] in
@@ -208,7 +217,7 @@ public final class PhoneBrowserModule: Module {
         try pool.gate.perform(input.epoch) {
           let tab = try pool.checked(input, live: false)
           guard input.maxFps == 8, let admission = pool.admission else { throw BrowserRefusal.forbidden }
-          try admission.viewer(channelId: input.channelId, sessionId: input.sessionId, epoch: input.epoch)
+          try admission.viewer(channelId: input.channelId, sessionId: input.sessionId, epoch: input.epoch, control: false)
           try tab.capture.set(channel: input.channelId, density: input.density, frames: input.frames, window: input.frameWindow)
           tab.captureEpoch = input.epoch
           pool.capture.refresh()
@@ -222,7 +231,7 @@ public final class PhoneBrowserModule: Module {
         try pool.gate.perform(input.epoch) {
           let tab = try pool.checked(input, live: false)
           guard let admission = pool.admission else { throw BrowserRefusal.forbidden }
-          try admission.viewer(channelId: input.channelId, sessionId: input.sessionId, epoch: input.epoch)
+          try admission.viewer(channelId: input.channelId, sessionId: input.sessionId, epoch: input.epoch, control: false)
           tab.capture.ack(channel: input.channelId, token: input.token)
         }
       }
@@ -282,7 +291,7 @@ public final class PhoneBrowserModule: Module {
     let pool = PhoneBrowserPool.shared
     _ = try pool.checked(input, document: input.documentId, geometry: input.geometryRevision)
     guard let admission = pool.admission else { throw BrowserRefusal.forbidden }
-    try admission.viewer(channelId: input.channelId, sessionId: input.sessionId, epoch: input.epoch)
+    try admission.viewer(channelId: input.channelId, sessionId: input.sessionId, epoch: input.epoch, control: false)
     let result = try await pool.capture.once(input)
     guard let artifact = result["artifactId"] as? String else { throw BrowserRefusal.outcomeUnknown }
     return artifact

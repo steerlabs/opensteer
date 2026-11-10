@@ -146,6 +146,20 @@ public final class IphoneAppsModule: Module {
     AsyncFunction("retryBrowserErasure") { () -> Void in
       if #available(iOS 17, *) { IphoneExecutorRuntime.shared.retryBrowserErasure() }
     }
+    AsyncFunction("attachAgent") { (input: [String: Any]) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported-operation") }
+      do {
+        guard input["backend"] as? String == "actions" else { throw PhoneBrowserFailure.forbidden }
+        try IphoneBrowserTransport.shared.connection.checkAgent(epoch: Self.epoch(input),
+          channelId: WireField.string(input, "channelId"), sessionId: WireField.string(input, "sessionId"),
+          attachmentId: WireField.string(input, "attachmentId"), actorToken: WireField.string(input, "actorToken"))
+      } catch { throw Self.refusal("forbidden") }
+    }
+    AsyncFunction("detachAgent") { (input: [String: Any]) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported-operation") }
+      do { try IphoneBrowserTransport.shared.connection.detachAgent(epoch: Self.epoch(input), attachmentId: WireField.string(input, "attachmentId")) }
+      catch { throw Self.refusal("forbidden") }
+    }
 
   }
 

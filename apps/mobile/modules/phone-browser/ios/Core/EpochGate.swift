@@ -39,6 +39,13 @@ public final class EpochGate: @unchecked Sendable {
     }
   }
 
+  public func adopt(_ value: Int) throws {
+    try lock.withLock {
+      guard value >= epoch else { throw BrowserRefusal.staleEpoch }
+      epoch = value
+    }
+  }
+
   public func check(_ expected: Int) throws {
     try perform(expected) {}
   }

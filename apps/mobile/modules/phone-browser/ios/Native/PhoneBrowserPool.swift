@@ -4,13 +4,18 @@ import WebKit
 @available(iOS 17, *)
 @MainActor final class PhoneBrowserTab {
   let id: String
-  let sessionId: String
+  var sessionId: String
   let storeHandle: String
   var generation = 0
+  var allocationEpoch = -1
   var revision = 0
+  var pageWaitChecks: [UUID: () -> Void] = [:]
+  var clipboardPastes: [String: BrowserClipboardPaste] = [:]
   var captureRevision = 0
+  let captureGate = EpochGate()
   var activitySequence = 0
   var agentOperations = Set<String>()
+  var agentOwners: [String: String] = [:]
   var agentFrames: [String: WKFrameInfo] = [:]
   var webView: WKWebView?
   var url: URL?
@@ -19,7 +24,9 @@ import WebKit
   var readyWaiters: [UUID: (Result<Void, Error>) -> Void] = [:]
   var loadWaiters: [UUID: (Result<Void, Error>) -> Void] = [:]
   var pendingCalls: [UUID: (Error) -> Void] = [:]
+  var keyboardWaiters: [UUID: () -> Void] = [:]
   var callEpochs: [UUID: Int] = [:]
+  var callOwners: [UUID: String] = [:]
   var readyEpochs: [UUID: Int] = [:]
   var geometryRevision = 0
   var presentationGeneration = 0
@@ -49,6 +56,7 @@ import WebKit
   var stagedSelection: BrowserStagedSelection?
   var chosenFiles: [[String: Any]]?
   var chosenSelectionId: UUID?
+  var chosenWaiters: [UUID: ([[String: Any]]) -> Void] = [:]
   var popupOpener: String?
 
   init(id: String, sessionId: String, url: URL?, storeHandle: String = "") {
@@ -100,6 +108,7 @@ import WebKit
   lazy var files = BrowserFiles(pool: self)
   lazy var capture = BrowserCapture(pool: self)
   var keyboardFrame = CGRect.zero
+  var keyboardMoving = false
   var initialized = false
   let runtimeId = UUID().uuidString.lowercased()
   var nextGeneration = 0
@@ -112,21 +121,29 @@ import WebKit
   override init() {
     super.init()
     for name in [UIApplication.willResignActiveNotification, UIApplication.didReceiveMemoryWarningNotification,
-      UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardWillHideNotification] {
+      UIResponder.keyboardWillChangeFrameNotification, UIResponder.keyboardWillHideNotification,
+      UIResponder.keyboardDidChangeFrameNotification, UIResponder.keyboardDidHideNotification] {
       lifecycle.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
         MainActor.assumeIsolated {
           guard let self else { return }
           if notification.name == UIApplication.willResignActiveNotification {
-            self.gate.advance()
             self.setForeground(false)
           } else if notification.name == UIApplication.didReceiveMemoryWarningNotification {
             for id in self.state.memoryPressure() { self.releaseView(id) }
             self.capture.trimPictures()
             self.emit?("memoryPressure", ["level": "critical"])
           } else {
-            self.keyboardFrame = notification.name == UIResponder.keyboardWillHideNotification ? .zero :
+            self.keyboardMoving = notification.name == UIResponder.keyboardWillChangeFrameNotification || notification.name == UIResponder.keyboardWillHideNotification
+            self.keyboardFrame = notification.name == UIResponder.keyboardWillHideNotification || notification.name == UIResponder.keyboardDidHideNotification ? .zero :
               (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect ?? .zero)
             for tab in self.tabs.values { _ = self.geometry(tab) }
+            if !self.keyboardMoving {
+              for tab in self.tabs.values {
+                let waiters = tab.keyboardWaiters.values
+                tab.keyboardWaiters.removeAll()
+                for ready in waiters { ready() }
+              }
+            }
           }
         }
       })
@@ -151,6 +168,7 @@ import WebKit
   func changed(_ tab: PhoneBrowserTab) {
     tab.revision += 1
     emit?("tabChanged", ["tabId": tab.id, "metadata": metadata(tab)])
+    for check in Array(tab.pageWaitChecks.values) { check() }
   }
 
   func window() throws -> UIWindow {
@@ -185,11 +203,8 @@ import WebKit
       let bundle = Bundle(url: resource), let url = bundle.url(forResource: "phone-browser-helper", withExtension: "js") else {
       throw BrowserRefusal.unsupportedOperation
     }
-    if let agent = bundle.url(forResource: "agent-helper", withExtension: "js") {
-      let source = try String(contentsOf: agent, encoding: .utf8)
-      configuration.userContentController.addUserScript(WKUserScript(source: source,
-        injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
-    }
+    configuration.userContentController.addUserScript(WKUserScript(source: PhoneBrowserAgentScript.source,
+      injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
     let script = try String(contentsOf: url, encoding: .utf8)
     configuration.userContentController.addUserScript(WKUserScript(source: script,
       injectionTime: .atDocumentStart, forMainFrameOnly: false, in: world))
@@ -241,8 +256,9 @@ import WebKit
     return view
   }
 
-  func create(_ input: BrowserCreateInput) async throws -> [String: Any] {
+  func create(_ input: BrowserCreateInput, authorization: (() throws -> Void)? = nil) async throws -> [String: Any] {
     let created: PhoneBrowserTab = try gate.perform(input.epoch) {
+      try authorization?()
       guard foreground else { throw BrowserRefusal.notActionable }
       guard !input.sessionId.isEmpty, !input.tabId.isEmpty else { throw BrowserRefusal.invalidArgument }
       try validateSize(input.viewport.width, input.viewport.height)
@@ -250,6 +266,7 @@ import WebKit
       try state.create(input.tabId)
       let tab = PhoneBrowserTab(id: input.tabId, sessionId: input.sessionId,
         url: input.url.flatMap(URL.init(string:)), storeHandle: input.storeHandle ?? "")
+      tab.allocationEpoch = input.epoch
       nextGeneration += 1
       tab.generation = nextGeneration
       tabs[tab.id] = tab
@@ -272,8 +289,10 @@ import WebKit
       try await waitReady(created)
       try await waitLoadFinished(created, epoch: input.epoch)
       try gate.check(input.epoch)
+      try authorization?()
       if let address = input.url {
         try gate.perform(input.epoch) {
+          try authorization?()
           created.readiness.provisional()
           if let navigation = created.webView?.load(URLRequest(url: try webURL(address))) {
             let id = input.navigationId ?? UUID().uuidString
@@ -283,12 +302,14 @@ import WebKit
         }
         try await waitReady(created)
         try gate.check(input.epoch)
+        try authorization?()
       }
       if input.state == "retained" {
         let retained = BrowserTabInput()
         retained.epoch = input.epoch; retained.tabId = created.id
         _ = try await suspend(retained)
       }
+      try authorization?()
       return metadata(created)
     } catch {
       if tabs[created.id] === created { destroy(created.id) }
@@ -353,17 +374,40 @@ import WebKit
   }
 
   func helper(_ tab: PhoneBrowserTab, function: String, arguments: [String: Any] = [:], frame: WKFrameInfo? = nil,
-    epoch issued: Int? = nil, timeoutMs: Int = 10000) async throws -> Any {
+    epoch issued: Int? = nil, timeoutMs: Int = 10000, authorization: (() throws -> Void)? = nil,
+    attachmentId: String? = nil) async throws -> Any {
     guard tab.pendingDialog == nil else { throw BrowserRefusal.dialogOpen }
     guard tab.pendingCalls.count < 32 else { throw BrowserRefusal.notActionable }
     guard let view = tab.webView else { throw BrowserRefusal.targetSuspended }
-    let allowed = ["ping", "anchor", "restoreAnchor", "focus", "tap", "selection", "agent"]
+    let allowed = ["ping", "anchor", "restoreAnchor", "focus", "tap", "selection", "editing", "agent"]
     guard allowed.contains(function) else { throw BrowserRefusal.unsupportedOperation }
     let epoch = issued ?? gate.current
     let deadline = DispatchTime.now() + .milliseconds(timeoutMs)
     let documentId = tab.documentId
     let frameId = frame.flatMap { selected in tab.frames.first(where: { $0.value === selected })?.key } ?? "main"
     try await waitReady(tab, frame: frameId, timeoutMs: timeoutMs, epoch: epoch)
+    let operation = (arguments["argument"] as? [String: Any])?["name"] as? String
+    if keyboardMoving, function == "agent", ["act", "focus", "tap", "fileChoose"].contains(operation ?? "") {
+      let request = UUID()
+      defer {
+        tab.keyboardWaiters.removeValue(forKey: request)
+        tab.pendingCalls.removeValue(forKey: request)
+        tab.callOwners.removeValue(forKey: request)
+        tab.callEpochs.removeValue(forKey: request)
+      }
+      try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        tab.callEpochs[request] = epoch
+        tab.callOwners[request] = attachmentId
+        tab.pendingCalls[request] = { continuation.resume(throwing: $0) }
+        tab.keyboardWaiters[request] = {
+          guard tab.pendingCalls.removeValue(forKey: request) != nil else { return }
+          continuation.resume()
+        }
+        DispatchQueue.main.asyncAfter(deadline: deadline) {
+          tab.pendingCalls.removeValue(forKey: request)?(BrowserRefusal.timeout)
+        }
+      }
+    }
     try gate.check(epoch)
     guard DispatchTime.now() < deadline else { throw BrowserRefusal.timeout }
     guard foreground, state.tabs[tab.id] == .live, tab.webView === view else { throw BrowserRefusal.targetSuspended }
@@ -372,26 +416,32 @@ import WebKit
       let result: Any = try await withCheckedThrowingContinuation { continuation in
         let request = UUID()
         tab.callEpochs[request] = epoch
+        tab.callOwners[request] = attachmentId
         tab.pendingCalls[request] = { error in continuation.resume(throwing: error) }
         DispatchQueue.main.asyncAfter(deadline: deadline) { [weak tab] in
           tab?.callEpochs.removeValue(forKey: request)
+          tab?.callOwners.removeValue(forKey: request)
           tab?.pendingCalls.removeValue(forKey: request)?(BrowserRefusal.timeout)
         }
         do {
           try gate.perform(epoch) {
+            try authorization?()
             view.callAsyncJavaScript("if(typeof phoneBrowserHelper!=='object'||phoneBrowserHelper.token!==token)return {__phoneBrowserRefusal:'helper-not-ready'};return phoneBrowserHelper.\(function)(argument)",
               arguments: ["token": token, "argument": arguments["argument"] ?? NSNull()], in: frame, in: world) { result in
               tab.callEpochs.removeValue(forKey: request)
+              tab.callOwners.removeValue(forKey: request)
               guard tab.pendingCalls.removeValue(forKey: request) != nil else { return }
               continuation.resume(with: result)
             }
           }
         } catch {
           tab.callEpochs.removeValue(forKey: request)
+          tab.callOwners.removeValue(forKey: request)
           tab.pendingCalls.removeValue(forKey: request)?(error)
         }
       }
       try gate.check(epoch)
+      try authorization?()
       guard tab.documentId == documentId else { throw BrowserRefusal.staleDocument }
       guard state.tabs[tab.id] == .live, tab.webView === view else { throw BrowserRefusal.targetSuspended }
       if (result as? [String: Any])?["__phoneBrowserRefusal"] != nil { throw BrowserRefusal.helperNotReady }
@@ -486,6 +536,7 @@ import WebKit
 
   func releaseView(_ id: String) {
     guard let tab = tabs[id] else { return }
+    tab.captureGate.advance()
     cancelAgent(tab)
     tab.url = tab.webView?.url ?? tab.url
     cancelDialog(tab)
@@ -525,7 +576,7 @@ import WebKit
     let keyboard = tab.webView.map { $0.convert(keyboardFrame, from: nil).intersection($0.bounds) } ?? .zero
     var result: [String: Any] = ["tabId": tab.id,
       "viewport": ["width": tab.visualViewport["width"] ?? size.width, "height": tab.visualViewport["height"] ?? size.height],
-      "nativeViewport": ["width": size.width, "height": size.height],
+      "nativeViewport": ["width": Double(size.width), "height": Double(size.height)],
       "scale": tab.visualViewport["scale"] ?? tab.webView?.scrollView.zoomScale ?? 1,
       "offset": ["x": tab.visualViewport["x"] ?? 0, "y": tab.visualViewport["y"] ?? 0],
       "scroll": ["x": offset.x, "y": offset.y], "pixelRatio": tab.webView?.window?.screen.scale ?? 1,
@@ -534,13 +585,16 @@ import WebKit
         "width": keyboard.isNull ? 0 : keyboard.width, "height": keyboard.isNull ? 0 : keyboard.height]]
     let fingerprint = result as NSDictionary
     let changed = tab.geometryFingerprint != fingerprint
-    if changed { tab.geometryRevision += 1; tab.revision += 1; tab.geometryFingerprint = fingerprint }
+    if changed { tab.captureGate.advance(); tab.geometryRevision += 1; tab.revision += 1; tab.geometryFingerprint = fingerprint }
     result["revision"] = tab.geometryRevision
     if changed { emit?("geometry", result) }
     return result
   }
 
   func setForeground(_ active: Bool) {
+    if foreground && !active {
+      for tab in tabs.values where state.tabs[tab.id] == .live { preserveScroll(tab) }
+    }
     foreground = active
     if !active {
       capture.stop()
@@ -557,6 +611,14 @@ import WebKit
         for waiter in loading { waiter(.failure(BrowserRefusal.notActionable)) }
       }
     } else { capture.refresh() }
+  }
+
+  func preserveScroll(_ tab: PhoneBrowserTab) {
+    guard let scroll = tab.webView?.scrollView else { return }
+    let inset = scroll.adjustedContentInset
+    let scale = max(scroll.zoomScale, 0.01)
+    tab.anchor = ["x": (scroll.contentOffset.x + inset.left) / scale,
+      "y": (scroll.contentOffset.y + inset.top) / scale]
   }
 
   func cancelDialog(_ tab: PhoneBrowserTab) {
@@ -580,6 +642,9 @@ import WebKit
     tab.pendingDialog = dialog
     emit?("dialog", ["tabId": tab.id, "documentId": tab.documentId,
       "dialog": ["id": dialog.id, "kind": kind, "message": String(message.prefix(16384)), "defaultText": defaultText as Any? ?? NSNull()]])
+    let pending = tab.pendingCalls.values
+    tab.pendingCalls.removeAll(); tab.callEpochs.removeAll()
+    for cancel in pending { cancel(BrowserRefusal.dialogOpen) }
   }
 
   func respondDialog(_ input: BrowserDialogInput) throws {
@@ -616,6 +681,7 @@ import WebKit
     do { try stores.markInitialized(tab.storeHandle) }
     catch { try? state.discard(tab.id); releaseView(tab.id); return }
     cancelDialog(tab)
+    tab.captureGate.advance()
     tab.documentId = UUID().uuidString
     tab.frameDocuments.removeAll()
     tab.readiness.commit(document: tab.documentId)

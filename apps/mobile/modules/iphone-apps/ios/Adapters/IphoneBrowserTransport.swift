@@ -3,6 +3,7 @@ import Foundation
 public protocol IphoneBrowserServices: AnyObject {
   var qualification: [String: Any] { get }
   func fence(epoch: Int, reason: String)
+  func detachAgent(epoch: Int, attachmentId: String)
   func eraseDeployment(_ deploymentId: String, completion: @escaping (Bool) -> Void)
 }
 
@@ -22,7 +23,8 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
   private var observer: (([String: Any]) -> Void)?
   private var erasureObserver: (([String: Any]) -> Void)?
   private static let nativeConnection = PhoneBrowserConnection(now: { shared.now() },
-    onRetire: { epoch, reason in shared.fenceServices(epoch: epoch, reason: reason) })
+    onRetire: { epoch, reason in shared.fenceServices(epoch: epoch, reason: reason) },
+    onDetach: { epoch, attachment in shared.detachServices(epoch: epoch, attachmentId: attachment) })
   public var connection: PhoneBrowserConnection { Self.nativeConnection }
 
   private init() {}
@@ -45,15 +47,19 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
     lock.unlock()
     let qualification = services.qualification
     guard qualification["browser"] as? Bool == true, qualification["sharedControl"] as? Bool == true,
-      qualification["agentActions"] as? Bool == true, qualification["platform"] as? String == "ios",
+      qualification["platform"] as? String == "ios",
       descriptor["runtimeId"] as? String == qualification["runtimeId"] as? String,
       let storage = descriptor["localProfileStorage"] as? [String: Any], storage["engine"] as? String == "wkwebview",
       Set(storage.keys) == Set(["storageInstanceId", "engine"]),
       storage["storageInstanceId"] as? String == qualification["storageInstanceId"] as? String,
       let storageId = storage["storageInstanceId"] as? String, UUID(uuidString: storageId) != nil else { throw PhoneBrowserFailure.forbidden }
-    let expected = ["wireVersion", "navigationVersion", "navigationAttributionVersion", "workspaceTabRestoreVersion", "popupFollowVersion", "sharedControl", "targetControl", "rasterDemand", "basicInput", "surfaceState", "agentActions"]
-    guard Set(descriptor.keys).isSubset(of: Set(expected + ["runtimeId", "localProfileStorage", "fileStaging"])) else { throw PhoneBrowserFailure.forbidden }
+    let expected = ["wireVersion", "navigationVersion", "navigationAttributionVersion", "workspaceTabRestoreVersion", "popupFollowVersion", "sharedControl", "targetControl", "rasterDemand", "basicInput", "surfaceState"]
+    guard Set(descriptor.keys).isSubset(of: Set(expected + ["runtimeId", "localProfileStorage", "fileStaging", "agentActions"])) else { throw PhoneBrowserFailure.forbidden }
     for field in expected { _ = try WireField.int(descriptor, field, range: 1...1) }
+    if descriptor["agentActions"] != nil {
+      guard qualification["agentActions"] as? Bool == true else { throw PhoneBrowserFailure.forbidden }
+      _ = try WireField.int(descriptor, "agentActions", range: 1...1)
+    }
     if descriptor["fileStaging"] != nil {
       guard #available(iOS 18.4, *), qualification["fileStaging"] as? Bool == true,
         PhoneBrowserValidation.boolean(descriptor["fileStaging"]), descriptor["fileStaging"] as? Bool == true else { throw PhoneBrowserFailure.forbidden }
@@ -100,6 +106,11 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
   private func fenceServices(epoch: Int, reason: String) {
     lock.lock(); let services = services; lock.unlock()
     services?.fence(epoch: epoch, reason: reason)
+  }
+
+  private func detachServices(epoch: Int, attachmentId: String) {
+    lock.lock(); let services = services; lock.unlock()
+    services?.detachAgent(epoch: epoch, attachmentId: attachmentId)
   }
 
   func offline(reason: String) {
