@@ -5,6 +5,7 @@ import type { NativePresentationSource, PresentedSurface } from "@opensteer/brow
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import type { ElectronAppWindow } from "../app/electron-window.js";
 import type { DesktopBrowserSocketObservation } from "../connections/host-transport.js";
+import type { DesktopAutofillScene } from "@opensteer/protocol/desktop";
 import type { NativePlacement } from "./electron-browser-launcher.js";
 import { DesktopBrowserPresentationManager } from "./browser-presentation.js";
 
@@ -16,6 +17,31 @@ vi.mock("./electron-browser-launcher.js", () => ({
   electronPagePresentation: (page: { native: unknown }) => page.native,
 }));
 const glass = vi.hoisted(() => ({ update: vi.fn(), close: vi.fn() }));
+const popups = vi.hoisted(
+  () =>
+    [] as {
+      update: ReturnType<typeof vi.fn>;
+      choose: (revision: number, accountId: string) => void;
+      dismiss: () => void;
+    }[],
+);
+vi.mock("./page-autofill.js", () => ({
+  PageAutofill: class {
+    shown = false;
+    update = vi.fn((scene: unknown) => {
+      this.shown = !!scene;
+    });
+    close = vi.fn();
+    orderAboveGlass = vi.fn();
+    constructor(
+      _parent: unknown,
+      _preload: string,
+      callbacks: { choose: (revision: number, accountId: string) => void; dismiss: () => void },
+    ) {
+      popups.push({ update: this.update, ...callbacks });
+    }
+  },
+}));
 vi.mock("./page-glass.js", () => ({
   PageGlass: class {
     update = glass.update;
@@ -60,6 +86,7 @@ function fixture() {
       closeSocketsForOwner: vi.fn(),
       openBrowserSurface: vi.fn(),
     },
+    autofillPreload: "unused",
     glassPreload: "unused",
     onError: (error) => {
       throw error;
@@ -80,6 +107,8 @@ function fixture() {
     appView: {},
     isDestroyed: () => false,
     isFocused: () => true,
+    isVisible: () => true,
+    isMinimized: () => false,
     contentView: {
       children,
       addChildView: vi.fn((view: unknown) => {
@@ -91,6 +120,8 @@ function fixture() {
   manager.attachWindow(window as unknown as ElectronAppWindow);
   const pageContents = Object.assign(new EventEmitter(), {
     isCrashed: () => false,
+    getZoomFactor: () => 1,
+    setIgnoreMenuShortcuts: vi.fn(),
     stopFindInPage: vi.fn(),
     isFocused: () => true,
     focus: vi.fn(),
@@ -513,3 +544,133 @@ it.each(["release", "replacement", "failure", "zero-size"] as const)(
     }
   },
 );
+
+const autofillScene: DesktopAutofillScene = {
+  accounts: [{ id: "00000000-0000-4000-8000-000000000001", username: "synthetic", label: null }],
+  anchor: { x: 30, y: 40, width: 100, height: 20 },
+  highlighted: 0,
+  reducedMotion: true,
+  role: "username",
+  sceneRevision: 1,
+};
+async function autofillFixture() {
+  onPlatform("darwin");
+  const f = fixture();
+  f.native.waitForPaint = () => Promise.resolve();
+  f.socket("admitted");
+  const target = await f.manager.present(f.sender, f.request);
+  await Promise.resolve();
+  f.manager.setAutofill(f.sender, { ...target, scene: autofillScene });
+  return { ...f, target, popup: popups.at(-1)! };
+}
+
+it("binds autofill scenes and choices to the owning current presentation revision", async () => {
+  const f = await autofillFixture();
+  const calls = f.popup.update.mock.calls.length;
+  f.manager.setAutofill({ id: 99 } as WebContents, {
+    ...f.target,
+    scene: { ...autofillScene, sceneRevision: 2 },
+  });
+  f.manager.setAutofill(f.sender, {
+    ...f.target,
+    revision: f.target.revision + 1,
+    scene: { ...autofillScene, sceneRevision: 2 },
+  });
+  f.manager.setAutofill(f.sender, { ...f.target, scene: { ...autofillScene, sceneRevision: 0 } });
+  expect(f.popup.update).toHaveBeenCalledTimes(calls);
+  f.contents.send.mockClear();
+  f.popup.choose(0, autofillScene.accounts[0]!.id);
+  f.popup.choose(1, "00000000-0000-4000-8000-000000000002");
+  expect(f.contents.send).not.toHaveBeenCalled();
+  f.popup.choose(1, autofillScene.accounts[0]!.id);
+  expect(f.contents.send).toHaveBeenCalledWith(expect.any(String), {
+    type: "autofill-choice",
+    presentationId: f.target.presentationId,
+    sceneRevision: 1,
+    accountId: autofillScene.accounts[0]!.id,
+  });
+  expect(f.popup.update).toHaveBeenLastCalledWith(null, null);
+  const count = f.contents.send.mock.calls.length;
+  f.popup.choose(1, autofillScene.accounts[0]!.id);
+  expect(f.contents.send).toHaveBeenCalledTimes(count);
+});
+
+it.each([
+  "blur",
+  "hide",
+  "minimize",
+  "close",
+  "enter-full-screen",
+  "leave-full-screen",
+  "overlay",
+  "mouse",
+  "fullscreen",
+  "release",
+  "replacement",
+])("dismisses autofill on %s and refuses late choices", async (reason) => {
+  const f = await autofillFixture();
+  f.contents.send.mockClear();
+  if (reason === "overlay")
+    f.manager.acquireOverlay(f.sender, { overlayId: "00000000-0000-4000-8000-000000000001" });
+  else if (reason === "mouse")
+    f.native.view.webContents.emit("before-mouse-event", {}, { type: "mouseDown" });
+  else if (reason === "fullscreen") f.native.view.webContents.emit("enter-html-full-screen");
+  else if (reason === "release") f.manager.release(f.sender, f.target);
+  else if (reason === "replacement") {
+    f.source.presentSurface.mockImplementation(
+      () =>
+        ({
+          ...f.surface,
+          page: { ...f.surface.page, native: { ...f.native, view: { ...f.native.view } } },
+        }) as unknown as PresentedSurface,
+    );
+    await f.manager.update(f.sender, {
+      presentationId: f.target.presentationId,
+      surfaceId: BrowserSurfaceIdSchema.parse("bsf_00000000-0000-4000-8000-000000000002"),
+    });
+  } else f.window.emit(reason);
+  expect(f.popup.update).toHaveBeenLastCalledWith(null, null);
+  expect(f.contents.send).toHaveBeenCalledWith(expect.any(String), {
+    type: "autofill-dismiss",
+    presentationId: f.target.presentationId,
+    sceneRevision: 1,
+  });
+  f.contents.send.mockClear();
+  f.popup.choose(1, autofillScene.accounts[0]!.id);
+  expect(f.contents.send).not.toHaveBeenCalled();
+});
+
+it("forwards page keys once while the chooser is shown and restores page keys on dismissal", async () => {
+  const f = await autofillFixture();
+  f.contents.send.mockClear();
+  const preventDefault = vi.fn();
+  for (const key of ["ArrowDown", "a", "Enter"])
+    f.native.view.webContents.emit(
+      "before-input-event",
+      { preventDefault },
+      { type: "keyDown", key, code: key, alt: false, control: false, meta: false, shift: false },
+    );
+  expect(preventDefault).toHaveBeenCalledTimes(2);
+  expect(f.contents.send.mock.calls.filter((call) => call[1].type === "key")).toHaveLength(3);
+  f.native.inputOutstanding.mockReturnValue(true);
+  f.contents.send.mockClear();
+  preventDefault.mockClear();
+  f.native.view.webContents.emit(
+    "before-input-event",
+    { preventDefault },
+    { type: "keyDown", key: "Enter" },
+  );
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(f.contents.send).not.toHaveBeenCalled();
+  f.native.inputOutstanding.mockReturnValue(false);
+  f.popup.dismiss();
+  f.contents.send.mockClear();
+  preventDefault.mockClear();
+  f.native.view.webContents.emit(
+    "before-input-event",
+    { preventDefault },
+    { type: "keyDown", key: "Enter" },
+  );
+  expect(preventDefault).not.toHaveBeenCalled();
+  expect(f.contents.send).not.toHaveBeenCalled();
+});

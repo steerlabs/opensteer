@@ -68,6 +68,13 @@ import {
   PasswordSignInCancelReasonSchema,
   PasswordSignInRequesterSchema,
 } from "./password-sign-in.js";
+import {
+  PersonFillAccountViewSchema,
+  PersonFillAnchorSchema,
+  PersonFillRoleSchema,
+  PersonFillStatusSchema,
+  personFillMaxAccounts,
+} from "./person-fill.js";
 import { PlaceOccupantSchema } from "./places.js";
 export * from "./browser-profile-storage.js";
 export const BrowserRasterDensitySchema = z.union([
@@ -210,6 +217,13 @@ export const BrowserAttachTicketClaimsSchema = z
     workspaceTabRestoreVersion: z.literal(1).optional(),
     /** The Host relays `browser.popup.opened`, so the runtime may send it. */
     popupFollowVersion: z.literal(1).optional(),
+    /**
+     * The Host relays person autofill (`person-fill.ts`): the runtime may put
+     * `personFillVersion` in its snapshot, emit `browser.autofill.*` and accept
+     * `autofill.fill`. Issued only on a Personal Deployment to a runtime
+     * advertising `modules.browser.personFill`.
+     */
+    personFillVersion: z.literal(1).optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
     dormantSurfaceIds: z
       .array(BrowserSurfaceIdSchema)
@@ -721,6 +735,19 @@ const BaselineBrowserClientMessageSchema = z
       reason: PasswordSignInCancelReasonSchema,
       type: z.literal("login.cancel"),
     }),
+    /**
+     * A person's choice in an autofill offer. Only the offer's viewer may send
+     * it; the Host stamps `producerId` and never trusts one a viewer supplies.
+     */
+    z.strictObject({
+      ...browserBase,
+      type: z.literal("autofill.fill"),
+      surfaceId: BrowserSurfaceIdSchema,
+      offerId: z.uuid(),
+      loginId: z.uuid(),
+      revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      producerId: z.uuid().optional(),
+    }),
   ])
   .superRefine((message, context) => {
     const viewport =
@@ -761,6 +788,8 @@ const BrowserSnapshotSchema = z
     editingVersion: z.union([z.literal(1), z.literal(2)]).optional(),
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
     clipboard: z.boolean().optional(),
+    /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
+    personFillVersion: z.literal(1).optional(),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     surfaces: BrowserSurfacesSchema,
     type: z.literal("browser.snapshot"),
@@ -905,6 +934,37 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     editable: z.boolean(),
     selection: z.boolean(),
     linkUrl: z.string().max(browserWorkspaceTabUrlMaxLength).optional(),
+  }),
+  /**
+   * Saved logins for a login field the named viewer just activated. Sent only
+   * to that viewer and never stored. The same `offerId` again moves its anchor.
+   */
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.autofill.offer"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+    role: PersonFillRoleSchema,
+    geometryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    anchor: PersonFillAnchorSchema,
+    accounts: z.array(PersonFillAccountViewSchema).min(1).max(personFillMaxAccounts),
+  }),
+  /** The offer's field lost its place: another field, a navigation, an agent, or a fill. */
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.autofill.withdrawn"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+  }),
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.autofill.result"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+    status: PersonFillStatusSchema,
   }),
   z.strictObject({
     ...browserBase,

@@ -10,6 +10,7 @@ import {
   DesktopBrowserOverlayInputSchema,
   DesktopBrowserFindInputSchema,
   DesktopBrowserGlassInputSchema,
+  DesktopBrowserAutofillInputSchema,
 } from "@opensteer/protocol/desktop";
 import { BrowserPresentationUnavailable } from "../browser-presentation-result.js";
 import { desktopBridgeChannels } from "../desktop-bridge-channels.js";
@@ -107,6 +108,12 @@ export function browserPresentationHandlers(
       desktopBridgeChannels.browserExitFullscreen,
       handler(DesktopBrowserPresentationTargetSchema, (manager, sender, input) =>
         manager.exitFullscreen(sender, input),
+      ),
+    ],
+    [
+      desktopBridgeChannels.browserSetAutofill,
+      handler(DesktopBrowserAutofillInputSchema, (manager, sender, input) =>
+        manager.setAutofill(sender, input),
       ),
     ],
     [

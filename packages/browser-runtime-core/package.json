@@ -39,6 +39,7 @@
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
     "esbuild": "0.28.2",
+    "happy-dom": "21.0.4",
     "react": "catalog:",
     "react-dom": "catalog:",
     "typescript": "catalog:",

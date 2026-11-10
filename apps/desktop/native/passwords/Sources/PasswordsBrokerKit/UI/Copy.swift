@@ -8,6 +8,15 @@ import Foundation
 public enum Copy {
   // Shared with packages/client/src/host/passwords.ts.
   public static let appName = "Opensteer Passwords"
+  public static let personFill = "Fill passwords for me in Opensteer"
+  public static let personFillDetail = "Offers your saved logins when you click a sign-in field in Opensteer’s browser, on this Mac or another device."
+  public static func fillReason(_ site: String) -> String { "fill your saved login on \(site)" }
+  public static func personFillTitle(_ entry: PersonActivityEntry) -> String {
+    entry.kind == .code ? "You filled a verification code" : "You filled \(entry.account)"
+  }
+  public static func personFillLocation(_ presence: Wire.FillPresence) -> String {
+    presence == .here ? "on this Mac" : "from another device"
+  }
   public static let agentSignIns = "Agents can use saved passwords and cards"
   public static let setUpLead = "Let agents sign in for you with passwords saved on this Mac."
   public static let setUpFacts = [

@@ -112,7 +112,9 @@ ledger decides this when the popup registers, from the opener's latest person in
 `Page.windowOpen` cannot decide it: a cross-site frame's event reaches only that frame's session, and
 a blocked attempt fires it too. The rule shares Chromium's user activation and its limit: an agent
 timer firing just after a person's input reads as theirs, as it does to Chromium. Any agent command
-after the input cancels the follow, which leaves the popup as a new row.
+after the input cancels the follow, which leaves the popup as a new row. Saved-login offers for a
+field a person activates reach only that viewer by the same rule ([Filling for
+people](passwords.md#filling-for-people)), and Watch never receives them.
 
 ## Profile state
 
