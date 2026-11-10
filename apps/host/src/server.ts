@@ -3000,6 +3000,7 @@ export function advertisedCapabilities(
     "iphone-apps-v1",
     "ownerViewWindows",
     "browser-target-control-v1",
+    "browser-backend-v1",
     "integration-app-finish-v1",
     "integration-app-return-port-v1",
     ...(dependencies.passkeys === true ? ["browser-passkeys-v1" as const] : []),

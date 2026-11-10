@@ -11,9 +11,11 @@ export interface BrowserFrame {
 }
 
 export function encodeBrowserFrame(frame: BrowserFrame): Buffer {
-  return Buffer.from(
-    encodeFrameEnvelope(BrowserBinaryFrameHeaderSchema.parse(frame.header), frame.data),
+  const encoded = encodeFrameEnvelope(
+    BrowserBinaryFrameHeaderSchema.parse(frame.header),
+    frame.data,
   );
+  return Buffer.from(encoded.buffer, encoded.byteOffset, encoded.byteLength);
 }
 
 export function decodeBrowserFrame(envelope: Buffer): BrowserFrame {

@@ -1332,11 +1332,14 @@ export class BrowserService {
     const homes = await this.#repository.listEligibleBrowserRunners(ownerId);
     const preferred = homes.find((home) => home.id === request?.runnerId);
     const main = this.#personal ? homes.find((home) => home.kind === "main") : undefined;
-    const selected =
-      preferred ??
-      main ??
-      (!this.#personal && !request && homes.length === 1 ? homes[0] : undefined);
+    const selected = preferred ?? main ?? (homes.length === 1 ? homes[0] : undefined);
     if (selected) return selected.id;
+    if (homes.length === 0)
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        reason: "browser-placement-unavailable",
+        message: "No computer can hold your browser profiles.",
+      });
     throw new OpensteerError({
       code: "conflict",
       reason: "browser-placement-ambiguous",

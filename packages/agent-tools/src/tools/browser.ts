@@ -132,7 +132,7 @@ export const browser_session_open = defineAgentTool({
   name: "browser_session_open",
   title: "Open a browser session",
   description:
-    "Attach by sessionId, or create with profileId or fresh: true (Guest); choose one. A profile opens only on its home, regardless of environmentId. Guest needs a browser computer running agents. Returns session/placement and wasExisting. Sessions outlive Runs; Guest data is lost on close. Name an offline home; never bypass a refusal with Guest, another profile or computer.",
+    "Attach by sessionId, or create with profileId or fresh: true (Guest); choose one. Profiles open only on their home, ignoring environmentId. Guest needs an agent computer or the server's managed browser service. Returns session/placement and wasExisting. Sessions outlive Runs; Guest data is lost on close. Name offline homes; never bypass refusals with Guest, another profile or computer.",
   input: z
     .strictObject({
       environmentId: EnvironmentIdSchema.optional().describe(

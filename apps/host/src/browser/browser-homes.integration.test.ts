@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 import { BrowserService, type BrowserRuntimePlacement } from "./browser-service.js";
 import { BrowserLocalProfiles } from "./browser-local-profiles.js";
+import { browserAccessResponse } from "@opensteer/client/host";
 
 async function setup(fixture: StoreFixture, personal = false) {
   const run = await fixture.createRunFixture(
@@ -192,7 +193,7 @@ describeStore("Host browser homes", (it) => {
     }
   });
 
-  it.for(["run", "main", "explicit", "ambiguous", "unavailable-run"] as const)(
+  it.for(["run", "main", "explicit", "ambiguous", "unavailable-run", "no-home"] as const)(
     "places an approved profile using %s",
     async (choice, { storeFixture: fixture }) => {
       const personal = choice === "main";
@@ -231,11 +232,17 @@ describeStore("Host browser homes", (it) => {
         runnerId: run.runnerId,
       });
       const home = await computer(fixture, run.userId, personal);
-      if (choice === "unavailable-run")
+      if (choice === "unavailable-run" || choice === "no-home")
         await fixture.database
           .updateTable("runners")
           .set({ allowedModules: sql`'["agents"]'::jsonb` })
           .where("id", "=", run.runnerId)
+          .execute();
+      if (choice === "no-home")
+        await fixture.database
+          .updateTable("runners")
+          .set({ allowedModules: sql`'["agents"]'::jsonb` })
+          .where("id", "=", home)
           .execute();
       const { browser } = service(fixture, {
         personal,
@@ -256,28 +263,38 @@ describeStore("Host browser homes", (it) => {
           reason: "Separate work identity",
           suggestion: { kind: "new", suggestedName: "Work" },
         });
-        const response = {
-          kind: "external" as const,
-          value: {
-            decision: "fulfilled",
-            createProfile: {
-              name: "Work",
-              ...(choice === "explicit" ? { homeRunnerId: home } : {}),
-            },
-          },
-        };
+        const response = browserAccessResponse(
+          { kind: "new" },
+          "Work",
+          choice === "explicit" ? home : null,
+        );
         const resolution = browser.resolveRequest({
           requestId: request.requestId,
           resolvedBy: run.userId,
           response,
         });
-        if (choice === "ambiguous" || choice === "unavailable-run") {
-          await expect(resolution).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
+        if (choice === "ambiguous" || choice === "no-home") {
+          await expect(resolution).rejects.toMatchObject({
+            reason:
+              choice === "no-home"
+                ? "browser-placement-unavailable"
+                : "browser-placement-ambiguous",
+          });
           expect((await fixture.store.requests.get(request.requestId))?.status).toBe("pending");
         } else {
           expect((await resolution).profile?.homeRunnerId).toBe(
             choice === "main" ? run.runnerId : home,
           );
+          if (choice === "unavailable-run")
+            expect(
+              (
+                await browser.createProfile({
+                  ownerId: run.userId,
+                  name: "Ordinary",
+                  idempotencyKey: "ordinary",
+                })
+              ).homeRunnerId,
+            ).toBe(home);
         }
       } finally {
         await browser.close();

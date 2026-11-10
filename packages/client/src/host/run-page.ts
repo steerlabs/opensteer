@@ -23,7 +23,7 @@ export const freshRunPageMemory: RunPageMemory = {
 
 /** What the person was doing when the agent first acted. */
 export interface RunPageMoment {
-  readonly cellular: boolean;
+  readonly cellular: boolean | null;
   readonly scrolledUp: boolean;
   readonly typing: boolean;
 }
@@ -38,6 +38,7 @@ export function runPageActed(
   runId: string,
   moment: RunPageMoment,
 ): RunPageMemory {
+  if (moment.cellular === null) return memory;
   if (memory.decidedRunId === runId) return memory;
   const opens = !memory.folded && !moment.scrolledUp && !moment.typing && !moment.cellular;
   return { ...memory, decidedRunId: runId, openRunId: opens ? runId : null };

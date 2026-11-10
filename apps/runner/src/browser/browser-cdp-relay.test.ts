@@ -67,40 +67,84 @@ afterEach(async () => {
 });
 
 describe("BrowserCdpRelay", () => {
+  it.each([false, true])(
+    "uses only advertised backend negotiation (advertised=%s)",
+    async (advertised) => {
+      const upstream = await fakeCdpServer(() => ({}), { advertised });
+      const relay = new BrowserCdpRelay({
+        url: upstream.url,
+        token: () => "run-capability-secret",
+        transport: developmentTransport,
+      });
+      try {
+        const url = await relay.start();
+        const sessionId = createBrowserSessionId();
+        const response = await fetch(`${url.replace(/^ws/u, "http")}/backend/${sessionId}`);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ sessionId, backend: "cdp", version: 1 });
+        await requestCdp(`${url}/${sessionId}`, 1, "Runtime.enable");
+        expect(upstream.httpPaths()).toEqual([
+          "/.well-known/opensteer",
+          ...(advertised ? [`/internal/v1/browser-backend/${sessionId}`] : []),
+        ]);
+        expect(upstream.paths()).toEqual([`/internal/v1/browser-cdp/${sessionId}`]);
+      } finally {
+        await relay.close();
+      }
+    },
+  );
+
   it.each([
-    "Browser Session bsn_00000000-0000-4000-8000-000000000001 has ended. Open a new one with browser_session_open.",
-    "Browser Session bsn_00000000-0000-4000-8000-000000000001 was not found. browser_session_list shows available sessions.",
-  ])("preserves the Host's actionable backend refusal: %s", async (message) => {
-    const sessionId = createBrowserSessionId();
-    const http = createServer((request, response) => {
-      expect(request.headers.authorization).toBe("Bearer run-capability-secret");
-      response.writeHead(403, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: { code: "forbidden", message, retryable: false } }));
-    });
-    heldHosts.push(() => http.close());
-    http.listen(0, "127.0.0.1");
-    await once(http, "listening");
-    const address = http.address();
-    if (!address || typeof address === "string") throw new Error("Refusal fixture did not bind");
-    const relay = new BrowserCdpRelay({
-      url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
-      token: () => "run-capability-secret",
-      transport: developmentTransport,
-    });
-    try {
-      const url = await relay.start();
-      await expect(
-        runBrowserHarness(
-          fileURLToPath(new URL("../../browser-harness/browser-harness.mjs", import.meta.url)),
-          "await pageInfo()",
-          url,
-          sessionId,
-        ),
-      ).rejects.toThrow(message);
-    } finally {
-      await relay.close();
-    }
-  });
+    {
+      status: 403,
+      message:
+        "Browser Session bsn_00000000-0000-4000-8000-000000000001 has ended. Open a new one with browser_session_open.",
+    },
+    {
+      status: 403,
+      message:
+        "Browser Session bsn_00000000-0000-4000-8000-000000000001 was not found. browser_session_list shows available sessions.",
+    },
+    { status: 404, message: "The advertised backend route is unavailable." },
+    { status: 503, message: "The browser service is unavailable." },
+  ])(
+    "preserves the Host's actionable backend refusal: $status $message",
+    async ({ status, message }) => {
+      const sessionId = createBrowserSessionId();
+      const http = createServer((request, response) => {
+        if (request.url === "/.well-known/opensteer") {
+          response.end(JSON.stringify({ capabilities: ["browser-backend-v1"] }));
+          return;
+        }
+        expect(request.headers.authorization).toBe("Bearer run-capability-secret");
+        response.writeHead(status, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { code: "forbidden", message, retryable: false } }));
+      });
+      heldHosts.push(() => http.close());
+      http.listen(0, "127.0.0.1");
+      await once(http, "listening");
+      const address = http.address();
+      if (!address || typeof address === "string") throw new Error("Refusal fixture did not bind");
+      const relay = new BrowserCdpRelay({
+        url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+        token: () => "run-capability-secret",
+        transport: developmentTransport,
+      });
+      try {
+        const url = await relay.start();
+        await expect(
+          runBrowserHarness(
+            fileURLToPath(new URL("../../browser-harness/browser-harness.mjs", import.meta.url)),
+            "await pageInfo()",
+            url,
+            sessionId,
+          ),
+        ).rejects.toThrow(message);
+      } finally {
+        await relay.close();
+      }
+    },
+  );
 
   it("negotiates once for the exact session and carries actions with the same Run bearer", async () => {
     let negotiations = 0;
@@ -115,6 +159,10 @@ describe("BrowserCdpRelay", () => {
       url: "https://example.test/",
     };
     const http = createServer((request, response) => {
+      if (request.url === "/.well-known/opensteer") {
+        response.end(JSON.stringify({ capabilities: ["browser-backend-v1"] }));
+        return;
+      }
       expect(request.url).toBe(`/internal/v1/browser-backend/${sessionId}`);
       expect(request.headers.authorization).toBe("Bearer run-capability-secret");
       negotiations++;
@@ -912,12 +960,28 @@ interface FakeCdpRequest {
   readonly params?: Record<string, unknown>;
 }
 
-async function fakeCdpServer(resultFor: (request: FakeCdpRequest) => unknown): Promise<{
+async function fakeCdpServer(
+  resultFor: (request: FakeCdpRequest) => unknown,
+  options: { advertised: boolean } = { advertised: true },
+): Promise<{
   readonly url: string;
   authorization(): string | undefined;
   paths(): readonly string[];
+  httpPaths(): readonly string[];
 }> {
+  const httpPaths: string[] = [];
   const http = createServer((request, response) => {
+    httpPaths.push(request.url ?? "");
+    if (request.url === "/.well-known/opensteer") {
+      response.end(
+        JSON.stringify({ capabilities: options.advertised ? ["browser-backend-v1"] : [] }),
+      );
+      return;
+    }
+    if (!options.advertised) {
+      response.writeHead(404).end();
+      return;
+    }
     const sessionId = request.url?.split("/").at(-1);
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ sessionId, backend: "cdp", version: 1 }));
@@ -942,6 +1006,7 @@ async function fakeCdpServer(resultFor: (request: FakeCdpRequest) => unknown): P
     });
   });
   return {
+    httpPaths: () => [...httpPaths],
     authorization: () => authorization,
     paths: () => [...paths],
     url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,

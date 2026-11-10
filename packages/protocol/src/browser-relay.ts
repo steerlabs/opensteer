@@ -276,7 +276,8 @@ export function validateBrowserRuntimeFrameBytes(value: Uint8Array): void {
 }
 
 export function encodeBrowserRelayFrame(header: BrowserRelayFrameHeader, frame: Buffer): Buffer {
-  return Buffer.from(encodeBrowserRelayFrameBytes(header, frame));
+  const encoded = encodeBrowserRelayFrameBytes(header, frame);
+  return Buffer.from(encoded.buffer, encoded.byteOffset, encoded.byteLength);
 }
 export function decodeBrowserRelayFrame(value: Buffer): {
   readonly frame: Buffer;

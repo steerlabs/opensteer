@@ -7781,6 +7781,16 @@ export const browserProfileHomesMigration: Migration = {
       create index browser_profiles_home_runner on browser_profiles(home_runner_id);
       alter table browser_profiles add constraint browser_profiles_home_storage_check
         check (storage_state <> 'local' or (home_runner_id is not null and storage_runner_id = home_runner_id));
+      create function adopt_browser_profile_storage_home() returns trigger language plpgsql as $$
+      begin
+        if new.storage_state = 'local' and new.home_runner_id is null then
+          new.home_runner_id := new.storage_runner_id;
+        end if;
+        return new;
+      end;
+      $$;
+      create trigger browser_profiles_adopt_storage_home before insert or update on browser_profiles
+        for each row execute function adopt_browser_profile_storage_home();
       create temporary table removed_browser_homes on commit drop as
         select p.id from browser_profiles p join runners r on r.id = p.home_runner_id where r.revoked_at is not null;
       update workspace_tabs set closed_at = coalesce(closed_at,now()) where group_id in (
