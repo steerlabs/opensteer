@@ -2,16 +2,15 @@ import { isDeepStrictEqual } from "node:util";
 import { sql } from "kysely";
 import { assertProjectAuthority } from "./deployment-execution-authority.js";
 import { jsonValue } from "./store-primitives.js";
-import { resolveAdmittedProjectRuntime } from "./project-runtime-settings-store.js";
 import {
-  HumanRootSchema,
-  ModelSelectionSchema,
-  ProjectRunBindingSchema,
-  type ProjectRunBinding,
-} from "@opensteer/core";
+  ProjectRuntimeSnapshotSchema,
+  resolveAdmittedProjectRuntime,
+} from "./project-runtime-settings-store.js";
+import { HumanRootSchema, ProjectRunBindingSchema, type ProjectRunBinding } from "@opensteer/core";
 import { deploymentPolicy } from "@opensteer/core";
 import {
   OpensteerError,
+  type HumanRoot,
   type EnvironmentId,
   type GrantId,
   type RunId,
@@ -295,6 +294,33 @@ function safeGeneration(value: string | number): number {
   return generation;
 }
 
+export function projectOriginFromRow(
+  row: Pick<
+    RunRow,
+    "requestedBy" | "membershipGeneration" | "initiatorGeneration" | "originConnectionId"
+  >,
+): HumanRoot | null {
+  if (row.requestedBy === null) {
+    if (
+      row.membershipGeneration !== null ||
+      row.initiatorGeneration !== null ||
+      row.originConnectionId !== null
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "invalid-root-shape",
+        message: "Stored Project work has an invalid human root",
+      });
+    return null;
+  }
+  return HumanRootSchema.parse({
+    userId: row.requestedBy,
+    membershipGeneration: Number(row.membershipGeneration),
+    initiatorGeneration: Number(row.initiatorGeneration),
+    originConnectionId: row.originConnectionId,
+  });
+}
+
 export async function projectWorkIsCurrent(
   database: Database,
   row: Pick<
@@ -348,15 +374,7 @@ export async function readProjectRunBinding(
     .executeTakeFirst();
   if (!row || row.principalKind !== "project" || row.principalWorkspaceId !== row.workspaceId)
     return null;
-  const origin =
-    row.requestedBy === null
-      ? null
-      : HumanRootSchema.parse({
-          userId: row.requestedBy,
-          membershipGeneration: Number(row.membershipGeneration),
-          initiatorGeneration: Number(row.initiatorGeneration),
-          originConnectionId: row.originConnectionId,
-        });
+  const origin = projectOriginFromRow(row);
   return {
     row,
     binding: ProjectRunBindingSchema.parse({
@@ -385,7 +403,10 @@ export async function readProjectRunBinding(
 export async function assertActiveProjectBinding(
   database: Database,
   input: ProjectRunBinding,
-  dependencies: { runnerIsConnected: (runnerId: RunnerId) => boolean; now?: () => number },
+  dependencies: {
+    runnerIsAttached: (runnerId: RunnerId, runnerBootId: string) => boolean;
+    now?: () => number;
+  },
 ) {
   const binding = ProjectRunBindingSchema.parse(input);
   await assertProjectAuthority(database);
@@ -414,14 +435,25 @@ export async function assertActiveProjectBinding(
       code: "forbidden",
       message: "Project execution authority has ended",
     });
+  const snapshot = ProjectRuntimeSnapshotSchema.safeParse(row.authoritySource.projectRuntime);
+  if (
+    !snapshot.success ||
+    snapshot.data.harnessInstanceId !== row.harnessInstanceId ||
+    !isDeepStrictEqual(snapshot.data.modelSelection, row.modelSelection) ||
+    snapshot.data.accessMode !== row.accessMode
+  )
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "admitted-runtime-snapshot-mismatch",
+      message: "Project Run has no matching admitted runtime snapshot",
+    });
   const runtime = await resolveAdmittedProjectRuntime(
     database,
     row.workspaceId,
-    {
-      harnessInstanceId: row.harnessInstanceId,
-      modelSelection: ModelSelectionSchema.parse(row.modelSelection),
-    },
-    dependencies.runnerIsConnected,
+    snapshot.data,
+    (runnerId) =>
+      runnerId === binding.runnerId &&
+      dependencies.runnerIsAttached(runnerId, binding.runnerBootId),
   );
   if (runtime.state !== "ready" || runtime.environmentId !== binding.environmentId)
     throw new OpensteerError({

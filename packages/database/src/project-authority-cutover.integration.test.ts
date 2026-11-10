@@ -197,6 +197,11 @@ describeStore("additive Project authority preparation", (it) => {
     const project = await createProjectIdentityFixture(storeFixture, "guarded-work");
     const fixture = await insertProjectRunFixture(storeFixture, project, "guarded-work");
     const database = storeFixture.database;
+    for (const mutation of ["model_selection = '{}'::jsonb", "access_mode = 'approval-required'"]) {
+      await expect(
+        sql`update runs set ${sql.raw(mutation)} where id = ${fixture.run.id}`.execute(database),
+      ).rejects.toMatchObject({ code: "23514" });
+    }
     for (const table of ["runs", "thread_inputs", "commands"]) {
       await expect(
         sql`insert into ${sql.id(table)} select (jsonb_populate_record(null::${sql.id(table)}, to_jsonb(row) || jsonb_build_object('initiator_generation', null, 'actor_principal_id', (select id from principals where user_id = ${fixture.userId})))).* from ${sql.id(table)} row ${table === "commands" ? sql`where type = 'run.execute.project'` : sql``} limit 1`.execute(
@@ -285,6 +290,11 @@ describeStore("additive Project authority preparation", (it) => {
         source: "export default async () => {}",
       },
     });
+    await database
+      .updateTable("triggerWatchActivations")
+      .set({ executionGeneration: 1 })
+      .where("triggerId", "=", created.trigger.id)
+      .execute();
     const activation = await database
       .selectFrom("triggerWatchActivations")
       .selectAll()
@@ -399,6 +409,7 @@ describeStore("additive Project authority preparation", (it) => {
               const freshDefinitions = await definitions();
               await sql`drop index thread_inputs_unattended_idempotency; drop index commands_unattended_idempotency;
         drop trigger runs_execution_authority on runs; drop trigger commands_execution_authority on commands;
+        drop trigger runs_admitted_project_settings on runs; drop function opensteer_project_run_settings_immutable();
         drop trigger thread_inputs_execution_authority on thread_inputs; drop function opensteer_enforce_input_execution_authority();
         drop trigger deployments_immutable_authority on deployments; drop function opensteer_prevent_deployment_authority_change();
         drop function opensteer_project_work_is_valid(text,text,text,bigint,bigint,text,jsonb);

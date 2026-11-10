@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   CommandIdSchema,
   HarnessInstanceIdSchema,
@@ -42,6 +43,16 @@ const settingsInput = z.strictObject({
     ),
   timeZone: TimeZoneSchema,
 });
+
+export const ProjectRuntimeSnapshotSchema = z.strictObject({
+  settingsRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  harnessInstanceId: HarnessInstanceIdSchema,
+  modelSelection: ModelSelectionSchema,
+  accessMode: ThreadAccessModeSchema,
+  instructions: z.string(),
+  timeZone: TimeZoneSchema,
+});
+export type ProjectRuntimeSnapshot = z.infer<typeof ProjectRuntimeSnapshotSchema>;
 
 export type ProjectRuntimeSettings = Omit<Selectable<ProjectRuntimeSettingsTable>, "revision"> & {
   revision: number;
@@ -109,6 +120,7 @@ async function selectedRuntime(
       "harnessInstances.stateKind",
       "runners.id as runnerId",
       "runners.ownerKind",
+      "runners.ownerUserId",
       "runners.revokedAt",
       "runners.updateRequired",
       "runners.capabilities",
@@ -118,6 +130,7 @@ async function selectedRuntime(
   if (
     !instance ||
     instance.ownerKind !== "deployment" ||
+    instance.ownerUserId !== null ||
     instance.environmentId !== workspace.ownerEnvironmentId ||
     !instance.enabled ||
     instance.removedAt ||
@@ -330,7 +343,7 @@ export async function resolveProjectRuntime(
 ): Promise<ProjectRuntimeResolution> {
   const settings = await getProjectRuntimeSettings(database, workspaceId);
   if (!settings) return { state: "unavailable", reason: "not-configured" };
-  const runtime = await resolveAdmittedProjectRuntime(
+  const runtime = await resolveSelectedProjectRuntime(
     database,
     workspaceId,
     settings,
@@ -339,7 +352,7 @@ export async function resolveProjectRuntime(
   return runtime;
 }
 
-export async function resolveAdmittedProjectRuntime<
+async function resolveSelectedProjectRuntime<
   Settings extends Pick<ProjectRuntimeSettings, "harnessInstanceId" | "modelSelection">,
 >(
   database: Kysely<DatabaseSchema>,
@@ -366,4 +379,26 @@ export async function resolveAdmittedProjectRuntime<
     settings: { ...settings, modelSelection: runtime.modelSelection },
     environmentId: runtime.instance.environmentId,
   } as const;
+}
+
+export async function resolveAdmittedProjectRuntime<
+  Settings extends Pick<ProjectRuntimeSettings, "harnessInstanceId" | "modelSelection">,
+>(
+  database: Kysely<DatabaseSchema>,
+  workspaceId: WorkspaceId,
+  settings: Settings,
+  runnerIsConnected: (runnerId: RunnerId) => boolean,
+) {
+  const runtime = await resolveSelectedProjectRuntime(
+    database,
+    workspaceId,
+    settings,
+    runnerIsConnected,
+  );
+  if (
+    runtime.state === "ready" &&
+    !isDeepStrictEqual(runtime.settings.modelSelection, settings.modelSelection)
+  )
+    return { state: "unavailable", reason: "model-unavailable" } as const;
+  return runtime;
 }

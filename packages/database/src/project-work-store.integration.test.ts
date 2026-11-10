@@ -1,5 +1,15 @@
+import { issueRunGrant } from "./run-grants.js";
+import { settleAssignmentAfterRun } from "./assignment-store.js";
+import { runFromRow, messageFromRow } from "./thread-row-mappers.js";
+import { assertActiveProjectBinding, readProjectRunBinding } from "./execution-authority.js";
 import { randomUUID } from "node:crypto";
-import { ProjectRunBindingSchema, HumanRootSchema, createId } from "@opensteer/core";
+import {
+  type RunId,
+  type RunnerId,
+  ProjectRunBindingSchema,
+  HumanRootSchema,
+  createId,
+} from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { expect } from "vitest";
@@ -135,17 +145,22 @@ describeStore("Project principal lookup", (it) => {
 
 async function prepareProjectAdmission(storeFixture: StoreFixture, running = false) {
   const project = await createProjectIdentityFixture(storeFixture, "admission");
-  const prepared = await insertProjectRunFixture(
+  let prepared = await insertProjectRunFixture(
     storeFixture,
     project,
     "existing-thread",
     project.userId,
-    running ? "running" : "queued",
+    "queued",
   );
   const database = storeFixture.database;
-  if (!running) {
+  {
     await database.deleteFrom("commands").where("runId", "=", prepared.run.id).execute();
     await database.deleteFrom("runs").where("id", "=", prepared.run.id).execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "cancelled", cancelReason: "fixture-seed-retired" })
+      .where("messageId", "=", prepared.turn.input.messageId)
+      .execute();
   }
   await database
     .updateTable("threads")
@@ -207,8 +222,199 @@ async function prepareProjectAdmission(storeFixture: StoreFixture, running = fal
     membershipGeneration: 1,
     originConnectionId: null,
   });
-  const store = new ProjectWorkStore(database, { runnerIsConnected: () => true });
+  const store = new ProjectWorkStore(database, {
+    runnerIsConnected: () => true,
+    runnerIsAttached: () => true,
+  });
+  if (running) {
+    const admitted = await store.admitProjectWork({
+      threadId: prepared.thread.id,
+      origin,
+      source: { kind: "human" },
+      content: [{ type: "text", text: "bound parent" }],
+      policy: "queue",
+      idempotencyKey: "bound-parent",
+    });
+    if (!admitted.runId || !admitted.commandId) throw new Error("Parent fixture was not admitted");
+    await bindProjectRun(storeFixture, admitted.runId, project.runnerId);
+    const run = runFromRow(
+      await database
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", admitted.runId)
+        .executeTakeFirstOrThrow(),
+    );
+    const message = messageFromRow(
+      await database
+        .selectFrom("messages")
+        .selectAll()
+        .where("id", "=", admitted.input.messageId)
+        .executeTakeFirstOrThrow(),
+    );
+    const command = await database
+      .selectFrom("commands")
+      .selectAll()
+      .where("id", "=", admitted.commandId)
+      .executeTakeFirstOrThrow();
+    prepared = { ...prepared, run, turn: { run, message, input: admitted.input, command } };
+  }
   return { project, prepared, database, origin, store };
+}
+
+async function bindProjectRun(fixture: StoreFixture, runId: RunId, runnerId: RunnerId) {
+  const grantId = await fixture.database.transaction().execute(async (transaction) => {
+    const run = await transaction
+      .selectFrom("runs")
+      .selectAll()
+      .where("id", "=", runId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    const thread = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", run.threadId)
+      .executeTakeFirstOrThrow();
+    await transaction
+      .selectFrom("workspaces")
+      .select("id")
+      .where("id", "=", thread.workspaceId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .selectFrom("providerSessions")
+      .select("id")
+      .where("threadId", "=", thread.id)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    await transaction
+      .updateTable("providerSessions")
+      .set({ active: false })
+      .where("threadId", "=", thread.id)
+      .execute();
+    await transaction
+      .updateTable("providerSessions")
+      .set({
+        active: true,
+        status: "running",
+        runnerId,
+        runnerBootId: "result-boot",
+        bindingGeneration: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        leaseTokenHash: "fixture-lease",
+      })
+      .where("id", "=", run.providerSessionId)
+      .execute();
+    await transaction
+      .updateTable("runs")
+      .set({ status: "running", bindingGeneration: 1, startedAt: new Date() })
+      .where("id", "=", runId)
+      .execute();
+    return (
+      await issueRunGrant(transaction, {
+        runId,
+        runnerId,
+        runnerBootId: "result-boot",
+        bindingGeneration: 1,
+        modelSelection: testModelSelection,
+      })
+    ).grantId;
+  });
+  const saved = await readProjectRunBinding(fixture.database, { runId, grantId });
+  if (!saved) throw new Error("Project binding fixture was not retained");
+  return saved.binding;
+}
+
+async function completedProjectAssignment(fixture: StoreFixture) {
+  const context = await prepareProjectAdmission(fixture);
+  const { project, prepared, database, origin, store } = context;
+  const parent = await store.admitProjectWork({
+    threadId: prepared.thread.id,
+    origin,
+    source: { kind: "human" },
+    content: [{ type: "text", text: "parent task" }],
+    policy: "queue",
+    idempotencyKey: "parent",
+  });
+  if (!parent.runId) throw new Error("Parent was not queued");
+  const binding = await bindProjectRun(fixture, parent.runId, project.runnerId);
+  const child = await store.delegateProjectWork({
+    binding,
+    title: "Check",
+    content: [{ type: "text", text: "report the answer" }],
+    idempotencyKey: randomUUID(),
+  });
+  await bindProjectRun(fixture, child.runId, project.runnerId);
+  await database.transaction().execute(async (transaction) => {
+    const run = await transaction
+      .selectFrom("runs")
+      .selectAll()
+      .where("id", "=", child.runId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .selectFrom("workspaces")
+      .select("id")
+      .where("id", "=", project.workspace.id)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    const thread = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", child.threadId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .selectFrom("delegations")
+      .select("id")
+      .where("id", "=", child.assignmentId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable("threadInputs")
+      .set({ state: "delivered", runId: run.id, deliveredAt: new Date() })
+      .where("messageId", "=", run.seedInputId)
+      .execute();
+    await transaction
+      .insertInto("messages")
+      .values({
+        id: createId("message"),
+        threadId: thread.id,
+        runId: run.id,
+        sequence: thread.nextMessageSequence,
+        kind: "assistant",
+        actorPrincipalId: run.actorPrincipalId,
+        author: jsonValue({
+          kind: "agent",
+          runId: run.id,
+          threadId: thread.id,
+          workspaceId: project.workspace.id,
+          workspaceName: project.workspace.name,
+          displayName: "Project",
+        }),
+        content: jsonValue([{ type: "text", text: "The answer" }]),
+        createdAt: new Date(),
+      })
+      .execute();
+    await transaction
+      .updateTable("threads")
+      .set({ nextMessageSequence: sql<string>`next_message_sequence + 1` })
+      .where("id", "=", thread.id)
+      .execute();
+    await transaction
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", run.id)
+      .execute();
+    await settleAssignmentAfterRun(transaction, {
+      assignmentId: child.assignmentId,
+      failureSummary: null,
+      finishedAt: new Date(),
+      run: { id: run.id, threadId: run.threadId },
+      status: "completed",
+    });
+  });
+  return { ...context, parent, child };
 }
 
 describeStore("Project work admission", (it) => {
@@ -480,7 +686,10 @@ describeStore("Project work admission", (it) => {
         return args.result;
       },
     });
-    const raced = new ProjectWorkStore(measured, { runnerIsConnected: () => true });
+    const raced = new ProjectWorkStore(measured, {
+      runnerIsConnected: () => true,
+      runnerIsAttached: () => true,
+    });
     const input = {
       threadId: prepared.thread.id,
       origin,
@@ -521,5 +730,292 @@ describeStore("Project work admission", (it) => {
         timeoutError: () => new Error("Admission race cleanup did not settle"),
       });
     }
+  });
+  it("recovers a pending exchange from immutable input settings and never re-roots it", async ({
+    storeFixture,
+  }) => {
+    const { project, prepared, database, origin, store } =
+      await prepareProjectAdmission(storeFixture);
+    const input = {
+      threadId: prepared.thread.id,
+      origin,
+      source: { kind: "human" as const },
+      content: [{ type: "text" as const, text: "first" }],
+      policy: "queue" as const,
+      idempotencyKey: "recovery-first",
+    };
+    const first = await store.admitProjectWork(input);
+    const pending = await store.admitProjectWork({
+      ...input,
+      idempotencyKey: "recovery-next",
+      content: [{ type: "text", text: "next" }],
+    });
+    await database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", first.runId)
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "delivered", runId: first.runId, deliveredAt: new Date() })
+      .where("messageId", "=", first.input.messageId)
+      .execute();
+    const settings = await database
+      .selectFrom("projectRuntimeSettings")
+      .selectAll()
+      .where("workspaceId", "=", project.workspace.id)
+      .executeTakeFirstOrThrow();
+    await setProjectRuntimeSettings(
+      database,
+      { userId: project.userId, authorityGeneration: 1 },
+      {
+        workspaceId: project.workspace.id,
+        expectedAccessRevision: 1,
+        expectedSettingsRevision: Number(settings.revision),
+        commandIdentity: createId("command"),
+        harnessInstanceId: prepared.harnessInstance.id,
+        modelSelection: testModelSelection,
+        accessMode: "approval-required",
+        instructions: "Changed after admission",
+        timeZone: "America/Chicago",
+      },
+    );
+    const recovered = await store.recoverPendingProjectWork(prepared.thread.id);
+    expect(recovered.state).toBe("queued");
+    const run = await database
+      .selectFrom("runs")
+      .selectAll()
+      .where("id", "=", recovered.runId)
+      .executeTakeFirstOrThrow();
+    expect(run).toMatchObject({
+      seedInputId: pending.input.messageId,
+      requestedBy: origin.userId,
+      initiatorGeneration: "1",
+      membershipGeneration: "1",
+      accessMode: "full-access",
+      authoritySource: {
+        projectRuntime: { settingsRevision: 1, instructions: "Project only", timeZone: "UTC" },
+      },
+    });
+    expect((await store.recoverPendingProjectWork(prepared.thread.id)).runId).toBe(run.id);
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("id")
+        .where("threadId", "=", prepared.thread.id)
+        .execute(),
+    ).toHaveLength(2);
+    await database
+      .updateTable("runs")
+      .set({ status: "failed", completedAt: new Date() })
+      .where("id", "=", run.id)
+      .execute();
+    await database
+      .updateTable("users")
+      .set({ authorityGeneration: "2" })
+      .where("id", "=", origin.userId)
+      .execute();
+    const cancelled = await store.recoverPendingProjectWork(prepared.thread.id);
+    expect(cancelled.state).toBe("cancelled");
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["state", "cancelReason", "initiatorGeneration"])
+        .where("messageId", "=", pending.input.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      state: "cancelled",
+      cancelReason: "execution-authority-unavailable",
+      initiatorGeneration: "1",
+    });
+  });
+  it("returns a child's stored result into its original Project exchange, idempotently", async ({
+    storeFixture,
+  }) => {
+    const { database, store, project, prepared, parent, child } =
+      await completedProjectAssignment(storeFixture);
+    const delivered = await store.deliverAssignmentResult(child.assignmentId);
+    expect(delivered.state).toBe("delivered");
+    expect(await store.deliverAssignmentResult(child.assignmentId)).toEqual({
+      state: "settled",
+      events: [],
+    });
+    const assignment = await database
+      .selectFrom("delegations")
+      .selectAll()
+      .where("id", "=", child.assignmentId)
+      .executeTakeFirstOrThrow();
+    expect(assignment).toMatchObject({ resultStatus: "delivered", resultRunId: child.runId });
+    const receipt = await database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("messageId", "=", assignment.resultMessageId)
+      .executeTakeFirstOrThrow();
+    expect(receipt).toMatchObject({
+      threadId: prepared.thread.id,
+      actorPrincipalId: project.principalId,
+      requestedBy: project.userId,
+      initiatorGeneration: "1",
+      membershipGeneration: "1",
+      originConnectionId: null,
+      authoritySource: { kind: "workspace-membership", parentRunId: parent.runId },
+    });
+    expect(
+      await database
+        .selectFrom("messages")
+        .select(["kind", "content"])
+        .where("id", "=", receipt.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ kind: "continuation", content: [{ type: "text", text: "The answer" }] });
+    expect(delivered.events.filter((event) => event.type === "assignment.updated")).toHaveLength(2);
+  });
+
+  it("makes a departed root's result explicitly undeliverable while retaining both Project task cards", async ({
+    storeFixture,
+  }) => {
+    const { database, store, project, child } = await completedProjectAssignment(storeFixture);
+    const before = await database.selectFrom("threadInputs").select("messageId").execute();
+    await database
+      .updateTable("users")
+      .set({ authorityGeneration: "2" })
+      .where("id", "=", project.userId)
+      .execute();
+    const result = await store.deliverAssignmentResult(child.assignmentId);
+    expect(result.state).toBe("undeliverable");
+    expect(await database.selectFrom("threadInputs").select("messageId").execute()).toEqual(before);
+    expect(
+      await database
+        .selectFrom("delegations")
+        .select(["resultStatus", "resultReason"])
+        .where("id", "=", child.assignmentId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ resultStatus: "undeliverable", resultReason: "execution-authority-unavailable" });
+    expect(result.events.filter((event) => event.type === "assignment.updated")).toHaveLength(2);
+  });
+  it("creates Chat from Project settings with the actual human root as attribution, and refuses a missing configuration", async ({
+    storeFixture,
+  }) => {
+    const { project, database, origin, store, prepared } =
+      await prepareProjectAdmission(storeFixture);
+    const userId = await storeFixture.store.createUser("Project member");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date() })
+      .where("id", "=", userId)
+      .execute();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: project.workspace.id,
+        userId,
+        role: "collaborator",
+        state: "active",
+        generation: 1,
+        invitedBy: project.userId,
+        joinedAt: new Date(),
+        revokedAt: null,
+        revokedBy: null,
+        updatedAt: new Date(),
+      })
+      .execute();
+    const memberRoot = HumanRootSchema.parse({ ...origin, userId });
+    const request = {
+      workspaceId: project.workspace.id,
+      origin: memberRoot,
+      title: "Chat",
+      role: "conversation" as const,
+      home: true,
+      idempotencyKey: "chat",
+    };
+    const created = await store.createProjectThread(request);
+    expect(created.thread).toMatchObject({
+      createdBy: userId,
+      harnessInstanceId: prepared.harnessInstance.id,
+      accessMode: "full-access",
+    });
+    expect(
+      await database
+        .selectFrom("threads")
+        .select(["createdBy", "createdByPrincipalId"])
+        .where("id", "=", created.thread.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ createdBy: userId, createdByPrincipalId: project.principalId });
+    expect((await store.createProjectThread(request)).thread.id).toBe(created.thread.id);
+    expect(
+      (await store.createProjectThread({ ...request, origin, idempotencyKey: "another-person" }))
+        .thread.id,
+    ).toBe(created.thread.id);
+    expect(
+      (
+        await database
+          .selectFrom("workspaces")
+          .select("homeThreadId")
+          .where("id", "=", project.workspace.id)
+          .executeTakeFirstOrThrow()
+      ).homeThreadId,
+    ).toBe(created.thread.id);
+    await database
+      .deleteFrom("projectRuntimeSettings")
+      .where("workspaceId", "=", project.workspace.id)
+      .execute();
+    const before = await database.selectFrom("threads").select("id").execute();
+    await expect(
+      store.createProjectThread({
+        ...request,
+        origin,
+        home: false,
+        role: "work",
+        title: "No configuration",
+        idempotencyKey: "unconfigured",
+      }),
+    ).rejects.toMatchObject({ reason: "not-configured" });
+    expect(await database.selectFrom("threads").select("id").execute()).toEqual(before);
+  });
+  it("refuses a superseded Runner boot and a changed native model without changing the admitted binding", async ({
+    storeFixture,
+  }) => {
+    const { prepared, project, database } = await prepareProjectAdmission(storeFixture, true);
+    const grant = await database
+      .selectFrom("grants")
+      .select("id")
+      .where("runId", "=", prepared.run.id)
+      .where("status", "=", "active")
+      .executeTakeFirstOrThrow();
+    const saved = await readProjectRunBinding(database, {
+      runId: prepared.run.id,
+      grantId: grant.id,
+    });
+    if (!saved) throw new Error("Missing admitted binding");
+    await expect(
+      assertActiveProjectBinding(database, saved.binding, { runnerIsAttached: () => false }),
+    ).rejects.toMatchObject({ reason: "computer-offline" });
+    await assertActiveProjectBinding(database, saved.binding, {
+      runnerIsAttached: (id, boot) =>
+        id === project.runnerId && boot === saved.binding.runnerBootId,
+    });
+    const row = await database
+      .selectFrom("harnessCatalogs")
+      .select("catalog")
+      .where("harnessInstanceId", "=", prepared.harnessInstance.id)
+      .executeTakeFirstOrThrow();
+    if (row.catalog.status !== "ready") throw new Error("Project fixture has no model catalog");
+    await database
+      .updateTable("harnessCatalogs")
+      .set({
+        catalog: jsonValue({
+          ...row.catalog,
+          models: row.catalog.models.map((model) => ({
+            ...model,
+            nativeModelId: "different-provider-model",
+          })),
+        }),
+      })
+      .where("harnessInstanceId", "=", prepared.harnessInstance.id)
+      .execute();
+    await expect(
+      assertActiveProjectBinding(database, saved.binding, { runnerIsAttached: () => true }),
+    ).rejects.toMatchObject({ reason: "model-unavailable" });
+    expect((await readProjectRunBinding(database, saved.binding))?.binding).toEqual(saved.binding);
   });
 });

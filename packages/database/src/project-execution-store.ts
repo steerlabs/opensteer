@@ -1,6 +1,6 @@
+import { projectOriginFromRow } from "./execution-authority.js";
 import {
   createId,
-  HumanRootSchema,
   OpensteerError,
   ProjectRunBindingSchema,
   type ProjectRunBinding,
@@ -131,15 +131,7 @@ export class ProjectExecutionStore implements ProjectRequestControlPort {
         code: "forbidden",
         message: "Project control binding is unavailable",
       });
-    const origin =
-      run.requestedBy === null
-        ? null
-        : HumanRootSchema.parse({
-            userId: run.requestedBy,
-            initiatorGeneration: Number(run.initiatorGeneration),
-            membershipGeneration: Number(run.membershipGeneration),
-            originConnectionId: run.originConnectionId,
-          });
+    const origin = projectOriginFromRow(run);
     const durable = ProjectRunBindingSchema.parse({
       authority: {
         version: 1,
