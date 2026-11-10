@@ -643,6 +643,29 @@ describe("phone browser manager", () => {
     expect(fixture.presentation().state).toBe("retained");
   });
 
+  test("an agent attaching to a tab a person woke owns it after that person leaves", async () => {
+    const fixture = await setup();
+    await fixture.client({
+      type: "cdp.command",
+      requestId: uuid(),
+      command: {
+        method: "Opensteer.resumeTab",
+        parameters: { surfaceId: fixture.surfaceId },
+      },
+    });
+    await fixture.client({ type: "stream.subscribe", surfaceId: fixture.surfaceId });
+    await fixture.agentAttach();
+    await fixture.action({ type: "surface.attach" });
+    await fixture.client({ type: "stream.unsubscribe", surfaceId: fixture.surfaceId });
+    expect(fixture.presentation().state).toBe("live-covered");
+    await fixture.client({
+      type: "agent.detach",
+      sessionId: fixture.sessionId,
+      attachmentId: fixture.attachmentId,
+    });
+    expect(fixture.presentation().state).toBe("retained");
+  });
+
   test("releasing an old picture cannot retain a newly claimed tab, and every receiver must leave", async () => {
     const fixture = await setup();
     await fixture.open("second");

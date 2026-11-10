@@ -1117,8 +1117,7 @@ export class PhoneBrowserManager {
         )
           throw new PhoneBrowserError("stale-geometry", "The page geometry changed.");
         if (action.type === "surface.resume" || action.type === "surface.attach") {
-          if (action.type === "surface.resume")
-            await this.#claimCovered(tab, { channel, attachmentId: message.attachmentId });
+          await this.#claimCovered(tab, { channel, attachmentId: message.attachmentId });
           result = { type: action.type, binding: actionBinding(tab) };
         } else if (action.type === "surface.close") {
           await this.#closeTab(session, tab);
@@ -1446,12 +1445,14 @@ export class PhoneBrowserManager {
       )
         throw new PhoneBrowserError(
           "target-suspended",
-          "The phone's browser is busy with another agent's tab.",
+          owner
+            ? "Another agent is using this phone's browser."
+            : "An agent is using this phone's browser.",
         );
       if (previous && !previous.owner && !owner && this.#hasReceivers(previous.tabId))
         throw new PhoneBrowserError(
           "target-suspended",
-          "Someone is still viewing the phone's other browser tab.",
+          "Another device is using this phone's browser.",
         );
       if (previous) {
         const held = this.#tabs.get(previous.tabId);
