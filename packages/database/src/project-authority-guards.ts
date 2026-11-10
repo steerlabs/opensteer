@@ -66,7 +66,7 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
       join public.principals p on p.workspace_id = w.id and p.kind = 'project' and p.id = actor
       join public.execution_environments e on e.id = t.environment_id
       join public.runners r on r.id = e.runner_id
-      join public.harness_instances h on h.id = t.harness_instance_id
+      join public.harness_instances h on h.id = coalesce(source #>> '{projectRuntime,harnessInstanceId}', t.harness_instance_id)
       where t.id = work_thread and w.kind = 'project'
         and w.deleted_at is null and w.status not in ('deleting', 'deleted')
         and e.id = w.owner_environment_id and r.owner_kind = 'deployment' and r.revoked_at is null
@@ -74,6 +74,16 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
         and h.environment_id = e.id and h.state_kind = 'isolated'
         and h.driver_kind in ('codex', 'claude') and h.enabled and h.removed_at is null
         and not t.inherits_main and t.specialist_id is null
+        and (not source ? 'parentRunId' or exists (
+          select 1 from public.runs parent join public.threads pt on pt.id = parent.thread_id
+          where parent.id = source->>'parentRunId' and pt.workspace_id = w.id
+            and parent.actor_principal_id = actor
+            and parent.requested_by is not distinct from requester
+            and parent.membership_generation is not distinct from scoped
+            and parent.initiator_generation is not distinct from global_generation
+            and parent.origin_connection_id is not distinct from connection_id
+            and parent.authority_source - 'projectRuntime' - 'parentRunId' = source - 'projectRuntime' - 'parentRunId'
+        ))
         and (
           (requester is null and scoped is null and global_generation is null and connection_id is null)
           or (requester is not null and scoped between 1 and 9007199254740991 and global_generation is not null and exists (
@@ -131,7 +141,7 @@ declare stored_model integer; stored_kind text;
           if not public.opensteer_project_work_is_valid(new.thread_id, new.actor_principal_id, new.requested_by, new.membership_generation, new.initiator_generation, new.origin_connection_id, new.authority_source) or not exists (
             select 1 from public.threads t join public.thread_inputs i on i.message_id = new.seed_input_id
             where t.id = new.thread_id and t.environment_id = new.environment_id
-              and t.harness_instance_id = new.harness_instance_id and i.thread_id = t.id
+              and coalesce(new.authority_source #>> '{projectRuntime,harnessInstanceId}', t.harness_instance_id) = new.harness_instance_id and i.thread_id = t.id
               and i.actor_principal_id = new.actor_principal_id
               and i.requested_by is not distinct from new.requested_by
               and i.membership_generation is not distinct from new.membership_generation
