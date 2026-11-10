@@ -134,14 +134,21 @@ internal class CaptureCredit {
 }
 
 internal class InputSequences {
-  private data class Lane(val generation: Long, val start: Long, val sequence: Long)
+  private data class Lane(val generation: Long, val sequence: Long)
   private val lanes = mutableMapOf<Pair<String, String>, Lane>()
+  fun accept(channel: String, message: Map<String, Any?>) {
+    val sequence = NativeIntegers.parse((message["inputSequence"] as? Number)?.toDouble() ?: Double.NaN)
+    accept(channel, message["producerId"] as? String ?: throw BrowserFailure("forbidden"),
+      NativeIntegers.parse((message["inputGeneration"] as? Number)?.toDouble() ?: Double.NaN),
+      if (message["inputSequenceStart"] == null) sequence else NativeIntegers.parse((message["inputSequenceStart"] as? Number)?.toDouble() ?: Double.NaN),
+      sequence)
+  }
   fun accept(channel: String, producer: String, generation: Long, start: Long, sequence: Long) {
     if (producer.isBlank() || generation < 0 || start < 0 || sequence < start) throw BrowserFailure("forbidden")
     val key = channel to producer
     val old = lanes[key]
-    if (old != null && (generation < old.generation || generation == old.generation && (start != old.start || sequence <= old.sequence))) throw BrowserFailure("stale-input")
-    lanes[key] = Lane(generation, start, sequence)
+    if (old != null && (generation < old.generation || generation == old.generation && start <= old.sequence)) throw BrowserFailure("stale-input")
+    lanes[key] = Lane(generation, sequence)
   }
   fun clear() = lanes.clear()
 }

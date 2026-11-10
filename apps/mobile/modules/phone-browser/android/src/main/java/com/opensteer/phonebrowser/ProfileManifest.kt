@@ -48,6 +48,17 @@ internal class ProfileManifest(read: () -> String?, private val write: (String) 
   }
 
   fun all() = entries.toList()
+  fun retireDeployment(deploymentId: String) {
+    replace(entries.map { entry ->
+      if (entry.binding.deploymentId == deploymentId && entry.deletionId == null)
+        entry.copy(deletionId = UUID.randomUUID().toString())
+      else entry
+    })
+  }
+  fun requireGuestsErased(deploymentId: String) {
+    if (entries.any { it.binding.deploymentId == deploymentId && it.guest && !it.deleted })
+      throw com.opensteer.phoneconnection.core.Refused("erasure-pending")
+  }
   fun inventory(deploymentId: String, runnerId: String) = entries.filter { it.binding.deploymentId == deploymentId && it.binding.runnerId == runnerId && !it.guest }
   fun byHandle(handle: String) = entries.find { it.handle == handle } ?: throw BrowserFailure("profile-missing")
   fun find(binding: ProfileBinding): ProfileEntry? {

@@ -179,8 +179,11 @@ holds no grants. Grants decide which agents may use a profile, never whether its
 Guest state cannot be promoted, so choose the profile before signing in.
 
 Deletion revokes grants and schedules erasure on the owning computer (`pending-computer` while it is
-offline). Electron keeps a Session until exit, so an opened profile stays `pending-restart` until
-the next start erases it: never move or delete a live Session directory to finish sooner.
+offline). Electron keeps a Session until exit, and Android WebView cannot delete a loaded profile,
+so an opened profile stays `pending-restart` until the next start erases it: never move or delete a
+live store directory to finish sooner. Android retirement remains `erasure-pending` until Guest
+stores are deleted too. Its durable retiring identity survives interruption before tombstoning;
+startup completes that erasure before any profile can load.
 
 Removing a computer deletes its homed profiles in the same transaction. Their storage erasure is
 terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device

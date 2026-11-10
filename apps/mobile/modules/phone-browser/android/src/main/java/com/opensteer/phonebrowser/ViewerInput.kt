@@ -32,7 +32,7 @@ internal class ViewerInput(private val pool: PhoneBrowserPool, private val emit:
         if (message.optLong("geometryRevision", -1) != tab.geometryRevision) throw BrowserFailure("stale-geometry")
         if (message.has("captureRevision") && tab.frameRevisions[input.channelId]?.contains(message.getLong("captureRevision")) != true) throw BrowserFailure("stale-geometry")
       }
-      tab.inputSequences.accept(input.channelId, message.optString("producerId"), NativeIntegers.parse(message.optDouble("inputGeneration",Double.NaN)), NativeIntegers.parse(message.optDouble("inputSequenceStart",Double.NaN)), NativeIntegers.parse(message.optDouble("inputSequence",Double.NaN)))
+      tab.inputSequences.accept(input.channelId, input.message)
       channels.getOrPut(tab.id) { mutableSetOf() }.add(input.channelId)
       val browser = tab.view ?: throw BrowserFailure("target-suspended")
       when (type) {

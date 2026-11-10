@@ -44,7 +44,7 @@ internal class PhoneBrowserRuntime(
     "sharedControl" to false, "agentActions" to false, "cdpBoundary" to false, "fileStaging" to false)
   private val services = PhoneBrowserServices(gate, connection::browser,
     { handle -> profiles().manifest.byHandle(handle).binding.fields() },
-    { artifact -> foreground && artifact.isCurrent() }, capture::rejected)
+    { artifact -> foreground && artifact.isCurrent() }, capture::completed)
   private val endpoint = object : PhoneBrowserEndpoint {
     override fun qualification(deploymentId: String, runnerId: String): JsonObject = nativeJson(
       if (this@PhoneBrowserRuntime.deploymentId == deploymentId && this@PhoneBrowserRuntime.runnerId == runnerId) qualified
@@ -58,7 +58,7 @@ internal class PhoneBrowserRuntime(
       files.close()
       pool.ui(epoch) {
         downloads.bind(deploymentId); downloads.erase()
-        if (entries.any { it.guest && !profiles().manifest.byHandle(it.handle).deleted }) throw BrowserFailure("profile-erasure-pending")
+        profiles().manifest.requireGuestsErased(deploymentId)
         nativeJson(profiles().list(deploymentId, runnerId)) as JsonArray
       }
     }, popupWorker)
@@ -249,7 +249,7 @@ internal class PhoneBrowserRuntime(
   }
   fun mount(input: MountRecord): Map<String, Any?> {
     requireReady(input.epoch)
-    pool.ui(input.epoch) { pool.check(input); if (input.presentationGeneration < 0) throw BrowserFailure("stale-presentation") }
+    pool.ui(input.epoch) { val tab = pool.check(input); profiles().serving(tab.storeHandle); if (input.presentationGeneration < 0) throw BrowserFailure("stale-presentation") }
     pool.mount(input.epoch, input.tabId, input.hostId, input.presentationGeneration)
     return pool.ui(input.epoch) { val tab = pool.check(input); tab.interactive = input.interactive; tab.view?.isEnabled = input.interactive; pool.changed(tab); pool.metadata(tab) }
   }
@@ -259,7 +259,7 @@ internal class PhoneBrowserRuntime(
       if (input.presentationGeneration < tab.presentationGeneration) throw BrowserFailure("stale-presentation")
       tab.presentationGeneration = input.presentationGeneration
     }
-    if (pool.ui(input.epoch) { pool.ledger.state(input.tabId) } == TabState.LIVE) pool.cover(input.epoch, input.tabId)
+    pool.park(input.epoch, input.tabId)
   }
   fun resize(input: ResizeRecord): Map<String, Any?> {
     requireReady(input.epoch)

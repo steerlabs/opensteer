@@ -41,6 +41,7 @@ internal class NativeProfiles(context: Context) {
         try { Os.fsync(directory) } finally { Os.close(directory) }
       } catch (error: Throwable) { file.failWrite(stream); throw BrowserFailure("profile-manifest-write-failed") }
     })
+    com.opensteer.phoneconnection.PhoneConnectionRuntime.get(context).retiringDeployment()?.let(manifest::retireDeployment)
     for (entry in manifest.all().filter { it.deletionId != null }) {
       if (ProfileStore.getInstance().allProfileNames.contains(entry.name)) {
         if (!ProfileStore.getInstance().deleteProfile(entry.name)) throw BrowserFailure("profile-erasure-failed")

@@ -93,8 +93,28 @@ class TransportTest {
         val replay = fixture.transport.verifyAttach(fixture.admission.epoch, second)
         refused { ReplayState.parse(replay.obj("replayState"), 4096).claim(claims.text("nonce"), claims.time("expiresAt"), fixture.now, 4096) }
     }
-    @Test fun `queued native pixels are dropped on background channel close or lease expiry`() {
-        for (loss in listOf("epoch", "channel", "expiry", "capability")) {
+    @Test fun `live capability renewal preserves channels attachments queued frames and epoch`() {
+        val fixture = Fixture(); fixture.admit(); fixture.agent()
+        val epoch = fixture.admission.epoch
+        var delivered: Boolean? = null
+        fixture.transport.frame(epoch, fixture.channelId, vector("frames").obj("header"), byteArrayOf(1)) { delivered = it }
+        val next = JsonObject(fixture.capability + mapOf("capabilityGeneration" to JsonPrimitive(2), "capabilityLeaseId" to JsonPrimitive("bcl_22222222-2222-4222-8222-222222222222")))
+        fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.grant"), "requestId" to JsonPrimitive("renewal"),
+            "lease" to JsonObject(next + ("expiresAt" to JsonPrimitive("2026-11-09T12:00:02.000Z"))))))
+        assertEquals(epoch, fixture.admission.epoch)
+        fixture.transport.send(epoch, JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.accepted"), "requestId" to JsonPrimitive("renewal"), "capability" to next)))
+        assertEquals("attachment", fixture.transport.requireAgent(epoch, fixture.channelId, "actor").attachmentId)
+        fixture.runQueued()
+        assertEquals(true, delivered)
+        assertEquals(next, FrameCodec.decodeRelay(fixture.socket.bytes.single()).first.obj("capability"))
+        refused { fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("browser.client-message"), "channelId" to JsonPrimitive(fixture.channelId),
+            "capability" to fixture.capability, "message" to Wire.fields("type" to JsonPrimitive("agent.detach"), "attachmentId" to JsonPrimitive("attachment"))))) }
+        fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.revoke"), "requestId" to JsonPrimitive("revoke"), "capability" to next)))
+        assertTrue(fixture.admission.epoch > epoch)
+        refused { fixture.transport.requireAgent(fixture.admission.epoch, fixture.channelId, "actor") }
+    }
+    @Test fun `queued native pixels are dropped on background channel close revocation or lease expiry`() {
+        for (loss in listOf("epoch", "channel", "expiry", "revocation")) {
             val fixture = Fixture()
             fixture.admit()
             val frame = vector("frames")
@@ -104,9 +124,8 @@ class TransportTest {
             when (loss) {
                 "epoch" -> fixture.transport.fence()
                 "channel" -> fixture.transport.closeChannel(fixture.admission.epoch, fixture.channelId)
-                "capability" -> fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.grant"),
-                    "requestId" to JsonPrimitive("replacement"), "lease" to JsonObject(fixture.capability + mapOf("capabilityGeneration" to JsonPrimitive(2),
-                        "expiresAt" to JsonPrimitive("2026-11-09T12:00:01.000Z"))))))
+                "revocation" -> fixture.transport.receive(JsonObject(fixture.fences.obj("fence") + mapOf("type" to JsonPrimitive("capability.revoke"),
+                    "requestId" to JsonPrimitive("revoke"), "capability" to fixture.capability)))
                 else -> fixture.now += 1000
             }
             fixture.runQueued()
@@ -114,17 +133,20 @@ class TransportTest {
             assertTrue(fixture.socket.bytes.isEmpty())
         }
     }
-    @Test fun `native frame credit requires the exact token and frames stay ordered`() {
+    @Test fun `native frame credit ends on write completion without minting Host Watch tokens`() {
         val fixture = Fixture(); fixture.admit()
         val header = vector("frames").obj("header")
+        var forged = true
+        fixture.transport.frame(fixture.admission.epoch, fixture.channelId, JsonObject(header + ("watchToken" to JsonPrimitive("11111111-1111-4111-8111-111111111111"))), byteArrayOf(1)) { forged = it }
+        assertFalse(forged); assertTrue(fixture.queue.isEmpty())
         fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, byteArrayOf(1)) {}
+        fixture.tick += 125_000_000
+        fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, byteArrayOf(2)) {}
+        assertEquals(1, fixture.queue.size)
         fixture.runQueued()
         val first = FrameCodec.decodeRelay(fixture.socket.bytes.single())
-        val token = FrameCodec.split(first.second).first.text("watchToken")
-        fixture.transport.ack(fixture.admission.epoch, fixture.channelId, "wrong")
-        fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, byteArrayOf(2)) {}
-        fixture.runQueued(); assertEquals(1, fixture.socket.bytes.size)
-        fixture.transport.ack(fixture.admission.epoch, fixture.channelId, token)
+        assertFalse(FrameCodec.split(first.second).first.containsKey("watchToken"))
+        fixture.tick = 0
         fixture.transport.frame(fixture.admission.epoch, fixture.channelId, header, byteArrayOf(3)) {}
         fixture.runQueued(); assertEquals(1, fixture.socket.bytes.size)
         fixture.tick += 125_000_000

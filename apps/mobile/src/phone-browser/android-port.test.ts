@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { FakePhoneBrowserNative } from "./fake-native.test-support.js";
 import { composeAndroidBrowserPort } from "./android-port.js";
 import { PhoneBrowserError, type PhoneBrowserNativeEvent } from "./native-port.js";
@@ -22,7 +23,7 @@ test("Android qualifies the views before reading connection evidence and uses on
   expect(connection.calls.map(({ method }) => method)).toContain("setForeground");
 });
 
-test("native popup refusal reaches CDP unchanged", async () => {
+test("native popup and viewer input refusals retain their typed reason", async () => {
   const views = new FakePhoneBrowserNative("android");
   const sentence =
     "A page opened this tab and this phone cannot hand it to an agent; open its address in a new tab instead.";
@@ -41,6 +42,25 @@ test("native popup refusal reaches CDP unchanged", async () => {
       attachmentId: "attachment",
     }),
   ).rejects.toEqual(new PhoneBrowserError("unsupported-operation", sentence));
+  vi.spyOn(views, "applyViewerInput").mockRejectedValue(
+    Object.assign(new Error("The drawn page geometry changed."), { code: "stale-geometry" }),
+  );
+  await expect(
+    port.applyViewerInput({
+      epoch: 0,
+      sessionId: "session",
+      tabId: "page",
+      generation: 1,
+      documentId: "document",
+      geometryRevision: 1,
+      channelId: "channel",
+      message: {
+        type: "clipboard.paste",
+        surfaceId: BrowserSurfaceIdSchema.parse("page"),
+        text: "viewer typed",
+      },
+    }),
+  ).rejects.toEqual(new PhoneBrowserError("stale-geometry", "The drawn page geometry changed."));
 });
 
 test("CDP dialogs, answers and cancellation interrupt unfinished relay work in ingress order", async () => {

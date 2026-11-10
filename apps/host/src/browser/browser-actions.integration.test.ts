@@ -570,6 +570,39 @@ integration("session-scoped browser agent backends", () => {
       { sessionId: opened.session.id },
     );
     expect(refusal).toMatchObject({ error: { code: "unsupported-operation" } });
+    const nativeCdp = await connect(
+      `ws://127.0.0.1:${f.host.hostPort}/internal/v1/browser-cdp/${opened.session.id}`,
+      f.bearer(f.run.toolsToken),
+    );
+    nativeCdp.send(JSON.stringify({ id: 1, method: "Target.getTargets" }));
+    await vi.waitFor(
+      () => {
+        const commands = chromium.receivedCommands();
+        const attachment = commands.find((message) => message.type === "agent.attach");
+        const query = commands.find((message) => message.type === "cdp.command");
+        expect(attachment, "The phone never received CDP attachment authority").toMatchObject({
+          backend: "cdp",
+          sessionId: opened.session.id,
+          actorToken: expect.any(String),
+          attachmentId: expect.any(String),
+        });
+        expect(query).toMatchObject({ actorToken: attachment!.actorToken });
+        expect(commands.indexOf(attachment!)).toBeLessThan(commands.indexOf(query!));
+      },
+      { timeout: 2_000 },
+    );
+    nativeCdp.close();
+    await vi.waitFor(
+      () =>
+        expect(
+          chromium.receivedCommands().find((message) => message.type === "agent.detach"),
+        ).toMatchObject({
+          attachmentId: chromium
+            .receivedCommands()
+            .find((message) => message.type === "agent.attach")!.attachmentId,
+        }),
+      { timeout: 2_000 },
+    );
     const cdp = await connect(
       `ws://127.0.0.1:${f.host.hostPort}/internal/v1/browser-cdp/${f.sessionId}`,
       f.bearer(f.run.toolsToken),
