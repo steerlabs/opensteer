@@ -158,6 +158,7 @@ async function run(): Promise<void> {
       checkDeployments: unused,
       connectPrivate: unused,
       createPersonalDeployment: unused,
+      deploymentPolicy: unused,
       linkPersonal: unused,
       reauthorize: unused,
       refreshDirectory: unused,
