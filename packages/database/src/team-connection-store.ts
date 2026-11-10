@@ -123,7 +123,7 @@ export async function revokeTeamConnection(
             membershipGeneration: root.membershipGenerationCutoff,
             membershipGenerationCutoff: root.membershipGenerationCutoff,
             accessRoot: jsonValue(root),
-            causeId: input.idempotencyKey,
+            causeId: `team.connection.revoke:${actor.userId}:${input.idempotencyKey}`,
             status: "pending",
             nextAttemptAt: now,
             createdAt: now,

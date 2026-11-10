@@ -123,8 +123,22 @@ describeStore("connected-agent team incarnations", (it) => {
       await database
         .selectFrom("securityEffects")
         .select("accessRoot")
-        .where("causeId", "=", command.idempotencyKey)
+        .where("userId", "=", fixture.userId)
         .execute(),
     ).toEqual([{ accessRoot: roots[0] }]);
+    const administrator = await storeFixture.store.createUser("Another administrator");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date(), instanceRole: "administrator" })
+      .where("id", "=", administrator)
+      .execute();
+    await revokeTeamConnection(
+      database,
+      { userId: administrator },
+      { ...command, connectionId: second.id },
+      work,
+    );
+    expect(await store.authenticate("e".repeat(64))).toBeNull();
+    expect(roots).toHaveLength(2);
   });
 });
