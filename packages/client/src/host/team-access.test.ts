@@ -1,4 +1,3 @@
-import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
   TeamCommandSchema,
   TeamInvitationSelectorSchema,
@@ -13,6 +12,7 @@ import {
   changeLevelChanges,
   createTeamInvitationDraft,
   parseTeamInvitationUrl,
+  teamInvitationTokenHash,
   teamInvitationUrl,
 } from "./team-access.js";
 import { accessPaths } from "./team-presentation.js";
@@ -22,7 +22,11 @@ describe("team invitation material", () => {
     const draft = createTeamInvitationDraft();
     expect(TeamInvitationSelectorSchema.safeParse(draft.selector).success).toBe(true);
     expect(TeamInvitationVerifierSchema.safeParse(draft.verifier).success).toBe(true);
-    expect(draft.tokenHash).toBe(digestSecret(draft.verifier));
+    expect(draft.tokenHash).toBe(teamInvitationTokenHash(draft.verifier));
+    // The Host's digestSecret: hex SHA-256 of the UTF-8 text.
+    expect(teamInvitationTokenHash("mockTeamInviteVerifier000000000000000000001")).toBe(
+      "3e6618d07c99c5cf76511ad76115362f1c0fc5f33a09f528905d3d66fbb3d351",
+    );
 
     const url = new URL(teamInvitationUrl("https://acme.example/app", draft));
     expect(url.pathname).toBe(`/join/${draft.selector}`);
@@ -124,7 +128,11 @@ describe("access changes", () => {
           { kind: "group", groupId: success, name: "Customer success" },
           "use",
         ),
-        entry("00000000-0000-4000-a000-000000000003", { ...person, name: "Sam Lee" }, "use"),
+        entry(
+          "00000000-0000-4000-a000-000000000003",
+          { ...person, name: "Sam Lee" } as never,
+          "use",
+        ),
       ],
       groups: [
         { id: support, name: "Support team", builtin: null },

@@ -49,10 +49,19 @@ export type InvitePreviewView = TeamReadOutput<"team.invitation.preview">;
  */
 export class TeamAccess {
   readonly #port: TeamPort;
+  readonly #listeners = new Set<() => void>();
   #summary: TeamSummaryView | null = null;
 
   constructor(port: TeamPort) {
     this.#port = port;
+  }
+
+  /** Called after every command the Host commits, so open screens read again. */
+  onChange(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
   }
 
   /** Revalidates the cached summary; a Host that answers not-modified costs no body. */
@@ -225,7 +234,7 @@ export class TeamAccess {
   ): Promise<CommandResult<Type>> {
     const result = await this.#port.dispatch(command);
     if (result.type !== type) throw new Error(`The Host answered ${type} with ${result.type}.`);
-    this.#summary = null;
+    for (const listener of this.#listeners) listener();
     return result as CommandResult<Type>;
   }
 }

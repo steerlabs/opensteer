@@ -54,7 +54,7 @@ describe("the shared team mock", () => {
           input: unknown,
         ) => Promise<{ ok: boolean; data?: unknown; error?: { reason?: string } }>;
         const result = await call(input);
-      if (scenario === "admin") expect(result.ok ? null : result.error, name).toBeNull();
+        if (scenario === "admin") expect(result.ok ? null : result.error, name).toBeNull();
         if (result.ok) {
           expect(() => teamReadSchemas[name].output.parse(result.data), name).not.toThrow();
         } else {
@@ -70,7 +70,7 @@ describe("the shared team mock", () => {
     const host = client("admin");
     const team = new TeamAccess(host);
     const revision = async () => (await team.summary()).accessRevision;
-    const results = [
+    const results: unknown[] = [
       await team.createProject(await revision(), { name: "Support", color: "sky" }),
       await team.applyAccess(await revision(), [
         { kind: "create-group", id: "00000000-0000-4000-9000-0000000000aa", name: "Design" },
@@ -98,7 +98,9 @@ describe("the shared team mock", () => {
     });
     results.push(created, await team.revokeInvitation(await revision(), created.invitationId));
     for (const result of results) expect(() => TeamCommandResultSchema.parse(result)).not.toThrow();
-    expect(new Set(results.map(({ type }) => type)).size).toBe(8);
+    expect(new Set(results.map((result) => TeamCommandResultSchema.parse(result).type)).size).toBe(
+      8,
+    );
     host.dispose();
   });
 
