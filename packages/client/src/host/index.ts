@@ -90,3 +90,6 @@ export * from "./harness-authentication.js";
 export * from "./account-name.js";
 export * from "./ai-accounts.js";
 export * from "./model-servers.js";
+
+export * from "./subagent-model.js";
+export * from "./node-detail.js";
