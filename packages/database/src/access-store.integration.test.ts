@@ -7,7 +7,6 @@ import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test
 import { migrateToLatest, migrationProvider } from "./migrations.js";
 import { expect } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-primitives.js";
 import { testModelSelection } from "./store.integration.test-support.js";
 import {
