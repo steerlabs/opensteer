@@ -94,8 +94,13 @@ import WebKit
     return held.store
   }
 
+  func adoptGuest(_ handle: String, from previous: String, to session: String) throws {
+    guard let existing = held[handle], existing.binding == nil, existing.sessionId == previous || existing.sessionId == session else { throw BrowserRefusal.bindingMismatch }
+    held[handle] = HeldStore(store: existing.store, binding: nil, sessionId: session)
+  }
+
   func inventory(_ deployment: String) -> [[String: Any]] {
-    manifest.entries.filter { $0.binding.deploymentId == deployment }.map { entry in
+    manifest.inventory(deploymentId: deployment, runnerId: runnerId).map { entry in
       var result: [String: Any] = ["binding": bindingDictionary(entry.binding), "phase": entry.deletionId == nil ? "ready" : "deleted"]
       if let deletion = entry.deletionId {
         result["deletionId"] = deletion.uuidString.lowercased()

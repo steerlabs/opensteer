@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   initialize: vi.fn<() => Promise<void>>(),
   dispose: vi.fn(async () => {}),
   foreground: vi.fn(async (_active: boolean) => {}),
+  erase: vi.fn(async () => {}),
 }));
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
@@ -23,6 +24,7 @@ vi.mock("./manager.js", () => ({
     initialize = state.initialize;
     dispose = state.dispose;
     setForeground = state.foreground;
+    eraseDeployment = state.erase;
   },
 }));
 
@@ -46,4 +48,46 @@ test("leaving foreground fences an initializing manager before qualification com
   expect(state.dispose).toHaveBeenCalledOnce();
   initialization.resolve();
   await vi.waitFor(() => expect(state.foreground).not.toHaveBeenCalled());
+});
+
+test("erasure waits for lifecycle disposal instead of racing a second native deletion", async () => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  state.initialize.mockResolvedValue();
+  const disposal = Promise.withResolvers<void>();
+  state.dispose.mockReturnValue(disposal.promise);
+  const { startPhoneBrowserRuntime } = await import("./runtime.js");
+  let enrollment: ReturnType<PhoneBrowserPlatform["getEnrollment"]> = {
+    deploymentId: "deployment",
+    runnerId: "runner",
+  };
+  let changed = () => {};
+  let erase: (deploymentId: string) => Promise<void> = async () => {};
+  startPhoneBrowserRuntime({
+    getEnrollment: () => enrollment,
+    subscribeEnrollment: (listener) => {
+      changed = listener;
+      return () => {};
+    },
+    loadNativePort: async () => new FakePhoneBrowserNative(),
+    subscribeErasure: (listener) => {
+      erase = listener;
+      return () => {};
+    },
+    retryErasure: async () => {},
+  });
+  await vi.waitFor(() => expect(state.foreground).toHaveBeenCalledWith(true));
+  enrollment = null;
+  changed();
+  let confirmed = false;
+  const retired = erase("deployment").then(() => {
+    confirmed = true;
+  });
+  await Promise.resolve();
+  expect(confirmed).toBe(false);
+  expect(state.erase).not.toHaveBeenCalled();
+  disposal.resolve();
+  await retired;
+  expect(confirmed).toBe(true);
+  expect(state.dispose).toHaveBeenCalledOnce();
 });

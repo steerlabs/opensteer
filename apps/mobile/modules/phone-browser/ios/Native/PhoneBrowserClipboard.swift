@@ -52,7 +52,7 @@ import Foundation
       let primitive = BrowserActionInput()
       primitive.epoch = input.epoch; primitive.tabId = tab.id; primitive.documentId = tab.documentId
       primitive.contextId = tab.contextId; primitive.action.kind = "text.copy"
-      let result = try await perform(primitive, viewer: true)
+      let result = try await perform(primitive, viewer: true, authorization: { _ = try self.authorize(input, viewer: true) })
       _ = try authorize(input, viewer: true)
       guard let text = result["text"] as? String else { throw BrowserRefusal.notActionable }
       let bytes = Data(text.utf8)
@@ -100,7 +100,7 @@ import Foundation
     primitive.epoch = input.epoch; primitive.tabId = tab.id; primitive.documentId = tab.documentId
     primitive.contextId = paste.contextId; primitive.action.kind = "text.paste"; primitive.action.text = text
     _ = try authorize(input, viewer: true)
-    _ = try await perform(primitive, viewer: true)
+    _ = try await perform(primitive, viewer: true, authorization: { _ = try self.authorize(input, viewer: true) })
     clipboardReply(tab, channel: paste.channelId, operation: operation, consumer: paste.consumerToken, outcome: "pasted")
   }
 }

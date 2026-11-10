@@ -288,13 +288,28 @@ describe("phone browser manager", () => {
     await fixture.present();
     const original = fixture.native.tabs.get(fixture.surfaceId)!;
     original.form = "verification code";
+    await fixture.open("discarded");
+    await fixture.native.emit({
+      type: "memoryPressure",
+      epoch: fixture.reference().epoch,
+      level: "critical",
+    });
+    const discarded = fixture.native.tabs.get("discarded")!;
+    discarded.metadata = { ...discarded.metadata, documentId: "" };
+    await fixture.native.emit({
+      type: "documentChanged",
+      ...fixture.reference("discarded"),
+      metadata: discarded.metadata,
+    });
     await fixture.open("dormant");
     fixture.native.tabs.get("dormant")!.form = "second form";
     const generation = original.metadata.generation;
     await fixture.manager.setForeground(false);
     await fixture.manager.setForeground(true);
     const sessionId = `bsn_${uuid()}`;
-    await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant"] });
+    await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
+    expect(fixture.presentation("discarded").state).toBe("discarded");
+    expect(fixture.native.tabs.get("discarded")!.loads).toBe(1);
     expect(fixture.native.tabs.get(fixture.surfaceId)).toMatchObject({
       sessionId,
       form: "verification code",
@@ -1556,6 +1571,13 @@ test("descriptors declare only the actually qualified platform abilities", () =>
       phoneBrowserDescriptor({ ...native.qualification, cdpBoundary: false }),
     ).not.toHaveProperty("cdpBoundary");
     expect(phoneBrowserDescriptor({ ...native.qualification, browser: false })).toBeUndefined();
+    const viewingOnly = phoneBrowserDescriptor({
+      ...native.qualification,
+      agentActions: false,
+      fileStaging: true,
+    });
+    expect(viewingOnly).toMatchObject({ sharedControl: 1, basicInput: 1, fileStaging: true });
+    expect(viewingOnly).not.toHaveProperty("agentActions");
     const runner = phoneBrowserRunnerDescriptor(native.qualification, {
       runnerId: fences.fence.runnerId as never,
       bootId: fences.fence.bootId as never,

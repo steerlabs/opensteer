@@ -36,7 +36,10 @@ test("a dialog and its answer pass an unfinished action on the composed event st
   try {
     const action = transport.emit({
       type: "relayCommand",
-      message: { type: "browser.client-message", message: { type: "agent.action" } },
+      message: {
+        type: "browser.client-message",
+        message: { type: "agent.action", request: { action: { type: "dom.act" } } },
+      },
     } as PhoneBrowserNativeEvent);
     await vi.waitFor(() => expect(seen).toEqual(["relayCommand"]));
     const dialog = views.emit({ type: "dialog" } as PhoneBrowserNativeEvent);

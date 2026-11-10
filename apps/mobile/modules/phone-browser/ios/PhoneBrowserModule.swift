@@ -33,12 +33,18 @@ struct BrowserTabInput: Record {
   @Field var generation: Int = -1
 }
 
+struct BrowserRestoreRef: Record {
+  @Field var sessionId: String = ""
+  @Field var generation: Int = -1
+}
+
 struct BrowserCreateInput: Record {
   @Field var epoch: Int = -1
   @Field var tabId: String = ""
   @Field var sessionId: String = ""
   @Field var storeHandle: String?
   @Field var allocationPermit: String = ""
+  @Field var restoreFrom: BrowserRestoreRef?
   @Field var state: String = "live"
   @Field var navigationId: String?
   @Field var viewport: BrowserViewport = BrowserViewport()

@@ -11,8 +11,9 @@ import WebKit
     return nil
   }
 
-  func perform(_ input: BrowserActionInput, viewer: Bool) async throws -> [String: Any] {
+  func perform(_ input: BrowserActionInput, viewer: Bool, authorization: (() throws -> Void)? = nil) async throws -> [String: Any] {
     try gate.check(input.epoch)
+    try authorization?()
     let textLimit = viewer && input.action.kind == "text.paste" ? 16 * 1024 * 1024 : 432 * 1024
     guard foreground, (1...30000).contains(input.timeoutMs), input.action.text.utf8.count <= textLimit,
       (input.action.selector?.utf8.count ?? 0) <= 16384 else { throw BrowserRefusal.invalidArgument }
@@ -49,7 +50,7 @@ import WebKit
     } else { frame = nil }
     switch action.kind {
     case "helper.ping":
-      return try await helper(tab, function: "ping", frame: frame, epoch: input.epoch, timeoutMs: input.timeoutMs) as? [String: Any] ?? ["ready": false]
+      return try await helper(tab, function: "ping", frame: frame, epoch: input.epoch, timeoutMs: input.timeoutMs, authorization: authorization) as? [String: Any] ?? ["ready": false]
     case "pointer.tap", "file.choose":
       guard let view = tab.webView, action.x.isFinite, action.y.isFinite,
         action.x >= 0, action.y >= 0, action.x < view.bounds.width, action.y < view.bounds.height else { throw BrowserRefusal.notActionable }
@@ -61,13 +62,14 @@ import WebKit
       if let window = view.window { try protectResponder(view, window: window) }
       guard tab.geometryRevision == input.geometryRevision else { throw BrowserRefusal.staleGeometry }
       guard try await helper(tab, function: "tap", arguments: ["argument": ["x": action.x, "y": action.y,
-        "selector": action.selector as Any? ?? NSNull()]], frame: frame, epoch: input.epoch, timeoutMs: input.timeoutMs) as? Bool == true else {
+        "selector": action.selector as Any? ?? NSNull()]], frame: frame, epoch: input.epoch, timeoutMs: input.timeoutMs, authorization: authorization) as? Bool == true else {
         throw BrowserRefusal.notActionable
       }
       activity(tab, kind: viewer ? "viewer" : "agent", pointer: ["x": action.x, "y": action.y], actorToken: input.actorToken)
       return ["submitted": true]
     case "scroll":
       return try gate.perform(input.epoch) {
+        try authorization?()
         guard action.deltaX.isFinite, action.deltaY.isFinite, let scroll = tab.webView?.scrollView else { throw BrowserRefusal.invalidArgument }
         let inset = scroll.adjustedContentInset
         let x = ScrollAnchor.clamped(target: scroll.contentOffset.x + action.deltaX, content: scroll.contentSize.width,
@@ -80,7 +82,7 @@ import WebKit
       }
     case "text.copy":
       guard viewer, !tab.secureInput else { throw BrowserRefusal.unsupportedOperation }
-      return ["text": try await helper(tab, function: "selection", frame: frame, epoch: input.epoch, timeoutMs: input.timeoutMs)]
+      return ["text": try await helper(tab, function: "selection", frame: frame, epoch: input.epoch, timeoutMs: input.timeoutMs, authorization: authorization)]
     case "text.insert", "text.paste", "text.backspace", "text.enter", "text.selectAll", "text.mark", "text.unmark", "focus":
       if action.kind == "text.paste", !viewer { throw BrowserRefusal.unsupportedOperation }
       guard let view = tab.webView, let window = view.window else { throw BrowserRefusal.notActionable }
@@ -88,9 +90,10 @@ import WebKit
       if let context = input.contextId, context != tab.contextId { throw BrowserRefusal.notActionable }
       if let selector = action.selector {
         guard try await helper(tab, function: "focus", arguments: ["argument": selector], frame: frame,
-          epoch: input.epoch, timeoutMs: input.timeoutMs) as? Bool == true else { throw BrowserRefusal.notActionable }
+          epoch: input.epoch, timeoutMs: input.timeoutMs, authorization: authorization) as? Bool == true else { throw BrowserRefusal.notActionable }
       } else if tab.contextId == nil { throw BrowserRefusal.notActionable }
       return try gate.perform(input.epoch) {
+        try authorization?()
         guard foreground, state.tabs[tab.id] == .live, tab.webView === view else { throw BrowserRefusal.targetSuspended }
         guard tab.documentId == input.documentId else { throw BrowserRefusal.staleDocument }
         try protectResponder(view, window: window)

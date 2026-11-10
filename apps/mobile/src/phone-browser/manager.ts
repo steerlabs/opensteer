@@ -1140,6 +1140,8 @@ export class PhoneBrowserManager {
             `bsf_${this.#uuid()}`,
             action.url ?? "about:blank",
             action.viewport,
+            undefined,
+            `action:${message.requestId}`,
           );
           this.#assertEpoch(channel.epoch);
           if (this.#attachments.get(message.attachmentId)?.channel !== channel)
@@ -1384,6 +1386,7 @@ export class PhoneBrowserManager {
     url: string,
     viewport = { width: 390, height: 760 },
     navigationId?: string,
+    allocationPermit = session.allocationPermit,
   ): Promise<PhoneTab> {
     BrowserSurfaceIdSchema.parse(id);
     if (session.closing)
@@ -1418,7 +1421,7 @@ export class PhoneBrowserManager {
         epoch,
         tabId: id,
         sessionId: session.claims.sessionId,
-        allocationPermit: session.allocationPermit,
+        allocationPermit,
         storeHandle: session.storeHandle,
         state: "retained",
         ...(restore
@@ -1457,7 +1460,17 @@ export class PhoneBrowserManager {
       });
       throw new PhoneBrowserError("target-closed", "The tab closed while opening.");
     }
-    const tab = this.#newTab(session, id, metadata, null);
+    const tab = this.#newTab(
+      session,
+      id,
+      metadata,
+      null,
+      restore ? retained.lastDocumentId : undefined,
+    );
+    if (restore && retained.state === "discarded") {
+      tab.state = "discarded";
+      this.#publishTab(tab);
+    }
     await this.#trimRetained();
     return tab;
   }
@@ -1467,8 +1480,9 @@ export class PhoneBrowserManager {
     id: string,
     metadata: NativeTabMetadata,
     openerId: string | null,
+    lastDocumentId = metadata.documentId,
   ): PhoneTab {
-    if (!metadata.documentId)
+    if (!lastDocumentId)
       throw new PhoneBrowserError("stale-document", "A committed document is required.");
     const tab: PhoneTab = {
       id,
@@ -1476,6 +1490,7 @@ export class PhoneBrowserManager {
       order: session.revision,
       openerId,
       metadata,
+      lastDocumentId,
       state: "retained",
       dialog: null,
       lastUsed: ++this.#lru,
@@ -1770,6 +1785,7 @@ export class PhoneBrowserManager {
       tab.editingContextId = null;
     }
     tab.metadata = metadata;
+    if (metadata.documentId) tab.lastDocumentId = metadata.documentId;
     return true;
   }
 
@@ -1827,7 +1843,7 @@ export class PhoneBrowserManager {
       active: session.activeId === tab.id,
       title: tab.metadata.title,
       url: tab.metadata.url,
-      documentId: tab.metadata.documentId,
+      ...(tab.metadata.documentId ? { documentId: tab.metadata.documentId } : {}),
       geometryRevision: tab.metadata.geometryRevision,
       loading: tab.metadata.loading,
       navigationFailed: tab.metadata.navigationFailed,
@@ -2163,7 +2179,7 @@ function connectionKey(fence: RunnerAuxiliaryFrameFence): string {
 function actionBinding(tab: PhoneTab): z.infer<typeof BrowserActionBindingSchema> {
   return {
     surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
-    documentId: tab.metadata.documentId,
+    documentId: tab.metadata.documentId || tab.lastDocumentId,
     geometryRevision: tab.metadata.geometryRevision,
     state: isLive(tab) ? "live" : "suspended",
     title: tab.metadata.title,

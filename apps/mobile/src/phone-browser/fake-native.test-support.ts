@@ -90,6 +90,13 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   }
 
   async emit(event: PhoneBrowserNativeEvent): Promise<void> {
+    if (
+      event.type === "relayCommand" &&
+      event.message.type === "browser.client-message" &&
+      event.message.message.type === "agent.action" &&
+      event.message.message.request.action.type === "surface.open"
+    )
+      this.permits.add(`action:${event.message.message.requestId}`);
     await Promise.all([...this.#listeners].map((listener) => listener(event)));
   }
   onEvent(listener: (event: PhoneBrowserNativeEvent) => Promise<void>) {

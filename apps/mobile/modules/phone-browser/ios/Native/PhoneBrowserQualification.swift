@@ -7,6 +7,7 @@ import WebKit
     var checks: [String] = []
     var fileStaging = false
     var failure: String?
+    var agentFailure: String?
     var stage = "store"
     let session = "qualification-\(UUID().uuidString)"
     let id = "bsf_\(UUID().uuidString.lowercased())"
@@ -30,7 +31,7 @@ import WebKit
       <select id=select><option value=a>A</option><option value=b>B</option></select>
       <button id=button onclick="document.getElementById('status').textContent=event.isTrusted?'trusted':'script'">Go</button>
       <button id=dialog onclick="confirm('qualification')">Dialog</button>
-      <input id=file type=file style='width:200px;height:50px'><pre id=status></pre><pre id=trusted></pre>
+      <input id=file type=file style='position:fixed;left:20px;top:200px;width:200px;height:50px'><pre id=status></pre><pre id=trusted></pre>
       <script>document.getElementById('text').addEventListener('input',e=>document.getElementById('trusted').textContent=String(e.isTrusted));</script>
       """
       tab.readiness.provisional()
@@ -44,6 +45,9 @@ import WebKit
           throw BrowserHelperRefusal(code: error["code"] ?? "not-actionable", description: "Conformance helper refused")
         }
         guard let result = reply?["result"] as? [String: Any] else { throw BrowserRefusal.notActionable }
+        if name != "commit", result["kind"] as? String == "script-activation", let planId = result["planId"] as? String {
+          return try await invoke("commit", ["planId": planId])
+        }
         return result
       }
       func query(_ selector: String, _ read: String) async throws -> Any? {
@@ -79,34 +83,6 @@ import WebKit
       guard try await query("#text", "inputValue") as? String == "replacemen" else { throw BrowserRefusal.notActionable }
       try await text("text.enter")
       checks.append("trusted-text-and-keys")
-      stage = "person-responder-protection"
-      view.endEditing(true)
-      let person = UITextField(frame: CGRect(x: 0, y: 0, width: 150, height: 40))
-      window.addSubview(person)
-      defer { person.resignFirstResponder(); person.removeFromSuperview() }
-      guard person.becomeFirstResponder() else { throw BrowserRefusal.notActionable }
-      do { try await text("text.insert", value: "must-refuse"); throw BrowserRefusal.forbidden }
-      catch BrowserRefusal.notActionable {}
-      guard person.isFirstResponder else { throw BrowserRefusal.forbidden }
-      person.resignFirstResponder(); person.removeFromSuperview()
-      checks.append("person-responder-protection")
-      stage = "dialog"
-      var dialogAnswered = false
-      emit = { name, body in
-        if name == "dialog", body["tabId"] as? String == id, let dialog = tab.pendingDialog {
-          let input = BrowserDialogInput(); input.epoch = epoch; input.tabId = id
-          input.documentId = tab.documentId; input.dialogId = dialog.id; input.accept = false
-          do {
-            try self.respondDialog(input)
-            do { try self.respondDialog(input); return } catch BrowserRefusal.staleDialog {} catch { return }
-            dialogAnswered = true
-          } catch {}
-        } else { previous?(name, body) }
-      }
-      do { _ = try await invoke("act", ["type": "dom.act", "kind": "click", "locator": ["by": "css", "value": "#dialog"]]) }
-      catch BrowserRefusal.dialogOpen {}
-      guard dialogAnswered else { throw BrowserRefusal.notActionable }
-      checks.append("answer-once-dialog")
       stage = "native-snapshot"
       let image: UIImage = try await withCheckedThrowingContinuation { continuation in
         let request = UUID()
@@ -135,20 +111,77 @@ import WebKit
           tab.stagedSelection = BrowserStagedSelection(operationId: operation, epoch: epoch, documentId: tab.documentId, fileIds: [file["fileId"] as! String])
           defer { self.cancelChooser(tab) }
           _ = try await invoke("fileChoose", target)
-          guard tab.chosenFiles?.first?["name"] as? String == "qualification.txt" else { throw BrowserRefusal.notActionable }
+          let chosen = try await waitChosen(tab, operation: operation, epoch: epoch, deadline: Date().timeIntervalSince1970 * 1000 + 10000)
+          guard chosen.first?["name"] as? String == "qualification.txt" else { throw BrowserRefusal.notActionable }
         }
         do {
           try await choose(["locator": ["by": "css", "value": "#file"]])
+          try await choose(["point": ["x": 30, "y": 210]])
           fileStaging = true
-          checks.append("staged-file-chooser")
+          checks.append("staged-file-chooser-locator-and-point")
         } catch { fileStaging = false }
+      }
+      stage = "person-responder-protection"
+      view.endEditing(true)
+      do {
+        let person = UITextField(frame: CGRect(x: 0, y: 0, width: 150, height: 40))
+        window.addSubview(person)
+        defer { person.resignFirstResponder(); person.removeFromSuperview() }
+        guard person.becomeFirstResponder() else { throw BrowserRefusal.notActionable }
+        do { try await text("text.insert", value: "must-refuse"); throw BrowserRefusal.forbidden }
+        catch BrowserRefusal.notActionable {}
+        guard person.isFirstResponder else { throw BrowserRefusal.forbidden }
+      }
+      checks.append("person-responder-protection")
+      stage = "agent-dialog-interruption"
+      do {
+        do {
+          _ = try await invoke("act", ["type": "dom.act", "kind": "click", "locator": ["by": "css", "value": "#dialog"]])
+          throw BrowserRefusal.notActionable
+        } catch BrowserRefusal.dialogOpen {}
+        guard let dialog = tab.pendingDialog else { throw BrowserRefusal.notActionable }
+        let answer = BrowserDialogInput(); answer.epoch = epoch; answer.tabId = id
+        answer.documentId = tab.documentId; answer.dialogId = dialog.id; answer.accept = false
+        try respondDialog(answer)
+        do { try respondDialog(answer); throw BrowserRefusal.notActionable }
+        catch BrowserRefusal.staleDialog {}
+        checks.append("interrupt-before-answer-once-dialog")
+        stage = "agent-text-plans"
+        tab.readiness.provisional()
+        view.loadHTMLString("""
+          <!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>
+          <style>#message{position:fixed;left:10px;top:10px;width:180px;height:30px}</style>
+          <form onsubmit="event.preventDefault();document.getElementById('submitted').textContent='yes'"><label>Message<input id=message></label></form>
+          <div style='height:180px'></div><input id=rejected oninput="this.value=''" aria-label=Rejected>
+          <pre id=submitted></pre><div style='height:2000px'></div>
+          """, baseURL: URL(string: "https://phone-browser-conformance.invalid"))
+        try await waitReady(tab, epoch: epoch)
+        try await waitLoadFinished(tab, epoch: epoch)
+        func fill(_ selector: String, value: String) async throws {
+          let plan = try await invoke("act", ["type": "dom.act", "kind": "fill", "value": value,
+            "locator": ["by": "css", "value": selector]])
+          guard plan["kind"] as? String == "native-text", let planId = plan["planId"] as? String else { throw BrowserRefusal.notActionable }
+          _ = try await invoke("textFocus", ["planId": planId])
+          try await text("text.selectAll")
+          try await text(value.isEmpty ? "text.backspace" : "text.insert", value: value)
+          _ = try await invoke("textResult", ["planId": planId])
+        }
+        try await fill("#message", value: "accepted")
+        do { try await fill("#rejected", value: "must-refuse"); throw BrowserRefusal.notActionable }
+        catch let error as BrowserHelperRefusal where error.code == "not-actionable" {}
+        _ = try await invoke("act", ["type": "dom.act", "kind": "focus", "locator": ["by": "css", "value": "#message"]])
+        try await text("text.enter")
+        guard try await query("#submitted", "textContent") as? String == "yes" else { throw BrowserRefusal.notActionable }
+        checks.append("accepted-and-rejected-text-plans-then-enter")
+      } catch {
+        agentFailure = (error as? BrowserRefusal)?.rawValue ?? (error as? BrowserHelperRefusal)?.code ?? "conformance-failed"
       }
       try gate.check(epoch)
       stage = "complete"
     } catch { failure = (error as? BrowserRefusal)?.rawValue ?? (error as? BrowserHelperRefusal)?.code ?? "conformance-failed" }
     return ["platform": "ios", "runtimeId": runtimeId, "storageInstanceId": stores.storageInstanceId,
-      "browser": failure == nil, "sharedControl": failure == nil, "agentActions": failure == nil,
+      "browser": failure == nil, "sharedControl": failure == nil, "agentActions": failure == nil && agentFailure == nil,
       "cdpBoundary": false, "fileStaging": failure == nil && fileStaging,
-      "checks": checks, "failure": failure as Any? ?? NSNull(), "stage": stage]
+      "checks": checks, "failure": failure as Any? ?? NSNull(), "agentFailure": agentFailure as Any? ?? NSNull(), "stage": stage]
   }
 }

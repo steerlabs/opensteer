@@ -12,6 +12,7 @@ export interface PhoneTab {
   readonly order: number;
   readonly openerId: string | null;
   metadata: NativeTabMetadata;
+  lastDocumentId: string;
   state: PhoneTabState;
   dialog: BrowserDialog | null;
   lastUsed: number;

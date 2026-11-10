@@ -28,17 +28,63 @@ const locator = (by: "role" | "label" | "text" | "css", value: string, fields = 
   ...fields,
 });
 let operationSequence = 0;
-const invoke = (name: string, args: unknown) =>
-  helper.invoke({
+const invoke = async (name: string, args: unknown): Promise<unknown> => {
+  const result = await helper.invoke({
     documentId: "document-1",
     operationId: `operation-${++operationSequence}`,
     name,
     args,
   });
+  if (
+    result &&
+    typeof result === "object" &&
+    "kind" in result &&
+    result.kind === "script-activation" &&
+    "planId" in result
+  )
+    return helper.invoke({
+      documentId: "document-1",
+      operationId: `operation-${++operationSequence}`,
+      name: "commit",
+      args: { planId: result.planId },
+    });
+  return result;
+};
 const query = (target: ReturnType<typeof locator>, read = "count", fields = {}) =>
   invoke("query", { type: "dom.query", locator: target, read, ...fields });
 
 describe("isolated phone page helper", () => {
+  it("keeps an exact prepared button actionable when its own child is at the hit point", async () => {
+    document.body.innerHTML = "<button><span data-hit>Continue</span></button>";
+    const clicked = vi.fn();
+    document.querySelector("button")!.addEventListener("click", clicked);
+    await invoke("act", {
+      type: "dom.act",
+      kind: "click",
+      locator: locator("role", "button", { name: "Continue" }),
+    });
+    expect(clicked).toHaveBeenCalledOnce();
+  });
+  it("prepares activation without clicking and refuses a replaced target and a consumed plan", async () => {
+    document.body.innerHTML = '<input type="file" data-hit>';
+    const original = document.querySelector("input")!;
+    const clicked = vi.spyOn(original, "click").mockImplementation(() => undefined);
+    const plan = (await helper.invoke({
+      documentId: "document-1",
+      operationId: "prepare",
+      name: "fileChoose",
+      args: { locator: locator("css", "input") },
+    })) as { planId: string };
+    expect(clicked).not.toHaveBeenCalled();
+    original.replaceWith(document.createElement("input"));
+    await expect(invoke("commit", { planId: plan.planId })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
+    await expect(invoke("commit", { planId: plan.planId })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
+    expect(clicked).not.toHaveBeenCalled();
+  });
   it("chooses only an actionable file input from a fresh locator or exact point", async () => {
     document.body.innerHTML = '<label>Document<input type="file" data-hit></label>';
     const file = document.querySelector("input")!;
@@ -304,7 +350,7 @@ describe("isolated phone page helper", () => {
         kind: "fill",
         value: "hello",
       }),
-    ).toEqual({ kind: "native-text", clear: true, text: "hello" });
+    ).toMatchObject({ kind: "native-text", clear: true, text: "hello" });
     expect(input.value).toBe("");
     expect(document.activeElement).toBe(input);
     document.body.innerHTML = '<input type="checkbox" data-hit>';
@@ -322,6 +368,43 @@ describe("isolated phone page helper", () => {
         values: ["b"],
       }),
     ).toMatchObject({ values: ["b"], trusted: false });
+  });
+
+  it("confirms native text against the original field and never reports rejected or replaced text as filled", async () => {
+    document.body.innerHTML = "<input data-hit>";
+    const input = document.querySelector("input")!;
+    const plan = (await invoke("act", {
+      type: "dom.act",
+      locator: locator("css", "input"),
+      kind: "fill",
+      value: "hello",
+    })) as { planId: string };
+    await expect(invoke("textResult", { planId: plan.planId })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
+    const accepted = (await invoke("act", {
+      type: "dom.act",
+      locator: locator("css", "input"),
+      kind: "fill",
+      value: "hello",
+    })) as { planId: string };
+    input.value = "hello";
+    await expect(invoke("textResult", { planId: accepted.planId })).resolves.toMatchObject({
+      outcome: "filled",
+      trusted: true,
+    });
+    await expect(invoke("textResult", { planId: accepted.planId })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
+    const replaced = (await invoke("act", {
+      type: "dom.act",
+      locator: locator("css", "input"),
+      kind: "clear",
+    })) as { planId: string };
+    document.body.innerHTML = '<input value="" data-hit>';
+    await expect(invoke("textResult", { planId: replaced.planId })).rejects.toMatchObject({
+      code: "not-actionable",
+    });
   });
 
   it("focuses without clicking or clearing, and explicitly collapses append selections to the end", async () => {

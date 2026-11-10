@@ -86,7 +86,9 @@ export function startPhoneBrowserRuntime(platform: PhoneBrowserPlatform): void {
     reconcile();
   });
   platform.subscribeErasure(async (erasedDeploymentId) => {
-    if (erasedDeploymentId === deploymentId && manager) await manager.eraseDeployment();
+    if (erasedDeploymentId !== deploymentId) return;
+    reconcile();
+    await turn;
   });
   void platform.retryErasure().catch(() => undefined);
   reconcile();

@@ -8,6 +8,7 @@ struct BrowserStagedSelection {
   let epoch: Int
   let documentId: String
   let fileIds: [String]
+  var authorize: (() throws -> Void)? = nil
 }
 
 @available(iOS 17, *)
@@ -96,13 +97,15 @@ struct BrowserStagedSelection {
       if input.last, let expected = input.size, input.offset + data.count != expected { throw BrowserRefusal.invalidArgument }
       var file: Staged
       if let existing = staged[key] {
-        guard existing.name == input.name, !existing.complete, existing.expected == input.size else { throw BrowserRefusal.invalidArgument }
+        guard existing.name == input.name, !existing.complete,
+          existing.expected == nil || existing.expected == input.size else { throw BrowserRefusal.invalidArgument }
         file = existing
+        if let size = input.size { file.expected = size }
       } else {
         guard input.offset == 0, staged.count < 1024 else { throw BrowserRefusal.invalidArgument }
         let url = try destination(input.name)
         guard FileManager.default.createFile(atPath: url.path, contents: nil) else { throw BrowserRefusal.notActionable }
-        file = Staged(id: UUID().uuidString, session: input.sessionId, name: input.name, url: url, expected: input.size)
+        file = Staged(id: input.fileId, session: input.sessionId, name: input.name, url: url, expected: input.size)
       }
       guard input.offset == file.bytes, total + data.count <= 512 * 1024 * 1024,
         file.expected == nil || file.bytes + data.count <= file.expected! else { throw BrowserRefusal.tooLarge }
@@ -135,7 +138,7 @@ struct BrowserStagedSelection {
   }
 
   func portStage(_ input: BrowserStageInput) throws -> [String: Any] {
-    input.last = input.size.map { input.offset + (Data(base64Encoded: input.data)?.count ?? 0) == $0 } ?? true
+    input.last = input.size.map { input.offset + (Data(base64Encoded: input.data)?.count ?? 0) == $0 } ?? false
     _ = try stage(input)
     guard let file = staged[StageKey(session: input.sessionId, file: input.fileId)] else { throw BrowserRefusal.outcomeUnknown }
     return ["fileId": file.id, "complete": file.complete]
@@ -255,10 +258,32 @@ struct BrowserStagedSelection {
 
 @available(iOS 17, *)
 @MainActor extension PhoneBrowserPool {
-  func cancelChooser(_ tab: PhoneBrowserTab) {
+  func cancelChooser(_ tab: PhoneBrowserTab, preserving operation: UUID? = nil) {
     let chooser = tab.chooser
     tab.chooser = nil; tab.stagedChooser = false; tab.stagedSelection = nil; tab.chosenFiles = nil; tab.chosenSelectionId = nil
     chooser?.finish(nil)
+    for id in Array(tab.chosenWaiters.keys) where id != operation {
+      tab.callEpochs.removeValue(forKey: id)
+      tab.pendingCalls.removeValue(forKey: id)?(BrowserRefusal.staleChooser)
+    }
+  }
+
+  func waitChosen(_ tab: PhoneBrowserTab, operation: UUID, epoch: Int, deadline: Double) async throws -> [[String: Any]] {
+    try gate.check(epoch)
+    if tab.chosenSelectionId == operation, let chosen = tab.chosenFiles { return chosen }
+    guard tab.stagedSelection?.operationId == operation else { throw BrowserRefusal.staleChooser }
+    return try await withCheckedThrowingContinuation { continuation in
+      tab.callEpochs[operation] = epoch
+      tab.pendingCalls[operation] = { error in
+        tab.chosenWaiters.removeValue(forKey: operation)
+        continuation.resume(throwing: error)
+      }
+      tab.chosenWaiters[operation] = { files in continuation.resume(returning: files) }
+      DispatchQueue.main.asyncAfter(deadline: .now() + max(0, (deadline - Date().timeIntervalSince1970 * 1000) / 1000)) {
+        tab.callEpochs.removeValue(forKey: operation)
+        tab.pendingCalls.removeValue(forKey: operation)?(BrowserRefusal.timeout)
+      }
+    }
   }
 
   @available(iOS 18.4, *)
@@ -267,7 +292,7 @@ struct BrowserStagedSelection {
     guard foreground, let tab = tabs.values.first(where: { $0.webView === webView }) else { completionHandler(nil); return }
     let staged = tab.stagedChooser
     let selection = tab.stagedSelection
-    cancelChooser(tab)
+    cancelChooser(tab, preserving: selection?.operationId)
     let chooser = BrowserChooser(documentId: tab.documentId, epoch: gate.current, multiple: parameters.allowsMultipleSelection,
       completion: completionHandler)
     tab.chooser = chooser
@@ -275,12 +300,18 @@ struct BrowserStagedSelection {
       do {
         try gate.perform(selection.epoch) {
           guard selection.documentId == tab.documentId else { throw BrowserRefusal.staleDocument }
+          try selection.authorize?()
           let selected = try files.selected(selection.fileIds, session: tab.sessionId)
           guard chooser.multiple || selected.count <= 1 else { throw BrowserRefusal.invalidArgument }
           tab.chosenFiles = selected.map { ["fileId": $0.id, "name": $0.name, "size": $0.bytes] }
           tab.chosenSelectionId = selection.operationId
           tab.chooser = nil
           chooser.finish(selected.map(\.url))
+          if let complete = tab.chosenWaiters.removeValue(forKey: selection.operationId), let files = tab.chosenFiles {
+            tab.callEpochs.removeValue(forKey: selection.operationId)
+            tab.pendingCalls.removeValue(forKey: selection.operationId)
+            complete(files)
+          }
         }
       } catch { cancelChooser(tab) }
       return

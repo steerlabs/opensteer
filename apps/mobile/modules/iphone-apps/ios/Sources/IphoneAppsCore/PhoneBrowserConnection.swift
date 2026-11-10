@@ -7,6 +7,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   private let admission = PhoneBrowserAdmission()
   private let now: () -> Int64
   private let onRetire: (Int, String) -> Void
+  private let onDetach: (Int, String) -> Void
   private var sender: Sender?
   private var observer: (([String: Any]) -> Void)?
   private var keys: [[String: Any]] = []
@@ -16,6 +17,15 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   private var tickets: [String: Ticket] = [:]
   private var permits: [String: Permit] = [:]
   private var agents: [String: (channelId: String, sessionId: String, actorToken: String)] = [:]
+  private var actions: [String: Action] = [:]
+  private struct Action {
+    let channelId: String
+    let attachmentId: String
+    let sessionId: String
+    let actorToken: String
+    let deadline: Int64
+    let message: NSDictionary
+  }
   private var leaseTimer: DispatchSourceTimer?
   private var closeTransport: (() -> Void)?
   private var pendingFrames: Set<String> = []
@@ -24,7 +34,6 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   private struct Channel {
     let capability: [String: Any]
     var sequence = 0
-    var watchTokens: [String: String] = [:]
     var lastFrameIds: [String: Int] = [:]
     var authorized = false
     var closing = false
@@ -49,8 +58,9 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
 
   public init(now: @escaping () -> Int64,
     queue: DispatchQueue = DispatchQueue(label: "com.opensteer.phone-browser.writer", qos: .userInitiated),
-    onRetire: @escaping (Int, String) -> Void = { _, _ in }) {
-    self.now = now; self.queue = queue; self.onRetire = onRetire
+    onRetire: @escaping (Int, String) -> Void = { _, _ in },
+    onDetach: @escaping (Int, String) -> Void = { _, _ in }) {
+    self.now = now; self.queue = queue; self.onRetire = onRetire; self.onDetach = onDetach
   }
 
   public func setObserver(_ observer: (([String: Any]) -> Void)?) {
@@ -80,7 +90,8 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
   }
 
   private func retireChannels() {
-    tickets.removeAll(); permits.removeAll(); channels.removeAll(); agents.removeAll()
+    for attachment in agents.keys { onDetach(admission.epoch, attachment) }
+    tickets.removeAll(); permits.removeAll(); channels.removeAll(); agents.removeAll(); actions.removeAll()
   }
 
   public func adopt(_ welcome: [String: Any], sender: @escaping Sender, close: @escaping () -> Void) throws {
@@ -168,15 +179,26 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
           agents[id] = (channelId, session, actor)
         } else if message["type"] as? String == "agent.detach", let id = message["attachmentId"] as? String {
           guard agents[id]?.channelId == channelId else { throw PhoneBrowserFailure.forbidden }
-          agents.removeValue(forKey: id)
+          try detachAgent(epoch: admission.epoch, attachmentId: id)
+        } else if message["type"] as? String == "agent.action" {
+          let attachment = try WireField.string(message, "attachmentId")
+          let actor = try WireField.string(message, "actorToken")
+          let request = try WireField.object(message, "request")
+          let session = try WireField.string(request, "sessionId")
+          let requestId = try WireField.string(message, "requestId")
+          try checkAgent(epoch: admission.epoch, channelId: channelId, sessionId: session, attachmentId: attachment, actorToken: actor)
+          let timeout = try WireField.int(request, "timeoutMs", range: 1...30000)
+          if let previous = actions[requestId] {
+            guard previous.channelId == channelId, previous.message == message as NSDictionary else { throw PhoneBrowserFailure.forbidden }
+          } else {
+            actions = actions.filter { $0.value.deadline > now() }
+            guard actions.count < 128 else { throw PhoneBrowserFailure.full }
+            actions[requestId] = Action(channelId: channelId, attachmentId: attachment, sessionId: session,
+              actorToken: actor, deadline: now() + Int64(timeout), message: message as NSDictionary)
+          }
         }
         if let actor = message["actorToken"] as? String, UUID(uuidString: actor) != nil {
           channel.actorToken = actor; channels[channelId] = channel
-        }
-        if message["type"] as? String == "stream.ack", let token = message["token"] as? String,
-          let surfaceId = channel.watchTokens.first(where: { $0.value == token })?.key,
-          message["surfaceId"] == nil || message["surfaceId"] as? String == surfaceId {
-          channel.watchTokens.removeValue(forKey: surfaceId); channels[channelId] = channel
         }
         if message["type"] as? String == "cdp.command", var command = message["command"] as? [String: Any],
           var parameters = command["parameters"] as? [String: Any], let raw = parameters.removeValue(forKey: "operationAuthority") as? String {
@@ -189,7 +211,10 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
         channels[channelId]?.closing = true
         tickets = tickets.filter { $0.value.channelId != channelId }
         permits = permits.filter { $0.value.channelId != channelId }
-        agents = agents.filter { $0.value.channelId != channelId }
+        for (attachment, agent) in agents where agent.channelId == channelId {
+          try detachAgent(epoch: admission.epoch, attachmentId: attachment)
+        }
+        actions = actions.filter { $0.value.channelId != channelId }
       }
     }
     event["message"] = sanitized
@@ -236,6 +261,16 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
 
   public func permit(_ handle: String, epoch: Int) throws -> Permit {
     lock.lock(); defer { lock.unlock() }
+    if handle.hasPrefix("action:") {
+      let requestId = String(handle.dropFirst("action:".count))
+      guard let action = actions[requestId],
+        let request = action.message["request"] as? [String: Any],
+        (request["action"] as? [String: Any])?["type"] as? String == "surface.open",
+        let permit = permits.values.first(where: { $0.channelId == action.channelId && $0.epoch == epoch && $0.fence == admission.fence }) else { throw PhoneBrowserFailure.forbidden }
+      try checkAction(epoch: epoch, channelId: action.channelId, sessionId: action.sessionId,
+        attachmentId: action.attachmentId, actorToken: action.actorToken, requestId: requestId)
+      return permit
+    }
     guard let permit = permits[handle], permit.epoch == epoch, permit.fence == admission.fence,
       let channel = channels[permit.channelId], !channel.closing else { throw PhoneBrowserFailure.forbidden }
     try admission.check(epoch: epoch, now: now(), capability: channel.capability)
@@ -272,7 +307,10 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     channels.removeValue(forKey: channelId)
     tickets = tickets.filter { $0.value.channelId != channelId }
     permits = permits.filter { $0.value.channelId != channelId }
-    agents = agents.filter { $0.value.channelId != channelId }
+    for (attachment, agent) in agents where agent.channelId == channelId {
+      try detachAgent(epoch: epoch, attachmentId: attachment)
+    }
+    actions = actions.filter { $0.value.channelId != channelId }
   }
 
   public func sendHeartbeat() async throws {
@@ -327,6 +365,19 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     lock.lock(); defer { lock.unlock() }
     guard epoch == admission.epoch else { throw PhoneBrowserFailure.forbidden }
     agents.removeValue(forKey: attachmentId)
+    actions = actions.filter { $0.value.attachmentId != attachmentId }
+    onDetach(epoch, attachmentId)
+  }
+
+  public func checkAction(epoch: Int, channelId: String, sessionId: String, attachmentId: String, actorToken: String, requestId: String, request: [String: Any]? = nil) throws {
+    lock.lock(); defer { lock.unlock() }
+    try checkAgent(epoch: epoch, channelId: channelId, sessionId: sessionId, attachmentId: attachmentId, actorToken: actorToken)
+    guard let action = actions[requestId], action.channelId == channelId, action.sessionId == sessionId,
+      action.attachmentId == attachmentId, action.actorToken == actorToken, action.deadline > now() else { throw PhoneBrowserFailure.forbidden }
+    if let request {
+      guard let observed = action.message["request"] as? NSDictionary,
+        observed == request as NSDictionary else { throw PhoneBrowserFailure.forbidden }
+    }
   }
 
   public func eventRoutes(epoch: Int, sessionId: String, actorToken: String?) -> [(channelId: String, actorToken: String)] {
@@ -337,36 +388,49 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     }
   }
 
-  private func write(epoch: Int, channelId: String, fence: AuxiliaryFence, revision: UUID, header: [String: Any]?, message: [String: Any]?, completion: @escaping (Bool) -> Void, pixels: Data, dataPath: [String]? = nil) {
+  private func write(epoch: Int, channelId: String, fence: AuxiliaryFence, revision: UUID, header: [String: Any]?, message: [String: Any]?, completion: @escaping (Bool) -> Void, pixels: Data, dataPath: [String]? = nil,
+    withValidity: (((() -> Void) -> Bool))? = nil) {
     let pendingKey = "\(epoch):\(revision):\(channelId)"
     lock.lock()
     guard pixels.count <= PhoneBrowserFrames.maxFrameBytes,
       header == nil ? pendingResults < 64 : !pendingFrames.contains(pendingKey) else { lock.unlock(); completion(false); return }
     if header != nil { pendingFrames.insert(pendingKey) } else { pendingResults += 1 }
+    let timeout = message.flatMap { $0["requestId"] as? String }.flatMap { actions[$0] }.map { max(0, $0.deadline - now()) } ?? 30_000
     lock.unlock()
+    var completed = false
     let finished: (Bool) -> Void = { [self] success in
       lock.lock()
+      guard !completed else { lock.unlock(); return }
+      completed = true
       if header != nil { pendingFrames.remove(pendingKey) } else { pendingResults -= 1 }
       lock.unlock(); completion(success)
     }
+    queue.asyncAfter(deadline: .now() + .milliseconds(Int(timeout))) { finished(false) }
     queue.async { [self] in
+      let send = {
       lock.lock(); defer { lock.unlock() }
       do {
-        guard revision == streamRevision, fence == admission.fence, var channel = channels[channelId], channel.authorized,
+        guard !completed, revision == streamRevision, fence == admission.fence, var channel = channels[channelId], channel.authorized,
           !channel.closing, let sender else { throw PhoneBrowserFailure.unavailable }
         try admission.check(epoch: epoch, now: now(), capability: channel.capability)
         if let header {
           let frameId = try WireField.int(header, "frameId", range: 0...9_007_199_254_740_991)
           let surfaceId = try WireField.string(header, "surfaceId")
-          guard channel.watchTokens[surfaceId] == nil, frameId > (channel.lastFrameIds[surfaceId] ?? -1) else { throw PhoneBrowserFailure.forbidden }
+          guard header["watchToken"] == nil, frameId > (channel.lastFrameIds[surfaceId] ?? -1) else { throw PhoneBrowserFailure.forbidden }
           var outer = fence.fields
           outer.merge(["type": "browser.frame", "channelId": channelId, "capability": channel.capability, "sequence": channel.sequence + 1]) { _, next in next }
           let frame = try PhoneBrowserFrames.envelope(header: header, payload: pixels)
           let relay = try PhoneBrowserFrames.relay(header: outer, frame: frame)
-          channel.sequence += 1; channel.lastFrameIds[surfaceId] = frameId; channel.watchTokens[surfaceId] = header["watchToken"] as? String
+          channel.sequence += 1; channel.lastFrameIds[surfaceId] = frameId
           channels[channelId] = channel
           sender(.data(relay)) { finished($0 == nil) }
         } else if var message {
+          guard message["type"] as? String == "agent.result", let requestId = message["requestId"] as? String,
+            let action = actions[requestId], message["attachmentId"] as? String == action.attachmentId,
+            let request = action.message["request"] as? [String: Any],
+            (request["action"] as? [String: Any])?["type"] as? String == "page.capture" else { throw PhoneBrowserFailure.forbidden }
+          try checkAction(epoch: epoch, channelId: channelId, sessionId: action.sessionId,
+            attachmentId: action.attachmentId, actorToken: action.actorToken, requestId: requestId)
           if let dataPath {
             func inserting(_ object: [String: Any], path: ArraySlice<String>) -> [String: Any]? {
               guard let key = path.first else { return nil }
@@ -383,6 +447,10 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
           sender(.string(String(decoding: data, as: UTF8.self))) { finished($0 == nil) }
         } else { throw PhoneBrowserFailure.invalidFrame }
       } catch { finished(false) }
+      }
+      if let withValidity {
+        if !withValidity(send) { finished(false) }
+      } else { send() }
     }
   }
 
@@ -402,6 +470,12 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     func writePixelResult(message: [String: Any], dataPath: [String], pixels: Data, completion: @escaping (Bool) -> Void) {
       guard let connection, pixels.count <= PhoneBrowserFrames.maxFrameBytes else { completion(false); return }
       connection.write(epoch: epoch, channelId: channelId, fence: fence, revision: revision, header: nil, message: message, completion: completion, pixels: pixels, dataPath: dataPath)
+    }
+    func writePixelResult(message: [String: Any], dataPath: [String], pixels: Data,
+      withValidity: @escaping (() -> Void) -> Bool, completion: @escaping (Bool) -> Void) {
+      guard let connection, pixels.count <= PhoneBrowserFrames.maxFrameBytes else { completion(false); return }
+      connection.write(epoch: epoch, channelId: channelId, fence: fence, revision: revision, header: nil,
+        message: message, completion: completion, pixels: pixels, dataPath: dataPath, withValidity: withValidity)
     }
   }
 

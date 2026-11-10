@@ -120,6 +120,10 @@
       element.focus({ preventScroll: true });
       return document.activeElement === element;
     },
+    editing: () => {
+      editing();
+      return true;
+    },
     tap: (point) => {
       const element = point.selector
         ? document.querySelector(point.selector)

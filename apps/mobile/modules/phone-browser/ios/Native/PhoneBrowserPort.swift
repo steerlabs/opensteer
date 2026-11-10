@@ -10,7 +10,7 @@ public struct PhoneBrowserEventRoute {
 
 @MainActor public protocol PhoneBrowserAdmission: AnyObject {
   func allocation(permit: String, binding: [String: Any]?, sessionId: String?, epoch: Int) throws
-  func action(channelId: String, attachmentId: String, actorToken: String, sessionId: String, epoch: Int) throws
+  func action(channelId: String, attachmentId: String, actorToken: String, sessionId: String, requestId: String, request: [String: Any], epoch: Int) throws
   func viewer(channelId: String, sessionId: String, epoch: Int, control: Bool) throws
   func routes(sessionId: String, tabId: String, actorToken: String?) -> [PhoneBrowserEventRoute]
 }
@@ -82,6 +82,7 @@ struct BrowserWireInput: Record, BrowserReference {
   }
 
   func portEvents(_ name: String, _ body: [String: Any]) -> [[String: Any]] {
+    if name == "closed" { return [body.merging(["type": "closed"]) { _, next in next }] }
     if name == "agentEvent", let attachment = body["attachmentId"] as? String, let payload = body["event"] as? [String: Any] {
       return [["type": name, "epoch": gate.current, "attachmentId": attachment, "event": payload]]
     }
@@ -154,6 +155,21 @@ struct BrowserWireInput: Record, BrowserReference {
     guard ["live", "retained"].contains(input.state) else { throw BrowserRefusal.invalidArgument }
     let existingBinding = input.storeHandle.flatMap { stores.held[$0]?.binding }.map(stores.bindingDictionary)
     try admission.allocation(permit: input.allocationPermit, binding: existingBinding, sessionId: input.sessionId, epoch: input.epoch)
+    if let restore = input.restoreFrom {
+      let retained = try gate.perform(input.epoch) {
+        let retained = try tab(input.tabId, live: false)
+        guard foreground, retained.allocationEpoch < input.epoch, state.tabs[retained.id] != .live,
+          retained.sessionId == restore.sessionId, retained.generation == restore.generation,
+          (input.storeHandle == nil ? stores.held[retained.storeHandle]?.binding == nil : retained.storeHandle == input.storeHandle) else { throw BrowserRefusal.forbidden }
+        if input.storeHandle == nil { try stores.adoptGuest(retained.storeHandle, from: restore.sessionId, to: input.sessionId) }
+        retained.sessionId = input.sessionId
+        retained.allocationEpoch = input.epoch
+        nextGeneration += 1
+        retained.generation = nextGeneration
+        return retained
+      }
+      return portMetadata(retained)
+    }
     if input.storeHandle == nil {
       let guest = BrowserProfileInput()
       guest.epoch = input.epoch; guest.guestSessionId = input.sessionId
@@ -164,7 +180,9 @@ struct BrowserWireInput: Record, BrowserReference {
     try gate.check(input.epoch)
     let binding = input.storeHandle.flatMap { stores.held[$0]?.binding }.map(stores.bindingDictionary)
     try admission.allocation(permit: input.allocationPermit, binding: binding, sessionId: input.sessionId, epoch: input.epoch)
-    _ = try await create(input)
+    _ = try await create(input, authorization: {
+      try admission.allocation(permit: input.allocationPermit, binding: binding, sessionId: input.sessionId, epoch: input.epoch)
+    })
     try gate.check(input.epoch)
     return portMetadata(try tab(input.tabId, live: false))
   }

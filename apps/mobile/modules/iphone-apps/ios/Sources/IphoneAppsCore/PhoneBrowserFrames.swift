@@ -77,4 +77,6 @@ public enum PhoneBrowserFrames {
 public protocol PhoneBrowserFrameWriter: AnyObject {
   func writeFrame(header: [String: Any], pixels: Data, completion: @escaping (Bool) -> Void)
   func writePixelResult(message: [String: Any], dataPath: [String], pixels: Data, completion: @escaping (Bool) -> Void)
+  func writePixelResult(message: [String: Any], dataPath: [String], pixels: Data,
+    withValidity: @escaping (() -> Void) -> Bool, completion: @escaping (Bool) -> Void)
 }
