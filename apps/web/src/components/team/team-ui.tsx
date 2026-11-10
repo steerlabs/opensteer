@@ -3,6 +3,7 @@ import {
   accessPreviewHeadline,
   accessPreviewLines,
   initialsOf,
+  pagedListBound,
   levelLabel,
   teamErrorText,
   teamReasonOf,
@@ -211,5 +212,43 @@ export function TeamSection({
 export function formatDay(value: string): string {
   return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(
     new Date(value),
+  );
+}
+
+/** "Show more" for a paged team list: one page per press, up to the list's bound. */
+export function ShowMore({
+  list,
+  team,
+}: {
+  readonly list: {
+    readonly nextCursor: string | null;
+    readonly loadingMore: boolean;
+    readonly capped: boolean;
+    readonly error: unknown;
+    readonly first: unknown;
+    readonly more: () => void;
+  };
+  readonly team?: string;
+}) {
+  return (
+    <>
+      {list.nextCursor ? (
+        <button
+          className="btn btn--ghost btn--small team-more"
+          disabled={list.loadingMore}
+          onClick={list.more}
+          type="button"
+        >
+          {list.loadingMore ? "Loading…" : "Show more"}
+        </button>
+      ) : list.capped ? (
+        <p className="settings-footnote team-more">
+          Showing the first {pagedListBound.toLocaleString()}. Search to find the rest.
+        </p>
+      ) : null}
+      {list.first && list.error ? (
+        <TeamError error={list.error} onRetry={list.more} {...(team ? { team } : {})} />
+      ) : null}
+    </>
   );
 }

@@ -365,6 +365,37 @@ describeStore("team administration review regressions", (it) => {
       changes: [{ kind: "entry", after: { subject: { userId: administrator }, level: "manage" } }],
     });
     expect(result.items.every((row) => row.target !== null)).toBe(true);
+
+    // Removing a suspended person changes no effective access, only sources: still this Project's audit.
+    const person = await admit(storeFixture, "Suspended then removed");
+    await mutateAccess(
+      prepared.database,
+      prepared.input(
+        [
+          {
+            kind: "grant",
+            id: randomUUID(),
+            subject: { kind: "person", userId: person },
+            target: { kind: "project", workspaceId: prepared.workspace.id },
+            level: "use",
+          },
+          { kind: "add-group-member", groupId, member: { kind: "person", userId: person } },
+        ],
+        4,
+      ),
+    );
+    for (const [memberState, revision] of [
+      ["suspended", 5],
+      ["removed", 6],
+    ] as const)
+      await mutateAccess(
+        prepared.database,
+        prepared.input([{ kind: "member", userId: person, memberState }], revision),
+      );
+    const scoped = await new TeamAccessReadStore(prepared.database).audit(prepared.actor, {
+      target: { workspaceId: prepared.workspace.id },
+    });
+    expect(scoped.items.filter((row) => row.target?.id === person)).toHaveLength(2);
   });
 
   it("counts distinct people across Projects without losing per-Project preview detail", async ({

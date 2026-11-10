@@ -4,8 +4,6 @@ import { TeamSession, type TeamSessionState } from "../host/team-session.js";
 
 export interface TeamState extends TeamSessionState {
   readonly refresh: () => void;
-  readonly holdLink: (invitationId: string, url: string) => void;
-  readonly forgetLink: (invitationId: string) => void;
 }
 
 const sessions = new WeakMap<HostClient, TeamSession>();
@@ -31,7 +29,5 @@ export function useTeam(client: HostClient): TeamState {
   return {
     ...state,
     refresh: session.refresh,
-    holdLink: session.holdLink,
-    forgetLink: session.forgetLink,
   };
 }

@@ -12,7 +12,7 @@ import {
   type HostClient,
   type ProjectAccessView,
 } from "@opensteer/client/host";
-import { useHostRead, useTeam } from "@opensteer/client/react";
+import { useHostRead, usePagedList, useTeam } from "@opensteer/client/react";
 import type { EntryView } from "@opensteer/protocol";
 import { useNavigation } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
@@ -24,6 +24,7 @@ import { Symbol } from "../ui/symbol.js";
 import {
   Avatar,
   ReadState,
+  ShowMoreRow,
   TeamSection,
   confirmAccessChange,
   showError,
@@ -32,10 +33,10 @@ import {
 
 /** One read of a shared Project's access view, for its marker and its people. */
 export function useTeamProjectAccess(hostClient: HostClient, workspaceId: string) {
-  const { team, generation } = useTeam(hostClient);
+  const { team, generation, identity } = useTeam(hostClient);
   return useHostRead(
     team ? () => team.projectAccess({ workspaceId }) : null,
-    `team-access:${workspaceId}:${generation}`,
+    `team-access:${identity}:${workspaceId}:${generation}`,
   );
 }
 
@@ -94,9 +95,21 @@ export function TeamProjectSection(props: {
 }): ReactNode {
   const { hostClient, deploymentId, access, viewerId } = props;
   const navigation = useNavigation();
-  const { team, summary, error: summaryError } = useTeam(hostClient);
+  const { team, summary, identity, error: summaryError } = useTeam(hostClient);
   const teamName = summary?.team.name ?? "the team";
   const view = access.data;
+  // The access read is the first page of entries; "Show more" reads on from it.
+  const entryPages = usePagedList(
+    team && view?.entries
+      ? (cursor: string | null) =>
+          cursor
+            ? team
+                .projectAccess({ workspaceId: view.project.id, cursor })
+                .then((next) => next.entries ?? { items: [], nextCursor: null })
+            : Promise.resolve(view.entries!)
+      : null,
+    `team-access-entries:${identity}:${view?.project.id}:${view?.accessRevision}:${view ? "read" : "waiting"}`,
+  );
   if (!team) return null;
   if (!view)
     return (
@@ -180,7 +193,7 @@ export function TeamProjectSection(props: {
                   </AppText>
                 </View>,
               ]
-            : view.entries.items.map((entry) => {
+            : (entryPages.first ? entryPages.items : view.entries.items).map((entry) => {
                 const mine = entry.subject.kind === "person" && entry.subject.userId === viewerId;
                 const choices = [
                   { id: "why", title: "Why?" },
@@ -242,6 +255,7 @@ export function TeamProjectSection(props: {
                 );
               })}
         </RowGroup>
+        <ShowMoreRow list={entryPages} team={teamName} />
       </TeamSection>
       {view.can.manage.allowed ? (
         <RuntimeSummary deploymentId={deploymentId} hostClient={hostClient} view={view} />
