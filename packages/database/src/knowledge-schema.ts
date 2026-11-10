@@ -352,6 +352,14 @@ export async function ensureKnowledge(
   transaction: Transaction<DatabaseSchema>,
   passwordVerifier: string,
 ): Promise<string> {
+  const { rows: superuser } = await sql<{ superuser: boolean }>`
+    select rolsuper as superuser from pg_catalog.pg_roles where rolname = current_user
+  `.execute(transaction);
+  // Creating the owner's schema needs SET on that role, and pinning the login's logging needs superuser.
+  if (superuser[0]?.superuser !== true)
+    throw new Error(
+      "The knowledge trial needs the Host's PostgreSQL user to be a superuser; turn OPENSTEER_KNOWLEDGE off or run the Host as one",
+    );
   await sql`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('opensteer:knowledge-schema', 0))`.execute(
     transaction,
   );
@@ -366,7 +374,9 @@ export async function ensureKnowledge(
       ? Number(found.comment.slice(versionComment.length))
       : Number.NaN;
   if (!Number.isInteger(version) || version > knowledgeSchemaSteps.length)
-    throw new Error("A different Opensteer build prepared this database's knowledge schema");
+    throw new Error(
+      "This database has a knowledge schema this build did not create; turn OPENSTEER_KNOWLEDGE off or remove that schema",
+    );
   // The owner role is shared by every database in the cluster, which the advisory lock does not
   // span, so it is created at most once and altered only when wrong.
   await sql

@@ -266,10 +266,12 @@ integration("knowledge storage", () => {
     expect(await version()).toEqual([{ version: "opensteer knowledge schema 1" }]);
     await prepareKnowledgeExecutor(database);
     expect(await version()).toEqual([{ version: "opensteer knowledge schema 1" }]);
-    await sql`comment on schema knowledge is 'opensteer knowledge schema 2'`.execute(database);
-    await expect(prepareKnowledgeExecutor(database)).rejects.toThrow(
-      "A different Opensteer build prepared this database's knowledge schema",
-    );
+    for (const comment of ["'opensteer knowledge schema 2'", "null", "'something else'"]) {
+      await sql`comment on schema knowledge is ${sql.raw(comment)}`.execute(database);
+      await expect(prepareKnowledgeExecutor(database), comment).rejects.toThrow(
+        "This database has a knowledge schema this build did not create",
+      );
+    }
   });
 
   it("keeps the knowledge tables private when the Host's default privileges grant PUBLIC", async () => {
@@ -310,39 +312,42 @@ integration("knowledge storage", () => {
       expect(await sqlState(state.client.query(statement)), statement).toBe("42501");
   });
 
-  it("refuses to turn the trial on for a database user that may not create roles", async () => {
-    const clone = await cloneTestDatabase("host");
-    const limited = `knowledge_limited_${randomUUID().replaceAll("-", "")}`;
-    const url = new URL(clone.url);
-    url.username = limited;
-    url.password = limited;
-    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
-      const administrator = createDatabase({ connectionString: clone.url, maxConnections: 1 });
-      await sql`create role ${sql.id(limited)} login password ${sql.lit(limited)}`.execute(
-        administrator,
+  it.for(["", "createrole"])(
+    "refuses to turn the trial on for a database user that is not a superuser (%s)",
+    async (attribute) => {
+      const clone = await cloneTestDatabase("host");
+      const limited = `knowledge_limited_${randomUUID().replaceAll("-", "")}`;
+      const url = new URL(clone.url);
+      url.username = limited;
+      url.password = limited;
+      const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+        const administrator = createDatabase({ connectionString: clone.url, maxConnections: 1 });
+        await sql`create role ${sql.id(limited)} login ${sql.raw(attribute)} password ${sql.lit(limited)}`.execute(
+          administrator,
+        );
+        await sql`grant create on database ${sql.id(url.pathname.slice(1))} to ${sql.id(limited)}`.execute(
+          administrator,
+        );
+        const database = createDatabase({ connectionString: url.toString(), maxConnections: 1 });
+        return {
+          database,
+          async close() {
+            await database.destroy();
+            await sql`drop owned by ${sql.id(limited)}; drop role ${sql.id(limited)}`.execute(
+              administrator,
+            );
+            await administrator.destroy();
+          },
+        };
+      });
+      await expect(prepareKnowledgeExecutor(database)).rejects.toThrow(
+        "The knowledge trial needs the Host's PostgreSQL user to be a superuser",
       );
-      await sql`grant create on database ${sql.id(url.pathname.slice(1))} to ${sql.id(limited)}`.execute(
-        administrator,
-      );
-      const database = createDatabase({ connectionString: url.toString(), maxConnections: 1 });
-      return {
-        database,
-        async close() {
-          await database.destroy();
-          await sql`drop owned by ${sql.id(limited)}; drop role ${sql.id(limited)}`.execute(
-            administrator,
-          );
-          await administrator.destroy();
-        },
-      };
-    });
-    await expect(prepareKnowledgeExecutor(database)).rejects.toThrow(
-      "The knowledge trial needs a PostgreSQL user that may create roles and schemas",
-    );
-    expect(
-      (await sql`select from pg_namespace where nspname = 'knowledge'`.execute(database)).rows,
-    ).toEqual([]);
-  });
+      expect(
+        (await sql`select from pg_namespace where nspname = 'knowledge'`.execute(database)).rows,
+      ).toEqual([]);
+    },
+  );
 
   it("seeds one General topic for the Personal owner and lists unarchived topics", async () => {
     const clone = await cloneTestDatabase("host");

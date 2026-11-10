@@ -23,14 +23,7 @@ export async function prepareKnowledgeExecutor(
   const password = randomBytes(32).toString("base64url");
   const role = await withDatabaseTransaction(database, (transaction) =>
     ensureKnowledge(transaction, scramVerifier(password)),
-  ).catch((error: unknown) => {
-    if (error instanceof Error && "code" in error && error.code === "42501")
-      throw new Error(
-        "The knowledge trial needs a PostgreSQL user that may create roles and schemas; turn OPENSTEER_KNOWLEDGE off or run the Host as such a user",
-        { cause: error },
-      );
-    throw error;
-  });
+  );
   return { role, password };
 }
 

@@ -8,8 +8,12 @@ own database, in the `knowledge` schema ([schema](../packages/database/src/knowl
 With the trial off, nothing about knowledge exists in the database. The schema, its owner role and
 the restricted login come from a versioned ensure step that the manager runs at each start with the
 trial on, in one transaction under an advisory lock. Add a step to change the schema; never edit
-one that shipped. The Host's PostgreSQL user must be allowed to create roles, or turning the trial
-on fails at start. Turning the trial off leaves the schema and its facts in place.
+one that shipped. The Host's PostgreSQL user must be a superuser, as the desktop's is: the step
+creates the schema under its owner role and pins the login's logging, which CREATEROLE alone cannot.
+Otherwise turning the trial on fails at start. Each start gives the login a new password, so two
+Hosts must never share a database with the trial on; the
+[authority lease](../packages/database/src/deployment-authority.ts) already refuses a second Host on
+a database. Turning the trial off leaves the schema and its facts in place.
 
 ## Who holds the tool
 
@@ -30,7 +34,8 @@ Three layers, each covering what the others cannot:
 - The [validator](../apps/host/src/knowledge/sql-gate.ts) keeps every statement to `facts`,
   `fact_history` and reviewed functions, operators and types. It alone keeps agents away from
   settings, catalogs and functions such as `set_config`.
-- Grants keep the restricted login out of every application table.
+- Grants keep the restricted login out of every application table. Each start revokes PUBLIC from
+  everything in the `knowledge` schema, so default privileges the Host's user set cannot reach it.
 - Row security hides fact rows outside the caller's topics.
 
 The login alone does not hide PostgreSQL's public catalogs: through PUBLIC grants, which cannot be
@@ -43,10 +48,12 @@ one admitted statement could otherwise hide a `set_config` call that forges its 
 Agent SQL runs as its own non-superuser LOGIN role with its own two-connection pool, never through
 `SET ROLE` on the Host's connection. The Host's session user is a superuser, and PostgreSQL checks
 `SET ROLE` and `set_config('role', …)` against the session user, so one validator slip would become
-superuser and a shell through `COPY … TO PROGRAM`. The pool takes only the server's address from
-the Host's connection string, never a user, password or options from its query, and refuses any
-connection whose session is not the restricted login. The Host gives the role a fresh random
-password at each start and keeps it only in memory.
+superuser and a shell through `COPY … TO PROGRAM`. The pool reaches the server and database that pg
+resolves for the Host's own connection, environment included, but its startup carries only the
+login, database and name: no options, replication or timeouts from the query string, `PGOPTIONS` or
+other `PG*` variables. It refuses any connection whose session is not the restricted login. It does
+not support TLS yet, so a Host whose connection uses TLS cannot turn the trial on. The Host gives
+the role a fresh random password at each start and keeps it only in memory.
 
 ## Limits
 
@@ -59,17 +66,20 @@ or as an error that quotes a failing input, crashing the Host from the socket pa
   on a message over 1 MB, before the driver buffers it. The statement fails; the process does not.
 - Inside PostgreSQL, a row over 512 KB (the whole row's text, whatever its columns are named)
   raises, and so does a result whose running total passes 1 MB. At most 200 rows are returned.
-- The manager then refuses a whole encoded result over 512 KB rather than truncating it.
+- The manager then refuses a whole encoded result over 512 KB rather than truncating it, and
+  counts a result it cannot encode as over that. `JSON.stringify` overflows near 8,000 levels of
+  nesting, so a stored fact value nests at most 64 arrays and objects.
 - The login logs only FATAL messages, so such error text never reaches the server log.
 
-Also bounded: temp files at 32 MB; statement text at 16 KiB and 64 parameters; a write at 25 facts,
-each value at 64 KB.
+Also bounded: temp files at 32 MB; statement text at 16 KiB; at most 64 parameters, each bounded
+only by the size of the MCP request; a write at 25 facts, each value at 64 KB.
 
 Neither backend time nor backend memory is bounded. `statement_timeout` is only checked between
-interrupt checks, and string building inside one expression does not check: a 2 s timeout landed
-after 8.7 s. `work_mem` and `temp_file_limit` do not cap one expression: one backend reached 8 GB,
-and the pool has two. `lpad`, `rpad` and `format` are refused because one call builds any width,
-but `||`, `replace`, `regexp_replace` and `string_agg` still amplify. That is acceptable for one
+interrupt checks, and string building inside one expression does not check: with the functions
+still allowed, a 2 s timeout landed after 3.9 s. `work_mem` and `temp_file_limit` do not cap one
+expression: one backend reached 3.8 GB, and the pool's two together 5.9 GB (PostgreSQL 17.11 on
+macOS). `lpad`, `rpad`, `format` and `repeat` are refused because one call builds any width, but
+`||`, `replace`, `regexp_replace`, `to_jsonb` and `string_agg` still amplify. That is acceptable for one
 person's own agents and must be decided before knowledge reaches a server.
 
 Parameters reach PostgreSQL as JSON, so a list is a JSON array read with
