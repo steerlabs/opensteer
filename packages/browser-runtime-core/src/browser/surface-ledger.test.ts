@@ -928,3 +928,47 @@ describe("SurfaceLedger", () => {
     await ledger.close();
   });
 });
+
+it("reads native or remote viewer attribution without consuming it, after agent commands and within activation lifetime", async () => {
+  const page = new FakePage(),
+    context = new FakeContext([page]);
+  const ledger = new SurfaceLedger(context);
+  await ledger.start();
+  const surfaceId = ledger.active()!.surface.id;
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(10_000);
+    ledger.recordViewerInput(surfaceId, "native-viewer", true);
+    expect(ledger.latestViewerInput(surfaceId)).toMatchObject({
+      consumerToken: "native-viewer",
+      native: true,
+    });
+    expect(ledger.latestViewerInput(surfaceId)).toMatchObject({
+      consumerToken: "native-viewer",
+      native: true,
+    });
+    const popup = new FakePage({ opener: page });
+    context.addPage(popup);
+    await withTimeout(ledger.resolveTarget(await popup.targetId()), 1000, {
+      timeoutError: () => new Error("The attributed popup never registered"),
+    });
+    expect(ledger.latestViewerInput(surfaceId)).toMatchObject({
+      consumerToken: "native-viewer",
+      native: true,
+    });
+    ledger.recordAgentCommand(await page.targetId());
+    expect(ledger.latestViewerInput(surfaceId)).toBeNull();
+    ledger.recordViewerInput(surfaceId, "remote-viewer");
+    expect(ledger.latestViewerInput(surfaceId)).toMatchObject({
+      consumerToken: "remote-viewer",
+      native: false,
+    });
+    now.mockReturnValue(15_000);
+    expect(ledger.latestViewerInput(surfaceId)).toBeNull();
+    ledger.recordViewerInput(surfaceId, null, true);
+    expect(ledger.latestViewerInput(surfaceId)).toBeNull();
+  } finally {
+    now.mockRestore();
+    await ledger.close();
+  }
+});

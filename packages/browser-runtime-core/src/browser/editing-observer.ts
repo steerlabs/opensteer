@@ -1,3 +1,9 @@
+import {
+  PersonFillRoleSchema,
+  type PersonFillAnchor,
+  type PersonFillRole,
+  type PersonFillSlot,
+} from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -39,6 +45,60 @@ type MenuFacts = {
 };
 type MenuPublisher = (menu: MenuFacts, coordinates: Promise<EditingContext["caret"]>) => void;
 
+const personReport = z.object({
+  kind: z.literal("person-fill"),
+  bindingId: z.uuid(),
+  role: PersonFillRoleSchema,
+  activated: z.boolean(),
+  box: z.object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    width: z.number().nonnegative().finite(),
+    height: z.number().nonnegative().finite(),
+  }),
+  slots: z.object({ partner: z.boolean(), group: z.boolean() }),
+});
+const frameTree = z.object({
+  frame: z.object({ id: z.string(), securityOrigin: z.string().optional() }),
+  childFrames: z.array(z.unknown()).optional(),
+});
+function committedOrigin(tree: unknown, frameId: string): string | null {
+  const parsed = frameTree.safeParse(tree);
+  if (!parsed.success) return null;
+  if (parsed.data.frame.id === frameId) {
+    try {
+      const origin = new URL(parsed.data.frame.securityOrigin ?? "");
+      return origin.protocol === "https:" ? origin.origin : null;
+    } catch {
+      return null;
+    }
+  }
+  for (const child of parsed.data.childFrames ?? []) {
+    const origin = committedOrigin(child, frameId);
+    if (origin) return origin;
+  }
+  return null;
+}
+
+export interface PersonFillBinding {
+  readonly bindingId: string;
+  readonly frame: string;
+  readonly role: PersonFillRole;
+  readonly slots: { partner: boolean; group: boolean };
+  origin(): Promise<string | null>;
+  write(slot: PersonFillSlot, value: string, expectedOrigin: string): Promise<boolean>;
+  release(): void;
+}
+export type PersonFillObservation =
+  | {
+      type: "binding";
+      binding: PersonFillBinding;
+      activated: boolean;
+      anchor: Promise<PersonFillAnchor | null>;
+    }
+  | { type: "withdrawn"; bindingId: string }
+  | { type: "focus"; bindingId: string | null };
+
 /** Owns one private editing world in every frame of a page's renderer. */
 export class PageEditingObserver {
   readonly #cdp: CdpSession;
@@ -55,6 +115,8 @@ export class PageEditingObserver {
   readonly #world = `opensteer-editing-${randomUUID()}`;
   readonly #publish: (context: EditingContext) => void;
   readonly #menu: MenuPublisher;
+  readonly #person: ((event: PersonFillObservation) => void) | undefined;
+  readonly #personBindings = new Map<string, { binding: PersonFillBinding; context: number }>();
   readonly #contexts = new Map<number, string>();
   readonly #inventory = new ExecutionContextInventory();
   #focused: { context: number; frame: string; fieldId: string; selectionRevision: number } | null =
@@ -75,9 +137,11 @@ export class PageEditingObserver {
       frameId: string,
       caret: z.infer<typeof contextReport>["caret"],
     ) => Promise<EditingContext["caret"]>,
+    person?: (event: PersonFillObservation) => void,
   ) {
     this.#cdp = cdp;
     this.#mapGeometry = geometry;
+    this.#person = person;
     this.#frames = new FrameCdpSessions(
       cdp,
       (session) => {
@@ -95,6 +159,7 @@ export class PageEditingObserver {
           },
           (menu, coordinates) => this.#menu(menu, coordinates),
           (frame, caret) => this.#geometry(frame, caret),
+          this.#person,
         );
         this.#children.set(session, child);
         void session
@@ -159,7 +224,7 @@ export class PageEditingObserver {
     const result = await this.#cdp.send<{ identifier: string }>(
       "Page.addScriptToEvaluateOnNewDocument",
       {
-        source: editingObserverSource(this.#binding),
+        source: editingObserverSource(this.#binding, this.#person !== undefined),
         worldName: this.#world,
         runImmediately: true,
       },
@@ -306,9 +371,13 @@ export class PageEditingObserver {
   };
   #navigated = (value: unknown): void => {
     const frame = z.object({ frame: z.object({ id: z.string() }) }).safeParse(value);
-    if (frame.success && this.#focused?.frame === frame.data.frame.id) this.#clear();
+    if (frame.success) {
+      this.#withdrawBindings((entry) => entry.binding.frame === frame.data.frame.id);
+      if (this.#focused?.frame === frame.data.frame.id) this.#clear();
+    }
   };
   #contextsCleared = (): void => {
+    this.#withdrawBindings(() => true);
     this.#inventory.clear();
     this.#contexts.clear();
     this.#activeChild = null;
@@ -319,6 +388,7 @@ export class PageEditingObserver {
     if (!event.success) return;
     const entry = this.#inventory.observe("Runtime.executionContextDestroyed", event.data);
     if (!entry) return;
+    this.#withdrawBindings((binding) => binding.context === entry.id);
     this.#contexts.delete(entry.id);
     if (this.#focused?.context === entry.id) this.#clear();
   };
@@ -340,6 +410,7 @@ export class PageEditingObserver {
     } catch {
       return;
     }
+    if (this.#personReport(payload, parsed.data.executionContextId, frame)) return;
     const menu = z
       .object({
         kind: z.literal("menu"),
@@ -390,6 +461,87 @@ export class PageEditingObserver {
       .catch(() => undefined);
   };
 
+  #withdrawBindings(
+    matches: (entry: { binding: PersonFillBinding; context: number }) => boolean,
+  ): void {
+    for (const [id, entry] of this.#personBindings) {
+      if (!matches(entry)) continue;
+      entry.binding.release();
+      this.#person?.({ type: "withdrawn", bindingId: id });
+    }
+  }
+
+  #personReport(payload: unknown, context: number, frame: string): boolean {
+    if (!this.#person || !payload || typeof payload !== "object" || !("kind" in payload))
+      return false;
+    const focus = z
+      .object({ kind: z.literal("person-focus"), bindingId: z.uuid().nullable() })
+      .safeParse(payload);
+    if (focus.success) {
+      this.#person({ type: "focus", bindingId: focus.data.bindingId });
+      return true;
+    }
+    const report = personReport.safeParse(payload);
+    if (!report.success) return false;
+    const { bindingId, role, slots, box, activated } = report.data;
+    let entry = this.#personBindings.get(bindingId);
+    if (!entry) {
+      if (!activated) return true;
+      this.#withdrawBindings(() => true);
+      const binding: PersonFillBinding = {
+        bindingId,
+        frame,
+        role,
+        slots,
+        origin: async () => {
+          const tree = await this.#cdp
+            .send<{ frameTree?: unknown }>("Page.getFrameTree")
+            .catch(() => null);
+          return this.#personBindings.has(bindingId)
+            ? committedOrigin(tree?.frameTree, frame)
+            : null;
+        },
+        write: async (slot, value, expectedOrigin) => {
+          if (!this.#personBindings.has(bindingId) || (await binding.origin()) !== expectedOrigin)
+            return false;
+          const response = await this.#cdp
+            .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+              contextId: context,
+              expression: `globalThis.editingOwner?.write(${JSON.stringify(bindingId)},${JSON.stringify(slot)},${JSON.stringify(value)},${JSON.stringify(expectedOrigin)})`,
+              returnByValue: true,
+              silent: true,
+            })
+            .catch(() => null);
+          return response?.result?.value === true;
+        },
+        release: () => {
+          if (!this.#personBindings.delete(bindingId)) return;
+          void this.#cdp
+            .send("Runtime.evaluate", {
+              contextId: context,
+              expression: `globalThis.editingOwner?.release(${JSON.stringify(bindingId)})`,
+              silent: true,
+            })
+            .catch(() => undefined);
+        },
+      };
+      entry = { binding, context };
+      this.#personBindings.set(bindingId, entry);
+    }
+    const anchor = Promise.all([
+      this.#geometry(frame, box),
+      this.#geometry(frame, { x: box.x + box.width, y: box.y + box.height, height: 0 }),
+    ])
+      .then(([start, end]) =>
+        start && end
+          ? { x: start.x, y: start.y, width: Math.max(0, end.x - start.x), height: start.height }
+          : null,
+      )
+      .catch(() => null);
+    this.#person({ type: "binding", binding: entry.binding, activated, anchor });
+    return true;
+  }
+
   async #geometry(
     frameId: string,
     caret: z.infer<typeof contextReport>["caret"],
@@ -430,6 +582,7 @@ export class PageEditingObserver {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#withdrawBindings(() => true);
     await Promise.all([...this.#children.values()].map((child) => child.close()));
     await this.#frames.close();
     this.#children.clear();
@@ -459,7 +612,7 @@ export class PageEditingObserver {
   }
 }
 
-function editingObserverSource(binding: string): string {
+function editingObserverSource(binding: string, personFill: boolean): string {
   return `(() => {
   if (globalThis.editingOwner) return;
   const listeners = [],
@@ -584,7 +737,100 @@ function editingObserverSource(binding: string): string {
     if (mirrorSuffix.data) mirrorSuffix.data = "";
     return result;
   };
+  const personBindings = new Map(),
+    inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+  let personBinding = null;
+  const writable = (element) => {
+    if (!(element instanceof HTMLInputElement) || element.ownerDocument !== document ||
+        !element.isConnected || element.matches(":disabled") || element.readOnly || element.type === "hidden") return false;
+    const style = getComputedStyle(element), box = element.getBoundingClientRect();
+    return style.visibility === "visible" && style.display !== "none" && box.width > 0 && box.height > 0;
+  };
+  const codeGroup = (element) => {
+    if (!element.parentElement) return null;
+    const children = Array.from(element.parentElement.children), index = children.indexOf(element);
+    const digit = (node) => writable(node) && /^(text|tel|number|password)$/.test(node.type) && node.maxLength === 1;
+    if (!digit(element)) return null;
+    let start = index, end = index;
+    while (start > 0 && digit(children[start - 1])) start--;
+    while (end + 1 < children.length && digit(children[end + 1])) end++;
+    return end - start + 1 >= 4 && end - start + 1 <= 8 ? children.slice(start, end + 1) : null;
+  };
+  const loginRole = (element) => {
+    if (!writable(element)) return null;
+    const autocomplete = (element.autocomplete || "").toLowerCase().split(/\\s+/);
+    if (autocomplete.includes("new-password")) return null;
+    if (autocomplete.includes("one-time-code") ||
+        (/^(text|tel|number)$/.test(element.type) && /otp|totp|2fa|mfa|one.?time|verification|security.?code|auth.?code|passcode/i.test(
+          [element.name, element.id, element.autocomplete, element.getAttribute("aria-label"), element.placeholder].join(" "))) || codeGroup(element)) return "code";
+    if (element.type === "password") return "password";
+    if (autocomplete.includes("username") || autocomplete.includes("email") || element.type === "email" ||
+        (/^(text|tel)$/.test(element.type) && /user|email|login|account|identifier/i.test(element.name + " " + element.id))) return "username";
+    return null;
+  };
+  const release = (id) => {
+    personBindings.delete(id);
+    if (personBinding === id) personBinding = null;
+  };
+  const publishPerson = (activated = false) => {
+    const bound = personBindings.get(personBinding), target = bound?.target.deref();
+    if (!bound) return;
+    if (!writable(target) || bound.document.deref() !== document) {
+      release(personBinding);
+      globalThis[${JSON.stringify(binding)}](JSON.stringify({kind:"person-focus",bindingId:null}));
+      return;
+    }
+    const box = target.getBoundingClientRect();
+    globalThis[${JSON.stringify(binding)}](JSON.stringify({kind:"person-fill",bindingId:personBinding,role:bound.role,activated,
+      box:{x:box.x,y:box.y,width:box.width,height:box.height},slots:{partner:!!bound.partner,group:!!bound.group}}));
+  };
+  const activatePerson = (element) => {
+    const role = loginRole(element);
+    if (!role) return;
+    if (personBinding) release(personBinding);
+    const inputs = element.form ? Array.from(element.form.elements).filter(input => input instanceof HTMLInputElement)
+      : Array.from(element.getRootNode().querySelectorAll("input"));
+    const index = inputs.indexOf(element), candidates = inputs;
+    const partner = role === "username" ? candidates.find(input => inputs.indexOf(input) > index && loginRole(input) === "password")
+      : role === "password" ? candidates.findLast(input => inputs.indexOf(input) < index && loginRole(input) === "username") : null;
+    const group = role === "code" ? codeGroup(element) : null;
+    personBinding = crypto.randomUUID();
+    personBindings.set(personBinding, {document:new WeakRef(document),target:new WeakRef(element),role,
+      partner:partner ? new WeakRef(partner) : null,group:group?.map(input => new WeakRef(input))});
+    publishPerson(true);
+  };
+  const write = (id, slot, value, expectedOrigin) => {
+    const bound = personBindings.get(id);
+    const valid = (element) => bound?.document.deref() === document && location.origin === expectedOrigin && writable(element);
+    if (!bound || !valid(bound.target.deref())) return false;
+    const elements = slot === "group" ? bound.group?.map(input => input.deref())
+      : slot === "target" ? [bound.target.deref()] : slot === "partner" && bound.partner ? [bound.partner.deref()] : null;
+    if (!elements || (slot === "group" && value.length !== elements.length) || !elements.every(valid)) return false;
+    for (let index = 0; index < elements.length; index++) {
+      const element = elements[index];
+      if (!personBindings.has(id) || !valid(element)) return false;
+      inputSetter.call(element, slot === "group" ? value[index] : value);
+      element.dispatchEvent(new Event("input", {bubbles:true,composed:true}));
+      element.dispatchEvent(new Event("change", {bubbles:true,composed:true}));
+    }
+    return true;
+  };
+  if (${personFill}) {
+    on(document, "pointerdown", event => {
+      if (event.isTrusted) activatePerson(event.composedPath().find(node => node instanceof HTMLInputElement));
+    });
+    on(document, "keydown", event => {
+      if (event.isTrusted && event.key === "ArrowDown") activatePerson(active());
+    });
+    on(document, "focusin", () => {
+      if (active() !== personBindings.get(personBinding)?.target.deref()) {
+        if (personBinding) release(personBinding);
+        globalThis[${JSON.stringify(binding)}](JSON.stringify({kind:"person-focus",bindingId:null}));
+      }
+    });
+  }
   const publish = () => {
+    publishPerson();
     syncSelection();
     if (scheduled) cancelAnimationFrame(scheduled);
     scheduled = 0;
@@ -815,6 +1061,8 @@ function editingObserverSource(binding: string): string {
   });
   globalThis.editingOwner = {
     sensitive,
+    release,
+    write,
     beginInput,
     finishInput,
     publish: () => {
@@ -823,6 +1071,7 @@ function editingObserverSource(binding: string): string {
     },
     prepare,
     stop: () => {
+      personBindings.clear();
       listeners.forEach((fn) => fn());
       stopEditContext();
       resize.disconnect();

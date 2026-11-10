@@ -3233,6 +3233,339 @@ describe("BrowserController", () => {
     await ledger.close();
   });
 
+  async function autofillController(
+    options: {
+      native?: boolean;
+      missing?: "accounts" | "fill";
+      nativeLive?: () => boolean;
+      negotiated?: boolean;
+      accounts?: import("./sign-in.js").BrowserLoginAuthority["personFillAccounts"];
+      fill?: import("./sign-in.js").BrowserLoginAuthority["personFill"];
+    } = {},
+  ) {
+    const cdp = page.cdpSession;
+    cdp.responses.set("Page.getFrameTree", {
+      frameTree: { frame: { id: "main", securityOrigin: "https://example.test" } },
+    });
+    cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "observer" });
+    cdp.responses.set("Runtime.evaluate", { result: { value: true } });
+    const account = {
+      id: crypto.randomUUID(),
+      revision: 2,
+      username: "fixture",
+      label: null,
+      ready: false,
+    };
+    const accounts = vi.fn(options.accounts ?? (async () => [account]));
+    const fill = vi.fn(
+      options.fill ??
+        (async (input) => ((await input.write("target", "fixture")) ? "filled" : "stale")),
+    );
+    const controller = new BrowserController({
+      cdpRouter,
+      claims: validClaims({
+        editingVersion: 2,
+        clipboard: false,
+        personFillVersion: options.negotiated === false ? undefined : 1,
+      }),
+      files,
+      ledger,
+      replaceSiteCookies,
+      signIns: noSignIns(),
+      sink,
+      loginAuthority: {
+        probe: async () => "unavailable",
+        authorize: async () => ({
+          kind: "ended",
+          outcome: { kind: "unavailable", reason: "not-set-up" },
+        }),
+        fill: async () => "unavailable",
+        end: async () => {},
+        ...(options.missing === "accounts" ? {} : { personFillAccounts: accounts }),
+        ...(options.missing === "fill" ? {} : { personFill: fill }),
+      },
+      nativePresentation: () => options.nativeLive?.() ?? true,
+    });
+    await controller.start();
+    await flushMicrotasks();
+    const world = cdp.sent.find(
+      (entry) =>
+        entry.method === "Runtime.addBinding" &&
+        String(entry.parameters?.executionContextName).startsWith("opensteer-editing-"),
+    )!.parameters!;
+    cdp.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 7,
+        uniqueId: crypto.randomUUID(),
+        name: world.executionContextName,
+        origin: "https://untrusted.test",
+        auxData: { frameId: "main", isDefault: false },
+      },
+    });
+    const producer = crypto.randomUUID(),
+      surfaceId = activeSurfaceId();
+    const report = (bindingId = crypto.randomUUID(), activated = true) => {
+      cdp.emit("Runtime.bindingCalled", {
+        name: world.name,
+        executionContextId: 7,
+        payload: JSON.stringify({
+          kind: "person-fill",
+          bindingId,
+          role: "username",
+          activated,
+          box: { x: 100, y: 100, width: 200, height: 30 },
+          slots: { partner: true, group: false },
+        }),
+      });
+      return bindingId;
+    };
+    const activate = () => {
+      ledger.recordViewerInput(surfaceId, producer, options.native);
+      return report();
+    };
+    const offers = () =>
+      sink.messages.filter((message) => message.type === "browser.autofill.offer");
+    const waitOffer = async () => {
+      await vi.waitFor(() =>
+        expect(offers().length, "The attributed field never offered accounts").toBeGreaterThan(0),
+      );
+      return offers().at(-1)!;
+    };
+    return {
+      cdp,
+      controller,
+      account,
+      accounts,
+      fill,
+      producer,
+      surfaceId,
+      report,
+      activate,
+      offers,
+      waitOffer,
+      blur: () =>
+        cdp.emit("Runtime.bindingCalled", {
+          name: world.name,
+          executionContextId: 7,
+          payload: JSON.stringify({ fieldId: null, field: null, caret: null }),
+        }),
+      focus: () =>
+        cdp.emit("Runtime.bindingCalled", {
+          name: world.name,
+          executionContextId: 7,
+          payload: JSON.stringify({ kind: "person-focus", bindingId: null }),
+        }),
+      choice: (offerId: string, producerId = producer) => ({
+        type: "autofill.fill" as const,
+        surfaceId,
+        offerId,
+        producerId,
+        loginId: account.id,
+        revision: account.revision,
+      }),
+    };
+  }
+
+  it("offers only after attributed activation newer than agent commands and upserts its anchor", async () => {
+    const fixture = await autofillController();
+    try {
+      fixture.report();
+      await flushMicrotasks();
+      expect(fixture.accounts).not.toHaveBeenCalled();
+      ledger.recordViewerInput(fixture.surfaceId, fixture.producer);
+      ledger.recordAgentCommand(await page.targetId());
+      fixture.report();
+      await flushMicrotasks();
+      expect(fixture.accounts).not.toHaveBeenCalled();
+      const binding = fixture.activate();
+      const offer = await fixture.waitOffer();
+      expect(fixture.accounts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          origin: "https://example.test",
+          consumerToken: fixture.producer,
+          presence: "elsewhere",
+        }),
+      );
+      expect(offer.anchor).toEqual({
+        x: 100 / 1280,
+        y: 100 / 720,
+        width: 200 / 1280,
+        height: 30 / 720,
+      });
+      fixture.report(binding, false);
+      await vi.waitFor(() =>
+        expect(fixture.offers(), "The bound anchor never updated").toHaveLength(2),
+      );
+      expect(fixture.offers()[1]?.offerId).toBe(offer.offerId);
+    } finally {
+      await fixture.controller.close();
+    }
+  });
+
+  it.each(["agent", "focus", "navigation", "document"] as const)(
+    "withdraws a live offer on %s",
+    async (reason) => {
+      const fixture = await autofillController();
+      try {
+        fixture.activate();
+        const offer = await fixture.waitOffer();
+        if (reason === "agent") ledger.recordAgentCommand(await page.targetId());
+        if (reason === "focus") fixture.focus();
+        if (reason === "navigation")
+          fixture.cdp.emit("Page.frameNavigated", { frame: { id: "main" } });
+        if (reason === "document")
+          fixture.cdp.emit("Runtime.executionContextDestroyed", { executionContextId: 7 });
+        await vi.waitFor(() =>
+          expect(sink.messages, "The stale autofill offer was never withdrawn").toContainEqual({
+            type: "browser.autofill.withdrawn",
+            surfaceId: fixture.surfaceId,
+            consumerToken: fixture.producer,
+            offerId: offer.offerId,
+          }),
+        );
+        await fixture.controller.handle(fixture.choice(offer.offerId));
+        expect(fixture.fill).not.toHaveBeenCalled();
+      } finally {
+        await fixture.controller.close();
+      }
+    },
+  );
+
+  it("drops account replies from an older activation and accepts only one listed choice from its producer", async () => {
+    const pending = Promise.withResolvers<import("@opensteer/protocol").PersonFillAccountView[]>();
+    let called = 0;
+    const fixture = await autofillController({
+      accounts: async () =>
+        ++called === 1
+          ? withTimeout(pending.promise, 1000, {
+              timeoutError: () => new Error("The older account lookup never settled"),
+            })
+          : [fixture.account],
+    });
+    try {
+      fixture.activate();
+      await vi.waitFor(() =>
+        expect(fixture.accounts, "First account lookup never started").toHaveBeenCalledTimes(1),
+      );
+      fixture.activate();
+      const offer = await fixture.waitOffer();
+      pending.resolve([fixture.account]);
+      await flushMicrotasks();
+      expect(fixture.offers()).toHaveLength(1);
+      await fixture.controller.handle(fixture.choice(offer.offerId, crypto.randomUUID()));
+      await fixture.controller.handle({ ...fixture.choice(offer.offerId), revision: 3 });
+      await fixture.controller.handle({
+        ...fixture.choice(offer.offerId),
+        loginId: crypto.randomUUID(),
+      });
+      expect(fixture.fill).not.toHaveBeenCalled();
+      await Promise.all([
+        fixture.controller.handle(fixture.choice(offer.offerId)),
+        fixture.controller.handle(fixture.choice(offer.offerId)),
+      ]);
+      expect(fixture.fill).toHaveBeenCalledTimes(1);
+      expect(sink.messages).toContainEqual({
+        type: "browser.autofill.result",
+        surfaceId: fixture.surfaceId,
+        consumerToken: fixture.producer,
+        offerId: offer.offerId,
+        status: "filled",
+      });
+    } finally {
+      pending.resolve([]);
+      await fixture.controller.close();
+    }
+  });
+
+  it("keeps plain blur usable but refuses native presence after its presentation ends", async () => {
+    let live = true;
+    const fixture = await autofillController({ native: true, nativeLive: () => live });
+    try {
+      fixture.activate();
+      const offer = await fixture.waitOffer();
+      expect(fixture.accounts).toHaveBeenCalledWith(expect.objectContaining({ presence: "here" }));
+      fixture.blur();
+      expect(
+        sink.messages.filter((message) => message.type === "browser.autofill.withdrawn"),
+      ).toEqual([]);
+      live = false;
+      await fixture.controller.handle(fixture.choice(offer.offerId));
+      expect(fixture.fill).not.toHaveBeenCalled();
+      expect(sink.messages).toContainEqual({
+        type: "browser.autofill.result",
+        surfaceId: fixture.surfaceId,
+        consumerToken: fixture.producer,
+        offerId: offer.offerId,
+        status: "unavailable",
+      });
+    } finally {
+      await fixture.controller.close();
+    }
+  });
+
+  it("never negotiates or offers person fill without its ticket claim", async () => {
+    const fixture = await autofillController({ negotiated: false });
+    try {
+      fixture.activate();
+      await flushMicrotasks();
+      expect(sink.messages[0]).not.toHaveProperty("personFillVersion");
+      expect(fixture.accounts).not.toHaveBeenCalled();
+      await fixture.controller.handle(fixture.choice(crypto.randomUUID()));
+      expect(fixture.fill).not.toHaveBeenCalled();
+    } finally {
+      await fixture.controller.close();
+    }
+  });
+
+  it.each(["accounts", "fill"] as const)(
+    "requires the authority's %s method before negotiating autofill",
+    async (missing) => {
+      const fixture = await autofillController({ missing });
+      try {
+        fixture.activate();
+        await flushMicrotasks();
+        expect(sink.messages[0]).not.toHaveProperty("personFillVersion");
+        expect(fixture.accounts).not.toHaveBeenCalled();
+      } finally {
+        await fixture.controller.close();
+      }
+    },
+  );
+
+  it("aborts a claimed fill and refuses its delayed write when an agent command reaches the page", async () => {
+    const waiting = Promise.withResolvers<void>();
+    let wrote: boolean | undefined;
+    let aborted: boolean | undefined;
+    const fixture = await autofillController({
+      fill: async (input) => {
+        await withTimeout(waiting.promise, 1000, {
+          timeoutError: () => new Error("The pending fill was never released"),
+        });
+        aborted = input.signal.aborted;
+        wrote = await input.write("target", "fixture");
+        return wrote ? "filled" : "stale";
+      },
+    });
+    let filling: Promise<void> | undefined;
+    try {
+      fixture.activate();
+      const offer = await fixture.waitOffer();
+      filling = fixture.controller.handle(fixture.choice(offer.offerId));
+      await vi.waitFor(() =>
+        expect(fixture.fill, "The chosen fill never started").toHaveBeenCalledTimes(1),
+      );
+      ledger.recordAgentCommand(await page.targetId());
+      waiting.resolve();
+      await filling;
+      expect(aborted).toBe(true);
+      expect(wrote).toBe(false);
+    } finally {
+      waiting.resolve();
+      await filling;
+      await fixture.controller.close();
+    }
+  });
+
   function createController(
     maxPendingCommands?: number,
     outputLimits: { maxPendingMessageBytes?: number; maxPendingMessages?: number } = {},
