@@ -5212,6 +5212,10 @@ export class HttpHostClient {
             )
           : [...(this.#snapshot.workspaceTabs ?? []), group],
       });
+      // The Host's layout lists only open tabs, so one this lineage closed leaves its group too.
+      const open = new Set(group.tabs?.map((tab) => tab.id));
+      const closed = held?.tabs?.flatMap((tab) => (open.has(tab.id) ? [] : [tab.id])) ?? [];
+      if (closed.length) this.#tabGroups.removeClosed(closed);
       return;
     }
     if (

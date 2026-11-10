@@ -2281,6 +2281,40 @@ describe("HttpHostClient durable realtime", () => {
       }
     });
 
+    it("takes a tab its lineage closed out of the cached tab group", async () => {
+      const f = await fixture();
+      try {
+        const closed = f.group.tabs![0]!;
+        const kept = { ...closed, id: BrowserSurfaceIdSchema.parse("surface_kept"), order: 1 };
+        const open = { ...f.group, tabs: [closed, kept] };
+        f.body.browser.workspaceTabs = [open];
+        f.body.browser.tabGroups = {
+          revision: 2,
+          order: [closed.id, kept.id],
+          groups: [
+            {
+              id: createId("browserTabGroup"),
+              title: "Tacos",
+              color: "blue",
+              collapsed: false,
+              tabIds: [closed.id, kept.id],
+            },
+          ],
+        };
+        await f.client.load();
+        f.socket.receive({
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: { ...open, revision: 2, tabs: [kept] },
+        });
+        const layout = f.client.getSnapshot().browserTabGroups;
+        expect(layout?.groups.map((group) => group.tabIds)).toEqual([[kept.id]]);
+        expect(layout?.order).toEqual([kept.id]);
+      } finally {
+        f.client.dispose();
+      }
+    });
+
     it("rereads a lineage notice whose tabs were omitted", async () => {
       const f = await fixture();
       try {
