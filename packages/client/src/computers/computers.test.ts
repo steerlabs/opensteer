@@ -43,6 +43,21 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+it.each([true, false])("separates Main topology from ownership grouping: %s", (ownsMain) => {
+  const overview = computersOverview({
+    deploymentPolicy: {
+      ownership: ownsMain ? "members" : "single-user",
+      deploymentOwnsMainComputer: ownsMain,
+    },
+    deploymentName: "Home",
+    hereId: null,
+    publicOrigin: "https://home.example",
+    machines: [machine({ ownership: "deployment", allowedModules: ["agents"] })],
+  });
+  expect(overview.home.kind).toBe(ownsMain ? "mac" : "server");
+  expect(overview.addTo).toBe(ownsMain ? "yours" : "others");
+});
+
 const macId = "rnr_11111111-1111-4111-8111-111111111111";
 
 function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {

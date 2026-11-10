@@ -534,10 +534,10 @@ export async function createHostServer(
     ? {
         oauth: dependencies.connections,
         canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
-        personal: deploymentPolicy({
+        loopbackOriginAliases: deploymentPolicy({
           kind: dependencies.discovery.document.deploymentShape.kind,
           defaultWorkspaceBacking: "local-directory",
-        }).services.personalRemoteAccess,
+        }).loopbackOriginAliases,
         remoteOrigin: async () =>
           (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route
             .origin ?? null,

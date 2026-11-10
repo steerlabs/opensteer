@@ -106,6 +106,7 @@ export const HostBootstrapSchema = z.object({
       serviceManagement: z.boolean().optional().catch(undefined),
       runnerEnrollmentMode: z.enum(["reach-only", "unrestricted"]).optional().catch(undefined),
       deploymentComputerAccess: z.boolean().optional().catch(undefined),
+      computerExecutionControls: z.boolean().optional().catch(undefined),
       projectConsent: z.enum(["owner-wide", "per-project"]).optional().catch(undefined),
       localRunnerDefaultModules: z
         .array(z.enum(["agents", "browser", "shell"]).optional().catch(undefined))

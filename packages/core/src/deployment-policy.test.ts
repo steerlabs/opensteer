@@ -26,7 +26,8 @@ describe("deployment policy", () => {
         serviceManagement: false,
         deploymentComputerAccess: true,
         deploymentOwnsMainComputer: true,
-        browserPersonalMode: true,
+        computerExecutionControls: false,
+        loopbackOriginAliases: true,
         retainLocalIntegrationApproval: true,
         configuration: {
           loopbackOnly: true,
@@ -66,7 +67,8 @@ describe("deployment policy", () => {
         serviceManagement: true,
         deploymentComputerAccess: false,
         deploymentOwnsMainComputer: false,
-        browserPersonalMode: false,
+        computerExecutionControls: true,
+        loopbackOriginAliases: false,
         retainLocalIntegrationApproval: false,
         configuration: {
           loopbackOnly: false,

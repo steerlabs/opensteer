@@ -13,7 +13,8 @@ export interface DeploymentPolicy {
   readonly serviceManagement: boolean;
   readonly deploymentComputerAccess: boolean;
   readonly deploymentOwnsMainComputer: boolean;
-  readonly browserPersonalMode: boolean;
+  readonly computerExecutionControls: boolean;
+  readonly loopbackOriginAliases: boolean;
   readonly retainLocalIntegrationApproval: boolean;
   readonly configuration: {
     readonly loopbackOnly: boolean;
@@ -57,6 +58,7 @@ type DeploymentClientFacts = {
   | "nativeWebLinks"
   | "deploymentOwnsMainComputer"
   | "deploymentComputerAccess"
+  | "computerExecutionControls"
   | "projectConsent"
   | "sharing"
   | "deploymentWideMachineReach"
@@ -82,7 +84,8 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       serviceManagement: false,
       deploymentComputerAccess: true,
       deploymentOwnsMainComputer: true,
-      browserPersonalMode: true,
+      computerExecutionControls: false,
+      loopbackOriginAliases: true,
       retainLocalIntegrationApproval: true,
       configuration: {
         loopbackOnly: true,
@@ -121,7 +124,8 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
       serviceManagement: true,
       deploymentComputerAccess: false,
       deploymentOwnsMainComputer: false,
-      browserPersonalMode: false,
+      computerExecutionControls: true,
+      loopbackOriginAliases: false,
       retainLocalIntegrationApproval: false,
       configuration: {
         loopbackOnly: false,
@@ -162,6 +166,7 @@ export function deploymentClientPolicy(policy: DeploymentPolicy): DeploymentClie
     deploymentOwnsMainComputer: policy.deploymentOwnsMainComputer,
     localOwnerClaim: policy.configuration.localOwnerClaim,
     deploymentComputerAccess: policy.deploymentComputerAccess,
+    computerExecutionControls: policy.computerExecutionControls,
     projectConsent: policy.projectConsent,
     localRunnerDefaultModules: policy.localRunnerDefaultModules,
   };

@@ -1054,7 +1054,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             decide, so their page only says so when agents do work there. */}
         {!phone &&
         !iphone &&
-        deploymentPolicy?.localRunnerDefaultModules?.includes("agents") === true &&
+        deploymentPolicy?.computerExecutionControls === true &&
         machine.status !== "pending" &&
         (machine.ownership !== "other" || machine.modules.agents) ? (
           <section aria-labelledby="runs-agents-title" className="computers-section">

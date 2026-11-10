@@ -472,6 +472,35 @@ describe("ComputerDetailPage", () => {
     ).toBeNull();
   });
 
+  it.each([true, false])(
+    "uses existing-computer execution controls independently of local enrollment: %s",
+    (computerExecutionControls) => {
+      const client = new MockHostClient({ latencyMs: 0 });
+      try {
+        const snapshot = serverSnapshot(client);
+        const markup = renderPage({
+          client,
+          path: `/settings/devices/computers/${macMiniId}`,
+          snapshot: {
+            ...snapshot,
+            deploymentPolicy: {
+              ...snapshot.deploymentPolicy,
+              computerExecutionControls,
+              localRunnerDefaultModules: computerExecutionControls
+                ? ["shell"]
+                : ["agents", "shell"],
+            },
+          },
+        });
+        expect(markup.includes('aria-labelledby="runs-agents-title"')).toBe(
+          computerExecutionControls,
+        );
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+
   it("switches agent work on this device, and states it as a fact elsewhere", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const performLocalExecutionAction = vi.fn(async () => undefined);
@@ -901,6 +930,7 @@ function serverSnapshot(client: MockHostClient): ShellContext["snapshot"] {
       deploymentOwnsMainComputer: false,
       nativePasswords: false,
       deploymentComputerAccess: false,
+      computerExecutionControls: true,
       sharing: true,
       serviceManagement: true,
       runnerEnrollmentMode: "unrestricted",
