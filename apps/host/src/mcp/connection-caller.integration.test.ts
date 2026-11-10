@@ -44,6 +44,8 @@ import { mcpResourceMetadataPath, mcpResourcePath } from "./connections/connecti
 import { agentToolHandlers } from "./handlers/index.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
+import type { KnowledgeManager } from "../knowledge/knowledge-manager.js";
+import { knowledgeForCaller } from "../knowledge/knowledge-eligibility.js";
 
 const servers: Server[] = [];
 const clients: Client[] = [];
@@ -67,6 +69,13 @@ async function serveMcp(
   options: {
     readonly connected?: () => boolean;
     readonly runScope?: import("../agents/run-tool-tokens.js").RunToolScope;
+    readonly runScopes?: Readonly<
+      Record<string, import("../agents/run-tool-tokens.js").RunToolScope>
+    >;
+    readonly knowledge?: {
+      readonly advertised: boolean;
+      readonly sql: KnowledgeManager["sql"];
+    };
     readonly notify?: { current?: () => void };
     readonly subscribed?: () => void;
     readonly unsubscribed?: () => void;
@@ -184,6 +193,8 @@ async function serveMcp(
       runs: {
         authenticate: async (token) => {
           if (token === "test-run" && options.runScope) return options.runScope;
+          const scope = options.runScopes?.[token];
+          if (scope) return scope;
           throw new Error("Not a Run");
         },
       },
@@ -220,9 +231,18 @@ async function serveMcp(
       pluginInstall: async () => {
         throw new Error("Unexpected install");
       },
+      ...(options.knowledge ? { knowledge: { sql: options.knowledge.sql } } : {}),
     }),
+    ...(options.knowledge
+      ? {
+          knowledgeFor: knowledgeForCaller({
+            store,
+            agents: () => (options.knowledge?.advertised ? { knowledgeSkill: 1 } : {}),
+          }),
+        }
+      : {}),
     store,
-    publicUrl: options.runScope ? url : new URL("http://runtime.invalid"),
+    publicUrl: options.runScope || options.runScopes ? url : new URL("http://runtime.invalid"),
   });
   return url;
 }
@@ -533,6 +553,147 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         }),
       ),
     ).toContain("outside the caller's reach");
+  });
+
+  it("offers knowledge only where the owner started the whole lineage in their own session", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("knowledge-provenance");
+    const { store, database } = storeFixture;
+    const create = (
+      key: string,
+      extra: Partial<Parameters<OpensteerStore["createThread"]>[0]> = {},
+    ) =>
+      store
+        .createThread({
+          createdBy: f.userId,
+          environmentId: f.environmentId,
+          harnessInstanceId: f.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          title: key,
+          workspaceId: f.workspace.id,
+          ...extra,
+        })
+        .then(({ thread }) => thread);
+    const runAuthority = {
+      kind: "run" as const,
+      userId: f.userId,
+      accessMode: f.thread.accessMode,
+      reach: { kind: "user" as const },
+      scope: {
+        bindingGeneration: f.bindingGeneration,
+        environmentId: f.environmentId,
+        membershipGeneration: 1,
+        requestedBy: f.userId,
+        runId: f.run.id,
+        runnerBootId: f.runnerBootId,
+        runnerId: f.runnerId,
+        threadId: f.thread.id,
+        workspaceId: f.workspace.id,
+      },
+    };
+
+    const delegateUrl = await serveMcp(store);
+    const agent = await connection(store, delegateUrl, {
+      userId: f.userId,
+      accessMode: "full-access",
+      reach: { kind: "user" },
+    });
+    const delegated = await agent.client.callTool({
+      name: "thread_delegate",
+      arguments: {
+        workspaceId: f.workspace.id,
+        environmentId: f.environmentId,
+        harnessInstanceId: f.harnessInstance.id,
+        model: { ...testModelSelection, options: {} },
+        title: "Connected work",
+        task: "Work in Main",
+        operationKey: "knowledge-provenance",
+      },
+    });
+    expect(delegated.isError, JSON.stringify(delegated.content)).not.toBe(true);
+    const connected = ThreadIdSchema.parse(
+      (delegated.structuredContent as { threadId: string }).threadId,
+    );
+
+    const owned = await create("owned", { ownerSession: true });
+    const ownedChild = await create("owned-child", {
+      ownerSession: true,
+      parentThreadId: owned.id,
+    });
+    const connectedChild = await create("connected-child", {
+      ownerSession: true,
+      parentThreadId: connected,
+    });
+    const unknownRunChild = await create("unknown-run-child", { authority: runAuthority });
+    await database
+      .updateTable("threads")
+      .set({ ownerStarted: true })
+      .where("id", "=", f.thread.id)
+      .execute();
+    const ownedRunChild = await create("owned-run-child", { authority: runAuthority });
+    const expected = {
+      [owned.id]: true,
+      [ownedChild.id]: true,
+      [ownedRunChild.id]: true,
+      [connected]: false,
+      [connectedChild.id]: false,
+      [unknownRunChild.id]: false,
+    };
+    for (const [threadId, ownerStarted] of Object.entries(expected))
+      expect(await store.threadProvenance(ThreadIdSchema.parse(threadId)), threadId).toEqual({
+        inheritsMain: true,
+        ownerStarted,
+      });
+
+    const scope = (threadId: string) => ({
+      aud: "opensteer-run-tools" as const,
+      exp: Math.floor(Date.now() / 1000) + 60,
+      iat: Math.floor(Date.now() / 1000),
+      iss: "opensteer-host" as const,
+      jti: `knowledge-${threadId}`,
+      bindingGeneration: f.bindingGeneration,
+      environmentId: f.environmentId,
+      membershipGeneration: 1,
+      requestedBy: f.userId,
+      runId: f.run.id,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      threadId: ThreadIdSchema.parse(threadId),
+      workspaceId: f.workspace.id,
+    });
+    const sql = vi.fn(async () => ({ source: { kind: "knowledge", trust: "data" } }) as never);
+    const runScopes = Object.fromEntries(
+      Object.keys(expected).map((threadId) => [threadId, scope(threadId)]),
+    );
+    const sees = async (url: URL, threadId: string) => {
+      const client = new Client({ name: `run-${threadId}`, version: "1" });
+      clients.push(client);
+      await client.connect(
+        new StreamableHTTPClientTransport(url, {
+          requestInit: { headers: { Authorization: `Bearer ${threadId}` } },
+        }) as unknown as Transport,
+        { timeout: 5000 },
+      );
+      const listed = (await client.listTools()).tools.some(({ name }) => name === "sql");
+      sql.mockClear();
+      const called = await client.callTool({ name: "sql", arguments: {} });
+      return { listed, dispatched: sql.mock.calls.length === 1, refused: called.isError === true };
+    };
+    const advertised = await serveMcp(store, { runScopes, knowledge: { advertised: true, sql } });
+    for (const [threadId, eligible] of Object.entries(expected))
+      expect(await sees(advertised, threadId), threadId).toEqual({
+        listed: eligible,
+        dispatched: eligible,
+        refused: !eligible,
+      });
+    const silent = await serveMcp(store, { runScopes, knowledge: { advertised: false, sql } });
+    expect(await sees(silent, owned.id)).toEqual({
+      listed: false,
+      dispatched: false,
+      refused: true,
+    });
   });
 
   it("returns a connection's original task on retry after the person's defaults change", async ({

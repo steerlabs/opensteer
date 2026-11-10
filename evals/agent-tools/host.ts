@@ -145,7 +145,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const agent = new OpensteerMcpService({
     publicUrl: url,
     handlers,
-    knowledge: testCase.knowledge,
+    knowledgeFor: async (caller) => caller.kind === "run" && testCase.knowledge === true,
     callers: {
       authenticate: async (token: string) => {
         const claims = await agentTokens.authenticate(token);

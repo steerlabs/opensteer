@@ -119,6 +119,7 @@ import { ProductToolHandlers } from "../mcp/handlers/product.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { agentToolHandlers } from "../mcp/handlers/index.js";
 import type { KnowledgeManager } from "../knowledge/knowledge-manager.js";
+import { knowledgeForCaller } from "../knowledge/knowledge-eligibility.js";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
@@ -2435,7 +2436,17 @@ export async function createHostRuntime(
       publicUrl: config.runtimeOrigin,
       realtime,
       onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
-      knowledge: knowledge !== undefined,
+      ...(knowledge
+        ? {
+            knowledgeFor: knowledgeForCaller({
+              store,
+              agents: (runnerId, bootId) => {
+                const identity = runnerRegistry?.identityForRunner(runnerId);
+                return identity?.bootId === bootId ? identity.modules.agents : null;
+              },
+            }),
+          }
+        : {}),
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,
