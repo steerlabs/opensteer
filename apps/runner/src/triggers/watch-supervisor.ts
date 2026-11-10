@@ -1,3 +1,5 @@
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
+import type { ProjectReconcileWatches, ProjectWatchReconcileActivation } from "@opensteer/protocol";
 import { programEnvironment } from "@opensteer/harness";
 import {
   createPrivateFileAtomically,
@@ -33,13 +35,14 @@ import type { ProgramLaunchPlanner } from "../agent/program-executor.js";
 interface ActiveWatch {
   abort: AbortController;
   capabilitiesPath: string;
-  desired: WatchReconcileActivation;
+  desired: WatchReconcileActivation | ProjectWatchReconcileActivation;
   /** The program's stand-ins for the Host, from start until the watch stops or expires. */
   endpoints?: ProgramEndpointSet;
   healthySince: string | null;
   lastError: string | null;
   lastExitCode: number | null;
   leaseTimer?: NodeJS.Timeout;
+  leaseDeadline?: number;
   observed: "starting" | "running" | "backoff" | "expired" | "stopped";
   process: SupervisedProcess | undefined;
   restartCount: number;
@@ -106,15 +109,55 @@ export class WatchSupervisor {
   }
 
   async reconcile(
-    command: Extract<
-      import("@opensteer/protocol").RunnerCommand,
-      { readonly type: "watch.reconcile" }
-    >,
+    command:
+      | Extract<import("@opensteer/protocol").RunnerCommand, { readonly type: "watch.reconcile" }>
+      | ProjectReconcileWatches,
     sink: RunnerMessageSink,
   ): Promise<void> {
     const applied = this.#reconcileTail.then(() => this.#applyReconcile(command, sink));
     this.#reconcileTail = applied.catch(() => undefined);
     return applied;
+  }
+
+  async stopProjectActivation(
+    activationId: TriggerWatchActivationId,
+    expected: ProjectWatchReconcileActivation,
+  ): Promise<void> {
+    const active = this.#watches.get(activationId);
+    if (
+      !active ||
+      !("executionLeaseMs" in active.desired) ||
+      active.desired.executionGeneration !== expected.executionGeneration ||
+      active.desired.revisionId !== expected.revisionId ||
+      active.desired.runnerBootId !== expected.runnerBootId ||
+      canonicalJson(active.desired.authority) !== canonicalJson(expected.authority)
+    )
+      return;
+    await this.#stop(active, true);
+    if (this.#watches.get(activationId) === active) this.#watches.delete(activationId);
+  }
+
+  renewProjectActivation(
+    activationId: TriggerWatchActivationId,
+    executionGeneration: number,
+    leaseMs: number,
+    token?: string,
+  ): void {
+    const active = this.#watches.get(activationId);
+    if (
+      !active ||
+      !("executionLeaseMs" in active.desired) ||
+      active.desired.executionGeneration !== executionGeneration ||
+      active.abort.signal.aborted
+    )
+      return;
+    active.desired = {
+      ...active.desired,
+      executionLeaseMs: leaseMs,
+      capabilities: { mcp: { ...active.desired.capabilities.mcp, ...(token ? { token } : {}) } },
+    };
+    this.#armLease(active);
+    if (token) void this.#writeCapabilities(active).catch(() => this.#expire(active));
   }
 
   async connectionLost(sink: RunnerMessageSink): Promise<void> {
@@ -128,10 +171,9 @@ export class WatchSupervisor {
   }
 
   async #applyReconcile(
-    command: Extract<
-      import("@opensteer/protocol").RunnerCommand,
-      { readonly type: "watch.reconcile" }
-    >,
+    command:
+      | Extract<import("@opensteer/protocol").RunnerCommand, { readonly type: "watch.reconcile" }>
+      | ProjectReconcileWatches,
     sink: RunnerMessageSink,
   ): Promise<void> {
     if (this.#closed) throw new Error("Watch supervisor is closed");
@@ -409,7 +451,14 @@ export class WatchSupervisor {
    */
   async #writeCapabilities(active: ActiveWatch): Promise<void> {
     active.endpoints ??= await startProgramEndpoints({
-      capabilities: () => active.desired.capabilities,
+      capabilities: () => {
+        if (
+          "executionLeaseMs" in active.desired &&
+          (active.leaseDeadline ?? Infinity) <= Date.now()
+        )
+          throw new Error("Project Watch lease ended");
+        return { browserCdp: null, ...active.desired.capabilities };
+      },
       transport: this.#transport,
     });
     const { endpoints } = active.endpoints;
@@ -418,7 +467,7 @@ export class WatchSupervisor {
       active.capabilitiesPath,
       JSON.stringify({
         browserCdp:
-          endpoints.browserCdp && capabilities.browserCdp
+          endpoints.browserCdp && "browserCdp" in capabilities && capabilities.browserCdp
             ? { ...endpoints.browserCdp, expiresAt: capabilities.browserCdp.expiresAt }
             : null,
         mcp: { ...endpoints.mcp, expiresAt: capabilities.mcp.expiresAt },
@@ -441,9 +490,15 @@ export class WatchSupervisor {
     if (active.leaseTimer) clearTimeout(active.leaseTimer);
     const expirations = [
       active.desired.capabilities.mcp.expiresAt,
-      active.desired.capabilities.browserCdp?.expiresAt,
+      "browserCdp" in active.desired.capabilities
+        ? active.desired.capabilities.browserCdp?.expiresAt
+        : undefined,
     ].filter((value): value is string => value !== undefined);
-    const expiresAt = Math.min(...expirations.map((value) => new Date(value).getTime()));
+    const expiresAt =
+      "executionLeaseMs" in active.desired
+        ? Date.now() + active.desired.executionLeaseMs
+        : Math.min(...expirations.map((value) => new Date(value).getTime()));
+    active.leaseDeadline = expiresAt;
     active.leaseTimer = setTimeout(
       () => {
         void this.#expire(active);
@@ -513,6 +568,7 @@ function watchTailText(value: Buffer): string {
 
 function watchEnvironment(active: ActiveWatch, eventFile: string): Record<string, string> {
   const environment = programEnvironment();
+  if ("projectTimeZone" in active.desired) environment.TZ = active.desired.projectTimeZone;
   environment.OPENSTEER_ACTIVATION_ID = active.desired.activationId;
   environment.OPENSTEER_CAPABILITIES_PATH = active.capabilitiesPath;
   environment.OPENSTEER_EVENT_PATH = eventFile;

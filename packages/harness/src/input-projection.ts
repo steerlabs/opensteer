@@ -1,3 +1,4 @@
+import type { EngineHarnessRunInput, ProjectHarnessRunContext } from "./types.js";
 import type { HarnessInput, HarnessRunReports } from "@opensteer/protocol";
 import {
   attachmentNativeImageMediaTypes,
@@ -9,7 +10,7 @@ import {
 } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { HarnessRunContext, HarnessRunInput, ResolvedAttachment } from "./types.js";
+import type { HarnessRunContext, ResolvedAttachment } from "./types.js";
 
 export function resolvedInputParts(
   input: HarnessInput,
@@ -225,7 +226,7 @@ export function escapeOpensteerPromptMarkers(body: string): string {
  * steer into a turn already under way carries none.
  */
 export function harnessTurnPreamble(
-  turn: Pick<HarnessRunInput, "context" | "reports"> | null,
+  turn: Pick<EngineHarnessRunInput, "context" | "reports"> | null,
   renderBody: (input: HarnessInput) => string,
 ): string | undefined {
   if (turn === null) return undefined;
@@ -241,12 +242,17 @@ export function harnessTurnPreamble(
  * agent decides what they mean. A Run outside any task is named as such only
  * where an earlier task could make its reply look like a return.
  */
-export function harnessThreadContextPrompt(context: HarnessRunContext, now = new Date()): string {
+export function harnessThreadContextPrompt(
+  context: HarnessRunContext | ProjectHarnessRunContext,
+  now = new Date(),
+): string {
   const { assignment } = context;
   const { previousAssignment, previousRun } = context.threadState;
   return [
     "[Opensteer thread context]",
-    requesterTimeLine(context.requesterTimeZone, now),
+    "projectTimeZone" in context
+      ? requesterTimeLine(context.projectTimeZone, now).replaceAll("Person's", "Project's")
+      : requesterTimeLine(context.requesterTimeZone, now),
     ...(assignment || previousAssignment ? [currentTaskLine(assignment)] : []),
     ...(previousRun ? [previousRunLine(previousRun)] : []),
     ...(previousAssignment ? [previousTaskLine(previousAssignment)] : []),

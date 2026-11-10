@@ -3533,3 +3533,84 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
   }
   await fixture.adapter.close();
 });
+
+it("proposes unattended Project approvals without choosing a person, and delivers Host refusal", async () => {
+  const fixture = await setup("pending-approval-interrupt", {
+    providerStateKind: "isolated",
+    runtimeBoundary: isolatedServiceHarnessRuntimeBoundary,
+  });
+  const {
+    machineAccessNotice: _notice,
+    machineAccessPlatform: _platform,
+    machineAccessRelaySocket: _relay,
+    voiceCall: _voice,
+    ...common
+  } = fixture.context;
+  const binding = {
+    authority: {
+      version: 1 as const,
+      principal: {
+        kind: "project" as const,
+        principalId: "project:test",
+        workspaceId: common.workspaceId,
+      },
+      origin: null,
+    },
+    environmentId: common.environmentId,
+    threadId: common.threadId,
+    workspaceId: common.workspaceId,
+    runId: createId("run"),
+    grantId: createId("grant"),
+    runnerId: createId("runner"),
+    runnerBootId: "boot",
+    bindingGeneration: 1,
+  };
+  const session = await fixture.adapter.startProjectSession!({ ...common, binding });
+  const events: import("@opensteer/harness").ProjectHarnessEvent[] = [];
+  const consume = (async () => {
+    for await (const event of session.events) events.push(event);
+  })();
+  const turn = fixture.turn("Run tests");
+  const { requestedBy: _person, context: _context, ...input } = turn;
+  const running = session.execute({
+    ...input,
+    runId: binding.runId,
+    executionAuthority: { kind: "project", binding },
+    context: {
+      assignment: null,
+      projectSettingsRevision: 1,
+      projectTimeZone: "UTC",
+      threadState: noThreadContext.threadState,
+    },
+  });
+  try {
+    await vi.waitFor(
+      () => expect(events.some((event) => event.type === "request.proposed.project")).toBe(true),
+      { timeout: 2_000 },
+    );
+    const proposal = events.find((event) => event.type === "request.proposed.project");
+    if (!proposal || proposal.type !== "request.proposed.project")
+      throw new Error("Project approval never arrived");
+    expect(proposal.binding).toEqual(binding);
+    expect(proposal.data.request).not.toHaveProperty("requestedBy");
+    expect(proposal.data.request).not.toHaveProperty("requiredActor");
+    await session.refuseRequest(
+      proposal.data.request.id,
+      proposal.data.request.callId,
+      "no-eligible-manager",
+    );
+    await vi.waitFor(
+      async () => {
+        expect(
+          (await fixture.capture()).find((message) => message.id === "pending-interrupt-rpc"),
+        ).toMatchObject({ error: { code: -32_000, message: "no-eligible-manager" } });
+      },
+      { timeout: 2000 },
+    );
+  } finally {
+    await session.stop();
+    await running;
+    await consume;
+    await fixture.adapter.close();
+  }
+});

@@ -30,7 +30,11 @@ import {
   runnerCommandMaxSerializedBytes,
   pendingAgentEventMaxSerializedBytes,
 } from "./runner-execution.js";
-import { RunnerBootIdSchema, RunnerConnectionFenceSchema } from "./runner-identity.js";
+import {
+  RunnerBootIdSchema,
+  RunnerConnectionFenceSchema,
+  type RunnerConnectionFence,
+} from "./runner-identity.js";
 import { RunnerAuxiliaryRequestIdSchema } from "./runner-auxiliary.js";
 
 const generation = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -403,3 +407,10 @@ export const ProjectHostToRunnerMessageSchema = hostMessages
   );
 export type ProjectRunnerToHostMessage = z.infer<typeof ProjectRunnerToHostMessageSchema>;
 export type ProjectHostToRunnerMessage = z.infer<typeof ProjectHostToRunnerMessageSchema>;
+
+export type ProjectRunnerOperationalReport = {
+  [Kind in ProjectRunnerToHostMessage["type"]]: Omit<
+    Extract<ProjectRunnerToHostMessage, { type: Kind }>,
+    keyof RunnerConnectionFence
+  >;
+}[ProjectRunnerToHostMessage["type"]];

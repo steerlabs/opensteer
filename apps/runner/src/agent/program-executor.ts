@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
-import type { TriggerExecutionContext } from "@opensteer/protocol";
+import type { ProjectTriggerExecutionContext, TriggerExecutionContext } from "@opensteer/protocol";
 import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { RunWorkspace } from "../workspace/mount-manager.js";
 import { triggerProgramRuntimeSource } from "./program-runtime.js";
@@ -45,7 +45,7 @@ export class TriggerProgramExecutor {
   }
 
   async execute(input: {
-    readonly context: TriggerExecutionContext;
+    readonly context: TriggerExecutionContext | ProjectTriggerExecutionContext;
     readonly endpoints: ProgramEndpoints;
     readonly planLaunch: ProgramLaunchPlanner;
     readonly signal: AbortSignal;
@@ -81,7 +81,7 @@ export class TriggerProgramExecutor {
   }
 
   async #run(input: {
-    readonly context: TriggerExecutionContext;
+    readonly context: TriggerExecutionContext | ProjectTriggerExecutionContext;
     readonly eventFile: string;
     readonly input: {
       readonly endpoints: ProgramEndpoints;
@@ -176,11 +176,12 @@ export class TriggerProgramExecutor {
 }
 
 function triggerEnvironment(
-  context: TriggerExecutionContext,
+  context: TriggerExecutionContext | ProjectTriggerExecutionContext,
   endpoints: ProgramEndpoints,
   eventFile: string,
 ): Record<string, string> {
   const environment = programEnvironment();
+  if ("projectTimeZone" in context) environment.TZ = context.projectTimeZone;
   environment.OPENSTEER_EVENT_PATH = eventFile;
   environment.OPENSTEER_MCP_URL = endpoints.mcp.url;
   environment.OPENSTEER_MCP_TOKEN = endpoints.mcp.token;

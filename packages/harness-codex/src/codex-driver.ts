@@ -1,3 +1,16 @@
+import {
+  assertEngineRunBinding,
+  engineRequestEvent,
+  personHarnessSession,
+  projectHarnessSession,
+  projectEngineContext,
+  type EngineHarnessRunInput,
+  type EngineHarnessEvent,
+  type EngineHarnessSession,
+  type ProjectHarnessSessionContext,
+  type ProjectHarnessSession,
+} from "@opensteer/harness";
+import type { HarnessExecutionAuthority } from "@opensteer/core";
 import { requestToolNames } from "@opensteer/agent-tools";
 import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
@@ -48,7 +61,6 @@ import {
   type RunUsage,
   type ThreadAccessMode,
   type ToolIdentity,
-  type UserId,
 } from "@opensteer/core";
 import { maxHarnessModelsPerCatalog, VoiceSdpSchema } from "@opensteer/protocol";
 import {
@@ -114,7 +126,6 @@ import {
   type HarnessObservedUsageWindow,
   type HarnessSourceDescriptor,
   type HarnessSteerInput,
-  type HarnessRunInput,
   type ResolvedAttachment,
   type SupervisedProcess,
 } from "@opensteer/harness";
@@ -210,8 +221,8 @@ interface ActiveTurn {
   interruptPromise?: Promise<void>;
   interruptRequested: boolean;
   providerTurnId?: string;
-  readonly requestedBy: UserId;
-  readonly runId: HarnessRunInput["runId"];
+  readonly authority: HarnessExecutionAuthority;
+  readonly runId: EngineHarnessRunInput["runId"];
   started: boolean;
   terminal: boolean;
   /** What this Run consumed: its own turns' and its subagents'; unset until Codex stated any. */
@@ -1001,7 +1012,9 @@ class CodexHarnessAdapter implements HarnessAdapter {
     assertFreshProviderSessionContext(context);
     // Codex mints the thread id, so the reference this session will answer to
     // is only known once the app-server has answered.
-    return this.#sessions.openUnreferenced(() => this.#open(context, { type: "start" }));
+    return personHarnessSession(
+      await this.#sessions.openUnreferenced(() => this.#open(context, { type: "start" })),
+    );
   }
 
   async resumeSession(
@@ -1010,7 +1023,33 @@ class CodexHarnessAdapter implements HarnessAdapter {
   ): Promise<HarnessSession> {
     this.#sessions.assertOpen();
     const reference = validateProviderReference(providerSessionReference);
-    return this.#sessions.open(reference, () => this.#open(context, { reference, type: "resume" }));
+    return personHarnessSession(
+      await this.#sessions.open(reference, () =>
+        this.#open(context, { reference, type: "resume" }),
+      ),
+    );
+  }
+
+  async startProjectSession(context: ProjectHarnessSessionContext): Promise<ProjectHarnessSession> {
+    const common = projectEngineContext(context);
+    this.#sessions.assertOpen();
+    assertFreshProviderSessionContext(common);
+    return projectHarnessSession(
+      await this.#sessions.openUnreferenced(() => this.#open(common, { type: "start" })),
+      context,
+    );
+  }
+  async resumeProjectSession(
+    reference: string,
+    context: ProjectHarnessSessionContext,
+  ): Promise<ProjectHarnessSession> {
+    const common = projectEngineContext(context);
+    this.#sessions.assertOpen();
+    reference = validateProviderReference(reference);
+    return projectHarnessSession(
+      await this.#sessions.open(reference, () => this.#open(common, { reference, type: "resume" })),
+      context,
+    );
   }
 
   async close(): Promise<void> {
@@ -1029,8 +1068,8 @@ class CodexHarnessAdapter implements HarnessAdapter {
   }
 }
 
-class CodexHarnessSession implements HarnessSession {
-  readonly events: AsyncIterable<HarnessEvent>;
+class CodexHarnessSession implements EngineHarnessSession {
+  readonly events: AsyncIterable<EngineHarnessEvent>;
   readonly #config: CodexHarnessConfig;
   readonly #launch: CodexLaunch;
   readonly #source: CodexSourceSelection;
@@ -1041,8 +1080,9 @@ class CodexHarnessSession implements HarnessSession {
    */
   #sessionApprovalGranted = false;
   readonly #resumed: boolean;
-  readonly #publisher: TurnPublisher;
+  readonly #publisher: TurnPublisher<EngineHarnessEvent>;
   readonly #onClose: (session: CodexHarnessSession) => void;
+  readonly #requestCallIds = new Map<RequestId, string>();
   readonly #pendingRequests = new Map<RequestId, PendingServerRequest>();
   readonly #pendingCancellationResponses = new Set<Promise<void>>();
   readonly #respondingProviderRequests = new Set<string>();
@@ -1073,7 +1113,7 @@ class CodexHarnessSession implements HarnessSession {
     this.#context = context;
     this.#resumed = resumed;
     this.#onClose = onClose;
-    this.#publisher = new TurnPublisher({
+    this.#publisher = new TurnPublisher<EngineHarnessEvent>({
       maxBytes: config.maxEventBytes,
       maxItems: config.maxEventItems,
     });
@@ -1123,7 +1163,7 @@ class CodexHarnessSession implements HarnessSession {
     return this.#providerSessionReference;
   }
 
-  async execute(run: HarnessRunInput): Promise<void> {
+  async execute(run: EngineHarnessRunInput): Promise<void> {
     this.#assertUsable();
     if (this.#activeTurn) {
       throw new OpensteerError({
@@ -1165,7 +1205,7 @@ class CodexHarnessSession implements HarnessSession {
       nodes: new SubagentNodes((event) => this.#publish(event)),
       nodeTokens: new Map(),
       interruptRequested: run.signal.aborted,
-      requestedBy: run.requestedBy,
+      authority: assertEngineRunBinding(run, this.#context),
       runId: run.runId,
       started: false,
       terminal: false,
@@ -1279,7 +1319,7 @@ class CodexHarnessSession implements HarnessSession {
     });
   }
 
-  async #executeVoice(active: ActiveTurn, run: HarnessRunInput): Promise<void> {
+  async #executeVoice(active: ActiveTurn, run: EngineHarnessRunInput): Promise<void> {
     const { signal } = run;
     const call = this.#context.voiceCall!;
     const client = this.#requireClient();
@@ -1456,6 +1496,15 @@ class CodexHarnessSession implements HarnessSession {
     }
     this.#childThreads.clear();
     return true;
+  }
+
+  async refuseRequest(requestId: RequestId, callId: string, reason: string): Promise<void> {
+    const pending = this.#pendingRequests.get(requestId);
+    if (!pending || this.#requestCallIds.get(requestId) !== callId)
+      throw protocolError("Project Request address does not match");
+    this.#requestCallIds.delete(requestId);
+    this.#pendingRequests.delete(requestId);
+    await this.#respondError(pending.id, -32_000, reason);
   }
 
   async resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void> {
@@ -2024,18 +2073,15 @@ class CodexHarnessSession implements HarnessSession {
           type: "approval",
         };
         this.#pendingRequests.set(requestId, pending);
-        this.#publish({
-          data: {
-            request: this.#pendingRequest(
-              requestId,
-              callId,
-              "harness.approval",
-              approval.presentation,
-              this.#childNode(params),
-            ),
-          },
-          type: "request.opened",
-        });
+        this.#publish(
+          this.#pendingRequest(
+            requestId,
+            callId,
+            "harness.approval",
+            approval.presentation,
+            this.#childNode(params),
+          ),
+        );
         break;
       }
       case "item/tool/requestUserInput": {
@@ -2051,28 +2097,25 @@ class CodexHarnessSession implements HarnessSession {
           questionIds: questions.map((question) => question.id),
           type: "input",
         });
-        this.#publish({
-          data: {
-            request: this.#pendingRequest(
-              requestId,
-              callId,
-              "harness.input",
-              {
-                fields: questions.map((question) => ({
-                  ...(question.choices ? { choices: question.choices } : {}),
-                  id: question.id,
-                  multiSelect: question.multiSelect,
-                  prompt: question.prompt,
-                  secret: question.secret,
-                })),
-                kind: "form",
-                title: "More information needed",
-              },
-              this.#childNode(params),
-            ),
-          },
-          type: "request.opened",
-        });
+        this.#publish(
+          this.#pendingRequest(
+            requestId,
+            callId,
+            "harness.input",
+            {
+              fields: questions.map((question) => ({
+                ...(question.choices ? { choices: question.choices } : {}),
+                id: question.id,
+                multiSelect: question.multiSelect,
+                prompt: question.prompt,
+                secret: question.secret,
+              })),
+              kind: "form",
+              title: "More information needed",
+            },
+            this.#childNode(params),
+          ),
+        );
         break;
       }
       default:
@@ -2091,12 +2134,13 @@ class CodexHarnessSession implements HarnessSession {
     kind: "harness.approval" | "harness.input",
     presentation: PendingRequest["presentation"],
     nodeId: ExecutionNodeId | undefined,
-  ): PendingRequest {
+  ): ReturnType<typeof engineRequestEvent> {
     const active = this.#activeTurn;
     if (!active || active.terminal) {
       throw protocolError("Codex opened a Request without an active turn");
     }
-    return {
+    this.#requestCallIds.set(id, callId);
+    return engineRequestEvent(active.authority, {
       callId,
       cancellationReason: null,
       createdAt: new Date().toISOString(),
@@ -2110,14 +2154,13 @@ class CodexHarnessSession implements HarnessSession {
       originatingWorkspaceId: this.#context.workspaceId,
       payload: { kind },
       presentation,
-      requestedBy: active.requestedBy,
       requiredActor: "requester",
       resolvedAt: null,
       resolvedBy: null,
       response: null,
       status: "pending",
       targetWorkspaceId: this.#context.workspaceId,
-    };
+    });
   }
 
   async #steerDenialNote(kind: PendingApproval["kind"], note: string): Promise<void> {
@@ -2433,9 +2476,10 @@ class CodexHarnessSession implements HarnessSession {
     void this.stop();
   }
 
-  #publish(event: HarnessEvent): void {
+  #publish(event: EngineHarnessEvent): void {
     if (this.#publisher.streamClosed) return;
-    if (this.#context.voiceCall) this.#trackVoiceStream(event);
+    if (this.#context.voiceCall && event.type !== "request.proposed.project")
+      this.#trackVoiceStream(event);
     try {
       this.#publisher.publish(event);
     } catch (error) {
@@ -2472,6 +2516,7 @@ class CodexHarnessSession implements HarnessSession {
     this.#respondingProviderRequests.add(providerKey);
     try {
       await this.#requireClient().respond(id, result);
+      this.#requestCallIds.delete(requestId);
       this.#pendingRequests.delete(requestId);
     } finally {
       this.#respondingProviderRequests.delete(providerKey);
@@ -2500,6 +2545,7 @@ class CodexHarnessSession implements HarnessSession {
     reason: "run-ended" | "source-closed",
   ): Promise<void> {
     if (this.#pendingRequests.get(requestId) !== pending) return;
+    this.#requestCallIds.delete(requestId);
     this.#pendingRequests.delete(requestId);
     let publishError: unknown;
     try {
@@ -3965,7 +4011,7 @@ const codexOriginalImageLimits = {
 
 async function inputsToCodexInput(
   inputs: readonly HarnessInput[],
-  turn: Pick<HarnessRunInput, "context" | "reports"> | null,
+  turn: Pick<EngineHarnessRunInput, "context" | "reports"> | null,
   attachments: ReadonlyMap<string, ResolvedAttachment> | undefined,
   transport: {
     readonly config: Pick<CodexHarnessConfig, "maxProtocolLineBytes" | "maxWriteBufferBytes">;
