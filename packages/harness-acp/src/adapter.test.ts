@@ -49,6 +49,9 @@ describe("ACP lifecycle", () => {
     await observed.done;
     const types = observed.events.map((event) => event.type);
     expect(types).toContain("node.started");
+    expect(observed.events.find((event) => event.type === "node.completed")?.data.status).toBe(
+      "interrupted",
+    );
     expect(types.indexOf("node.completed")).toBeLessThan(types.indexOf("run.completed"));
     await fixture.adapter.close();
   });
@@ -267,26 +270,33 @@ describe("ACP lifecycle", () => {
     expect(observed.events.filter((event) => event.type === "assistant.message")).toHaveLength(4);
   });
 
-  it("accepts only a permission choice the agent actually offered", async () => {
-    const fixture = await setup("permission");
-    const session = await fixture.adapter.startSession(fixture.context);
-    const observed = observe(session.events);
-    const execution = session.execute(fixture.turn("needs approval"));
-    await vi.waitFor(() => {
-      expect(observed.events.some((event) => event.type === "request.opened")).toBe(true);
-    });
-    const opened = observed.events.find((event) => event.type === "request.opened");
-    if (!opened || opened.type !== "request.opened") throw new Error("request did not open");
-    await expect(
-      session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "invented" }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-    await session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "allow" });
-    await execution;
-    expect(fixture.selectedPermissions).toEqual(["allow"]);
-    await session.stop();
-    await observed.done;
-    await fixture.adapter.close();
-  });
+  it.each(["permission", "child-permission"] as const)(
+    "accepts only an offered permission choice for %s",
+    async (scenario) => {
+      const fixture = await setup(scenario);
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observed = observe(session.events);
+      const execution = session.execute(fixture.turn("needs approval"));
+      await vi.waitFor(() => {
+        expect(observed.events.some((event) => event.type === "request.opened")).toBe(true);
+      });
+      const opened = observed.events.find((event) => event.type === "request.opened");
+      if (!opened || opened.type !== "request.opened") throw new Error("request did not open");
+      const node = observed.events.find((event) => event.type === "node.started");
+      expect(opened.data.request.originatingNodeId).toBe(
+        scenario === "child-permission" ? node?.data.nodeId : undefined,
+      );
+      await expect(
+        session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "invented" }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+      await session.resolveRequest(opened.data.request.id, { kind: "choice", optionId: "allow" });
+      await execution;
+      expect(fixture.selectedPermissions).toEqual(["allow"]);
+      await session.stop();
+      await observed.done;
+      await fixture.adapter.close();
+    },
+  );
 });
 
 describe("ACP boundaries", () => {
@@ -382,6 +392,7 @@ type Scenario =
   | "held-prompt-error"
   | "held-assistant-deadline"
   | "permission"
+  | "child-permission"
   | "prompt-error"
   | "replay"
   | "usage-interruption"
@@ -465,12 +476,19 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
           optionId: option.id,
         })),
       normalizeUpdate: (update) =>
-        scenario === "background" &&
+        (scenario === "background" || scenario === "child-permission") &&
         typeof update === "object" &&
         update !== null &&
         "sessionUpdate" in update &&
         update.sessionUpdate === "child-started"
-          ? [{ key: "child", kind: "subagent", state: "started" }]
+          ? [
+              {
+                key: "child",
+                kind: "subagent",
+                state: "started",
+                sessionReference: "child-session",
+              },
+            ]
           : undefined,
     },
     launch: ({ context }) => ({
@@ -726,14 +744,16 @@ function fakeClient(
         });
         throw new Error("prompt RPC failed");
       }
-      if (scenario === "permission") {
+      if (scenario === "permission" || scenario === "child-permission") {
+        if (scenario === "child-permission")
+          handlers.update("new-session", { sessionUpdate: "child-started" });
         const choice = await handlers.permission(
           {
             options: [
               { id: "allow", kind: "allow_once", label: "Allow" },
               { id: "reject", kind: "reject_once", label: "Reject" },
             ],
-            sessionId: "new-session",
+            sessionId: scenario === "child-permission" ? "child-session" : "new-session",
             toolCall: { id: "call-1", rawInput: { command: "pwd" }, title: "Run command" },
           },
           new AbortController().signal,

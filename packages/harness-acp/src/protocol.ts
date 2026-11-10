@@ -186,9 +186,6 @@ function createV1Client(
 ): AcpProtocolClient {
   const app = acpV1
     .client({ name: "Opensteer" })
-    .onNotification(acpV1.methods.client.session.update, ({ params }) => {
-      handlers.update(params.sessionId, params.update);
-    })
     .onRequest(acpV1.methods.client.session.requestPermission, async ({ params, signal }) => {
       const optionId = await handlers.permission(permissionRequestV1(params), signal);
       return {
@@ -212,19 +209,35 @@ function createV1Client(
         ),
       );
       return { action: "accept", content };
-    })
-    .onNotification("_x.ai/session/update", ExtensionSessionUpdateSchema, ({ params }) => {
-      handlers.update(params.sessionId, params.update);
-    })
-    .onNotification("x.ai/session_notification", ExtensionSessionUpdateSchema, ({ params }) => {
-      handlers.update(params.sessionId, params.update);
     });
-  const connection = app.connect(
-    acpV1.ndJsonStream(
-      Writable.toWeb(process.child.stdin),
-      Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
-    ),
+  const stream = acpV1.ndJsonStream(
+    Writable.toWeb(process.child.stdin),
+    Readable.toWeb(Readable.from(stdout)) as ReadableStream<Uint8Array>,
   );
+  // SDK dispatch walks async handlers; project updates before a following RPC response can settle.
+  const readable = stream.readable.pipeThrough(
+    new TransformStream({
+      transform(message, controller) {
+        if (
+          isRecord(message) &&
+          !("id" in message) &&
+          [
+            "session/update",
+            "x.ai/session/update",
+            "_x.ai/session/update",
+            "x.ai/session_notification",
+            "_x.ai/session_notification",
+          ].includes(String(message.method))
+        ) {
+          const parsed = ExtensionSessionUpdateSchema.safeParse(message.params);
+          if (parsed.success) handlers.update(parsed.data.sessionId, parsed.data.update);
+          return;
+        }
+        controller.enqueue(message);
+      },
+    }),
+  );
+  const connection = app.connect({ ...stream, readable });
   const agent = connection.agent;
   return {
     version: 1,
