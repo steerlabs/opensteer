@@ -213,6 +213,13 @@ describeStore("team administration review regressions", (it) => {
       .values({
         id: sessionId,
         userId: person,
+        memberGeneration: (
+          await database
+            .selectFrom("users")
+            .select("authorityGeneration")
+            .where("id", "=", person)
+            .executeTakeFirstOrThrow()
+        ).authorityGeneration,
         token: randomBytes(32).toString("hex"),
         expiresAt: expires,
         absoluteExpiresAt: expires,
@@ -315,7 +322,7 @@ describeStore("team administration review regressions", (it) => {
     }
   });
 
-  it("promotes a replacement manager before reductions and previews the retained owner rule", async ({
+  it("promotes a replacement manager before reductions and permits a managerless Project", async ({
     storeFixture,
   }) => {
     const prepared = await prepare(storeFixture);
@@ -363,11 +370,10 @@ describeStore("team administration review regressions", (it) => {
       3,
     );
     expect(await previewAccess(prepared.database, managerless)).toMatchObject({
-      allowed: false,
-      blockers: [{ reason: "invalid-selection" }],
+      allowed: true,
     });
-    await expect(mutateAccess(prepared.database, managerless)).rejects.toMatchObject({
-      reason: "invalid-selection",
+    await expect(mutateAccess(prepared.database, managerless)).resolves.toMatchObject({
+      revision: 4,
     });
   });
 

@@ -5,6 +5,7 @@ import { sql, type Kysely } from "kysely";
 import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
 import {
+  lockTeamHuman,
   requireTeamAuthority,
   requireTeamHuman,
   teamRefusal,
@@ -90,6 +91,7 @@ export async function mutateTeamInvitation(
     if (prior) {
       if (prior.metadata.fingerprint !== fingerprint)
         teamRefusal("idempotency-conflict", "conflict");
+      await lockTeamHuman(transaction, actor, true);
       return { accessRevision, result: resultSchema.parse(prior.metadata.result) };
     }
     if (accessRevision !== command.expectedRevision)
@@ -98,6 +100,8 @@ export async function mutateTeamInvitation(
       .rows[0]!.now;
     let result: z.infer<typeof resultSchema>;
     if (command.type === "team.invitation.create") {
+      if (command.trustedComputerConfirmed !== true)
+        teamRefusal("invalid-selection", "bad_request");
       const expiresAt = new Date(now.getTime() + (command.validFor === "1d" ? 1 : 7) * 86_400_000);
       const collision = await transaction
         .selectFrom("teamInvitations")
@@ -120,6 +124,7 @@ export async function mutateTeamInvitation(
           memberKind: command.memberKind,
           createdBy: actor.userId,
           createdAt: now,
+          trustedComputerConfirmedAt: now,
           expiresAt,
           acceptedAt: null,
           acceptedBy: null,
@@ -164,6 +169,7 @@ export async function mutateTeamInvitation(
         metadata: jsonValue({ fingerprint, result }),
       })
       .execute();
+    await lockTeamHuman(transaction, actor, true);
     return { accessRevision, result };
   });
 }

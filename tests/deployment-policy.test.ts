@@ -30,6 +30,36 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptionGroups = {
+  teamHumanCutover: {
+    "apps/host/src/agents/security-effect-service.ts": {
+      counts: { "authority?.kind": 1 },
+      reason:
+        "Stored authority selects cutoff-aware team cleanup; legacy claimant SQL is unchanged.",
+    },
+    "packages/database/src/agent-connection-store.ts": {
+      counts: { "authority.kind": 1 },
+      reason: "Stored authority fences team connection generations and the single Project scope.",
+    },
+    "packages/database/src/machine-store.ts": {
+      counts: { "authority.kind": 4 },
+      reason:
+        "Stored authority refuses member computers only on model-2 servers, preserving legacy ownership.",
+    },
+    "packages/database/src/runner-store.ts": {
+      counts: { "deployment?.deploymentShape.kind": 1 },
+      reason: "Enrollment and reconnect refuse user-owned placement only on model-2 servers.",
+    },
+    "packages/database/src/store.ts": {
+      counts: { "authority?.kind": 1 },
+      reason:
+        "Realtime capture is absent on legacy authority and captures team generations on model 2.",
+    },
+    "packages/identity/src/identity-service.ts": {
+      counts: { "authority.kind": 1 },
+      reason:
+        "Stored authority controls session generation capture and use; pre-initialization identity is unchanged.",
+    },
+  },
   dormantProjectAuthority: {
     "apps/host/src/team/team-administration-service.ts": {
       counts: { "authority.kind": 1 },

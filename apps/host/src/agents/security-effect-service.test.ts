@@ -40,6 +40,8 @@ describe("SecurityEffectService", () => {
       realtime: { closeUserWorkspace: vi.fn(), publishViewerTasksChanged: vi.fn() },
       runners: { dispatch, identityForEnvironment: () => runner, revokeRuns },
       store: {
+        securityEffectAuthority: async () => ({ kind: "personal" as const, model: 1 as const }),
+        claimAccessSecurityEffects: vi.fn(),
         claimSecurityEffects: vi.fn(),
         completeSecurityEffect: vi.fn(),
         failActiveRunsForMembershipRevocation: vi.fn(),
@@ -122,6 +124,8 @@ describe("SecurityEffectService", () => {
       realtime: { closeUserWorkspace: closeRealtime, publishViewerTasksChanged },
       runners: { dispatch, identityForEnvironment: () => runner, revokeRuns },
       store: {
+        securityEffectAuthority: async () => ({ kind: "personal" as const, model: 1 as const }),
+        claimAccessSecurityEffects: vi.fn(),
         claimSecurityEffects: vi.fn().mockResolvedValueOnce(effects).mockResolvedValueOnce([]),
         completeSecurityEffect,
         failActiveRunsForMembershipRevocation,
@@ -176,6 +180,8 @@ describe("SecurityEffectService", () => {
       realtime: { closeUserWorkspace: vi.fn(), publishViewerTasksChanged: vi.fn() },
       runners: { dispatch: vi.fn(), identityForEnvironment: () => runner, revokeRuns },
       store: {
+        securityEffectAuthority: async () => ({ kind: "personal" as const, model: 1 as const }),
+        claimAccessSecurityEffects: vi.fn(),
         claimSecurityEffects: vi.fn().mockResolvedValue([effect]),
         completeSecurityEffect: vi.fn(),
         failActiveRunsForMembershipRevocation: vi.fn(),
@@ -217,6 +223,8 @@ describe("SecurityEffectService", () => {
       realtime: { closeUserWorkspace: vi.fn(), publishViewerTasksChanged: vi.fn() },
       runners: { dispatch, identityForEnvironment: () => runner, revokeRuns },
       store: {
+        securityEffectAuthority: async () => ({ kind: "personal" as const, model: 1 as const }),
+        claimAccessSecurityEffects: vi.fn(),
         claimSecurityEffects: vi.fn().mockResolvedValueOnce([effect]).mockResolvedValueOnce([]),
         completeSecurityEffect: complete,
         failActiveRunsForMembershipRevocation: vi.fn(),
@@ -264,6 +272,8 @@ describe("SecurityEffectService", () => {
       realtime: { closeUserWorkspace: vi.fn(), publishViewerTasksChanged: vi.fn() },
       runners: { dispatch: vi.fn(), identityForEnvironment: () => runner, revokeRuns },
       store: {
+        securityEffectAuthority: async () => ({ kind: "personal" as const, model: 1 as const }),
+        claimAccessSecurityEffects: vi.fn(),
         claimSecurityEffects: vi.fn().mockResolvedValueOnce([effect]).mockResolvedValueOnce([]),
         completeSecurityEffect: vi.fn(),
         failActiveRunsForMembershipRevocation: vi.fn(),

@@ -152,7 +152,10 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       // than escaping to the global handler, which answers in a different shape.
       try {
         requireNegotiatedVersion(request);
-        let authenticated = await authenticateScope(authenticator, hostApiScopes[name], request);
+        let authenticated =
+          name === "team.invitation.accept"
+            ? await authenticator.authenticateTeamInvitationSessionContext(request.headers)
+            : await authenticateScope(authenticator, hostApiScopes[name], request);
         if (
           (name === "team.invitation.preview" || name === "team.invitation.exchange") &&
           request.headers.authorization !== undefined

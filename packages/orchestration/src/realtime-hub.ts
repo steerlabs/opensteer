@@ -15,7 +15,7 @@ import {
   type ThreadReadState,
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
-import { OpensteerStore } from "@opensteer/database";
+import { OpensteerStore, type TeamRealtimeAuthority } from "@opensteer/database";
 import { type HostToClientMessage, type WorkspaceTabLineage } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";
@@ -112,6 +112,8 @@ export interface RealtimeFillWindow {
 }
 
 interface SubscriberOptions {
+  readonly connectionSink: RealtimeSink;
+  readonly authority: Promise<TeamRealtimeAuthority | null>;
   readonly personShow: boolean;
   readonly placeEvents: boolean;
   readonly cursor: Sequence;
@@ -146,6 +148,8 @@ interface SubscriberOptions {
  * subscriber that goes live sends the Workspace's open streams whole instead.
  */
 class Subscriber {
+  readonly connectionSink: RealtimeSink;
+  authority: TeamRealtimeAuthority | null | undefined;
   readonly sink: RealtimeSink;
   readonly workspaceId: WorkspaceId;
   readonly userId: UserId;
@@ -217,6 +221,13 @@ class Subscriber {
     this.#visibleThrough = options.cursor;
     this.#handedThrough = options.cursor;
     this.sink = options.sink;
+    this.connectionSink = options.connectionSink;
+    void options.authority.then(
+      (authority) => {
+        this.authority = authority;
+      },
+      () => this.close(),
+    );
     this.userId = options.userId;
     this.workspaceId = options.workspaceId;
   }
@@ -635,6 +646,40 @@ export class RealtimeHub {
     this.#maxWireBytes = options.maxWireBytes ?? 960 * 1_024;
   }
 
+  #fenceSink(
+    sink: RealtimeSink,
+    captured: Promise<TeamRealtimeAuthority | null>,
+    refused: () => void = () => sink.close(4003, "Access revoked"),
+  ): RealtimeSink {
+    let authority: TeamRealtimeAuthority | null | undefined;
+    void captured.then(
+      (value) => {
+        authority = value;
+      },
+      () => refused(),
+    );
+    return {
+      id: sink.id,
+      close: (code, reason) => sink.close(code, reason),
+      send: (message) => {
+        if (authority === null) return sink.send(message);
+        return (async () => {
+          try {
+            await this.#store.assertRealtimeAuthority(await captured);
+          } catch (error) {
+            refused();
+            throw error;
+          }
+          await sink.send(message);
+        })();
+      },
+    };
+  }
+
+  fenceConnectionSink(userId: UserId, sessionId: AuthSessionId, sink: RealtimeSink): RealtimeSink {
+    return this.#fenceSink(sink, this.#store.captureRealtimeAuthority({ userId, sessionId }));
+  }
+
   async subscribe(input: {
     readonly afterSequence: Sequence;
     readonly snapshotMessages?: "omit";
@@ -644,7 +689,18 @@ export class RealtimeHub {
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
   }): Promise<() => void> {
+    const authority = this.#store.captureRealtimeAuthority({
+      userId: input.userId,
+      workspaceId: input.workspaceId,
+    });
     let subscriber!: Subscriber;
+    const sink = this.#fenceSink(input.sink, authority, () => {
+      subscriber?.close();
+      const remaining = [...this.#subscribers.values()].some((set) =>
+        [...set].some((other) => other.connectionSink === input.sink),
+      );
+      if (!remaining) input.sink.close(4003, "Access revoked");
+    });
     const remove = () => {
       const set = this.#subscribers.get(input.workspaceId);
       set?.delete(subscriber);
@@ -666,7 +722,9 @@ export class RealtimeHub {
       maxLiveBytes: this.#maxLiveBytes,
       maxWireBytes: this.#maxWireBytes,
       onClose: remove,
-      sink: input.sink,
+      sink,
+      connectionSink: input.sink,
+      authority,
       placeEvents: input.placeEvents === "include",
       personShow: input.personShow === "accept",
       userId: input.userId,
@@ -677,6 +735,7 @@ export class RealtimeHub {
     this.#subscribers.set(input.workspaceId, set);
 
     try {
+      await authority;
       const membership = await this.#store.workspaceMembershipForUser(
         input.workspaceId,
         input.userId,
@@ -748,7 +807,7 @@ export class RealtimeHub {
             ...(afterThreadId ? { afterThreadId } : {}),
           });
           if (page.markers.length)
-            await input.sink.send({
+            await sink.send({
               type: "host.read-markers",
               workspaceId: input.workspaceId,
               markers: [...page.markers],
@@ -767,7 +826,7 @@ export class RealtimeHub {
             threadIds: [...replayThreads],
           });
           for (let index = 0; index < states.length; index += 100)
-            await input.sink.send({
+            await sink.send({
               type: "host.read-states",
               workspaceId: input.workspaceId,
               states: states.slice(index, index + 100),
@@ -780,7 +839,7 @@ export class RealtimeHub {
             ...(afterWorkspaceId ? { afterWorkspaceId } : {}),
           });
           if (page.preferences.length)
-            await input.sink.send({
+            await sink.send({
               type: "host.notification-preferences",
               preferences: [...page.preferences],
             });
@@ -831,7 +890,7 @@ export class RealtimeHub {
       userSinks?.delete(sink);
       for (const subscribers of this.#subscribers.values()) {
         for (const subscriber of subscribers) {
-          if (subscriber.sink === sink) subscriber.close();
+          if (subscriber.connectionSink === sink) subscriber.close();
         }
       }
       sink.close(4003, "Session ended");
@@ -919,10 +978,10 @@ export class RealtimeHub {
       if (
         subscriber.userId !== userId ||
         !subscriber.acceptsPersonShow ||
-        sinks.has(subscriber.sink)
+        sinks.has(subscriber.connectionSink)
       )
         continue;
-      sinks.add(subscriber.sink);
+      sinks.add(subscriber.connectionSink);
       deliveries.push(subscriber.show(message));
     }
     return (await Promise.all(deliveries)).filter(Boolean).length;
@@ -951,7 +1010,7 @@ export class RealtimeHub {
       let queued = false;
       for (const subscribers of this.#subscribers.values())
         for (const subscriber of subscribers) {
-          if (subscriber.sink === sink) {
+          if (subscriber.connectionSink === sink) {
             subscriber.enqueueMessage(message);
             queued = true;
           }
@@ -1050,11 +1109,25 @@ export class RealtimeHub {
     }
   }
 
-  closeUserWorkspace(userId: UserId, workspaceId: WorkspaceId): void {
+  closeUserWorkspace(
+    userId: UserId,
+    workspaceId: WorkspaceId,
+    membershipGenerationCutoff?: number,
+  ): void {
     for (const subscriber of this.#subscribers.get(workspaceId) ?? []) {
-      if (subscriber.userId === userId) {
+      if (subscriber.userId !== userId) continue;
+      if (membershipGenerationCutoff === undefined) {
         subscriber.sink.close(4003, "Workspace access revoked");
         subscriber.close();
+      } else if (
+        subscriber.authority != null &&
+        Number(subscriber.authority.membershipGeneration) <= membershipGenerationCutoff
+      ) {
+        subscriber.close();
+        const remaining = [...this.#subscribers.values()].some((set) =>
+          [...set].some((other) => other.connectionSink === subscriber.connectionSink),
+        );
+        if (!remaining) subscriber.sink.close(4003, "Workspace access revoked");
       }
     }
   }

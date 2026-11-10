@@ -1,3 +1,4 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { createId, HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
@@ -9,7 +10,11 @@ import {
   resolveProjectRuntime,
   setProjectRuntimeSettings,
 } from "./project-runtime-settings-store.js";
-import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
+import {
+  describeStore,
+  enrollTestRunner,
+  type StoreFixture,
+} from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 
 async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "codex") {
@@ -85,6 +90,62 @@ async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "co
 }
 
 describeStore("Project runtime settings", (it) => {
+  it("refuses a member-bound managed computer even when its isolated engine and catalog are ready", async ({
+    storeFixture,
+  }) => {
+    const prepared = await setup(storeFixture);
+    const environmentId = createId("environment");
+    await enrollTestRunner(storeFixture.store, {
+      runnerId: createId("runner"),
+      environmentId,
+      runnerKind: "managed",
+      ownerUserId: prepared.userId,
+      createdBy: prepared.userId,
+      name: "Member managed",
+      tokenSuffix: "member-settings",
+    });
+    const project = await createTestWorkspace(storeFixture.store, {
+      createdBy: prepared.userId,
+      name: "Member placement",
+      idempotencyKey: "member-placement",
+      color: "blue",
+      kind: "project",
+      backing: {
+        kind: "local-directory",
+        bindingId: createId("workspaceBinding"),
+        generation: 1,
+        ownerEnvironmentId: environmentId,
+        storageAuthorityId: null,
+      },
+    });
+    const instance = await storeFixture.store.createHarnessInstance({
+      driverKind: HarnessIdSchema.parse("codex"),
+      environmentId,
+      config: {},
+      name: "Member Codex",
+      stateKind: "isolated",
+      sourceId: "openai",
+    });
+    await storeFixture.database
+      .insertInto("harnessCatalogs")
+      .values({
+        environmentId,
+        harnessInstanceId: instance.id,
+        catalog: jsonValue({ ...prepared.catalog, harnessInstanceId: instance.id }),
+        capturedAt: new Date(),
+      })
+      .execute();
+    await prepared.activate();
+    await expect(
+      setProjectRuntimeSettings(storeFixture.database, prepared.actor, {
+        ...prepared.input,
+        workspaceId: project.id,
+        harnessInstanceId: instance.id,
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(await getProjectRuntimeSettings(storeFixture.database, project.id)).toBeNull();
+  });
+
   it("refuses every model-1 API and SQL write, including Project-shaped input without a user fallback", async ({
     storeFixture,
   }) => {

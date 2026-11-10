@@ -1,3 +1,6 @@
+import { readInitializedDeploymentAuthority } from "./deployment-execution-authority.js";
+import { readTeamRealtimeAuthority, type TeamRealtimeAuthority } from "./access-store.js";
+import { claimAccessSecurityEffects } from "./access-effects.js";
 import * as backgroundModelStore from "./background-model-store.js";
 import * as voiceStore from "./voice-store.js";
 import * as workspaceSkillInventoryStore from "./workspace-skill-inventory-store.js";
@@ -10,6 +13,7 @@ import { type BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import { type ChannelTransportKind, type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
   createId,
+  OpensteerError,
   type AgentEvent,
   type AssignmentId,
   type AssignmentSummary,
@@ -201,6 +205,33 @@ export type RunGrantRevocationListener = (grants: readonly RevokedRunGrant[]) =>
 
 export class OpensteerStore {
   readonly #database: Kysely<DatabaseSchema>;
+  #storedAuthority: ReturnType<typeof readInitializedDeploymentAuthority> | undefined;
+
+  async captureRealtimeAuthority(input: {
+    readonly userId: UserId;
+    readonly sessionId?: import("@opensteer/core").AuthSessionId;
+    readonly workspaceId?: WorkspaceId;
+  }): Promise<TeamRealtimeAuthority | null> {
+    const authority = await (this.#storedAuthority ??= readInitializedDeploymentAuthority(
+      this.#database,
+    ));
+    if (!authority) this.#storedAuthority = undefined;
+    if (authority?.kind !== "server" || authority.model !== 2) return null;
+    return readTeamRealtimeAuthority(this.#database, input);
+  }
+
+  async assertRealtimeAuthority(captured: TeamRealtimeAuthority | null): Promise<void> {
+    if (!captured) return;
+    const current = await readTeamRealtimeAuthority(this.#database, captured);
+    if (
+      current.memberGeneration !== captured.memberGeneration ||
+      current.membershipGeneration !== captured.membershipGeneration
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Access revoked",
+      });
+  }
 
   // The Deployment authority lease permits one mutating Host process. These
   // post-commit listeners therefore form the immediate local revocation path;
@@ -431,6 +462,18 @@ export class OpensteerStore {
     readonly now: Date;
   }): Promise<readonly SecurityEffectRecord[]> {
     return workspaceMembershipStore.claimSecurityEffects(this.#database, input);
+  }
+
+  async securityEffectAuthority() {
+    return (this.#storedAuthority ??= readInitializedDeploymentAuthority(this.#database));
+  }
+
+  async claimAccessSecurityEffects(input: {
+    readonly leaseUntil: Date;
+    readonly limit: number;
+    readonly now: Date;
+  }) {
+    return claimAccessSecurityEffects(this.#database, input);
   }
 
   async completeSecurityEffect(effectId: SecurityEffectId): Promise<void> {
@@ -2021,7 +2064,13 @@ export class OpensteerStore {
   async failActiveRunsForMembershipRevocation(input: {
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
+    readonly membershipGenerationCutoff?: number;
   }): Promise<RunRecoveryOutcome> {
+    if (input.membershipGenerationCutoff !== undefined)
+      return executionRecovery.failActiveRunsForAccessRevocation(this.#database, this.#links, {
+        ...input,
+        membershipGenerationCutoff: input.membershipGenerationCutoff,
+      });
     return executionRecovery.failActiveRunsForMembershipRevocation(
       this.#database,
       this.#links,

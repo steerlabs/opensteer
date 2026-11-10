@@ -45,7 +45,8 @@ export interface PersonalRemoteSessionAuthenticator {
 export type HostAuthenticatingIdentity = Pick<
   IdentityService,
   "authenticateNativeAccessToken" | "requireSession" | "userSessionProfile"
->;
+> &
+  Partial<Pick<IdentityService, "requireTeamInvitationSession">>;
 
 export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = IdentityService> {
   readonly #identity: Identity;
@@ -144,6 +145,26 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
       session: await this.#identity.requireSession(toWebHeaders(headers)),
       surface: "canonical",
     };
+  }
+
+  async authenticateTeamInvitationSessionContext(
+    headers: RequestHeaders,
+  ): Promise<AuthenticatedHostSession> {
+    try {
+      return await this.authenticateSessionContext(headers, { mutation: true });
+    } catch (error) {
+      if (
+        headers.authorization !== undefined ||
+        !(error instanceof OpensteerError) ||
+        error.code !== "unauthorized"
+      )
+        throw error;
+      requireSingletonOrigin(headers.origin);
+      this.requireExactOrigin(headers);
+      const session = await this.#identity.requireTeamInvitationSession?.(toWebHeaders(headers));
+      if (!session) throw error;
+      return { credentialKind: "browser-cookie", session, surface: "canonical" };
+    }
   }
 
   requireExactOrigin(headers: RequestHeaders): void {

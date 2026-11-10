@@ -120,11 +120,11 @@ describeStore("additive Project authority preparation", (it) => {
           await sql`
         select 'column:' || table_name || ':' || column_name as name,
           data_type || ':' || is_nullable || ':' || coalesce(column_default, '') as definition
-        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations')
+        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'team_invitations')
         union all select 'constraint:' || conrelid::regclass::text || ':' || conname, pg_get_constraintdef(oid)
-          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass)
-        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations')
-        union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'opensteer_project_principal_scope'
+          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'team_invitations'::regclass)
+        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'team_invitations')
+        union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('opensteer_project_principal_scope', 'opensteer_prevent_last_workspace_owner_removal', 'opensteer_require_workspace_owner', 'opensteer_project_membership_change', 'opensteer_refresh_account_directory_user')
         union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where tgrelid = 'principals'::regclass and tgname = 'project_principal_scope'
         order by name
       `.execute(transaction)
@@ -139,13 +139,14 @@ describeStore("additive Project authority preparation", (it) => {
         alter table triggers drop column created_by_principal_id;
         alter table trigger_revisions drop column created_by_principal_id;
         alter table trigger_watch_activations drop column created_by_principal_id;
+        alter table team_invitations drop column trusted_computer_confirmed_at;
         insert into principals (id, kind, display_name) select 'pri_ddl_' || item, 'system', 'System' from generate_series(1, 100) item
       `.execute(transaction);
       const facts = async () =>
         (
           await sql`
         select relname, relfilenode, case when relname <> 'principals' then pg_stat_get_xact_numscans(oid) end as scans
-        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass)
+        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'team_invitations'::regclass)
         order by relname
       `.execute(transaction)
         ).rows;
@@ -156,7 +157,7 @@ describeStore("additive Project authority preparation", (it) => {
       const locks = (
         await sql<{ relname: string; mode: string }>`
         select distinct c.relname, l.mode from pg_locks l join pg_class c on c.oid = l.relation
-        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_connections', 'workspaces')
+        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_connections', 'workspaces', 'team_invitations')
         order by c.relname, l.mode
       `.execute(transaction)
       ).rows;
@@ -168,6 +169,7 @@ describeStore("additive Project authority preparation", (it) => {
         "triggers",
         "trigger_revisions",
         "trigger_watch_activations",
+        "team_invitations",
       ])
         expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
       expect(locks).toContainEqual({ relname: "agent_connections", mode: "ShareRowExclusiveLock" });

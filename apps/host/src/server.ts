@@ -3791,7 +3791,7 @@ function attachRealtimeSocket(
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
   const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
-  const sink: RealtimeSink = {
+  const sink: RealtimeSink = realtime.fenceConnectionSink(session.user.id, session.id, {
     ...peer,
     send: async (message: HostToClientMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
@@ -3862,7 +3862,7 @@ function attachRealtimeSocket(
       }
       await peer.send(projected.data);
     },
-  };
+  });
   const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
     maxBytes: 4 * maxWebSocketFrameBytes,
     maxItems: 64,

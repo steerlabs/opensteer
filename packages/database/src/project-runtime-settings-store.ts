@@ -109,6 +109,7 @@ async function selectedRuntime(
       "harnessInstances.stateKind",
       "runners.id as runnerId",
       "runners.ownerKind",
+      "runners.ownerUserId",
       "runners.revokedAt",
       "runners.updateRequired",
       "runners.capabilities",
@@ -118,6 +119,7 @@ async function selectedRuntime(
   if (
     !instance ||
     instance.ownerKind !== "deployment" ||
+    instance.ownerUserId !== null ||
     instance.environmentId !== workspace.ownerEnvironmentId ||
     !instance.enabled ||
     instance.removedAt ||

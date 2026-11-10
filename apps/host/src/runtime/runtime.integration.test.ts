@@ -68,7 +68,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import WebSocket from "ws";
 import { fetchWithExplicitHost } from "../access/session-exchange.test-support.js";
 import {
@@ -320,6 +320,20 @@ integration("Host vertical slice", () => {
       runnerToken,
       runnerConnection.challenge,
     );
+    const heartbeat = setInterval(() => {
+      if (runnerConnection.socket.readyState !== WebSocket.OPEN) return;
+      runnerConnection.socket.send(
+        JSON.stringify({
+          ...runnerEnrollment.fence,
+          activeRunIds: [],
+          activeTriggerOccurrenceIds: [],
+          activeWatchActivationIds: [],
+          sentAt: new Date().toISOString(),
+          type: "runner.heartbeat",
+        }),
+      );
+    }, runnerEnrollment.heartbeatIntervalMs);
+    onTestFinished(() => clearInterval(heartbeat));
     runnerSocket.send(
       JSON.stringify({
         ...runnerEnrollment.fence,
@@ -4856,6 +4870,7 @@ async function enrollRunnerSocket(
   challengeInput: unknown,
 ): Promise<{
   readonly fence: RunnerConnectionFence;
+  readonly heartbeatIntervalMs: number;
   readonly privateKey: KeyObject;
   readonly publicKey: KeyObject;
 }> {
@@ -4893,7 +4908,7 @@ async function enrollRunnerSocket(
   const welcome = (await waitForMessage(
     socket,
     (message) => message.type === "host.welcome",
-  )) as unknown as RunnerConnectionFence;
+  )) as unknown as Extract<HostToRunnerMessage, { type: "host.welcome" }>;
   // A Runner states the Runs it holds before the Host sends it any work.
   socket.send(
     JSON.stringify({
@@ -4903,7 +4918,12 @@ async function enrollRunnerSocket(
       type: "runner.executions.attach",
     }),
   );
-  return { fence: runnerFence(welcome), privateKey: pair.privateKey, publicKey: pair.publicKey };
+  return {
+    fence: runnerFence(welcome),
+    heartbeatIntervalMs: welcome.heartbeatIntervalMs,
+    privateKey: pair.privateKey,
+    publicKey: pair.publicKey,
+  };
 }
 
 async function openRunnerSocket(url: string): Promise<{

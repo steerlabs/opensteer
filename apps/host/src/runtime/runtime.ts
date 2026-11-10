@@ -2505,6 +2505,8 @@ export async function createHostRuntime(
             requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
           invalidate: (userIds) => {
             for (const userId of userIds) realtime.publishViewerTasksChanged(userId);
+            const first = userIds[0];
+            if (first) realtime.publishConnectionsChanged(first);
           },
         }),
         connections,

@@ -84,6 +84,64 @@ integration("IdentityService", () => {
     await database.destroy();
   });
 
+  for (const kind of ["personal", "server"] as const)
+    it(`keeps initialized ${kind} session authority reads out of authentication and issuance`, async () => {
+      await new OpensteerStore(database).ensureDeployment({
+        canonicalOrigin: "http://127.0.0.1:4310",
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+      });
+      let authorityReads = 0;
+      const observed = database.withPlugin({
+        transformQuery({ node }) {
+          if (JSON.stringify(node).includes('"name":"deployments"')) authorityReads++;
+          return node;
+        },
+        async transformResult({ result }) {
+          return result;
+        },
+      });
+      const identity = new IdentityService(observed, {
+        deployment: { kind: "self-hosted", name: null },
+        localPasswordEnabled: true,
+        oidcProviders: [],
+        publicOrigin: new URL("http://127.0.0.1:4310"),
+        secret: "identity-test-secret-that-is-at-least-thirty-two-bytes",
+        exposure: "networked",
+        signupPolicy: "open",
+      });
+      await identity.initialize();
+      expect(authorityReads).toBe(1);
+      authorityReads = 0;
+      const headers = new Headers({ origin: "http://127.0.0.1:4310" });
+      const signedUp = await identity.signUpPassword(
+        {
+          displayName: "Legacy",
+          email: "legacy@example.com",
+          password: "correct horse battery staple",
+        },
+        headers,
+      );
+      const cookie = signedUp.headers
+        .getSetCookie()
+        .find((value) => value.includes("opensteer.session"))!;
+      headers.set("cookie", cookie.split(";", 1)[0]!);
+      await expect(identity.authenticate(headers)).resolves.toMatchObject({
+        id: signedUp.data.session.id,
+      });
+      await expect(
+        identity.isSessionCurrent(signedUp.data.session.id, signedUp.data.session.user.id),
+      ).resolves.toBe(true);
+      expect(authorityReads).toBe(0);
+      const row = await database
+        .selectFrom("authSessions")
+        .select("memberGeneration")
+        .where("id", "=", signedUp.data.session.id)
+        .executeTakeFirstOrThrow();
+      expect(row.memberGeneration).toBeNull();
+    });
+
   it("creates a token-free password session with idle and absolute policy", async () => {
     const identity = new IdentityService(database, {
       deployment: { kind: "self-hosted", name: null },
@@ -533,6 +591,9 @@ integration("IdentityService", () => {
         deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
       });
       await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+      await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
+        database,
+      );
       const selector = "oidc-team-selector-123456789";
       const verifier = "v".repeat(43);
       await database
@@ -578,7 +639,11 @@ integration("IdentityService", () => {
       const teamHeaders = new Headers({
         cookie: `${cookieHeader(exchange.headers)}; ${sessionCookieHeader(teamCallback.headers)}`,
       });
-      const teamSession = await identity.requireSession(teamHeaders);
+      await expect(identity.requireSession(teamHeaders)).rejects.toMatchObject({
+        code: "unauthorized",
+      });
+      const teamSession = await identity.requireTeamInvitationSession(teamHeaders);
+      if (!teamSession) throw new Error("Pending invitation identity was not authenticated");
       const proof = await identity.teamInvitationAdmission(teamHeaders, teamSession);
       expect(
         await database
@@ -1987,6 +2052,9 @@ integration("IdentityService", () => {
       deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
     });
     await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
+      database,
+    );
     const selector = "team-invitation-selector-12345";
     const verifier = "v".repeat(43);
     await database

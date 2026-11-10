@@ -23,15 +23,17 @@ const origin = "http://127.0.0.1:4310";
 async function setup(fixture: StoreFixture) {
   const run = await fixture.createRunFixture("team-host", null, "project");
   const database = fixture.database;
-  const identity = new IdentityService(database, {
-    deployment: { kind: "self-hosted", name: null },
-    localPasswordEnabled: true,
-    oidcProviders: [],
-    publicOrigin: new URL(origin),
-    secret: "team-test-secret-at-least-thirty-two-bytes",
-    exposure: "networked",
-    signupPolicy: "open",
-  });
+  const createIdentity = () =>
+    new IdentityService(database, {
+      deployment: { kind: "self-hosted", name: null },
+      localPasswordEnabled: true,
+      oidcProviders: [],
+      publicOrigin: new URL(origin),
+      secret: "team-test-secret-at-least-thirty-two-bytes",
+      exposure: "networked",
+      signupPolicy: "open",
+    });
+  let identity = createIdentity();
   const signup = async (name: string) => {
     const result = await identity.signUpPassword(
       { displayName: name, email: `${name}@team.test`, password: "a correct test password" },
@@ -47,6 +49,7 @@ async function setup(fixture: StoreFixture) {
   const manager = await signup("manager");
   const pending = await signup("pending");
   await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+  identity = createIdentity();
   await database
     .updateTable("users")
     .set({ admittedAt: new Date(), instanceRole: "administrator" })
@@ -94,6 +97,9 @@ async function setup(fixture: StoreFixture) {
       },
     ],
   });
+  await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
+    database,
+  );
   const service = new TeamAdministrationService({
     database,
     identity,
@@ -360,6 +366,7 @@ describeStore("team administration Host boundary", (it) => {
       const invitationId = randomUUID();
       const creation = {
         type: "team.invitation.create" as const,
+        trustedComputerConfirmed: true,
         id: invitationId,
         selector,
         tokenHash: createHash("sha256").update(verifier).digest("hex"),
@@ -369,6 +376,9 @@ describeStore("team administration Host boundary", (it) => {
         expectedRevision: 3,
         idempotencyKey: "invite-person",
       };
+      await expect(
+        service.command({ ...creation, trustedComputerConfirmed: false }, context(admin)),
+      ).rejects.toMatchObject({ code: "bad_request" });
       const created = await service.command(creation, context(admin));
       expect(await service.command(creation, context(admin))).toEqual(created);
       const listed = await service.read("team.invitations.list", { limit: 1 }, context(admin));
@@ -405,6 +415,53 @@ describeStore("team administration Host boundary", (it) => {
       await expect(service.read("team.summary.get", {}, acceptedContext)).rejects.toMatchObject({
         reason: "membership-lost",
       });
+      for (const procedure of ["bootstrap.get", "team.summary.get"] as const) {
+        const response = await injectRpcRequest(app, procedure, {}, acceptedContext.headers);
+        expect(response.statusCode, response.body).toBe(401);
+      }
+      const realtime = await app.inject({
+        method: "GET",
+        url: "/v1/realtime",
+        headers: acceptedContext.headers,
+      });
+      expect(realtime.statusCode, realtime.body).toBe(401);
+      await database
+        .updateTable("users")
+        .set({ memberState: "suspended" })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      await expect(
+        identity.requireTeamInvitationSession(new Headers(acceptedContext.headers)),
+      ).rejects.toMatchObject({ reason: "invite-unavailable" });
+      await database
+        .updateTable("users")
+        .set({ memberState: "active" })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      await database
+        .updateTable("users")
+        .set({ disabledAt: new Date() })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      await expect(
+        identity.requireTeamInvitationSession(new Headers(acceptedContext.headers)),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+      await database
+        .updateTable("users")
+        .set({ disabledAt: null })
+        .where("id", "=", pending.session.user.id)
+        .execute();
+      const replacementLogin = await identity.signInPassword(
+        { email: pending.session.user.email, password: "a correct test password" },
+        new Headers({ origin }),
+      );
+      pending.cookie = replacementLogin.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0]!)
+        .join("; ");
+      pending.session = replacementLogin.data.session;
+      acceptedContext.session = pending.session;
+      acceptedContext.headers.cookie = `${pending.cookie}; ${admissionCookie}`;
       const proof = await identity.teamInvitationAdmission(
         new Headers(acceptedContext.headers),
         pending.session,
@@ -498,6 +555,7 @@ describeStore("team administration Host boundary", (it) => {
         },
         context(admin),
       );
+      expect(await identity.authenticate(new Headers({ cookie: pending.cookie }))).toBeNull();
       const removed = await service.command(
         {
           type: "team.member.change",
@@ -528,14 +586,23 @@ describeStore("team administration Host boundary", (it) => {
         verifier,
         new Headers({ origin }),
       );
+      const freshLogin = await identity.signInPassword(
+        { email: pending.session.user.email, password: "a correct test password" },
+        new Headers({ origin }),
+      );
+      const freshCookie = freshLogin.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0]!)
+        .join("; ");
       const rejoined = await service.read(
         "team.invitation.accept",
         {},
         {
           ...context(pending),
+          session: freshLogin.data.session,
           headers: {
             origin,
-            cookie: `${pending.cookie}; ${replacementProof.headers
+            cookie: `${freshCookie}; ${replacementProof.headers
               .getSetCookie()
               .map((value) => value.split(";", 1)[0]!)
               .join("; ")}`,

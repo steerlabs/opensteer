@@ -1,7 +1,9 @@
+import { PrincipalIdSchema } from "@opensteer/channel-core";
 import { isEveryoneMember } from "./everyone-membership.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   createId,
+  nonTerminalRunStatuses,
   CommandIdSchema,
   OpensteerError,
   MarkColorSchema,
@@ -14,6 +16,7 @@ import {
   type AccessTarget,
   type AccessAction,
   type CommandId,
+  type RunId,
   type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
@@ -31,7 +34,7 @@ import {
   assertProjectAuthority,
   readDeploymentAuthority,
 } from "./deployment-execution-authority.js";
-import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
+import { RequestLockSetChanged, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, safeGeneration } from "./store-primitives.js";
 import {
   consumeTeamAdmission,
@@ -68,6 +71,34 @@ export interface MembershipTransition extends Pair {
   readonly previousGeneration: number | null;
   readonly state: "active" | "revoked";
   readonly role: "owner" | "collaborator";
+}
+
+export type AccessWorkRevocationRoot =
+  | { readonly kind: "member"; readonly userId: UserId; readonly memberGenerationCutoff: number }
+  | {
+      readonly kind: "membership";
+      readonly userId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly membershipGenerationCutoff: number;
+    }
+  | {
+      readonly kind: "connection";
+      readonly userId: UserId;
+      readonly workspaceId: WorkspaceId;
+      readonly connectionId: string;
+      readonly memberGenerationCutoff: number;
+      readonly membershipGenerationCutoff: number;
+    };
+
+export interface AccessWorkRevocationPort {
+  discover(
+    transaction: Transaction<DatabaseSchema>,
+    roots: readonly AccessWorkRevocationRoot[],
+  ): Promise<{ readonly runIds: readonly RunId[]; readonly workspaceIds: readonly WorkspaceId[] }>;
+  cancel(
+    transaction: Transaction<DatabaseSchema>,
+    roots: readonly AccessWorkRevocationRoot[],
+  ): Promise<void>;
 }
 
 export interface AccessMutationResult {
@@ -123,7 +154,16 @@ async function takeWriterLock(transaction: AccessTransaction): Promise<void> {
 async function readGraph(database: Database, memberIds?: readonly UserId[]) {
   let userQuery = database
     .selectFrom("users")
-    .select(["id", "displayName", "instanceRole", "memberKind", "memberState", "admittedAt"]);
+    .select([
+      "id",
+      "displayName",
+      "instanceRole",
+      "memberKind",
+      "memberState",
+      "admittedAt",
+      "disabledAt",
+      "authorityGeneration",
+    ]);
   if (memberIds) userQuery = userQuery.where("id", "in", memberIds);
   const users = await userQuery.execute();
   const projects = await database
@@ -361,15 +401,19 @@ async function planAccess(
   ) {
     const admins = await database
       .selectFrom("users")
-      .select(["id", "instanceRole", "memberState", "admittedAt"])
+      .select(["id", "instanceRole", "memberState", "admittedAt", "disabledAt"])
       .where("instanceRole", "=", "administrator")
       .execute();
     const active = (
-      user: Pick<Graph["users"][number], "instanceRole" | "memberState" | "admittedAt">,
+      user: Pick<
+        Graph["users"][number],
+        "instanceRole" | "memberState" | "admittedAt" | "disabledAt"
+      >,
     ) =>
       user.instanceRole === "administrator" &&
       user.memberState === "active" &&
-      user.admittedAt !== null;
+      user.admittedAt !== null &&
+      user.disabledAt === null;
     if (
       admins.some(active) &&
       ![
@@ -412,7 +456,8 @@ async function planAccess(
           pairs.has(pairKey(membership)) &&
           effective(afterPairs.get(pairKey(membership))?.entries ?? []).level !== "manage",
       )
-      .map((membership) => membership.workspaceId),
+      .map((membership) => membership.workspaceId)
+      .filter((id) => !old.projects.some((project) => project.id === id)),
   );
   if (reducingManagers.size) {
     const owners = await database
@@ -867,6 +912,10 @@ async function applySource(
   input: AccessMutationInput,
   now: Date,
   admission?: TeamAdmissionInput,
+  work?: {
+    readonly port: AccessWorkRevocationPort;
+    readonly roots: readonly AccessWorkRevocationRoot[];
+  },
 ): Promise<void> {
   const changedUsers = next.users
     .filter((after) => {
@@ -1022,8 +1071,9 @@ async function applySource(
   }
   if (addedEntries.length)
     await transaction.insertInto("accessEntries").values(addedEntries).execute();
+  if (work?.roots.length) await work.port.cancel(transaction, work.roots);
   const invitation = admission ? await consumeTeamAdmission(transaction, admission, now) : null;
-  const userIds = new Set(changedUsers.map((user) => user.id));
+  const userIds = new Set([input.actor.userId, ...changedUsers.map((user) => user.id)]);
   if (input.changes.some((change) => change.kind === "create-project"))
     userIds.add(input.actor.userId);
   if (userIds.size)
@@ -1034,6 +1084,16 @@ async function applySource(
       .orderBy("id")
       .forNoKeyUpdate()
       .execute();
+  if (!admission) {
+    if (input.actor.sessionId)
+      await transaction
+        .selectFrom("authSessions")
+        .select("id")
+        .where("id", "=", input.actor.sessionId)
+        .forShare()
+        .executeTakeFirst();
+    await requireActor(transaction, input);
+  }
   if (admission && invitation) {
     const user = await transaction
       .selectFrom("users")
@@ -1085,6 +1145,7 @@ async function applySource(
         })
         .where("id", "=", change.workspaceId)
         .execute();
+  // The legacy Account presence trigger observes instanceRole on each final user-state write.
   for (const after of changedUsers) {
     const before = old.users.find((user) => user.id === after.id)!;
     await transaction
@@ -1415,11 +1476,13 @@ async function requireActor(
       "memberState",
       "admittedAt",
       "authorityGeneration",
+      "disabledAt",
     ])
     .where("id", "=", input.actor.userId)
     .executeTakeFirst();
   if (
     !actor ||
+    actor.disabledAt ||
     actor.memberState !== "active" ||
     !actor.admittedAt ||
     (input.actor.authorityGeneration !== undefined &&
@@ -1437,6 +1500,23 @@ async function requireActor(
               : "member-generation-changed",
       message: "Active admitted human is required",
     });
+  if (input.actor.sessionId) {
+    const session = await transaction
+      .selectFrom("authSessions")
+      .select("id")
+      .where("id", "=", input.actor.sessionId)
+      .where("userId", "=", actor.id)
+      .where("memberGeneration", "=", String(actor.authorityGeneration))
+      .where("expiresAt", ">", new Date())
+      .where("absoluteExpiresAt", ">", new Date())
+      .executeTakeFirst();
+    if (!session)
+      throw new OpensteerError({
+        code: "unauthorized",
+        reason: "member-generation-changed",
+        message: "Authentication required",
+      });
+  }
   return {
     id: actor.id,
     administrator: actor.instanceRole === "administrator",
@@ -1484,13 +1564,15 @@ async function authorizeMutation(
 export async function mutateAccess(
   database: Database,
   input: AccessMutationInput,
+  work?: AccessWorkRevocationPort,
 ): Promise<AccessMutationResult> {
-  return coordinateAccess(database, input);
+  return coordinateAccess(database, input, undefined, work);
 }
 
 export async function acceptTeamInvitation(
   database: Database,
   admission: TeamAdmissionInput,
+  work?: AccessWorkRevocationPort,
 ): Promise<AccessMutationResult> {
   await assertProjectAuthority(database);
   const invitation = await readTeamAdmission(database, admission);
@@ -1512,13 +1594,64 @@ export async function acceptTeamInvitation(
       ],
     },
     admission,
+    work,
   );
+}
+
+async function discoverLiveAccessScope(
+  database: Database,
+  pairs: readonly Pair[],
+  fencedUsers: readonly UserId[],
+) {
+  const pairJson = JSON.stringify(pairs);
+  const runs = await database
+    .selectFrom("runs")
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .select(["runs.id", "threads.workspaceId"])
+    .where("runs.status", "in", nonTerminalRunStatuses)
+    .where(
+      sql<boolean>`runs.requested_by = any(${fencedUsers}::text[]) or exists (
+      select 1 from jsonb_to_recordset(${pairJson}::jsonb) as pair("userId" text, "workspaceId" text)
+      where pair."userId" = runs.requested_by and pair."workspaceId" = threads.workspace_id)`,
+    )
+    .execute();
+  const connections = await database
+    .selectFrom("agentConnections")
+    .select("id")
+    .where("revokedAt", "is", null)
+    .where(
+      sql<boolean>`user_id = any(${fencedUsers}::text[]) or exists (
+      select 1 from jsonb_to_recordset(${pairJson}::jsonb) as pair("userId" text, "workspaceId" text)
+      where pair."userId" = user_id and pair."workspaceId" = workspace_id)`,
+    )
+    .execute();
+  const requests = runs.length
+    ? await database
+        .selectFrom("requests")
+        .select(["originatingWorkspaceId", "targetWorkspaceId"])
+        .where(
+          "originatingRunId",
+          "in",
+          runs.map((run) => run.id),
+        )
+        .where("status", "=", "pending")
+        .execute()
+    : [];
+  return {
+    runIds: runs.map((run) => run.id),
+    connectionIds: connections.map((row) => row.id),
+    workspaceIds: [
+      ...runs.map((run) => run.workspaceId),
+      ...requests.flatMap((row) => [row.originatingWorkspaceId, row.targetWorkspaceId]),
+    ],
+  };
 }
 
 async function coordinateAccess(
   database: Database,
   input: AccessMutationInput,
   admission?: TeamAdmissionInput,
+  work?: AccessWorkRevocationPort,
 ): Promise<AccessMutationResult> {
   if (!input.changes.length) refuse("At least one access change is required");
   const introducedIds = input.changes.flatMap((change) => introducedEntryId(change) ?? []);
@@ -1542,8 +1675,25 @@ async function coordinateAccess(
       pairs: Pair[];
       revision: number;
       growing: boolean;
+      fencedUsers: UserId[];
+      roots: readonly AccessWorkRevocationRoot[];
+      liveScope: Awaited<ReturnType<typeof discoverLiveAccessScope>>;
     }
   >();
+  const discover = async (
+    transaction: AccessTransaction,
+    pairs: readonly Pair[],
+    fencedUsers: readonly UserId[],
+    roots: readonly AccessWorkRevocationRoot[],
+  ) => {
+    const scope = await discoverLiveAccessScope(transaction, pairs, fencedUsers);
+    const execution = roots.length ? await work?.discover(transaction, roots) : undefined;
+    return {
+      ...scope,
+      runIds: [...new Set([...scope.runIds, ...(execution?.runIds ?? [])])],
+      workspaceIds: [...new Set([...scope.workspaceIds, ...(execution?.workspaceIds ?? [])])],
+    };
+  };
   const fingerprint = createHash("sha256")
     .update(
       JSON.stringify({
@@ -1559,7 +1709,13 @@ async function coordinateAccess(
       database,
       async (transaction) => {
         const plan = plans.get(transaction)!;
-        const ids = new Set(plan.pairs.map((pair) => pair.workspaceId));
+        const live = await discover(transaction, plan.pairs, plan.fencedUsers, plan.roots);
+        if (
+          live.runIds.some((id) => !plan.liveScope.runIds.includes(id)) ||
+          live.connectionIds.some((id) => !plan.liveScope.connectionIds.includes(id))
+        )
+          throw new RequestLockSetChanged(live.workspaceIds);
+        const ids = new Set([...plan.pairs.map((pair) => pair.workspaceId), ...live.workspaceIds]);
         for (const change of input.changes)
           if (change.kind === "delete-project") ids.add(change.workspaceId);
         if (plan.pairs.length) {
@@ -1605,7 +1761,15 @@ async function coordinateAccess(
         if (!admission && plan.revision !== input.expectedRevision)
           conflict("Access preview is stale");
         const { now, next } = plan;
-        await applySource(transaction, plan.old, next, input, now, admission);
+        await applySource(
+          transaction,
+          plan.old,
+          next,
+          input,
+          now,
+          admission,
+          work ? { port: work, roots: plan.roots } : undefined,
+        );
         const transitions = await recomputeProjectMemberships(transaction, {
           actorId: input.actor.userId,
           pairs: plan.pairs,
@@ -1613,6 +1777,19 @@ async function coordinateAccess(
           causeId: input.commandIdentity,
           graph: next,
         });
+        for (const change of input.changes) {
+          if (change.kind !== "create-project") continue;
+          await transaction
+            .insertInto("principals")
+            .values({
+              id: PrincipalIdSchema.parse(`pri_${randomUUID()}`),
+              kind: "project",
+              workspaceId: change.workspaceId,
+              userId: null,
+              displayName: change.name.trim(),
+            })
+            .execute();
+        }
         const revision = plan.revision + 1;
         if (!Number.isSafeInteger(revision)) throw new Error("Access revision exhausted");
         await transaction
@@ -1671,6 +1848,9 @@ async function coordinateAccess(
             pairs: [],
             revision: safeGeneration(state.revision),
             growing: false,
+            fencedUsers: [],
+            roots: [],
+            liveScope: { runIds: [], connectionIds: [], workspaceIds: [] },
           });
           return;
         }
@@ -1681,24 +1861,78 @@ async function coordinateAccess(
           .filter((after) => {
             const before = old.users.find((user) => user.id === after.id)!;
             return (
-              before.instanceRole !== after.instanceRole ||
-              (before.memberState !== after.memberState && after.memberState !== "active")
+              before.instanceRole !== after.instanceRole || before.memberState !== after.memberState
             );
           })
           .map((user) => user.id);
-        if (fencedUsers.length) {
-          const connections = await transaction
+        const beforePairs = entriesByPair(old);
+        const afterPairs = entriesByPair(next);
+        const roots: AccessWorkRevocationRoot[] = next.users.flatMap((after) => {
+          const before = old.users.find((user) => user.id === after.id)!;
+          return before.memberState !== after.memberState ||
+            before.instanceRole !== after.instanceRole
+            ? [
+                {
+                  kind: "member" as const,
+                  userId: before.id,
+                  memberGenerationCutoff: safeGeneration(before.authorityGeneration),
+                },
+              ]
+            : [];
+        });
+        const changed = pairs.filter(
+          (pair) =>
+            effective(beforePairs.get(pairKey(pair))?.entries ?? []).level !== null &&
+            effective(beforePairs.get(pairKey(pair))?.entries ?? []).level !==
+              effective(afterPairs.get(pairKey(pair))?.entries ?? []).level,
+        );
+        if (changed.length) {
+          const memberships = await transaction
+            .selectFrom("workspaceMemberships")
+            .select(["userId", "workspaceId", "generation"])
+            .where(
+              sql<boolean>`(user_id, workspace_id) in (select "userId", "workspaceId" from jsonb_to_recordset(${JSON.stringify(changed)}::jsonb) as pair("userId" text, "workspaceId" text))`,
+            )
+            .execute();
+          roots.push(
+            ...memberships.map((row) => ({
+              kind: "membership" as const,
+              userId: row.userId,
+              workspaceId: row.workspaceId,
+              membershipGenerationCutoff: safeGeneration(row.generation),
+            })),
+          );
+        }
+        const liveScope = await discover(transaction, pairs, fencedUsers, roots);
+        if (!work && liveScope.runIds.length && roots.some((root) => root.kind === "member"))
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Captured-root work cancellation is unavailable",
+            retryable: false,
+          });
+        if (liveScope.connectionIds.length)
+          await transaction
             .selectFrom("agentConnections")
             .select("id")
-            .where("userId", "in", fencedUsers)
-            .where("revokedAt", "is", null)
+            .where("id", "in", liveScope.connectionIds)
             .orderBy("id")
             .forNoKeyUpdate()
             .execute();
+        if (liveScope.runIds.length)
+          await transaction
+            .selectFrom("runs")
+            .select("id")
+            .where("id", "in", liveScope.runIds)
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+        if (fencedUsers.length) {
+          const connections = liveScope.connectionIds.map((id) => ({ id }));
           if (connections.length)
             await transaction
               .updateTable("agentConnections")
               .set({ revokedAt: now })
+              .where("userId", "in", fencedUsers)
               .where(
                 "id",
                 "in",
@@ -1713,6 +1947,9 @@ async function coordinateAccess(
           pairs,
           revision: safeGeneration(state.revision),
           growing,
+          fencedUsers,
+          roots,
+          liveScope,
         });
       },
     );
@@ -1816,5 +2053,65 @@ export async function checkAccess(
     allowed: true,
     memberGeneration: safeGeneration(membership.currentMemberGeneration),
     membershipGeneration: safeGeneration(membership.generation),
+  };
+}
+
+export interface TeamRealtimeAuthority {
+  readonly userId: UserId;
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
+  readonly workspaceId?: WorkspaceId;
+  readonly memberGeneration: string;
+  readonly membershipGeneration: string | null;
+}
+
+export async function readTeamRealtimeAuthority(
+  database: Database,
+  input: {
+    readonly userId: UserId;
+    readonly sessionId?: import("@opensteer/core").AuthSessionId;
+    readonly workspaceId?: WorkspaceId;
+  },
+): Promise<TeamRealtimeAuthority> {
+  const user = await database
+    .selectFrom("users")
+    .select("authorityGeneration")
+    .where("id", "=", input.userId)
+    .where("admittedAt", "is not", null)
+    .where("memberState", "=", "active")
+    .where("disabledAt", "is", null)
+    .$if(!!input.sessionId, (query) =>
+      query.where(({ exists, selectFrom }) =>
+        exists(
+          selectFrom("authSessions")
+            .select("id")
+            .where("id", "=", input.sessionId!)
+            .whereRef("userId", "=", "users.id")
+            .whereRef("memberGeneration", "=", "users.authorityGeneration")
+            .where("expiresAt", ">", new Date())
+            .where("absoluteExpiresAt", ">", new Date()),
+        ),
+      ),
+    )
+    .executeTakeFirst();
+  if (!user) throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+  const membership = input.workspaceId
+    ? await database
+        .selectFrom("workspaceMemberships")
+        .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
+        .select("workspaceMemberships.generation")
+        .where("workspaceMemberships.userId", "=", input.userId)
+        .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
+        .where("workspaceMemberships.state", "=", "active")
+        .where("workspaces.kind", "=", "project")
+        .where("workspaces.deletedAt", "is", null)
+        .where("workspaces.status", "not in", ["deleting", "deleted"])
+        .executeTakeFirst()
+    : null;
+  if (input.workspaceId && !membership)
+    throw new OpensteerError({ code: "forbidden", message: "Workspace access revoked" });
+  return {
+    ...input,
+    memberGeneration: user.authorityGeneration,
+    membershipGeneration: membership ? String(membership.generation) : null,
   };
 }

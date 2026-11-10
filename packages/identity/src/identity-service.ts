@@ -36,7 +36,13 @@ import {
   identityPasswordMaxLength,
   identityPasswordMinLength,
 } from "@opensteer/core";
-import { OpensteerStore, readTeamInvitation, type DatabaseSchema } from "@opensteer/database";
+import {
+  OpensteerStore,
+  readInitializedDeploymentAuthority,
+  readTeamAdmission,
+  readTeamInvitation,
+  type DatabaseSchema,
+} from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
 import { sso } from "@better-auth/sso";
 import {
@@ -44,7 +50,7 @@ import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
 } from "@better-auth/oauth-provider";
-import { APIError, betterAuth, type BetterAuthOptions } from "better-auth";
+import { APIError, betterAuth, getCurrentAdapter, type BetterAuthOptions } from "better-auth";
 import { verifyJwsAccessToken } from "better-auth/oauth2";
 import { jwt } from "better-auth/plugins";
 import { compactVerify, createLocalJWKSet, decodeJwt, type JWTPayload } from "jose";
@@ -169,6 +175,44 @@ export class IdentityService {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #options: IdentityServiceOptions;
   readonly #store: OpensteerStore;
+  #authority: ReturnType<typeof readInitializedDeploymentAuthority> | undefined;
+
+  async #isTeam(): Promise<boolean> {
+    const authority = await (this.#authority ??= readInitializedDeploymentAuthority(
+      this.#database,
+    ));
+    if (!authority) {
+      this.#authority = undefined;
+      return false;
+    }
+    return authority.kind === "server" && authority.model === 2;
+  }
+
+  async #teamSessionCurrent(sessionId: AuthSessionId, userId: UserId): Promise<boolean> {
+    if (!(await this.#isTeam())) return true;
+    return !!(await this.#database
+      .selectFrom("authSessions")
+      .innerJoin("users", "users.id", "authSessions.userId")
+      .select("authSessions.id")
+      .where("authSessions.id", "=", sessionId)
+      .where("users.id", "=", userId)
+      .where("users.admittedAt", "is not", null)
+      .where("users.memberState", "=", "active")
+      .where("users.disabledAt", "is", null)
+      .whereRef("authSessions.memberGeneration", "=", "users.authorityGeneration")
+      .executeTakeFirst());
+  }
+
+  async requireTeamInvitationSession(headers: Headers): Promise<AuthenticatedSession | null> {
+    if (!(await this.#isTeam())) return null;
+    const session = await this.#readIdentitySessionCookie(headers);
+    if (!session || !session.user.emailVerified)
+      throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+    const proof = await this.teamInvitationAdmission(headers, session);
+    // The admission reader enforces the same state and bound-email rules again in the writer transaction.
+    await readTeamAdmission(this.#database, proof);
+    return session;
+  }
 
   constructor(database: Kysely<DatabaseSchema>, options: IdentityServiceOptions) {
     if (options.secret.length < 32) {
@@ -184,9 +228,14 @@ export class IdentityService {
     this.#database = database;
     this.#options = options;
     this.#store = new OpensteerStore(database);
-    this.#auth = createOpensteerAuth(database, options, async (request, email) => {
-      await this.#requireSignupAdmission(request, email);
-    });
+    this.#auth = createOpensteerAuth(
+      database,
+      options,
+      async (request, email) => {
+        await this.#requireSignupAdmission(request, email);
+      },
+      () => this.#isTeam(),
+    );
   }
 
   async initialize(): Promise<void> {
@@ -194,6 +243,7 @@ export class IdentityService {
     // bootstrap can close the database underneath its schema query.
     const context = await this.#auth.$context;
     await context.checkSchema?.();
+    await this.#isTeam();
     await this.#ensureInitialOwnerEnrollment();
     await this.#ensureNativeOAuthClients();
   }
@@ -437,7 +487,8 @@ export class IdentityService {
       !session ||
       session.disabledAt ||
       session.expiresAt <= now ||
-      session.absoluteExpiresAt <= now
+      session.absoluteExpiresAt <= now ||
+      !(await this.#teamSessionCurrent(sessionId.data, subject.data))
     ) {
       throw new OpensteerError({ code: "unauthorized", message: "Native access token is invalid" });
     }
@@ -813,6 +864,7 @@ export class IdentityService {
       .executeTakeFirst();
     return (
       !!row &&
+      (await this.#teamSessionCurrent(sessionId, userId)) &&
       (row.remoteSessionId === null ||
         personalRemoteRouteIntact(
           {
@@ -826,6 +878,12 @@ export class IdentityService {
   }
 
   async #authenticateSessionCookie(headers: Headers): Promise<AuthenticatedSession | null> {
+    const session = await this.#readIdentitySessionCookie(headers);
+    if (!session || !(await this.#teamSessionCurrent(session.id, session.user.id))) return null;
+    return session;
+  }
+
+  async #readIdentitySessionCookie(headers: Headers): Promise<AuthenticatedSession | null> {
     const raw = await this.#auth.api.getSession({ headers });
     if (!raw) return null;
     const sessionId = AuthSessionIdSchema.safeParse(raw.session.id);
@@ -1550,7 +1608,11 @@ export class IdentityService {
         message: "Email or password is incorrect",
       });
     }
-    const session = await authenticateFromResponseCookie(this, headers, response.headers);
+    const session = await authenticateFromResponseCookie(
+      (headers) => this.#readIdentitySessionCookie(headers),
+      headers,
+      response.headers,
+    );
     const redirectUrl = oauthQuery
       ? await oauthRedirectUrl(response.clone(), this.#options.publicOrigin)
       : null;
@@ -1668,7 +1730,11 @@ export class IdentityService {
       }),
     );
     await assertSuccessfulBetterAuthResponse(response);
-    const session = await authenticateFromResponseCookie(this, headers, response.headers);
+    const session = await authenticateFromResponseCookie(
+      (headers) => this.#readIdentitySessionCookie(headers),
+      headers,
+      response.headers,
+    );
     return { data: { session }, headers: response.headers, status: response.status };
   }
 
@@ -2188,7 +2254,12 @@ export class IdentityService {
     readonly headers: Headers;
     readonly userId: UserId;
   }> {
-    const session = await this.requireSession(headers);
+    const team = await this.#isTeam();
+    const session = team
+      ? await this.#readIdentitySessionCookie(headers)
+      : await this.requireSession(headers);
+    if (!session)
+      throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
@@ -2220,9 +2291,39 @@ export class IdentityService {
         throw new OpensteerError({ code: "conflict", message: "Setup is already complete" });
       }
       const now = new Date();
+      if (team) {
+        const member = await transaction
+          .selectFrom("users")
+          .select("authorityGeneration")
+          .where("id", "=", session.user.id)
+          .where("disabledAt", "is", null)
+          .where("memberState", "=", "active")
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        const currentSession = member
+          ? await transaction
+              .selectFrom("authSessions")
+              .select("id")
+              .where("id", "=", session.id)
+              .where("userId", "=", session.user.id)
+              .where("memberGeneration", "=", member.authorityGeneration)
+              .where("expiresAt", ">", now)
+              .where("absoluteExpiresAt", ">", now)
+              .forShare()
+              .executeTakeFirst()
+          : null;
+        if (!currentSession)
+          throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+      }
       await transaction
         .updateTable("users")
-        .set({ instanceRole: "administrator", updatedAt: now })
+        .set({
+          instanceRole: "administrator",
+          updatedAt: now,
+          ...(team
+            ? { admittedAt: now, memberKind: "full" as const, memberState: "active" as const }
+            : {}),
+        })
         .where("id", "=", session.user.id)
         .executeTakeFirstOrThrow();
       await transaction
@@ -2480,6 +2581,7 @@ function createOpensteerAuth(
   database: Kysely<DatabaseSchema>,
   options: IdentityServiceOptions,
   requireSignupAdmission: (request: Request | undefined, email: string) => Promise<void>,
+  isTeam: () => Promise<boolean>,
 ) {
   const secure = options.publicOrigin.protocol === "https:";
   const providerOrigins = options.oidcProviders.flatMap((provider) => [
@@ -2535,6 +2637,17 @@ function createOpensteerAuth(
       session: {
         create: {
           before: async (session, context) => {
+            const team = await isTeam();
+            const member = team
+              ? await (
+                  await getCurrentAdapter(context!.context.adapter)
+                ).findOne<{ authorityGeneration: string }>({
+                  model: "user",
+                  where: [{ field: "id", value: session.userId }],
+                })
+              : null;
+            if (team && !member)
+              throw new APIError("UNAUTHORIZED", { message: "Authentication required" });
             const now = new Date();
             // Better Auth assigns createdAt before this hook. Anchor the hard
             // lifetime to that durable timestamp instead of sampling the clock
@@ -2543,6 +2656,7 @@ function createOpensteerAuth(
             return {
               data: {
                 ...session,
+                ...(member ? { memberGeneration: String(member.authorityGeneration) } : {}),
                 absoluteExpiresAt: new Date(createdAt.getTime() + absoluteSessionMilliseconds),
                 deviceLabel: describeSessionDevice(
                   context?.request?.headers.get("user-agent") ?? null,
@@ -2683,6 +2797,7 @@ function createOpensteerAuth(
         absoluteExpiresAt: { input: false, returned: false, type: "date" },
         deviceLabel: { input: false, returned: false, type: "string" },
         lastSeenAt: { input: false, returned: false, type: "date" },
+        memberGeneration: { input: false, required: false, returned: false, type: "string" },
       },
       cookieCache: { enabled: false },
       expiresIn: idleSessionSeconds,
@@ -2692,6 +2807,7 @@ function createOpensteerAuth(
     trustedOrigins: [options.publicOrigin.origin, ...providerOrigins],
     user: {
       additionalFields: {
+        authorityGeneration: { input: false, required: false, returned: false, type: "string" },
         disabledAt: { input: false, required: false, returned: false, type: "date" },
         instanceRole: {
           defaultValue: "user",
@@ -2955,12 +3071,12 @@ function invalidAccountAdoptionGrant(): OpensteerError {
 }
 
 async function authenticateFromResponseCookie(
-  service: IdentityService,
+  authenticate: (headers: Headers) => Promise<AuthenticatedSession | null>,
   requestHeaders: Headers,
   responseHeaders: Headers,
 ): Promise<AuthenticatedSession> {
   const headers = headersWithResponseCookies(requestHeaders, responseHeaders);
-  const session = await service.authenticate(headers);
+  const session = await authenticate(headers);
   if (!session) {
     throw new OpensteerError({ code: "internal", message: "Session was not created" });
   }

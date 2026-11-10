@@ -57,12 +57,20 @@ export async function readTeamAdmission(
     .executeTakeFirst();
   const user = await database
     .selectFrom("users")
-    .select(["id", "email", "emailVerified", "admittedAt", "memberState", "disabledAt"])
+    .select([
+      "id",
+      "email",
+      "emailVerified",
+      "admittedAt",
+      "memberState",
+      "disabledAt",
+      "authorityGeneration",
+    ])
     .where("id", "=", input.userId)
     .executeTakeFirst();
   const session = await database
     .selectFrom("authSessions")
-    .select("id")
+    .select(["id", "memberGeneration"])
     .where("id", "=", input.sessionId)
     .where("userId", "=", input.userId)
     .where("expiresAt", ">", now)
@@ -74,8 +82,12 @@ export async function readTeamAdmission(
     invitation.expiresAt <= now ||
     !user ||
     !session ||
+    session.memberGeneration === null ||
+    session.memberGeneration !== user.authorityGeneration ||
     !user.emailVerified ||
     user.disabledAt ||
+    user.memberState === "suspended" ||
+    (user.memberState === "removed" && user.admittedAt === null) ||
     normalizeIdentityEmail(user.email) !== invitation.intendedEmail ||
     proof.reservedEmail !== invitation.intendedEmail ||
     (proof.consumedAt && proof.consumedBy !== user.id) ||

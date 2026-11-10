@@ -31,6 +31,7 @@ import {
   revokeTeamConnection,
   setProjectRuntimeSettings,
   type DatabaseSchema,
+  type AccessWorkRevocationPort,
 } from "@opensteer/database";
 import {
   HarnessInstanceCatalogSchema,
@@ -87,6 +88,7 @@ function headersFrom(context: HostApiServerContext): Headers {
 
 export class TeamAdministrationService {
   readonly #database: Kysely<DatabaseSchema>;
+  readonly #work: AccessWorkRevocationPort | undefined;
   readonly #reads: TeamAccessReadStore;
   readonly #identity: Identity;
   readonly #teamName: string;
@@ -96,12 +98,14 @@ export class TeamAdministrationService {
 
   constructor(options: {
     database: Kysely<DatabaseSchema>;
+    workRevocation?: AccessWorkRevocationPort;
     identity: Identity;
     teamName: string;
     runnerIsConnected: (runnerId: RunnerId) => boolean;
     invalidate: (userIds: readonly UserId[]) => void;
   }) {
     this.#database = options.database;
+    this.#work = options.workRevocation;
     this.#reads = new TeamAccessReadStore(options.database);
     this.#identity = options.identity;
     this.#teamName = options.teamName.slice(0, 120);
@@ -236,7 +240,7 @@ export class TeamAdministrationService {
       await this.#authority();
       teamReadSchemas[procedure].input.parse(input);
       const proof = await this.#identity.teamInvitationAdmission(headersFrom(context), session);
-      const result = await acceptTeamInvitation(this.#database, proof);
+      const result = await acceptTeamInvitation(this.#database, proof, this.#work);
       const member = await this.#reads.memberMetadata(session.user.id);
       this.#invalidate([session.user.id]);
       return {
@@ -461,6 +465,7 @@ export class TeamAdministrationService {
               ])
               .where("workspaces.id", "=", parsed.workspaceId)
               .where("runners.ownerKind", "=", "deployment")
+              .where("runners.ownerUserId", "is", null)
               .where("runners.revokedAt", "is", null)
               .where("harnessInstances.enabled", "=", true)
               .where("harnessInstances.removedAt", "is", null)
@@ -552,7 +557,7 @@ export class TeamAdministrationService {
       });
     }
     if (command.type === "team.connection.revoke") {
-      const result = await revokeTeamConnection(this.#database, actor, command);
+      const result = await revokeTeamConnection(this.#database, actor, command, this.#work);
       this.#invalidate([actor.userId]);
       return TeamCommandResultSchema.parse({ ...base, ...result });
     }
@@ -567,6 +572,7 @@ export class TeamAdministrationService {
           .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
           .select("executionEnvironments.id")
           .where("runners.ownerKind", "=", "deployment")
+          .where("runners.ownerUserId", "is", null)
           .where("runners.revokedAt", "is", null)
           .where("executionEnvironments.kind", "=", "main")
           .orderBy("executionEnvironments.id")
@@ -610,14 +616,22 @@ export class TeamAdministrationService {
         changes = [memberChange(command.userId, command.change)];
         break;
     }
-    const result = await mutateAccess(this.#database, {
-      actor,
-      expectedRevision: command.expectedRevision,
-      commandIdentity: commandId,
-      changes,
-    });
+    const result = await mutateAccess(
+      this.#database,
+      {
+        actor,
+        expectedRevision: command.expectedRevision,
+        commandIdentity: commandId,
+        changes,
+      },
+      this.#work,
+    );
     this.#invalidate([
-      ...new Set([actor.userId, ...result.transitions.map((transition) => transition.userId)]),
+      ...new Set([
+        actor.userId,
+        ...(command.type === "team.member.change" ? [command.userId] : []),
+        ...result.transitions.map((transition) => transition.userId),
+      ]),
     ]);
     switch (command.type) {
       case "team.project.create":

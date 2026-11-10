@@ -2,17 +2,27 @@ import { OpensteerError } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-export async function readDeploymentAuthority(
+export async function readInitializedDeploymentAuthority(
   database: Kysely<DatabaseSchema>,
-): Promise<{ kind: "personal" | "server"; model: 1 | 2 }> {
+): Promise<{ kind: "personal" | "server"; model: 1 | 2 } | null> {
   const row = await database
     .selectFrom("deployments")
     .select(["authorityModelVersion", "deploymentShape"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  if (!row || (row.authorityModelVersion !== 1 && row.authorityModelVersion !== 2))
+  if (!row) return null;
+  if (row.authorityModelVersion !== 1 && row.authorityModelVersion !== 2)
     throw new OpensteerError({ code: "forbidden", message: "Deployment authority is unavailable" });
   return { kind: row.deploymentShape.kind, model: row.authorityModelVersion };
+}
+
+export async function readDeploymentAuthority(
+  database: Kysely<DatabaseSchema>,
+): Promise<{ kind: "personal" | "server"; model: 1 | 2 }> {
+  const authority = await readInitializedDeploymentAuthority(database);
+  if (!authority)
+    throw new OpensteerError({ code: "forbidden", message: "Deployment authority is unavailable" });
+  return authority;
 }
 
 export async function assertProjectAuthority(database: Kysely<DatabaseSchema>): Promise<void> {

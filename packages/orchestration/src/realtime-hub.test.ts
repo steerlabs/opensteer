@@ -24,6 +24,7 @@ describe("snapshot-before-live synchronization", () => {
     const userId = createId("user");
     const hub = new RealtimeHub({
       store: {
+        ...legacyRealtimeAuthority,
         notificationState: viewerState(),
         workspaceMembershipForUser: async (workspaceId: WorkspaceId, userId: UserId) =>
           activeMembership(workspaceId, userId),
@@ -83,6 +84,7 @@ describe("snapshot-before-live synchronization", () => {
       const userId = createId("user");
       const workspaceSnapshot = vi.fn(async () => snapshot(workspaceId, "0"));
       const store = {
+        ...legacyRealtimeAuthority,
         notificationState: viewerState(),
         workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
         workspaceSnapshot,
@@ -161,7 +163,9 @@ describe("snapshot-before-live synchronization", () => {
   );
 
   it("counts broad notices once at publication, before socket fanout", () => {
-    const hub = new RealtimeHub({ store: {} as OpensteerStore });
+    const hub = new RealtimeHub({
+      store: { ...legacyRealtimeAuthority } as unknown as OpensteerStore,
+    });
     const summary = JSON.stringify({
       windowMs: 1,
       triggers: { refresh: 6 },
@@ -199,6 +203,7 @@ describe("snapshot-before-live synchronization", () => {
       const userId = createId("user");
       const workspaceSnapshot = vi.fn(async () => snapshot(workspaceId, "0"));
       const store = {
+        ...legacyRealtimeAuthority,
         notificationState: viewerState(),
         workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
         workspaceSnapshot,
@@ -232,6 +237,7 @@ describe("snapshot-before-live synchronization", () => {
       releaseSnapshot = resolve;
     });
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => {
@@ -261,6 +267,7 @@ describe("snapshot-before-live synchronization", () => {
       releaseSnapshot = resolve;
     });
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => {
@@ -314,6 +321,7 @@ describe("snapshot-before-live synchronization", () => {
       readonly through: Sequence;
     }[] = [];
     const store = {
+      ...legacyRealtimeAuthority,
       eventsAfterWindow: (
         _workspace: WorkspaceId,
         after: Sequence,
@@ -374,6 +382,7 @@ describe("snapshot-before-live synchronization", () => {
     let fills = 0;
     let head = sequence("1");
     const store = {
+      ...legacyRealtimeAuthority,
       eventsAfterWindow: () => {
         fills += 1;
         return new Promise(() => undefined);
@@ -428,6 +437,7 @@ describe("snapshot-before-live synchronization", () => {
       workspaceId,
     });
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "1"),
@@ -476,6 +486,7 @@ describe("snapshot-before-live synchronization", () => {
       }
     }
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "1"),
@@ -505,6 +516,7 @@ describe("snapshot-before-live synchronization", () => {
       "utf8",
     );
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       eventsAfterWindow: async () => ({
         byteCount: Buffer.byteLength(JSON.stringify(replay), "utf8"),
@@ -539,6 +551,7 @@ describe("snapshot-before-live synchronization", () => {
     const otherWorkspaceId = createId("workspace");
     const userId = createId("user");
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async (requested: WorkspaceId) =>
         activeMembership(requested, userId),
@@ -582,6 +595,7 @@ describe("live subscriber delivery failures", () => {
       const workspaceId = createId("workspace");
       const userId = createId("user");
       const store = {
+        ...legacyRealtimeAuthority,
         notificationState: viewerState(),
         workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
         workspaceSnapshot: async () => snapshot(workspaceId, "0"),
@@ -643,6 +657,7 @@ describe("live subscriber delivery failures", () => {
     const workspaceId = createId("workspace");
     const userId = createId("user");
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "0"),
@@ -674,6 +689,7 @@ describe("connection-addressed messages", () => {
     const userId = createId("user");
     const workspaceId = createId("workspace");
     const store = {
+      ...legacyRealtimeAuthority,
       notificationState: viewerState(),
       workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
       workspaceSnapshot: async () => snapshot(workspaceId, "0"),
@@ -719,7 +735,9 @@ describe("connection-addressed messages", () => {
   });
 
   it("tells the Host's own observers when a person's agent connections change", () => {
-    const hub = new RealtimeHub({ store: {} as unknown as OpensteerStore });
+    const hub = new RealtimeHub({
+      store: { ...legacyRealtimeAuthority } as unknown as OpensteerStore,
+    });
     const observed: string[] = [];
     hub.observe((change) => observed.push(change.type));
 
@@ -731,7 +749,9 @@ describe("connection-addressed messages", () => {
   });
 
   it("keeps a failing socket from starving the rest of a broadcast", async () => {
-    const hub = new RealtimeHub({ store: {} as unknown as OpensteerStore });
+    const hub = new RealtimeHub({
+      store: { ...legacyRealtimeAuthority } as unknown as OpensteerStore,
+    });
     const userId = createId("user");
     const broken: RealtimeSink = {
       id: "broken",
@@ -883,3 +903,8 @@ function tabLineage(workspaceId: WorkspaceId): WorkspaceTabLineage {
     },
   };
 }
+
+const legacyRealtimeAuthority = {
+  captureRealtimeAuthority: async () => null,
+  assertRealtimeAuthority: async () => undefined,
+};

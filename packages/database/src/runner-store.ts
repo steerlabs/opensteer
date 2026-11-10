@@ -220,6 +220,7 @@ async function activateRunnerConnection(
       "kind",
       "name",
       "ownerKind",
+      "ownerUserId",
       "publicKeyFingerprint",
       "publicKeyPem",
       "revokedAt",
@@ -252,6 +253,7 @@ async function activateRunnerConnection(
   const personalRemoteAccessGeneration = await assertPersonalRunnerAdmission(transaction, {
     allowedModules: existing.allowedModules,
     ownerKind: existing.ownerKind,
+    ownerUserId: existing.ownerUserId,
     runnerKind: existing.kind,
     stage: "admission",
   });
@@ -565,13 +567,24 @@ async function assertPersonalRunnerAdmission(
     readonly ownerKind: "deployment" | "user";
     readonly runnerKind: "main" | "local" | "managed";
     readonly stage: "admission" | "issuance";
+    readonly ownerUserId: UserId | null;
   },
 ): Promise<number | null> {
   const deployment = await transaction
     .selectFrom("deployments")
-    .select("deploymentShape")
+    .select(["deploymentShape", "authorityModelVersion"])
     .where("singletonKey", "=", "primary")
     .executeTakeFirst(databaseOperationOptions());
+  if (
+    deployment?.deploymentShape.kind === "server" &&
+    deployment.authorityModelVersion === 2 &&
+    (input.ownerKind !== "deployment" || input.ownerUserId !== null || input.runnerKind === "local")
+  ) {
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Team computers must belong to the Deployment",
+    });
+  }
   const policy = deployment ? deploymentPolicy(deployment.deploymentShape) : null;
   const enrollment = policy?.runnerEnrollment;
   if (!enrollment || enrollment.mode !== "reach-only") return null;
@@ -1385,6 +1398,7 @@ export async function createRunnerEnrollment(
     await assertPersonalRunnerAdmission(transaction, {
       allowedModules,
       ownerKind: input.runnerKind === "local" ? "user" : "deployment",
+      ownerUserId: input.runnerKind === "local" ? input.createdBy : (input.ownerUserId ?? null),
       runnerKind: input.runnerKind,
       stage: "issuance",
     });
