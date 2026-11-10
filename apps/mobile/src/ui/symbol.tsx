@@ -20,6 +20,7 @@ import { color } from "../theme.js";
  */
 
 export type SFSymbolName =
+  | "123.rectangle"
   | "arrow.clockwise"
   | "arrow.triangle.branch"
   | "arrow.turn.down.right"
@@ -189,6 +190,7 @@ function accessibility(label: string | undefined): {
  * covers, so a phone without SF Symbols draws the mark rather than a box.
  */
 const glyph: Record<SFSymbolName, string> = {
+  "123.rectangle": "#",
   "arrow.clockwise": "↻",
   "arrow.triangle.branch": "⑂",
   "arrow.turn.down.right": "↳",
