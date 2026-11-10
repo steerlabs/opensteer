@@ -41,6 +41,7 @@ public struct BrokerPaths: Sendable, Equatable {
   public var vault: URL { root.appendingPathComponent("Vault", isDirectory: true) }
   /// The development build's `FileProtectedStore`; a release build uses the keychain.
   public var protectedFiles: URL { root.appendingPathComponent("Protected", isDirectory: true) }
+  public var personActivity: URL { root.appendingPathComponent("person-activity.jsonl", isDirectory: false) }
   public var activity: URL { root.appendingPathComponent("activity.jsonl", isDirectory: false) }
   public var application: URL { root.appendingPathComponent(BrokerIdentity.appName, isDirectory: true) }
   public var executable: URL {

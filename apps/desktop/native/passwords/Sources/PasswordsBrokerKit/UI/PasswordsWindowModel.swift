@@ -45,8 +45,9 @@ public final class PasswordsWindowModel: ObservableObject {
 
   @Published public private(set) var screen: Screen = .setUp
   @Published public private(set) var agentSignIns = false
+  @Published public private(set) var personFill = false
   /// Newest first.
-  @Published public private(set) var activity: [ActivityEntry] = []
+  @Published public private(set) var activity: [RecentSignIn] = []
   @Published public private(set) var logins: Logins = .hidden
   @Published public private(set) var cards: [Wire.CardChoice] = []
   @Published public var search = ""
@@ -109,12 +110,14 @@ public final class PasswordsWindowModel: ObservableObject {
     if screen == .addPasswords && next == .ready { filled = true }
     if next != screen { screen = next }
     agentSignIns = broker.agentSignInsSetting
+    personFill = broker.personFillSetting
     Task { await loadActivity() }
   }
 
   func loadActivity() async {
     let entries = await activityLog.entries()
-    activity = Array(entries.reversed().prefix(20))
+    let people = await broker.personActivity.entries()
+    activity = Array(RecentSignIn.merge(entries, people).prefix(20))
   }
 
   /// The broker ended the visit: nothing it showed stays, and the forms
@@ -163,6 +166,13 @@ public final class PasswordsWindowModel: ObservableObject {
       message = Copy.couldNotSave
     }
     agentSignIns = broker.agentSignInsSetting
+    personFill = broker.personFillSetting
+  }
+
+  public func setPersonFill(_ on: Bool) async {
+    do { try await broker.setPersonFill(on) }
+    catch { message = Copy.couldNotSave }
+    personFill = broker.personFillSetting
   }
 
   public func startFresh() async {

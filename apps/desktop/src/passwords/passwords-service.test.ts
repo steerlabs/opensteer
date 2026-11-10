@@ -114,6 +114,204 @@ describe("PasswordsService off the platforms the broker runs on", () => {
 
 // Unix sockets, the lifecycle lock and peer credentials: the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsService end to end", () => {
+  it("keeps each legacy protocol on its own connection beneath a v8 service", async () => {
+    const harness = await serviceHarness("multiple compatibility protocols", {
+      clientProtocolVersion: 8,
+    });
+    harness.broker.reply("card.probe", () => ({ cards: "has-card" }));
+    const login = harness.service.broker(6);
+    const card = harness.service.broker(7);
+    const legacy = harness.service.broker(4);
+    await expect(login.probe({ site: "https://example.com" })).resolves.toEqual({
+      passwords: "has-login",
+    });
+    await expect(card.cardProbe()).resolves.toEqual({ cards: "has-card" });
+    await expect(legacy.probe({ site: "https://example.com" })).resolves.toEqual({
+      passwords: "has-login",
+    });
+    expect([login.protocolVersion, card.protocolVersion, legacy.protocolVersion]).toEqual([
+      6, 7, 4,
+    ]);
+    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual(
+      [6, 7, 4].map((protocolVersion) => ({ client: { version: "9.9.9" }, protocolVersion })),
+    );
+    await harness.service.stop();
+    await expect(card.probe({ site: "https://example.com" })).resolves.toEqual({
+      passwords: "unavailable",
+    });
+    await expect(
+      harness.service.broker(5).request(requestParams, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "stopped" });
+    expect(harness.broker.received("hello")).toHaveLength(3);
+  });
+
+  it("exposes person calls at v8 and keeps person and agent lifetimes separate", async () => {
+    const harness = await serviceHarness("person lifetime separation", {
+      clientProtocolVersion: 8,
+      status: { agentSignIns: "on", personFill: "on", vault: "ready" },
+    });
+    const session = harness.service.broker();
+    const signal = new AbortController().signal;
+    const account = {
+      id: credential.login.id,
+      revision: 3,
+      username: "person@example.com",
+      label: null,
+      hasCode: true,
+    };
+    harness.broker.reply("fill.accounts", () => ({ fill: "on", accounts: [account] }));
+    harness.broker.reply("fill.begin", () => ({
+      decision: "authorized",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    }));
+    harness.broker.reply("signin.request", () => credential);
+    harness.broker.reply("signin.release", () => ({ released: true, value: syntheticPassword }));
+    await expect(session.fillAccounts?.({ origin: "https://example.com" })).resolves.toEqual({
+      fill: "on",
+      accounts: [account],
+    });
+    expect(session.protocolVersion).toBe(8);
+    const person = await session.fillBegin!(
+      {
+        transactionId,
+        loginId: account.id,
+        revision: 3,
+        origin: "https://example.com",
+        presence: "elsewhere",
+      },
+      signal,
+    );
+    const { runtimeId: _runtime, sessionId: _session, ...request } = requestParams;
+    const agent = await session.request(
+      { ...request, protocolVersion: 6, permissionVersion: 5, transactionId: randomUUID() },
+      signal,
+    );
+    harness.broker.setStatus({ agentSignIns: "off", personFill: "on", vault: "ready" });
+    await vi.waitFor(() => expect(agent.lifetime.aborted).toBe(true));
+    expect(person.lifetime.aborted).toBe(false);
+    expect(harness.statuses.at(-1)).toMatchObject({ broker: { personFill: "on" } });
+    await expect(
+      session.release({
+        transactionId,
+        field: "password",
+        kind: "browser",
+        origin: "https://example.com",
+      }),
+    ).resolves.toEqual({ released: true, value: syntheticPassword });
+    await expect(
+      session.release({ transactionId, field: "password", kind: "app" }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    await expect(
+      session.approve(
+        { transactionId, loginId: account.id, revision: 3, permissionVersion: 5, remember: true },
+        signal,
+      ),
+    ).rejects.toMatchObject({ code: "invalid" });
+    await expect(session.commit(transactionId, signal)).rejects.toMatchObject({ code: "invalid" });
+    await expect(
+      session.cardRelease({
+        transactionId,
+        field: "number",
+        topOrigin: "https://example.com",
+        frameOrigin: "https://example.com",
+      }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    expect(harness.broker.received("signin.approve")).toEqual([]);
+    expect(harness.broker.received("signin.commit")).toEqual([]);
+    harness.broker.setStatus({ agentSignIns: "on", personFill: "on", vault: "ready" });
+    await vi.waitFor(() =>
+      expect(harness.statuses.at(-1)).toMatchObject({ broker: { agentSignIns: "on" } }),
+    );
+    const nextAgent = await session.request(
+      { ...request, protocolVersion: 6, permissionVersion: 5, transactionId: randomUUID() },
+      signal,
+    );
+    harness.broker.setStatus({ agentSignIns: "on", personFill: "off", vault: "ready" });
+    await vi.waitFor(() => expect(person.lifetime.aborted).toBe(true));
+    expect(nextAgent.lifetime.aborted).toBe(false);
+    harness.broker.setStatus({ agentSignIns: "off", personFill: "off", vault: "needs-reset" });
+    await vi.waitFor(() => expect(nextAgent.lifetime.aborted).toBe(true));
+    await session.cancel(transactionId);
+    expect(harness.broker.received("signin.cancel")[0]?.params).toEqual({ transactionId });
+    expect(harness.broker.received("hello")).toHaveLength(1);
+  });
+
+  it("ends person lifetimes when the vault becomes unsupported or its connection closes", async () => {
+    const harness = await serviceHarness("person vault and connection", {
+      clientProtocolVersion: 8,
+      status: { agentSignIns: "on", personFill: "on", vault: "ready" },
+    });
+    const session = harness.service.broker();
+    harness.broker.reply("fill.begin", () => ({
+      decision: "authorized",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    }));
+    const start = async () =>
+      await session.fillBegin!(
+        {
+          transactionId: randomUUID(),
+          loginId: credential.login.id,
+          revision: 3,
+          origin: "https://example.com",
+          presence: "elsewhere",
+        },
+        new AbortController().signal,
+      );
+    const first = await start();
+    harness.broker.setStatus({ agentSignIns: "off", personFill: "off", vault: "unsupported" });
+    await vi.waitFor(() => expect(first.lifetime.aborted).toBe(true));
+    harness.broker.setStatus({ agentSignIns: "on", personFill: "on", vault: "ready" });
+    await vi.waitFor(() =>
+      expect(harness.statuses.at(-1)).toMatchObject({ availability: "available" }),
+    );
+    const second = await start();
+    harness.broker.dropConnections();
+    await vi.waitFor(() => expect(second.lifetime.aborted).toBe(true));
+    expect(harness.broker.received("signin.release")).toEqual([]);
+  });
+
+  it("omits person calls after v8 falls back to a fresh v7 connection", async () => {
+    const harness = await serviceHarness("person compatibility", {
+      clientProtocolVersion: 8,
+      protocolVersion: 7,
+    });
+    const session = harness.service.broker();
+    await harness.service.status();
+    expect(session.protocolVersion).toBe(7);
+    expect(session.fillAccounts).toBeUndefined();
+    expect(session.fillBegin).toBeUndefined();
+    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual([
+      { client: { version: "9.9.9" }, protocolVersion: 8 },
+      { client: { version: "9.9.9" }, protocolVersion: 7 },
+    ]);
+    expect(harness.broker.received("status")).toHaveLength(1);
+  });
+
+  it("withdraws an in-flight person begin when its own setting turns off", async () => {
+    const harness = await serviceHarness("person pending toggle", {
+      clientProtocolVersion: 8,
+      status: { agentSignIns: "off", personFill: "on", vault: "ready" },
+    });
+    const session = harness.service.broker();
+    await harness.service.status();
+    const waiting = session.fillBegin!(
+      {
+        transactionId,
+        loginId: credential.login.id,
+        revision: 3,
+        origin: "https://example.com",
+        presence: "here",
+      },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    await harness.broker.waitFor("fill.begin");
+    harness.broker.setStatus({ agentSignIns: "off", personFill: "off", vault: "ready" });
+    await expect(waiting).resolves.toMatchObject({ code: "aborted" });
+    await harness.broker.waitFor("signin.cancel");
+    expect(harness.broker.received("signin.cancel")[0]?.params).toEqual({ transactionId });
+    expect(harness.broker.received("signin.release")).toEqual([]);
+  });
+
   it("binds card transactions to their kind and original v7 connection", async () => {
     const harness = await serviceHarness("card connection", { clientProtocolVersion: 7 });
     const broker = harness.service.broker();
@@ -626,7 +824,7 @@ async function serviceHarness(
     readonly bundled?: boolean;
     readonly development?: boolean;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5 | 6 | 7;
+    readonly clientProtocolVersion?: 4 | 5 | 6 | 7 | 8;
     readonly status?: PasswordsBrokerStatus;
   } = {},
 ) {
