@@ -2,6 +2,7 @@ import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { describe, expect, it } from "vitest";
 import { ContentPartSchema, contentSaysSomething, createId } from "@opensteer/core";
 import {
+  browserSessionTabsMax,
   BrowserTabCatalogSchema,
   BrowserTabIconResultSchema,
   TargetedBrowserClientMessageSchema,
@@ -26,7 +27,11 @@ describe("place wire contracts", () => {
     expect(BrowserTabCatalogSchema.safeParse({ ...catalog, tabs: [] }).success).toBe(true);
     for (const tabs of [
       [tab, tab],
-      Array.from({ length: 65 }, (_, index) => ({ ...tab, id: `tab-${index}`, order: index })),
+      Array.from({ length: browserSessionTabsMax + 1 }, (_, index) => ({
+        ...tab,
+        id: `tab-${index}`,
+        order: index,
+      })),
       [{ ...tab, site: "https://example.com/private?q=secret" }],
       [{ ...tab, favicon: "bytes" }],
     ]) {
