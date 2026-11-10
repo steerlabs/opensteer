@@ -34,6 +34,14 @@ describe("native autofill scene", () => {
         prevent: ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(key),
       });
     const fresh = new AutofillKeys();
+    // Modified arrows and Return stay the page's, as the viewer's own rule says.
+    expect(
+      fresh.decide(
+        { type: "keyDown", key: "ArrowDown", code: "ArrowDown", shift: true },
+        true,
+        true,
+      ),
+    ).toEqual({ forward: true, prevent: false });
     expect(fresh.decide({ type: "keyDown", key: "Enter", code: "Enter" }, false, true)).toEqual({
       forward: false,
       prevent: false,

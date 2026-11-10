@@ -38,6 +38,7 @@ function setup(
     insideForm?: boolean;
     abilities?: EditingTargetAbilities;
     enabled?: boolean;
+    onKey?: (event: KeyboardEvent) => boolean;
   } = {},
 ) {
   const container = document.createElement(options.insideForm ? "form" : "div");
@@ -67,6 +68,7 @@ function setup(
           }
           enabled={next.enabled ?? options.enabled ?? true}
           label="Remote keyboard"
+          onKey={options.onKey}
           onLeave={leave}
           platform="mac"
           ref={(value) => {
@@ -332,6 +334,45 @@ describe("real shared proxy element", () => {
     composition(field, "compositionend", "한");
     expect(operations.filter((operation) => operation.kind === "edit")).toHaveLength(1);
   });
+  it("keeps a press the chooser took from the page, repeats included, until its release or a blur", () => {
+    let shown = true;
+    // The chooser takes Return once and closes, as choosing a login does.
+    const { element, operations } = setup({
+      onKey: (event) => {
+        if (!shown || event.key !== "Enter") return false;
+        shown = false;
+        return true;
+      },
+    });
+    const enter = (type: "keydown" | "keyup", repeat = false) =>
+      act(() => {
+        element().dispatchEvent(
+          new KeyboardEvent(type, {
+            key: "Enter",
+            code: "Enter",
+            repeat,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    enter("keydown");
+    enter("keydown", true);
+    enter("keyup");
+    expect(operations).toEqual([]);
+    shown = true;
+    enter("keydown");
+    act(() => {
+      element().dispatchEvent(new FocusEvent("blur"));
+    });
+    enter("keydown");
+    expect(
+      operations.map((operation) =>
+        operation.kind === "key" ? operation.keystroke.action : operation.kind,
+      ),
+    ).toEqual(["down"]);
+  });
+
   it("releases an admitted key when the viewer becomes disabled", () => {
     const { element, render, operations } = setup();
     act(() => {

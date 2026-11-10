@@ -1,4 +1,5 @@
 import type { PersonFillStatus } from "@opensteer/protocol";
+import { autofillKeeps, type AutofillKey } from "../editing/autofill-keys.js";
 import type { BrowserAutofillState, BrowserEditingTarget } from "./browser-editing.js";
 import { profileTint } from "./start-page-model.js";
 
@@ -32,25 +33,7 @@ export function autofillResultMessage(status: PersonFillStatus | null): string |
   }
 }
 
-export interface AutofillKey {
-  readonly key: string;
-  readonly alt: boolean;
-  readonly ctrl: boolean;
-  readonly meta: boolean;
-  readonly shift: boolean;
-}
-
-/** The keys a shown chooser keeps from the page: ↑, ↓ and Return on their own, and Esc. */
-export function autofillKeeps(key: AutofillKey): boolean {
-  if (key.key === "Escape") return true;
-  return (
-    !key.alt &&
-    !key.ctrl &&
-    !key.meta &&
-    !key.shift &&
-    (key.key === "ArrowUp" || key.key === "ArrowDown" || key.key === "Enter")
-  );
-}
+export { autofillKeeps, type AutofillKey } from "../editing/autofill-keys.js";
 
 /**
  * A key pressed while the chooser is shown: ↑ and ↓ move, Return fills and Esc

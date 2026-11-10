@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { autofillKeeps } from "@opensteer/client/editing";
 import {
   desktopAutofillPopupInset,
   type DesktopAutofillScene,
@@ -48,7 +49,15 @@ export class AutofillKeys {
   readonly #taken = new Set<string>();
 
   decide(
-    input: { type: string; key: string; code: string },
+    input: {
+      type: string;
+      key: string;
+      code: string;
+      alt?: boolean;
+      control?: boolean;
+      meta?: boolean;
+      shift?: boolean;
+    },
     shown: boolean,
     focused: boolean,
   ): { forward: boolean; prevent: boolean } {
@@ -56,7 +65,14 @@ export class AutofillKeys {
     const forward = shown && focused && input.type === "keyDown";
     const prevent =
       this.#taken.has(input.code) ||
-      (forward && ["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(input.key));
+      (forward &&
+        autofillKeeps({
+          key: input.key,
+          alt: input.alt === true,
+          ctrl: input.control === true,
+          meta: input.meta === true,
+          shift: input.shift === true,
+        }));
     if (prevent) this.#taken.add(input.code);
     return { forward, prevent };
   }

@@ -360,9 +360,12 @@ export function RemoteEditingProxy({
               }
               const composing =
                 event.isComposing || event.keyCode === 229 || event.key === "Process";
+              // A press the chooser kept stays its own until release, repeats
+              // included, even after the chooser has closed.
               if (
                 type === "keydown"
-                  ? !composing && current.current.onKey?.(event)
+                  ? (!composing && current.current.onKey?.(event)) ||
+                    keptKeys.current.has(event.code)
                   : keptKeys.current.delete(event.code)
               ) {
                 if (type === "keydown") keptKeys.current.add(event.code);
@@ -519,6 +522,8 @@ export function RemoteEditingProxy({
       [
         "blur",
         (event) => {
+          // Blur can swallow a kept key's release; forget it so its next press is the page's.
+          keptKeys.current.clear();
           if (current.current.cancelCompositionOnBlur)
             state.current = { ...state.current, composition: null, compositionTail: "discard" };
           feed({ type: "blur" }, event);
