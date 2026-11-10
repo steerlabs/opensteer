@@ -48,6 +48,7 @@ internal class ProfileManifest(read: () -> String?, private val write: (String) 
   }
 
   fun all() = entries.toList()
+  fun inventory(deploymentId: String, runnerId: String) = entries.filter { it.binding.deploymentId == deploymentId && it.binding.runnerId == runnerId && !it.guest }
   fun byHandle(handle: String) = entries.find { it.handle == handle } ?: throw BrowserFailure("profile-missing")
   fun find(binding: ProfileBinding): ProfileEntry? {
     val entry = entries.find { it.binding.bindingId == binding.bindingId } ?: return null

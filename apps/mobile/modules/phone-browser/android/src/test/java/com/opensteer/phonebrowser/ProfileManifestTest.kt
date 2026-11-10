@@ -4,6 +4,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ProfileManifestTest {
+  @Test fun repeatedEnrollmentInventoriesOnlyTheCurrentRunnerWithoutLosingOldErasure() {
+    var durable: String? = null
+    val manifest = ProfileManifest({ durable }, { durable = it })
+    val old = manifest.create(ProfileBinding("deployment", "old-runner", manifest.storageInstanceId, "old-profile", "old-binding"), false, false)
+    manifest.tombstone(old.handle, "old-deletion")
+    manifest.deleted(old.handle)
+    val current = manifest.create(ProfileBinding("deployment", "new-runner", manifest.storageInstanceId, "new-profile", "new-binding"), false, false)
+    manifest.tombstone(current.handle, "new-deletion")
+    val restarted = ProfileManifest({ durable }, { durable = it })
+    assertEquals(listOf(current.handle), restarted.inventory("deployment", "new-runner").map { it.handle })
+    assertEquals("new-deletion", restarted.inventory("deployment", "new-runner").single().deletionId)
+    assertFalse(restarted.inventory("deployment", "new-runner").single().deleted)
+    assertTrue(restarted.byHandle(old.handle).deleted)
+    restarted.deleted(current.handle)
+    assertTrue(restarted.inventory("deployment", "new-runner").single().deleted)
+    assertTrue(restarted.inventory("another-deployment", "new-runner").isEmpty())
+  }
+
   @Test fun guestTombstonePrecedesInitializationAndSurvivesRestart() {
     var durable: String? = null
     val manifest = ProfileManifest({ durable }, { durable = it })

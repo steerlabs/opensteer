@@ -18,7 +18,7 @@ import java.util.concurrent.ScheduledFuture
 interface PhoneBrowserEndpoint {
     fun qualification(deploymentId: String, runnerId: String): JsonObject
     fun fence(epoch: Int)
-    fun eraseDeployment(deploymentId: String, epoch: Int): CompletableFuture<JsonArray>
+    fun eraseDeployment(deploymentId: String, runnerId: String, epoch: Int): CompletableFuture<JsonArray>
 }
 
 class PhoneConnectionRuntime private constructor(context: Context) {
@@ -201,7 +201,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         erase = { deploymentId ->
             val browser = synchronized(this) { endpoint ?: throw Refused("erasure-pending") }
             val epoch = synchronized(this) { admission.epoch }
-            browser.eraseDeployment(deploymentId, epoch).thenApply { remaining ->
+            browser.eraseDeployment(deploymentId, current.text("runnerId"), epoch).thenApply { remaining ->
                 Wire.requireThat(remaining.size <= 128, "erasure-unavailable")
                 remaining.all {
                     val profile = it as? JsonObject ?: throw Refused("erasure-unavailable")
