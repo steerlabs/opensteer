@@ -34,6 +34,27 @@ export const projectAuthorityCutoverMigration: Migration = {
         add constraint ${sql.id(`${table}_created_by_principal_id_fkey`)} foreign key (created_by_principal_id) references public.principals(id) on delete restrict not valid
       `.execute(database);
     }
+
+    for (const table of ["thread_inputs", "runs"]) {
+      await sql`alter table ${sql.id("public", table)}
+        alter column requested_by drop not null,
+        alter column membership_generation drop not null,
+        add constraint ${sql.id(`${table}_human_root_shape`)} check (
+          (requested_by is not null and membership_generation is not null and initiator_generation is null and origin_connection_id is null)
+          or (requested_by is not null and membership_generation is not null and initiator_generation is not null)
+          or (requested_by is null and membership_generation is null and initiator_generation is null and origin_connection_id is null)
+        ) not valid
+      `.execute(database);
+    }
+    await sql`alter table public.commands alter column requested_by drop not null,
+      add constraint commands_human_root_shape check (
+        (requested_by is not null and membership_generation is null and initiator_generation is null and origin_connection_id is null)
+        or (requested_by is not null and membership_generation is not null and initiator_generation is not null)
+        or (requested_by is null and membership_generation is null and initiator_generation is null and origin_connection_id is null)
+      ) not valid;
+      create unique index thread_inputs_unattended_idempotency on public.thread_inputs(thread_id, actor_principal_id, idempotency_key) where requested_by is null;
+      create unique index commands_unattended_idempotency on public.commands(actor_principal_id, idempotency_key) where requested_by is null;
+    `.execute(database);
     await sql.raw(PROJECT_AUTHORITY_GUARDS_SQL).execute(database);
   },
 };
