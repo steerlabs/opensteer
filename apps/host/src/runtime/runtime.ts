@@ -118,6 +118,8 @@ import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { ProductToolHandlers } from "../mcp/handlers/product.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { agentToolHandlers } from "../mcp/handlers/index.js";
+import type { KnowledgeManager } from "../knowledge/knowledge-manager.js";
+import { knowledgeForCaller } from "../knowledge/knowledge-eligibility.js";
 import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
@@ -458,6 +460,7 @@ export async function createHostRuntime(
   let threadStateStopped = false;
   let unsubscribePlaceMembership: (() => void) | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
+  let knowledge: KnowledgeManager | undefined;
   try {
     authorityLease = await acquireDeploymentAuthorityLease(database);
     await migrateToLatest(database).catch((error: unknown) => {
@@ -495,6 +498,10 @@ export async function createHostRuntime(
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: config.workspace.shape,
     });
+    if (config.knowledge === true) {
+      const { startKnowledgeManager } = await import("../knowledge/knowledge-manager.js");
+      knowledge = await startKnowledgeManager({ database, databaseUrl: config.databaseUrl });
+    }
     const connections = new ConnectionOAuth({
       deploymentId: deployment.id,
       store: new AgentConnectionStore(database),
@@ -2073,6 +2080,7 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
+      knowledge,
       workspaceSkillPolicy: (workspaceId, ownerUserId) =>
         integrationPlatformStore.settings.workspaceSkillPolicy(workspaceId, ownerUserId),
       pluginVersions: async (workspaceId, ownerUserId) =>
@@ -2449,6 +2457,17 @@ export async function createHostRuntime(
       publicUrl: config.runtimeOrigin,
       realtime,
       onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
+      ...(knowledge
+        ? {
+            knowledgeFor: knowledgeForCaller({
+              owner: () => knowledge!.owner(),
+              agents: (runnerId, bootId) => {
+                const identity = runnerRegistry?.identityForRunner(runnerId);
+                return identity?.bootId === bootId ? identity.modules.agents : null;
+              },
+            }),
+          }
+        : {}),
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,
@@ -2463,6 +2482,7 @@ export async function createHostRuntime(
         product: productHandlers,
         integrations: integrationTools,
         triggers: new TriggerToolHandlers(triggers),
+        knowledge,
         pluginInstall: async (scope, directory) => {
           const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
           if (!admission) throw new Error("Workspace is unavailable");
@@ -2507,6 +2527,7 @@ export async function createHostRuntime(
       {
         connections,
         passkeys: config.passkeys === true,
+        knowledge: knowledge !== undefined,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
           ? {
@@ -2884,6 +2905,7 @@ export async function createHostRuntime(
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
         await step("agent tools", () => agentTools.close());
+        await step("knowledge", () => knowledge?.close());
         await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
         unsubscribePlaceMembership?.();
@@ -2924,6 +2946,7 @@ export async function createHostRuntime(
     await threadStateLoop?.close();
     await threadStateDrain?.catch(() => undefined);
     await pluginChangeNotices?.close();
+    await knowledge?.close();
     await authorityLease?.close();
     await database.destroy();
     throw error;

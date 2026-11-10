@@ -18,8 +18,9 @@ export async function measureMcpContext(kind: AgentCallerKind) {
     handlers: unavailable as never,
     callers: unavailable as never,
     store: unavailable as never,
+    knowledgeFor: async (caller) => caller.kind === "run",
   });
-  const server = service.createServer({
+  const server = await service.createServer({
     kind,
     key: "context-budget",
     accessMode: "full-access",

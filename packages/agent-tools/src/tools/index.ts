@@ -31,6 +31,7 @@ import {
 import { machine_full_disk_access_request } from "./computer.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 import { integrationTools } from "./integrations.js";
+import { sql } from "./knowledge.js";
 export const agentTools = [
   ...administrationTools,
   app_publish,
@@ -68,6 +69,7 @@ export const agentTools = [
   trigger_read,
   trigger_write,
   ...integrationTools,
+  sql,
 ] as const;
 export type AgentTool = (typeof agentTools)[number];
 export type AgentToolName = AgentTool["name"];
@@ -92,5 +94,6 @@ export * from "./requests.js";
 export * from "./threads.js";
 export * from "./triggers.js";
 export * from "./integrations.js";
+export * from "./knowledge.js";
 
 export * from "./administration.js";

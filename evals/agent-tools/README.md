@@ -39,7 +39,7 @@ fixture label and selects no tools or authority.
   a rename.
 - Mocks are keyed by bare tool name. `{"$responses": [...]}` answers successive calls,
   `{"$byArgs": [{"args": partial, "result": response}]}` answers the first partial match, and
-  `{"$error": "message"}` returns an MCP tool error. An exhausted or unmatched mock returns an
+  `{"$error": "message"}` returns an MCP tool error, recorded as that call's result. An exhausted or unmatched mock returns an
   explicit unavailable result. Calls reach a mock only after the production MCP service's
   input and access checks, so semantic errors stay errors even when the flat schema accepts
   the arguments.

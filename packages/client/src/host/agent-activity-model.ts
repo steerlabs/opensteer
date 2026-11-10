@@ -2303,6 +2303,13 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
   ["trigger_read", said(["Looking up automations", "Looked up automations"], "list")],
   [
+    "sql",
+    (tool, args) =>
+      (stringField(args, "mode") === "write"
+        ? said(["Saving facts", "Saved facts"], "pencil")
+        : said(["Looking up facts", "Looked up facts"], "list"))(tool, args),
+  ],
+  [
     "trigger_write",
     saidByAction(
       automationActions,

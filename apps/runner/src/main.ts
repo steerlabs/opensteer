@@ -380,6 +380,8 @@ async function startAgentsRunner(input: {
   return {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
+      // What this build can serve, whether or not a Host has the trial on; a bundle without it starts anyway.
+      ...(agentSkills.paths["opensteer:knowledge"] ? { knowledgeSkill: true as const } : {}),
       ...(localWorkspace
         ? {
             localWorkspaces: {

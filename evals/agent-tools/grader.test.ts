@@ -199,6 +199,41 @@ it("checks the first tool attempt's string argument, not a later repair", () => 
     expect(grade(e, calls, "").every((c) => c.pass)).toBe(false);
 });
 
+it("passes an uncertain knowledge write only after the write, its error and a recovery read", async () => {
+  const cases = parseCases(
+    await readFile(new URL("./cases/knowledge.ndjson", import.meta.url), "utf8"),
+  );
+  const e = cases.find((c) => c.id === "knowledge-uncertain-write")!.expect;
+  const uncertain = {
+    $error:
+      "The write may have committed. Read facts to check whether it was saved before writing again; never repeat the INSERT blindly.",
+  };
+  const discover = { tool: "sql", args: {}, valid: true, result: {} };
+  const insert = {
+    tool: "sql",
+    args: {
+      query:
+        "INSERT INTO facts (topic, thing, property, value) VALUES ($1, 'customer/12', 'status', '\"churned\"')",
+      mode: "write",
+    },
+    valid: true,
+    result: uncertain,
+  };
+  const read = (result: unknown = { rows: [["58", "churned"]] }) => ({
+    tool: "sql",
+    args: { query: "SELECT id, text FROM facts WHERE thing = 'customer/12'" },
+    valid: true,
+    result,
+  });
+  const pass = (calls: Parameters<typeof grade>[1]) =>
+    grade(e, calls, "Saved: customer/12 is churned.").every((c) => c.pass);
+  expect(pass([discover, insert, read()])).toBe(true);
+  expect(pass([discover, read(uncertain), read()])).toBe(false);
+  expect(pass([discover, read(), read()])).toBe(false);
+  expect(pass([discover, read(), insert])).toBe(false);
+  expect(pass([discover, insert, read(), { ...insert, result: {} }])).toBe(false);
+});
+
 it("requires a resumed computer call to bind a fresh window or phone before acting", async () => {
   const cases = parseCases(
     await readFile(new URL("./cases/browser.ndjson", import.meta.url), "utf8"),
