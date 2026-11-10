@@ -1,6 +1,6 @@
 import { GlassView, isGlassEffectAPIAvailable, isLiquidGlassAvailable } from "expo-glass-effect";
 import type { ReactNode } from "react";
-import { StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
+import { StyleSheet, View, type StyleProp, type ViewProps, type ViewStyle } from "react-native";
 import { material, radius } from "../theme.js";
 
 /**
@@ -25,6 +25,7 @@ export function GlassSurface(props: {
   readonly children: ReactNode;
   /** Glass that deforms under a touch. Only for chrome a finger acts on. */
   readonly interactive?: boolean;
+  readonly onLayout?: ViewProps["onLayout"];
   readonly radius?: number;
   readonly shape?: GlassShape;
   readonly style?: StyleProp<ViewStyle>;
@@ -46,6 +47,7 @@ export function GlassSurface(props: {
         // `clear` is for glass over imagery the person is meant to keep seeing.
         glassEffectStyle="regular"
         isInteractive={props.interactive ?? false}
+        onLayout={props.onLayout}
         style={[{ borderRadius: corner }, props.style]}
         {...(props.tint === undefined ? {} : { tintColor: props.tint })}
       >
@@ -56,6 +58,7 @@ export function GlassSurface(props: {
 
   return (
     <View
+      onLayout={props.onLayout}
       style={[
         styles.fallback,
         { borderRadius: corner },

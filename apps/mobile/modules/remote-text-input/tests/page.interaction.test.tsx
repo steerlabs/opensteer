@@ -14,6 +14,7 @@ const harness = vi.hoisted(() => ({
     finishCompositionRequest?: number;
   },
   contexts: [] as unknown[],
+  flattenViews: false,
   legacy: null as null | {
     value: string;
     onKeyPress(event: { nativeEvent: { key: string } }): void;
@@ -24,7 +25,28 @@ const harness = vi.hoisted(() => ({
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
   StyleSheet: { create: (v: unknown) => v, hairlineWidth: 1 },
-  View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  View: ({
+    children,
+    collapsable,
+    testID,
+    pointerEvents,
+    style,
+  }: {
+    children?: ReactNode;
+    collapsable?: boolean;
+    testID?: string;
+    pointerEvents?: string;
+    style?: { overflow?: string };
+  }) => {
+    // Model the native parent changes Fabric makes for layout-only views.
+    const native =
+      !harness.flattenViews ||
+      collapsable === false ||
+      testID !== undefined ||
+      pointerEvents === "none" ||
+      style?.overflow === "hidden";
+    return native ? <div>{children}</div> : <>{children}</>;
+  },
   TextInput: (props: NonNullable<typeof harness.legacy>) => {
     harness.legacy = props;
     return <input aria-label="Type into the page" value={props.value} readOnly />;
@@ -75,10 +97,17 @@ vi.mock("../../../src/browser/browser-stream.js", () => ({
 vi.mock("../../../src/browser/chrome-sign-in-action.js", () => ({
   ChromeSignInAction: () => null,
 }));
-vi.mock(
-  "../../../src/browser/toolbar.js",
-  async () => (await import("../../../test-support/native-chrome.js")).toolbar,
-);
+vi.mock("../../../src/browser/toolbar.js", async () => {
+  const { View } = await import("react-native");
+  return {
+    ...(await import("../../../test-support/native-chrome.js")).toolbar,
+    Toolbar: ({ children, testID }: { children?: ReactNode; testID?: string }) => (
+      <View collapsable={false} testID={testID}>
+        {children}
+      </View>
+    ),
+  };
+});
 vi.mock(
   "../../../src/ui/glass.js",
   async () => (await import("../../../test-support/native-chrome.js")).glass,
@@ -429,3 +458,39 @@ it.each([
     }
   },
 );
+
+it("keeps the native responder mounted when the page opens and closes its keyboard", async () => {
+  harness.flattenViews = true;
+  const done = vi.fn();
+  const context = {
+    contextId: "00000000-0000-4000-8000-000000000001",
+    field: { kind: "text", multiline: false, sensitive: false },
+    caret: null,
+  } as const;
+  const render = async (softKeyboard: boolean) =>
+    act(async () => {
+      root.render(
+        <PageTyping
+          focused
+          softKeyboard={softKeyboard}
+          context={context}
+          onDone={done}
+          sendOperation={() => true}
+        />,
+      );
+    });
+  try {
+    await render(false);
+    const input = container.querySelector("[data-native-proxy]");
+    expect(input).not.toBeNull();
+    for (const open of [true, false, true]) {
+      await render(open);
+      expect(container.querySelector("[data-native-proxy]")).toBe(input);
+    }
+    await act(async () => harness.proxy?.onEvent({ type: "blur" }));
+    expect(done).toHaveBeenCalledOnce();
+  } finally {
+    await act(async () => root.render(null));
+    harness.flattenViews = false;
+  }
+});
