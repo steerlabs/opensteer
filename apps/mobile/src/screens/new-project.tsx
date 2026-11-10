@@ -3,6 +3,7 @@ import {
   mutationIdempotencyKey,
   sameStableHostSnapshot,
   teamErrorText,
+  teamReasonText,
   type HostClient,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useTeam } from "@opensteer/client/react";
@@ -130,6 +131,20 @@ function NewProjectForm(props: {
       });
   };
 
+  if (snapshot.teamAdministrationAvailable && summary && !summary.can.createProject.allowed)
+    return (
+      <Sheet onClose={() => navigation.goBack()}>
+        <Notice
+          detail={
+            summary.can.createProject.reason
+              ? teamReasonText(summary.can.createProject.reason, summary.team.name)
+              : `${summary.team.name} doesn’t let you create a project.`
+          }
+          title="A project can’t be created here"
+          tone="neutral"
+        />
+      </Sheet>
+    );
   return (
     <Sheet onClose={() => navigation.goBack()}>
       <AppText role="secondary" tone="muted">

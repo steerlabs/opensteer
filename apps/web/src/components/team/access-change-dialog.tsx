@@ -42,7 +42,6 @@ export function AccessChangeDialog({
   children,
   confirm,
   danger = false,
-  names,
   onClose,
   onDone,
   onStale,
@@ -55,7 +54,6 @@ export function AccessChangeDialog({
   readonly children?: ReactNode;
   readonly confirm: string;
   readonly danger?: boolean;
-  readonly names?: ReadonlyMap<string, string>;
   readonly onClose: () => void;
   readonly onDone?: () => void;
   readonly onStale: () => void;
@@ -71,7 +69,7 @@ export function AccessChangeDialog({
   return (
     <Dialog labelledBy="team-access-change" onClose={() => !pending && onClose()} title={title}>
       {children}
-      <AccessPreviewPanel names={names} preview={previewError ? null : preview} team={teamName} />
+      <AccessPreviewPanel preview={previewError ? null : preview} team={teamName} />
       <TeamError
         error={shown}
         onRetry={

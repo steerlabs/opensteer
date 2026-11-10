@@ -101,6 +101,9 @@ export function WhoCanSeeChip({
               <li key={person.id}>
                 <Icon name="user" />
                 <span>{person.name}</span>
+                {person.kind === "guest" ? (
+                  <span className="chip team-who__chip">Guest</span>
+                ) : null}
                 {access.managerNames.some((manager) => manager.id === person.id) ? (
                   <span className="team-who__meta">Can manage</span>
                 ) : null}
@@ -255,11 +258,6 @@ export function ProjectAccessSection({
       </TeamSection>
     );
   const entries = [...(view.entries?.items ?? []), ...more];
-  const names = new Map(
-    entries.flatMap((entry) =>
-      entry.subject.kind === "person" ? [[entry.subject.userId, entry.subject.name] as const] : [],
-    ),
-  );
   const { project, audience } = view;
   return (
     <TeamSection
@@ -331,7 +329,6 @@ export function ProjectAccessSection({
         <ChangeEntryDialog
           entry={editing.entry}
           level={editing.level}
-          names={names}
           onClose={() => setEditing(null)}
           onStale={access.reload}
           projectName={project.name}
@@ -387,14 +384,15 @@ function EntryRow({
         <span className="card__row-title">
           {subject.name}
           {mine ? <span className="chip">You</span> : null}
+          {subject.kind === "person" && subject.memberKind === "guest" ? (
+            <span className="chip">Guest</span>
+          ) : null}
           {subject.kind === "group" && subject.memberCount !== undefined ? (
             <span className="team-entry__count">{peopleCount(subject.memberCount)}</span>
           ) : null}
         </span>
         <span className="card__row-detail">
-          {mine && entry.grantedBy.id === viewerId
-            ? `Added yourself, ${formatDay(entry.grantedAt)}`
-            : `Added by ${entry.grantedBy.name}, ${formatDay(entry.grantedAt)}`}
+          {`Added by ${entry.grantedBy.name}, ${formatDay(entry.grantedAt)}`}
         </span>
       </span>
       <span className="card__row-actions team-entry__actions">
@@ -636,11 +634,7 @@ function AddPeopleDialog({
                 ? `They’ll read ${view.project.name}’s chat, tasks and files, work in it, and decide who else can.`
                 : `They’ll read ${view.project.name}’s chat, tasks and files, and start work in it.`}
             </p>
-            <AccessPreviewPanel
-              names={new Map()}
-              preview={previewError ? null : preview}
-              team={teamName}
-            />
+            <AccessPreviewPanel preview={previewError ? null : preview} team={teamName} />
           </>
         ) : null}
         <TeamError
@@ -709,7 +703,6 @@ function ResultRow({
 function ChangeEntryDialog({
   entry,
   level,
-  names,
   onClose,
   onStale,
   projectName,
@@ -719,7 +712,6 @@ function ChangeEntryDialog({
 }: {
   readonly entry: EntryView;
   readonly level: Level | null;
-  readonly names: ReadonlyMap<string, string>;
   readonly onClose: () => void;
   readonly onStale: () => void;
   readonly projectName: string;
@@ -737,7 +729,6 @@ function ChangeEntryDialog({
       changes={changes}
       confirm={level ? `Change to ${levelLabel(level)}` : "Remove"}
       danger={!level}
-      names={names}
       onClose={onClose}
       onStale={onStale}
       revision={revision}

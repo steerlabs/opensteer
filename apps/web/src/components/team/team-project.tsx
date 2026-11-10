@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { runtimeStateForUser, type ProjectAccessView } from "@opensteer/client/host";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -34,6 +35,9 @@ export function TeamProjectSections({ access }: { readonly access: ProjectAccess
           teamName={teamName}
         />
       ) : null}
+      {access.data && !access.data.can.manage.allowed ? (
+        <UseOnlyRuntime access={access.data} teamName={teamName} />
+      ) : null}
       <ProjectAccessSection
         access={access}
         appointing={appointing}
@@ -48,8 +52,36 @@ export function TeamProjectSections({ access }: { readonly access: ProjectAccess
 
 /** The marker on a shared Project's own page, read after the page paints. */
 export function TeamProjectHomeMarker({ workspaceId }: { readonly workspaceId: string }) {
+  const { identity } = useShellTeam();
+  return <HomeMarker key={identity ?? ""} workspaceId={workspaceId} />;
+}
+
+function HomeMarker({ workspaceId }: { readonly workspaceId: string }) {
   const access = useProjectAccess(workspaceId);
   return <TeamProjectMarker access={access} />;
+}
+
+/** Why tasks can't run, for someone who can use but not change the Project, and who can fix it. */
+function UseOnlyRuntime({
+  access,
+  teamName,
+}: {
+  readonly access: ProjectAccessView;
+  readonly teamName: string;
+}) {
+  const state = runtimeStateForUser(access.runtime, access.managerNames, teamName);
+  if (!state) return null;
+  return (
+    <div className="notice notice--warn team-banner" role="status">
+      <Icon name="alert-circle" />
+      <div>
+        <strong>{access.project.name} can’t run tasks right now.</strong>
+        <p>
+          {state.why} {state.fix}
+        </p>
+      </div>
+    </div>
+  );
 }
 
 export function TeamProjectMarker({ access }: { readonly access: ProjectAccessRead }) {

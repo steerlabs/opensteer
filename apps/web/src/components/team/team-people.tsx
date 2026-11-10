@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { Link, NavLink, useParams } from "react-router";
 import {
   createTeamInvitationDraft,
@@ -11,7 +11,6 @@ import {
   teamInvitationUrl,
   type MemberDetailView,
   type TeamAccess,
-  type TeamInvitationDraft,
 } from "@opensteer/client/host";
 import { useHostRead } from "@opensteer/client/react";
 import type { MemberChange, MemberKind, MemberState, MemberSummary } from "@opensteer/protocol";
@@ -209,7 +208,9 @@ export function TeamPeoplePage() {
           </button>
         ) : null}
       </div>
-      <SessionInvites team={team} teamName={teamName} />
+      {summary?.can.invite.allowed ? (
+        <Invitations onInvite={() => setInviting(true)} team={team} teamName={teamName} />
+      ) : null}
       {inviting && summary ? (
         <InviteDialog
           onClose={() => setInviting(false)}
@@ -222,97 +223,128 @@ export function TeamPeoplePage() {
   );
 }
 
-interface SessionInvite {
-  readonly draft: TeamInvitationDraft;
-  readonly email: string;
-  readonly kind: MemberKind;
-  readonly invitationId: string;
-  readonly expiresAt: string;
-  readonly url: string;
-  revoked: boolean;
-}
+const invitationState: Record<
+  "open" | "used" | "revoked" | "expired",
+  { readonly label: string; readonly chip: string }
+> = {
+  open: { label: "Open", chip: "chip chip--ok" },
+  used: { label: "Joined", chip: "chip" },
+  revoked: { label: "Revoked", chip: "chip chip--muted" },
+  expired: { label: "Expired", chip: "chip chip--warn" },
+};
 
-/**
- * Invites made in this tab, kept only in memory: the link's verifier exists
- * nowhere else, and a reload forgets it rather than storing a bearer secret.
- */
-const sessionInvites = (() => {
-  let items: readonly SessionInvite[] = [];
-  const listeners = new Set<() => void>();
-  return {
-    get: () => items,
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    set: (next: readonly SessionInvite[]) => {
-      items = next;
-      for (const listener of listeners) listener();
-    },
-  };
-})();
-
-function SessionInvites({
+function Invitations({
+  onInvite,
   team,
   teamName,
 }: {
+  readonly onInvite: () => void;
   readonly team: TeamAccess;
   readonly teamName: string;
 }) {
-  const invites = useSyncExternalStore(sessionInvites.subscribe, sessionInvites.get);
-  const { summary } = useShellTeam();
+  const { generation, links, forgetLink } = useShellTeam();
+  const read = useHostRead(() => team.invitations({ limit: 30 }), `team-invitations:${generation}`);
+  const [more, setMore] = useState<NonNullable<typeof read.data>["items"]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
-  if (!invites.length) return null;
+  useEffect(() => {
+    setMore([]);
+    setCursor(read.data?.nextCursor ?? null);
+  }, [read.data]);
+  const list = read.data;
+  const items = [...(list?.items ?? []), ...more];
   return (
     <TeamSection
-      hint="Links you made here. Each works once, for its email, until it expires. Reloading this page forgets the links; revoke one you lose and make a new one."
-      id="team-session-invites"
-      title="Invites you made"
+      hint="Open invitations, and those made, used or revoked in the last 30 days, from any device. A link can be copied only in the tab that made it; anywhere else, revoke it and invite again."
+      id="team-invitations"
+      title="Invitations"
     >
       <div className="card">
-        {invites.map((invite) => (
-          <div className="card__row" key={invite.invitationId}>
-            <span className="card__row-glyph">
-              <Icon name="paper-plane" />
-            </span>
-            <span className="card__row-body">
-              <span className="card__row-title">
-                {invite.email}
-                {invite.kind === "guest" ? <span className="chip">Guest</span> : null}
-                {invite.revoked ? <span className="chip chip--muted">Revoked</span> : null}
-              </span>
-              <span className="card__row-detail">
-                {invite.revoked
-                  ? "This link no longer works."
-                  : `Works until ${formatWhen(invite.expiresAt)}`}
-              </span>
-            </span>
-            {invite.revoked ? null : (
-              <span className="card__row-actions">
-                <CopyButton text={invite.url} />
-                <button
-                  className="btn btn--small btn--ghost"
-                  onClick={() => {
-                    setError(null);
-                    void team
-                      .revokeInvitation(summary?.accessRevision ?? 1, invite.invitationId)
-                      .then(() =>
-                        sessionInvites.set(
-                          sessionInvites
-                            .get()
-                            .map((item) => (item === invite ? { ...item, revoked: true } : item)),
-                        ),
-                      )
-                      .catch(setError);
-                  }}
-                  type="button"
-                >
-                  Revoke
-                </button>
-              </span>
-            )}
-          </div>
-        ))}
+        {!list ? (
+          read.error ? (
+            <div className="card__empty">
+              <TeamError error={read.error} onRetry={read.reload} team={teamName} />
+            </div>
+          ) : (
+            <LoadingRows label="Loading invitations" rows={2} />
+          )
+        ) : items.length === 0 ? (
+          <div className="card__empty">No invitations in the last 30 days.</div>
+        ) : (
+          items.map((invitation) => {
+            const state = invitationState[invitation.state];
+            const link = invitation.state === "open" ? links.get(invitation.id) : undefined;
+            return (
+              <div className="card__row team-invitation" key={invitation.id}>
+                <span className="card__row-glyph">
+                  <Icon name="paper-plane" />
+                </span>
+                <span className="card__row-body">
+                  <span className="card__row-title">
+                    {invitation.emailMasked}
+                    {invitation.memberKind === "guest" ? <span className="chip">Guest</span> : null}
+                    <span className={state.chip}>{state.label}</span>
+                  </span>
+                  <span className="card__row-detail">
+                    {`Made by ${invitation.createdBy.name}, ${formatDay(invitation.createdAt)} · `}
+                    {invitation.state === "open"
+                      ? link
+                        ? `works until ${formatWhen(invitation.expiresAt)}`
+                        : `works until ${formatWhen(invitation.expiresAt)}. Its link can’t be shown again here.`
+                      : invitation.state === "expired"
+                        ? `expired ${formatDay(invitation.expiresAt)}`
+                        : invitation.state === "revoked"
+                          ? "no longer works"
+                          : "used to join"}
+                  </span>
+                </span>
+                <span className="card__row-actions">
+                  {link ? <CopyButton text={link} /> : null}
+                  {invitation.can.revoke.allowed ? (
+                    <button
+                      className="btn btn--small btn--ghost"
+                      disabled={pending !== null}
+                      onClick={() => {
+                        setPending(invitation.id);
+                        setError(null);
+                        void team
+                          .revokeInvitation(list.accessRevision, invitation.id)
+                          .then(() => forgetLink(invitation.id))
+                          .catch(setError)
+                          .finally(() => setPending(null));
+                      }}
+                      type="button"
+                    >
+                      {pending === invitation.id ? "Revoking…" : "Revoke"}
+                    </button>
+                  ) : invitation.state === "revoked" || invitation.state === "expired" ? (
+                    <button className="btn btn--small btn--ghost" onClick={onInvite} type="button">
+                      Invite again
+                    </button>
+                  ) : null}
+                </span>
+              </div>
+            );
+          })
+        )}
+        {cursor ? (
+          <button
+            className="btn btn--ghost btn--small team-more"
+            onClick={() =>
+              void team
+                .invitations({ cursor, limit: 30 })
+                .then((page) => {
+                  setMore((current) => [...current, ...page.items]);
+                  setCursor(page.nextCursor);
+                })
+                .catch(setError)
+            }
+            type="button"
+          >
+            Show more
+          </button>
+        ) : null}
       </div>
       <TeamError error={error} team={teamName} />
     </TeamSection>
@@ -349,13 +381,18 @@ function InviteDialog({
   readonly teamName: string;
 }) {
   const { snapshot } = useShell();
+  const { holdLink } = useShellTeam();
   const [email, setEmail] = useState("");
   const [kind, setKind] = useState<MemberKind>("full");
   const [validFor, setValidFor] = useState<"1d" | "7d">("7d");
   const [draft] = useState(() => createTeamInvitationDraft());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [made, setMade] = useState<SessionInvite | null>(null);
+  const [made, setMade] = useState<{
+    readonly email: string;
+    readonly expiresAt: string;
+    readonly url: string;
+  } | null>(null);
   const origin = snapshot.identityConfig?.publicOrigin ?? window.location.origin;
   const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email.trim());
   if (made)
@@ -381,7 +418,7 @@ function InviteDialog({
         </div>
         <p className="settings-footnote">
           Anyone with the link can see it’s from {teamName}, but only {made.email} can join with it.
-          You can revoke it under Invites you made.
+          You can revoke it under Invitations, from any device.
         </p>
         <div className="form-actions">
           <button className="btn btn--primary" onClick={onClose} type="button">
@@ -407,17 +444,9 @@ function InviteDialog({
           void team
             .createInvitation(revision, draft, { email: intended, kind, validFor })
             .then((result) => {
-              const invite: SessionInvite = {
-                draft,
-                email: intended,
-                kind,
-                invitationId: result.invitationId,
-                expiresAt: result.expiresAt,
-                url: teamInvitationUrl(origin, draft),
-                revoked: false,
-              };
-              sessionInvites.set([invite, ...sessionInvites.get()]);
-              setMade(invite);
+              const url = teamInvitationUrl(origin, draft);
+              holdLink(result.invitationId, url);
+              setMade({ email: intended, expiresAt: result.expiresAt, url });
             })
             .catch(setError)
             .finally(() => setPending(false));

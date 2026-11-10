@@ -117,11 +117,8 @@ export interface AccessPreviewLine {
   readonly text: string;
 }
 
-export function accessPreviewLines(
-  preview: AccessPreview,
-  _names: ReadonlyMap<string, string> = new Map(),
-  team?: string,
-): AccessPreviewLine[] {
+/** What a previewed access change does, in words, from the Host's own names. */
+export function accessPreviewLines(preview: AccessPreview, team?: string): AccessPreviewLine[] {
   if (!preview.allowed)
     return [...new Set(preview.blockers.map(({ reason }) => teamReasonText(reason, team)))].map(
       (text) => ({ tone: "blocked", text }),
@@ -140,10 +137,9 @@ export function accessPreviewLines(
     };
   });
   for (const keep of preview.surviving) {
-    const name = keep.name;
     lines.push({
       tone: "keep",
-      text: `${name} keeps ${levelLabel(keep.level)} another way`,
+      text: `${keep.name} keeps ${levelLabel(keep.level)} another way`,
     });
   }
   if (preview.truncated) {
@@ -286,6 +282,38 @@ export function runtimeStateText(state: RuntimeState): string | null {
     case "runner-update-required":
       return "The team’s computer needs an update before it can run tasks.";
   }
+}
+
+/**
+ * Why a Project can't run tasks, for someone who can use but not change it,
+ * and who can fix it. Null when it runs.
+ */
+export function runtimeStateForUser(
+  state: RuntimeState,
+  managers: readonly { readonly name: string }[],
+  team = "the team",
+): { readonly why: string; readonly fix: string } | null {
+  if (state.state === "ready") return null;
+  const why = {
+    "not-configured": "It hasn’t been set up to run tasks yet.",
+    "computer-offline": `${team}’s computer is offline, so tasks wait until it’s back.`,
+    "engine-unavailable": `Its engine isn’t available on ${team}’s computer.`,
+    "model-unavailable": "The model it was set up with isn’t available any more.",
+    "runner-update-required": `${team}’s computer needs an update before it can run tasks.`,
+  }[state.reason];
+  const names = managers.map(({ name }) => name);
+  const fix =
+    state.reason === "computer-offline" || state.reason === "runner-update-required"
+      ? `An admin of ${team} can fix this.`
+      : names.length === 0
+        ? `It has no manager yet. Ask an admin of ${team} to appoint one.`
+        : `${listNames(names)} can fix this: they manage it.`;
+  return { why, fix };
+}
+
+function listNames(names: readonly string[]): string {
+  if (names.length <= 2) return names.join(" or ");
+  return `${names.slice(0, 2).join(", ")} or another manager`;
 }
 
 export interface AccessPath {

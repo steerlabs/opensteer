@@ -5,6 +5,7 @@ import {
   changeLevelChanges,
   levelLabel,
   peopleCount,
+  runtimeStateForUser,
   runtimeStateText,
   subjectRef,
   teamErrorText,
@@ -49,7 +50,13 @@ export function TeamMarker(props: {
     const lines = [
       ...audience.groups.map((group) => `${group.name} (group) · ${peopleCount(group.count)}`),
       ...audience.preview.map((person) =>
-        managers.has(person.id) ? `${person.name} · Can manage` : person.name,
+        [
+          person.name,
+          person.kind === "guest" ? "Guest" : null,
+          managers.has(person.id) ? "Can manage" : null,
+        ]
+          .filter(Boolean)
+          .join(" · "),
       ),
       ...(audience.people > audience.preview.length
         ? [`and ${peopleCount(audience.people - audience.preview.length)} more`]
@@ -107,11 +114,9 @@ export function TeamProjectSection(props: {
       </TeamSection>
     );
   const { project, audience } = view;
-  const names = new Map(
-    (view.entries?.items ?? []).flatMap((entry) =>
-      entry.subject.kind === "person" ? [[entry.subject.userId, entry.subject.name] as const] : [],
-    ),
-  );
+  const useOnly = view.can.manage.allowed
+    ? null
+    : runtimeStateForUser(view.runtime, view.managerNames, teamName);
   const add = (level: "use" | "manage") =>
     navigation.navigate("TeamAdd", { deploymentId, target: "project", id: project.id, level });
   const why = (entry: EntryView) => {
@@ -146,6 +151,12 @@ export function TeamProjectSection(props: {
           {view.can.appointManager.allowed ? (
             <SecondaryButton compact label="Appoint a manager" onPress={() => add("manage")} />
           ) : null}
+        </View>
+      ) : null}
+      {useOnly ? (
+        <View style={styles.banner}>
+          <AppText role="bodyMedium">{`${project.name} can’t run tasks right now.`}</AppText>
+          <AppText role="secondary" tone="soft">{`${useOnly.why} ${useOnly.fix}`}</AppText>
         </View>
       ) : null}
       {view.iAmAdminNotMember && view.can.selfGrant.allowed ? (
@@ -200,9 +211,7 @@ export function TeamProjectSection(props: {
                       <AppText numberOfLines={1} role="caption" tone="muted">
                         {entry.subject.kind === "group" && entry.subject.memberCount !== undefined
                           ? `Group · ${peopleCount(entry.subject.memberCount)}`
-                          : mine && entry.grantedBy.id === viewerId
-                            ? "Added yourself"
-                            : `Added by ${entry.grantedBy.name}`}
+                          : `${entry.subject.kind === "person" && entry.subject.memberKind === "guest" ? "Guest · " : ""}Added by ${entry.grantedBy.name}`}
                       </AppText>
                     </View>
                     <ChoiceMenu
@@ -226,7 +235,6 @@ export function TeamProjectSection(props: {
                                 : `Change ${entry.subject.name} to ${levelLabel(id === "manage" ? "manage" : "use")}?`,
                             confirm: id === "remove" ? "Remove" : "Change",
                             destructive: id === "remove",
-                            names,
                           });
                       }}
                     />

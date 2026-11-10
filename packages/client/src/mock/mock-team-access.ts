@@ -105,6 +105,8 @@ interface Invitation {
   readonly email: string;
   readonly kind: MemberKind;
   readonly expiresAt: string;
+  readonly createdBy: PersonRef;
+  readonly createdAt: string;
   revoked: boolean;
   accepted: boolean;
 }
@@ -171,6 +173,8 @@ export class MockTeamAccess {
   readonly #projects = new Map<WorkspaceId, Project>();
   readonly #invitations = new Map<string, Invitation>();
   #admitted = false;
+  /** The selector this browser proved, standing in for the Host's HttpOnly admission cookie. */
+  #proof: string | null = null;
 
   constructor(scenario: MockTeamScenario = "absent", now: () => Date = () => new Date()) {
     this.scenario = scenario;
@@ -396,9 +400,26 @@ export class MockTeamAccess {
       email: "nina@acme.example",
       kind: "full",
       expiresAt: new Date(Date.UTC(2026, 10, 16, 17)).toISOString(),
+      createdBy: { id: maya, name: "Maya Chen" },
+      createdAt: new Date(Date.UTC(2026, 10, 9, 10)).toISOString(),
       revoked: false,
       accepted: false,
     });
+    const settled = (suffix: string, email: string, state: "used" | "revoked", day: number) =>
+      this.#invitations.set(`mockTeamSettledInvitation00000000${suffix}`, {
+        id: `00000000-0000-4000-b000-00000000000${suffix}`,
+        selector: `mockTeamSettledInvitation00000000${suffix}`,
+        tokenHash: digest(`settled-${suffix}`),
+        email,
+        kind: state === "used" ? "guest" : "full",
+        expiresAt: new Date(Date.UTC(2026, 10, day + 7, 9)).toISOString(),
+        createdBy: { id: viewerId, name: "Alex Rivera" },
+        createdAt: new Date(Date.UTC(2026, 10, day, 9)).toISOString(),
+        revoked: state === "revoked",
+        accepted: state === "used",
+      });
+    settled("2", "jordan@partner.example", "used", 2);
+    settled("3", "omar@acme.example", "revoked", 5);
   }
 
   #syncEveryone() {
@@ -1098,6 +1119,8 @@ export class MockTeamAccess {
           email: command.intendedEmail,
           kind: command.memberKind,
           expiresAt,
+          createdBy: { id: viewerId, name: this.#viewer.name },
+          createdAt: this.#now().toISOString(),
           revoked: false,
           accepted: false,
         });
@@ -1196,27 +1219,29 @@ export class MockTeamAccess {
           this.#requireAdmin();
           return {
             ...page(
-              [...this.#invitations.values()].map((invitation) => ({
-                id: invitation.id,
-                emailMasked: `${invitation.email.slice(0, 1)}***${invitation.email.slice(invitation.email.indexOf("@"))}`,
-                memberKind: invitation.kind,
-                createdBy: { id: maya, name: this.#person(maya).name },
-                createdAt: new Date(Date.UTC(2026, 10, 9, 10)).toISOString(),
-                expiresAt: invitation.expiresAt,
-                state: invitation.revoked
-                  ? "revoked"
-                  : invitation.accepted
-                    ? "used"
-                    : new Date(invitation.expiresAt) <= this.#now()
-                      ? "expired"
-                      : "open",
-                can: {
-                  revoke:
-                    invitation.revoked || invitation.accepted
-                      ? denied("invite-unavailable")
-                      : allowed,
-                },
-              })),
+              [...this.#invitations.values()]
+                .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                .map((invitation) => ({
+                  id: invitation.id,
+                  emailMasked: `${invitation.email.slice(0, 1)}***${invitation.email.slice(invitation.email.indexOf("@"))}`,
+                  memberKind: invitation.kind,
+                  createdBy: invitation.createdBy,
+                  createdAt: invitation.createdAt,
+                  expiresAt: invitation.expiresAt,
+                  state: invitation.revoked
+                    ? "revoked"
+                    : invitation.accepted
+                      ? "used"
+                      : new Date(invitation.expiresAt) <= this.#now()
+                        ? "expired"
+                        : "open",
+                  can: {
+                    revoke:
+                      invitation.revoked || invitation.accepted
+                        ? denied("invite-unavailable")
+                        : allowed,
+                  },
+                })),
               input,
             ),
             accessRevision: this.#revision,
@@ -1417,12 +1442,13 @@ export class MockTeamAccess {
           const invitation = this.#invitations.get(input.selector);
           if (!invitation || invitation.tokenHash !== digest(input.verifier))
             return { preview: { state: "unavailable" as const } };
+          this.#proof = input.selector;
           return { preview: this.#invitePreview(input.selector) };
         })(),
       "team.invitation.accept": () =>
         run("team.invitation.accept", () => {
-          const invitation = [...this.#invitations.values()].find((i) => !i.revoked && !i.accepted);
-          if (!invitation || this.#admitted)
+          const invitation = this.#proof ? this.#invitations.get(this.#proof) : undefined;
+          if (!invitation || invitation.revoked || invitation.accepted || this.#admitted)
             throw refusal("conflict", "invite-unavailable", "This invite can't be used.");
           invitation.accepted = true;
           this.#admitted = true;

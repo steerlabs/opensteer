@@ -150,17 +150,15 @@ const toneIcon: Record<
 
 /** Who gains and loses what, and which paths survive, before anything is saved. */
 export function AccessPreviewPanel({
-  names,
   preview,
   team,
 }: {
-  readonly names?: ReadonlyMap<string, string> | undefined;
   readonly preview: AccessPreview | null;
   readonly team?: string;
 }) {
   if (!preview)
     return <p className="team-preview team-preview--loading">Checking who this changes…</p>;
-  const lines = accessPreviewLines(preview, names, team);
+  const lines = accessPreviewLines(preview, team);
   return (
     <div className={`team-preview${preview.allowed ? "" : " team-preview--blocked"}`} role="status">
       <p className="team-preview__headline">

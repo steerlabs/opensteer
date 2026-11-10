@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import {
   TeamAccess,
+  openTeamJoin,
   teamErrorText,
   teamInvitationVerifier,
   unwrapRpcResult,
   type HostClient,
-  type InvitePreviewView,
+  type TeamJoinState,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { BrandMark } from "../brand.js";
@@ -25,32 +26,35 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
   const navigate = useNavigate();
   const { snapshot } = useHostSnapshot(hostClient);
   const team = useMemo(() => new TeamAccess(hostClient), [hostClient]);
-  const [verifier] = useState(() => {
-    const value = teamInvitationVerifier(window.location.hash);
-    if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
-    return value;
-  });
-  const [preview, setPreview] = useState<InvitePreviewView | null>(null);
+  const [verifier] = useState(() => teamInvitationVerifier(window.location.hash));
+  const [state, setState] = useState<TeamJoinState | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
   const [mode, setMode] = useState<"create" | "sign-in">("create");
+  const opened = useRef(false);
+  const settled = snapshot.session !== "checking";
+  const authenticated = snapshot.session === "authenticated";
 
   useEffect(() => {
-    if (!selector || snapshot.session === "checking") return;
-    let alive = true;
-    (verifier
-      ? team.invitationExchange({ selector, verifier }).then(({ preview: next }) => next)
-      : team.invitationPreview(selector)
-    ).then(
-      (next) => alive && setPreview(next),
-      (next: unknown) => alive && setError(next),
-    );
-    return () => {
-      alive = false;
-    };
-    // The session settling is the only moment worth exchanging again.
+    if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
+  }, []);
+
+  const finish = async () => {
+    await hostClient.refresh();
+    await navigate("/", { replace: true });
+  };
+
+  // Opened once the session has settled. A return from sign-in is a new
+  // page: it has no verifier, and joins on the Host's proof alone.
+  useEffect(() => {
+    if (!selector || !settled || opened.current) return;
+    opened.current = true;
+    openTeamJoin(team, { selector, verifier, authenticated }).then((next) => {
+      setState(next);
+      if (next.kind === "joined") void finish();
+    }, setError);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selector, verifier, snapshot.session === "checking"]);
+  }, [selector, settled]);
 
   const accept = async (before?: () => Promise<void>) => {
     setPending(true);
@@ -58,8 +62,7 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
     try {
       await before?.();
       await team.invitationAccept();
-      await hostClient.refresh();
-      await navigate("/", { replace: true });
+      await finish();
     } catch (next) {
       setError(next);
     } finally {
@@ -67,17 +70,23 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
     }
   };
 
-  if (!preview)
+  if (!state || state.kind === "joined")
     return (
       <main className={error ? "splash" : "splash splash--quiet"}>
         <div className="splash__inner">
           <BrandMark large />
-          <p className="splash__detail">{error ? teamErrorText(error) : "Checking this invite…"}</p>
+          <p className="splash__detail">
+            {error
+              ? teamErrorText(error)
+              : state?.kind === "joined"
+                ? "Joining…"
+                : "Checking this invite…"}
+          </p>
         </div>
       </main>
     );
 
-  if (preview.state === "unavailable")
+  if (state.kind === "unavailable")
     return (
       <OnboardingCard
         description="It may have expired, been used, or been revoked. Ask the person who invited you for a new link."
@@ -89,6 +98,7 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
       </OnboardingCard>
     );
 
+  const { preview } = state;
   const kind = preview.kind === "guest" ? "a guest" : "a member";
   return (
     <OnboardingCard
@@ -118,11 +128,11 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
       title={`Join ${preview.teamName}`}
       titleId="team-join-heading"
     >
-      {preview.state === "used" ? (
+      {state.kind === "used" ? (
         <p className="onboarding__lead">If that was you, open {preview.teamName} and sign in.</p>
-      ) : !verifier ? (
+      ) : state.kind === "missing-link" ? (
         <ErrorNotice message="This link is missing its last part. Open the whole link from your invite." />
-      ) : snapshot.session === "authenticated" ? (
+      ) : state.kind === "ready" || authenticated ? (
         <div className="onboarding__form">
           <ErrorNotice message={error ? teamErrorText(error, preview.teamName) : null} />
           <button

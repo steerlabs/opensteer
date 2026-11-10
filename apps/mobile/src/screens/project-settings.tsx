@@ -75,11 +75,27 @@ export function ProjectSettingsScreen(props: ProjectSettingsScreenProps): ReactN
   const hostClient = useAttachedHost(deploymentId);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return (
-    <ProjectSettings
+    <ProjectSettingsForViewer
       deploymentId={deploymentId}
       hostClient={hostClient}
-      key={`${deploymentId}:${workspaceId}`}
       workspaceId={workspaceId}
+    />
+  );
+}
+
+/** Remounts for whoever is signed in, so no team read survives a change of person. */
+function ProjectSettingsForViewer(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+  readonly workspaceId: string;
+}): ReactNode {
+  const { identity } = useTeam(props.hostClient);
+  return (
+    <ProjectSettings
+      deploymentId={props.deploymentId}
+      hostClient={props.hostClient}
+      key={`${props.deploymentId}:${props.workspaceId}:${identity ?? ""}`}
+      workspaceId={props.workspaceId}
     />
   );
 }
@@ -102,7 +118,8 @@ function ProjectSettings(props: {
   const readable = project !== null && userId !== null;
   const teamProject = snapshot.teamAdministrationAvailable === true;
   const teamAccess = useTeamProjectAccess(hostClient, workspaceId);
-  const teamName = useTeam(hostClient).summary?.team.name ?? "the team";
+  const { summary } = useTeam(hostClient);
+  const teamName = summary?.team.name ?? "the team";
 
   const members = useHostRead(
     readable && !teamProject
@@ -206,9 +223,13 @@ function ProjectSettings(props: {
             <AppText role="title">{project.name}</AppText>
             <AppText role="secondary" tone="muted">
               {[
-                project.machineName === null
-                  ? "Its folder is in Main."
-                  : `Its folder is in Main on ${project.machineName}.`,
+                teamProject
+                  ? summary
+                    ? `A shared project in ${teamName}.`
+                    : null
+                  : project.machineName === null
+                    ? "Its folder is in Main."
+                    : `Its folder is in Main on ${project.machineName}.`,
                 teamProject
                   ? null
                   : owner
