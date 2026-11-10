@@ -209,7 +209,6 @@ async function run(): Promise<void> {
       subscribe,
     },
     hostTransport: {
-      attachedDeploymentPolicy: unused,
       closeBinary: unused,
       closeBinaryForOwner: unused,
       openBinary: unused,

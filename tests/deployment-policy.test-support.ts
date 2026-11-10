@@ -3,7 +3,7 @@ import { parse } from "@babel/parser";
 type SyntaxNode = Record<string, unknown>;
 const sqlKindSelector = String.raw`(?:(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*(?:->>?\s*'(?:kind|mode|tenancy|ownerEstablishment)'|#>>?\s*'\{(?:kind|mode|tenancy|ownerEstablishment)\}'|\[\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\])|jsonb_extract_path_text\(\s*(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*,\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\))`;
 const sqlKindDecisionPattern = new RegExp(
-  `${sqlKindSelector}\\s*\\)*\\s*(?:<>|!=|=|\\b(?:not\\s+)?in\\b)[^\\n;]*`,
+  `${sqlKindSelector}\\s*\\)*\\s*(?:<>|!=|=|\\b(?:not\\s+)?in\\b)[^\\n;]*|'[^'\\n]+'\\s*(?:<>|!=|=)\\s*\\(*\\s*${sqlKindSelector}\\s*\\)*`,
   "giu",
 );
 
@@ -21,8 +21,9 @@ function walk(value: unknown, visit: (entry: SyntaxNode) => void): void {
   const entry = node(value);
   if (!entry) return;
   visit(entry);
-  for (const [key, child] of Object.entries(entry))
-    if (!["loc", "comments", "tokens"].includes(key)) walk(child, visit);
+  for (const key in entry)
+    if (typeof entry[key] === "object" && !["loc", "comments", "tokens"].includes(key))
+      walk(entry[key], visit);
 }
 
 export function sqlKindComparisons(source: string): string[] {
@@ -33,8 +34,19 @@ export function sqlKindComparisons(source: string): string[] {
 
 export function kindComparisons(file: string, source: string): string[] {
   if (file.endsWith(".sql")) return sqlKindComparisons(source);
+  const literalText = /["'`](?:personal|server)["'`]/u.test(source)
+    ? source
+    : source.replace(
+        /\\(?:u\{([\da-f]+)\}|u([\da-f]{4})|x([\da-f]{2}))/giu,
+        (
+          _escape,
+          codePoint: string | undefined,
+          unicode: string | undefined,
+          hex: string | undefined,
+        ) => String.fromCodePoint(Number.parseInt(codePoint ?? unicode ?? hex!, 16)),
+      );
   if (
-    !/["'`](?:personal|server)["'`]/u.test(source) ||
+    !/["'`](?:personal|server)["'`]/u.test(literalText) ||
     !/(?:[!=]={1,2}|\bswitch\s*\(|\b(?:includes|has|indexOf|is\w*|has\w*|matches\w*)\s*\()/u.test(
       source,
     )
@@ -95,7 +107,7 @@ export function kindComparisons(file: string, source: string): string[] {
     return entry;
   };
   const hasKind = (value: unknown, seen = new Set<string>()): boolean => {
-    const entry = node(value);
+    const entry = constantValue(value, seen);
     if (!entry) return false;
     if (entry["type"] === "StringLiteral")
       return ["personal", "server"].includes(String(entry["value"]));
@@ -103,27 +115,10 @@ export function kindComparisons(file: string, source: string): string[] {
       return (entry["quasis"] as SyntaxNode[]).some((quasi) =>
         ["personal", "server"].includes(String((quasi["value"] as SyntaxNode)["cooked"])),
       );
-    if (
-      [
-        "TSAsExpression",
-        "TSSatisfiesExpression",
-        "TSNonNullExpression",
-        "ParenthesizedExpression",
-      ].includes(String(entry["type"]))
-    )
-      return hasKind(entry["expression"], seen);
-    if (entry["type"] === "Identifier") {
-      const name = String(entry["name"]);
-      if (seen.has(name)) return false;
-      return hasKind(declarations.get(name), new Set([...seen, name]));
-    }
     if (entry["type"] === "ArrayExpression")
       return (entry["elements"] as unknown[]).some((element) => hasKind(element, seen));
     if (entry["type"] === "NewExpression")
       return (entry["arguments"] as unknown[]).some((argument) => hasKind(argument, seen));
-    if (["MemberExpression", "OptionalMemberExpression"].includes(String(entry["type"]))) {
-      return hasKind(constantValue(entry, seen), seen);
-    }
     return false;
   };
   const expression = (value: unknown): string => {

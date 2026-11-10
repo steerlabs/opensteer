@@ -21,12 +21,21 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
   "apps/desktop/src/supervisor/local-runner-authority.ts": {
     count: 2,
+    reason: "Pre-bootstrap Runner launch authority from signed discovery.",
+  },
+  "apps/desktop/src/bridge/methods/web-links.ts": {
+    count: 1,
     reason:
-      "Pre-bootstrap Runner launch authority from signed discovery; post-attachment capabilities must use the Host projection.",
+      "Native web links for the desktop's own supervised Host, whose local shape is known first-hand.",
   },
 };
 const exceptionGroups = {
   displayAlias: {
+    "apps/desktop/src/bridge/methods/web-links.ts": {
+      counts: { "selected.kind": 1 },
+      reason:
+        "Maps the desktop's own supervised Host presentation to its known local shape for policy evaluation.",
+    },
     "apps/host/src/runtime/runtime.ts": {
       counts: { "config.workspace.shape.kind": 1 },
       reason: "Projects the Deployment kind into the existing presentation alias only.",
@@ -311,6 +320,8 @@ describe("deployment policy boundary", () => {
   });
   it.each([
     "deployment_shape->>'kind' = 'server'",
+    "'server' = deployment_shape->>'kind'",
+    "'personal' = (deployment_shape->>'kind')",
     "deployment_shape->>'mode' in ('personal', 'development')",
     "workspace_profile->>'mode' = 'cloud'",
     "deployment_shape['kind'] = '\"server\"'::jsonb",
@@ -323,6 +334,8 @@ describe("deployment policy boundary", () => {
   });
   it.each([
     'shape["kind"] === "personal"',
+    String.raw`shape.kind === "\u0070ersonal"`,
+    String.raw`shape.kind === "\x70ersonal"`,
     "shape.kind === `personal`",
     'shape.kind === ("personal" as const)',
     'const kinds = { personal: "personal" }; shape.kind === kinds.personal',
@@ -350,7 +363,7 @@ describe("deployment policy boundary", () => {
   it("does not build a syntax tree without a possible kind comparison", () => {
     expect(kindComparisons("fixture.ts", 'const kind: = "personal";')).toEqual([]);
   });
-  it("compares Deployment kinds only in the policy, with explicit non-policy exceptions", () => {
+  it("is a tripwire for ordinary Deployment-kind comparisons outside named exceptions", () => {
     const files = execFileSync(
       "git",
       [
@@ -391,7 +404,7 @@ describe("deployment policy boundary", () => {
             ))
         )
           violations.push(
-            `${file}: clients must read the Host projection; derivations need a named pre-bootstrap/compatibility exception`,
+            `${file}: clients must read the Host projection; derivations need a named compatibility or local-authority exception`,
           );
       }
       if (sqlExceptions[file])

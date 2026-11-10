@@ -159,7 +159,6 @@ export interface DesktopBridgeOptions {
   };
   readonly hostTransport: Pick<
     DesktopHostTransport,
-    | "attachedDeploymentPolicy"
     | "closeSocketsForOwner"
     | "closeBinaryForOwner"
     | "openBinary"

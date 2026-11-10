@@ -17,47 +17,45 @@ import { desktopBridgeChannels } from "./desktop-bridge-channels.js";
 import { registerDesktopBridge } from "./registration.js";
 import { DesktopWebLinks } from "../app/web-links.js";
 
-it.each([true, false])("delivers attached web links only by the Host projection: %s", (allowed) => {
-  const deploymentId = createId("deployment");
-  const event = ipcEvent("app://opensteer/");
-  const links = new DesktopWebLinks(() => undefined);
-  const access = {
-    ...accessOperationMocks(),
-    deploymentPolicy: vi.fn(() => ({ nativeWebLinks: !allowed })),
-    snapshot: () =>
-      ({
-        ...snapshot(),
-        selectedDeploymentId: deploymentId,
-        deployments: [{ id: deploymentId, status: "connected", kind: "personal" }],
-      }) as unknown as DeploymentAccessSnapshot,
-    subscribe: () => () => undefined,
-  };
-  const handlers = registerWith(passwordsPort(), {}, undefined, {
-    access,
-    hostTransport: {
-      ...hostTransport(deploymentId),
-      attachedDeploymentPolicy: () => ({ nativeWebLinks: allowed }),
-    },
-    isWorkspaceContents: (sender) => sender === event.sender,
-    webLinks: links,
-  });
-  try {
-    handlers.invoke(desktopBridgeChannels.webLinkDelivery, event, {
-      bridgeToken: "b".repeat(43),
-      input: {
-        deploymentId,
-        userId: createId("user"),
-        generation: crypto.randomUUID(),
-        ready: true,
-      },
+it.each(["personal", "self-hosted"] as const)(
+  "delivers web links by the supervised Host's policy: %s",
+  (kind) => {
+    const deploymentId = createId("deployment");
+    const event = ipcEvent("app://opensteer/");
+    const links = new DesktopWebLinks(() => undefined);
+    const access = {
+      ...accessOperationMocks(),
+      snapshot: () =>
+        ({
+          ...snapshot(),
+          selectedDeploymentId: deploymentId,
+          deployments: [{ id: deploymentId, status: "connected", kind }],
+        }) as unknown as DeploymentAccessSnapshot,
+      subscribe: () => () => undefined,
+    };
+    const handlers = registerWith(passwordsPort(), {}, undefined, {
+      access,
+      isWorkspaceContents: (sender) => sender === event.sender,
+      webLinks: links,
     });
-    links.accept("https://example.com/from-host");
-    expect(event.sender.send).toHaveBeenCalledTimes(allowed ? 1 : 0);
-  } finally {
-    handlers.unregister();
-    links.dispose();
-  }
-});
+    try {
+      handlers.invoke(desktopBridgeChannels.webLinkDelivery, event, {
+        bridgeToken: "b".repeat(43),
+        input: {
+          deploymentId,
+          userId: createId("user"),
+          generation: crypto.randomUUID(),
+          ready: true,
+        },
+      });
+      links.accept("https://example.com/from-host");
+      expect(event.sender.send).toHaveBeenCalledTimes(kind === "personal" ? 1 : 0);
+    } finally {
+      handlers.unregister();
+      links.dispose();
+    }
+  },
+);
 
 /** The setup guide's surface, which these tests do not exercise. */
 const computerAppSetupUnused = {
@@ -737,7 +735,6 @@ function runnerController() {
 
 function hostTransport(deploymentId = createId("deployment")) {
   return {
-    attachedDeploymentPolicy: vi.fn(() => undefined),
     closeBinary: vi.fn(async () => undefined),
     closeBinaryForOwner: vi.fn(async () => undefined),
     openBinary: vi.fn(async () => ({ transferId: crypto.randomUUID() })),
