@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
   AgentEventSchema,
@@ -183,12 +184,22 @@ export async function requireActiveWorkspaceMembership(
 ): Promise<{ readonly role: "owner" | "collaborator"; readonly generation: number }> {
   let query = transaction
     .selectFrom("workspaceMemberships")
-    .select(["role", "state", "generation"])
+    .select(["role", "state", "generation", "effectiveUntil"])
     .where("workspaceId", "=", workspaceId)
-    .where("userId", "=", userId);
+    .where("userId", "=", userId)
+    .where(effectiveMembershipPredicate());
   if (lock) query = query.forNoKeyUpdate();
   const membership = await query.executeTakeFirst(databaseOperationOptions());
-  if (!membership || membership.state !== "active") {
+  const current =
+    lock && membership?.effectiveUntil
+      ? await transaction
+          .selectFrom("workspaceMemberships")
+          .select(effectiveMembershipPredicate().as("allowed"))
+          .where("workspaceId", "=", workspaceId)
+          .where("userId", "=", userId)
+          .executeTakeFirst(databaseOperationOptions())
+      : undefined;
+  if (!membership || membership.state !== "active" || current?.allowed === false) {
     throw new OpensteerError({
       code: "forbidden",
       message: "Active Workspace membership is required",

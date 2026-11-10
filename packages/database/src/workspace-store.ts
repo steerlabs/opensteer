@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
 import { PluginSettingsStore } from "./plugin-settings-store.js";
@@ -376,7 +377,7 @@ export async function setWorkspaceIcon(
     const membership = workspace
       ? await transaction
           .selectFrom("workspaceMemberships")
-          .select(["role", "state"])
+          .select(["role", effectiveMembershipState()])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
           .executeTakeFirst(databaseOperationOptions())
@@ -473,7 +474,7 @@ export async function setWorkspaceColor(
     const membership = workspace
       ? await transaction
           .selectFrom("workspaceMemberships")
-          .select(["role", "state"])
+          .select(["role", effectiveMembershipState()])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
           .executeTakeFirst(databaseOperationOptions())
@@ -571,7 +572,7 @@ export async function requestWorkspaceDeletion(
         }
         const membership = await transaction
           .selectFrom("workspaceMemberships")
-          .select(["role", "state"])
+          .select(["role", effectiveMembershipState()])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.requestedBy)
           .executeTakeFirst(databaseOperationOptions());
@@ -665,7 +666,7 @@ export async function recoverWorkspaceDeletion(
     }
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", "state"])
+      .select(["role", effectiveMembershipState()])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.requestedBy)
       .executeTakeFirst(databaseOperationOptions());
@@ -877,7 +878,7 @@ export async function workspacePageForOwner(
         .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
         .selectAll("workspaces")
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
+        .where(effectiveMembershipPredicate())
         .where("workspaces.status", "!=", "deleted");
       if (anchor) {
         query = query.where((expressions) =>
@@ -901,7 +902,7 @@ export async function workspacePageForOwner(
           .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
           .select(({ fn }) => fn.countAll<string>().as("count"))
           .where("workspaceMemberships.userId", "=", input.ownerId)
-          .where("workspaceMemberships.state", "=", "active")
+          .where(effectiveMembershipPredicate())
           .where("workspaces.status", "!=", "deleted")
           .executeTakeFirstOrThrow(databaseOperationOptions()),
       ]);
@@ -950,7 +951,7 @@ export async function listWorkspacesForOwner(
     .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
     .selectAll("workspaces")
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .where("workspaces.status", "!=", "deleted")
     .orderBy("updatedAt", "desc")
     .limit(boundedLimit(limit, 1_000))
@@ -1005,7 +1006,7 @@ export async function getWorkspaceForOwner(
     .selectAll("workspaces")
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .executeTakeFirst(databaseOperationOptions());
   return row ? workspaceFromRow(row) : null;
 }
@@ -1026,7 +1027,7 @@ export async function admitWorkspaceFiles(
     .select("workspaceMemberships.generation as membershipGeneration")
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", userId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .executeTakeFirst(databaseOperationOptions());
   if (!row) return null;
   if (row.status === "deleted") return null;

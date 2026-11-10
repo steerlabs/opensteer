@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   OpensteerError,
   RunThreadStateSchema,
@@ -64,7 +65,7 @@ export async function readRunThreadState(
         .select("threads.id")
         .where("threads.id", "=", earlierTask.parentThreadId)
         .where("workspaceMemberships.userId", "=", input.viewerId)
-        .where("workspaceMemberships.state", "=", "active")
+        .where(effectiveMembershipPredicate())
         .executeTakeFirst()
     : undefined;
   return RunThreadStateSchema.parse({

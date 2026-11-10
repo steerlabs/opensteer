@@ -1,4 +1,5 @@
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
+import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import {
   isMemoryPassWake,
   memoryPassWakeContext,
@@ -1939,7 +1940,7 @@ async function lockThreadInputPreconditions(
   if (!workspace) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["generation", "state"])
+    .select(["generation", effectiveMembershipState()])
     .where("workspaceId", "=", observedThread.workspaceId)
     .where("userId", "=", input.requestedBy)
     .forNoKeyUpdate()
@@ -2076,7 +2077,7 @@ async function cancelStaleReportMemberships(
             .where("workspaceId", "=", thread.workspaceId)
             .whereRef("userId", "=", "threadInputs.requestedBy")
             .whereRef("generation", "=", "threadInputs.membershipGeneration")
-            .where("state", "=", "active"),
+            .where(effectiveMembershipPredicate()),
         ),
       ),
     )
@@ -3728,7 +3729,7 @@ async function deliverAssignmentReturnTransaction(
     [parent.workspaceId, observed.childWorkspaceId].map((workspaceId) =>
       transaction
         .selectFrom("workspaceMemberships")
-        .select(["generation", "state"])
+        .select(["generation", effectiveMembershipState()])
         .where("workspaceId", "=", workspaceId)
         .where("userId", "=", requester.requestedBy)
         .executeTakeFirst(),
@@ -4358,7 +4359,7 @@ export async function delegateThreadInTransaction(
   }
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select("state")
+    .select(effectiveMembershipState())
     .where("workspaceId", "=", input.workspaceId)
     .where("userId", "=", input.createdBy)
     .forNoKeyUpdate()

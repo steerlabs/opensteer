@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { isPlaceContentPart } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { createHash } from "node:crypto";
@@ -213,7 +214,7 @@ export class NotificationStore {
       .select("agentNotificationMutes.muted")
       .where("workspaceMemberships.workspaceId", "=", entry.workspaceId)
       .where("workspaceMemberships.userId", "=", entry.userId)
-      .where("workspaceMemberships.state", "=", "active")
+      .where(effectiveMembershipPredicate())
       .where("users.disabledAt", "is", null)
       .executeTakeFirst();
     if (!recipient) return "Recipient can no longer open this Thread";
@@ -478,7 +479,7 @@ async function personAnswered(
     .where("runs.id", "=", event.runId)
     .where("runs.threadId", "=", event.threadId)
     .where("threads.workspaceId", "=", event.workspaceId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
   if (
@@ -563,7 +564,7 @@ async function activeMembers(
       "workspaceMemberships.userId as userId",
     ])
     .where("workspaceMemberships.workspaceId", "=", workspaceId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .where("users.disabledAt", "is", null)
     .limit(1_000)
     .execute();

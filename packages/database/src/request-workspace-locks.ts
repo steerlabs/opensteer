@@ -86,8 +86,13 @@ export async function discoverRequestWorkspaces(
     readonly runId?: RunId;
     readonly pending?: boolean;
     readonly kinds?: readonly DatabaseSchema["requests"]["kind"][];
+    readonly membershipPairs?: readonly {
+      readonly userId: UserId;
+      readonly workspaceId: WorkspaceId;
+    }[];
   } = {},
 ): Promise<readonly WorkspaceId[]> {
+  if (input.membershipPairs?.length === 0) return [];
   let query = database
     .selectFrom("requests")
     .select(["originatingWorkspaceId", "targetWorkspaceId"])
@@ -104,6 +109,27 @@ export async function discoverRequestWorkspaces(
   if (input.requestedBy) query = query.where("requestedBy", "=", input.requestedBy);
   if (input.runId) query = query.where("originatingRunId", "=", input.runId);
   if (input.kinds) query = query.where("kind", "in", [...input.kinds]);
+  if (input.membershipPairs) {
+    const scopes = new Map<UserId, Set<WorkspaceId>>();
+    for (const pair of input.membershipPairs) {
+      const ids = scopes.get(pair.userId) ?? new Set<WorkspaceId>();
+      ids.add(pair.workspaceId);
+      scopes.set(pair.userId, ids);
+    }
+    query = query.where((eb) =>
+      eb.or(
+        [...scopes].map(([userId, ids]) =>
+          eb.and([
+            eb("requestedBy", "=", userId),
+            eb.or([
+              eb("originatingWorkspaceId", "in", [...ids]),
+              eb("targetWorkspaceId", "in", [...ids]),
+            ]),
+          ]),
+        ),
+      ),
+    );
+  }
   return (await query.execute()).flatMap((row) => [
     row.originatingWorkspaceId,
     row.targetWorkspaceId,

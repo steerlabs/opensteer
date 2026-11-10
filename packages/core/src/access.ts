@@ -1,4 +1,6 @@
 import type { CommandId, UserId, WorkspaceId } from "./ids.js";
+import type { MarkColor } from "./marks.js";
+import type { WorkspaceBacking } from "./models.js";
 
 export type AccessPrincipal =
   | { readonly kind: "person"; readonly userId: UserId }
@@ -17,6 +19,14 @@ export type TeamAccountAccessLevel = "use";
 export type AccessAction = "inspect" | "use" | "read" | "write" | "manage" | "administer";
 
 export type AccessMutation =
+  | {
+      readonly kind: "create-project";
+      readonly workspaceId: WorkspaceId;
+      readonly entryId: string;
+      readonly name: string;
+      readonly color: MarkColor;
+      readonly backing: WorkspaceBacking;
+    }
   | {
       readonly kind: "create-group";
       readonly id: string;
@@ -45,7 +55,11 @@ export type AccessMutation =
       readonly memberState?: "active" | "suspended" | "removed";
       readonly admit?: boolean;
     }
-  | { readonly kind: "delete-project"; readonly workspaceId: WorkspaceId };
+  | {
+      readonly kind: "delete-project";
+      readonly workspaceId: WorkspaceId;
+      readonly purgeAfter: Date;
+    };
 
 export interface AuthenticatedHuman {
   readonly userId: UserId;

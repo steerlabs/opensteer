@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
   type WorkspaceMembershipId,
@@ -32,6 +33,7 @@ export interface WorkspaceMembershipRecord {
 export type WorkspaceMembershipChangeListener = (membership: WorkspaceMembershipRecord) => void;
 
 export interface SecurityEffectRecord {
+  readonly membershipGenerationCutoff: number;
   readonly attempts: number;
   readonly id: SecurityEffectId;
   readonly kind:
@@ -85,6 +87,7 @@ async function requireWorkspaceSharingCapability(
 
 function workspaceMembershipFromRow(row: {
   readonly generation: string;
+  readonly effectiveUntil?: Date | null;
   readonly id: WorkspaceMembershipId;
   readonly invitedBy: UserId | null;
   readonly joinedAt: Date;
@@ -100,7 +103,9 @@ function workspaceMembershipFromRow(row: {
       message: "Stored Workspace membership generation is invalid",
     });
   }
-  return { ...row, generation };
+  const membership = { ...row, generation };
+  delete membership.effectiveUntil;
+  return membership;
 }
 
 function workspaceInvitationFromRow(row: {
@@ -149,7 +154,18 @@ export async function workspaceMembershipForUser(
 ): Promise<WorkspaceMembershipRecord | null> {
   const row = await database
     .selectFrom("workspaceMemberships")
-    .select(["generation", "id", "invitedBy", "joinedAt", "role", "state", "userId", "workspaceId"])
+    .select([
+      "generation",
+      "id",
+      "invitedBy",
+      "joinedAt",
+      "role",
+      sql<
+        "active" | "revoked"
+      >`case when ${effectiveMembershipPredicate()} then 'active' else 'revoked' end`.as("state"),
+      "userId",
+      "workspaceId",
+    ])
     .where("workspaceId", "=", workspaceId)
     .where("userId", "=", userId)
     .executeTakeFirst();
@@ -182,7 +198,7 @@ export async function listWorkspaceMembers(
       "workspaceMemberships.workspaceId",
     ])
     .where("workspaceMemberships.workspaceId", "=", workspaceId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .orderBy("workspaceMemberships.role", "asc")
     .orderBy("workspaceMemberships.joinedAt", "asc")
     .limit(1_001)
@@ -249,7 +265,7 @@ export async function createWorkspaceInvitation(
       .executeTakeFirstOrThrow();
     const actor = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", "state"])
+      .select(["role", effectiveMembershipState()])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.createdBy)
       .forNoKeyUpdate()
@@ -349,7 +365,7 @@ export async function revokeWorkspaceInvitation(
       .executeTakeFirstOrThrow();
     const actor = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["role", "state"])
+      .select(["role", effectiveMembershipState()])
       .where("workspaceId", "=", input.workspaceId)
       .where("userId", "=", input.actorId)
       .forNoKeyUpdate()
@@ -741,6 +757,7 @@ export async function changeWorkspaceMembership(
               kind,
               lastError: null,
               membershipGeneration: row.generation,
+              membershipGenerationCutoff: safeGeneration(row.generation) - 1,
               nextAttemptAt: now,
               status: "pending",
               userId: input.targetUserId,
@@ -797,23 +814,25 @@ export async function claimSecurityEffects(
       .execute();
     const claimed: SecurityEffectRecord[] = [];
     for (const row of rows) {
-      const membership = await transaction
-        .selectFrom("workspaceMemberships")
-        .select(["generation", "state"])
-        .where("workspaceId", "=", row.workspaceId)
-        .where("userId", "=", row.userId)
-        .executeTakeFirst();
-      if (
-        !membership ||
-        membership.state !== "revoked" ||
-        safeGeneration(membership.generation) !== safeGeneration(row.membershipGeneration)
-      ) {
-        await transaction
-          .updateTable("securityEffects")
-          .set({ lastError: null, status: "completed", updatedAt: input.now })
-          .where("id", "=", row.id)
-          .executeTakeFirstOrThrow();
-        continue;
+      if (row.kind === "revoke-browser" || row.kind === "revoke-triggers") {
+        const membership = await transaction
+          .selectFrom("workspaceMemberships")
+          .select(["generation", "state"])
+          .where("workspaceId", "=", row.workspaceId)
+          .where("userId", "=", row.userId)
+          .executeTakeFirst();
+        if (
+          !membership ||
+          membership.state !== "revoked" ||
+          membership.generation !== row.membershipGeneration
+        ) {
+          await transaction
+            .updateTable("securityEffects")
+            .set({ lastError: null, status: "completed", updatedAt: input.now })
+            .where("id", "=", row.id)
+            .execute();
+          continue;
+        }
       }
       const attempts = row.attempts + 1;
       await transaction
@@ -832,6 +851,7 @@ export async function claimSecurityEffects(
         id: row.id,
         kind: row.kind,
         membershipGeneration: safeGeneration(row.membershipGeneration),
+        membershipGenerationCutoff: safeGeneration(row.membershipGenerationCutoff),
         userId: row.userId,
         workspaceId: row.workspaceId,
       });

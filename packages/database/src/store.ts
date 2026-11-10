@@ -2019,6 +2019,7 @@ export class OpensteerStore {
   }
 
   async failActiveRunsForMembershipRevocation(input: {
+    readonly membershipGenerationCutoff?: number;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
   }): Promise<RunRecoveryOutcome> {

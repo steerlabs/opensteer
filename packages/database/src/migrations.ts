@@ -31,6 +31,126 @@ import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
+export const accessFoundationMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.deployments add column authority_model_version smallint not null default 1
+        check (authority_model_version in (1, 2));
+      alter table public.users
+        add column member_kind text not null default 'full' check (member_kind in ('full', 'guest')),
+        add column member_state text not null default 'active' check (member_state in ('active', 'suspended', 'removed')),
+        add column authority_generation bigint not null default 1 check (authority_generation between 1 and 9007199254740991),
+        add column admitted_at timestamptz,
+        add column member_state_changed_at timestamptz not null default now(),
+        add column member_state_changed_by text references public.users(id);
+      update public.users set member_state = 'suspended', member_state_changed_at = disabled_at where disabled_at is not null;
+      alter table public.workspace_memberships add column effective_until timestamptz;
+      alter table public.workspace_memberships drop constraint workspace_memberships_revocation_check;
+      alter table public.workspace_memberships add constraint workspace_memberships_revocation_check check (
+        (state = 'active' and revoked_at is null and revoked_by is null)
+        or (state = 'revoked' and revoked_at is not null)
+      );
+      create index workspace_memberships_due on public.workspace_memberships(effective_until)
+        where state = 'active' and effective_until is not null;
+      create table public.access_groups (
+        id uuid primary key, name text not null check (length(btrim(name)) between 1 and 120),
+        builtin text check (builtin = 'everyone'), created_by text not null references public.users(id),
+        created_at timestamptz not null default now(), deleted_at timestamptz,
+        check (builtin is null or deleted_at is null)
+      );
+      create unique index access_groups_live_name on public.access_groups(lower(btrim(name))) where deleted_at is null;
+      create unique index access_groups_builtin on public.access_groups(builtin) where builtin is not null;
+      create table public.access_group_members (
+        group_id uuid not null references public.access_groups(id), member_kind text not null check (member_kind in ('user','group')),
+        member_id text not null, added_by text not null references public.users(id), added_at timestamptz not null default now(),
+        primary key (group_id, member_kind, member_id)
+      );
+      create index access_group_members_reverse on public.access_group_members(member_kind, member_id, group_id);
+      create table public.access_entries (
+        id uuid primary key, subject_kind text not null check (subject_kind in ('user','group','project')),
+        subject_id text not null, target_kind text not null check (target_kind in ('project','topic','team-account')),
+        target_id text not null, level text not null,
+        granted_by text not null references public.users(id), granted_at timestamptz not null default now(),
+        expires_at timestamptz, revoked_at timestamptz, revoked_by text references public.users(id),
+        check ((target_kind = 'project' and level in ('use','manage') and subject_kind <> 'project')
+          or (target_kind = 'topic' and level in ('read','write','manage'))
+          or (target_kind = 'team-account' and level = 'use')),
+        check (expires_at is null or expires_at > granted_at)
+      );
+      create index access_entries_target on public.access_entries(target_kind, target_id);
+      create index access_entries_subject on public.access_entries(subject_kind, subject_id);
+      create table public.access_state (
+        singleton_key text primary key check (singleton_key = 'primary'),
+        revision bigint not null check (revision between 1 and 9007199254740991)
+      );
+      insert into public.access_state values ('primary', 1);
+      create function public.opensteer_membership_is_effective(membership_state text, deadline timestamptz, member_id text)
+      returns boolean language sql volatile parallel safe as $$
+        select membership_state = 'active' and (deadline is null or deadline > clock_timestamp())
+          and (not exists (select 1 from public.deployments where authority_model_version = 2 and deployment_shape->>'kind' = 'server')
+            or exists (select 1 from public.users where id = member_id and member_state = 'active' and admitted_at is not null))
+      $$;
+      alter table public.security_effects add column membership_generation_cutoff bigint;
+      update public.security_effects set membership_generation_cutoff = membership_generation - 1;
+      alter table public.security_effects alter column membership_generation_cutoff set not null;
+      alter table public.security_effects add constraint security_effects_cutoff_positive check (membership_generation_cutoff >= 1);
+      alter table public.security_effects add column cause_id text;
+      create unique index security_effects_cause_scope on public.security_effects(cause_id, kind, workspace_id, user_id, membership_generation_cutoff)
+        where cause_id is not null;
+      create function public.opensteer_security_effect_scope_immutable() returns trigger language plpgsql as $$
+      begin
+        if (old.workspace_id, old.user_id, old.membership_generation_cutoff, old.membership_generation, old.kind, old.cause_id)
+          is distinct from (new.workspace_id, new.user_id, new.membership_generation_cutoff, new.membership_generation, new.kind, new.cause_id) then
+          raise exception 'security effect scope is immutable';
+        end if;
+        return new;
+      end $$;
+      create trigger security_effect_scope_immutable before update on public.security_effects
+        for each row execute function public.opensteer_security_effect_scope_immutable();
+    `.execute(database);
+    const ownerFence = await sql<{
+      definition: string;
+    }>`select pg_get_functiondef('public.opensteer_prevent_last_workspace_owner_removal()'::regprocedure) as definition`.execute(
+      database,
+    );
+    const definition = ownerFence.rows[0]!.definition;
+    const replacement = definition.replace(
+      /\bbegin\b/u,
+      `begin
+      if exists (select 1 from public.deployments where authority_model_version = 2 and deployment_shape->>'kind' = 'server')
+        and exists (select 1 from public.workspaces where id = old.workspace_id and kind = 'project') then
+        return case when tg_op = 'DELETE' then old else new end;
+      end if;`,
+    );
+    if (replacement === definition) throw new Error("Workspace owner fence definition is missing");
+    await sql.raw(replacement).execute(database);
+    const guards = await sql<{ definition: string }>`
+      select pg_get_functiondef(procedure.oid) as definition
+      from pg_proc as procedure join pg_namespace as namespace on namespace.oid = procedure.pronamespace
+      where namespace.nspname = 'public' and procedure.prokind = 'f'
+        and procedure.prosrc like '%workspace_memberships%'
+    `.execute(database);
+    for (const guard of guards.rows) {
+      let updated = guard.definition;
+      for (const match of updated.matchAll(
+        /\b(?:from|join)\s+(?:public\.)?workspace_memberships\s*(?:as\s+)?([a-z_]+)?/giu,
+      )) {
+        const alias =
+          match[1] &&
+          !["where", "on", "join", "order", "set", "for"].includes(match[1].toLowerCase())
+            ? match[1]
+            : "workspace_memberships";
+        const active = new RegExp(`\\b${alias}\\.state\\s*=\\s*'active'(?:::text)?`, "gu");
+        updated = updated.replace(
+          active,
+          `public.opensteer_membership_is_effective(${alias}.state, ${alias}.effective_until, ${alias}.user_id)`,
+        );
+      }
+      if (updated !== guard.definition) await sql.raw(updated).execute(database);
+    }
+  },
+};
+
 const machineFullDiskAccessMigration: Migration = {
   async up(database: Kysely<unknown>): Promise<void> {
     const constraint = await sql<{ definition: string }>`
@@ -4720,6 +4840,7 @@ export function migrationProvider() {
         "0166_memory_pass_activity": memoryPassActivityMigration,
         "0167_quiet_tasks": quietTasksMigration,
         "0168_devices": devicesMigration,
+        "0169_access_foundation": accessFoundationMigration,
       };
     },
   };

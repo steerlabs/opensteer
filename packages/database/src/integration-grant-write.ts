@@ -1,4 +1,5 @@
 import { OpensteerError, type UserId, type WorkspaceId } from "@opensteer/core";
+import { effectiveMembershipState } from "./effective-membership.js";
 import {
   IntegrationApplicationSourceSchema,
   IntegrationConnectionRequirementSchema,
@@ -129,7 +130,7 @@ export async function validateIntegrationGrantInTransaction(
 ): Promise<void> {
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["state"])
+    .select(effectiveMembershipState())
     .where("workspaceId", "=", input.workspaceId)
     .where("userId", "=", input.ownerUserId)
     .executeTakeFirst();

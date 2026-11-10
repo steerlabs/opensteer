@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import {
@@ -88,7 +89,7 @@ export async function readThreadHistory(
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
+        .where(effectiveMembershipPredicate())
         .executeTakeFirst();
       if (!thread) return null;
       let visible = transaction

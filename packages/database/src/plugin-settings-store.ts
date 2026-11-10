@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { pluginDeviceFromManifest } from "@opensteer/integration-core";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
@@ -80,7 +81,7 @@ export class PluginSettingsStore {
       select distinct m.user_id from workspace_memberships m
       join workspaces w on w.id = m.workspace_id
       left join execution_environments e on e.id = w.owner_environment_id
-      where m.state = 'active' and (
+      where ${effectiveMembershipPredicate("m")} and (
         w.id = ${input.workspaceId ?? null}
         or e.runner_id = ${input.runnerId ?? null}
         or exists(select 1 from plugin_activations a where a.workspace_id = w.id and a.plugin_id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null})))
@@ -89,7 +90,7 @@ export class PluginSettingsStore {
       union select c.owner_user_id from integration_connections c where c.runner_id = ${input.runnerId ?? null}
         or exists(select 1 from integration_installations i where i.id = ${input.installationId ?? null} and coalesce(i.manifest->'definition'->>'id',i.name) = c.integration_definition_id)
       union select m.user_id from requests q
-        join workspace_memberships m on m.workspace_id = q.originating_workspace_id and m.state = 'active'
+        join workspace_memberships m on m.workspace_id = q.originating_workspace_id and ${effectiveMembershipPredicate("m")}
         join users u on u.id = m.user_id
         where q.id = ${input.requestId ?? null} and (
           (q.required_actor = 'requester' and (q.requested_by = m.user_id or (u.instance_role = 'administrator' and q.kind = 'integration.access' and q.payload->>'installationId' is null)))
@@ -141,7 +142,7 @@ export class PluginSettingsStore {
       .selectFrom("workspaceMemberships")
       .select("workspaceId")
       .where("userId", "=", owner)
-      .where("state", "=", "active");
+      .where(effectiveMembershipPredicate());
     const [
       viewer,
       places,
@@ -796,7 +797,7 @@ export class PluginSettingsStore {
       .select("threads.id")
       .where("threads.id", "=", threadId)
       .where("workspaceMemberships.userId", "=", owner)
-      .where("workspaceMemberships.state", "=", "active")
+      .where(effectiveMembershipPredicate())
       .executeTakeFirst();
     return thread?.id ?? null;
   }

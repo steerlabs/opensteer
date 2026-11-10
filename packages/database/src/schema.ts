@@ -129,6 +129,7 @@ export type JsonColumn<T> = ColumnType<T, T, T>;
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
 
 export interface DeploymentTable {
+  authorityModelVersion: Generated<number>;
   id: DeploymentId;
   singletonKey: "primary";
   activeHostInstanceId: HostInstanceId;
@@ -140,6 +141,12 @@ export interface DeploymentTable {
 }
 
 export interface UserTable {
+  memberKind: Generated<"full" | "guest">;
+  memberState: Generated<"active" | "suspended" | "removed">;
+  authorityGeneration: ColumnType<string, number | string | undefined, number | string>;
+  admittedAt: NullableTimestamp;
+  memberStateChangedAt: Timestamp;
+  memberStateChangedBy: Generated<UserId | null>;
   id: UserId;
   displayName: string;
   email: string;
@@ -717,6 +724,7 @@ export interface WorkspaceTable {
 }
 
 export interface WorkspaceMembershipTable {
+  effectiveUntil: NullableTimestamp;
   id: WorkspaceMembershipId;
   workspaceId: WorkspaceId;
   userId: UserId;
@@ -728,6 +736,42 @@ export interface WorkspaceMembershipTable {
   revokedAt: NullableTimestamp;
   revokedBy: UserId | null;
   updatedAt: Timestamp;
+}
+
+export interface AccessGroupTable {
+  id: string;
+  name: string;
+  builtin: "everyone" | null;
+  createdBy: UserId;
+  createdAt: Timestamp;
+  deletedAt: NullableTimestamp;
+}
+
+export interface AccessGroupMemberTable {
+  groupId: string;
+  memberKind: "user" | "group";
+  memberId: string;
+  addedBy: UserId;
+  addedAt: Timestamp;
+}
+
+export interface AccessEntryTable {
+  id: string;
+  subjectKind: "user" | "group" | "project";
+  subjectId: string;
+  targetKind: "project" | "topic" | "team-account";
+  targetId: string;
+  level: "use" | "manage" | "read" | "write";
+  grantedBy: UserId;
+  grantedAt: Timestamp;
+  expiresAt: NullableTimestamp;
+  revokedAt: NullableTimestamp;
+  revokedBy: UserId | null;
+}
+
+export interface AccessStateTable {
+  singletonKey: "primary";
+  revision: ColumnType<string, number | string, number | string>;
 }
 
 export interface WorkspaceInvitationTable {
@@ -763,6 +807,8 @@ interface SecurityAuditTable {
 }
 
 interface SecurityEffectTable {
+  membershipGenerationCutoff: ColumnType<string, number | string, number | string>;
+  causeId: Generated<string | null>;
   id: SecurityEffectId;
   workspaceId: WorkspaceId;
   userId: UserId;
@@ -2046,6 +2092,10 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  accessGroups: AccessGroupTable;
+  accessGroupMembers: AccessGroupMemberTable;
+  accessEntries: AccessEntryTable;
+  accessState: AccessStateTable;
   agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;

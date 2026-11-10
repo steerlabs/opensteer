@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { AgentConnection, AgentConnectionReach } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
@@ -19,7 +20,7 @@ export class AgentConnectionStore {
       .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
       .select(["workspaces.id", "workspaces.name"])
       .where("workspaceMemberships.userId", "=", userId)
-      .where("workspaceMemberships.state", "=", "active")
+      .where(effectiveMembershipPredicate())
       .where("workspaceMemberships.role", "=", "owner")
       .where("workspaces.deletedAt", "is", null)
       .execute();
@@ -51,7 +52,7 @@ export class AgentConnectionStore {
           .where("workspaceMemberships.workspaceId", "=", input.reach.workspaceId)
           .where("workspaceMemberships.userId", "=", input.userId)
           .where("workspaceMemberships.role", "=", "owner")
-          .where("workspaceMemberships.state", "=", "active")
+          .where(effectiveMembershipPredicate())
           .forShare()
           .executeTakeFirst();
         if (!membership)
@@ -128,7 +129,7 @@ export class AgentConnectionStore {
               .select("workspaceMemberships.id")
               .whereRef("workspaceMemberships.workspaceId", "=", "agentConnections.workspaceId")
               .whereRef("workspaceMemberships.userId", "=", "agentConnections.userId")
-              .where("workspaceMemberships.state", "=", "active")
+              .where(effectiveMembershipPredicate())
               .where("workspaceMemberships.role", "=", "owner")
               .where("workspaces.deletedAt", "is", null),
           ),

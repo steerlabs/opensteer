@@ -19,6 +19,66 @@ import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 
 describe("snapshot-before-live synchronization", () => {
+  it("does not apply an old cutoff to a replacement whose membership read is pending", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    const membership = Promise.withResolvers<ReturnType<typeof activeMembership>>();
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: () => membership.promise,
+        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore,
+    });
+    const sink = new MemorySink();
+    const subscribing = hub.subscribe({ afterSequence: sequence("0"), sink, userId, workspaceId });
+    hub.closeUserWorkspace(userId, workspaceId, 1);
+    membership.resolve({ ...activeMembership(workspaceId, userId), generation: 3 });
+    const close = await subscribing;
+    try {
+      expect(sink.closed).toBeUndefined();
+    } finally {
+      close();
+    }
+  });
+  it("closes the captured incarnation after rejoin without closing its replacement", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    let generation = 1;
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => ({
+          ...activeMembership(workspaceId, userId),
+          generation,
+        }),
+        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore,
+    });
+    const old = new MemorySink("old");
+    const fresh = new MemorySink("fresh");
+    const closeOld = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink: old,
+      userId,
+      workspaceId,
+    });
+    generation = 3;
+    const closeFresh = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink: fresh,
+      userId,
+      workspaceId,
+    });
+    try {
+      hub.closeUserWorkspace(userId, workspaceId, 1);
+      expect(old.closed).toMatchObject({ code: 4003 });
+      expect(fresh.closed).toBeUndefined();
+    } finally {
+      closeOld();
+      closeFresh();
+    }
+  });
   it("sends show once only to opted-in subscriptions of the requester and Workspace, without replay", async () => {
     const workspaceId = createId("workspace");
     const userId = createId("user");

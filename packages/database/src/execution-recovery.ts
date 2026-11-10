@@ -5,6 +5,7 @@ import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
 import * as commandStore from "./command-store.js";
 import { resendableControlCommandTypes } from "./command-delivery.js";
+import { effectiveMembershipState } from "./effective-membership.js";
 import {
   type EnvironmentId,
   type RunId,
@@ -97,6 +98,7 @@ type AbandonedRunRecovery =
   | {
       readonly code: "workspace_access_revoked";
       readonly kind: "membership-revocation";
+      readonly membershipGenerationCutoff?: number;
       readonly message: string;
       readonly userId: UserId;
       readonly workspaceId: WorkspaceId;
@@ -131,6 +133,13 @@ async function recoverAbandonedRuns(
           .distinct()
           .where("runs.status", "in", activeStatuses)
           .where("runs.requestedBy", "=", recovery.userId)
+          .$if(recovery.membershipGenerationCutoff !== undefined, (query) =>
+            query.where(
+              "runs.membershipGeneration",
+              "<=",
+              String(recovery.membershipGenerationCutoff!),
+            ),
+          )
           .where("threads.workspaceId", "=", recovery.workspaceId)
           .orderBy("runs.id", "asc")
           .execute()
@@ -395,7 +404,7 @@ export async function recoverThreadWorkQueues(
         });
         const membership = await transaction
           .selectFrom("workspaceMemberships")
-          .select(["generation", "state"])
+          .select(["generation", effectiveMembershipState()])
           .where("workspaceId", "=", observed.workspaceId)
           .where("userId", "=", run.requestedBy)
           .executeTakeFirst();
@@ -1232,6 +1241,7 @@ export async function failActiveRunsForMembershipRevocation(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   input: {
+    readonly membershipGenerationCutoff?: number;
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
   },
@@ -1239,6 +1249,9 @@ export async function failActiveRunsForMembershipRevocation(
   return recoverAbandonedRuns(database, links, {
     code: "workspace_access_revoked",
     kind: "membership-revocation",
+    ...(input.membershipGenerationCutoff === undefined
+      ? {}
+      : { membershipGenerationCutoff: input.membershipGenerationCutoff }),
     message: "Workspace access was revoked before the Run reached a terminal event",
     userId: input.userId,
     workspaceId: input.workspaceId,

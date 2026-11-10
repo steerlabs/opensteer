@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { nonTerminalRunStatuses, type ThreadId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type RawBuilder } from "kysely";
 import { publishedMessagePredicate } from "./message-visibility.js";
@@ -20,7 +21,7 @@ function quietTask(now: Date): RawBuilder<boolean> {
       select 1 from workspace_memberships membership
       join workspaces workspace on workspace.id = membership.workspace_id
       where membership.workspace_id = thread.workspace_id and membership.user_id = thread.created_by
-        and membership.state = 'active' and workspace.status <> 'deleted')
+        and ${effectiveMembershipPredicate("membership")} and workspace.status <> 'deleted')
     and not exists (select 1 from workspaces where home_thread_id = thread.id)
     and not exists (
       select 1 from channel_conversation_contexts where active_thread_id = thread.id)

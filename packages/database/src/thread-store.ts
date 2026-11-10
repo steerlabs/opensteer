@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
 import { environmentIsAvailableToUser } from "./environment-store.js";
@@ -554,7 +555,7 @@ export async function listThreadsForOwner(
       threadContinuationIdentitySelection,
     ])
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .orderBy("threads.updatedAt", "desc")
     .limit(boundedLimit(limit, 10_000))
     .execute();
@@ -592,7 +593,7 @@ export async function ownerThreadPageForOwner(
           threadContinuationIdentitySelection,
         ])
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active");
+        .where(effectiveMembershipPredicate());
       if (anchor) {
         query = query.where((expressions) =>
           expressions.or([
@@ -619,7 +620,7 @@ export async function ownerThreadPageForOwner(
           )
           .select(({ fn }) => fn.countAll<string>().as("count"))
           .where("workspaceMemberships.userId", "=", input.ownerId)
-          .where("workspaceMemberships.state", "=", "active")
+          .where(effectiveMembershipPredicate())
           .executeTakeFirstOrThrow(),
       ]);
       const window = boundedSerializedPrefix(
@@ -680,7 +681,7 @@ export async function getAssignmentForOwner(
         .selectAll("delegations")
         .where("delegations.id", "=", input.assignmentId)
         .where("workerMembership.userId", "=", input.ownerId)
-        .where("workerMembership.state", "=", "active")
+        .where(effectiveMembershipPredicate("workerMembership"))
         .executeTakeFirst();
       if (!row) return null;
       const parent = await transaction
@@ -693,7 +694,7 @@ export async function getAssignmentForOwner(
         .select("threads.id")
         .where("threads.id", "=", row.parentThreadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
+        .where(effectiveMembershipPredicate())
         .executeTakeFirst();
       return parent ? assignmentFromRow(row) : null;
     },
@@ -733,7 +734,7 @@ export async function listThreadAssignmentsForOwner(
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
+        .where(effectiveMembershipPredicate())
         .executeTakeFirst();
       if (!thread) return null;
       let base = transaction
@@ -749,10 +750,10 @@ export async function listThreadAssignmentsForOwner(
           join
             .onRef("parentMembership.workspaceId", "=", "parentThread.workspaceId")
             .on("parentMembership.userId", "=", input.ownerId)
-            .on("parentMembership.state", "=", "active"),
+            .on(effectiveMembershipPredicate("parentMembership")),
         )
         .where("workerMembership.userId", "=", input.ownerId)
-        .where("workerMembership.state", "=", "active")
+        .where(effectiveMembershipPredicate("workerMembership"))
         .where((expressions) =>
           expressions.or([
             expressions("delegations.childThreadId", "=", input.threadId),
@@ -853,7 +854,7 @@ export async function agentThreadPageForOwner(
         )
         .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
         .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active");
+        .where(effectiveMembershipPredicate());
       if (input.parentThreadId) {
         base = base.where((eb) =>
           eb.or([
@@ -996,7 +997,7 @@ export async function getThreadForOwner(
     ])
     .where("threads.id", "=", threadId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .executeTakeFirst();
   return row ? threadFromRow(row) : null;
 }
@@ -1041,7 +1042,7 @@ export async function readThreadForOwner(
         ])
         .where("threads.id", "=", threadId)
         .where("workspaceMemberships.userId", "=", ownerId)
-        .where("workspaceMemberships.state", "=", "active")
+        .where(effectiveMembershipPredicate())
         .executeTakeFirst();
       if (!threadRow) return null;
       const messageRows = await transaction
@@ -1098,7 +1099,7 @@ export async function createThreadInTransaction(
   if (!workspace) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["role", "state"])
+    .select(["role", effectiveMembershipState()])
     .where("workspaceId", "=", input.workspaceId)
     .where("userId", "=", input.createdBy)
     .forNoKeyUpdate()
@@ -1172,7 +1173,7 @@ export async function createThreadInTransaction(
     }
     const parentMembership = await transaction
       .selectFrom("workspaceMemberships")
-      .select("state")
+      .select(effectiveMembershipState())
       .where("workspaceId", "=", parent.workspaceId)
       .where("userId", "=", input.createdBy)
       .executeTakeFirst();
@@ -1485,7 +1486,7 @@ export async function updateThreadExecutionSelection(
     await lockWorkspaceRow(transaction, observed.workspaceId);
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select("state")
+      .select(effectiveMembershipState())
       .where("workspaceId", "=", observed.workspaceId)
       .where("userId", "=", input.requestedBy)
       .forNoKeyUpdate()
@@ -2153,7 +2154,7 @@ export async function updateThreadAccessMode(
     await lockWorkspaceRow(transaction, observed.workspaceId);
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select("state")
+      .select(effectiveMembershipState())
       .where("workspaceId", "=", observed.workspaceId)
       .where("userId", "=", input.requestedBy)
       .forNoKeyUpdate()

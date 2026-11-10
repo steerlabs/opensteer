@@ -80,6 +80,7 @@ describe("SecurityEffectService", () => {
       id: createId("securityEffect"),
       kind,
       membershipGeneration: 2,
+      membershipGenerationCutoff: 1,
       userId,
       workspaceId,
     })) as readonly SecurityEffectRecord[];
@@ -140,9 +141,14 @@ describe("SecurityEffectService", () => {
 
     await service.reconcile();
 
-    expect(closeRealtime).toHaveBeenCalledWith(userId, workspaceId);
+    expect(closeRealtime).toHaveBeenCalledWith(userId, workspaceId, 1);
     expect(publishViewerTasksChanged).toHaveBeenCalledWith(userId);
     expect(failActiveRunsForMembershipRevocation).toHaveBeenCalledTimes(3);
+    expect(failActiveRunsForMembershipRevocation).toHaveBeenCalledWith({
+      userId,
+      workspaceId,
+      membershipGenerationCutoff: 1,
+    });
     expect(publish).toHaveBeenCalledWith(terminal);
     expect(revokeBrowser).toHaveBeenCalledWith(userId, workspaceId);
     expect(revokeTriggers).toHaveBeenCalledWith({
@@ -165,6 +171,7 @@ describe("SecurityEffectService", () => {
       id: createId("securityEffect"),
       kind: "revoke-browser",
       membershipGeneration: 3,
+      membershipGenerationCutoff: 2,
       userId: createId("user"),
       workspaceId: createId("workspace"),
     };
@@ -204,6 +211,7 @@ describe("SecurityEffectService", () => {
       id: createId("securityEffect"),
       kind: "revoke-triggers",
       membershipGeneration: 4,
+      membershipGenerationCutoff: 3,
       userId: createId("user"),
       workspaceId: createId("workspace"),
     };
@@ -253,6 +261,7 @@ describe("SecurityEffectService", () => {
       id: createId("securityEffect"),
       kind: "revoke-triggers",
       membershipGeneration: 5,
+      membershipGenerationCutoff: 4,
       userId: createId("user"),
       workspaceId: createId("workspace"),
     };

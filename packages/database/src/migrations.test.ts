@@ -176,6 +176,7 @@ const releasedMigrationNames = [
   "0166_memory_pass_activity",
   "0167_quiet_tasks",
   "0168_devices",
+  "0169_access_foundation",
 ];
 
 describe("migration names", () => {

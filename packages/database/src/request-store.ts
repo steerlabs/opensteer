@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { ReplyTargetSchema } from "@opensteer/core";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
@@ -1594,7 +1595,7 @@ export class RequestStore {
             join
               .onRef("membership.workspaceId", "=", "requests.originatingWorkspaceId")
               .on("membership.userId", "=", input.userId)
-              .on("membership.state", "=", "active"),
+              .on(effectiveMembershipPredicate("membership")),
           )
           .where("requests.status", "=", "pending")
           .where((expression) =>
@@ -1730,7 +1731,7 @@ export class RequestStore {
             .select("id")
             .whereRef("workspaceMemberships.workspaceId", "=", "requests.originatingWorkspaceId")
             .where("workspaceMemberships.userId", "=", input.userId)
-            .where("workspaceMemberships.state", "=", "active"),
+            .where(effectiveMembershipPredicate()),
         ),
       );
     if (input.workspaceId) query = query.where("originatingWorkspaceId", "=", input.workspaceId);
@@ -4658,7 +4659,7 @@ async function lockRequestWorkspaceAuthorities(
   for (const workspaceId of workspaceIds) {
     const membership = await transaction
       .selectFrom("workspaceMemberships")
-      .select(["generation", "state"])
+      .select(["generation", effectiveMembershipState()])
       .where("workspaceId", "=", workspaceId)
       .where("userId", "=", input.requestedBy)
       .executeTakeFirst();
@@ -4873,11 +4874,11 @@ async function heldAssignments(
       exists (
         select 1 from public.workspace_memberships as membership
         where membership.workspace_id = worker.workspace_id
-          and membership.user_id = ${userId} and membership.state = 'active'
+          and membership.user_id = ${userId} and ${effectiveMembershipPredicate("membership")}
       ) and exists (
         select 1 from public.workspace_memberships as membership
         where membership.workspace_id = parent.workspace_id
-          and membership.user_id = ${userId} and membership.state = 'active'
+          and membership.user_id = ${userId} and ${effectiveMembershipPredicate("membership")}
       ) as readable
     from chain
     join public.threads as worker on worker.id = chain.child_thread_id

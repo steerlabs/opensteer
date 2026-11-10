@@ -1,3 +1,4 @@
+import { effectiveMembershipState } from "./effective-membership.js";
 import {
   withAdministrationTransaction,
   type AdministrationCommandIdentity,
@@ -1747,7 +1748,7 @@ export class ChannelStore {
           if (eligibleAuthorityUserId) {
             const inactiveMembership = await transaction
               .selectFrom("workspaceMemberships")
-              .select("state")
+              .select(effectiveMembershipState())
               .where("workspaceId", "=", binding.workspaceId)
               .where("userId", "=", eligibleAuthorityUserId)
               .forNoKeyUpdate()
@@ -1792,7 +1793,7 @@ export class ChannelStore {
           .select([
             "workspaceMemberships.generation",
             "workspaceMemberships.role",
-            "workspaceMemberships.state",
+            effectiveMembershipState(),
           ])
           .where("workspaceMemberships.workspaceId", "=", binding.workspaceId)
           .where("workspaceMemberships.userId", "=", authority.userId)
@@ -2492,7 +2493,7 @@ async function requireWorkspaceOwner(
 ): Promise<void> {
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["role", "state"])
+    .select(["role", effectiveMembershipState()])
     .where("workspaceId", "=", workspaceId)
     .where("userId", "=", userId)
     .executeTakeFirst();

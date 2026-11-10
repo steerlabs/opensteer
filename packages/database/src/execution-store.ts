@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
@@ -163,7 +164,7 @@ export async function renewActiveExecutionBindings(
             and run.status in ('starting', 'running', 'waiting')
             and run.harness_instance_id = provider_sessions.harness_instance_id
             and run.environment_id = thread.environment_id
-            and membership.state = 'active'
+            and ${effectiveMembershipPredicate("membership")}
             and membership.generation = run.membership_generation
             and opensteer_user_can_execute_environment(
               run.environment_id,

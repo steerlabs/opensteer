@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate, effectiveMembershipState } from "./effective-membership.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -45,7 +46,7 @@ export class PluginStore {
               .select("id")
               .whereRef("workspaceMemberships.workspaceId", "=", "plugins.workspaceId")
               .where("userId", "=", actor.userId)
-              .where("state", "=", "active"),
+              .where(effectiveMembershipPredicate()),
           )
           .as("isActiveWorkspaceMember"),
       )
@@ -140,7 +141,7 @@ export class PluginStore {
     const member = workspaceId
       ? await this.database
           .selectFrom("workspaceMemberships")
-          .select("state")
+          .select(effectiveMembershipState())
           .where("workspaceId", "=", workspaceId)
           .where("userId", "=", actorUserId)
           .executeTakeFirst()
@@ -420,7 +421,7 @@ export class PluginStore {
           .executeTakeFirstOrThrow();
         const member = await tx
           .selectFrom("workspaceMemberships")
-          .select(["role", "state"])
+          .select(["role", effectiveMembershipState()])
           .where("workspaceId", "=", input.workspaceId)
           .where("userId", "=", input.actorUserId)
           .executeTakeFirst();

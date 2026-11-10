@@ -92,7 +92,11 @@ export class SecurityEffectService {
       switch (effect.kind) {
         case "close-realtime":
           this.#realtime.publishViewerTasksChanged(effect.userId);
-          this.#realtime.closeUserWorkspace(effect.userId, effect.workspaceId);
+          this.#realtime.closeUserWorkspace(
+            effect.userId,
+            effect.workspaceId,
+            effect.membershipGenerationCutoff,
+          );
           break;
         case "stop-runs": {
           await this.#terminateAffectedRuns(effect);
@@ -135,6 +139,7 @@ export class SecurityEffectService {
 
   async #terminateAffectedRuns(effect: SecurityEffectRecord): Promise<void> {
     const recovery = await this.#store.failActiveRunsForMembershipRevocation({
+      membershipGenerationCutoff: effect.membershipGenerationCutoff,
       userId: effect.userId,
       workspaceId: effect.workspaceId,
     });

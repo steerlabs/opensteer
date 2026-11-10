@@ -146,6 +146,20 @@ interface SubscriberOptions {
  * subscriber that goes live sends the Workspace's open streams whole instead.
  */
 class Subscriber {
+  #membershipGeneration: number | undefined;
+  #membershipGenerationCutoff = -1;
+
+  captureMembershipGeneration(generation: number): boolean {
+    this.#membershipGeneration = generation;
+    return generation > this.#membershipGenerationCutoff;
+  }
+
+  revokeMembershipThrough(cutoff: number): void {
+    this.#membershipGenerationCutoff = Math.max(this.#membershipGenerationCutoff, cutoff);
+    if (this.#membershipGeneration === undefined || this.#membershipGeneration > cutoff) return;
+    this.sink.close(4003, "Workspace access revoked");
+    this.close();
+  }
   readonly sink: RealtimeSink;
   readonly workspaceId: WorkspaceId;
   readonly userId: UserId;
@@ -687,6 +701,13 @@ export class RealtimeHub {
           message: "Workspace realtime subscription is not authorized",
         });
       }
+      if (!subscriber.captureMembershipGeneration(membership.generation)) {
+        subscriber.revokeMembershipThrough(membership.generation);
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Workspace realtime subscription is not authorized",
+        });
+      }
       const messages: HostToClientMessage[] = [];
       let cursor: Sequence;
       if (compareSequence(input.afterSequence, zeroSequence) === 0) {
@@ -1050,12 +1071,14 @@ export class RealtimeHub {
     }
   }
 
-  closeUserWorkspace(userId: UserId, workspaceId: WorkspaceId): void {
+  closeUserWorkspace(
+    userId: UserId,
+    workspaceId: WorkspaceId,
+    membershipGenerationCutoff = Number.MAX_SAFE_INTEGER,
+  ): void {
     for (const subscriber of this.#subscribers.get(workspaceId) ?? []) {
-      if (subscriber.userId === userId) {
-        subscriber.sink.close(4003, "Workspace access revoked");
-        subscriber.close();
-      }
+      if (subscriber.userId === userId)
+        subscriber.revokeMembershipThrough(membershipGenerationCutoff);
     }
   }
 }

@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import { requestSettlementActor } from "./request-settlement.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
@@ -137,7 +138,7 @@ export class LocalMcpServerStore {
             "threads.workspaceId",
           )
           .where("workspaceMemberships.userId", "=", owner)
-          .where("workspaceMemberships.state", "=", "active")
+          .where(effectiveMembershipPredicate())
           .select(["threads.id as threadId", "threads.title as threadTitle", "threads.workspaceId"])
           .where("integrationInstallations.id", "=", locked.installationId)
           .executeTakeFirst();

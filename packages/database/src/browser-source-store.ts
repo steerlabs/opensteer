@@ -1,3 +1,4 @@
+import { effectiveMembershipPredicate } from "./effective-membership.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -375,7 +376,7 @@ export class BrowserSourceStore {
       .select(grantColumns.map((column) => `browserSiteGrants.${column}` as const))
       .where("browserSiteGrants.ownerId", "=", ownerId)
       .where("browserSiteGrants.revokedAt", "is", null)
-      .where("workspaceMemberships.state", "=", "active")
+      .where(effectiveMembershipPredicate())
       .where("workspaces.status", "=", "ready")
       .orderBy("browserSiteGrants.createdAt", "asc")
       .limit(maxActiveSiteGrants)
@@ -662,7 +663,7 @@ async function workspaceUsable(
     .select(["workspaces.kind", "workspaces.status", "workspaceMemberships.role"])
     .where("workspaces.id", "=", workspaceId)
     .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where(effectiveMembershipPredicate())
     .where("users.disabledAt", "is", null);
   if (lock) query = query.forShare(["workspaces", "workspaceMemberships"]);
   const workspace = await query.executeTakeFirst();

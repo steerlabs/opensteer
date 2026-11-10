@@ -1,4 +1,5 @@
 import { sql } from "kysely";
+import { effectiveMembershipState } from "./effective-membership.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { appendDoneState } from "./task-done.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
@@ -278,7 +279,7 @@ export async function finalizeRunTransaction(
   // deliver them again, with the same IDs and the old snapshot still on its Run.
   const membership = await transaction
     .selectFrom("workspaceMemberships")
-    .select(["generation", "state"])
+    .select(["generation", effectiveMembershipState()])
     .where("workspaceId", "=", run.workspaceId)
     .where("userId", "=", run.requestedBy)
     .executeTakeFirst();
