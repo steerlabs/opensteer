@@ -5,3 +5,4 @@ export { mockBrowserSignInRequest } from "./mock-chrome-sign-ins.js";
 export type { MockPlaceScript } from "./mock-places.js";
 
 export * from "./mock-desktop-updates.js";
+export * from "./mock-team-access.js";

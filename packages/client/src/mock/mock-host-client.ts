@@ -30,6 +30,7 @@ import {
 } from "@opensteer/protocol";
 import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
+import { MockTeamAccess, type MockTeamScenario } from "./mock-team-access.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
 import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
@@ -1936,6 +1937,8 @@ export interface MockHostClientOptions {
    * places — for the screens a first visit sees.
    */
   world?: "seeded" | "first-run" | "busy" | "stress";
+  /** The team this Host plays; `absent`, today's Hosts, by default. */
+  team?: MockTeamScenario;
   latencyMs?: number;
   now?: () => Date;
   pendingRequests?: readonly Request[];
@@ -2037,6 +2040,7 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  */
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   return {
+    ...client.team.handlers(),
     "connections.list": async () => rpcSuccess({ connections: client.listConnections() }),
     "connections.authorization.get": async ({ requestId }) =>
       rpcSuccess(client.connectionConsent(requestId)),
@@ -2626,6 +2630,19 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "team.project.create":
+    case "team.access.apply":
+    case "team.access.selfGrant":
+    case "team.member.change":
+    case "team.connection.revoke":
+    case "team.project.settings.set":
+    case "team.invitation.create":
+    case "team.invitation.revoke":
+      return rpcSuccess(
+        await client.team.command(command, async (name) =>
+          WorkspaceIdSchema.parse((await client.createWorkspace({ name })).id),
+        ),
+      );
     case "phone.tab.close":
       client.closePhoneTab(command.machineId);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
@@ -5309,6 +5326,7 @@ class MockHostState {
       (row) => row.id !== id || row.userId !== this.snapshot.user?.id,
     );
   }
+  readonly team: MockTeamAccess;
   readonly settings = new MockSettingsFixtures(
     () => this.emit(),
     () =>
@@ -6284,8 +6302,10 @@ class MockHostState {
     this.latencyMs = options.latencyMs ?? 420;
     this.now = options.now ?? (() => new Date());
     this.chrome = new MockChromeSignIns(this.now);
+    this.team = new MockTeamAccess(options.team, this.now);
     const initial = {
       ...seedMockTaskMarks(createInitialSnapshot()),
+      teamAdministrationAvailable: this.team.available,
       browserTabGroups: this.tabGroups,
       sharedTaskDoneAvailable: options.sharedTaskDoneAvailable ?? true,
       quietTasksAvailable: options.quietTasksAvailable ?? true,

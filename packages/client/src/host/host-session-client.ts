@@ -1206,6 +1206,7 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
+      teamAdministrationAvailable: this.#capabilities?.includes("team-administration-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
@@ -4068,6 +4069,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       voiceAvailable: capabilities.includes("voice-run-v1"),
+      teamAdministrationAvailable: capabilities.includes("team-administration-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
     if (changed) {
@@ -6671,6 +6673,7 @@ export class HttpHostClient {
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
+      teamAdministrationAvailable: this.#capabilities?.includes("team-administration-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       threads:
         threads.length === this.#snapshot.threads.length &&
