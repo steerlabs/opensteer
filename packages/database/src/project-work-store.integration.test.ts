@@ -1,19 +1,11 @@
+import { prepareProjectAdmission, bindProjectRun } from "./project-work.test-support.js";
 import { readProjectRunThreadState } from "./run-thread-state.js";
 import { ProjectBindingStore } from "./project-execution-store.js";
 import { loadProjectRunDispatchContext } from "./execution-store.js";
-import { issueRunGrant } from "./run-grants.js";
 import { settleAssignmentAfterRun } from "./assignment-store.js";
-import { runFromRow, messageFromRow } from "./thread-row-mappers.js";
 import { assertActiveProjectBinding, readProjectRunBinding } from "./execution-authority.js";
 import { randomUUID } from "node:crypto";
-import {
-  type RunId,
-  type RunnerId,
-  ProjectRunBindingSchema,
-  HumanRootSchema,
-  createId,
-} from "@opensteer/core";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { ProjectRunBindingSchema, HumanRootSchema, createId } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -24,11 +16,7 @@ import { TriggerStore } from "./trigger-store.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 import { setProjectRuntimeSettings } from "./project-runtime-settings-store.js";
-import {
-  createProjectIdentityFixture,
-  insertProjectRunFixture,
-} from "./project-work.test-support.js";
-import { testModelSelection, testReadyHarnessCatalog } from "./store.integration.test-support.js";
+import { testModelSelection } from "./store.integration.test-support.js";
 import { ensureProjectPrincipal, ProjectWorkStore } from "./project-work-store.js";
 
 describeStore("Project principal lookup", (it) => {
@@ -145,188 +133,6 @@ describeStore("Project principal lookup", (it) => {
     ).toEqual([{ id: ids[0] }]);
   });
 });
-
-async function prepareProjectAdmission(storeFixture: StoreFixture, running = false) {
-  const project = await createProjectIdentityFixture(storeFixture, "admission");
-  let prepared = await insertProjectRunFixture(
-    storeFixture,
-    project,
-    "existing-thread",
-    project.userId,
-    "queued",
-  );
-  const database = storeFixture.database;
-  {
-    await database.deleteFrom("commands").where("runId", "=", prepared.run.id).execute();
-    await database.deleteFrom("runs").where("id", "=", prepared.run.id).execute();
-    await database
-      .updateTable("threadInputs")
-      .set({ state: "cancelled", cancelReason: "fixture-seed-retired" })
-      .where("messageId", "=", prepared.turn.input.messageId)
-      .execute();
-  }
-  await database
-    .updateTable("threads")
-    .set({ nextMessageSequence: "1", nextRunOrdinal: 1 })
-    .where("id", "=", prepared.thread.id)
-    .execute();
-  await database
-    .insertInto("harnessCatalogs")
-    .values({
-      environmentId: project.environmentId,
-      harnessInstanceId: prepared.harnessInstance.id,
-      catalog: jsonValue(
-        HarnessInstanceCatalogSchema.parse({
-          ...testReadyHarnessCatalog(prepared.harnessInstance.id),
-          models: [
-            {
-              displayName: "Project model",
-              isDefault: true,
-              providerId: testModelSelection.providerId,
-              modelId: testModelSelection.modelId,
-              options: [
-                {
-                  id: "effort",
-                  label: "Effort",
-                  type: "select",
-                  values: [{ value: "low", label: "Low" }],
-                },
-              ],
-            },
-          ],
-          driverKind: "codex",
-          continuationIdentity: {
-            continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-            driverKind: "codex",
-          },
-        }),
-      ),
-      capturedAt: new Date(),
-    })
-    .execute();
-  await setProjectRuntimeSettings(
-    database,
-    { userId: project.userId, authorityGeneration: 1 },
-    {
-      workspaceId: project.workspace.id,
-      expectedAccessRevision: 1,
-      expectedSettingsRevision: null,
-      commandIdentity: createId("command"),
-      harnessInstanceId: prepared.harnessInstance.id,
-      modelSelection: testModelSelection,
-      accessMode: "full-access",
-      instructions: "Project only",
-      timeZone: "UTC",
-    },
-  );
-  const origin = HumanRootSchema.parse({
-    userId: project.userId,
-    initiatorGeneration: 1,
-    membershipGeneration: 1,
-    originConnectionId: null,
-  });
-  const store = new ProjectWorkStore(database, {
-    runnerIsConnected: () => true,
-    runnerIsAttached: () => true,
-  });
-  if (running) {
-    const admitted = await store.admitProjectWork({
-      threadId: prepared.thread.id,
-      origin,
-      source: { kind: "human" },
-      content: [{ type: "text", text: "bound parent" }],
-      policy: "queue",
-      idempotencyKey: "bound-parent",
-    });
-    if (!admitted.runId || !admitted.commandId) throw new Error("Parent fixture was not admitted");
-    await bindProjectRun(storeFixture, admitted.runId, project.runnerId);
-    const run = runFromRow(
-      await database
-        .selectFrom("runs")
-        .selectAll()
-        .where("id", "=", admitted.runId)
-        .executeTakeFirstOrThrow(),
-    );
-    const message = messageFromRow(
-      await database
-        .selectFrom("messages")
-        .selectAll()
-        .where("id", "=", admitted.input.messageId)
-        .executeTakeFirstOrThrow(),
-    );
-    const command = await database
-      .selectFrom("commands")
-      .selectAll()
-      .where("id", "=", admitted.commandId)
-      .executeTakeFirstOrThrow();
-    prepared = { ...prepared, run, turn: { run, message, input: admitted.input, command } };
-  }
-  return { project, prepared, database, origin, store };
-}
-
-async function bindProjectRun(fixture: StoreFixture, runId: RunId, runnerId: RunnerId) {
-  const grantId = await fixture.database.transaction().execute(async (transaction) => {
-    const run = await transaction
-      .selectFrom("runs")
-      .selectAll()
-      .where("id", "=", runId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    const thread = await transaction
-      .selectFrom("threads")
-      .selectAll()
-      .where("id", "=", run.threadId)
-      .executeTakeFirstOrThrow();
-    await transaction
-      .selectFrom("workspaces")
-      .select("id")
-      .where("id", "=", thread.workspaceId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    await transaction
-      .selectFrom("providerSessions")
-      .select("id")
-      .where("threadId", "=", thread.id)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute();
-    await transaction
-      .updateTable("providerSessions")
-      .set({ active: false })
-      .where("threadId", "=", thread.id)
-      .execute();
-    await transaction
-      .updateTable("providerSessions")
-      .set({
-        active: true,
-        status: "running",
-        runnerId,
-        runnerBootId: "result-boot",
-        bindingGeneration: 1,
-        leaseExpiresAt: new Date(Date.now() + 60_000),
-        leaseTokenHash: "fixture-lease",
-      })
-      .where("id", "=", run.providerSessionId)
-      .execute();
-    await transaction
-      .updateTable("runs")
-      .set({ status: "running", bindingGeneration: 1, startedAt: new Date() })
-      .where("id", "=", runId)
-      .execute();
-    return (
-      await issueRunGrant(transaction, {
-        runId,
-        runnerId,
-        runnerBootId: "result-boot",
-        bindingGeneration: 1,
-        modelSelection: testModelSelection,
-      })
-    ).grantId;
-  });
-  const saved = await readProjectRunBinding(fixture.database, { runId, grantId });
-  if (!saved) throw new Error("Project binding fixture was not retained");
-  return saved.binding;
-}
 
 async function completedProjectAssignment(fixture: StoreFixture) {
   const context = await prepareProjectAdmission(fixture);

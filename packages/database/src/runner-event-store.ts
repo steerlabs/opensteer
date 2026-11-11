@@ -699,7 +699,7 @@ async function projectRunPhase(
  * surrogate pair and U+0000 in any text, keys included: the one is made
  * well-formed and the other becomes U+FFFD, as in tool output.
  */
-function storableJson<Value>(value: Value): Value {
+export function storableJson<Value>(value: Value): Value {
   return JSON.parse(
     JSON.stringify(value, (_key, item: unknown) => {
       if (typeof item === "string") return storableText(item);

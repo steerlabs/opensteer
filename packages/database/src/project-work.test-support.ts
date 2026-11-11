@@ -1,3 +1,9 @@
+import { readProjectRunBinding } from "./execution-authority.js";
+import { HumanRootSchema, type RunId, type RunnerId } from "@opensteer/core";
+import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { ProjectWorkStore } from "./project-work-store.js";
+import { setProjectRuntimeSettings } from "./project-runtime-settings-store.js";
+import { testReadyHarnessCatalog } from "./store.integration.test-support.js";
 import { randomUUID } from "node:crypto";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue, principalIdForUser } from "./store-primitives.js";
@@ -307,4 +313,187 @@ export async function insertProjectRunFixture(
     runnerBootId,
     bindingGeneration: status === "running" ? 1 : 0,
   };
+}
+
+export async function prepareProjectAdmission(storeFixture: StoreFixture, running = false) {
+  const project = await createProjectIdentityFixture(storeFixture, "admission");
+  let prepared = await insertProjectRunFixture(
+    storeFixture,
+    project,
+    "existing-thread",
+    project.userId,
+    "queued",
+  );
+  const database = storeFixture.database;
+  {
+    await database.deleteFrom("commands").where("runId", "=", prepared.run.id).execute();
+    await database.deleteFrom("runs").where("id", "=", prepared.run.id).execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "cancelled", cancelReason: "fixture-seed-retired" })
+      .where("messageId", "=", prepared.turn.input.messageId)
+      .execute();
+  }
+  await database
+    .updateTable("threads")
+    .set({ nextMessageSequence: "1", nextRunOrdinal: 1 })
+    .where("id", "=", prepared.thread.id)
+    .execute();
+  await database
+    .insertInto("harnessCatalogs")
+    .values({
+      environmentId: project.environmentId,
+      harnessInstanceId: prepared.harnessInstance.id,
+      catalog: jsonValue(
+        HarnessInstanceCatalogSchema.parse({
+          ...testReadyHarnessCatalog(prepared.harnessInstance.id),
+          models: [
+            {
+              displayName: "Project model",
+              isDefault: true,
+              providerId: testModelSelection.providerId,
+              modelId: testModelSelection.modelId,
+              options: [
+                {
+                  id: "effort",
+                  label: "Effort",
+                  type: "select",
+                  values: [{ value: "low", label: "Low" }],
+                },
+              ],
+            },
+          ],
+          driverKind: "codex",
+          continuationIdentity: {
+            continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
+            driverKind: "codex",
+          },
+        }),
+      ),
+      capturedAt: new Date(),
+    })
+    .execute();
+  await setProjectRuntimeSettings(
+    database,
+    { userId: project.userId, authorityGeneration: 1 },
+    {
+      workspaceId: project.workspace.id,
+      expectedAccessRevision: 1,
+      expectedSettingsRevision: null,
+      commandIdentity: createId("command"),
+      harnessInstanceId: prepared.harnessInstance.id,
+      modelSelection: testModelSelection,
+      accessMode: "full-access",
+      instructions: "Project only",
+      timeZone: "UTC",
+    },
+  );
+  const origin = HumanRootSchema.parse({
+    userId: project.userId,
+    initiatorGeneration: 1,
+    membershipGeneration: 1,
+    originConnectionId: null,
+  });
+  const store = new ProjectWorkStore(database, {
+    runnerIsConnected: () => true,
+    runnerIsAttached: () => true,
+  });
+  if (running) {
+    const admitted = await store.admitProjectWork({
+      threadId: prepared.thread.id,
+      origin,
+      source: { kind: "human" },
+      content: [{ type: "text", text: "bound parent" }],
+      policy: "queue",
+      idempotencyKey: "bound-parent",
+    });
+    if (!admitted.runId || !admitted.commandId) throw new Error("Parent fixture was not admitted");
+    await bindProjectRun(storeFixture, admitted.runId, project.runnerId);
+    const run = runFromRow(
+      await database
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", admitted.runId)
+        .executeTakeFirstOrThrow(),
+    );
+    const message = messageFromRow(
+      await database
+        .selectFrom("messages")
+        .selectAll()
+        .where("id", "=", admitted.input.messageId)
+        .executeTakeFirstOrThrow(),
+    );
+    const command = await database
+      .selectFrom("commands")
+      .selectAll()
+      .where("id", "=", admitted.commandId)
+      .executeTakeFirstOrThrow();
+    prepared = { ...prepared, run, turn: { run, message, input: admitted.input, command } };
+  }
+  return { project, prepared, database, origin, store };
+}
+
+export async function bindProjectRun(fixture: StoreFixture, runId: RunId, runnerId: RunnerId) {
+  const runnerBootId = `rbt_${randomUUID()}`;
+  const grantId = await fixture.database.transaction().execute(async (transaction) => {
+    const run = await transaction
+      .selectFrom("runs")
+      .selectAll()
+      .where("id", "=", runId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    const thread = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", run.threadId)
+      .executeTakeFirstOrThrow();
+    await transaction
+      .selectFrom("workspaces")
+      .select("id")
+      .where("id", "=", thread.workspaceId)
+      .forNoKeyUpdate()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .selectFrom("providerSessions")
+      .select("id")
+      .where("threadId", "=", thread.id)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+    await transaction
+      .updateTable("providerSessions")
+      .set({ active: false })
+      .where("threadId", "=", thread.id)
+      .execute();
+    await transaction
+      .updateTable("providerSessions")
+      .set({
+        active: true,
+        status: "running",
+        runnerId,
+        runnerBootId,
+        bindingGeneration: 1,
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        leaseTokenHash: "fixture-lease",
+      })
+      .where("id", "=", run.providerSessionId)
+      .execute();
+    await transaction
+      .updateTable("runs")
+      .set({ status: "running", bindingGeneration: 1, startedAt: new Date() })
+      .where("id", "=", runId)
+      .execute();
+    return (
+      await issueRunGrant(transaction, {
+        runId,
+        runnerId,
+        runnerBootId,
+        bindingGeneration: 1,
+        modelSelection: testModelSelection,
+      })
+    ).grantId;
+  });
+  const saved = await readProjectRunBinding(fixture.database, { runId, grantId });
+  if (!saved) throw new Error("Project binding fixture was not retained");
+  return saved.binding;
 }
