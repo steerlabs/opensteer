@@ -1253,7 +1253,7 @@ describe("a link arriving at the start page", () => {
       )!;
       const tab = session.tabs[0]!;
       profileId = session.profileId;
-      url = tab.url;
+      url = `${session.tabCatalog!.tabs.find((row) => row.id === tab.id)!.site}/`;
       localStorage.setItem(
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
         '{"kind":"guest"}',

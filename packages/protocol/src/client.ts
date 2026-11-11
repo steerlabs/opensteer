@@ -154,6 +154,10 @@ export const unsupportedVersionCloseCode = 4011;
 export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("client.browser.resync"),
+    continuation: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
     groupId: BrowserSessionIdSchema.optional(),
   }),
   z.strictObject({

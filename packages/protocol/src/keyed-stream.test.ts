@@ -40,6 +40,33 @@ function fixture(count = 10, targetBytes = 256) {
   return { rows, publisher, receiver, drain };
 }
 describe("keyed streams", () => {
+  it("continues a seeded prefix without implying closes until the matching end", () => {
+    const f = fixture();
+    const prefix = [...f.rows.values()].slice(0, 3);
+    f.receiver.seed(prefix, { activeId: "0" });
+    f.publisher.seed(prefix);
+    const begin = f.publisher.next()!;
+    expect(begin).toMatchObject({ op: "begin", prefix: 3 });
+    expect(f.receiver.apply(begin)).toBe("staged");
+    f.publisher.settled(begin, true);
+    f.rows.delete("0");
+    f.publisher.mark("0");
+    const firstRows = f.publisher.next()!;
+    expect(f.receiver.apply(firstRows)).toBe("staged");
+    expect([...f.receiver.rows.values()]).toEqual(prefix);
+    f.publisher.settled(firstRows, true);
+    const frames = [firstRows, ...f.drain()];
+    expect(frames.filter((frame) => frame.op === "rows").flatMap((frame) => frame.rows)).toEqual(
+      [...f.rows.values()].slice(2),
+    );
+    expect(frames.at(-1)).toMatchObject({ op: "change", remove: ["0"] });
+    expect(f.receiver.rows.size).toBe(9);
+    f.publisher.reset();
+    expect(f.publisher.next()).not.toHaveProperty("prefix");
+    const empty = fixture();
+    expect(empty.receiver.apply({ op: "begin", generation: "bad", prefix: 3 })).toBe("resync");
+    expect(empty.receiver.rows.size).toBe(0);
+  });
   it("sends one field at the same size regardless of catalog size", () => {
     const sizes = [10, 1000].map((count) => {
       const f = fixture(count);

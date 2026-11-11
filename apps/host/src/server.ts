@@ -3962,10 +3962,14 @@ function attachRealtimeSocket(
       if (message.type === "client.browser.resync") {
         if (browserStream) browserStream.resync(message.groupId);
         else if (!message.groupId) {
-          const attached = await browser.clientStreams.attach(session.user.id, {
-            send: (message) => sink.send(message),
-            bufferedAmount: () => socket.bufferedAmount,
-          });
+          const attached = await browser.clientStreams.attach(
+            session.user.id,
+            {
+              send: (message) => sink.send(message),
+              bufferedAmount: () => socket.bufferedAmount,
+            },
+            message.continuation,
+          );
           if (realtimeClosed) attached.close();
           else browserStream = attached;
         }

@@ -155,6 +155,70 @@ function fixture(count = 1) {
 }
 afterEach(() => vi.useRealTimers());
 describe("BrowserClientStreams", () => {
+  it("continues only a matching authorized bootstrap and falls back after changes or revocation", async () => {
+    vi.useFakeTimers();
+    const f = fixture(200);
+    const prefix = await f.streams.source.bootstrap(alice);
+    expect(prefix.tabs[0]!.complete).toBe(false);
+    const frames: BrowserClientStreamMessage[] = [];
+    const connection = await f.streams.attach(
+      alice,
+      {
+        bufferedAmount: () => 0,
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      },
+      prefix.continuation,
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    const rows = frames.flatMap<BrowserGroupRow | BrowserTabRow>((frame) =>
+      frame.type === "host.browser-tabs" && frame.stream.op === "rows" ? frame.stream.rows : [],
+    );
+    expect([...prefix.tabs[0]!.rows, ...rows]).toHaveLength(200);
+    expect(frames[0]).toMatchObject({ stream: { op: "begin", prefix: 1 } });
+    connection.close();
+    frames.length = 0;
+    f.records.set(tabId, { ...f.records.get(tabId)!, title: "Changed since bootstrap" });
+    const stale = await f.streams.attach(
+      alice,
+      {
+        bufferedAmount: () => 0,
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      },
+      prefix.continuation,
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(frames[0]!.stream).not.toHaveProperty("prefix");
+    expect(
+      frames.flatMap<BrowserGroupRow | BrowserTabRow>((frame) =>
+        frame.stream.op === "rows" ? frame.stream.rows : [],
+      ),
+    ).toContainEqual(expect.objectContaining({ id: tabId, title: "Changed since bootstrap" }));
+    stale.close();
+    frames.length = 0;
+    f.visible = false;
+    await f.streams.attach(
+      alice,
+      {
+        bufferedAmount: () => 0,
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      },
+      prefix.continuation,
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      frames.flatMap<BrowserGroupRow | BrowserTabRow>((frame) =>
+        frame.stream.op === "rows" ? frame.stream.rows : [],
+      ),
+    ).toEqual([]);
+    expect(frames[0]!.stream).not.toHaveProperty("prefix");
+    f.streams.close();
+  });
   it("shares viewer projections but keeps each connection's revision independent", async () => {
     vi.useFakeTimers();
     const f = fixture();
@@ -512,7 +576,7 @@ describe("BrowserClientStreams", () => {
     await attaching;
     await vi.advanceTimersByTimeAsync(50);
     expect(
-      frames.flatMap((frame) =>
+      frames.flatMap<BrowserGroupRow | BrowserTabRow>((frame) =>
         frame.type === "host.browser-tabs" && frame.stream.op === "rows" ? frame.stream.rows : [],
       ),
     ).toMatchObject([{ id: tabId, state: "suspended", title: "Page" }]);

@@ -264,7 +264,9 @@ it.each([64, 500])(
     const { BrowserClientStreams } = (await import(modulePath)) as {
       BrowserClientStreams: new (rowPorts: typeof ports) => {
         source: {
-          bootstrap(user: typeof ownerId): Promise<Pick<BrowserWireBootstrap, "groups" | "tabs">>;
+          bootstrap(
+            user: typeof ownerId,
+          ): Promise<Pick<BrowserWireBootstrap, "groups" | "tabs" | "continuation">>;
           markTabs(sessionId: (typeof groups)[number]["id"], ids: Iterable<string>): void;
         };
         attach(
@@ -273,6 +275,7 @@ it.each([64, 500])(
             bufferedAmount(): number;
             send(message: HostToClientMessage): Promise<void>;
           },
+          continuation?: string,
         ): Promise<{ close(): void; resync(): void }>;
         close(): void;
       };
@@ -303,18 +306,22 @@ it.each([64, 500])(
         const send = socket.send.bind(socket);
         socket.send = (data) => {
           send(data);
-          const message = JSON.parse(data) as { type: string };
+          const message = JSON.parse(data) as { type: string; continuation?: string };
           if (message.type !== "client.browser.resync") return;
           if (attachment) attachment.resync();
           else
             void publisher
-              .attach(ownerId, {
-                bufferedAmount: () => 0,
-                send: async (frame) => {
-                  messages.push(frame);
-                  socket.receive(frame);
+              .attach(
+                ownerId,
+                {
+                  bufferedAmount: () => 0,
+                  send: async (frame) => {
+                    messages.push(frame);
+                    socket.receive(frame);
+                  },
                 },
-              })
+                message.continuation,
+              )
               .then((connection) => {
                 attachment = connection;
                 attachments.push(connection);
@@ -345,6 +352,24 @@ it.each([64, 500])(
         count,
       );
       expect(client.getSnapshot().workspaceTabs?.every((group) => group.whole)).toBe(true);
+      expect([
+        ...prefix.groups.rows,
+        ...incoming[0]!.flatMap((message) =>
+          message.type === "host.browser-groups" && message.stream.op === "rows"
+            ? message.stream.rows
+            : [],
+        ),
+      ]).toHaveLength(groups.length);
+      const deliveredTabs = [
+        ...prefix.tabs.flatMap((group) => group.rows),
+        ...incoming[0]!.flatMap((message) =>
+          message.type === "host.browser-tabs" && message.stream.op === "rows"
+            ? message.stream.rows
+            : [],
+        ),
+      ];
+      expect(deliveredTabs).toHaveLength(count);
+      expect(new Set(deliveredTabs.map((row) => row.id)).size).toBe(count);
       const prefixBytes = keyedStreamBytes(prefix);
       const browserSection = keyedStreamBytes(body.browser);
       const snapshotBytes = total();

@@ -131,17 +131,27 @@ export class MockBrowserStream {
       stream.publish(tabs, (frame) => this.#store.applyTabs(id, frame));
     }
     for (const id of this.#tabs.keys()) if (!rows.tabs.has(id)) this.#tabs.delete(id);
+    const derived = this.#derive.derive(
+      {
+        ...snapshot,
+        browserSessions: previous?.browserSessions ?? [],
+        workspaceTabs: previous?.workspaceTabs,
+      },
+      this.#store,
+      surface,
+    );
+    const order = new Map(snapshot.browserSessions.map((session, index) => [session.id, index]));
+    const sessions = derived.browserSessions.toSorted(
+      (a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity),
+    );
     return {
       ...snapshot,
-      ...this.#derive.derive(
-        {
-          ...snapshot,
-          browserSessions: previous?.browserSessions ?? [],
-          workspaceTabs: previous?.workspaceTabs,
-        },
-        this.#store,
-        surface,
-      ),
+      ...derived,
+      browserSessions:
+        previous?.browserSessions.length === sessions.length &&
+        sessions.every((session, index) => session === previous.browserSessions[index])
+          ? previous.browserSessions
+          : sessions,
     };
   }
 }

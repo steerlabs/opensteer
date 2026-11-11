@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BrowserSessionId, UserId } from "@opensteer/core";
 import type { BrowserGroupFacts, WorkspaceTabStreamRow } from "@opensteer/database";
 import {
@@ -444,7 +445,7 @@ export class BrowserRowSource {
   }
   async bootstrap(
     userId: UserId,
-  ): Promise<Required<Pick<HostedBrowserBootstrap, "groups" | "tabs">>> {
+  ): Promise<Pick<HostedBrowserBootstrap, "groups" | "tabs" | "continuation">> {
     if (this.#closed) return { groups: { rows: [], complete: true }, tabs: [] };
     const authority = this.ports.authorityGeneration();
     const budget = 64 * 1024;
@@ -512,7 +513,14 @@ export class BrowserRowSource {
     const finalGroups = prefix(groups, budget, { complete: false });
     finalGroups.complete &&= exhausted;
     const included = new Set(finalGroups.rows.map((row) => row.id));
-    return { groups: finalGroups, tabs: tabs.filter((entry) => included.has(entry.groupId)) };
+    const packed = {
+      groups: finalGroups,
+      tabs: tabs.filter((entry) => included.has(entry.groupId)),
+    };
+    return {
+      ...packed,
+      continuation: createHash("sha256").update(JSON.stringify(packed)).digest("hex"),
+    };
   }
   reauthorizeAll(): Promise<void> {
     return Promise.all([...this.#projections.keys()].map((id) => this.reauthorize(id))).then(
@@ -568,12 +576,20 @@ export class BrowserClientStreams {
       }
     });
   }
-  async attach(userId: UserId, transport: Pick<Connection, "send" | "bufferedAmount">) {
+  async attach(
+    userId: UserId,
+    transport: Pick<Connection, "send" | "bufferedAmount">,
+    continuation?: string,
+  ) {
     if (this.#closed) throw new Error("Browser client streams are closed.");
     const projection = await this.source.acquire(userId);
-    if (this.#closed) {
+    let prefix: Awaited<ReturnType<BrowserRowSource["bootstrap"]>> | undefined;
+    try {
+      if (continuation) prefix = await this.source.bootstrap(userId);
+      if (this.#closed) throw new Error("Browser client streams are closed.");
+    } catch (error) {
       this.source.release(projection);
-      throw new Error("Browser client streams are closed.");
+      throw error;
     }
     const connection: Connection = {
       ...transport,
@@ -592,6 +608,10 @@ export class BrowserClientStreams {
         envelopeBytes: keyedStreamBytes({ type: "host.browser-groups", stream: null }) - 4,
       }),
     };
+    if (prefix?.continuation === continuation && prefix) {
+      connection.groups.seed(prefix.groups.rows);
+      for (const entry of prefix.tabs) this.#tabs(connection, entry.groupId).seed(entry.rows);
+    }
     this.#connections.add(connection);
     for (const id of projection.groups.keys()) this.#tabs(connection, id);
     this.#schedule(connection);

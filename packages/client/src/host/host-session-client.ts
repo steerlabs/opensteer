@@ -491,6 +491,7 @@ export class HttpHostClient {
   readonly #presenceMarks = new Map<string, number>();
   #presenceCounter = 0;
   #browserCarrier: WorkspaceChannel | null = null;
+  #browserContinuation: string | undefined;
   readonly #browserWaiters = new Set<() => void>();
   readonly #browserTabs = new BrowserTabStore((groupId) => this.#resyncBrowser(groupId));
   readonly #browserSnapshot = new BrowserSnapshotDerivation();
@@ -3259,6 +3260,7 @@ export class HttpHostClient {
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
     this.#browserTabs.clear();
+    this.#browserContinuation = undefined;
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
@@ -3899,7 +3901,8 @@ export class HttpHostClient {
       if (mark > presenceMark) continue;
       this.#presenceMarks.delete(sessionId);
     }
-    this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs });
+    if (this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs }))
+      this.#browserContinuation = payload.browser.continuation;
     const initialWorkspace = homeWorkspace ?? workspaces[0];
     if (initialWorkspace) this.#ensureWorkspaceChannel(initialWorkspace.id);
     // Retry retained workspaces too: the open thread need not be in Main.
@@ -4191,12 +4194,16 @@ export class HttpHostClient {
     }
   }
 
-  #resyncBrowser(groupId?: string): void {
+  #resyncBrowser(groupId?: string, continuation?: string): void {
     const carrier = this.#browserCarrier;
     if (!carrier?.socket || carrier.socket.readyState !== 1) return;
     try {
       carrier.socket.send(
-        JSON.stringify({ type: "client.browser.resync", ...(groupId ? { groupId } : {}) }),
+        JSON.stringify({
+          type: "client.browser.resync",
+          ...(groupId ? { groupId } : {}),
+          ...(continuation ? { continuation } : {}),
+        }),
       );
     } catch {
       this.#closeChannel(carrier, true, 1000, "Browser resync unsendable");
@@ -4207,7 +4214,8 @@ export class HttpHostClient {
       return;
     this.#browserCarrier =
       [...this.#channels.values()].find((channel) => channel.socket?.readyState === 1) ?? null;
-    this.#resyncBrowser();
+    this.#resyncBrowser(undefined, this.#browserContinuation);
+    this.#browserContinuation = undefined;
   }
   #releaseBrowserCarrier(channel: WorkspaceChannel): void {
     if (channel !== this.#browserCarrier) return;
@@ -5448,6 +5456,7 @@ export class HttpHostClient {
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
     this.#browserTabs.clear();
+    this.#browserContinuation = undefined;
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();

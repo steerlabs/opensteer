@@ -1606,6 +1606,10 @@ export const BrowserTabWriteResultSchema = z.object({
 export type BrowserTabWriteResult = z.infer<typeof BrowserTabWriteResultSchema>;
 
 export const HostedBrowserBootstrapSchema = z.object({
+  continuation: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/u)
+    .optional(),
   groups: z.strictObject({ rows: z.array(BrowserGroupRowSchema), complete: z.boolean() }),
   tabs: z.array(
     z.strictObject({

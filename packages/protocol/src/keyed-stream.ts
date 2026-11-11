@@ -9,7 +9,7 @@ export function keyedStreamSchema<
   Meta extends z.ZodRawShape,
 >(row: z.ZodObject<Row>, meta: z.ZodObject<Meta>) {
   return z.discriminatedUnion("op", [
-    z.strictObject({ op: z.literal("begin"), generation: Generation }),
+    z.strictObject({ op: z.literal("begin"), generation: Generation, prefix: Revision.optional() }),
     z.strictObject({ op: z.literal("rows"), rows: z.array(row).min(1) }),
     z.strictObject({ op: z.literal("end"), revision: Revision, count: Revision, meta }),
     z.strictObject({
@@ -26,7 +26,7 @@ export function keyedStreamSchema<
 }
 
 export type KeyedStreamMessage<Row extends { id: string }, Meta extends object> =
-  | { op: "begin"; generation: string }
+  | { op: "begin"; generation: string; prefix?: number | undefined }
   | { op: "rows"; rows: Row[] }
   | { op: "end"; revision: number; count: number; meta: Meta }
   | {
@@ -90,8 +90,10 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
     cursor: number;
     phase: "begin" | "rows" | "end";
     prior: ReadonlyMap<string, Row>;
+    prefix: number | null;
   } | null = null;
   #reset = true;
+  #prefix: number | null = null;
   #inflight: { frame: KeyedStreamMessage<Row, Meta>; commit(): void } | null = null;
   #retry = false;
   constructor(options: PublisherOptions<Row, Meta>) {
@@ -105,6 +107,15 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
       throw new Error("Invalid keyed stream byte target.");
     this.#generation = Generation.parse(options.generation ?? globalThis.crypto.randomUUID());
     this.#options = options;
+  }
+  seed(rows: readonly Row[]): void {
+    if (!this.#reset || this.#snapshot || this.#inflight || this.#sent.size)
+      throw new Error("A keyed stream prefix must precede its first frame.");
+    for (const row of rows) {
+      this.#sent.set(row.id, row);
+      this.#dirty.add(row.id);
+    }
+    this.#prefix = rows.length;
   }
   mark(id: string): void {
     this.#dirty.add(id);
@@ -158,15 +169,30 @@ export class KeyedStreamPublisher<Row extends { id: string }, Meta extends objec
       const ids = new Set(this.#options.ids());
       // Carry pending closes through the snapshot so its first change can close them durably.
       for (const id of this.#dirty) if (prior.has(id)) ids.add(id);
-      this.#snapshot = { ids: [...ids], cursor: 0, phase: "begin", prior };
+      const prefix = this.#prefix;
+      this.#prefix = null;
+      this.#snapshot = {
+        ids: [...ids].filter((id) => prefix === null || !prior.has(id)),
+        cursor: 0,
+        phase: "begin",
+        prior,
+        prefix,
+      };
     }
     const snapshot = this.#snapshot;
     if (snapshot?.phase === "begin")
-      return this.#offer({ op: "begin", generation: this.#generation }, () => {
-        this.#sent.clear();
-        this.#meta = null;
-        snapshot.phase = "rows";
-      });
+      return this.#offer(
+        {
+          op: "begin",
+          generation: this.#generation,
+          ...(snapshot.prefix === null ? {} : { prefix: snapshot.prefix }),
+        },
+        () => {
+          if (snapshot.prefix === null) this.#sent.clear();
+          this.#meta = null;
+          snapshot.phase = "rows";
+        },
+      );
     if (snapshot?.phase === "rows") {
       const rows: Row[] = [];
       let cursor = snapshot.cursor;
@@ -322,8 +348,13 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
   }
   apply(message: KeyedStreamMessage<Row, Meta>): "applied" | "staged" | "resync" {
     if (message.op === "begin") {
+      if (
+        message.prefix !== undefined &&
+        (this.#state !== "empty" || message.prefix !== this.#rows.size)
+      )
+        return this.#gap();
       this.#generation = message.generation;
-      this.#staged = new Map();
+      this.#staged = message.prefix === undefined ? new Map() : new Map(this.#rows);
       this.#state = "assembling";
       return "staged";
     }

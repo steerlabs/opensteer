@@ -5134,7 +5134,7 @@ export class MockHostClient implements HostClient {
   }
 
   async stopRun(threadId: string): Promise<void> {
-    const snapshot = this.#state.getSnapshot();
+    const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
     if (!run) throw new Error("This Thread has nothing to stop.");

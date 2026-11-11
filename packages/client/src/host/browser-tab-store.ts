@@ -180,10 +180,11 @@ export class BrowserTabStore {
     groups: { rows: readonly BrowserGroupRow[]; complete: boolean };
     tabs: readonly { groupId: string; rows: readonly BrowserTabRow[]; complete: boolean }[];
   }) {
-    if (this.#groups.receiver.state !== "empty" || this.#groups.receiver.rows.size) return;
+    if (this.#groups.receiver.state !== "empty" || this.#groups.receiver.rows.size) return false;
     this.#groups.seed(prefix.groups.rows, prefix.groups.complete);
     for (const group of prefix.tabs)
       if (this.group(group.groupId)) this.#ensure(group.groupId).seed(group.rows, group.complete);
+    return true;
   }
   applyGroups(message: KeyedStreamMessage<BrowserGroupRow, Meta>) {
     if (this.#groups.apply(message) === "resync") this.resync();

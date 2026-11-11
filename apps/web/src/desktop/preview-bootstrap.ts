@@ -61,7 +61,8 @@ export function previewBootstrap(
       available: false,
       placements: [],
       profiles: [],
-      sessions: [],
+      groups: { rows: [], complete: true },
+      tabs: [],
     },
     deploymentShape: {
       defaultWorkspaceBacking: "local-directory",
