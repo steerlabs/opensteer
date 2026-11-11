@@ -656,7 +656,14 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       break;
     }
     case "delete-project":
-      if (!Number.isFinite(change.purgeAfter.getTime()) || change.purgeAfter < now)
+      if (change.retentionMilliseconds !== undefined) {
+        if (
+          !Number.isSafeInteger(change.retentionMilliseconds) ||
+          change.retentionMilliseconds < 0 ||
+          !Number.isFinite(new Date(now.getTime() + change.retentionMilliseconds).getTime())
+        )
+          refuse("Invalid Project retention duration");
+      } else if (!Number.isFinite(change.purgeAfter.getTime()) || change.purgeAfter < now)
         refuse("Project deletion requires a future retention deadline");
       if (!next.projects.some((project) => project.id === change.workspaceId))
         refuse("Live Project is required");
@@ -1140,7 +1147,10 @@ async function applySource(
           deletedAt: null,
           deletionRequestedAt: now,
           deletionRequestedBy: input.actor.userId,
-          purgeAfter: change.purgeAfter,
+          purgeAfter:
+            change.retentionMilliseconds !== undefined
+              ? new Date(now.getTime() + change.retentionMilliseconds)
+              : change.purgeAfter,
           updatedAt: now,
         })
         .where("id", "=", change.workspaceId)
