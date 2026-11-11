@@ -22,6 +22,7 @@ import {
   thread_queue,
   delegate_task,
   task_status,
+  task_cancel,
   thread_interrupt,
   thread_wait,
   pending_request,
@@ -30,6 +31,7 @@ import {
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
   appendHostWorkspaceEvent,
+  dispatchNodeStop,
   withDatabaseTransaction,
   BrowserTabGroupStore,
   WorkspaceTabStore,
@@ -971,6 +973,290 @@ async function tool(
 }
 
 describeStore("shaped agent Thread tools", (it) => {
+  it("reads only a reachable subagent's paged, clipped items and fences its Stop to the current attempt", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("node-read-stop");
+    const s = setup(storeFixture, f);
+    const nodeId = createId("executionNode");
+    let ordinal = 1;
+    const emit = (event: Pick<PendingAgentEvent, "type" | "data">) =>
+      storeFixture.store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+        event: pendingEvent({
+          ...event,
+          bindingGeneration: f.bindingGeneration,
+          environmentId: f.environmentId,
+          runId: f.run.id,
+          threadId: f.thread.id,
+          workspaceId: f.workspace.id,
+          ordinal: ordinal++,
+        }),
+      });
+    await emit({
+      type: "node.started",
+      data: {
+        nodeId,
+        kind: "subagent",
+        stopSupported: true,
+        model: "child-model",
+        nativeRef: "child-task",
+        sessionRef: null,
+        originCallId: null,
+        parentNodeId: null,
+        title: "Inspect parser",
+        prompt: "Find the parser",
+      },
+    });
+    await emit({ type: "node.message", data: { nodeId, text: "Child reply 😀" } });
+    await emit({
+      type: "reasoning.completed",
+      data: { nodeId, blockId: "thinking", text: "PRIVATE_REASONING" },
+    });
+    await emit({
+      type: "tool.started",
+      data: {
+        nodeId,
+        callId: "child-tool",
+        tool: { name: "Read", namespace: "engine" },
+        arguments: { path: "parser.ts" },
+      },
+    });
+    const output = "😀".repeat(700);
+    await emit({
+      type: "tool.completed",
+      data: { nodeId, callId: "child-tool", isError: false, output: { text: output } },
+    });
+    await emit({
+      type: "tool.started",
+      data: {
+        nodeId,
+        callId: "sensitive",
+        tool: { name: "computer", namespace: "opensteer" },
+        arguments: { secret: "NEVER_RETURN" },
+      },
+    });
+    await emit({
+      type: "tool.completed",
+      data: { nodeId, callId: "sensitive", isError: false, output: { text: "NEVER_RETURN" } },
+    });
+    const read = (extra: Record<string, unknown> = {}, caller: AgentCaller = s.caller) =>
+      s.product.thread_read({
+        caller,
+        input: thread_read.input.parse({
+          subagentId: nodeId,
+          view: "activity",
+          limit: 2,
+          ...extra,
+        }),
+        operationKey: randomUUID(),
+      });
+    const page = await read();
+    expect(ThreadReadOutputSchema.parse(page).subagent).toMatchObject({
+      id: nodeId,
+      title: "Inspect parser",
+      model: "child-model",
+      prompt: "Find the parser",
+      status: "running",
+      stopSupported: true,
+      stopping: false,
+    });
+    expect(page.items.map((item) => item.text)).toEqual([null, null]);
+    expect(JSON.stringify(page)).not.toContain("NEVER_RETURN");
+    const older = await read({ before: page.nextBefore });
+    expect(older.items[0]).toMatchObject({
+      type: "tool.completed",
+      text: "😀".repeat(500),
+      textTruncated: true,
+      nextTextOffset: 500,
+    });
+    const full = await read({ itemId: older.items[0]!.itemId, textOffset: 500 });
+    expect(full.items[0]).toMatchObject({ text: "😀".repeat(200), textTruncated: false });
+    const oldest = await read({ before: older.nextBefore });
+    expect(oldest.items).toHaveLength(1);
+    expect(oldest.items[0]).toMatchObject({ type: "node.message", text: "Child reply 😀" });
+    expect(oldest.hasMore).toBe(false);
+    const outside: AgentCaller = {
+      ...s.caller,
+      reach: { kind: "workspace", workspaceId: createId("workspace") },
+    };
+    const refusal = await read({}, outside).catch((error: unknown) => error);
+    const missing = await read({ subagentId: createId("executionNode") }).catch(
+      (error: unknown) => error,
+    );
+    expect(refusal).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
+    expect(missing).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
+    await expect(
+      s.product.task_cancel({
+        caller: { ...s.caller, claims: { ...s.caller.claims, runId: createId("run") } },
+        input: task_cancel.input.parse({ subagentId: nodeId }),
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await storeFixture.database
+      .updateTable("executionNodes")
+      .set({ stopSupported: false })
+      .where("id", "=", nodeId)
+      .execute();
+    await expect(
+      s.product.task_cancel({
+        caller: s.caller,
+        input: task_cancel.input.parse({ subagentId: nodeId }),
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "This engine cannot stop this subagent separately",
+    });
+    await storeFixture.database
+      .updateTable("executionNodes")
+      .set({ stopSupported: true })
+      .where("id", "=", nodeId)
+      .execute();
+    const result = await s.product.task_cancel({
+      caller: s.caller,
+      input: task_cancel.input.parse({ subagentId: nodeId }),
+      operationKey: randomUUID(),
+    });
+    expect(result).toEqual({ subagentId: nodeId, status: "stopping" });
+    expect(ThreadReadOutputSchema.parse(await read()).subagent).toMatchObject({
+      stopSupported: true,
+      stopping: true,
+    });
+    const node = await storeFixture.database
+      .selectFrom("executionNodes")
+      .selectAll()
+      .where("id", "=", nodeId)
+      .executeTakeFirstOrThrow();
+    await storeFixture.database
+      .updateTable("runAttempts")
+      .set({
+        status: "superseded",
+        supersededAt: new Date(),
+        outcome: "interrupted",
+        endedAt: new Date(),
+      })
+      .where("id", "=", node.attemptId)
+      .execute();
+    await expect(
+      s.product.task_cancel({
+        caller: s.caller,
+        input: task_cancel.input.parse({ subagentId: nodeId }),
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Subagent is no longer running in the current attempt",
+    });
+    const command = await storeFixture.database
+      .selectFrom("commands")
+      .selectAll()
+      .where("runId", "=", f.run.id)
+      .where("type", "=", "node.stop")
+      .executeTakeFirstOrThrow();
+    expect(command.authoritySource).toMatchObject({ kind: "run", runId: f.run.id });
+    const send = vi.fn(async () => undefined);
+    await expect(
+      dispatchNodeStop(
+        storeFixture.database,
+        {
+          nodeId,
+          runId: f.run.id,
+          threadId: f.thread.id,
+          requestedBy: f.userId,
+          idempotencyKey: command.idempotencyKey,
+        },
+        f.bindingGeneration,
+        command.id,
+        send,
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(send).not.toHaveBeenCalled();
+    expect(
+      (
+        await storeFixture.database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", f.run.id)
+          .executeTakeFirst()
+      )?.status,
+    ).toBe("running");
+  });
+
+  it("keeps a Workspace owner's subagent stop through a Host restart and a retry", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("node-stop-kept");
+    const nodeId = createId("executionNode");
+    let ordinal = 1;
+    const emit = (event: Pick<PendingAgentEvent, "type" | "data">) =>
+      storeFixture.store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+        event: pendingEvent({
+          ...event,
+          bindingGeneration: f.bindingGeneration,
+          environmentId: f.environmentId,
+          runId: f.run.id,
+          threadId: f.thread.id,
+          workspaceId: f.workspace.id,
+          ordinal: ordinal++,
+        }),
+      });
+    await emit({
+      type: "node.started",
+      data: {
+        nodeId,
+        kind: "subagent",
+        stopSupported: true,
+        model: null,
+        nativeRef: "child-task",
+        sessionRef: null,
+        originCallId: null,
+        parentNodeId: null,
+        title: "Inspect parser",
+        prompt: null,
+      },
+    });
+    const owner = await share(storeFixture, f);
+    await storeFixture.database
+      .updateTable("workspaceMemberships")
+      .set({ role: "owner" })
+      .where("workspaceId", "=", f.workspace.id)
+      .where("userId", "=", owner)
+      .execute();
+    const stop = () =>
+      storeFixture.store.stopNode({
+        nodeId,
+        runId: f.run.id,
+        threadId: f.thread.id,
+        requestedBy: owner,
+        idempotencyKey: "owner-stops-child",
+      });
+    const first = await stop();
+    expect(first.wasDuplicate).toBe(false);
+    const status = async () =>
+      (
+        await storeFixture.database
+          .selectFrom("commands")
+          .select("status")
+          .where("id", "=", first.command.id)
+          .executeTakeFirstOrThrow()
+      ).status;
+    await storeFixture.store.claimCommand(first.command.id, "host-before-restart");
+    expect(await status()).toBe("dispatched");
+    await storeFixture.store.recoverCommandsAfterHostRestart();
+    expect(await status()).toBe("pending");
+    await emit({
+      type: "node.completed",
+      data: { nodeId, status: "interrupted", result: null, usage: null },
+    });
+    expect(await stop()).toMatchObject({ wasDuplicate: true, command: { id: first.command.id } });
+  });
+
   it("waits in a Run, reads the result and withdraws its unclaimed automatic return", async ({
     storeFixture,
   }) => {

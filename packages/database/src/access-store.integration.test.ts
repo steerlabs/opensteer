@@ -403,7 +403,7 @@ describeStore("dormant Project access", (it) => {
       const released = await new Migrator({
         db: database,
         provider: { getMigrations: async () => migrations },
-      }).migrateTo("0177_task_question_notices");
+      }).migrateTo("0178_node_stop");
       if (released.error) throw released.error;
       const beforeCutover = (await legacyObjects(database)).rows;
       await migrateToLatest(database);

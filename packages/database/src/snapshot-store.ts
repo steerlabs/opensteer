@@ -1025,6 +1025,8 @@ export async function nodeEventPageForOwner(
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
     readonly nodeId: ExecutionNodeId;
+    readonly types?: readonly ("node.message" | "tool.started" | "tool.completed")[];
+    readonly itemId?: string;
     readonly through?: Sequence;
     readonly before?: string;
     readonly maxItems?: number;
@@ -1058,6 +1060,12 @@ export async function nodeEventPageForOwner(
         .selectFrom("workspaceEvents")
         .where("threadId", "=", input.threadId)
         .where("nodeDetailId", "=", input.nodeId);
+      if (input.types) query = query.where("type", "in", input.types);
+      if (input.itemId) {
+        const sequence = SequenceSchema.safeParse(input.itemId);
+        if (!sequence.success) throw invalidWindowCursor();
+        query = query.where("sequence", "=", sequence.data);
+      }
       if (input.through !== undefined) query = query.where("sequence", "<=", input.through);
       const count = await query
         .select(({ fn }) => fn.countAll<string>().as("count"))

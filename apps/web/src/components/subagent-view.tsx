@@ -21,6 +21,7 @@ import {
 import { SubagentSteps } from "./agent-activity.js";
 import { AgentMark, AgentState, Elapsed, WorkflowPhases, rememberOpener } from "./agent-cards.js";
 import { useShell } from "./app-shell.js";
+import { SubagentStop } from "./subagent-stop.js";
 import { Icon } from "./icon.js";
 import { RequestStack, useDockedRequests } from "./input-surface.js";
 import { LoadingRows } from "./loading-rows.js";
@@ -257,6 +258,7 @@ function SubagentHeader({
           </p>
         </div>
         <div className="conv-header__end subagent-view__state">
+          <SubagentStop card={card} direct />
           <AgentState card={card} />
           <Elapsed className="agent-row__time" endedAt={card.endedAt} startedAt={card.startedAt} />
         </div>

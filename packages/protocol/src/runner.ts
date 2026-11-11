@@ -47,6 +47,7 @@ import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   CommandIdSchema,
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
@@ -158,6 +159,14 @@ export type MountGrantExchangeResponse = z.infer<typeof MountGrantExchangeRespon
 
 const capabilityTokenSchema = z.string().min(1).max(4_096);
 
+const StopNodeSchema = RunnerCommandBaseSchema.extend({
+  type: z.literal("node.stop"),
+  runId: RunIdSchema,
+  threadId: ThreadIdSchema,
+  nodeId: ExecutionNodeIdSchema,
+  bindingGeneration: z.number().int().positive(),
+});
+
 const InterruptExecutionSchema = RunnerCommandBaseSchema.extend({
   /** Present when only that execution of the Run is to stop: a restart's predecessor. */
   bindingGeneration: z.number().int().positive().optional(),
@@ -211,6 +220,7 @@ const LegacyRunnerCommandSchema = z
     ExecuteTriggerSchema,
     ReconcileWatchesSchema,
     InterruptExecutionSchema,
+    StopNodeSchema,
     InterruptTriggerExecutionSchema,
     ResolveRequestSchema,
     SteerExecutionSchema,

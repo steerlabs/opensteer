@@ -43,6 +43,7 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   OpensteerError,
+  type ExecutionNodeId,
   RequestFormAnswersSchema,
   canonicalModelReference,
   createId,
@@ -54,7 +55,6 @@ import {
   type PendingRequest,
   type RequestFormAnswers,
   type RequestFormField,
-  type ExecutionNodeId,
   type RequestId,
   type RequestOption,
   type RequestResponse,
@@ -294,6 +294,7 @@ const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  subagentStop: true,
   longRequestHold: true,
   // Codex renders an MCP image content block to the model.
   mcpImageContent: true,
@@ -1377,6 +1378,18 @@ class CodexHarnessSession implements EngineHarnessSession {
     }
   }
 
+  async stopNode(nodeId: ExecutionNodeId): Promise<void> {
+    const active = this.#activeTurn;
+    const threadId = active?.nodes.keyForNode(nodeId);
+    const turnId = threadId ? active?.childTurns.get(threadId) : undefined;
+    if (!active || active.terminal || active.interruptRequested || !threadId || !turnId)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Codex has no running child turn for this subagent",
+      });
+    await this.#requireClient().request("turn/interrupt", { threadId, turnId });
+  }
+
   async interrupt(): Promise<void> {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
@@ -1954,6 +1967,7 @@ class CodexHarnessSession implements EngineHarnessSession {
     const context = this.#childContext(threadId);
     const nodeId = active.nodes.ensure(threadId, {
       ...context,
+      stopSupported: active.childTurns.has(threadId),
       ...(nativeRef ? { nativeRef } : {}),
       sessionRef: threadId,
     });
@@ -2065,6 +2079,7 @@ class CodexHarnessSession implements EngineHarnessSession {
     if (turnId && context.completedTurns.has(turnId)) return;
     if (method === "turn/started" && turnId) {
       active.childTurns.set(childThreadId, turnId);
+      active.nodes.update(childThreadId, { stopSupported: true });
       this.#childThreads.add(childThreadId);
       this.#ownTurn(active, childThreadId, turnId);
     }
@@ -2114,6 +2129,7 @@ class CodexHarnessSession implements EngineHarnessSession {
         const turnId = requireString(turn.id, "turn/started params.turn.id");
         // A new turn on a child whose last invocation ended is a resumption.
         active.childTurns.set(childThreadId, turnId);
+        active.nodes.update(childThreadId, { stopSupported: true });
         this.#childThreads.add(childThreadId);
         this.#ownTurn(active, childThreadId, turnId);
         ensure(`${childThreadId}:${turnId}`);

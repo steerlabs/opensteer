@@ -185,6 +185,12 @@ describe("dormant binding-aware Project transport", () => {
     expect(
       ProjectHostToRunnerMessageSchema.safeParse({
         ...control,
+        control: { kind: "node.stop", nodeId: createId("executionNode") },
+      }).success,
+    ).toBe(false);
+    expect(
+      ProjectHostToRunnerMessageSchema.safeParse({
+        ...control,
         binding: { ...runBinding, runnerBootId: "stale" },
       }).success,
     ).toBe(false);

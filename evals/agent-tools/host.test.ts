@@ -408,3 +408,28 @@ it("reads back a source-only schedule change while retaining the person's pause"
     await host.close();
   }
 });
+
+it("validates subagent read and stop cases with the production tool schemas", async () => {
+  const cases = parseCases(
+    await readFile(new URL("./cases/subagents.ndjson", import.meta.url), "utf8"),
+  );
+  for (const c of cases) {
+    const host = await startFakeHost(c);
+    const client = new Client({ name: "subagent-cases", version: "1" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL("/agent", host.url), {
+          requestInit: { headers: { Authorization: `Bearer ${host.secret}` } },
+        }) as unknown as Transport,
+      );
+      for (const call of c.expect.calls) {
+        const result = await client.callTool({ name: call.tool, arguments: call.args });
+        expect(result.isError, c.id).not.toBe(true);
+        expect(host.calls.at(-1)?.valid, c.id).toBe(true);
+      }
+    } finally {
+      await client.close();
+      await host.close();
+    }
+  }
+});

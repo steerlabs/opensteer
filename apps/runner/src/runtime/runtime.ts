@@ -1820,6 +1820,8 @@ export class RunnerRuntime {
           return { status: "accepted" };
         case "trigger.interrupt":
           return this.#interruptTrigger(command.occurrenceId);
+        case "node.stop":
+          return this.#stopNode(command);
         case "run.interrupt":
           return this.#interrupt(command.runId, command.threadId, command.bindingGeneration);
         case "request.resolve":
@@ -3551,6 +3553,28 @@ export class RunnerRuntime {
     await this.#pumpJournal(active);
     active.pendingRequestIds.clear();
     for (const requestId of pendingAfter) active.pendingRequestIds.add(requestId);
+  }
+
+  async #stopNode(
+    command: Extract<RunnerCommand, { type: "node.stop" }>,
+  ): Promise<CommandDecision> {
+    const active = this.#runs.get(command.runId);
+    if (
+      !active ||
+      active.settling ||
+      active.abort.signal.aborted ||
+      active.command.context.threadId !== command.threadId ||
+      active.command.context.bindingGeneration !== command.bindingGeneration
+    )
+      return reject("conflict", "Subagent stop targets an inactive attempt", false);
+    if (
+      !this.#harnesses.driverCapabilities(active.command.context.harness.driverKind)
+        ?.subagentStop ||
+      !active.session?.stopNode
+    )
+      return reject("conflict", "This engine cannot stop a subagent separately", false);
+    await active.session.stopNode(command.nodeId);
+    return { status: "accepted" };
   }
 
   async #interrupt(

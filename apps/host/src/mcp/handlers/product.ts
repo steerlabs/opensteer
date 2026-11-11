@@ -11,8 +11,16 @@ import {
   readAgentRequest,
   requestRevision,
   AgentRequestResponderSchema,
+  reachableNode,
 } from "@opensteer/database";
-import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
+import {
+  activityItem,
+  messageItem,
+  taskItem,
+  boundedThreadItems,
+  itemText,
+} from "../thread-items.js";
+import { sql } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
@@ -46,6 +54,7 @@ import {
   MessageIdSchema,
   WorkspaceIdSchema,
   type AgentEvent,
+  AgentEventSchema,
   type PlaceContentPart,
   type PlaceIdentity,
   type EnvironmentId,
@@ -625,6 +634,7 @@ export class ProductToolHandlers {
   }
 
   async thread_read({ caller, input }: ToolCall<"thread_read">) {
+    if (input.subagentId) return this.#readSubagent(caller, input);
     const claims = { requestedBy: caller.userId };
     const threadId =
       input.threadId === "home"
@@ -703,6 +713,92 @@ export class ProductToolHandlers {
         hasMore && items.length
           ? encodeThreadHistoryCursor(thread.id, messages[items.length - 1]!.sequence, input.query)
           : null,
+    };
+  }
+
+  async #readSubagent(caller: AgentCaller, input: ToolCall<"thread_read">["input"]) {
+    const missing = () => forbidden("Subagent is unavailable");
+    const node = await reachableNode(this.#store.database, input.subagentId!, caller.userId);
+    if (!node) throw missing();
+    const thread = await this.#store.getThreadForOwner(node.threadId, caller.userId);
+    if (!thread) throw missing();
+    try {
+      assertTarget(caller, thread);
+    } catch {
+      throw missing();
+    }
+    const page = await this.#store.nodeEventPageForOwner({
+      ownerId: caller.userId,
+      threadId: thread.id,
+      nodeId: node.id,
+      maxItems: input.itemId ? 1 : input.limit,
+      types:
+        input.view === "activity" || input.itemId
+          ? ["node.message", "tool.started", "tool.completed"]
+          : ["node.message"],
+      ...(input.before ? { before: input.before } : {}),
+      ...(input.itemId ? { itemId: input.itemId } : {}),
+    });
+    if (!page) throw missing();
+    const calls = page.events.flatMap((event) =>
+      event.type === "tool.completed" ? [event.data.callId] : [],
+    );
+    const starts = calls.length
+      ? await this.#store.database
+          .selectFrom("workspaceEvents")
+          .selectAll()
+          .where("nodeDetailId", "=", node.id)
+          .where("type", "=", "tool.started")
+          .where(sql<string>`data->>'callId'`, "in", calls)
+          .execute()
+      : [];
+    const started = new Map(
+      starts
+        .map((row) => {
+          const event = AgentEventSchema.parse({
+            ...row,
+            createdAt: row.createdAt.toISOString(),
+            sequence: String(row.sequence),
+          });
+          return event.type === "tool.started" ? ([event.data.callId, event] as const) : null;
+        })
+        .filter((entry) => entry !== null),
+    );
+    const mapped = [...page.events].reverse().flatMap((event) => {
+      if (event.type === "node.message")
+        return [
+          {
+            itemId: event.sequence,
+            type: "node.message",
+            status: "published",
+            runId: event.runId,
+            title: null,
+            ...itemText(event.data.text, input.maxCharsPerItem, input.textOffset),
+            createdAt: event.createdAt,
+          },
+        ];
+      if (event.type !== "tool.started" && event.type !== "tool.completed") return [];
+      return [
+        activityItem(event, {
+          start: event.type === "tool.started" ? event : started.get(event.data.callId),
+          ownRun: node.requestedBy === caller.userId,
+          named: !!input.itemId,
+          maxChars: input.maxCharsPerItem,
+          offset: input.textOffset,
+        }),
+      ];
+    });
+    const items = boundedThreadItems(mapped);
+    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this subagent");
+    const hasMore = items.length < mapped.length || page.window.hasMore;
+    return {
+      thread: ThreadDetailSchema.parse(thread),
+      subagent: page.node,
+      recentRuns: [],
+      recentPlaces: [],
+      items,
+      hasMore,
+      nextBefore: hasMore ? (items.at(-1)?.itemId ?? page.window.nextBefore) : null,
     };
   }
 
@@ -906,8 +1002,13 @@ export class ProductToolHandlers {
   }
 
   async assignmentTargets({ caller, input }: ToolCall<"task_cancel">) {
+    if (input.subagentId) {
+      const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
+      if (!node) throw forbidden("Subagent is unavailable");
+      return [node.threadId];
+    }
     const assignment = await this.#store.getAssignmentForOwner({
-      assignmentId: input.assignmentId,
+      assignmentId: input.assignmentId!,
       ownerId: caller.userId,
     });
     if (!assignment) throw forbidden("Assignment is unavailable");
@@ -916,9 +1017,24 @@ export class ProductToolHandlers {
   async task_cancel({ caller, input, operationKey }: ToolCall<"task_cancel">) {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "task_cancel");
+    if (input.subagentId) {
+      const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
+      if (!node) throw forbidden("Subagent is unavailable");
+      if (node.runId !== claims.runId)
+        throw forbidden("Only this Run's agent may stop its subagents");
+      await this.#commands.stopNode({
+        nodeId: node.id,
+        runId: node.runId,
+        threadId: node.threadId,
+        requestedBy: caller.userId,
+        authority: threadCallerAuthority(caller),
+        idempotencyKey: idempotencyKey(caller, requestId, "node.stop"),
+      });
+      return { subagentId: node.id, status: "stopping" as const };
+    }
 
     const assignment = await this.#store.getAssignmentForOwner({
-      assignmentId: input.assignmentId,
+      assignmentId: input.assignmentId!,
       ownerId: caller.userId,
     });
     if (!assignment) throw forbidden("Assignment is unavailable");
@@ -926,7 +1042,7 @@ export class ProductToolHandlers {
     if (!target) throw forbidden("Thread is unavailable");
     assertMutableTarget(caller, target);
     const cancelled = await this.#commands.cancelAssignment({
-      assignmentId: input.assignmentId,
+      assignmentId: input.assignmentId!,
       requestedBy: claims.requestedBy,
       actorRunId: claims.runId,
       idempotencyKey: idempotencyKey(caller, requestId, "assignment.cancel"),

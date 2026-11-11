@@ -13,6 +13,7 @@ export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
 export * from "./command-delivery.js";
+export * from "./node-control.js";
 export * from "./connection.js";
 export * from "./deployment-authority.js";
 export * from "./deployment-execution-authority.js";

@@ -185,7 +185,8 @@ const releasedMigrationNames = [
   "0175_program_tool_names",
   "0176_assignment_result_waits",
   "0177_task_question_notices",
-  "0178_project_authority_cutover",
+  "0178_node_stop",
+  "0179_project_authority_cutover",
 ];
 
 describe("migration names", () => {

@@ -1,6 +1,7 @@
 import { readInitializedDeploymentAuthority } from "./deployment-execution-authority.js";
 import { readTeamRealtimeAuthority, type TeamRealtimeAuthority } from "./access-store.js";
 import { claimAccessSecurityEffects } from "./access-effects.js";
+import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
 import * as voiceStore from "./voice-store.js";
@@ -1739,6 +1740,10 @@ export class OpensteerStore {
     return this.#announceRevokedGrants(
       await threadStore.enqueueAdmittedThreadInput(this.#database, request, this.#executionNow),
     );
+  }
+
+  stopNode(input: import("./node-control.js").NodeStopInput) {
+    return enqueueNodeStop(this.#database, input);
   }
 
   async enqueueRunnerControl(input: RunnerControlInput): Promise<{

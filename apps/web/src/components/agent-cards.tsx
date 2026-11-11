@@ -30,6 +30,7 @@ import {
 } from "@opensteer/client/host";
 import type { AssignmentSummary } from "@opensteer/core";
 import { useShell } from "./app-shell.js";
+import { SubagentStop } from "./subagent-stop.js";
 import { Icon } from "./icon.js";
 import { LifecycleNews, ObservedWorker, TaskLineState, TaskMenu } from "./task-line.js";
 import { AreaLink } from "./workspace/area-link.js";
@@ -247,7 +248,7 @@ export function AgentRow({
       <span className="agent-row__end">
         {card.modelLabel ? <span className="agent-row__model">{card.modelLabel}</span> : null}
         <Elapsed className="agent-row__time" endedAt={card.endedAt} startedAt={card.startedAt} />
-        {more}
+        {more ?? (card.origin === "subagent" ? <SubagentStop card={card} /> : null)}
       </span>
       <span aria-hidden className="agent-row__chevron">
         {to ? <Icon name="chevron-right" /> : null}

@@ -1,6 +1,7 @@
 import { defineAgentTool } from "../registry.js";
 import {
   AssignmentIdSchema,
+  ExecutionNodeIdSchema,
   DelegationModelChoiceSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
@@ -18,6 +19,7 @@ import { z } from "zod";
 import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import {
   TaskSchema,
+  SubagentCancelOutputSchema,
   ThreadReadOutputSchema,
   ThreadListOutputSchema,
   ThreadMessageOutputSchema,
@@ -35,10 +37,11 @@ export const thread_read = defineAgentTool({
   targetFields: ["threadId"],
   title: "Read a Thread",
   description:
-    "Read a reachable Thread; `home` means Chat, `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
+    "Read a reachable Thread or subagentId; `home` means Chat, `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. A subagent returns its own messages and tools, without reasoning. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
   input: z
     .strictObject({
-      threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]),
+      threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]).optional(),
+      subagentId: ExecutionNodeIdSchema.optional(),
       view: z.enum(["messages", "activity"]).default("messages"),
       limit: z.number().int().min(1).max(100).default(20).describe("Max items."),
       runLimit: z.number().int().min(1).max(50).default(10).describe("Max recent Runs."),
@@ -58,6 +61,10 @@ export const thread_read = defineAgentTool({
       ),
     })
     .superRefine((input, context) => {
+      if (!!input.threadId === !!input.subagentId)
+        context.addIssue({ code: "custom", message: "Name exactly one threadId or subagentId" });
+      if (input.subagentId && (input.query || input.aroundMessageId))
+        context.addIssue({ code: "custom", message: "query and aroundMessageId require threadId" });
       if (input.textOffset !== undefined && !input.itemId)
         context.addIssue({ code: "custom", message: "textOffset needs itemId" });
       if (input.itemId && (input.before || input.query || input.aroundMessageId))
@@ -182,11 +189,18 @@ export const task_cancel = defineAgentTool({
   name: "task_cancel",
   title: "Cancel a task",
   description:
-    "Stop one task for good: its Runs, its Requests and the tasks it delegated. A finished task keeps its result; its Thread stays reusable. Confirm the returned `status` before saying it stopped. To stop and resume later: `thread_interrupt`.",
+    "Name assignmentId for a task, or subagentId for one child of this Run. A subagent stop needs engine support and never stops the parent; stopping means requested, interrupted confirms it ended. Stop one task for good: its Runs, its Requests and the tasks it delegated. A finished task keeps its result; its Thread stays reusable. Confirm the returned `status` before saying it stopped. To stop and resume later: `thread_interrupt`.",
   input: z
-    .strictObject({ assignmentId: AssignmentIdSchema })
+    .strictObject({
+      assignmentId: AssignmentIdSchema.optional(),
+      subagentId: ExecutionNodeIdSchema.optional(),
+    })
+    .refine(
+      (input) => !!input.assignmentId !== !!input.subagentId,
+      "Name exactly one assignmentId or subagentId",
+    )
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: TaskSchema,
+  output: z.union([TaskSchema, SubagentCancelOutputSchema]),
   access: "write",
   callers: ["run"] as const,
   destructive: true,

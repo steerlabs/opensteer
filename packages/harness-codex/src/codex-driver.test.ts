@@ -2525,6 +2525,53 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
+  it("interrupts only the named child turn and leaves the Codex Run live", async () => {
+    const fixture = await setup("subagents-hold");
+    const adapter = fixture.adapter;
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      const executing = session.execute(fixture.turn("Inspect notes"));
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) => event.type === "node.updated" && event.data.stopSupported,
+          ),
+        ).toBe(true),
+      );
+      const node = observer.events.find((event) => event.type === "node.started");
+      if (node?.type !== "node.started") throw new Error("Codex child never started");
+      await session.stopNode!(node.data.nodeId);
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) =>
+              event.type === "node.completed" &&
+              event.data.nodeId === node.data.nodeId &&
+              event.data.status === "interrupted",
+          ),
+        ).toBe(true),
+      );
+      expect(
+        observer.events.some(
+          (event) => event.type === "run.interrupted" || event.type === "run.completed",
+        ),
+      ).toBe(false);
+      const interruptions = (await fixture.capture()).filter(
+        (message) => message.method === "turn/interrupt",
+      );
+      expect(interruptions).toHaveLength(1);
+      expect(interruptions[0]).toMatchObject({
+        params: { threadId: node.data.sessionRef, turnId: "child-turn-1" },
+      });
+      await session.interrupt();
+      await executing;
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
+  });
+
   it("interrupts the exact active Codex turn and waits for its terminal event", async () => {
     const fixture = await setup("interrupt");
     const session = await fixture.adapter.startSession(fixture.context);

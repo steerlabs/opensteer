@@ -1039,6 +1039,10 @@ export type RunAttempt = z.infer<typeof RunAttemptSchema>;
 
 /** One subagent a Run's engine started, as the Host recorded it. */
 const executionNodeShape = {
+  /** Its engine can stop it without stopping the Run. */
+  stopSupported: z.boolean().optional(),
+  /** A stop was asked for and has not ended it yet. */
+  stopping: z.boolean().optional(),
   attemptId: RunAttemptIdSchema,
   effort: z.string().min(1).max(64).nullable(),
   endedAt: IsoDateTimeSchema.nullable(),
@@ -1071,6 +1075,7 @@ export const ExecutionNodeViewSchema = z.object({
   usage: RunUsageViewSchema.nullable(),
 });
 export type ExecutionNode = z.infer<typeof ExecutionNodeSchema>;
+export type ExecutionNodeView = z.infer<typeof ExecutionNodeViewSchema>;
 
 /**
  * How long a Run's background work may keep it live after its engine's turn

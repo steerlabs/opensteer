@@ -3,6 +3,7 @@ import {
   isActiveSubagent,
   visibleAgentMembers,
   type AgentCard,
+  type HostClient,
   type AgentGroup,
   type AgentTone,
   type WorkflowView,
@@ -32,6 +33,7 @@ import { appear, enter, exit, move } from "../ui/motion.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
+import { SubagentStop } from "./subagent-stop.js";
 import { samePlain } from "./agent-select.js";
 
 /**
@@ -107,6 +109,7 @@ function Elapsed(props: {
 
 /** Where a card goes when pressed, and whether the Host is in reach so time still moves. */
 export interface AgentScope {
+  readonly hostClient?: HostClient;
   readonly live: boolean;
   readonly onOpen: (card: AgentCard) => void;
   /** A task card's own row: its menu and Stop belong to the conversation's task lines. */
@@ -422,7 +425,32 @@ export function AgentCardView(props: { readonly card: AgentCard; readonly scope:
 
 function cardRow(card: AgentCard, scope: AgentScope): ReactNode {
   if (card.origin === "task" && scope.renderTask) return scope.renderTask(card);
-  return <AgentCardRow card={card} live={scope.live} onOpen={scope.onOpen} />;
+  if (!scope.hostClient)
+    return <AgentCardRow card={card} live={scope.live} onOpen={scope.onOpen} />;
+  return (
+    <SubagentStop card={card} hostClient={scope.hostClient}>
+      {(onStop) => (
+        <AgentCardRow
+          card={card}
+          live={scope.live}
+          onOpen={scope.onOpen}
+          accessibilityActions={
+            card.stop
+              ? [
+                  {
+                    name: "stop",
+                    label: `Stop ${card.kind === "workflow" ? "workflow" : "subagent"}`,
+                  },
+                ]
+              : []
+          }
+          onAccessibilityAction={(name) => {
+            if (name === "stop") onStop();
+          }}
+        />
+      )}
+    </SubagentStop>
+  );
 }
 
 /**
@@ -587,9 +615,7 @@ export function WorkflowCard(props: {
   const { card, scope, workflow } = props;
   const body = (
     <>
-      {props.phasesOnly === true ? null : (
-        <AgentCardRow card={card} live={scope.live} onOpen={scope.onOpen} />
-      )}
+      {props.phasesOnly === true ? null : cardRow(card, scope)}
       {workflow.phases.map((phase, index) => (
         <Phase
           cardKey={card.key}
