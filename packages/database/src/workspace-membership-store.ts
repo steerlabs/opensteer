@@ -1,6 +1,6 @@
 import {
   isProjectDeploymentAuthority,
-  readInitializedDeploymentAuthority,
+  deploymentAuthorityFromStoredRow,
 } from "./deployment-execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -74,16 +74,16 @@ export interface WorkspaceInvitationRecord {
 async function requireWorkspaceSharingCapability(
   transaction: Transaction<DatabaseSchema>,
 ): Promise<void> {
-  if (isProjectDeploymentAuthority(await readInitializedDeploymentAuthority(transaction)))
+  const deployment = await transaction
+    .selectFrom("deployments")
+    .select(["deploymentShape", "authorityModelVersion"])
+    .where("singletonKey", "=", "primary")
+    .executeTakeFirst();
+  if (isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(deployment)))
     throw new OpensteerError({
       code: "forbidden",
       message: "Team membership requires the access writer",
     });
-  const deployment = await transaction
-    .selectFrom("deployments")
-    .select("deploymentShape")
-    .where("singletonKey", "=", "primary")
-    .executeTakeFirst();
   if (!deployment || !deploymentSupportsSharing(deployment.deploymentShape)) {
     throw new OpensteerError({
       code: "forbidden",

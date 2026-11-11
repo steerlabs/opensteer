@@ -1534,6 +1534,7 @@ async function authorizeMutation(
   let workspaceId: WorkspaceId | undefined;
   if (change.kind === "grant" && change.target.kind === "project")
     workspaceId = change.target.workspaceId;
+  if (change.kind === "delete-project") workspaceId = change.workspaceId;
   if (change.kind === "revoke") {
     const entry = await transaction
       .selectFrom("accessEntries")
