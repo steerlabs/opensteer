@@ -1,4 +1,8 @@
-import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
+import {
+  assertActiveProjectBinding,
+  requireHumanRequester,
+  requireHumanMembershipGeneration,
+} from "./execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
@@ -330,6 +334,56 @@ export async function loadRunDispatchContext(
   commandId: CommandRow["id"],
   options: DurableWindowReadOptions = {},
 ): Promise<RunDispatchContext> {
+  const context = await loadStoredRunDispatchContext(database, commandId, options);
+  return {
+    ...context,
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(context.membershipGeneration),
+    ),
+  };
+}
+
+export async function loadProjectRunDispatchContext(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  binding: import("@opensteer/core").ProjectRunBinding,
+  runnerIsAttached: (runnerId: RunnerId, runnerBootId: string) => boolean,
+  options: DurableWindowReadOptions = {},
+): Promise<Omit<RunDispatchContext, "membershipGeneration" | "voiceCall">> {
+  await assertActiveProjectBinding(database, binding, { runnerIsAttached });
+  const command = await database
+    .selectFrom("commands")
+    .select(["runId", "type"])
+    .where("id", "=", commandId)
+    .executeTakeFirst();
+  if (command?.runId !== binding.runId || command.type !== "run.execute.project")
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Project dispatch command does not match its binding",
+    });
+  const {
+    membershipGeneration: _membership,
+    voiceCall,
+    ...context
+  } = await loadStoredRunDispatchContext(database, commandId, options);
+  if (voiceCall)
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "voice-not-supported",
+      message: "Project work does not support Voice",
+    });
+  return context;
+}
+
+async function loadStoredRunDispatchContext(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  options: DurableWindowReadOptions = {},
+): Promise<
+  Omit<RunDispatchContext, "membershipGeneration"> & {
+    readonly membershipGeneration: string | null;
+  }
+> {
   const maxHistoryItems = boundedWindowLimit(options.maxItems, runHistoryMaxMessages);
   const maxHistoryBytes = boundedWindowBytes(options.maxBytes, runHistoryMaxSerializedBytes);
   const command = await database
@@ -516,9 +570,7 @@ export async function loadRunDispatchContext(
           omittedCount: runRow.reportContext.omittedCount,
           throughSequence: runRow.reportContext.throughSequence,
         },
-    membershipGeneration: safeGeneration(
-      requireHumanMembershipGeneration(runRow.membershipGeneration),
-    ),
+    membershipGeneration: runRow.membershipGeneration,
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
     ...(runRow.voiceSessionId

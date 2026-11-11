@@ -1,3 +1,5 @@
+import { ProjectBindingStore } from "./project-execution-store.js";
+import { loadProjectRunDispatchContext } from "./execution-store.js";
 import { issueRunGrant } from "./run-grants.js";
 import { settleAssignmentAfterRun } from "./assignment-store.js";
 import { runFromRow, messageFromRow } from "./thread-row-mappers.js";
@@ -418,6 +420,120 @@ async function completedProjectAssignment(fixture: StoreFixture) {
 }
 
 describeStore("Project work admission", (it) => {
+  it("freezes a bounded canonical exchange into an exact boot binding, retains its settings and never rebinds by replay", async ({
+    storeFixture,
+  }) => {
+    const { database, store, project, prepared, origin } =
+      await prepareProjectAdmission(storeFixture);
+    await database
+      .updateTable("threads")
+      .set({ role: "conversation" })
+      .where("id", "=", prepared.thread.id)
+      .execute();
+    const admit = (key: string, policy: "queue" | "report" = "queue") =>
+      store.admitProjectWork({
+        threadId: prepared.thread.id,
+        origin,
+        source: { kind: "human" },
+        content: [{ type: "text", text: key }],
+        policy,
+        idempotencyKey: key,
+      });
+    const first = await admit("binding-seed");
+    const followup = await admit("binding-followup");
+    const report = await admit("binding-report", "report");
+    const otherUser = await storeFixture.store.createUser("Other Project member");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date() })
+      .where("id", "=", otherUser)
+      .execute();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: project.workspace.id,
+        userId: otherUser,
+        role: "collaborator",
+        state: "active",
+        generation: 1,
+        invitedBy: project.userId,
+        joinedAt: new Date(),
+        revokedAt: null,
+        revokedBy: null,
+        updatedAt: new Date(),
+      })
+      .execute();
+    const other = await store.admitProjectWork({
+      threadId: prepared.thread.id,
+      origin: { ...origin, userId: otherUser },
+      source: { kind: "human" },
+      content: [{ type: "text", text: "Other person's work" }],
+      policy: "queue",
+      idempotencyKey: "other-root",
+    });
+
+    if (!first.commandId || !first.runId) throw new Error("Project admission did not queue a Run");
+    const bindings = new ProjectBindingStore(database, {
+      runnerIsAttached: (id, boot) => id === project.runnerId && boot === "attached-boot",
+    });
+    const input = {
+      commandId: first.commandId,
+      runnerId: project.runnerId,
+      runnerBootId: "attached-boot",
+      leaseTokenHash: "binding-secret-hash",
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+      dispatcherId: "project-dispatch-test",
+    };
+    const bound = await bindings.acquire(input);
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select(["state", "runId"])
+        .where("messageId", "=", other.input.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "pending", runId: null });
+    expect(bound.created).toBe(true);
+    expect(bound.binding.authority.origin).toEqual(origin);
+    expect(bound.snapshot).toMatchObject({
+      settingsRevision: 1,
+      instructions: "Project only",
+      timeZone: "UTC",
+    });
+    const context = await loadProjectRunDispatchContext(
+      database,
+      first.commandId,
+      bound.binding,
+      () => true,
+    );
+    expect(context.inputs.map((message) => message.id)).toEqual([
+      first.input.messageId,
+      followup.input.messageId,
+    ]);
+    expect(context.reports.messages.map((message) => message.id)).toEqual([report.input.messageId]);
+    expect(context).not.toHaveProperty("membershipGeneration");
+    expect(context).not.toHaveProperty("voiceCall");
+    expect(context.run.status).toBe("starting");
+    expect(await bindings.acquire(input)).toMatchObject({
+      binding: bound.binding,
+      created: false,
+      events: [],
+    });
+    expect(
+      await database.selectFrom("grants").select("id").where("runId", "=", first.runId).execute(),
+    ).toHaveLength(1);
+    const restarted = new ProjectBindingStore(database, { runnerIsAttached: () => true });
+    await expect(restarted.acquire({ ...input, runnerBootId: "new-boot" })).rejects.toMatchObject({
+      reason: "binding-recovery-required",
+    });
+    const later = await admit("after-freeze");
+    expect(later.runId).not.toBe(first.runId);
+    expect(
+      (
+        await loadProjectRunDispatchContext(database, first.commandId, bound.binding, () => true)
+      ).inputs.map((message) => message.id),
+    ).toEqual([first.input.messageId, followup.input.messageId]);
+  });
   it("queues as the Project, freezes settings and replays without borrowing the root's preferences", async ({
     storeFixture,
   }) => {

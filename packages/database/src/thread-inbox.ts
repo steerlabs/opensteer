@@ -1323,6 +1323,39 @@ export async function claimRunInputBatch(
     throw new OpensteerError({ code: "conflict", message: "Run context changed while claiming" });
   await transaction.updateTable("messages").set({ runId }).where("id", "in", selected).execute();
   await recordPersonWaited(transaction, runId);
+  const initialContext = await freezeRunInitialContext(transaction, run, seed);
+  await transaction
+    .updateTable("runs")
+    .set({
+      initialContext: initialContext ? jsonValue(initialContext) : null,
+      reportContext: jsonValue({
+        messageIds: reportIds,
+        omittedCount: safeCount(total.count) - cancelledCount - reportIds.length,
+        throughSequence,
+      }),
+    })
+    .where("id", "=", runId)
+    .execute();
+  for (const row of claimed)
+    events.push(
+      await appendHostWorkspaceEvent(transaction, {
+        data: { input: threadInputFromRow(row) },
+        environmentId: thread.environmentId,
+        runId,
+        threadId: run.threadId,
+        type: "thread-input.updated",
+        workspaceId: thread.workspaceId,
+      }),
+    );
+  events.push(...(await claimConversationBatch(transaction, runId, runExecuteInputsMax - 1)));
+  return events;
+}
+
+export async function freezeRunInitialContext(
+  transaction: Transaction<DatabaseSchema>,
+  run: RunRow,
+  seed: Pick<RunRow, "authoritySource"> & { readonly messageId: MessageId },
+) {
   let initialContext: {
     readonly messageIds: readonly MessageId[];
     readonly omittedCount: number;
@@ -1386,31 +1419,7 @@ export async function claimRunInputBatch(
       }
     }
   }
-  await transaction
-    .updateTable("runs")
-    .set({
-      initialContext: initialContext ? jsonValue(initialContext) : null,
-      reportContext: jsonValue({
-        messageIds: reportIds,
-        omittedCount: safeCount(total.count) - cancelledCount - reportIds.length,
-        throughSequence,
-      }),
-    })
-    .where("id", "=", runId)
-    .execute();
-  for (const row of claimed)
-    events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { input: threadInputFromRow(row) },
-        environmentId: thread.environmentId,
-        runId,
-        threadId: run.threadId,
-        type: "thread-input.updated",
-        workspaceId: thread.workspaceId,
-      }),
-    );
-  events.push(...(await claimConversationBatch(transaction, runId, runExecuteInputsMax - 1)));
-  return events;
+  return initialContext;
 }
 
 /**
