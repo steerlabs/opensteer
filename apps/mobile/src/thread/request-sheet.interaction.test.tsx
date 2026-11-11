@@ -17,6 +17,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockCardUseRequest, mockTmdbProposal } from "@opensteer/client/mock";
 import { createThreadMutationGate, type ThreadMutationGate } from "./thread-mutation-gate.js";
 
+vi.mock("./agent-mark.js", () => ({
+  AgentEngine: ({ children }: { readonly children: unknown }) => children,
+  AskerMark: () => null,
+  threadEngine: () => null,
+}));
 vi.mock("./password-approval-auth.js", () => ({
   authenticatePasswordApproval: vi.fn(async () => true),
 }));
@@ -874,7 +879,6 @@ async function render(
           root.render(null);
         }}
         reason={options.reason ?? false}
-        subagentTitle={null}
         surface={model}
       />,
     );

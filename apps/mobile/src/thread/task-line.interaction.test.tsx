@@ -14,6 +14,7 @@ import {
 import type { ActionReview, AssignmentEntry, HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 
+vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("react-native", () => {
   type Children = { readonly children?: ReactNode };
   return {
@@ -76,6 +77,7 @@ vi.mock("@expo/ui/community/menu", () => ({
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
+  monoFontFamily: "monospace",
   StatusDot: (props: {
     readonly live?: boolean;
     readonly ring?: boolean;
@@ -230,46 +232,48 @@ function asking(client: MockHostClient, task: AssignmentSummary, title: string):
 }
 
 const card = (node: HTMLElement) =>
-  node.querySelector<HTMLButtonElement>('button[aria-label$="Open task"]')!;
+  node.querySelector<HTMLButtonElement>('button[aria-label$="Open the task"]')!;
 
-// Ways a task's card can fail on a phone: two states read alike or by colour
-// alone, a working task stops breathing (or a settled one keeps on), the
-// question it waits on is not said on it, or a tap no longer opens the task.
-describe("a task's card on a phone", () => {
+// Ways a task's row can fail on a phone: two states read alike or by colour
+// alone, a working task stops breathing (or a settled one keeps on), a lone
+// row stops saying it is a task, or a tap no longer opens the task.
+describe("a task's row on a phone", () => {
   it.each([
-    ["working", { currentRunStatus: "running" as const }, "Working", "ember", true, false],
-    ["done", settled("completed"), "Finished", "muted", false, false],
-    ["failed", settled("failed"), "Couldn’t finish", "red", false, false],
-    ["stopped", settled("cancelled"), "Stopped", "muted", false, true],
+    ["working", { currentRunStatus: "running" as const }, "Working", "ember", true],
+    ["done", settled("completed"), "Finished", null, false],
+    ["failed", settled("failed"), "Couldn’t finish", "red", false],
+    ["stopped", settled("cancelled"), "Stopped", null, false],
   ] as const)(
     "reads a %s task by its word and dot, and opens it",
-    async (_, change, word, dot, live, ring) => {
+    async (_, change, word, dot, live) => {
       const { node, onViewWork, tasks } = await linesFor((seeded) => [variant(seeded, 0, change)]);
       const open = card(node);
-      expect(open.getAttribute("aria-label")).toBe(
-        `${tasks[0]!.workerThread.title}, Opensteer, task, ${word}. Open task`,
+      expect(open.getAttribute("aria-label")).toMatch(
+        new RegExp(
+          `^Task ${tasks[0]!.workerThread.title}, Opensteer, ${word}, .+\\. Open the task$`,
+          "u",
+        ),
       );
-      expect(open.textContent).toContain(`Task${word}`);
-      const shown = open.querySelector<HTMLElement>("[data-dot]")!;
-      expect([shown.dataset.dot, shown.dataset.live, shown.dataset.ring]).toEqual([
-        dot,
-        String(live),
-        String(ring),
-      ]);
+      expect(open.textContent).toContain("Task · ");
+      const shown = open.querySelector<HTMLElement>("[data-dot]");
+      expect(shown === null ? null : [shown.dataset.dot, shown.dataset.live]).toEqual(
+        dot === null ? null : [dot, String(live)],
+      );
       await act(async () => open.click());
       expect(onViewWork).toHaveBeenCalledExactlyOnceWith(tasks[0]!.workerThread.id);
     },
   );
 
-  it("says the question it waits on as its one line", async () => {
+  // A question has one place, the Request panel: the row only points at it.
+  it("says it asked a question without repeating the question", async () => {
     const { node } = await linesFor(
       (seeded) => [variant(seeded, 0, { currentRunStatus: "waiting" })],
       (client, [task]) => [asking(client, task!, "Book the 7:00 PM table at Adda?")],
     );
     const open = card(node);
     expect(open.querySelector<HTMLElement>("[data-dot]")?.dataset.dot).toBe("amber");
-    expect(open.textContent).toContain("Needs you");
-    expect(open.textContent?.endsWith("Book the 7:00 PM table at Adda?")).toBe(true);
+    expect(open.textContent).toContain("Asked you a question");
+    expect(open.textContent).not.toContain("Book the 7:00 PM table at Adda?");
   });
 
   it("stops an open task from its long-press menu, after asking", async () => {
@@ -302,17 +306,19 @@ describe("tasks one turn handed out together, on a phone", () => {
       (client, [, task]) => [asking(client, task!, "Which quarter should I use?")],
     );
     const head = node.querySelector("button[aria-expanded]")!;
-    expect(head.getAttribute("aria-label")).toBe("3 tasks · 1 needs you · 1 working · 1 finished");
+    expect(head.getAttribute("aria-label")).toBe(
+      "3 tasks: 1 needs you, 1 working, 1 finished. Hide tasks",
+    );
     expect(head.getAttribute("aria-expanded")).toBe("true");
     expect(node.querySelectorAll('[data-menu-action="open"]')).toHaveLength(3);
     expect(
-      [...node.querySelectorAll('button[aria-label$="Open task"]')].map((line) =>
+      [...node.querySelectorAll('button[aria-label$="Open the task"]')].map((line) =>
         line.getAttribute("aria-label"),
       ),
     ).toEqual([
-      expect.stringMatching(/, task, Finished\. Open task$/u),
-      expect.stringMatching(/, task, Needs you\. Open task$/u),
-      expect.stringMatching(/, task, Working\. Open task$/u),
+      expect.stringMatching(/, Finished, .+\. Open the task$/u),
+      expect.stringMatching(/, Needs you, .+\. Open the task$/u),
+      expect.stringMatching(/, Working, .+\. Open the task$/u),
     ]);
   });
 
@@ -322,10 +328,12 @@ describe("tasks one turn handed out together, on a phone", () => {
       variant(seeded, 1, settled("failed")),
     ]);
     const head = node.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
-    expect(head.getAttribute("aria-label")).toBe("2 tasks · 1 finished · 1 failed");
-    expect(node.querySelectorAll('button[aria-label$="Open task"]')).toHaveLength(0);
+    expect(head.getAttribute("aria-label")).toBe(
+      "2 tasks: 1 finished, 1 couldn't finish. Show tasks",
+    );
+    expect(node.querySelectorAll('button[aria-label$="Open the task"]')).toHaveLength(0);
     await act(async () => head.click());
-    expect(node.querySelectorAll('button[aria-label$="Open task"]')).toHaveLength(2);
+    expect(node.querySelectorAll('button[aria-label$="Open the task"]')).toHaveLength(2);
   });
 
   it("says when one of them ends, once", async () => {

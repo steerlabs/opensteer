@@ -34,6 +34,7 @@ const harness = vi.hoisted(() => ({
   setOptions: vi.fn(),
 }));
 
+vi.mock("../thread/settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("react-native", () => {

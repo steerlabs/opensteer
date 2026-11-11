@@ -108,21 +108,6 @@ export const AroundButton = memo(function AroundButton(props: {
             </>
           ),
         }),
-    ...(props.glance.agents === null
-      ? {}
-      : {
-          agents: (
-            <>
-              <Symbol name="person.2" size={15} tint={color.text} />
-              <Count muted={props.glance.agents.live === 0}>
-                {props.glance.agents.live === 0
-                  ? props.glance.agents.total
-                  : props.glance.agents.live}
-              </Count>
-              {props.glance.agents.needsYou > 0 ? <View style={styles.attention} /> : null}
-            </>
-          ),
-        }),
     ...(family === null || family.automations === 0
       ? {}
       : {
@@ -153,7 +138,7 @@ export const AroundButton = memo(function AroundButton(props: {
   });
   return (
     <Pressable
-      accessibilityHint="Shows the places, tasks, agents and schedules around this conversation"
+      accessibilityHint="Shows the places, tasks and schedules around this conversation"
       accessibilityLabel={label}
       accessibilityRole="button"
       onPress={props.onPress}

@@ -1,6 +1,11 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
-import { MockDesktopUpdates, MockHostClient, type MockTeamScenario } from "@opensteer/client/mock";
+import {
+  MockDesktopUpdates,
+  MockHostClient,
+  type MockSubagentScene,
+  type MockTeamScenario,
+} from "@opensteer/client/mock";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
@@ -20,6 +25,8 @@ export function createMockHostPort(
     readonly hosts?: Map<string, MockHostClient>;
     readonly initialHome?: "seeded" | "absent";
     readonly team?: MockTeamScenario | null;
+    /** One subagent scene of the design, so each of its states can be looked at. */
+    readonly subagents?: MockSubagentScene | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
     readonly onCommand?: (command: HostApiCommandInput) => void;
   } = {},
@@ -33,6 +40,7 @@ export function createMockHostPort(
       return new MockHostClient({
         initialHome: options.initialHome ?? "seeded",
         ...(options.team ? { team: options.team } : {}),
+        ...(options.subagents ? { subagents: options.subagents } : {}),
       });
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
@@ -40,6 +48,7 @@ export function createMockHostPort(
       const created = new MockHostClient({
         initialHome: options.initialHome ?? "seeded",
         ...(options.team ? { team: options.team } : {}),
+        ...(options.subagents ? { subagents: options.subagents } : {}),
       });
       const dispatch = created.dispatch.bind(created);
       created.dispatch = async (command) => {

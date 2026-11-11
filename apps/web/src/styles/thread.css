@@ -198,13 +198,21 @@
 }
 
 /* Who asked, when a task this conversation handed out is asking. */
+/* Who asked, and "1 of 2" when more than one waits: the line above the request. */
+.request-card__by {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  margin: var(--space-10) var(--space-12) calc(var(--space-6) * -1) var(--space-16);
+}
+
 .request-card__source {
   display: flex;
   align-items: center;
   gap: var(--space-6);
-  width: fit-content;
+  min-width: 0;
   max-width: 100%;
-  margin: var(--space-12) var(--space-16) calc(var(--space-6) * -1);
   color: var(--text-soft);
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
@@ -328,40 +336,6 @@
   font-size: var(--text-2xl);
   font-weight: var(--weight-bold);
   color: var(--text);
-}
-
-/* Who inside the Run asked, when it was a subagent rather than the agent
-   itself: a link to that subagent's own view, where it can be answered too. */
-.action-panel__asker {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  gap: var(--space-4);
-  max-width: 100%;
-  margin: 0;
-  overflow: hidden;
-  font-size: var(--text-sm);
-  color: var(--muted);
-  text-decoration: underline;
-  text-decoration-color: transparent;
-  text-overflow: ellipsis;
-  text-underline-offset: 2px;
-  white-space: nowrap;
-  transition:
-    color var(--duration-fast) var(--ease-out),
-    text-decoration-color var(--duration-fast) var(--ease-out);
-}
-
-.action-panel__asker:hover,
-.action-panel__asker:focus-visible {
-  color: var(--text-soft);
-  text-decoration-color: currentColor;
-}
-
-.action-panel__asker .icon {
-  flex: none;
-  width: 12px;
-  height: 12px;
 }
 
 /* Detail: the substance of the decision — clamped until asked for. */
@@ -2259,145 +2233,4 @@ fieldset.action-panel {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* ---- A subagent's own view ---- */
-
-/* The conversation's place, read-only: its header, its steps, and a bar where
-   the composer would be that says it runs on its own. */
-.subagent-view__mark {
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  color: var(--muted-dim);
-}
-
-.subagent-view__mark .icon {
-  width: 16px;
-  height: 16px;
-}
-
-.subagent-view__state {
-  gap: var(--space-8);
-}
-
-.subagent-view__body > .msg--input {
-  margin-block: var(--space-8);
-}
-
-.subagent-view__steps {
-  margin-block: var(--space-6);
-}
-
-.subagent-view__note {
-  align-items: flex-start;
-  line-height: 1.5;
-}
-
-.subagent-view__note .icon {
-  flex: none;
-  margin-top: 3px;
-}
-
-.subagent-view__note strong {
-  color: var(--text-soft);
-  font-weight: var(--weight-medium);
-}
-
-.subagent-view__retry {
-  margin-top: var(--space-8);
-}
-
-.subagent-view__result {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-  margin-top: var(--space-12);
-}
-
-.subagent-view__result .md-prose {
-  font-size: var(--text-2xl);
-}
-
-.subagent-view__empty {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-12);
-  padding: var(--space-48) var(--space-16);
-  text-align: center;
-}
-
-.subagent-view__empty .loading-rows {
-  width: min(var(--transcript-max-width), 100%);
-  text-align: left;
-}
-
-.subagent-view__empty-title {
-  margin: 0;
-  color: var(--text);
-  font-size: var(--display-xs);
-  font-weight: var(--weight-strong);
-}
-
-.agent-readonly-slot {
-  padding: 0 var(--space-12) var(--space-12);
-}
-
-.agent-readonly {
-  container-type: inline-size;
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-  max-width: var(--composer-max-width);
-  margin: 0 auto;
-  padding: var(--space-12) var(--space-14);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-lg);
-  background: var(--sheen) var(--fill-float);
-  box-shadow: var(--edge-plate), var(--lift-float);
-}
-
-.agent-readonly__glyph {
-  display: grid;
-  flex: none;
-  align-self: flex-start;
-  margin-top: 2px;
-  color: var(--muted);
-}
-
-.agent-readonly__glyph .icon {
-  width: 14px;
-  height: 14px;
-}
-
-.agent-readonly__text {
-  flex: 1;
-  min-width: 0;
-}
-
-.agent-readonly__title {
-  margin: 0;
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-medium);
-}
-
-.agent-readonly__detail {
-  margin: var(--space-2) 0 0;
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-@container (max-width: 560px) {
-  .agent-readonly__detail {
-    display: none;
-  }
-}
-
-.subagent-view__empty .run-note {
-  text-align: left;
 }

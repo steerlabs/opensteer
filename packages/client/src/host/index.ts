@@ -98,4 +98,5 @@ export * from "./team-join.js";
 export * from "./team-paging.js";
 export * from "./team-settings.js";
 export * from "./subagent-model.js";
+export * from "./subagent-now.js";
 export * from "./node-detail.js";

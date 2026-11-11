@@ -3,6 +3,7 @@ import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client
 import { assignmentTitle } from "@opensteer/client/host";
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { type Request, type RequestResponse } from "@opensteer/core";
+import { EngineDotMark } from "./subagent-rows.js";
 import { androidPhoneDefinitionId } from "@opensteer/protocol";
 import { ActionNote, ChoiceRows } from "./action-rows.js";
 import { useShell } from "./app-shell.js";
@@ -32,12 +33,10 @@ import {
   browserSiteLabel,
   deriveSurface,
   mutationIdempotencyKey,
+  requestAsker,
   requestsWaitingOn,
-  subagentTitle,
   waitingRequestSource,
   waitingRequestPresentationSource,
-  type HostSnapshot,
-  type NodeEntry,
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { integrationInstallNextStep } from "@opensteer/client/integrations";
@@ -306,54 +305,148 @@ export function focusOpenRequest(scope: ParentNode | null) {
 export function RequestStack({
   asker = true,
   disabled,
+  folded = false,
   items,
   onOpen,
+  onUnfold,
   openId,
   threadId,
 }: {
   /** Names the subagent that asked; its own view already is that subagent. */
   readonly asker?: boolean;
   readonly disabled: boolean;
+  /** Something else above the composer is open, so the request shows only its title line. */
+  readonly folded?: boolean;
   readonly items: readonly DockedRequest[];
   readonly onOpen: (requestId: string) => void;
+  /** The folded title line was pressed: open the request whole again. */
+  readonly onUnfold?: () => void;
   /** The request the reader opened, or was sent to; the first one otherwise. */
   readonly openId: string | null;
   readonly threadId: string;
 }) {
-  if (items.length === 0) return null;
-  const open = items.find((item) => item.surface.request.id === openId) ?? items[0];
+  const index = Math.max(
+    0,
+    items.findIndex((item) => item.surface.request.id === openId),
+  );
+  const open = items[index];
+  if (!open) return null;
+  if (folded)
+    return (
+      <div className="request-stack">
+        <RequestRow item={open} onOpen={() => onUnfold?.()} />
+      </div>
+    );
+  const pager =
+    items.length > 1 ? (
+      <RequestPager
+        index={index}
+        onOpen={(next) => {
+          const target = items[next];
+          if (target) onOpen(target.surface.request.id);
+        }}
+        total={items.length}
+      />
+    ) : null;
   return (
     <div className="request-stack">
-      {items.map((item) =>
-        item === open ? (
-          <div
-            className={`${inputSurfaceClass(item.surface)} request-card`}
-            key={item.surface.request.id}
-          >
-            {item.source ? (
-              <AreaLink
-                className="request-card__source"
-                to={`/threads/${encodeURIComponent(item.source.threadId)}`}
-              >
-                <span className="task-request-mark">
-                  <TaskMark size={16} mark={item.source.mark} />
-                  <TaskBadge state="needs-you" />
-                </span>
-                <span className="request-card__source-name">{item.source.title}</span>
-                <Icon name="chevron-right" />
-              </AreaLink>
-            ) : null}
-            <RequestPanel
-              asker={asker}
-              disabled={disabled}
-              surface={item.surface}
-              threadId={item.source ? item.surface.request.originatingThreadId : threadId}
-            />
+      <div
+        className={`${inputSurfaceClass(open.surface)} request-card`}
+        key={open.surface.request.id}
+      >
+        {open.source ? (
+          <div className="request-card__by">
+            <AreaLink
+              className="request-card__source"
+              to={`/threads/${encodeURIComponent(open.source.threadId)}`}
+            >
+              <span className="task-request-mark">
+                <TaskMark size={16} mark={open.source.mark} />
+                <TaskBadge state="needs-you" />
+              </span>
+              <span className="request-card__source-name">{open.source.title}</span>
+              <Icon name="chevron-right" />
+            </AreaLink>
+            {pager}
           </div>
-        ) : (
-          <RequestRow item={item} key={item.surface.request.id} onOpen={onOpen} />
-        ),
-      )}
+        ) : asker ? (
+          <AskerByline pager={pager} request={open.surface.request} />
+        ) : pager ? (
+          <div className="request-card__by">{pager}</div>
+        ) : null}
+        <RequestPanel
+          disabled={disabled}
+          surface={open.surface}
+          threadId={open.source ? open.surface.request.originatingThreadId : threadId}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** "1 of 2", with the way to each: one request is shown whole at a time. */
+function RequestPager({
+  index,
+  onOpen,
+  total,
+}: {
+  readonly index: number;
+  readonly onOpen: (index: number) => void;
+  readonly total: number;
+}) {
+  return (
+    <span className="request-card__pager">
+      <button
+        aria-label="Previous request"
+        className="icon-btn icon-btn--small"
+        disabled={index === 0}
+        onClick={() => onOpen(index - 1)}
+        type="button"
+      >
+        <Icon name="chevron-left" />
+      </button>
+      <span aria-live="polite">
+        {index + 1} of {total}
+      </span>
+      <button
+        aria-label="Next request"
+        className="icon-btn icon-btn--small"
+        disabled={index === total - 1}
+        onClick={() => onOpen(index + 1)}
+        type="button"
+      >
+        <Icon name="chevron-right" />
+      </button>
+    </span>
+  );
+}
+
+/**
+ * Who asked, for a question a subagent asked: its mark and name, and the
+ * subagent it runs inside when it is nested. It opens the asker.
+ */
+function AskerByline({ pager, request }: { pager: ReactNode; request: Request }) {
+  const { snapshot } = useShell();
+  const workspace = useOptionalWorkspace();
+  const asker = requestAsker(snapshot, request);
+  if (!asker) return pager ? <div className="request-card__by">{pager}</div> : null;
+  return (
+    <div className="request-card__by">
+      <button
+        aria-label={`Asked by subagent ${asker.title}. Open it`}
+        className="request-card__asker"
+        onClick={() =>
+          workspace?.nav.openConversation(workspace.nav.threadPath(asker.threadId), {
+            subagent: asker.nodeId,
+          })
+        }
+        type="button"
+      >
+        <EngineDotMark dot="needs" />
+        <strong>{asker.title}</strong>
+        <span className="request-card__within">· {asker.byline}</span>
+      </button>
+      {pager}
     </div>
   );
 }
@@ -423,20 +516,17 @@ function requestTitle(request: Request): string {
 /* ---- The focused Request ---- */
 
 function RequestPanel({
-  asker,
   disabled,
   surface,
   threadId,
 }: {
-  asker: boolean;
   disabled: boolean;
   surface: SurfaceModel;
   threadId: string;
 }) {
   const { snapshot } = useShell();
   const { request } = surface;
-  const workspace = useOptionalWorkspace();
-  const subagent = asker ? askingSubagent(snapshot, request) : null;
+  const asker = requestAsker(snapshot, request);
   // An agent's app request reads as the title and the model's own reason; the
   // card below says where it is answered.
   // A sign-in card names the site itself, whatever wording the Request carries.
@@ -453,7 +543,7 @@ function RequestPanel({
   const ownHead = request.kind === "integration.access" && !surface.denied;
   return (
     <fieldset
-      aria-label="Opensteer needs your input"
+      aria-label={asker ? `${asker.title} asks: ${title}` : "Opensteer needs your input"}
       className="action-panel"
       data-request-id={request.id}
       disabled={disabled}
@@ -468,19 +558,6 @@ function RequestPanel({
           {request.presentation.agentProposed ? <AgentProposedChip /> : null}
         </div>
       )}
-      {subagent ? (
-        <AreaLink
-          className="action-panel__asker"
-          to={
-            workspace
-              ? workspace.nav.subagentPath(request.originatingThreadId, subagent.nodeId)
-              : `/threads/${encodeURIComponent(request.originatingThreadId)}/subagents/${encodeURIComponent(subagent.nodeId)}`
-          }
-        >
-          Asked by subagent {subagent.title}
-          <Icon name="chevron-right" />
-        </AreaLink>
-      ) : null}
       <div className="action-panel__content">
         {detail && !ownHead ? (
           <ActionDetail mono={request.kind === "harness.approval"}>{detail}</ActionDetail>
@@ -489,24 +566,6 @@ function RequestPanel({
       </div>
     </fieldset>
   );
-}
-
-/**
- * The subagent that asked a Request, by its title: as the Host named it for
- * the reader to answer, or else as the asking Thread's transcript has it.
- */
-function askingSubagent(
-  snapshot: Pick<HostSnapshot, "transcripts" | "waitingRequests">,
-  request: Request,
-): { readonly nodeId: string; readonly title: string } | null {
-  const nodeId = request.originatingNodeId;
-  if (nodeId === undefined || nodeId === null) return null;
-  const waiting = snapshot.waitingRequests.find((entry) => entry.request.id === request.id);
-  const node = snapshot.transcripts[request.originatingThreadId]?.find(
-    (entry): entry is NodeEntry => entry.kind === "node" && entry.nodeId === nodeId,
-  );
-  const title = waiting?.subagent?.title ?? node?.title;
-  return title === undefined ? null : { nodeId, title: subagentTitle(title) };
 }
 
 function ActionBody({

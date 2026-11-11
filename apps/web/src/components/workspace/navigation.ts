@@ -396,8 +396,6 @@ export interface WorkspaceNavigation {
   readonly leaveSettings: () => void;
   /** The path of a conversation: Chat at the root, a task under /threads. */
   readonly threadPath: (threadId: string) => string;
-  /** A subagent's read-only view, in its conversation's place. */
-  readonly subagentPath: (threadId: string, nodeId: string) => string;
   /** Task row, task line, the menu under a name: the conversation only. */
   readonly openConversation: (
     path: string,
@@ -406,6 +404,10 @@ export interface WorkspaceNavigation {
       readonly draftId?: string;
       readonly focusRequest?: string;
       readonly messageId?: string;
+      /** A subagent of this conversation to open in its place, read-only. */
+      readonly subagent?: string;
+      /** Takes the current entry's place in history: a hop between siblings. */
+      readonly replace?: boolean;
     },
   ) => void;
   readonly showPendingBrowserTab: (
@@ -529,11 +531,6 @@ export function useWorkspaceNavigation(
       threadId === homeThreadId ? "/" : `/threads/${encodeURIComponent(threadId)}`,
     [homeThreadId],
   );
-  const subagentPath = useCallback(
-    (threadId: string, nodeId: string) =>
-      `/threads/${encodeURIComponent(threadId)}/subagents/${encodeURIComponent(nodeId)}`,
-    [],
-  );
   const conversationHref = useCallback((to: string): To => areaAddress(to, search), [search]);
   const openPage = useCallback<WorkspaceNavigation["openPage"]>(
     (to, options) => {
@@ -555,9 +552,11 @@ export function useWorkspaceNavigation(
       const params = placeOnly(latest.current.search);
       if (options?.messageId) params.set("messageId", options.messageId);
       if (options?.draftId) params.set("draft", options.draftId);
+      if (options?.subagent) params.set("subagent", options.subagent);
       go(
         { pathname: path, search: searchString(params) },
         options?.focusRequest ? { focusRequest: options.focusRequest } : undefined,
+        options?.replace,
       );
     },
     [go],
@@ -696,7 +695,6 @@ export function useWorkspaceNavigation(
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
-      subagentPath,
       threadPath,
     }),
     [
@@ -717,7 +715,6 @@ export function useWorkspaceNavigation(
       showPlace,
       showPlaceWithConversation,
       succeedPlace,
-      subagentPath,
       threadPath,
     ],
   );
