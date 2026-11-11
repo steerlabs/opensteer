@@ -33,6 +33,7 @@ type ActivityEvent = Extract<
       | "request.opened"
       | "request.resolved"
       | "request.cancelled"
+      | "thread.execution-updated"
       | "node.started"
       | "node.completed";
   }
@@ -173,22 +174,30 @@ export async function readProjectThreadActivity(
   input: ThreadActivityQuery & { readonly binding: ProjectRunBinding },
   runnerIsAttached: (runnerId: RunnerId, bootId: string) => boolean,
 ) {
+  if (input.binding.workspaceId !== input.binding.authority.principal.workspaceId)
+    throw new OpensteerError({ code: "forbidden", message: "Thread is outside this Project" });
   await assertActiveProjectBinding(database, input.binding, { runnerIsAttached });
-  return readThreadActivity(database, input, async (tx) => {
-    await assertActiveProjectBinding(tx, input.binding, { runnerIsAttached });
-    return tx
-      .selectFrom("threads")
-      .select("id")
-      .where("id", "=", input.threadId)
-      .where("workspaceId", "=", input.binding.workspaceId)
-      .executeTakeFirst();
-  });
+  return readThreadActivity(
+    database,
+    input,
+    async (tx) => {
+      await assertActiveProjectBinding(tx, input.binding, { runnerIsAttached });
+      return tx
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "=", input.threadId)
+        .where("workspaceId", "=", input.binding.workspaceId)
+        .executeTakeFirst();
+    },
+    true,
+  );
 }
 
 async function readThreadActivity(
   database: Kysely<DatabaseSchema>,
   input: ThreadActivityQuery,
   authorize: (tx: Transaction<DatabaseSchema>) => Promise<{ readonly id: ThreadId } | undefined>,
+  projectRequestFacts = false,
 ) {
   const before = input.before === undefined ? null : SequenceSchema.safeParse(input.before);
   if (before && (!before.success || BigInt(before.data) > maximumEventSequence))
@@ -203,7 +212,16 @@ async function readThreadActivity(
       let candidates = tx
         .selectFrom("workspaceEvents as e")
         .where("e.threadId", "=", input.threadId)
-        .where("e.type", "in", types)
+        .where("e.type", "in", projectRequestFacts ? [...types, "thread.execution-updated"] : types)
+        .$if(projectRequestFacts, (query) =>
+          query.where(sql<boolean>`
+          (e.type <> 'thread.execution-updated' or e.data ? 'requestFact') and
+          (e.type not in ('request.opened','request.resolved') or not exists (
+            select 1 from workspace_events marker where marker.thread_id = e.thread_id
+              and marker.type = 'thread.execution-updated'
+              and marker.data->'requestFact'->>'requestId' = e.data->'request'->>'id'
+              and marker.data->'requestFact'->>'type' = case when e.type = 'request.opened' then 'opened' else 'resolved' end))`),
+        )
         .where((eb) =>
           eb.or([
             eb("e.type", "not in", markers),

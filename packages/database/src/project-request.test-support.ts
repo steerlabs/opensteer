@@ -27,6 +27,7 @@ export async function projectRequestFixture(
   root: "human" | "connection" | "unattended" = "human",
 ) {
   const { database } = fixture;
+  const runnerBootId = `rbt_${randomUUID()}`;
   const project = await createProjectIdentityFixture(fixture, suffix);
   const seed = await insertProjectRunFixture(fixture, project, suffix);
   await database.deleteFrom("commands").where("runId", "=", seed.run.id).execute();
@@ -214,7 +215,7 @@ export async function projectRequestFixture(
         active: true,
         status: "running",
         runnerId: project.runnerId,
-        runnerBootId: `boot-${suffix}`,
+        runnerBootId,
         bindingGeneration: 1,
         leaseTokenHash: "request-lease",
         leaseExpiresAt: new Date(Date.now() + 60000),
@@ -230,7 +231,7 @@ export async function projectRequestFixture(
       await issueRunGrant(tx, {
         runId: admitted.id,
         runnerId: project.runnerId,
-        runnerBootId: `boot-${suffix}`,
+        runnerBootId,
         bindingGeneration: 1,
         modelSelection: testModelSelection,
       })

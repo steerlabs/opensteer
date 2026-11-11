@@ -10,6 +10,7 @@ import {
   OpensteerError,
   zeroSequence,
   type AgentEvent,
+  type AgentEventView,
   type AuthSessionId,
   type Sequence,
   type UserId,
@@ -117,6 +118,7 @@ export interface RealtimeFillWindow {
 interface SubscriberOptions {
   readonly connectionSink: RealtimeSink;
   readonly authority: Promise<TeamRealtimeAuthority | null>;
+  readonly projectEvents: (events: readonly AgentEventView[]) => Promise<readonly AgentEventView[]>;
   readonly personShow: boolean;
   readonly placeEvents: boolean;
   readonly toolOutputs: boolean;
@@ -194,6 +196,7 @@ class Subscriber {
   #send(message: HostToClientMessage): Promise<void> {
     switch (message.type) {
       case "host.events": {
+        const envelope = message;
         const events = message.events.filter((event) => {
           const nodeId = nodeDetailEventNodeId(event);
           return (
@@ -201,15 +204,31 @@ class Subscriber {
             (nodeId === undefined || nodeId === this.#watchedNodeId)
           );
         });
-        const last = message.events.at(-1);
-        const visible = events.at(-1);
-        if (last) this.#handedThrough = last.sequence;
-        if (visible) this.#visibleThrough = visible.sequence;
-        if (events.length === 0) return Promise.resolve();
-        return this.sink.send({
-          ...message,
-          events: this.#options.toolOutputs ? events.map(previewToolOutput) : events,
-        });
+        const forward = (visibleEvents: readonly AgentEventView[]): Promise<void> => {
+          const last = envelope.events.at(-1);
+          const visible = visibleEvents.at(-1);
+          if (last) this.#handedThrough = last.sequence;
+          if (visible) this.#visibleThrough = visible.sequence;
+          if (!visibleEvents.length) return Promise.resolve();
+          if (this.authority === null)
+            return this.sink.send({
+              ...envelope,
+              events: this.#options.toolOutputs
+                ? visibleEvents.map(previewToolOutput)
+                : [...visibleEvents],
+            });
+          return (async () => {
+            for (const batch of boundedEventBatches(visibleEvents, this.#options.maxWireBytes))
+              await this.sink.send({
+                ...envelope,
+                events: this.#options.toolOutputs ? batch.map(previewToolOutput) : batch,
+              });
+          })();
+        };
+        if (this.authority === null) return forward(events);
+        return this.#options.authority.then(async (authority) =>
+          forward(authority ? await this.#options.projectEvents(events) : events),
+        );
       }
       case "host.live": {
         const items = message.progress.items.filter(
@@ -787,6 +806,7 @@ export class RealtimeHub {
       sink,
       connectionSink: input.sink,
       authority,
+      projectEvents: (events) => this.#store.projectClientEvents(input.userId, events),
       placeEvents: input.placeEvents === "include",
       toolOutputs: input.toolOutputs === "preview",
       personShow: input.personShow === "accept",
@@ -1212,13 +1232,16 @@ export class RealtimeHub {
   }
 }
 
-function eventBytes(event: AgentEvent): number {
+function eventBytes(event: AgentEventView): number {
   return Buffer.byteLength(JSON.stringify(event), "utf8");
 }
 
-function boundedEventBatches(events: readonly AgentEvent[], maxWireBytes: number): AgentEvent[][] {
-  const batches: AgentEvent[][] = [];
-  let batch: AgentEvent[] = [];
+function boundedEventBatches<Event extends AgentEventView>(
+  events: readonly Event[],
+  maxWireBytes: number,
+): Event[][] {
+  const batches: Event[][] = [];
+  let batch: Event[] = [];
   let batchBytes = hostEventsEnvelopeBytes;
   for (const event of events) {
     const bytes = eventBytes(event) + (batch.length === 0 ? 0 : 1);

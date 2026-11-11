@@ -1,3 +1,4 @@
+import { ProjectRequestStore } from "./project-request-store.js";
 import { storedProjectDeployment } from "./deployment-execution-authority.js";
 import { teamProjectAudiences } from "./team-project-store.js";
 import { type RunId } from "@opensteer/core";
@@ -52,7 +53,7 @@ import {
   eventFromRow,
   isLegacyLiveEventType,
 } from "./store-primitives.js";
-import { type Kysely, type Transaction, sql } from "kysely";
+import { type Kysely, Transaction, sql } from "kysely";
 import { type DatabaseSchema, legacyLiveEventTypes } from "./schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
@@ -279,10 +280,18 @@ export async function workspaceSnapshot(
           .$if(options.listedOnly === true, (query) => query.where("listed", "=", true))
           .executeTakeFirstOrThrow(),
       ]);
+      const requestFacts =
+        projectAuthority && options.viewerId
+          ? await new ProjectRequestStore(transaction).threadFacts({
+              threadIds: threadRows.slice(0, maxThreads).map((thread) => thread.id),
+              userId: options.viewerId,
+            })
+          : new Map();
       const threads = boundedSerializedPrefix(
         threadsFromRows(threadRows.slice(0, maxThreads)).map((thread) => ({
           ...thread,
           ...(audience ? { audience } : {}),
+          ...requestFacts.get(thread.id),
         })),
         maxThreads,
         Math.min(192 * 1_024, maxSerializedBytes),
@@ -319,6 +328,9 @@ export async function workspaceSnapshot(
                 .selectFrom("requests")
                 .selectAll()
                 .where("originatingThreadId", "in", threadIds)
+                .$if(projectAuthority && options.viewerId === undefined, (query) =>
+                  query.where(sql<boolean>`false`),
+                )
                 .where("status", "=", "pending")
                 .orderBy("createdAt", "desc")
                 .orderBy("id", "desc")
@@ -328,6 +340,9 @@ export async function workspaceSnapshot(
                 .selectFrom("requests")
                 .select(({ fn }) => fn.countAll<string>().as("count"))
                 .where("originatingThreadId", "in", threadIds)
+                .$if(projectAuthority && options.viewerId === undefined, (query) =>
+                  query.where(sql<boolean>`false`),
+                )
                 .where("status", "=", "pending")
                 .executeTakeFirstOrThrow(),
               transaction
@@ -352,10 +367,19 @@ export async function workspaceSnapshot(
         maxMessages,
         Math.min(640 * 1_024, maxSerializedBytes),
       ).items;
+      const requestViewFacts =
+        projectAuthority && options.viewerId
+          ? await new ProjectRequestStore(transaction).viewFacts(transaction, {
+              userId: options.viewerId,
+              requestIds: pendingRows
+                .slice(0, workspaceSnapshotMaxPendingRequests)
+                .map((row) => row.id),
+            })
+          : new Map();
       let pendingRequestsDesc = boundedSerializedPrefix(
-        PendingRequestSchema.array().parse(
-          pendingRows.slice(0, workspaceSnapshotMaxPendingRequests).map(requestFromRow),
-        ),
+        PendingRequestSchema.array()
+          .parse(pendingRows.slice(0, workspaceSnapshotMaxPendingRequests).map(requestFromRow))
+          .map((request) => ({ ...request, ...requestViewFacts.get(request.id) })),
         workspaceSnapshotMaxPendingRequests,
         Math.min(600 * 1_024, maxSerializedBytes),
       ).items;
@@ -574,10 +598,17 @@ export async function taskPageForUser(
             rows.map((row) => row.workspaceId),
           )
         : new Map();
+      const requestFacts = rows.some((row) => row.projectAuthority)
+        ? await new ProjectRequestStore(transaction).threadFacts({
+            threadIds: rows.slice(0, maxItems).map((row) => row.id),
+            userId: input.userId,
+          })
+        : new Map();
       const threads = threadsFromRows(
         rows.slice(0, maxItems).map(({ projectAuthority: _projectAuthority, ...row }) => row),
       ).map((thread) => ({
         ...thread,
+        ...requestFacts.get(thread.id),
         ...(audiences.has(thread.workspaceId)
           ? { audience: audiences.get(thread.workspaceId) }
           : {}),
@@ -788,82 +819,79 @@ export async function threadEventPageForOwner(
       message: "Choose an event cursor or a message anchor",
     });
   }
-  return withDatabaseTransaction(
-    database,
-    async (transaction) => {
-      const thread = await transaction
-        .selectFrom("threads")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
+  const read = async (
+    transaction: Transaction<DatabaseSchema>,
+  ): Promise<ThreadEventPage | null> => {
+    const thread = await transaction
+      .selectFrom("threads")
+      .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
+      .selectAll("threads")
+      .select([
+        threadPendingRequestsSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .where("threads.id", "=", input.threadId)
+      .where("workspaceMemberships.userId", "=", input.ownerId)
+      .where("workspaceMemberships.state", "=", "active")
+      .executeTakeFirst();
+    if (!thread) return null;
+    const [page, countRow] = await Promise.all([
+      input.aroundMessageId
+        ? eventsAroundMessage(transaction, input.threadId, input.aroundMessageId, {
+            maxBytes,
+            maxItems,
+            placeEvents: input.placeEvents,
+          })
+        : newestTurns(transaction, input.threadId, anchor, {
+            maxBytes,
+            maxItems,
+            maxTurns,
+            placeEvents: input.placeEvents,
+          }),
+      transaction
+        .selectFrom("workspaceEvents")
+        .select(({ fn }) => fn.countAll<string>().as("count"))
+        .where("threadId", "=", input.threadId)
+        .where("nodeDetailId", "is", null)
+        .where(
+          "type",
+          "not in",
+          input.placeEvents === "include"
+            ? legacyLiveEventTypes
+            : [...legacyLiveEventTypes, "place.entered"],
         )
-        .selectAll("threads")
-        .select([
-          threadPendingRequestsSelection,
-          threadProviderSessionSelection,
-          threadContinuationIdentitySelection,
-        ])
-        .where("threads.id", "=", input.threadId)
-        .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
-        .executeTakeFirst();
-      if (!thread) return null;
-      const [page, countRow] = await Promise.all([
-        input.aroundMessageId
-          ? eventsAroundMessage(transaction, input.threadId, input.aroundMessageId, {
-              maxBytes,
-              maxItems,
-              placeEvents: input.placeEvents,
-            })
-          : newestTurns(transaction, input.threadId, anchor, {
-              maxBytes,
-              maxItems,
-              maxTurns,
-              placeEvents: input.placeEvents,
-            }),
-        transaction
-          .selectFrom("workspaceEvents")
-          .select(({ fn }) => fn.countAll<string>().as("count"))
-          .where("threadId", "=", input.threadId)
-          .where("nodeDetailId", "is", null)
-          .where(
-            "type",
-            "not in",
-            input.placeEvents === "include"
-              ? legacyLiveEventTypes
-              : [...legacyLiveEventTypes, "place.entered"],
-          )
-          .executeTakeFirstOrThrow(),
-      ]);
-      const { events, hasMore } = page;
-      const oldest = events.at(0);
-      return {
-        readState: await notificationState.getReadState({
-          database: transaction,
-          userId: input.ownerId,
-          threadId: input.threadId,
-        }),
-        events,
-        thread: threadFromRow(thread),
+        .executeTakeFirstOrThrow(),
+    ]);
+    const { events, hasMore } = page;
+    const oldest = events.at(0);
+    return {
+      readState: await notificationState.getReadState({
+        database: transaction,
+        userId: input.ownerId,
         threadId: input.threadId,
-        window: {
-          byteCount: serializedArrayBytes(events),
-          hasMore,
-          itemCount: events.length,
-          nextBefore:
-            "nextBefore" in page
-              ? (page.nextBefore as string | null)
-              : hasMore && oldest
-                ? oldest.sequence
-                : null,
-          threadId: input.threadId,
-          totalItems: safeCount(countRow.count),
-        },
-      };
-    },
-    "repeatable read",
-  );
+      }),
+      events,
+      thread: threadFromRow(thread),
+      threadId: input.threadId,
+      window: {
+        byteCount: serializedArrayBytes(events),
+        hasMore,
+        itemCount: events.length,
+        nextBefore:
+          "nextBefore" in page
+            ? (page.nextBefore as string | null)
+            : hasMore && oldest
+              ? oldest.sequence
+              : null,
+        threadId: input.threadId,
+        totalItems: safeCount(countRow.count),
+      },
+    };
+  };
+  return database instanceof Transaction
+    ? read(database)
+    : withDatabaseTransaction(database, read, "repeatable read");
 }
 
 /**

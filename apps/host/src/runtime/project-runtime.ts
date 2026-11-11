@@ -1,5 +1,10 @@
 import {
   OpensteerError,
+  ProjectEngineResponseSchema,
+  type AuthSessionId,
+  type RequestId,
+  type UserId,
+  type ThreadId,
   type AgentEvent,
   type LiveRunProgress,
   type ProjectRunBinding,
@@ -215,6 +220,33 @@ export class ProjectRuntime implements ProjectRuntimePorts {
       reconcile: () => this.reconcile(),
     });
   }
+
+  readonly humanRequests = {
+    waiting: (input: { userId: UserId; limit: number; before?: string }) =>
+      this.#database
+        .transaction()
+        .setIsolationLevel("repeatable read")
+        .execute((tx) => this.requests.waitingPage(tx, input)),
+    thread: (input: { userId: UserId; threadId: ThreadId; limit: number; before?: string }) =>
+      this.#database
+        .transaction()
+        .setIsolationLevel("repeatable read")
+        .execute((tx) => this.requests.pageViews(tx, input)),
+    answer: async (input: {
+      requestId: RequestId;
+      userId: UserId;
+      sessionId: AuthSessionId;
+      response: unknown;
+    }) => {
+      const response = ProjectEngineResponseSchema.parse(input.response);
+      const result = await this.#database
+        .transaction()
+        .execute((tx) => this.requests.answer(tx, { ...input, response }));
+      this.#infrastructure.publish(result.events);
+      void this.reconcile().catch(this.#infrastructure.onError);
+      return result;
+    },
+  };
 
   async start(): Promise<void> {
     try {

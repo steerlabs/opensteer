@@ -981,23 +981,31 @@ export async function agentThreadPageForOwner(
   );
 }
 
+export function readableThreadsForOwner(
+  database: Kysely<DatabaseSchema>,
+  ownerId: UserId,
+  threadId?: ThreadId,
+) {
+  return database
+    .selectFrom("threads")
+    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
+    .$if(threadId !== undefined, (query) => query.where("threads.id", "=", threadId!))
+    .where("workspaceMemberships.userId", "=", ownerId)
+    .where("workspaceMemberships.state", "=", "active");
+}
+
 export async function getThreadForOwner(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
 ): Promise<Thread | null> {
-  const row = await database
-    .selectFrom("threads")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
+  const row = await readableThreadsForOwner(database, ownerId, threadId)
     .selectAll("threads")
     .select([
       threadPendingRequestsSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
-    .where("threads.id", "=", threadId)
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
     .executeTakeFirst();
   return row ? threadFromRow(row) : null;
 }

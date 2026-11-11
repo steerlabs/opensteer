@@ -2323,38 +2323,52 @@ export class ProjectProductToolHandlers implements ProjectAgentToolPort {
           const mapped = page.items.map((item) => ({
             sequence: item.sequence,
             item:
-              item.type === "message"
-                ? messageItem(
-                    {
-                      ...item.message,
-                      content: item.message.content.map((part) =>
-                        isPlaceContentPart(part)
-                          ? { type: "text", text: "[Place unavailable]" }
-                          : part,
-                      ),
-                    },
-                    input.maxCharsPerItem,
-                    input.textOffset,
-                  )
-                : activityItem(item, {
-                    start:
-                      item.type === "tool.started"
-                        ? item
-                        : item.type === "tool.completed"
-                          ? starts.get(item.sequence)
+              page.requestActivity.has(item.sequence) && item.type !== "message"
+                ? {
+                    itemId: item.sequence,
+                    type: page.requestActivity.get(item.sequence)!.type,
+                    status: page.requestActivity.get(item.sequence)!.status,
+                    title: page.requestActivity.get(item.sequence)!.title,
+                    runId: page.requestActivity.get(item.sequence)!.runId,
+                    createdAt: item.createdAt,
+                    ...itemText(
+                      page.requestActivity.get(item.sequence)!.text,
+                      input.maxCharsPerItem,
+                      input.textOffset,
+                    ),
+                  }
+                : item.type === "message"
+                  ? messageItem(
+                      {
+                        ...item.message,
+                        content: item.message.content.map((part) =>
+                          isPlaceContentPart(part)
+                            ? { type: "text", text: "[Place unavailable]" }
+                            : part,
+                        ),
+                      },
+                      input.maxCharsPerItem,
+                      input.textOffset,
+                    )
+                  : activityItem(item, {
+                      start:
+                        item.type === "tool.started"
+                          ? item
+                          : item.type === "tool.completed"
+                            ? starts.get(item.sequence)
+                            : undefined,
+                      nodeTitle:
+                        item.type === "node.completed"
+                          ? page.nodeTitles.get(item.data.nodeId)
                           : undefined,
-                    nodeTitle:
-                      item.type === "node.completed"
-                        ? page.nodeTitles.get(item.data.nodeId)
-                        : undefined,
-                    ownRun:
-                      !!item.runId &&
-                      page.runPrincipals.get(item.runId) ===
-                        binding.authority.principal.principalId,
-                    named: !!input.itemId,
-                    maxChars: input.maxCharsPerItem,
-                    offset: input.textOffset,
-                  }),
+                      ownRun:
+                        !!item.runId &&
+                        page.runPrincipals.get(item.runId) ===
+                          binding.authority.principal.principalId,
+                      named: !!input.itemId,
+                      maxChars: input.maxCharsPerItem,
+                      offset: input.textOffset,
+                    }),
           }));
           const items = boundedThreadItems(mapped.map((item) => item.item));
           if (input.itemId && !items.length) throw forbidden("Item is unavailable in this Thread");

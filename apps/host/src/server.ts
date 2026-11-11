@@ -1,3 +1,4 @@
+import type { ExecutionRuntime } from "./runtime/execution-runtime.js";
 import { isProjectDeploymentAuthority } from "@opensteer/database";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
@@ -431,6 +432,7 @@ export interface HostServerDependencies {
   /** Present when web distribution is packaged. */
   readonly phoneUpdateRelease?: (() => AgentPhoneUpdateRelease | null) | undefined;
   readonly staticDistribution?: { readonly service: HostStaticDistribution } | undefined;
+  readonly executionRuntime?: ExecutionRuntime;
   readonly store: OpensteerStore;
   readonly triggers: {
     readonly controlTokens: TriggerControlTokenService;
@@ -446,6 +448,17 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
+  const projectRequests = async () => {
+    if (!isProjectDeploymentAuthority(await dependencies.store.securityEffectAuthority()))
+      return null;
+    if (dependencies.executionRuntime?.kind !== "project")
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "project-runtime-infrastructure-unavailable",
+        message: "Project Request runtime is unavailable",
+      });
+    return dependencies.executionRuntime.project.humanRequests;
+  };
   const threadService = new ThreadService(dependencies);
   const publishWorkspaceEvent =
     dependencies.publishWorkspaceEvent ??
@@ -1595,18 +1608,36 @@ export async function createHostServer(
         hostApi["thread.assignments.list"].success.parse({ ...page, threadId: input.threadId }),
       );
     },
-    "requests.list": async (input, context) =>
-      rpcSuccess(
+    "requests.list": async (input, context) => {
+      const project = await projectRequests();
+      const query = {
+        ...(input.before ? { before: input.before } : {}),
+        limit: Math.min(input.limit ?? 100, 100),
+        userId: requireRpcSession(context).user.id,
+      };
+      return rpcSuccess(
         hostApi["requests.list"].success.parse(
-          await dependencies.store.requests.waitingOnUserPage({
-            ...(input.before ? { before: input.before } : {}),
-            limit: Math.min(input.limit ?? 100, 100),
-            userId: requireRpcSession(context).user.id,
-          }),
+          project
+            ? await project.waiting(query)
+            : await dependencies.store.requests.waitingOnUserPage(query),
         ),
-      ),
+      );
+    },
     "thread.requests.list": async (input, context) => {
       const ownerId = requireRpcSession(context).user.id;
+      const project = await projectRequests();
+      if (project)
+        return rpcSuccess(
+          hostApi["thread.requests.list"].success.parse({
+            ...(await project.thread({
+              userId: ownerId,
+              threadId: input.threadId,
+              limit: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
+              ...(input.before ? { before: input.before } : {}),
+            })),
+            threadId: input.threadId,
+          }),
+        );
       const thread = await dependencies.store.getThreadForOwner(input.threadId, ownerId);
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       const page = await dependencies.store.requests.originatingPendingPage({
@@ -2088,6 +2119,16 @@ export async function createHostServer(
         };
 
       case "request.respond": {
+        const project = await projectRequests();
+        if (project) {
+          const result = await project.answer({
+            requestId: command.requestId,
+            userId,
+            sessionId: session.id,
+            response: command.response,
+          });
+          return { type: command.type, wasDuplicate: result.replayed };
+        }
         const pending = await dependencies.store.requests.get(command.requestId);
         if (!pending || pending.status !== "pending") {
           throw new OpensteerError({ code: "conflict", message: "Request is no longer pending" });

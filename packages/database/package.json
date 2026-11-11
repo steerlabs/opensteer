@@ -11,6 +11,7 @@
     "./test-support/workspace": "./src/workspace-fixture.test-support.ts",
     "./test-support/store": "./src/store.integration.test-support.ts",
     "./test-support/project": "./src/project-work.test-support.ts",
+    "./test-support/project-requests": "./src/project-request.test-support.ts",
     "./test-support/deployment": "./src/deployment-fixture.test-support.ts"
   },
   "scripts": {

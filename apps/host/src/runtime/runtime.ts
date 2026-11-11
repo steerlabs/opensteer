@@ -2652,6 +2652,7 @@ export async function createHostRuntime(
         ...(staticDistribution ? { staticDistribution: { service: staticDistribution } } : {}),
         ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
         store,
+        executionRuntime,
         triggers: {
           controlTokens: triggerControlTokens,
           service: triggers,

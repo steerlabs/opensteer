@@ -1,3 +1,5 @@
+import { boundedSerializedPrefix } from "./message-window.js";
+import { projectClientEventViews, projectThreadViews } from "./project-client-views.js";
 import { requireTeamProjectManager } from "./team-project-store.js";
 import {
   isProjectDeploymentAuthority,
@@ -21,6 +23,7 @@ import {
   createId,
   OpensteerError,
   type AgentEvent,
+  type AgentEventView,
   type AssignmentId,
   type AssignmentSummary,
   type AssignmentView,
@@ -2182,7 +2185,51 @@ export class OpensteerStore {
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   }): Promise<ThreadEventPage | null> {
-    return snapshotStore.threadEventPageForOwner(this.#database, this.notificationState, input);
+    if (!isProjectDeploymentAuthority(await this.securityEffectAuthority()))
+      return snapshotStore.threadEventPageForOwner(this.#database, this.notificationState, input);
+    return this.#database
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .execute(async (tx) => {
+        const page = await snapshotStore.threadEventPageForOwner(tx, this.notificationState, input);
+        if (!page) return null;
+        const [thread] = await projectThreadViews(tx, input.ownerId, [page.thread]);
+        if (!thread) throw new Error("Project Thread projection is missing");
+        const projected = await projectClientEventViews(tx, input.ownerId, page.events);
+        const window = boundedSerializedPrefix(
+          [...projected].reverse(),
+          projected.length,
+          Math.min(input.maxBytes ?? 640 * 1_024, 640 * 1_024),
+        );
+        if (projected.length && !window.items.length)
+          throw new OpensteerError({
+            code: "resource_exhausted",
+            message: "Project event exceeds the history byte window",
+          });
+        const events = [...window.items].reverse();
+        const trimmed = events.length < projected.length;
+        return {
+          ...page,
+          thread,
+          events,
+          window: {
+            ...page.window,
+            itemCount: events.length,
+            byteCount: window.byteCount,
+            hasMore: page.window.hasMore || trimmed,
+            nextBefore: trimmed
+              ? (events[0]?.sequence ?? page.window.nextBefore)
+              : page.window.nextBefore,
+          },
+        };
+      });
+  }
+
+  async projectClientEvents(userId: UserId, events: readonly AgentEventView[]) {
+    return this.#database
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .execute((tx) => projectClientEventViews(tx, userId, events));
   }
 
   async eventsAfter(

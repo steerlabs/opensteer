@@ -1,3 +1,5 @@
+import { readableThreadsForOwner } from "./thread-store.js";
+import { decodeRequestCursor, heldAssignments, requestPage } from "./request-store.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   AuthSessionIdSchema,
@@ -20,19 +22,41 @@ import {
   type RunId,
   type UserId,
   type WorkspaceId,
+  type ThreadId,
+  type RequestView,
+  type ThreadRequestWaits,
+  type ThreadRequestOutcome,
+  ThreadRequestWaitsSchema,
+  RequestViewSchema,
+  PendingRequestViewSchema,
+  CanSchema,
+  RequestWaitingOnSchema,
+  AutomationSourceSchema,
+  RequestCancelledForSchema,
+  ThreadRequestOutcomesSchema,
+  threadRequestFactLimit,
 } from "@opensteer/core";
 import type { ProjectRunControl, PendingAgentEvent } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
 import { assertRequestResponse } from "./command-store.js";
-import { projectWorkIsCurrent } from "./execution-authority.js";
+import { assertActiveProjectBinding, projectWorkIsCurrent } from "./execution-authority.js";
 import { checkAccess } from "./access-store.js";
-import { assertProjectAuthority } from "./deployment-execution-authority.js";
+import {
+  storedProjectDeployment,
+  assertProjectAuthority,
+} from "./deployment-execution-authority.js";
 import { lockRequestWorkspaces } from "./request-workspace-locks.js";
 import { requestSettlementActor } from "./request-settlement.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
+import {
+  threadFromRow,
+  threadPendingRequestsSelection,
+  threadProviderSessionSelection,
+  threadContinuationIdentitySelection,
+} from "./thread-row-mappers.js";
 
 import {
   ProjectExecutionStore,
@@ -259,6 +283,11 @@ function pending(row: RequestRow): ProjectPendingEngineRequest {
   };
 }
 
+export type ProjectRequestViewFacts = Pick<
+  RequestView,
+  "answer" | "waitingOn" | "source" | "resolvedByName" | "cancelledFor"
+>;
+
 export class ProjectRequestStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly controls: ProjectRequestControlPort;
@@ -268,6 +297,114 @@ export class ProjectRequestStore {
   ) {
     this.database = database;
     this.controls = controls;
+  }
+
+  async threadFacts(input: { readonly threadIds: readonly ThreadId[]; readonly userId: UserId }) {
+    return this.readFacts(input);
+  }
+
+  async activityFacts(
+    binding: ProjectRunBinding,
+    input: { readonly threadId: ThreadId; readonly requestIds: readonly RequestId[] },
+    runnerIsAttached: (runnerId: import("@opensteer/core").RunnerId, bootId: string) => boolean,
+  ) {
+    if (binding.authority.principal.workspaceId !== binding.workspaceId) denied();
+    await assertActiveProjectBinding(this.database, binding, { runnerIsAttached });
+    if (input.requestIds.length > threadRequestFactLimit)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "project-request-activity-unavailable",
+        message: "Request activity exceeds its bounded fact window",
+      });
+    return this.readFacts({
+      threadIds: [input.threadId],
+      workspaceId: binding.workspaceId,
+      requestIds: input.requestIds,
+    });
+  }
+
+  private async readFacts(
+    input: {
+      readonly threadIds: readonly ThreadId[];
+      readonly requestIds?: readonly RequestId[];
+    } & (
+      | { readonly userId: UserId; readonly workspaceId?: never }
+      | { readonly workspaceId: WorkspaceId; readonly userId?: never }
+    ),
+  ): Promise<
+    ReadonlyMap<
+      ThreadId,
+      {
+        readonly requestWaits: ThreadRequestWaits;
+        readonly requestOutcomes: readonly ThreadRequestOutcome[];
+      }
+    >
+  > {
+    if (!input.threadIds.length) return new Map();
+    const result = await sql<{
+      threadId: ThreadId;
+      requestWaits: unknown;
+      requestOutcomes: unknown;
+    }>`with visible as materialized (
+      select t.id from threads t
+      join workspaces w on w.id = t.workspace_id
+      ${
+        input.userId
+          ? sql`join workspace_memberships m on m.workspace_id = w.id and m.user_id = ${input.userId}
+      join users u on u.id = m.user_id`
+          : sql``
+      }
+      where t.id in (${sql.join(input.threadIds)}) and ${storedProjectDeployment}
+        and w.kind = 'project' and w.deleted_at is null
+        and w.status not in ('deleting', 'deleted')
+        ${input.userId ? sql`and m.state = 'active' and u.member_state = 'active' and u.admitted_at is not null and u.disabled_at is null` : sql`and w.id = ${input.workspaceId}`}
+    ), ranked as (
+      select r.id, r.originating_thread_id as thread_id, r.kind, r.status,
+        r.created_at, r.resolved_at, r.resolved_by, r.requested_by, r.cancellation_reason,
+        count(*) over (partition by r.originating_thread_id, (r.status = 'pending')) as total,
+        row_number() over (partition by r.originating_thread_id, (r.status = 'pending')
+          order by case when r.status = 'pending' then r.created_at end asc,
+            case when r.status <> 'pending' then r.resolved_at end desc,
+            case when r.status = 'pending' then r.id end asc, r.id desc) as position
+      from requests r join visible v on v.id = r.originating_thread_id
+      where r.originating_grant_id is not null
+        ${input.requestIds ? sql`and r.id in (${input.requestIds.length ? sql.join(input.requestIds) : sql`null`})` : sql``}
+    ), facts as (
+      select r.*, case when r.kind = 'harness.input' then 'question' else 'approval' end as class,
+        requester.display_name as requester_name, resolver.display_name as resolver_name
+      from ranked r
+      left join users requester on requester.id = r.requested_by
+      left join users resolver on resolver.id = r.resolved_by
+      where r.position <= ${threadRequestFactLimit}
+    )
+    select v.id as thread_id,
+      jsonb_build_object('total', coalesce(max(f.total) filter (where f.status = 'pending'), 0),
+        'items', coalesce(jsonb_agg(jsonb_build_object(
+          'requestId', f.id, 'class', f.class, 'since', f.created_at,
+          'waitingOn', case when f.requested_by is null then jsonb_build_object('kind', 'managers')
+            else jsonb_build_object('kind', 'person', 'name', f.requester_name) end)
+          order by f.position) filter (where f.status = 'pending'), '[]'::jsonb)) as request_waits,
+      coalesce(jsonb_agg(case when f.status = 'cancelled' then
+        jsonb_build_object('requestId', f.id, 'class', f.class, 'status', f.status,
+          'at', f.resolved_at, 'reason', f.cancellation_reason) ||
+          case when f.requested_by is not null and
+            f.cancellation_reason in ('authority-revoked', 'membership-revoked')
+            then jsonb_build_object('cancelledFor', jsonb_build_object('name', f.requester_name))
+            else '{}'::jsonb end
+        else jsonb_build_object('requestId', f.id, 'class', f.class, 'status', f.status,
+          'at', f.resolved_at, 'resolvedByName', f.resolver_name) end order by f.position)
+        filter (where f.status <> 'pending'), '[]'::jsonb) as request_outcomes
+      from visible v left join facts f on f.thread_id = v.id group by v.id
+    `.execute(this.database);
+    return new Map(
+      result.rows.map((row) => [
+        row.threadId,
+        {
+          requestWaits: ThreadRequestWaitsSchema.parse(row.requestWaits),
+          requestOutcomes: ThreadRequestOutcomesSchema.parse(row.requestOutcomes),
+        },
+      ]),
+    );
   }
 
   /** E calls after authenticating the Runner fence; commit precedes event acknowledgement. */
@@ -406,6 +543,13 @@ export class ProjectRequestStore {
               workspaceId: source.binding.workspaceId,
             }),
           ];
+    events.push(
+      ...(await appendRequestFactInvalidations(transaction, [row.originatingThreadId], {
+        requestId: row.id,
+        runId: row.originatingRunId,
+        type: "opened",
+      })),
+    );
     await fencePeople(transaction, recipients);
     if (source.origin && !(await liveRoot(transaction, source.binding.workspaceId, source.origin)))
       denied();
@@ -423,12 +567,276 @@ export class ProjectRequestStore {
     transaction: Transaction<DatabaseSchema>,
     input: { requestId: RequestId; userId: UserId },
   ) {
-    if (!(await this.recipients(transaction, input.requestId)).includes(input.userId)) denied();
-    return transaction
+    await assertProjectAuthority(transaction);
+    const row = await transaction
       .selectFrom("requests")
       .selectAll()
       .where("id", "=", input.requestId)
+      .where("originatingGrantId", "is not", null)
+      .where(projectRequestReadSql(transaction, input.userId))
+      .executeTakeFirst();
+    if (!row) denied();
+    return row;
+  }
+
+  async viewFacts(
+    transaction: Transaction<DatabaseSchema>,
+    input: { readonly userId: UserId; readonly requestIds: readonly RequestId[] },
+  ): Promise<ReadonlyMap<RequestId, ProjectRequestViewFacts>> {
+    if (input.requestIds.length > 100)
+      throw new TypeError("Request view limit must not exceed 100");
+    if (!input.requestIds.length) return new Map();
+    const rows = await transaction
+      .selectFrom("requests")
+      .leftJoin("users as requester", "requester.id", "requests.requestedBy")
+      .leftJoin("users as resolver", "resolver.id", "requests.resolvedBy")
+      .leftJoin("runs as askingRun", "askingRun.id", "requests.originatingRunId")
+      .leftJoin("triggerOccurrences as occurrence", (join) =>
+        join.on(
+          "occurrence.id",
+          "=",
+          sql<
+            import("@opensteer/core").TriggerOccurrenceId
+          >`asking_run.authority_source->>'occurrenceId'`,
+        ),
+      )
+      .leftJoin("triggers as automation", (join) =>
+        join
+          .on(
+            "automation.id",
+            "=",
+            sql<
+              import("@opensteer/core").TriggerId
+            >`coalesce(asking_run.authority_source->>'triggerId', occurrence.trigger_id)`,
+          )
+          .onRef("automation.workspaceId", "=", "requests.originatingWorkspaceId"),
+      )
+      .select([
+        "requests.id",
+        "requests.status",
+        "requests.requestedBy",
+        "requests.cancellationReason",
+        "requester.displayName as requesterName",
+        "resolver.displayName as resolverName",
+        "automation.name as sourceName",
+        "askingRun.authoritySource",
+        projectRequestAudienceSql(input.userId).as("canAnswer"),
+      ])
+      .where("requests.id", "in", [...input.requestIds])
+      .where(storedProjectDeployment)
+      .where("requests.originatingGrantId", "is not", null)
+      .where(projectRequestReadSql(transaction, input.userId))
+      .execute();
+    return new Map(
+      rows.map((row) => {
+        const sourceKind =
+          row.authoritySource?.kind === "watch-observation"
+            ? "watch"
+            : row.authoritySource?.kind === "trigger-occurrence"
+              ? "trigger"
+              : null;
+        const source =
+          sourceKind && row.requestedBy === null && row.sourceName
+            ? AutomationSourceSchema.parse({ kind: sourceKind, name: row.sourceName })
+            : undefined;
+        const cancelledFor =
+          row.requestedBy !== null &&
+          row.status === "cancelled" &&
+          (row.cancellationReason === "authority-revoked" ||
+            row.cancellationReason === "membership-revoked")
+            ? RequestCancelledForSchema.parse({ name: row.requesterName })
+            : undefined;
+        return [
+          row.id,
+          {
+            ...(row.status === "pending"
+              ? {
+                  answer: CanSchema.parse(
+                    row.canAnswer
+                      ? { allowed: true }
+                      : {
+                          allowed: false,
+                          reason: row.requestedBy === null ? "manager-only" : "requester-only",
+                        },
+                  ),
+                }
+              : {}),
+            waitingOn:
+              row.status === "pending"
+                ? RequestWaitingOnSchema.parse(
+                    row.requestedBy === null
+                      ? { kind: "managers" }
+                      : { kind: "person", name: row.requesterName },
+                  )
+                : null,
+            resolvedByName: row.resolverName,
+            ...(source ? { source } : {}),
+            ...(cancelledFor ? { cancelledFor } : {}),
+          },
+        ] as const;
+      }),
+    );
+  }
+
+  async detailView(
+    transaction: Transaction<DatabaseSchema>,
+    input: { requestId: RequestId; userId: UserId },
+  ) {
+    const row = await this.detail(transaction, input);
+    const facts = (
+      await this.viewFacts(transaction, { userId: input.userId, requestIds: [row.id] })
+    ).get(row.id);
+    if (!facts) denied();
+    return RequestViewSchema.parse({ ...requestFromRow(row), ...facts });
+  }
+
+  async listViews(
+    transaction: Transaction<DatabaseSchema>,
+    userId: UserId,
+    limit = 100,
+    before?: { readonly createdAt: Date; readonly id: RequestId },
+  ) {
+    const rows = await this.list(transaction, userId, limit, before);
+    const facts = await this.viewFacts(transaction, {
+      userId,
+      requestIds: rows.map((row) => row.id),
+    });
+    return rows.map((row) => {
+      const display = facts.get(row.id);
+      if (!display) denied();
+      return RequestViewSchema.parse({ ...requestFromRow(row), ...display });
+    });
+  }
+
+  async cancelledEventViews(
+    transaction: Transaction<DatabaseSchema>,
+    events: readonly Extract<AgentEvent, { type: "request.cancelled" }>[],
+    userId: UserId,
+  ) {
+    const facts = await this.viewFacts(transaction, {
+      userId,
+      requestIds: [...new Set(events.map((event) => event.data.requestId))],
+    });
+    return events.flatMap((event) => {
+      const display = facts.get(event.data.requestId);
+      return display
+        ? [
+            {
+              ...event,
+              data: {
+                ...event.data,
+                ...(display.cancelledFor ? { cancelledFor: display.cancelledFor } : {}),
+              },
+            },
+          ]
+        : [];
+    });
+  }
+
+  async pageViews(
+    transaction: Transaction<DatabaseSchema>,
+    input: {
+      readonly userId: UserId;
+      readonly threadId?: ThreadId;
+      readonly limit: number;
+      readonly before?: string;
+    },
+  ) {
+    await assertProjectAuthority(transaction);
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 100)
+      throw new OpensteerError({ code: "bad_request", message: "Request page limit is invalid" });
+    if (
+      input.threadId &&
+      !(await readableThreadsForOwner(transaction, input.userId, input.threadId)
+        .select("threads.id")
+        .executeTakeFirst())
+    )
+      denied();
+    const scope = input.threadId
+      ? `originating-pending:${input.threadId}`
+      : `waiting:${input.userId}`;
+    const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
+    const addressed = transaction
+      .selectFrom("requests")
+      .where(
+        input.threadId
+          ? projectRequestReadSql(transaction, input.userId)
+          : projectRequestAudienceSql(input.userId),
+      )
+      .where("originatingGrantId", "is not", null)
+      .where("status", "=", "pending")
+      .$call((query) =>
+        input.threadId ? query.where("originatingThreadId", "=", input.threadId) : query,
+      );
+    let query = addressed
+      .selectAll()
+      .orderBy("createdAt", "desc")
+      .orderBy("id", "desc")
+      .limit(input.limit + 1);
+    if (anchor)
+      query = query.where((eb) =>
+        eb.or([
+          eb("createdAt", "<", anchor.createdAt),
+          eb.and([eb("createdAt", "=", anchor.createdAt), eb("id", "<", anchor.id)]),
+        ]),
+      );
+    const rows = await query.execute();
+    const count = await addressed
+      .select(({ fn }) => fn.countAll<string>().as("count"))
       .executeTakeFirstOrThrow();
+    const page = requestPage(rows, Number(count.count), input.limit, scope);
+    const facts = await this.viewFacts(transaction, {
+      userId: input.userId,
+      requestIds: page.requests.map((request) => request.id),
+    });
+    const requests = page.requests.map((request) => {
+      const display = facts.get(request.id);
+      if (!display) denied();
+      return PendingRequestViewSchema.parse({ ...request, ...display });
+    });
+    return {
+      requests,
+      window: { ...page.window, byteCount: Buffer.byteLength(JSON.stringify(requests)) },
+    };
+  }
+
+  async waitingPage(
+    transaction: Transaction<DatabaseSchema>,
+    input: {
+      readonly userId: UserId;
+      readonly limit: number;
+      readonly before?: string;
+    },
+  ) {
+    const page = await this.pageViews(transaction, input);
+    const held = await heldAssignments(
+      transaction,
+      page.requests.map((request) => request.id),
+      input.userId,
+    );
+    const nodeIds = page.requests.flatMap((request) =>
+      request.originatingNodeId ? [request.originatingNodeId] : [],
+    );
+    const nodes = new Map(
+      (nodeIds.length
+        ? await transaction
+            .selectFrom("executionNodes")
+            .select(["id", "title"])
+            .where("id", "in", nodeIds)
+            .execute()
+        : []
+      ).map((node) => [node.id, node]),
+    );
+    const requests = page.requests.map((request) => ({
+      assignments: held.get(request.id) ?? [],
+      presentation: null,
+      request,
+      subagent: request.originatingNodeId ? (nodes.get(request.originatingNodeId) ?? null) : null,
+    }));
+    return {
+      requests,
+      window: { ...page.window, byteCount: Buffer.byteLength(JSON.stringify(requests)) },
+    };
   }
 
   async list(
@@ -496,7 +904,23 @@ export class ProjectRequestStore {
       .where("id", "=", input.requestId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    if (!(await this.recipients(transaction, row.id)).includes(input.userId)) denied();
+    if (!(await this.recipients(transaction, row.id)).includes(input.userId))
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: row.requestedBy === null ? "manager-only" : "requester-only",
+        message: "Only the Request audience may answer",
+      });
+    if (row.status !== "pending") {
+      if (row.resolvedBy !== input.userId || !isDeepStrictEqual(row.response, input.response))
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "request-already-settled",
+          message: "Request was already settled",
+        });
+      await fencePeople(transaction, [input.userId]);
+      await authenticatedResponder(transaction, input.userId, input.sessionId);
+      return { replayed: true, events: [] };
+    }
     const source = await storedBinding(transaction, observed.originatingGrantId);
     if (
       source.row.grantStatus !== "active" ||
@@ -511,12 +935,6 @@ export class ProjectRequestStore {
       !row.presentation.options.some((option) => option.id === response.optionId)
     )
       denied();
-    if (row.status !== "pending") {
-      if (row.resolvedBy !== input.userId || !isDeepStrictEqual(row.response, response)) denied();
-      await fencePeople(transaction, [input.userId]);
-      await authenticatedResponder(transaction, input.userId, input.sessionId);
-      return { replayed: true, events: [] };
-    }
     if (row.requestedBy !== null) assertRequestResponse(requestFromRow(row), response, false);
     else if (row.presentation.kind === "form" && response.kind === "form") {
       if (Object.keys(response.answers).length !== row.presentation.fields.length) denied();
@@ -569,9 +987,21 @@ export class ProjectRequestStore {
               workspaceId: source.binding.workspaceId,
             }),
           ];
+    events.push(
+      ...(await appendRequestFactInvalidations(transaction, [row.originatingThreadId], {
+        requestId: row.id,
+        runId: row.originatingRunId,
+        type: "resolved",
+      })),
+    );
     await fencePeople(transaction, [input.userId]);
     await authenticatedResponder(transaction, input.userId, input.sessionId);
-    if (!(await this.recipients(transaction, row.id)).includes(input.userId)) denied();
+    if (!(await this.recipients(transaction, row.id)).includes(input.userId))
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: row.requestedBy === null ? "manager-only" : "requester-only",
+        message: "Only the Request audience may answer",
+      });
     return { replayed: false, events };
   }
 
@@ -800,6 +1230,48 @@ async function cancelRows(
         workspaceId: row.originatingWorkspaceId,
       }),
     );
+  events.push(
+    ...(await appendRequestFactInvalidations(
+      transaction,
+      rows.map((row) => row.originatingThreadId),
+    )),
+  );
+  return events;
+}
+
+async function appendRequestFactInvalidations(
+  transaction: Transaction<DatabaseSchema>,
+  threadIds: readonly ThreadId[],
+  requestFact?: {
+    readonly requestId: RequestId;
+    readonly runId: RunId | null;
+    readonly type: "opened" | "resolved";
+  },
+): Promise<AgentEvent[]> {
+  if (!threadIds.length) return [];
+  const threads = await transaction
+    .selectFrom("threads")
+    .selectAll()
+    .select([
+      threadPendingRequestsSelection,
+      threadProviderSessionSelection,
+      threadContinuationIdentitySelection,
+    ])
+    .where("id", "in", [...new Set(threadIds)])
+    .orderBy("id")
+    .execute();
+  const events: AgentEvent[] = [];
+  for (const row of threads)
+    events.push(
+      await appendHostWorkspaceEvent(transaction, {
+        type: "thread.execution-updated",
+        data: { thread: threadFromRow(row), ...(requestFact ? { requestFact } : {}) },
+        environmentId: row.environmentId,
+        workspaceId: row.workspaceId,
+        threadId: row.id,
+        runId: null,
+      }),
+    );
   return events;
 }
 
@@ -835,7 +1307,8 @@ export async function projectRunRecipients(
     ])
     .where("runs.id", "=", runId)
     .executeTakeFirst();
-  if (!row?.requestedBy) return [];
+  if (!row) return [];
+  if (row.requestedBy === null) return eligibleProjectRequestManagers(database, row.workspaceId);
   const root = HumanRootSchema.parse({
     userId: row.requestedBy,
     initiatorGeneration: Number(row.initiatorGeneration),
@@ -845,7 +1318,11 @@ export async function projectRunRecipients(
   return (await liveRoot(database, row.workspaceId, root)) ? [root.userId] : [];
 }
 
-function projectRequestAudienceSql(userId: UserId) {
+function projectRequestReadSql(database: Kysely<DatabaseSchema>, userId: UserId) {
+  return sql<boolean>`requests.originating_thread_id in (${readableThreadsForOwner(database, userId).select("threads.id")})`;
+}
+
+export function projectRequestAudienceSql(userId: UserId) {
   return sql<boolean>`exists (
         select 1 from grants g join runs r on r.id = g.run_id
         join workspace_memberships m on m.workspace_id = requests.originating_workspace_id
@@ -948,5 +1425,45 @@ export function projectRequestRevocationHooks(
           requestEvents: cancelled.events,
         });
     },
+  };
+}
+
+export function projectRequestActivityFact(
+  fact: ThreadRequestWaits["items"][number] | ThreadRequestOutcome,
+) {
+  const title = fact.class === "question" ? "Question" : "Approval";
+  if ("waitingOn" in fact)
+    return {
+      title,
+      status: "pending",
+      text:
+        fact.waitingOn.kind === "person"
+          ? `Waiting for ${fact.waitingOn.name}`
+          : "Waiting for managers",
+    };
+  if (fact.status !== "cancelled") {
+    const text =
+      fact.status === "fulfilled"
+        ? `Answered by ${fact.resolvedByName}`
+        : fact.status === "declined"
+          ? `Declined by ${fact.resolvedByName}`
+          : "Withdrawn";
+    return { title, status: fact.status, text };
+  }
+  const reasons = {
+    "run-ended": "Cancelled: run ended",
+    "process-lost": "Cancelled: process lost",
+    "source-closed": "Cancelled: source closed",
+    "thread-archived": "Cancelled: task closed",
+    "workspace-deleted": "Cancelled: Project deleted",
+    "resource-deleted": "Cancelled: resource deleted",
+    "membership-revoked": "Cancelled: membership revoked",
+    "authority-revoked": "Cancelled: authority revoked",
+    "no-eligible-manager": "Cancelled: no manager left",
+  };
+  return {
+    title,
+    status: fact.status,
+    text: fact.cancelledFor ? `Cancelled: ${fact.cancelledFor.name} left` : reasons[fact.reason],
   };
 }

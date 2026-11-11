@@ -12,6 +12,35 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("Workspace snapshot history", (it) => {
+  it("adds no Request fact query to a Personal snapshot", async ({ storeFixture }) => {
+    const { database, createRunFixture } = storeFixture;
+    const fixture = await createRunFixture("personal-request-facts-cost", {
+      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      workspaceBacking: "local-directory",
+    });
+    const queries: string[] = [];
+    const observed = new OpensteerStore(
+      database.withPlugin({
+        transformQuery(args) {
+          const query = database.getExecutor().compileQuery(args.node, args.queryId).sql;
+          if (!/^(begin|commit|rollback)/iu.test(query)) queries.push(query);
+          return args.node;
+        },
+        async transformResult({ result }) {
+          return result;
+        },
+      }),
+    );
+    const snapshot = await observed.workspaceSnapshot(fixture.workspace.id, {
+      viewerId: fixture.userId,
+    });
+    expect(snapshot.threads).toHaveLength(1);
+    expect(snapshot.threads[0]).not.toHaveProperty("requestWaits");
+    expect(snapshot.threads[0]).not.toHaveProperty("requestOutcomes");
+    expect(queries).toHaveLength(10);
+    expect(queries.some((query) => query.includes("with visible as materialized"))).toBe(false);
+  });
+
   it("remembers a human hand-off returned to the queue at finalization", async ({
     storeFixture,
   }) => {

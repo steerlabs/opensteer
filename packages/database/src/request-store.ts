@@ -4866,7 +4866,7 @@ function encodeRequestCursor(createdAt: string, id: RequestId, scope: string): s
   return Buffer.from(JSON.stringify({ createdAt, id, scope }), "utf8").toString("base64url");
 }
 
-function decodeRequestCursor(
+export function decodeRequestCursor(
   cursor: string,
   scope: string,
 ): { readonly createdAt: Date; readonly id: RequestId } {
@@ -4888,7 +4888,7 @@ function decodeRequestCursor(
 }
 
 /** Each Request's held work, innermost first, cut where the reader could not open a link. */
-async function heldAssignments(
+export async function heldAssignments(
   transaction: Transaction<DatabaseSchema>,
   requestIds: readonly RequestId[],
   userId: UserId,
@@ -4953,7 +4953,7 @@ async function heldAssignments(
   return held;
 }
 
-function requestPage(
+export function requestPage(
   rows: readonly RequestRow[],
   totalItems: number,
   limit: number,

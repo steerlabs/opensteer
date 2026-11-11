@@ -93,7 +93,14 @@ type HostWorkspaceEventInput =
       readonly workspaceId: WorkspaceId;
     }
   | {
-      readonly data: { readonly thread: Thread };
+      readonly data: {
+        readonly thread: Thread;
+        readonly requestFact?: {
+          readonly requestId: import("@opensteer/core").RequestId;
+          readonly runId: RunId | null;
+          readonly type: "opened" | "resolved";
+        };
+      };
       readonly environmentId: EnvironmentId;
       readonly runId: null;
       readonly threadId: ThreadId;
