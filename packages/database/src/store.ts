@@ -1,4 +1,7 @@
-import { readInitializedDeploymentAuthority } from "./deployment-execution-authority.js";
+import {
+  isProjectDeploymentAuthority,
+  readInitializedDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { readTeamRealtimeAuthority, type TeamRealtimeAuthority } from "./access-store.js";
 import { claimAccessSecurityEffects } from "./access-effects.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
@@ -1305,11 +1308,13 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
+  async #ensureProjectChat(workspace: Workspace): Promise<Workspace> {
+    if (isProjectDeploymentAuthority(await this.securityEffectAuthority())) return workspace;
+    return ensureProjectChat(this.#database, workspace);
+  }
+
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
-    return ensureProjectChat(
-      this.#database,
-      await workspaceStore.createWorkspace(this.#database, input),
-    );
+    return this.#ensureProjectChat(await workspaceStore.createWorkspace(this.#database, input));
   }
 
   async setWorkspaceIcon(input: {
@@ -1364,8 +1369,7 @@ export class OpensteerStore {
   async listWorkspaces(): Promise<readonly Workspace[]> {
     const workspaces = await workspaceStore.listWorkspaces(this.#database);
     const result: Workspace[] = [];
-    for (const workspace of workspaces)
-      result.push(await ensureProjectChat(this.#database, workspace));
+    for (const workspace of workspaces) result.push(await this.#ensureProjectChat(workspace));
     return result;
   }
 
@@ -1424,8 +1428,7 @@ export class OpensteerStore {
     readonly status: Workspace["status"];
     readonly workspaceId: WorkspaceId;
   }): Promise<Workspace> {
-    return ensureProjectChat(
-      this.#database,
+    return this.#ensureProjectChat(
       await workspaceStore.setWorkspaceProvisioningResult(this.#database, input),
     );
   }
