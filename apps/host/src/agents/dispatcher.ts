@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
@@ -228,6 +229,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   }
 
   async dispatch(command: CommandRow, signal: AbortSignal): Promise<void> {
+    if (
+      command.requestedBy === null ||
+      command.type === "run.execute.project" ||
+      command.type === "run.control.project"
+    )
+      throw new CommandDispatchError(
+        "Project commands require the Project execution runtime",
+        "failed",
+      );
     if (!command.environmentId) {
       throw new CommandDispatchError("Unsupported durable Runner command", "failed");
     }
@@ -247,7 +257,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         await new SpecialistStore(this.#store.database).assertRunnable(
           context.thread.specialistId,
           context.workspace.id,
-          context.run.requestedBy,
+          requireHumanRequester(context.run.requestedBy),
         );
       } catch (error) {
         throw new CommandDispatchError(
@@ -482,7 +492,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const workspaceAccess = await this.#workspaceAccess.plan({
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
-      requestedBy: context.run.requestedBy,
+      requestedBy: requireHumanRequester(context.run.requestedBy),
       runnerIdentity: identity,
       workspace: context.workspace,
     });
@@ -493,7 +503,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
-      requestedBy: command.requestedBy,
+      requestedBy: requireHumanRequester(command.requestedBy),
       runId: context.run.id,
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
@@ -515,7 +525,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       throw new Error("Specialist registration was removed");
     const workspaceSkillPolicy = await this.#workspaceSkillPolicy(
       context.workspace.id,
-      command.requestedBy,
+      requireHumanRequester(command.requestedBy),
     );
     if (workspaceSkillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
       throw new CommandDispatchError(
@@ -525,7 +535,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const pinnedPlugins = specialist
       ? [specialist]
-      : await this.#pluginVersions(context.workspace.id, command.requestedBy);
+      : await this.#pluginVersions(
+          context.workspace.id,
+          requireHumanRequester(command.requestedBy),
+        );
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
@@ -533,7 +546,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
       environmentId: context.run.environmentId,
       membershipGeneration: context.membershipGeneration,
-      requestedBy: command.requestedBy,
+      requestedBy: requireHumanRequester(command.requestedBy),
       runId: context.run.id,
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
@@ -548,7 +561,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
             environmentId: context.run.environmentId,
             membershipGeneration: context.membershipGeneration,
-            requestedBy: command.requestedBy,
+            requestedBy: requireHumanRequester(command.requestedBy),
             runId: context.run.id,
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
@@ -559,10 +572,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       : undefined;
     const threadState = await this.#store.loadRunThreadState({
       runId: context.run.id,
-      viewerId: command.requestedBy,
+      viewerId: requireHumanRequester(command.requestedBy),
     });
     const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
-      context.run.requestedBy,
+      requireHumanRequester(context.run.requestedBy),
     );
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
@@ -607,7 +620,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           grantId: binding.grantId,
           environmentId: context.run.environmentId,
           membershipGeneration: context.membershipGeneration,
-          requestedBy: context.run.requestedBy,
+          requestedBy: requireHumanRequester(context.run.requestedBy),
           runId: context.run.id,
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
@@ -645,7 +658,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         providerSessionId: binding.providerSessionId,
         providerSessionStateLayout: context.providerSessionStateLayout,
         providerSessionReference: binding.providerSessionReference,
-        requestedBy: context.run.requestedBy,
+        requestedBy: requireHumanRequester(context.run.requestedBy),
         requesterTimeZone,
         runId: context.run.id,
         threadId: context.thread.id,
@@ -692,7 +705,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       await computeMachineAccess({
         callerMachineName: identity.name,
         callerRunnerId: identity.runnerId,
-        requestedBy: context.run.requestedBy,
+        requestedBy: requireHumanRequester(context.run.requestedBy),
         runners: this.#runners,
         serializedCommandBytes: (access) =>
           new TextEncoder().encode(JSON.stringify(runnerCommandFor(access))).byteLength,
@@ -720,7 +733,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           grantId: binding.grantId,
           environmentId: context.run.environmentId,
           membershipGeneration: context.membershipGeneration,
-          requestedBy: context.run.requestedBy,
+          requestedBy: requireHumanRequester(context.run.requestedBy),
           runId: context.run.id,
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,

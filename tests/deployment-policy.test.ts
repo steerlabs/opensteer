@@ -274,10 +274,13 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/project-authority-guards.ts": {
     reason:
-      "Project principal and Request creation require persisted server/model-2 authority; legacy Request writes return before querying Deployment state.",
+      "Project guards use the sole stored selector. Legacy execution predicates accept its already-read kind; the original two-argument predicates remain unchanged.",
     decisions: {
       "baseline/public.opensteer_project_principal_scope": {
-        "d.deployment_shape->>'kind' = 'server'": 1,
+        "d.kind = 'server'": 1,
+      },
+      "baseline/public.opensteer_user_can_execute_environment": {
+        "stored_kind = 'server' or (stored_kind = 'personal' and exists (": 1,
       },
       "baseline/public.opensteer_project_request_scope": {
         "d.deployment_shape->>'kind' = 'server'": 1,
@@ -353,6 +356,31 @@ describe("deployment policy boundary", () => {
       sqlExceptions["packages/database/src/migrations.ts"]!.decisions,
     );
   });
+  it.each([
+    "select * from public.opensteer_stored_execution_authority() d where d.kind = 'server';",
+    "select * into authority from public.opensteer_stored_execution_authority(); if authority.kind = 'server' then return; end if;",
+  ])("tracks stored-helper comparisons as named SQL decisions: %s", (query) => {
+    const inventory = sqlKindDecisionInventory(
+      `create function public.unlisted_scope() returns void as $$ begin ${query} end $$;`,
+    );
+    expect(Object.keys(inventory)).toEqual(["baseline/public.unlisted_scope"]);
+    expect(Object.values(inventory)[0]).toEqual(
+      query.includes("authority.kind")
+        ? { "authority.kind = 'server' then return": 1 }
+        : { "d.kind = 'server'": 1 },
+    );
+  });
+
+  it("tracks a kind selected beside the model into scalar guard variables", () => {
+    expect(
+      sqlKindDecisionInventory(`create function public.unlisted_scope() returns void as $$ begin
+      select model, kind into version, stored_kind from public.opensteer_stored_execution_authority();
+      if stored_kind = 'server' then return; end if; end $$;`),
+    ).toEqual({
+      "baseline/public.unlisted_scope": { "stored_kind = 'server' then return": 1 },
+    });
+  });
+
   it.each([
     "deployment_shape->>'kind' = 'server'",
     "'server' = deployment_shape->>'kind'",

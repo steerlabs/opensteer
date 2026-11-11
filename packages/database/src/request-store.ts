@@ -4601,6 +4601,12 @@ async function lockRequestOrigin(
     .$if(lock, (query) => query.forNoKeyUpdate("runs"))
     .executeTakeFirst();
   if (!run) return undefined;
+  if (run.requestedBy === null || run.membershipGeneration === null)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "unattended-project-work-unsupported",
+      message: "This Request path does not support unattended Project work yet",
+    });
   return {
     environmentId: run.environmentId,
     membershipGeneration: safeGeneration(run.membershipGeneration),

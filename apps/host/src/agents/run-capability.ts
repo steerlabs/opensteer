@@ -112,3 +112,30 @@ export class RunCapabilityTokenService<Audience extends string> {
     return claims;
   }
 }
+
+const projectCapabilityEnvelope = z.object({
+  aud: z.unknown().optional(),
+  authority: z.unknown().optional(),
+});
+
+const projectPrincipalMarker = z.object({ principal: z.object({ kind: z.literal("project") }) });
+
+export function isProjectRunCapabilityEnvelope(token: string): boolean {
+  if (Buffer.byteLength(token, "utf8") > 64 * 1024) return false;
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[1]) return false;
+  try {
+    const envelope = projectCapabilityEnvelope.safeParse(
+      JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")),
+    );
+    return (
+      envelope.success &&
+      (projectPrincipalMarker.safeParse(envelope.data.authority).success ||
+        envelope.data.aud === "opensteer-project-run-tools" ||
+        envelope.data.aud === "opensteer-project-run-attachments" ||
+        envelope.data.aud === "opensteer-project-egress")
+    );
+  } catch {
+    return false;
+  }
+}

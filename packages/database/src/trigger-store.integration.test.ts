@@ -378,6 +378,40 @@ integration.sequential("Trigger failure auto-pause", () => {
     },
   });
 
+  it("reads migrated Trigger revisions through the strict detail mapper", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, detail, database } = storeFixture;
+    const fixture = await createFixture("revision-storage-columns");
+    const created = await createScheduleTrigger(fixture, "revision-storage-columns");
+    const stored = await database
+      .selectFrom("triggerRevisions")
+      .selectAll()
+      .where("id", "=", created.revision.id)
+      .executeTakeFirstOrThrow();
+    expect(stored).toHaveProperty("createdByPrincipalId", null);
+    const result = await detail(created.trigger.id, fixture.userId);
+    expect(result.revision.id).toBe(stored.id);
+    expect(result.revision).not.toHaveProperty("createdByPrincipalId");
+  });
+
+  it("reads migrated Watch activations through the strict detail mapper", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createWatchTrigger, detail, database } = storeFixture;
+    const fixture = await createFixture("watch-storage-columns");
+    const created = await createWatchTrigger(fixture, "watch-storage-columns");
+    const stored = await database
+      .selectFrom("triggerWatchActivations")
+      .selectAll()
+      .where("triggerId", "=", created.trigger.id)
+      .executeTakeFirstOrThrow();
+    expect(stored).toHaveProperty("createdByPrincipalId", null);
+    const result = await detail(created.trigger.id, fixture.userId);
+    expect(result.activation?.id).toBe(stored.id);
+    expect(result.activation).not.toHaveProperty("createdByPrincipalId");
+  });
+
   it("orders occurrence completion before its Trigger fence", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, triggers, store, stagedTriggerEdge, detail } =
       storeFixture;

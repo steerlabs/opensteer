@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "@opensteer/database";
 import { randomUUID } from "node:crypto";
 import {
   automaticModelWants,
@@ -110,7 +111,7 @@ export class ThreadNaming {
     const { candidates: resolved } = await resolveAutomaticModels(
       { store, runners },
       {
-        userId: input.requestedBy,
+        userId: requireHumanRequester(input.requestedBy),
         wants: (config) => automaticModelWants(config, "light"),
         original: { ...input, fromPastRun: true },
         canRun: backgroundTextSupport(runners),
@@ -138,7 +139,7 @@ export class ThreadNaming {
         const [current, harness, config] = await Promise.all([
           store.getThreadNamingInput(threadId),
           store.getHarnessInstance(candidate.harnessInstanceId),
-          store.getAutomaticModelConfig(input.requestedBy),
+          store.getAutomaticModelConfig(requireHumanRequester(input.requestedBy)),
         ]);
         if (
           !current ||
@@ -151,7 +152,10 @@ export class ThreadNaming {
           harness.removedAt ||
           harness.runtimeRevision !== candidate.harnessRevision ||
           config.excludedAccounts.includes(candidate.harnessInstanceId) ||
-          !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
+          !(await store.environmentIsAvailableToUser(
+            candidate.environmentId,
+            requireHumanRequester(input.requestedBy),
+          ))
         )
           return { failure: "account-changed" as const };
         deadline ??= Date.now() + 120_000;

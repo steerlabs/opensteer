@@ -1,3 +1,4 @@
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
@@ -733,8 +734,8 @@ export async function attachRunnerExecutions(
         !(await threadExecutionIsAvailableToUser(
           transaction,
           run.threadId,
-          run.requestedBy,
-          safeGeneration(run.membershipGeneration),
+          requireHumanRequester(run.requestedBy),
+          safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
         ))
       ) {
         return revoked(
@@ -1134,7 +1135,10 @@ async function stopRunWithoutPausing(
   const command = await transaction
     .insertInto("commands")
     .values({
-      actorPrincipalId: await principalIdForUser(transaction, run.requestedBy),
+      actorPrincipalId: await principalIdForUser(
+        transaction,
+        requireHumanRequester(run.requestedBy),
+      ),
       authoritySource: jsonValue(authoritySource),
       dispatcherId: null,
       environmentId: run.environmentId,

@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "@opensteer/database";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
@@ -999,7 +1000,10 @@ integration("durable Thread changes native continuation", () => {
           .select(["membershipGeneration", "requestedBy"])
           .where("id", "=", runId)
           .executeTakeFirstOrThrow();
-        const source = await stack!.host.store.getThreadForOwner(specialistId, run.requestedBy);
+        const source = await stack!.host.store.getThreadForOwner(
+          specialistId,
+          requireHumanRequester(run.requestedBy),
+        );
         const session = await stack!.host.store.database
           .selectFrom("providerSessions")
           .select(["bindingGeneration", "runnerBootId", "runnerId"])
@@ -1017,7 +1021,7 @@ integration("durable Thread changes native continuation", () => {
           iss: "opensteer-host",
           jti: randomUUID(),
           membershipGeneration: Number(run.membershipGeneration),
-          requestedBy: run.requestedBy,
+          requestedBy: requireHumanRequester(run.requestedBy),
           runId,
           runnerBootId: session.runnerBootId,
           runnerId: session.runnerId,
@@ -1223,7 +1227,7 @@ integration("durable Thread changes native continuation", () => {
           iss: "opensteer-host",
           jti: randomUUID(),
           membershipGeneration: Number(run.membershipGeneration),
-          requestedBy: run.requestedBy,
+          requestedBy: requireHumanRequester(run.requestedBy),
           runId,
           runnerBootId: session.runnerBootId,
           runnerId: session.runnerId,

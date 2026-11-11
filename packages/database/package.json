@@ -9,7 +9,8 @@
     "./test-support/lock-order": "./src/lock-order-checker.test-support.ts",
     "./test-support/database": "./src/test-database.test-support.ts",
     "./test-support/workspace": "./src/workspace-fixture.test-support.ts",
-    "./test-support/store": "./src/store.integration.test-support.ts"
+    "./test-support/store": "./src/store.integration.test-support.ts",
+    "./test-support/project": "./src/project-work.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

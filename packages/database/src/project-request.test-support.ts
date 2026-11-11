@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
-import type { ProjectRequestControlPort } from "./project-request-store.js";
+import type { ProjectRequestControlPort } from "./project-execution-store.js";
 import type { ProjectRunControl } from "@opensteer/protocol";
 
 export async function projectRequestFixture(fixture: StoreFixture, suffix: string) {

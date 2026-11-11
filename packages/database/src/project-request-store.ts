@@ -33,24 +33,7 @@ import { requestSettlementActor } from "./request-settlement.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
-/** Enqueue and replay lookup share the proposal transaction; neither waits for a Runner. */
-export interface ProjectRequestControlPort {
-  find(
-    transaction: Transaction<DatabaseSchema>,
-    input: {
-      readonly binding: ProjectRunBinding;
-      readonly idempotencyKey: string;
-    },
-  ): Promise<ProjectRunControl | null>;
-  enqueue(
-    transaction: Transaction<DatabaseSchema>,
-    input: {
-      readonly binding: ProjectRunBinding;
-      readonly idempotencyKey: string;
-      readonly control: ProjectRunControl;
-    },
-  ): Promise<{ readonly created: boolean }>;
-}
+import type { ProjectRequestControlPort } from "./project-execution-store.js";
 
 export type ProjectRequestRevocationRoot =
   | { readonly kind: "member"; readonly userId: UserId; readonly memberGenerationCutoff: number }

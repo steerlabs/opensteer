@@ -486,6 +486,8 @@ async function personAnswered(
     .where("threads.workspaceId", "=", event.workspaceId)
     .where("workspaceMemberships.state", "=", "active")
     .where("users.disabledAt", "is", null)
+    // The inner join to users on runs.requestedBy excludes null requesters.
+    .$narrowType<{ requestedBy: UserId }>()
     .executeTakeFirst();
   if (
     !run ||

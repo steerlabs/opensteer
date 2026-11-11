@@ -963,7 +963,7 @@ const runShape = {
   modelSelection: ModelSelectionSchema,
   replyTarget: ReplyTargetSchema.nullable(),
   providerSessionId: ProviderSessionIdSchema.nullable(),
-  requestedBy: UserIdSchema,
+  requestedBy: UserIdSchema.nullable(),
   runOrdinal: z.number().int().nonnegative(),
   startedAt: IsoDateTimeSchema.nullable(),
   status: RunStatusSchema,

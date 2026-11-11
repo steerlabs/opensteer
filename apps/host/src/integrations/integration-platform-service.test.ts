@@ -52,7 +52,7 @@ import {
   type MachineAppStatus,
 } from "@opensteer/protocol";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   carriesApproval,
   IntegrationAuthorizationRequiredError,
@@ -75,6 +75,16 @@ import type {
   RunToolContext,
   ToolCaller,
 } from "./integration-platform-service.js";
+
+let testDataDirectory: string | undefined;
+beforeEach(async () => {
+  testDataDirectory = await mkdtemp(join(tmpdir(), "opensteer-integration-platform-"));
+});
+afterEach(async () => {
+  const directory = testDataDirectory;
+  testDataDirectory = undefined;
+  if (directory) await rm(directory, { recursive: true, force: true });
+});
 
 /** A call with no Run behind it, as a Trigger occurrence makes. */
 const caller: ToolCaller = { run: null, threadId: createId("thread") };
@@ -4796,6 +4806,8 @@ function platform(input: {
   readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
 }): IntegrationPlatformService {
+  const dataDirectory = testDataDirectory;
+  if (!dataDirectory) throw new Error("Integration test data directory was not initialized");
   return new IntegrationPlatformService({
     listConnections: input.listConnections ?? (async () => []),
     secretVault: new AesGcmSecretVault(
@@ -4834,7 +4846,7 @@ function platform(input: {
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
     ...(input.mcpImageContent ? { mcpImageContent: input.mcpImageContent } : {}),
-    dataDirectory: "/tmp/opensteer-integration-test",
+    dataDirectory,
     ...(input.definitions ? { definitions: input.definitions } : { definitions: [] }),
     isRunnerConnected: input.isRunnerConnected ?? vi.fn(() => true),
     mcpOauth: input.mcpOauth ?? {

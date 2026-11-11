@@ -1109,11 +1109,19 @@ export class TriggerStore {
       anchorThread: await getThreadForOwner(this.#database, trigger.anchorThreadId, ownerId),
       anchorThreadTitle,
       createdByThreadTitle,
-      downstreamRuns: downstreamRunRows.slice(0, 100).map((row) => ({
-        occurrenceId: row.occurrenceId,
-        run: runFromRow(row),
-        threadTitle: row.threadTitle,
-      })),
+      downstreamRuns: downstreamRunRows.slice(0, 100).map((row) => {
+        if (row.requestedBy === null)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "unattended-project-work-unsupported",
+            message: "This Trigger path does not support unattended Project work yet",
+          });
+        return {
+          occurrenceId: row.occurrenceId,
+          run: runFromRow(row),
+          threadTitle: row.threadTitle,
+        };
+      }),
       downstreamRunsTruncated: downstreamRunRows.length > 100,
       occurrences: occurrences.map(occurrenceFromRow),
       revision: revisionFromRow(revision),
@@ -2332,7 +2340,8 @@ function triggerFromRow(row: TriggerRow): Trigger {
 }
 
 function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
-  return TriggerRevisionSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
+  const { createdByPrincipalId: _createdByPrincipalId, ...value } = row;
+  return TriggerRevisionSchema.parse({ ...value, createdAt: row.createdAt.toISOString() });
 }
 
 function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
@@ -2356,8 +2365,9 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
 }
 
 function watchActivationFromRow(row: TriggerWatchActivationRow): TriggerWatchActivation {
+  const { createdByPrincipalId: _createdByPrincipalId, ...value } = row;
   return TriggerWatchActivationSchema.parse({
-    ...row,
+    ...value,
     createdAt: row.createdAt.toISOString(),
     executionGeneration: Number(row.executionGeneration),
     healthySince: row.healthySince?.toISOString() ?? null,

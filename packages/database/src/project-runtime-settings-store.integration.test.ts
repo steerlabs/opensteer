@@ -1,3 +1,4 @@
+import { createProjectIdentityFixture } from "./project-work.test-support.js";
 import { createId, HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
@@ -12,8 +13,12 @@ import {
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 
-async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "codex") {
-  const run = await fixture.createRunFixture("project-settings", null, "project");
+async function setup(
+  fixture: StoreFixture,
+  driverKind: "codex" | "native" = "codex",
+  model: 1 | 2 = 2,
+) {
+  const run = await createProjectIdentityFixture(fixture, "project-settings", model);
   const instance = await fixture.store.createHarnessInstance({
     driverKind: HarnessIdSchema.parse(driverKind),
     config: {},
@@ -74,7 +79,6 @@ async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "co
   };
   const actor = { userId: run.userId, authorityGeneration: 1 };
   const activate = async () => {
-    await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await fixture.database
       .updateTable("users")
       .set({ admittedAt: new Date() })
@@ -88,7 +92,7 @@ describeStore("Project runtime settings", (it) => {
   it("refuses every model-1 API and SQL write, including Project-shaped input without a user fallback", async ({
     storeFixture,
   }) => {
-    const prepared = await setup(storeFixture);
+    const prepared = await setup(storeFixture, "codex", 1);
     await expect(
       getProjectRuntimeSettings(storeFixture.database, prepared.workspace.id),
     ).rejects.toMatchObject({ code: "forbidden" });

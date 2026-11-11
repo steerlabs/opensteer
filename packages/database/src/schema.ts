@@ -922,14 +922,14 @@ export interface ThreadInputTable {
   causalChainId: CausalChainId;
   deliveredAt: NullableTimestamp;
   idempotencyKey: string;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
+  membershipGeneration: ColumnType<string | null, number | string | null, number | string | null>;
   messageId: MessageId;
   policy: ThreadInputPolicy;
   /** Where waiting work stands in line; admission takes the lowest first. */
   queueRank: ColumnType<string, number | string, number | string>;
   replyTarget: JsonColumn<ReplyTarget | null>;
   requestFingerprint: string;
-  requestedBy: UserId;
+  requestedBy: UserId | null;
   runId: RunId | null;
   state: ThreadInputState;
   steerCommandId: CommandId | null;
@@ -996,8 +996,8 @@ export interface RunTable {
   harnessInstanceId: HarnessInstanceId;
   modelSelection: JsonColumn<ModelSelection>;
   replyTarget: JsonColumn<ReplyTarget | null>;
-  requestedBy: UserId;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
+  requestedBy: UserId | null;
+  membershipGeneration: ColumnType<string | null, number | string | null, number | string | null>;
   actorPrincipalId: PrincipalId;
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
   runOrdinal: number;
@@ -1320,6 +1320,7 @@ export interface ProviderSessionTable {
 type CommandStatus = "pending" | "dispatched" | "succeeded" | "failed" | "unknown";
 
 export interface CommandTable {
+  originatingGrantId: Generated<GrantId | null>;
   membershipGeneration: ColumnType<
     string | null,
     number | string | null | undefined,
@@ -1335,7 +1336,7 @@ export interface CommandTable {
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
   runId: RunId | null;
-  requestedBy: UserId;
+  requestedBy: UserId | null;
   actorPrincipalId: PrincipalId;
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
   idempotencyKey: string;

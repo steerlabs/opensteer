@@ -1,3 +1,4 @@
+import { createProjectIdentityFixture } from "./project-work.test-support.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createId, type AccessMutation, type UserId } from "@opensteer/core";
 import { sql } from "kysely";
@@ -13,9 +14,8 @@ import { TeamAccessReadStore } from "./team-access-read-store.js";
 import { teamAdministrationMigration } from "./team-administration-migration.js";
 
 async function prepare(fixture: StoreFixture) {
-  const run = await fixture.createRunFixture("team-regressions", null, "project");
+  const run = await createProjectIdentityFixture(fixture, "team-regressions");
   const database = fixture.database;
-  await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
   await database
     .updateTable("users")
     .set({ admittedAt: new Date(), instanceRole: "administrator" })
