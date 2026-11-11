@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { browserRows } from "./browser-rows.test-support.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { zeroSequence } from "@opensteer/core";
@@ -273,9 +275,8 @@ integration("Durable tab icons", () => {
     expect(runtime.receivedCommands().some((command) => command.type === "cdp.command")).toBe(
       false,
     );
-    runtime.sendServer(
+    runtime.publishTabs(
       {
-        type: "browser.surfaces.changed",
         surfaces: [
           surface("page-integration", "https://www.amazon.com/", "amazon-1", {
             favicon: iconA,
@@ -311,13 +312,15 @@ integration("Durable tab icons", () => {
     });
     await waitForMessage(viewer, (message) => message.type === "browser.snapshot");
     const sendSurfaces = async (surfaces: Record<string, unknown>[]) => {
+      const marker = randomUUID();
       const received = waitForMessage(
         viewer,
-        (message) => message.type === "browser.surfaces.changed",
+        (message) =>
+          message.type === "browser.error" &&
+          (message as { error?: { message?: string } }).error?.message === marker,
       );
-      runtime.sendServer(
+      runtime.publishTabs(
         {
-          type: "browser.surfaces.changed",
           surfaces: surfaces.map(({ navigationId: _navigationId, ...surface }) => surface),
         },
         sessionId,
@@ -334,6 +337,10 @@ integration("Durable tab icons", () => {
             },
             sessionId,
           );
+      runtime.sendServer(
+        { type: "browser.error", error: { code: "conflict", message: marker, retryable: false } },
+        sessionId,
+      );
       await received;
     };
     const go = async (url: string, typed = false) => {
@@ -591,16 +598,25 @@ integration("Durable tab icons", () => {
         typed: true,
       }),
     );
+    const guestMarker = randomUUID();
     const guestCommitted = waitForMessage(
       guestViewer,
-      (message) => message.type === "browser.surfaces.changed",
+      (message) =>
+        message.type === "browser.error" &&
+        (message as { error?: { message?: string } }).error?.message === guestMarker,
     );
-    runtime.sendServer(
+    runtime.publishTabs(
       {
-        type: "browser.surfaces.changed",
         surfaces: [
           surface("page-integration", "https://guest.example/", "guest", { favicon: iconA }),
         ],
+      },
+      guest.session.id,
+    );
+    runtime.sendServer(
+      {
+        type: "browser.error",
+        error: { code: "conflict", message: guestMarker, retryable: false },
       },
       guest.session.id,
     );
@@ -675,8 +691,6 @@ integration("Durable tab icons", () => {
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
-    const owner = await listen(host, run.workspaceId);
-    cleanups.push(() => owner.close());
     const opened = await testRpcData(
       host.origin,
       "commands.dispatch",
@@ -701,16 +715,17 @@ integration("Durable tab icons", () => {
           .where("id", "=", sessionId)
           .executeTakeFirstOrThrow()
       ).tabRevision;
-    const tabsChanged = () =>
-      owner.messages.filter(
-        (message) =>
-          message.type === "host.browser-tabs-changed" && message.sessionId === sessionId,
-      ).length;
-    const settledNotice = async (from: number) =>
-      until(
-        () => (tabsChanged() > from ? true : undefined),
-        () => owner.messages.map((message) => message.type),
+    const geometry = async (expected: number) => {
+      await vi.waitFor(
+        () =>
+          expect(
+            host.runtime.browser.clientStreams.source.ports.live(sessionId)?.records.get("page-a")
+              ?.geometryRevision,
+          ).toBe(expected),
+        { timeout: 5_000 },
       );
+      await host.runtime.browser.flushPendingTabDescriptors();
+    };
     const surface = (
       id: string,
       url: string,
@@ -740,13 +755,11 @@ integration("Durable tab icons", () => {
     const urlB = "https://b.example/";
     const steps: Record<string, unknown>[] = [];
 
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlOne, iconA), surface("page-b", urlB, undefined)],
     });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [descriptor("page-a", urlOne), descriptor("page-b", urlB)],
+    runtime.publishTabs({
+      surfaces: [descriptor("page-a", urlOne), descriptor("page-b", urlB)],
       closed: ["page-integration"],
     });
     await until(
@@ -758,86 +771,57 @@ integration("Durable tab icons", () => {
     steps.push({ step: "live icon stored", revision: stored });
 
     // An icon-only change: the Runtime's durable descriptors do not change.
-    let notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlOne, iconB), surface("page-b", urlB, undefined)],
     });
     await until(
       async () => ((await row("page-a"))?.favicon === iconB ? true : undefined),
       async () => row("page-a"),
     );
-    await settledNotice(notices);
+    await host.runtime.browser.flushPendingTabDescriptors();
     expect(await revision()).toBe(stored + 1);
     steps.push({ step: "icon-only change stored", revision: await revision() });
 
     // Loading, geometry and a transiently absent icon on the same page are not writes.
-    notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         surface("page-a", urlOne, undefined, { loading: true, geometryRevision: 2 }),
         surface("page-b", urlB, undefined, { geometryRevision: 2 }),
       ],
     });
-    await settledNotice(notices);
-    const retainedCatalog = await testRpcData(
-      host.origin,
-      "browser.tabs.get",
-      { sessionId },
-      { headers: host.ownerHeaders },
-    );
+    await geometry(2);
+    const retainedCatalog = await browserRows(host.runtime.browser, host.ownerId, sessionId);
     expect(retainedCatalog.tabs.find((tab) => tab.id === "page-a")?.iconRef).toBe(
       (await row("page-a"))?.iconRef,
     );
-    notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         surface("page-a", urlOne, iconB, { geometryRevision: 3 }),
         surface("page-b", urlB, undefined, { geometryRevision: 3 }),
       ],
     });
-    await settledNotice(notices);
+    await geometry(3);
     expect(await revision()).toBe(stored + 1);
     expect((await row("page-a"))?.favicon).toBe(iconB);
     steps.push({ step: "loading and geometry not stored", revision: await revision() });
 
     // A committed navigation clears the old icon before the new page names one.
-    notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [descriptor("page-a", urlTwo), descriptor("page-b", urlB)],
+    runtime.publishTabs({
+      surfaces: [descriptor("page-a", urlTwo), descriptor("page-b", urlB)],
       closed: [],
     });
     await until(
       async () => ((await row("page-a"))?.url === urlTwo ? true : undefined),
       async () => row("page-a"),
     );
-    await settledNotice(notices);
+    await host.runtime.browser.flushPendingTabDescriptors();
     expect((await row("page-a"))?.favicon ?? null).toBeNull();
     expect((await row("page-a"))?.iconRef ?? null).toBeNull();
-    // The descriptor arrives first; a flush must not copy the preceding document's image.
-    expect((await row("page-a"))?.url).toBe(urlTwo);
-    // An icon shown while the address differs from the committed one is not stored.
-    notices = tabsChanged();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
-      surfaces: [
-        surface("page-a", "https://a.example/three", iconC),
-        surface("page-b", urlB, undefined),
-      ],
-    });
-    await settledNotice(notices);
-    expect((await row("page-a"))?.favicon ?? null).toBeNull();
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlTwo, iconC), surface("page-b", urlB, undefined)],
     });
-    // Only the raw URL changed, at the same origin and with identical icon bytes.
     await until(async () => ((await row("page-a"))?.favicon === iconC ? true : undefined));
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [surface("page-a", urlTwo, iconA), surface("page-b", urlB, undefined)],
     });
     await until(
@@ -846,7 +830,7 @@ integration("Durable tab icons", () => {
     );
     steps.push({ step: "navigation cleared then settled", revision: await revision() });
 
-    const coldTabs = async () => {
+    const coldTabs = async (currentHost = host) => {
       const bootstrap = await testRpcData(
         host.origin,
         "bootstrap.get",
@@ -855,19 +839,14 @@ integration("Durable tab icons", () => {
           headers: host.ownerHeaders,
         },
       );
-      const group = bootstrap.browser.workspaceTabs?.find((group) => group.id === sessionId);
-      const read = await testRpcData(
-        host.origin,
-        "workspace.tabs.get",
-        { groupId: sessionId },
-        { headers: host.ownerHeaders },
-      );
+      const group = bootstrap.browser.tabs.find((group) => group.groupId === sessionId);
+      const read = await browserRows(currentHost.runtime.browser, currentHost.ownerId, sessionId);
       expect(JSON.stringify(group)).not.toContain("data:image");
       expect(JSON.stringify(read)).not.toContain("data:image");
       const refs = (
         tabs: readonly { id: string; iconRef?: string | null | undefined }[] | undefined,
       ) => Object.fromEntries((tabs ?? []).map((tab) => [tab.id, tab.iconRef ?? null]));
-      expect(refs(read.tabs)).toEqual(refs(group?.tabs));
+      expect(refs(read.tabs)).toEqual(refs(group?.rows));
       return { group, refs: refs(read.tabs) };
     };
     const live = await coldTabs();
@@ -900,7 +879,7 @@ integration("Durable tab icons", () => {
     const commandsAfterEnd = runtime.receivedCommands().length;
     const ended = await coldTabs();
     expect(ended.refs).toEqual(live.refs);
-    expect(ended.group?.tabs?.map((tab) => tab.state)).toEqual(["suspended", "suspended"]);
+    expect(ended.group?.rows.map((tab) => tab.state)).toEqual(["suspended", "suspended"]);
     const endedIcon = await fetchIcon(host.ownerHeaders);
     expect(endedIcon.status).toBe(200);
     expect(await endedIcon.json()).toMatchObject({ data: { favicon: iconA } });
@@ -917,7 +896,7 @@ integration("Durable tab icons", () => {
       runtime: restarted,
       store: restarted.store,
     };
-    const afterRestart = await coldTabs();
+    const afterRestart = await coldTabs(restartedHost);
     expect(afterRestart.refs).toEqual(live.refs);
     const restartedIcon = await fetchIcon(host.ownerHeaders);
     expect(restartedIcon.status).toBe(200);

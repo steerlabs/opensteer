@@ -24,6 +24,7 @@ import {
 } from "react";
 import {
   type BrowserSessionSummary,
+  type BrowserSessionUseSummary,
   incomingMessageAction,
   activityStepHead,
   conversationActivities,
@@ -179,6 +180,7 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
 const HomeThread = createContext<string | null>(null);
 /** Every browser this reader can see, which a Run's pages are looked up in. */
+const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
 const TranscriptBrowsers = createContext<readonly BrowserSessionSummary[]>([]);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
 const Speakers = createContext<{
@@ -247,6 +249,7 @@ function useAgentSource(
 const noWorkspaces: readonly WorkspaceSummary[] = [];
 const noWaitingRequests: readonly WaitingRequest[] = [];
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
+const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
 const noBrowsers: readonly BrowserSessionSummary[] = [];
 
 /**
@@ -265,6 +268,7 @@ export function AgentTranscript({
   waitingRequests = noWaitingRequests,
   assignments = noAssignments,
   browserSessions = noBrowsers,
+  browserUses = noBrowserUses,
   homeThreadId = null,
   activityOwner = null,
   onOpenActivity,
@@ -299,6 +303,7 @@ export function AgentTranscript({
   waitingRequests?: readonly WaitingRequest[];
   assignments?: Readonly<Record<string, AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
+  browserUses?: readonly BrowserSessionUseSummary[];
   homeThreadId?: string | null;
   /**
    * Given, each reply in a conversation that did anything on the way offers
@@ -414,61 +419,67 @@ export function AgentTranscript({
                             <HomeThread value={homeThreadId}>
                               <TranscriptHostClientContext value={attachmentReader}>
                                 <ReaderComputers value={computers}>
-                                  <TranscriptBrowsers value={browserSessions}>
-                                    <Speakers value={speakers}>
-                                      {rows.map(({ group, key }, index) => (
-                                        <Fragment key={key}>
-                                          {places?.[index]?.time ? (
-                                            <p className="transcript__time">{places[index].time}</p>
-                                          ) : null}
-                                          <div
-                                            className="transcript__row"
-                                            data-continued={places?.[index]?.continued || undefined}
-                                            data-joined={places?.[index]?.joined || undefined}
-                                            data-transcript-row={key}
-                                          >
-                                            {group.kind === "app" ? (
-                                              <AppCard entry={group.entry} />
-                                            ) : group.kind === "turn" ? (
-                                              <TurnView
-                                                turn={group.turn}
-                                                turnKey={group.key}
-                                                reveal={revealMessage}
-                                              />
-                                            ) : group.kind === "delegation" ? (
-                                              <DelegationNotice delegation={group.entry} />
-                                            ) : group.kind === "assignment" ? (
-                                              renderTask?.([group.entry])
-                                            ) : (
-                                              <TranscriptMessage
-                                                joinedRun={group.joinedRun === true}
-                                                reveal={
-                                                  revealMessage?.id === group.entry.id
-                                                    ? revealMessage
-                                                    : null
-                                                }
-                                                message={group.entry}
-                                                viewerUserId={viewerUserId}
-                                                workspaces={workspaces}
-                                              />
-                                            )}
+                                  <TranscriptBrowserUses value={browserUses}>
+                                    <TranscriptBrowsers value={browserSessions}>
+                                      <Speakers value={speakers}>
+                                        {rows.map(({ group, key }, index) => (
+                                          <Fragment key={key}>
+                                            {places?.[index]?.time ? (
+                                              <p className="transcript__time">
+                                                {places[index].time}
+                                              </p>
+                                            ) : null}
+                                            <div
+                                              className="transcript__row"
+                                              data-continued={
+                                                places?.[index]?.continued || undefined
+                                              }
+                                              data-joined={places?.[index]?.joined || undefined}
+                                              data-transcript-row={key}
+                                            >
+                                              {group.kind === "app" ? (
+                                                <AppCard entry={group.entry} />
+                                              ) : group.kind === "turn" ? (
+                                                <TurnView
+                                                  turn={group.turn}
+                                                  turnKey={group.key}
+                                                  reveal={revealMessage}
+                                                />
+                                              ) : group.kind === "delegation" ? (
+                                                <DelegationNotice delegation={group.entry} />
+                                              ) : group.kind === "assignment" ? (
+                                                renderTask?.([group.entry])
+                                              ) : (
+                                                <TranscriptMessage
+                                                  joinedRun={group.joinedRun === true}
+                                                  reveal={
+                                                    revealMessage?.id === group.entry.id
+                                                      ? revealMessage
+                                                      : null
+                                                  }
+                                                  message={group.entry}
+                                                  viewerUserId={viewerUserId}
+                                                  workspaces={workspaces}
+                                                />
+                                              )}
+                                            </div>
+                                          </Fragment>
+                                        ))}
+                                        {indicator === null ? null : indicator.kind === "typing" ? (
+                                          // No turn has begun, so there is no Activity to open yet.
+                                          <div className="turn turn--conversation">
+                                            <Typing />
                                           </div>
-                                        </Fragment>
-                                      ))}
-                                      {indicator === null ? null : indicator.kind === "typing" ? (
-                                        // No turn has begun, so there is no Activity to open yet.
-                                        <div className="turn turn--conversation">
-                                          <Typing />
-                                        </div>
-                                      ) : (
-                                        <WorkingIndicator label={indicator.label} />
-                                      )}
-                                      {passwordsOffer === null
-                                        ? null
-                                        : renderPasswordsSuggestion?.(passwordsOffer)}
-                                      {queued}
-                                    </Speakers>
-                                  </TranscriptBrowsers>
+                                        ) : (
+                                          <WorkingIndicator label={indicator.label} />
+                                        )}
+                                        {passwordsOffer === null
+                                          ? null
+                                          : renderPasswordsSuggestion?.(passwordsOffer)}
+                                        {queued}
+                                      </Speakers>
+                                    </TranscriptBrowsers>
+                                  </TranscriptBrowserUses>
                                 </ReaderComputers>
                               </TranscriptHostClientContext>
                             </HomeThread>
@@ -933,19 +944,20 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
  * counts, so a reply that a message interrupted still lists what came before.
  */
 function ReplySurfaces({ turn, turnKey }: { turn: Turn; turnKey: string }) {
+  const uses = useContext(TranscriptBrowserUses);
   const sessions = useContext(TranscriptBrowsers);
   const computers = useContext(ReaderComputers);
   const whole = useContext(ActivityOfTurn).get(turnKey)?.turn ?? turn;
   const surfaces = useMemo(
     () =>
-      replyPlaces(whole, sessions, computers?.machines ?? []).map((place) =>
+      replyPlaces(whole, uses, sessions, computers?.machines ?? []).map((place) =>
         place.kind === "page"
           ? pageChip(place.page, sessions)
           : place.kind === "phone"
             ? phoneChip(place.phone)
             : appChip(place.app),
       ),
-    [computers?.machines, sessions, whole],
+    [computers?.machines, uses, sessions, whole],
   );
   return <SurfaceChips label="Pages and apps this reply used" surfaces={surfaces} />;
 }
@@ -1253,6 +1265,7 @@ function Typing({ turnKey = null }: { turnKey?: string | null }) {
 export function ConversationActivity({
   anchor,
   browserSessions = noBrowsers,
+  browserUses = noBrowserUses,
   entries,
   id,
   inputQueuePaused = false,
@@ -1267,6 +1280,7 @@ export function ConversationActivity({
   /** What the panel hangs from beside the conversation: the control that holds it, or the header. */
   anchor: HTMLElement;
   browserSessions?: readonly BrowserSessionSummary[];
+  browserUses?: readonly BrowserSessionUseSummary[];
   /** The conversation as it is drawn. */
   entries: readonly TranscriptEntry[];
   /** The panel's id, for the `aria-controls` of the control that opened it. */
@@ -1317,23 +1331,25 @@ export function ConversationActivity({
         <AgentReader value={agents}>
           <AgentFolds>
             <QuietSteps value>
-              <TranscriptBrowsers value={browserSessions}>
-                <div className="activity__body" ref={bodyRef}>
-                  {activity !== null && activity.steps.length > 0 ? (
-                    <TurnContent
-                      reveal={reveal}
-                      entries={activity.steps}
-                      live={live}
-                      status={false}
-                      turn={activity.turn}
-                    />
-                  ) : (
-                    <p className="activity__empty">
-                      {activity?.live ? "Nothing to show yet." : "Nothing to show."}
-                    </p>
-                  )}
-                </div>
-              </TranscriptBrowsers>
+              <TranscriptBrowserUses value={browserUses}>
+                <TranscriptBrowsers value={browserSessions}>
+                  <div className="activity__body" ref={bodyRef}>
+                    {activity !== null && activity.steps.length > 0 ? (
+                      <TurnContent
+                        reveal={reveal}
+                        entries={activity.steps}
+                        live={live}
+                        status={false}
+                        turn={activity.turn}
+                      />
+                    ) : (
+                      <p className="activity__empty">
+                        {activity?.live ? "Nothing to show yet." : "Nothing to show."}
+                      </p>
+                    )}
+                  </div>
+                </TranscriptBrowsers>
+              </TranscriptBrowserUses>
             </QuietSteps>
           </AgentFolds>
         </AgentReader>

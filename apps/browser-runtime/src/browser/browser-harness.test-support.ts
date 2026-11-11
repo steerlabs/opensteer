@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { CdpParameters } from "@opensteer/browser-core";
-import type { BrowserClientMessage, BrowserServerMessage } from "@opensteer/protocol";
+import type { BrowserClientMessage, BrowserRuntimeServerMessage } from "@opensteer/protocol";
 import type { FakeSink } from "@opensteer/browser-runtime-core/test-support";
 import { browserTestSignal, withBrowserTestSignal } from "./browser-test-lifecycle.js";
 
@@ -54,7 +54,7 @@ export function runHarness(
 /** Speaks to a session as the Host's broker does for Browser Harness. */
 export async function sendAsAgent(
   deliver: (message: BrowserClientMessage) => Promise<void>,
-  messages: readonly BrowserServerMessage[],
+  messages: readonly BrowserRuntimeServerMessage[],
   method: string,
   parameters?: CdpParameters,
   sessionId?: string,

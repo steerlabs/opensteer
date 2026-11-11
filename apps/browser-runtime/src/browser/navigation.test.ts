@@ -11,7 +11,7 @@ import {
   freshClaims,
   testSessionFilesRoot,
 } from "@opensteer/browser-runtime-core/test-support";
-import { BrowserSurfaceSchema, type BrowserSurface } from "@opensteer/protocol/browser";
+import { BrowserTabRecordSchema, type BrowserTabRecord } from "@opensteer/protocol/browser";
 import { expect, it } from "vitest";
 import {
   TestChromiumLauncher,
@@ -64,14 +64,7 @@ it.each([false, true])(
     cleanup.push(() => runtime.shutdown());
     const sink = new FakeSink();
     const attachment = await runtime.attach("ticket", sink);
-    const surfaces = (): BrowserSurface[] =>
-      sink.messages
-        .flatMap((message) =>
-          message.type === "browser.snapshot" || message.type === "browser.surfaces.changed"
-            ? message.surfaces
-            : [],
-        )
-        .slice(-1);
+    const surfaces = (): BrowserTabRecord[] => [...sink.tabs.rows.values()];
     const id = surfaces()[0]!.id;
     const send = (message: object) =>
       attachment.handle(JSON.stringify({ ...message, surfaceId: id }));
@@ -121,8 +114,11 @@ it.each([false, true])(
         .slice(beforeEvents)
         .some(
           (message) =>
-            message.type === "browser.surfaces.changed" &&
-            message.surfaces.some((surface) => surface.loading),
+            message.type === "browser.tabs" &&
+            message.stream.op === "change" &&
+            [...(message.stream.add ?? []), ...(message.stream.update ?? [])].some(
+              (surface) => surface.loading,
+            ),
         ),
     );
     await observe(`${origin}/two#fragment`, true, false);
@@ -140,11 +136,8 @@ it.each([false, true])(
           error: { code: "conflict" },
         });
       }
-      const oldSurface = BrowserSurfaceSchema.omit({ canGoBack: true, canGoForward: true });
-      for (const message of sink.messages)
-        if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-          for (const surface of message.surfaces)
-            expect(oldSurface.safeParse(surface).success).toBe(true);
+      for (const surface of sink.tabs.rows.values())
+        expect(BrowserTabRecordSchema.safeParse(surface).success).toBe(true);
       expect(assetRequests).toBe(beforeReload);
     }
     const evidence = join(

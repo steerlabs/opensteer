@@ -3,35 +3,116 @@ import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { placeList, samePlaceListSource, type PlaceItem } from "../host/places.js";
+import {
+  placeList,
+  placeStructure,
+  placeByKey,
+  samePlaceListSource,
+  type PlaceItem,
+} from "../host/places.js";
+import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 const selectSource = (snapshot: HostSnapshot) => snapshot;
-/**
- * The place list, keeping each unchanged item's object from the last one: one
- * tab's catalog change re-renders that tab's row, not every row beside it.
- */
-export function usePlaceList(hostClient: HostClient) {
-  const source = useHostSelector(hostClient, selectSource, samePlaceListSource);
-  const previous = useRef<{
-    readonly items: readonly PlaceItem[];
-    readonly byKey: ReadonlyMap<string, { readonly item: PlaceItem; readonly json: string }>;
-  }>({ items: [], byKey: new Map() });
-  return useMemo(() => {
-    const byKey = new Map<string, { readonly item: PlaceItem; readonly json: string }>();
-    let changed = false;
-    const items = placeList(source).map((item, index) => {
-      const json = JSON.stringify(item);
-      const held = previous.current.byKey.get(item.key);
-      const kept = held?.json === json ? held.item : item;
-      byKey.set(item.key, { item: kept, json });
-      if (kept !== previous.current.items[index]) changed = true;
-      return kept;
-    });
-    const list =
-      changed || items.length !== previous.current.items.length ? items : previous.current.items;
-    previous.current = { items: list, byKey };
-    return list;
-  }, [source]);
+function usePlaceSelection<T>(
+  hostClient: HostClient,
+  select: (source: HostSnapshot) => T,
+  structural = false,
+  enabled = true,
+) {
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (!enabled) return () => {};
+      const host = hostSnapshotStore(hostClient).subscribe(listener);
+      const tabs = structural
+        ? hostClient.browserTabs.subscribeStructure(listener)
+        : hostClient.browserTabs.subscribe(listener);
+      return () => {
+        host();
+        tabs();
+      };
+    },
+    [hostClient, structural, enabled],
+  );
+  const get = useCallback(() => select(hostClient.getSnapshot()), [hostClient, select]);
+  return useSyncExternalStore(subscribe, get, get);
+}
+const noPlaces: readonly PlaceItem[] = [];
+export function usePlaceList(hostClient: HostClient, enabled = true) {
+  const select = useCallback(
+    (source: HostSnapshot) => (enabled ? placeList(source) : noPlaces),
+    [enabled],
+  );
+  return usePlaceSelection(hostClient, select, false, enabled);
+}
+export function usePlaceStructure(hostClient: HostClient) {
+  return usePlaceSelection(hostClient, placeStructure, true);
+}
+function subscribePlace(hostClient: HostClient, key: string | null, listener: () => void) {
+  if (key === null) return () => {};
+  const store = hostClient.browserTabs;
+  let source = hostClient.getSnapshot();
+  const host = hostSnapshotStore(hostClient).subscribe(() => {
+    const next = hostClient.getSnapshot();
+    if (!samePlaceListSource(source, next) || source.browserSessions !== next.browserSessions) {
+      source = next;
+      listener();
+    }
+  });
+  const separator = key.startsWith("browser:") ? key.indexOf(":", "browser:".length) : -1;
+  const sessionId = separator < 0 ? undefined : key.slice("browser:".length, separator);
+  const tabId = separator < 0 ? undefined : key.slice(separator + 1);
+  let releaseRow = () => {};
+  const bind = () => {
+    releaseRow();
+    const groupId = sessionId === undefined ? undefined : store.groupForSession(sessionId);
+    if (groupId !== undefined && tabId !== undefined) {
+      const row = store.subscribeTab(groupId, tabId, listener);
+      const group = store.subscribeGroup(groupId, listener);
+      releaseRow = () => {
+        row();
+        group();
+      };
+    }
+    listener();
+  };
+  const session = sessionId === undefined ? () => {} : store.subscribeSessionGroup(sessionId, bind);
+  bind();
+  return () => {
+    host();
+    session();
+    releaseRow();
+  };
+}
+export function usePlace(hostClient: HostClient, key: string | null) {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribePlace(hostClient, key, listener),
+    [hostClient, key],
+  );
+  const get = useCallback(
+    () => (key === null ? undefined : placeByKey(hostClient.getSnapshot(), key)),
+    [hostClient, key],
+  );
+  return useSyncExternalStore(subscribe, get, get);
+}
+export function usePlaces(hostClient: HostClient, keys: readonly string[]): readonly PlaceItem[] {
+  const held = useRef<readonly PlaceItem[]>(noPlaces);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const releases = keys.map((key) => subscribePlace(hostClient, key, listener));
+      return () => {
+        for (const release of releases) release();
+      };
+    },
+    [hostClient, keys],
+  );
+  const get = useCallback(() => {
+    const source = hostClient.getSnapshot();
+    const next = keys.flatMap((key) => placeByKey(source, key) ?? []);
+    if (next.length !== held.current.length || next.some((place, i) => place !== held.current[i]))
+      held.current = next;
+    return held.current;
+  }, [hostClient, keys]);
+  return useSyncExternalStore(subscribe, get, get);
 }
 export function usePlaceActivity(hostClient: HostClient, placeKey: string) {
   const subscribe = useCallback(
@@ -90,7 +171,13 @@ const selectTabGroups = (snapshot: HostSnapshot) => snapshot.browserTabGroups;
 export function useBrowserTabStrip(hostClient: HostClient) {
   const places = usePlaceList(hostClient);
   const layout = useHostSelector(hostClient, selectTabGroups);
-  return browserTabStrip(places, layout);
+  return useMemo(() => browserTabStrip(places, layout), [places, layout]);
+}
+
+export function useBrowserTabStripStructure(hostClient: HostClient) {
+  const places = usePlaceStructure(hostClient);
+  const layout = useHostSelector(hostClient, selectTabGroups);
+  return useMemo(() => browserTabStrip(places, layout), [places, layout]);
 }
 
 /** Catalog changes retarget a picture without subscribing the card to streaming text. */
@@ -98,14 +185,15 @@ export function useRunPlaceBinding(hostClient: HostClient, entry: PlaceEnteredEv
   const source = useHostSelector(
     hostClient,
     selectSource,
-    (a, b) =>
-      a.machines === b.machines &&
-      a.browserSessions === b.browserSessions &&
-      a.workspaceTabs === b.workspaceTabs,
+    (a, b) => a.machines === b.machines && a.browserSessions === b.browserSessions,
+  );
+  const tabRevision = useSyncExternalStore(
+    hostClient.browserTabs.subscribe,
+    () => hostClient.browserTabs.revision,
   );
   const destination = useMemo(
     () => (entry ? runPlaceDestination(entry, source) : null),
-    [entry, source],
+    [entry, source, tabRevision],
   );
   const sessionId = useMemo(
     () => (entry ? runPlaceSessionId(entry, source) : null),

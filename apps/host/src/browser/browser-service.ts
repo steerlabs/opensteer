@@ -1,6 +1,26 @@
+import { BrowserClientStreams, type BrowserLiveRows } from "./browser-client-streams.js";
+import {
+  keyedStreamHardCapBytes,
+  KeyedStreamPublisher,
+  KeyedStreamReceiver,
+  keyedStreamBytes,
+} from "@opensteer/protocol/keyed-stream";
+import type {
+  BrowserTabRecord,
+  BrowserTabStreamMeta,
+  BrowserViewerSurface,
+} from "@opensteer/protocol/browser-tabs";
+import {
+  BrowserRuntimeServerMessageSchema,
+  type BrowserRuntimeServerMessage,
+  type BrowserSessionState,
+} from "@opensteer/protocol/browser";
+import type { WorkspaceTabDescriptor } from "@opensteer/database";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { editingClipboardPartCount } from "@opensteer/protocol/editing";
 import {
+  BrowserListTabsParametersSchema,
+  BrowserResumeTabParametersSchema,
   BrowserActionRequestSchema,
   type BrowserActionRequest,
   type BrowserActionResult,
@@ -42,9 +62,7 @@ import {
   type BrowserHistoryStore,
   type BrowserTabGroupStore,
 } from "@opensteer/database";
-import type { BrowserWorkspaceTabDescriptor, WorkspaceTabLineage } from "@opensteer/protocol";
 import {
-  browserBootstrapSessionsMaxBytes,
   browserCaptureMaxTargets,
   BrowserClientMessageSchema,
   BrowserContextCandidateSchema,
@@ -52,13 +70,9 @@ import {
   BrowserHistoryUrlSchema,
   browserHostMethods,
   browserPageSite,
-  browserSessionTabLimit,
-  browserSessionTabsFullReason,
   BrowserProfileAccessSchema,
-  BrowserServerMessageSchema,
   browserStateImportHostTimeoutMs,
   BrowserSurfaceIdSchema,
-  BrowserTabCatalogSchema,
   BrowserTabOpenCommandSchema,
   BrowserTabOpenRefusalDetailsSchema,
   browserViewerCloseCodes,
@@ -78,7 +92,6 @@ import {
   type BrowserPagePresence,
   type BrowserPlacement,
   type BrowserPlacementSelector,
-  type BrowserPresence,
   type BrowserProfile,
   type BrowserProfileAccess,
   type BrowserProfileGrant,
@@ -90,7 +103,6 @@ import {
   type BrowserSessionOpenerRecord,
   type BrowserSurface,
   type BrowserSurfaceId,
-  type BrowserTabCatalog,
   type BrowserTabCloseCommand,
   type BrowserTabCloseResult,
   type BrowserTabIconInput,
@@ -119,7 +131,6 @@ import { createHash, randomUUID } from "node:crypto";
 import type { RawData } from "ws";
 import WebSocket from "ws";
 import { z } from "zod";
-import { BrowserCatalogRevisions } from "./browser-catalog-revisions.js";
 import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
@@ -134,7 +145,6 @@ const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
 const maxBrowserProfiles = 128;
-const maxBrowserSessions = 100;
 const maxBrowserProfileGrants = 100;
 /** A live state export walks every context, so it gets more room than a CDP call. */
 
@@ -611,11 +621,6 @@ interface BrowserServiceOptions {
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
-  readonly onCatalogChanged?: (
-    sessionId: BrowserSessionId,
-    workspaceId: WorkspaceId,
-    change?: { readonly lineageChanged: boolean },
-  ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (
     ownerId: UserId,
@@ -623,13 +628,6 @@ interface BrowserServiceOptions {
       PlaceActivityNotice | { type: "host.thread-place-changed"; reference: ThreadPlaceReference },
   ) => void;
   readonly connectTimeoutMs?: number;
-  /**
-   * Announces that viewers' browser catalogs changed in this Workspace.
-   *
-   * The list reaches a client through the HTTP bootstrap, which it re-reads on
-   * a poll — so without this an agent-opened browser stays invisible for the
-   * length of that interval.
-   */
   readonly onSessionsChanged: (
     workspaceId: WorkspaceId,
     sessionIds: readonly BrowserSessionId[],
@@ -639,11 +637,6 @@ interface BrowserServiceOptions {
    * What a person sees about one browser changed: its page, or whether an
    * agent is acting in it. These change often, so they never reread a list.
    */
-  readonly onPresenceChanged?: (change: {
-    readonly presence: BrowserPresence;
-    readonly workspaceId: WorkspaceId;
-  }) => void;
-  /** Conversations whose visible browser usage changed. */
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
@@ -687,6 +680,7 @@ interface BrowserActor {
 }
 
 export class BrowserService {
+  readonly clientStreams: BrowserClientStreams;
   readonly #personal: boolean;
   readonly #profileRequestRunner: BrowserServiceOptions["profileRequestRunner"];
   readonly #nativeActivity = new Map<
@@ -706,14 +700,12 @@ export class BrowserService {
   readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
   readonly #workspaceTabs: WorkspaceTabStore | undefined;
   readonly #tabGroups: BrowserTabGroupStore | undefined;
-  readonly #endedCatalogs = new Map<BrowserSessionId, BrowserTabCatalog>();
   readonly #closeResults = new Map<
     string,
     { fingerprint: string; outcome: BrowserTabCloseResult["outcome"] }
   >();
   readonly #onProfilesChanged: NonNullable<BrowserServiceOptions["onProfilesChanged"]>;
   readonly #onMissingActor: NonNullable<BrowserServiceOptions["onMissingActor"]>;
-  readonly #onCatalogChanged: NonNullable<BrowserServiceOptions["onCatalogChanged"]>;
   readonly #onPlaceNotice: NonNullable<BrowserServiceOptions["onPlaceNotice"]>;
   #placeOrder = 0;
   #placeSequence = 0;
@@ -723,8 +715,34 @@ export class BrowserService {
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
   readonly #runPlaces: RunPlaceRecorder;
-  readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
+  readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
+  readonly #personUseGroups = new Map<
+    BrowserSessionId,
+    {
+      tabs: Set<BrowserSurfaceId>;
+      ended: boolean;
+      ownerId: UserId;
+      workspaceId: WorkspaceId;
+      profileId: BrowserProfileId | null;
+    }
+  >();
+  #endPersonUse(groupId: BrowserSessionId): void {
+    const group = this.#personUseGroups.get(groupId);
+    if (group) {
+      group.ended = true;
+      group.tabs.clear();
+    }
+    this.#personUseGroups.delete(groupId);
+  }
+  readonly #requestPins = new Map<
+    string,
+    readonly {
+      sessionId: BrowserSessionId;
+      runId: RunId | null;
+      surfaceId: BrowserSurfaceId | null;
+    }[]
+  >();
   #validateLoginLease:
     | ((input: {
         loginRef: string;
@@ -741,10 +759,8 @@ export class BrowserService {
     sessionIds: readonly BrowserSessionId[],
     source: BootstrapNoticeSource,
   ) => void;
-  readonly #onPresenceChanged: NonNullable<BrowserServiceOptions["onPresenceChanged"]>;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
-  readonly #reservedTabs = new Map<BrowserSessionId, number>();
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
   readonly #actorMetadataTimeoutMs: number;
@@ -792,12 +808,16 @@ export class BrowserService {
     this.#workspaceTabs = options.workspaceTabs;
     this.#tabGroups = options.tabGroups;
     this.#onMissingActor = options.onMissingActor ?? (() => undefined);
-    this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
     this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
-    this.#onSessionsChanged = options.onSessionsChanged;
+    this.#onSessionsChanged = (workspaceId, sessionIds, source) => {
+      for (const id of sessionIds) this.#brokers.get(id)?.refreshSessionState();
+      void Promise.all(sessionIds.map((id) => this.clientStreams.source.groupChanged(id))).catch(
+        (error) => this.#onError(error),
+      );
+      options.onSessionsChanged(workspaceId, sessionIds, source);
+    };
     this.#onProfilesChanged = options.onProfilesChanged ?? (() => {});
-    this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#onUsageChanged = options.onUsageChanged ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#activityClock = options.activityClock ?? systemClock;
@@ -813,6 +833,20 @@ export class BrowserService {
     this.#repository = options.repository;
     this.#signer = options.signer;
     this.#targetResolver = options.targetResolver;
+    this.clientStreams = new BrowserClientStreams({
+      authorityGeneration: () => this.#authorityGeneration,
+      groupIds: (ownerId) => this.#workspaceTabs?.groupIds(ownerId) ?? Promise.resolve([]),
+      readGroups: async (ownerId, ids) => {
+        const rows = (await this.#workspaceTabs?.read(ownerId, ids)) ?? [];
+        await Promise.all(rows.map((row) => this.#restoreHoldings(row.sessionId)));
+        return rows;
+      },
+      readTabs: (ids) => this.#workspaceTabs?.openTabs(ids) ?? Promise.resolve([]),
+      groupId: (id) => this.#workspaceTabs?.lineageForSession(id) ?? Promise.resolve(null),
+      live: (id) => this.#brokers.get(id)?.clientRows(this.#presence(id)),
+      occupants: (ownerId, id, tabId) => this.#occupants(ownerId, id, tabId),
+      onError: (error) => this.#onError(error),
+    });
   }
 
   get available(): boolean {
@@ -881,38 +915,18 @@ export class BrowserService {
   }
 
   async bootstrap(ownerId: UserId): Promise<HostedBrowserBootstrap> {
-    const [profiles, sessions, grants, homes] = await Promise.all([
+    const [profiles, grants, homes, tabGroups] = await Promise.all([
       this.#repository.listBrowserProfiles(ownerId),
-      this.#repository.listBrowserSessions(ownerId),
       this.#repository.listActiveBrowserProfileGrants(ownerId),
       this.#repository.listEligibleBrowserRunners(ownerId),
-    ]);
-    if (
-      profiles.length > maxBrowserProfiles ||
-      sessions.length > maxBrowserSessions ||
-      grants.length > maxBrowserProfileGrants
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Browser catalog limit exceeded.",
-      });
-    }
-    const sessionIds = sessions.map((session) => session.id);
-    const [attachedRuns, threads, visibleOpeners] = await Promise.all([
-      this.#repository.listAttachedRunIdsForBrowserSessions(sessionIds),
-      this.#repository.listBrowserSessionThreads({ ownerId, sessionIds }),
-      this.#visibleOpenerThreads(ownerId, sessions),
-    ]);
-    await Promise.all(sessions.map((session) => this.#restoreHoldings(session.id)));
-    const [workspaceTabs, tabGroups] = await Promise.all([
-      this.#workspaceTabs
-        ?.list(ownerId)
-        .then((groups) => groups.map((group) => this.#personWorkspaceTabs(group))),
       this.#tabGroups?.layout(ownerId),
     ]);
-    const bootstrap: HostedBrowserBootstrap = {
+    if (profiles.length > maxBrowserProfiles || grants.length > maxBrowserProfileGrants)
+      throw new OpensteerError({ code: "conflict", message: "Browser catalog limit exceeded." });
+    return {
+      ...(await this.clientStreams.source.bootstrap(ownerId)),
       profileHomes: homes.map((home) => home.id),
-      ...(workspaceTabs ? { workspaceTabRestoreVersion: 1, workspaceTabs } : {}),
+      ...(this.#workspaceTabs ? { workspaceTabRestoreVersion: 1 as const } : {}),
       ...(tabGroups ? { tabGroupsVersion: 1, tabGroups } : {}),
       ...(this.#localProfiles
         ? { profileDeletions: await this.#localProfiles.pendingDeletions(ownerId) }
@@ -922,63 +936,6 @@ export class BrowserService {
         !this.#closed && this.#eligiblePlacements(homes).some((placement) => placement.available),
       placements: this.#eligiblePlacements(homes).map(publicPlacement),
       profiles: profiles.map(publicProfile),
-      sessions: sessions.map((session) => ({
-        tabCatalog: this.#catalog(ownerId, session.id),
-        ...publicSession(session),
-        navigationVersion: this.#brokers.get(session.id)?.navigationVersion,
-        workspaceTabRestoreVersion: this.#workspaceTabs
-          ? this.#brokers.get(session.id)?.workspaceTabRestoreVersion
-          : undefined,
-        opener: projectBrowserSessionOpener(session.opener ?? null, {
-          userId: ownerId,
-          visibleThreadIds: visibleOpeners,
-        }),
-        ...this.#presence(session.id),
-        attachedRunIds: [...(attachedRuns.get(session.id) ?? [])],
-        threadIds: [...(threads.get(session.id) ?? [])],
-      })),
-    };
-    if (
-      Buffer.byteLength(JSON.stringify(bootstrap.sessions), "utf8") >
-      browserBootstrapSessionsMaxBytes
-    ) {
-      for (const session of bootstrap.sessions) {
-        delete session.tabCatalog;
-      }
-    }
-    if (
-      workspaceTabs &&
-      Buffer.byteLength(JSON.stringify(workspaceTabs), "utf8") > browserBootstrapSessionsMaxBytes
-    )
-      for (const group of workspaceTabs) delete group.tabs;
-    return bootstrap;
-  }
-
-  async readWorkspaceTabs(
-    ownerId: UserId,
-    groupId: BrowserSessionId,
-  ): Promise<WorkspaceTabLineage> {
-    const resolved = (await this.#workspaceTabs?.lineageForSession(groupId)) ?? groupId;
-    const group = await this.#workspaceTabs?.read(ownerId, resolved);
-    if (!group) throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
-    return this.#personWorkspaceTabs(group);
-  }
-
-  #personWorkspaceTabs(group: WorkspaceTabLineage): WorkspaceTabLineage {
-    return {
-      ...group,
-      ...(group.tabs
-        ? {
-            tabs: group.tabs.map((tab) => {
-              const broker = tab.sessionId ? this.#brokers.get(tab.sessionId) : undefined;
-              const state =
-                broker?.live && broker.surfaceState === 1
-                  ? broker.surfaceStateOf(tab.id)
-                  : undefined;
-              return state ? { ...tab, state } : tab;
-            }),
-          }
-        : {}),
     };
   }
 
@@ -1052,7 +1009,7 @@ export class BrowserService {
       if (!broker?.live) {
         sessionId = createBrowserSessionId();
         const dormantSurfaceIds =
-          (await this.readWorkspaceTabs(ownerId, initial.groupId)).tabs
+          (await tabs.read(ownerId, initial.groupId))?.tabs
             ?.filter((tab) => tab.id !== tabId)
             .map((tab) => tab.id) ?? [];
         const finish = await this.#serializeKey(
@@ -1074,8 +1031,9 @@ export class BrowserService {
         );
         await finish();
         broker = this.#brokers.get(sessionId);
-      } else if (!broker.catalog(() => []).tabs.some((tab) => tab.id === tabId)) {
+      } else if (!broker.clientRows(this.#presence(sessionId)).records.has(tabId)) {
         await tabs.bind(initial.groupId, sessionId, tabId);
+        await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
         if (row.favicon) broker.restoreIcon(tabId, row.url, row.favicon);
         await broker.requestCdp({
           type: "cdp.command",
@@ -1091,7 +1049,6 @@ export class BrowserService {
         });
       }
       if (
-        !agent &&
         broker?.live &&
         broker.surfaceState === 1 &&
         broker.surfaceStateOf(tabId) === "suspended"
@@ -1103,11 +1060,10 @@ export class BrowserService {
         });
       }
       if (!(await tabs.get(ownerId, tabId))) {
-        if (broker?.live)
-          await this.#disposeWorkspaceTab(ownerId, previous.workspaceId, sessionId, tabId, broker);
+        if (broker?.live) await this.#disposeWorkspaceTab(ownerId, sessionId, tabId, broker);
         throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
       }
-      await this.#flushCatalogNotice(sessionId, previous.workspaceId);
+      await this.#flushTabDescriptors(sessionId);
       const session = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
       if (!session || !broker?.live) throw unavailable("The browser computer disconnected.");
       if (agent) {
@@ -1118,12 +1074,14 @@ export class BrowserService {
           });
         await this.#holdForAgent(agent, session);
       }
+      if (!agent) await broker.markPersonUsed(tabId);
+      await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       return {
         type: "workspace.tab.activate" as const,
-        group: await this.readWorkspaceTabs(ownerId, initial.groupId),
+        groupId: initial.groupId,
+        sessionId,
         session: await this.#personSession(session, ownerId),
         tabId,
-        catalog: this.#catalog(ownerId, sessionId),
       };
     });
   }
@@ -1189,12 +1147,15 @@ export class BrowserService {
       },
       idempotencyKey,
     );
-    const group = await this.readWorkspaceTabs(ownerId, row.groupId);
+    const group = await tabs.read(ownerId, row.groupId);
+    if (!group) throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
+    await this.clientStreams.source.groupChanged(group.session.id, { tabs: true });
     this.#onSessionsChanged(group.session.workspaceId, [group.session.id], "browser.tabs");
     return {
       type: "workspace.tab.reopen" as const,
+      groupId: row.groupId,
+      sessionId: group.session.id,
       tabId: BrowserSurfaceIdSchema.parse(row.id),
-      group,
       layout: await this.#tabGroups.layout(ownerId),
     };
   }
@@ -1202,25 +1163,29 @@ export class BrowserService {
   async closeWorkspaceTab(ownerId: UserId, tabId: BrowserSurfaceId, person = true) {
     const row = await this.#workspaceTabs?.close(ownerId, tabId, person);
     if (!row) throw new OpensteerError({ code: "not_found", message: "Browser tab not found." });
+    const marks = this.#personUseGroups.get(row.groupId);
+    marks?.tabs.delete(tabId);
+    if (marks?.tabs.size === 0) this.#personUseGroups.delete(row.groupId);
     // Closing commits before joining activation's turn, so a late open must dispose its page.
     await this.#serializeKey(`group:${row.groupId}`, async () => {
       const session = await this.#workspaceTabs!.session(ownerId, row.groupId);
       const broker = session ? this.#brokers.get(session.id) : undefined;
       if (session && broker?.live)
-        await this.#disposeWorkspaceTab(ownerId, session.workspaceId, session.id, tabId, broker);
+        await this.#disposeWorkspaceTab(ownerId, session.id, tabId, broker);
       // The closed revision reaches every viewer, so a slower earlier lineage can't bring it back.
-      if (session)
-        this.#onCatalogChanged(session.id, session.workspaceId, { lineageChanged: true });
+      if (session) {
+        await this.clientStreams.source.groupChanged(session.id, { tabs: true });
+      }
     });
     return {
       type: "workspace.tab.close" as const,
-      group: await this.readWorkspaceTabs(ownerId, row.groupId),
+      groupId: row.groupId,
+      sessionId: (await this.#workspaceTabs!.session(ownerId, row.groupId))?.id,
     };
   }
 
   async #disposeWorkspaceTab(
     ownerId: UserId,
-    workspaceId: WorkspaceId,
     sessionId: BrowserSessionId,
     tabId: BrowserSurfaceId,
     broker: HostedBrowserBroker,
@@ -1245,7 +1210,7 @@ export class BrowserService {
       const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
       if (record) await this.#stopRecord(record);
     }
-    await this.#flushCatalogNotice(sessionId, workspaceId, broker);
+    await this.#flushTabDescriptors(sessionId, broker);
   }
 
   /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
@@ -1312,6 +1277,8 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
+    for (const [id, group] of this.#personUseGroups)
+      if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();
     const stops = await Promise.allSettled(
       sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
@@ -1343,6 +1310,8 @@ export class BrowserService {
     profiles: readonly { id: BrowserProfileId; ownerId: UserId }[],
   ): Promise<void> {
     this.invalidatePlaceAuthority();
+    for (const [id, group] of this.#personUseGroups)
+      if (profiles.some((profile) => profile.id === group.profileId)) this.#endPersonUse(id);
     for (const { id } of profiles) await this.fenceLocalProfile(id);
     for (const ownerId of new Set(profiles.map((profile) => profile.ownerId)))
       await this.#ownerProfilesChanged(ownerId);
@@ -1404,7 +1373,6 @@ export class BrowserService {
       ...result,
       session: {
         ...result.session,
-        tabCatalog: this.#catalog(input.ownerId, result.session.id),
         ...this.#presence(result.session.id),
         threadIds: [...(threads.get(result.session.id) ?? [])],
       },
@@ -1454,42 +1422,34 @@ export class BrowserService {
     }
   }
 
-  #catalog(ownerId: UserId, sessionId: BrowserSessionId): BrowserTabCatalog {
-    const broker = this.#brokers.get(sessionId);
-    if (!broker)
-      return this.#endedCatalogs.get(sessionId) ?? { generation: 0, revision: 0, tabs: [] };
-    return broker.catalog((surfaceId) => {
-      const occupants = new Map<ThreadId, PlaceOccupant>();
-      for (const actor of this.#actors.values()) {
-        if (actor.sessionId !== sessionId) continue;
-        const identity = actor.audience.get(ownerId);
-        const use = actor.surfaces.get(surfaceId);
-        if (!identity || !use) continue;
-        const holding =
-          this.#holdings.get(sessionId)?.has(`${actor.binding}:${surfaceId}`) === true;
-        const acting = this.#activityClock.now() - use.at < this.#actingWindowMs;
-        if (!holding && !acting) continue;
-        const previous = occupants.get(identity.threadId);
-        occupants.set(identity.threadId, {
-          threadId: identity.threadId,
-          home: identity.home,
-          holding: holding || previous?.holding === true,
-          acting: acting || previous?.acting === true,
-          lastActiveAt: new Date(
-            Math.max(use.at, use.heldAt ?? 0, previous ? Date.parse(previous.lastActiveAt) : 0),
-          ).toISOString(),
-        });
-      }
-      return [...occupants.values()];
-    }, ownerId);
+  #occupants(ownerId: UserId, sessionId: BrowserSessionId, surfaceId: string): PlaceOccupant[] {
+    const occupants = new Map<ThreadId, PlaceOccupant>();
+    for (const actor of this.#actors.values()) {
+      if (actor.sessionId !== sessionId) continue;
+      const identity = actor.audience.get(ownerId);
+      const use = actor.surfaces.get(surfaceId);
+      if (!identity || !use) continue;
+      const holding = this.#holdings.get(sessionId)?.has(`${actor.binding}:${surfaceId}`) === true;
+      const acting = this.#activityClock.now() - use.at < this.#actingWindowMs;
+      if (!holding && !acting) continue;
+      const previous = occupants.get(identity.threadId);
+      occupants.set(identity.threadId, {
+        threadId: identity.threadId,
+        home: identity.home,
+        holding: holding || previous?.holding === true,
+        acting: acting || previous?.acting === true,
+        lastActiveAt: new Date(
+          Math.max(use.at, use.heldAt ?? 0, previous ? Date.parse(previous.lastActiveAt) : 0),
+        ).toISOString(),
+      });
+    }
+    return [...occupants.values()];
   }
 
-  async readTabCatalog(ownerId: UserId, sessionId: BrowserSessionId): Promise<BrowserTabCatalog> {
+  async #requireSession(ownerId: UserId, sessionId: BrowserSessionId): Promise<void> {
     const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
     if (!record || (this.#workspaceTabs && isTerminal(record.state)))
       throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
-    await this.#restoreHoldings(sessionId);
-    return this.#catalog(ownerId, sessionId);
   }
 
   async readTabIcon(
@@ -1518,9 +1478,9 @@ export class BrowserService {
     ownerId: UserId,
     input: BrowserContextCandidateInput,
   ): Promise<BrowserContextCandidate> {
-    await this.readTabCatalog(ownerId, input.sessionId);
+    await this.#requireSession(ownerId, input.sessionId);
     const broker = this.#brokers.get(input.sessionId);
-    if (!broker?.live || !broker.targetedStreaming)
+    if (!broker?.live)
       throw new OpensteerError({
         code: "conflict",
         message: "Update the browser computer to read this page.",
@@ -1797,8 +1757,6 @@ export class BrowserService {
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
       budget.signal.throwIfAborted();
       let admitted: BrowserTabOpenBinding | undefined;
-      // Until its page is recorded, an open counts against the session it chose.
-      let reserved: BrowserSessionId | undefined;
       try {
         let pendingFinish: (() => Promise<void>) | undefined;
         const select = async () => {
@@ -1853,20 +1811,7 @@ export class BrowserService {
                   left.createdAt.getTime() - right.createdAt.getTime() ||
                   left.id.localeCompare(right.id),
               );
-            record = null;
-            for (const candidate of candidates) {
-              const saved = (await this.#workspaceTabs?.tabIds(candidate.id)) ?? [];
-              // Read together after the await: an open is reserved until its page is listed.
-              const listed = this.#brokers.get(candidate.id)?.surfaceIds ?? [];
-              const held =
-                new Set([...saved, ...listed]).size + (this.#reservedTabs.get(candidate.id) ?? 0);
-              if (held < browserSessionTabLimit) {
-                record = candidate;
-                reserved = candidate.id;
-                this.#reservedTabs.set(reserved, (this.#reservedTabs.get(reserved) ?? 0) + 1);
-                break;
-              }
-            }
+            record = candidates[0] ?? null;
             if (!record)
               opening = {
                 ownerId,
@@ -1956,25 +1901,16 @@ export class BrowserService {
           if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
         }
         throw error;
-      } finally {
-        if (reserved) {
-          const left = (this.#reservedTabs.get(reserved) ?? 1) - 1;
-          if (left > 0) this.#reservedTabs.set(reserved, left);
-          else this.#reservedTabs.delete(reserved);
-        }
       }
     });
   }
 
   #tabOpenFailure(binding: BrowserTabOpenBinding, cause?: unknown): OpensteerError {
-    const full = cause instanceof OpensteerError && cause.reason === browserSessionTabsFullReason;
     return this.#tabOpenRefusal(
       "browser-tab-open-failed",
       binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
         ? "Opening was interrupted by a Host restart. Retry to open a new page."
-        : full
-          ? "This browser holds all the tabs it can. Retry to open the page in another browser."
-          : "The browser could not open this page. Retry to open a new page.",
+        : "The browser could not open this page. Retry to open a new page.",
       [],
       cause,
     );
@@ -2036,7 +1972,7 @@ export class BrowserService {
             "The original page outcome is unknown. Inspect the browser before opening another page.",
           );
         const broker = this.#brokers.get(record.id);
-        if (!broker?.live || !broker.targetedStreaming)
+        if (!broker?.live)
           throw this.#tabOpenRefusal(
             "browser-session-unavailable",
             "This browser is not ready to open a page. Try again shortly.",
@@ -2053,6 +1989,7 @@ export class BrowserService {
             method: browserHostMethods.openTab,
             parameters: {
               operationAuthority: this.#signer.issue({
+                creationOrigin: "person",
                 access: "read-write",
                 identity: { kind: "fresh" },
                 runtimeId: record.runtimeId,
@@ -2084,10 +2021,15 @@ export class BrowserService {
           "browser-tab-open-outcome-unknown",
           "The page outcome is unknown.",
         );
-      await this.#flushCatalogNotice(record.id, record.workspaceId);
+      await this.#flushTabDescriptors(record.id);
+      await this.clientStreams.source.groupChanged(record.id);
       const visible = await this.#visibleOpenerThreads(ownerId, [record]);
       return {
         type: "browser.tab.open",
+        groupId:
+          this.#brokers.get(record.id)?.groupId ??
+          (await this.#workspaceTabs?.lineageForSession(record.id)) ??
+          record.id,
         sessionId: record.id,
         browserStarted: binding.browserStarted,
         session: {
@@ -2102,7 +2044,6 @@ export class BrowserService {
           }),
         },
         tabId: binding.outcome.tabId,
-        catalog: this.#catalog(ownerId, record.id),
       };
     });
   }
@@ -2147,25 +2088,21 @@ export class BrowserService {
       if (previous) {
         if (previous.fingerprint !== fingerprint)
           throw new OpensteerError({ code: "conflict", message: "Idempotency key already used." });
-        await this.readTabCatalog(ownerId, command.sessionId);
+        await this.#requireSession(ownerId, command.sessionId);
         return {
           type: "browser.tab.close",
           sessionId: command.sessionId,
           outcome: previous.outcome,
-          catalog: this.#catalog(ownerId, command.sessionId),
         };
       }
-      const catalog = await this.readTabCatalog(ownerId, command.sessionId);
+      await this.#requireSession(ownerId, command.sessionId);
       const broker = this.#brokers.get(command.sessionId);
-      if (!broker?.live || !broker.targetedStreaming)
+      if (!broker?.live)
         throw new OpensteerError({
           code: "conflict",
           message: "The browser computer is unavailable or needs an update.",
         });
-      if (
-        catalog.generation !== command.expectedGeneration ||
-        (catalog.inventoryRevision ?? catalog.revision) !== command.expectedRevision
-      )
+      if (broker.inventoryRevision !== command.inventoryRevision)
         throw new OpensteerError({
           code: "conflict",
           reason: staleBrowserTabInventoryReason,
@@ -2200,15 +2137,19 @@ export class BrowserService {
         .object({ outcome: z.enum(["tab-closed", "session-closed"]) })
         .parse(response.result);
       await this.#workspaceTabs?.close(ownerId, command.surfaceId, false);
+      await this.clientStreams.source.groupChanged(command.sessionId, { tabs: true });
       if (outcome === "session-closed") {
         const record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
         if (record) await this.#stopRecord(record);
       }
       const result: BrowserTabCloseResult = {
         type: "browser.tab.close",
+        groupId:
+          this.#brokers.get(command.sessionId)?.groupId ??
+          (await this.#workspaceTabs?.lineageForSession(command.sessionId)) ??
+          command.sessionId,
         sessionId: command.sessionId,
         outcome,
-        catalog: this.#catalog(ownerId, command.sessionId),
       };
       this.#closeResults.set(key, { fingerprint, outcome });
       if (this.#closeResults.size > 1_000)
@@ -2351,7 +2292,16 @@ export class BrowserService {
         this.#clearActor(actor);
   }
 
-  invalidatePlaceAuthority(workspaceId?: WorkspaceId, threadIds?: readonly ThreadId[]): void {
+  invalidatePlaceAuthority(
+    workspaceId?: WorkspaceId,
+    threadIds?: readonly ThreadId[],
+    ownerId?: UserId,
+  ): void {
+    void (
+      ownerId
+        ? this.clientStreams.source.reauthorize(ownerId)
+        : this.clientStreams.source.reauthorizeAll()
+    ).catch((error) => this.#onError(error));
     // Pending lineage reads have no known scope yet; fence them without clearing live actors.
     this.#authorityGeneration++;
     for (const [key, token] of this.#actorKeys) if (token === null) this.#actorKeys.delete(key);
@@ -2372,11 +2322,7 @@ export class BrowserService {
         { agentBindingId: actor.binding, ownerId: actor.ownerId },
         actor.sessionId,
       );
-      if (broker) this.#queueCatalogNotice(actor.sessionId, broker.workspaceId);
     }
-    if (workspaceId && !threadIds)
-      for (const [sessionId, broker] of this.#brokers)
-        if (broker.workspaceId === workspaceId) this.#queueCatalogNotice(sessionId, workspaceId);
   }
 
   #clearActor(actor: BrowserActor): void {
@@ -2398,7 +2344,7 @@ export class BrowserService {
           seq: ++this.#placeSequence,
         });
     }
-    this.#brokers.get(actor.sessionId)?.bumpCatalog();
+    this.clientStreams.source.markTabs(actor.sessionId, actor.surfaces.keys());
   }
 
   #startActorResolution(
@@ -2535,6 +2481,7 @@ export class BrowserService {
     actor.audience.clear();
     for (const [ownerId, identity] of next) actor.audience.set(ownerId, identity);
     this.#actors.set(actor.token, actor);
+    this.clientStreams.source.markTabs(sessionId, actor.surfaces.keys());
     this.#actorKeys.set(key, actor.token);
     if (this.#actorKeys.size > 4096) this.#actorKeys.delete(this.#actorKeys.keys().next().value!);
   }
@@ -2585,22 +2532,11 @@ export class BrowserService {
             heldAt: holding.lastUsedAt.getTime(),
           });
       }
+      this.clientStreams.source.markTabs(
+        sessionId,
+        holdings.flatMap((holding) => (holding.tabId ? [holding.tabId] : [])),
+      );
     });
-  }
-
-  async catalogsForViewers(
-    sessionId: BrowserSessionId,
-  ): Promise<ReadonlyMap<UserId, BrowserTabCatalog>> {
-    const viewers = await this.#repository.listBrowserSessionViewers(sessionId);
-    await this.#restoreHoldings(sessionId, viewers?.userIds ?? []);
-    await Promise.all(
-      [...this.#actorResolutions]
-        .filter(([key]) => key.startsWith(`${sessionId}:`))
-        .map(([, work]) => work),
-    );
-    return new Map(
-      (viewers?.userIds ?? []).map((ownerId) => [ownerId, this.#catalog(ownerId, sessionId)]),
-    );
   }
 
   async flushPendingTabDescriptors(): Promise<void> {
@@ -2608,18 +2544,16 @@ export class BrowserService {
       [...this.#brokers]
         .filter(
           ([sessionId, broker]) =>
-            this.#catalogNotices.has(sessionId) ||
-            broker.durableCatalog().dirty ||
+            this.#tabDescriptorTimers.has(sessionId) ||
+            broker.hasTabChanges ||
             this.#sessionOperations.has(`catalog:${sessionId}`),
         )
-        .map(([sessionId, broker]) =>
-          this.#flushCatalogNotice(sessionId, broker.workspaceId, broker),
-        ),
+        .map(([sessionId, broker]) => this.#flushTabDescriptors(sessionId, broker)),
     );
   }
 
   tabOccupants(ownerId: UserId, sessionId: BrowserSessionId, tabId: BrowserSurfaceId) {
-    return this.#catalog(ownerId, sessionId).tabs.find((tab) => tab.id === tabId)?.occupants ?? [];
+    return this.#occupants(ownerId, sessionId, tabId);
   }
 
   /** The saved session's record when the agent may reach it, live or not; otherwise null. */
@@ -2644,35 +2578,36 @@ export class BrowserService {
       : null;
   }
 
-  #queueCatalogNotice(sessionId: BrowserSessionId, workspaceId: WorkspaceId): void {
-    if (this.#catalogNotices.has(sessionId)) return;
+  #queueTabDescriptors(sessionId: BrowserSessionId): void {
+    if (this.#tabDescriptorTimers.has(sessionId)) return;
     const timer = setTimeout(() => {
-      this.#catalogNotices.delete(sessionId);
-      void this.#flushCatalogNotice(sessionId, workspaceId).catch(this.#onError);
+      this.#tabDescriptorTimers.delete(sessionId);
+      void this.#flushTabDescriptors(sessionId).catch(this.#onError);
     }, 100);
     timer.unref();
-    this.#catalogNotices.set(sessionId, timer);
+    this.#tabDescriptorTimers.set(sessionId, timer);
   }
 
-  #flushCatalogNotice(
+  #flushTabDescriptors(
     sessionId: BrowserSessionId,
-    workspaceId: WorkspaceId,
     broker = this.#brokers.get(sessionId),
   ): Promise<void> {
-    const timer = this.#catalogNotices.get(sessionId);
+    const timer = this.#tabDescriptorTimers.get(sessionId);
     if (timer) clearTimeout(timer);
-    this.#catalogNotices.delete(sessionId);
+    this.#tabDescriptorTimers.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
-      let lineageChanged = false;
       if (broker && this.#workspaceTabs) {
-        const { tabs, closed, revision, dirty, surfaceStateRevision, surfaceStateDirty } =
-          broker.durableCatalog();
-        if (dirty) lineageChanged = await this.#workspaceTabs.record(sessionId, tabs, closed);
-        // A tab falling asleep or waking changes the group people hold, as a lineage change does.
-        lineageChanged ||= surfaceStateDirty;
-        broker.acknowledgeClosed(closed, revision, surfaceStateRevision);
+        const changes = broker.tabChanges();
+        if (changes.tabs.length || changes.closed.length) {
+          const written = await this.#workspaceTabs.recordChanges(
+            sessionId,
+            changes.tabs,
+            changes.closed,
+          );
+          this.clientStreams.source.tabsWritten(written.groupId, written.rows, written.closedIds);
+        }
+        broker.acknowledgeTabChanges(changes);
       }
-      this.#onCatalogChanged(sessionId, workspaceId, { lineageChanged });
     });
   }
 
@@ -2710,7 +2645,10 @@ export class BrowserService {
           page,
         }),
       )
-      .then((credits) => this.announceUsage(credits))
+      .then(async (credits) => {
+        this.announceUsage(credits);
+        await this.#restoreHoldings(actor.sessionId);
+      })
       .catch((error: unknown) => {
         const surface = actor.surfaces.get(surfaceId);
         if (surface?.recordedPage === recordedPage) delete surface.recordedPage;
@@ -2750,6 +2688,7 @@ export class BrowserService {
     const previous = actor.surfaces.get(activity.surfaceId);
     const wasActing = previous !== undefined && at - previous.at < this.#actingWindowMs;
     actor.surfaces.set(activity.surfaceId, { ...previous, at, seq: activity.seq });
+    if (this.#requestPins.size) broker.refreshSessionState();
     void this.#recordActorUse(actor, activity.surfaceId);
     const previousTimer = this.#actingTimers.get(sessionId);
     if (previousTimer) previousTimer();
@@ -2758,7 +2697,9 @@ export class BrowserService {
       .flatMap((entry) => [...entry.surfaces.values()].map(({ at }) => at + this.#actingWindowMs))
       .filter((deadline) => deadline > at);
     this.#scheduleActingEnd(sessionId, Math.min(at + this.#actingWindowMs, ...deadlines) - at);
-    if (!wasActing) this.#brokers.get(sessionId)?.bumpCatalog();
+    if (!wasActing) {
+      this.clientStreams.source.markTabs(sessionId, [activity.surfaceId]);
+    }
     const key = `${sessionId}:${activity.surfaceId}`;
     this.#activityPending.set(`${key}:${actor.token}`, {
       actor,
@@ -2851,10 +2792,6 @@ export class BrowserService {
     this.#activityTimers.set(key, timer);
   }
 
-  /**
-   * Conversations' visible usage changed. First uses and revisits that move
-   * the catalog's conversation list also refresh the viewers' catalogs.
-   */
   announceUsage(credits: readonly BrowserUsageCredit[]): void {
     if (credits.length === 0) return;
     this.#onUsageChanged(credits);
@@ -3189,6 +3126,9 @@ export class BrowserService {
     const detached = await this.#repository.detachBrowserSessionAttachmentsForProfileGrant(input);
     if (detached > 0) {
       const sessions = await this.#repository.listBrowserSessions(input.ownerId);
+      for (const session of sessions)
+        if (session.profileId === input.profileId)
+          this.#brokers.get(session.id)?.refreshSessionState();
       this.#onSessionsChanged(
         input.workspaceId,
         sessions
@@ -3466,9 +3406,7 @@ export class BrowserService {
       // its actor. A Run ending during admission still fences that command.
       const actorToken =
         nativeAttachment?.actorToken ??
-        (broker.targetedStreaming && !bindingWasEnded
-          ? await this.#actorToken(input, record.id)
-          : undefined);
+        (!bindingWasEnded ? await this.#actorToken(input, record.id) : undefined);
       if (!fillAllowed()) return expired;
       assertAttached(bindingWasEnded);
       const admitted = await this.#admitAgentBackend(input, "cdp");
@@ -3480,7 +3418,32 @@ export class BrowserService {
           message: `The browser running Browser Session ${record.id} is an older Opensteer version that cannot receive files. Update Opensteer on that computer.`,
         });
       }
-      if (Object.values(browserHostMethods).some((method) => method === command.method))
+      if (
+        (command.method === browserHostMethods.listTabs ||
+          command.method === browserHostMethods.resumeTab) &&
+        broker.surfaceState !== 1
+      )
+        throw browserActionFailure(
+          "unsupported-operation",
+          "Update the browser computer to list and resume sleeping tabs.",
+        );
+      if (command.method === browserHostMethods.listTabs) {
+        if (!BrowserListTabsParametersSchema.safeParse(command.parameters ?? {}).success)
+          throw new OpensteerError({ code: "bad_request", message: "Invalid tab-list cursor." });
+      } else if (command.method === browserHostMethods.resumeTab) {
+        const parsed = BrowserResumeTabParametersSchema.safeParse(command.parameters);
+        if (!parsed.success)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "A tab surfaceId is required.",
+          });
+        const { surfaceId } = parsed.data;
+        if (broker.surfaceStateOf(surfaceId) === undefined)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Browser tab not found in this session.",
+          });
+      } else if (Object.values(browserHostMethods).some((method) => method === command.method))
         throw new OpensteerError({
           code: "forbidden",
           message: "This operation is reserved for the Host.",
@@ -3524,7 +3487,10 @@ export class BrowserService {
                   sessionId: record.id,
                   tabId: target.data.surfaceId,
                 })
-                .then((credits) => this.announceUsage(credits))
+                .then(async (credits) => {
+                  this.announceUsage(credits);
+                  await this.#restoreHoldings(record.id);
+                })
                 .catch(this.#onError);
             }
           }
@@ -3669,7 +3635,7 @@ export class BrowserService {
         code: "not_found",
         message: "The sign-in page is no longer available.",
       });
-    if (input.targetId && broker?.live && broker.targetedStreaming) {
+    if (input.targetId && broker?.live) {
       const response = await broker.requestCdp({
         type: "cdp.command",
         requestId: randomUUID(),
@@ -3704,6 +3670,76 @@ export class BrowserService {
     }) => boolean,
   ): void {
     this.#validateLoginLease = validate;
+  }
+
+  tabStateOf(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
+    return this.#brokers.get(sessionId)?.surfaceStateOf(surfaceId);
+  }
+
+  setRequestPins(
+    key: string,
+    pins: readonly { sessionId: BrowserSessionId; runId: RunId | null }[],
+  ): void {
+    const previous = this.#requestPins.get(key) ?? [];
+    if (pins.length)
+      this.#requestPins.set(
+        key,
+        pins.map((pin) => ({
+          ...pin,
+          surfaceId:
+            previous.find((old) => old.sessionId === pin.sessionId && old.runId === pin.runId)
+              ?.surfaceId ?? this.#requestSurface(pin.sessionId, pin.runId),
+        })),
+      );
+    else this.#requestPins.delete(key);
+    for (const id of new Set([...previous, ...pins].map((pin) => pin.sessionId)))
+      this.#brokers.get(id)?.refreshSessionState();
+  }
+
+  observeRequest(request: Request): void {
+    const payload = request.payload;
+    if (payload.kind !== "browser.sign-in" && payload.kind !== "browser.password-sign-in") return;
+    const sessionId =
+      "sessionId" in payload ? BrowserSessionIdSchema.parse(payload.sessionId) : null;
+    this.setRequestPins(
+      request.id,
+      request.status === "pending" && sessionId
+        ? [{ sessionId, runId: request.originatingRunId }]
+        : [],
+    );
+  }
+
+  #requestSurface(sessionId: BrowserSessionId, runId: RunId | null): BrowserSurfaceId | null {
+    if (!runId) return null;
+    const actor = [...this.#actors.values()].find(
+      (actor) => actor.sessionId === sessionId && actor.runId === runId,
+    );
+    const latest =
+      actor &&
+      [...actor.surfaces].sort(
+        (a, b) =>
+          Math.max(b[1].at, b[1].recordedPage?.at ?? 0) -
+            Math.max(a[1].at, a[1].recordedPage?.at ?? 0) || b[1].seq - a[1].seq,
+      )[0];
+    return latest ? BrowserSurfaceIdSchema.parse(latest[0]) : null;
+  }
+
+  async #sessionState(
+    sessionId: BrowserSessionId,
+  ): Promise<Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">> {
+    const runs = await this.#repository.countBrowserSessionAttachments(sessionId);
+    const pinned = new Set<BrowserSurfaceId>();
+    let keepAwake = false;
+    for (const pins of this.#requestPins.values())
+      for (const pin of pins) {
+        if (pin.sessionId !== sessionId) continue;
+        const surfaceId = pin.surfaceId ?? this.#requestSurface(sessionId, pin.runId);
+        if (surfaceId) {
+          pin.surfaceId = surfaceId;
+          pinned.add(surfaceId);
+        } else keepAwake = true;
+      }
+    return { runs, pinned: [...pinned], ...(keepAwake ? { keepAwake: true } : {}) };
   }
 
   /**
@@ -3905,6 +3941,15 @@ export class BrowserService {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
       await this.#workspaceTabs?.closeLineage(sessionId);
+      const groupId =
+        this.#brokers.get(sessionId)?.groupId ??
+        (await this.#workspaceTabs?.lineageForSession(sessionId)) ??
+        sessionId;
+      const latest = this.#workspaceTabs
+        ? await this.#workspaceTabs.session(ownerId, groupId)
+        : persisted;
+      if (!latest || latest.id === sessionId) this.#endPersonUse(groupId);
+      await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       await this.#stopRecord(persisted);
     });
   }
@@ -3917,6 +3962,7 @@ export class BrowserService {
           actor.lineageWorkspaceIds.includes(workspaceId))
       ) {
         actor.audience.delete(ownerId);
+        this.clientStreams.source.markTabs(actor.sessionId, actor.surfaces.keys());
         for (const surfaceId of actor.surfaces.keys())
           this.#onPlaceNotice(ownerId, {
             type: "host.place-activity-cleared",
@@ -3933,6 +3979,8 @@ export class BrowserService {
   }
 
   async revokeWorkspaceUser(ownerId: UserId, workspaceId: WorkspaceId): Promise<void> {
+    for (const [id, group] of this.#personUseGroups)
+      if (group.ownerId === ownerId && group.workspaceId === workspaceId) this.#endPersonUse(id);
     this.revokePlaceReader(ownerId, workspaceId);
     this.invalidatePlaceAuthority(workspaceId);
     const sessions = await this.#repository.listBrowserSessions(ownerId);
@@ -3960,6 +4008,7 @@ export class BrowserService {
   abandonSession(sessionId: BrowserSessionId): void {
     const broker = this.#brokers.get(sessionId);
     if (!broker) return;
+    this.#endPersonUse(broker.groupId);
     this.#brokers.delete(sessionId);
     void broker.stop().catch(() => undefined);
   }
@@ -3967,10 +4016,11 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    this.clientStreams.close();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
-    for (const timer of this.#catalogNotices.values()) clearTimeout(timer);
-    this.#catalogNotices.clear();
+    for (const timer of this.#tabDescriptorTimers.values()) clearTimeout(timer);
+    this.#tabDescriptorTimers.clear();
     for (const timer of this.#activityTimers.values()) clearTimeout(timer);
     this.#activityTimers.clear();
     this.#activityPending.clear();
@@ -3986,13 +4036,15 @@ export class BrowserService {
       await this.#operationTail;
       await Promise.all(
         [...this.#brokers].map(([sessionId, broker]) =>
-          this.#flushCatalogNotice(sessionId, broker.workspaceId, broker),
+          this.#flushTabDescriptors(sessionId, broker),
         ),
       );
       await Promise.allSettled([...this.#brokers.values()].map((broker) => broker.stop()));
       await Promise.allSettled(this.#historyTails.values());
       await this.#workspaceTabs?.suspend();
       this.#brokers.clear();
+      for (const id of this.#personUseGroups.keys()) this.#endPersonUse(id);
+      this.#requestPins.clear();
     })();
     return this.#closePromise;
   }
@@ -4150,13 +4202,21 @@ export class BrowserService {
     });
     if (input.tabGroupId && input.initialSurfaceId)
       await this.#workspaceTabs?.bind(input.tabGroupId, sessionId, input.initialSurfaceId);
+    if (input.tabGroupId) await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
     this.#onSessionsChanged(record.workspaceId, [record.id], "browser.start");
     const initialHistoryNavigation =
       profile && initialUrl && personNavigation && target.navigationAttributionVersion
         ? { ...personNavigation, navigationId: randomUUID() }
         : undefined;
     input.operationBudget?.signal.throwIfAborted();
+    const workspaceTabRestore =
+      target.workspaceTabRestoreVersion &&
+      origin !== "trigger" &&
+      !input.agentBindingId?.startsWith("trigger:") &&
+      !input.agentBindingId?.startsWith("watch:");
     const ticket = this.#signer.issue({
+      creationOrigin:
+        origin === "workspace" && record.opener?.kind === "person" ? "person" : "agent",
       ...(input.operationBudget
         ? {
             operationExpiresAt: new Date(input.operationBudget.expiresAt).toISOString(),
@@ -4179,14 +4239,10 @@ export class BrowserService {
             ...(target.editing === 2 ? { clipboard: target.clipboard === true } : {}),
           }
         : {}),
-      ...(target.workspaceTabRestoreVersion &&
-      origin !== "trigger" &&
-      !input.agentBindingId?.startsWith("trigger:") &&
-      !input.agentBindingId?.startsWith("watch:")
+      ...(workspaceTabRestore
         ? {
             workspaceTabRestoreVersion: 1,
             initialSurfaceId: input.initialSurfaceId,
-            dormantSurfaceIds: input.dormantSurfaceIds ? [...input.dormantSurfaceIds] : undefined,
           }
         : {}),
       initialNavigation: {
@@ -4222,9 +4278,28 @@ export class BrowserService {
       throw browserStartUnavailable(correlationId, stage, error);
     }
     let readinessBudget = input.operationBudget;
+    const groupId = input.tabGroupId ?? sessionId;
+    const personUse = this.#personUseGroups.get(groupId) ?? {
+      tabs: new Set<BrowserSurfaceId>(),
+      ended: false,
+      ownerId: input.ownerId,
+      workspaceId: record.workspaceId,
+      profileId: record.profileId,
+    };
     const broker = withoutDatabaseOperationSignal(
       () =>
         new HostedBrowserBroker({
+          personUse,
+          onPersonUseChanged: () => {
+            if (personUse.ended) return;
+            if (personUse.tabs.size) this.#personUseGroups.set(groupId, personUse);
+            else if (this.#personUseGroups.get(groupId) === personUse)
+              this.#personUseGroups.delete(groupId);
+          },
+          workspaceTabRestoreVersion: workspaceTabRestore,
+          ...(workspaceTabRestore && input.initialSurfaceId
+            ? { savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])] }
+            : {}),
           profileId: record.profileId,
           ...(initialHistoryNavigation ? { initialHistoryNavigation } : {}),
           historyWrite: (operation) => {
@@ -4244,8 +4319,13 @@ export class BrowserService {
                 },
               }
             : {}),
+          readSessionState: () => this.#sessionState(sessionId),
           onPageChanged: () => this.#announcePresence(sessionId),
-          onTabsChanged: () => this.#queueCatalogNotice(sessionId, record.workspaceId),
+          onTabsChanged: () => this.#queueTabDescriptors(sessionId),
+          onRecordsChanged: (ids) => {
+            this.clientStreams.source.markTabs(sessionId, ids);
+            this.clientStreams.source.markGroup(sessionId);
+          },
           onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
           workspaceId: record.workspaceId,
           cdpBoundary: target.cdpBoundary === true,
@@ -4286,26 +4366,18 @@ export class BrowserService {
             for (const actor of this.#actors.values())
               if (actor.sessionId === sessionId) this.#clearActor(actor);
             const endedBroker = this.#brokers.get(sessionId);
-            await this.#flushCatalogNotice(sessionId, record.workspaceId, endedBroker);
+            await this.#flushTabDescriptors(sessionId, endedBroker);
             await this.#workspaceTabs?.suspend(sessionId);
+            await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
             if (this.#workspaceTabs)
               this.#onSessionsChanged(record.workspaceId, [sessionId], "browser.terminal");
-            const previous = endedBroker?.catalog(() => []);
-            if (previous)
-              this.#endedCatalogs.set(sessionId, {
-                ...previous,
-                revision: previous.revision + 1,
-                tabs: [],
-              });
-            if (this.#endedCatalogs.size > maxBrowserSessions)
-              this.#endedCatalogs.delete(this.#endedCatalogs.keys().next().value!);
-            this.#onCatalogChanged(sessionId, record.workspaceId);
             this.#forgetActing(sessionId);
             this.#announcePresence(sessionId);
             this.#brokers.delete(sessionId);
             this.#sessionProfiles.delete(sessionId);
             this.#holdings.delete(sessionId);
             this.#announcedPresence.delete(sessionId);
+            if (!workspaceTabRestore) this.#endPersonUse(groupId);
           },
           sessionId,
           socket,
@@ -4317,14 +4389,7 @@ export class BrowserService {
       try {
         stage = "runtime-readiness";
         await broker.ready();
-        if (
-          target.workspaceTabRestoreVersion &&
-          origin !== "trigger" &&
-          !input.agentBindingId?.startsWith("trigger:") &&
-          !input.agentBindingId?.startsWith("watch:")
-        )
-          await broker.workspaceTabsReady();
-        let initialTabId = broker.catalog(() => []).tabs[0]?.id;
+        let initialTabId: BrowserSurfaceId | undefined;
         {
           const ready = InitialPageReadySchema.parse(socket.initialPage);
           if (
@@ -4334,7 +4399,7 @@ export class BrowserService {
             throw unavailable("The browser returned mismatched initial page readiness.");
           initialTabId = ready.surfaceId;
         }
-        await this.#flushCatalogNotice(sessionId, record.workspaceId);
+        await this.#flushTabDescriptors(sessionId);
         if (initialTabId) onInitialPage?.(initialTabId);
         stage = "session-read";
         const latest = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
@@ -4557,7 +4622,12 @@ export class BrowserService {
         ].filter((at) => at > now);
         if (deadlines.length) this.#scheduleActingEnd(sessionId, Math.min(...deadlines) - now);
         if (!commands?.size) this.#agentCommands.delete(sessionId);
-        this.#brokers.get(sessionId)?.bumpCatalog();
+        this.clientStreams.source.markTabs(
+          sessionId,
+          [...this.#actors.values()]
+            .filter((actor) => actor.sessionId === sessionId)
+            .flatMap((actor) => [...actor.surfaces.keys()]),
+        );
         this.#announcePresence(sessionId);
       },
       Math.max(0, delayMs),
@@ -4596,11 +4666,11 @@ export class BrowserService {
   #announcePresence(sessionId: BrowserSessionId): void {
     const broker = this.#brokers.get(sessionId);
     if (!broker) return;
-    const presence: BrowserPresence = { sessionId, ...this.#presence(sessionId) };
+    const presence = this.#presence(sessionId);
     const announced = JSON.stringify([presence.acting, presence.page]);
     if (this.#announcedPresence.get(sessionId) === announced) return;
     this.#announcedPresence.set(sessionId, announced);
-    this.#onPresenceChanged({ presence, workspaceId: broker.workspaceId });
+    this.clientStreams.source.markGroup(sessionId);
   }
 
   async #agentSessionSummary(
@@ -4784,6 +4854,13 @@ interface PendingStateImport {
 }
 
 interface HostedBrowserBrokerOptions {
+  readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
+  readonly onPersonUseChanged?: () => void;
+  readonly readSessionState: () => Promise<
+    Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
+  >;
+  readonly savedTabIds?: readonly BrowserSurfaceId[];
+  readonly workspaceTabRestoreVersion?: boolean | undefined;
   readonly initialHistoryNavigation?: { navigationId: string; ownerId: UserId; typed: boolean };
   readonly profileId: BrowserProfileId | null;
   readonly historyWrite: (operation: (store: BrowserHistoryStore) => Promise<boolean>) => void;
@@ -4795,6 +4872,7 @@ interface HostedBrowserBrokerOptions {
     readonly favicon: string;
   };
   readonly onTabsChanged: () => void;
+  readonly onRecordsChanged: (ids: readonly string[]) => void;
   readonly onActivity: (activity: BrowserRuntimeActivity) => void;
   /** The active page's title or site changed; called at most once per `pageNoticeDelayMs`. */
   readonly onPageChanged: () => void;
@@ -4823,7 +4901,7 @@ interface HostedBrowserBrokerOptions {
   readonly socket: BrowserRuntimeConnection;
 }
 
-class HostedBrowserBroker {
+export class HostedBrowserBroker {
   readonly profileId: BrowserProfileId | null;
   readonly #historyWrite: HostedBrowserBrokerOptions["historyWrite"];
   readonly #historyNavigations = new Map<
@@ -4871,7 +4949,7 @@ class HostedBrowserBroker {
       return;
     this.#historyNavigations.delete(event.navigationId);
     if (!BrowserHistoryUrlSchema.safeParse(event.url).success) return;
-    const surface = this.#snapshot?.surfaces.find(
+    const surface = this.#surfaces.find(
       (surface) => surface.id === event.surfaceId && surface.documentId === event.documentId,
     );
     const title = surface?.title.slice(0, 200) ?? "";
@@ -4934,66 +5012,41 @@ class HostedBrowserBroker {
   get navigationVersion(): 1 | undefined {
     return this.#navigation && this.live ? 1 : undefined;
   }
-  readonly #durableReady = Promise.withResolvers<void>();
-  workspaceTabsReady(): Promise<void> {
-    return withTimeout(this.#durableReady.promise, this.#connectTimeoutMs, {
-      timeoutError: () => new Error("Browser Runtime did not send its durable tab inventory."),
-    });
-  }
-  #durableTabs: BrowserWorkspaceTabDescriptor[] = [];
-  readonly #durableClosed = new Set<BrowserSurfaceId>();
-  #durableRevision = 0;
-  /** The pages the Runtime listed last; it lists a new tab before answering its open. */
-  get surfaceIds(): readonly BrowserSurfaceId[] {
-    return this.#snapshot?.surfaces.map((surface) => surface.id) ?? [];
-  }
-
+  readonly #restoreTabs: boolean;
+  readonly #savedTabIds: readonly BrowserSurfaceId[] | undefined;
+  readonly #tabs = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+  readonly #dirtyTabs = new Map<string, WorkspaceTabDescriptor>();
+  readonly #closedTabs = new Set<BrowserSurfaceId>();
+  #tabStateRevision = 0;
+  #storedTabStateRevision = 0;
+  #surfaces: BrowserSurface[] = [];
   get workspaceTabRestoreVersion(): 1 | undefined {
-    return this.#durableRevision > 0 ? 1 : undefined;
+    return this.#restoreTabs ? 1 : undefined;
   }
-  #storedDurableRevision = 0;
-  #surfaceStateRevision = 0;
-  #announcedSurfaceStateRevision = 0;
-  #durableIcon(tab: BrowserWorkspaceTabDescriptor) {
-    const surface = this.#snapshot?.surfaces.find(
-      (surface) => surface.id === tab.id && surface.url === tab.url,
-    );
-    return surface ? this.#surfaceIcon(surface) : undefined;
-  }
-  #durableIconRefs(): string {
-    return JSON.stringify(
-      this.#durableTabs.map((tab) => [tab.id, this.#durableIcon(tab)?.ref ?? null]),
+  get hasTabChanges(): boolean {
+    return (
+      this.#dirtyTabs.size > 0 ||
+      this.#closedTabs.size > 0 ||
+      this.#tabStateRevision !== this.#storedTabStateRevision
     );
   }
-  #durableDescriptors() {
-    return this.#durableTabs.map((tab) => {
-      const icon = this.#durableIcon(tab);
-      return { ...tab, ...(icon ? { favicon: icon.favicon } : {}) };
-    });
-  }
-  durableCatalog() {
+  tabChanges() {
     return {
-      tabs: this.#durableDescriptors(),
-      closed: [...this.#durableClosed],
-      revision: this.#durableRevision,
-      dirty: this.#storedDurableRevision < this.#durableRevision,
-      surfaceStateRevision: this.#surfaceStateRevision,
-      surfaceStateDirty: this.#announcedSurfaceStateRevision < this.#surfaceStateRevision,
+      tabs: [...this.#dirtyTabs.values()],
+      closed: [...this.#closedTabs],
+      stateRevision: this.#tabStateRevision,
+      stateDirty: this.#tabStateRevision !== this.#storedTabStateRevision,
     };
   }
-  acknowledgeClosed(
-    ids: readonly BrowserSurfaceId[],
-    revision: number,
-    surfaceStateRevision: number,
-  ) {
-    this.#storedDurableRevision = revision;
-    this.#announcedSurfaceStateRevision = surfaceStateRevision;
-    for (const id of ids) this.#durableClosed.delete(id);
+  acknowledgeTabChanges(changes: ReturnType<HostedBrowserBroker["tabChanges"]>): void {
+    for (const row of changes.tabs)
+      if (this.#dirtyTabs.get(row.id) === row) this.#dirtyTabs.delete(row.id);
+    for (const id of changes.closed) this.#closedTabs.delete(id);
+    this.#storedTabStateRevision = changes.stateRevision;
   }
   readonly #onTabsChanged: () => void;
+  readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
-  readonly #catalogGeneration = Date.now();
-  readonly #catalogRevisions = new BrowserCatalogRevisions();
   readonly #runtimeTargets = new Map<string, boolean>();
   readonly #runtimeRaster = new Map<
     string,
@@ -5004,7 +5057,10 @@ class HostedBrowserBroker {
       timer: NodeJS.Timeout | null;
     }
   >();
-  readonly #latestFrames = new Map<string, { frame: Buffer; header: BrowserBinaryFrameHeader }>();
+  readonly #latestFrames = new Map<
+    string,
+    { frame: Buffer; header: BrowserBinaryFrameHeader; documentId: string }
+  >();
   readonly #frameIds = new Map<string, number>();
   readonly #onPageChanged: () => void;
   #pageNoticeTimer: NodeJS.Timeout | null = null;
@@ -5020,16 +5076,11 @@ class HostedBrowserBroker {
   readonly #sessionId: BrowserSessionId;
   readonly #groupId: BrowserSessionId;
   readonly #socket: BrowserRuntimeConnection;
-  #snapshot: Extract<BrowserServerMessage, { type: "browser.snapshot" }> | null = null;
+  #snapshot: Extract<BrowserRuntimeServerMessage, { type: "browser.snapshot" }> | null = null;
   readonly #editingContexts = new Map<
     BrowserSurfaceId,
     Extract<BrowserServerMessage, { type: "browser.editing" }>
   >();
-  /**
-   * Viewers that sent this runtime a key it cannot attribute back to them,
-   * for the life of its one connection, including viewers since detached.
-   */
-  readonly #unaddressedKeySenders = new Set<string>();
   #answeredOlderDialogId: string | null = null;
   readonly #actionListeners = new Map<string, (event: BrowserActionEvent) => void>();
   readonly #pendingActions = new Map<
@@ -5060,16 +5111,8 @@ class HostedBrowserBroker {
   #commandTail = Promise.resolve();
   #runtimeFrameTail = Promise.resolve();
   #stateImportTail = Promise.resolve();
-  #lastFrameId = -1;
-  /**
-   * The newest picture of the active tab while the Runtime streams. A viewer
-   * that subscribes to a page that is not repainting gets it at once instead
-   * of waiting for the page to change.
-   */
-  #latestFrame: { readonly frame: Buffer; readonly header: BrowserBinaryFrameHeader } | null = null;
   #streamReconcileTail = Promise.resolve();
   #runtimeReady = false;
-  #runtimeStreaming = false;
   #protocolFailed = false;
   /** The first thing that broke this session's runtime connection. */
   #failure: string | null = null;
@@ -5096,8 +5139,22 @@ class HostedBrowserBroker {
   readonly stateImport: boolean;
   readonly workspaceId: WorkspaceId;
 
+  readonly #readSessionState: HostedBrowserBrokerOptions["readSessionState"];
+  #sessionStateTimer: NodeJS.Timeout | undefined;
+  #sessionStateGeneration = 0;
+  #lastSessionState: string | undefined;
+  readonly #personUse: { tabs: Set<BrowserSurfaceId>; ended: boolean };
+  readonly #pendingPersonUse: Set<BrowserSurfaceId>;
+  readonly #onPersonUseChanged: () => void;
+  #sessionStateSending: Promise<void> | undefined;
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.#personUse = options.personUse ?? { tabs: new Set(), ended: false };
+    this.#pendingPersonUse = new Set(this.#personUse.tabs);
+    this.#onPersonUseChanged = options.onPersonUseChanged ?? (() => undefined);
+    this.#readSessionState = options.readSessionState;
+    this.#restoreTabs = options.workspaceTabRestoreVersion === true;
+    this.#savedTabIds = options.savedTabIds;
     this.profileId = options.profileId;
     this.#historyWrite = options.historyWrite;
     if (options.initialHistoryNavigation) {
@@ -5108,6 +5165,7 @@ class HostedBrowserBroker {
     this.passkeyOwnOrigins = options.passkeyOwnOrigins;
     this.#passkeys = options.passkeys
       ? new PasskeyService({
+          onChanged: () => this.refreshSessionState(),
           ownOrigins: options.passkeyOwnOrigins,
           viewers: () =>
             [...this.#consumers.values()].map((outlet): PasskeyViewer => ({
@@ -5115,12 +5173,7 @@ class HostedBrowserBroker {
               userId: outlet.userId,
               fullControl: outlet.mode === "control",
               mode: outlet.passkeys,
-              surfaceId:
-                outlet.subscription === null
-                  ? null
-                  : (outlet.surfaceId ??
-                    this.#snapshot?.surfaces.find((surface) => surface.active)?.id ??
-                    null),
+              surfaceId: outlet.subscription === null ? null : outlet.surfaceId,
               live: outlet.peer.isOpen(),
               authorized: outlet.authorized,
               send: (message) => {
@@ -5134,6 +5187,7 @@ class HostedBrowserBroker {
       : undefined;
     this.#navigation = options.navigation;
     this.#onTabsChanged = options.onTabsChanged;
+    this.#onRecordsChanged = options.onRecordsChanged;
     this.#onActivity = options.onActivity;
     this.#onPageChanged = options.onPageChanged;
     this.workspaceId = options.workspaceId;
@@ -5167,6 +5221,127 @@ class HostedBrowserBroker {
     this.#readyPromise = this.#waitUntilReady();
   }
 
+  async markPersonUsed(surfaceId: BrowserSurfaceId): Promise<void> {
+    if (!this.live || !this.#tabs.rows.has(surfaceId) || this.#personUse.ended) return;
+    if (!this.#personUse.tabs.has(surfaceId)) {
+      this.#personUse.tabs.add(surfaceId);
+      this.#pendingPersonUse.add(surfaceId);
+      this.#onPersonUseChanged();
+    }
+    this.#sessionStateGeneration++;
+    await this.#sendSessionState();
+  }
+
+  refreshSessionState(): void {
+    this.#sessionStateGeneration++;
+    if (!this.live || this.#snapshot?.surfaceState !== 1 || this.#sessionStateTimer) return;
+    this.#sessionStateTimer = setTimeout(() => {
+      this.#sessionStateTimer = undefined;
+      void this.#sendSessionState().catch(() => undefined);
+    }, 50);
+    this.#sessionStateTimer.unref();
+  }
+
+  #sendSessionState(): Promise<void> {
+    if (this.#sessionStateSending) return this.#sessionStateSending;
+    const send = async () => {
+      let generation: number;
+      do {
+        generation = this.#sessionStateGeneration;
+        await this.#writeSessionState();
+      } while (this.live && generation !== this.#sessionStateGeneration);
+    };
+    this.#sessionStateSending = send().finally(() => {
+      this.#sessionStateSending = undefined;
+    });
+    return this.#sessionStateSending;
+  }
+
+  async #writeSessionState(): Promise<void> {
+    if (!this.live || this.#snapshot?.surfaceState !== 1) return;
+    const generation = this.#sessionStateGeneration;
+    let facts: Awaited<ReturnType<HostedBrowserBrokerOptions["readSessionState"]>>;
+    try {
+      facts = await this.#readSessionState();
+    } catch {
+      facts = { runs: 0, pinned: [], keepAwake: true };
+    }
+    if (!this.live || generation !== this.#sessionStateGeneration) return;
+    const viewed = new Set<BrowserSurfaceId>();
+    const pinned = new Set(facts.pinned);
+    for (const id of this.#passkeys?.pendingSurfaceIds ?? [])
+      pinned.add(BrowserSurfaceIdSchema.parse(id));
+    for (const outlet of this.#consumers.values()) {
+      if (outlet.subscription === null) continue;
+      const id = outlet.surfaceId ?? this.#tabs.meta?.activeId;
+      if (id && this.#tabs.rows.has(id))
+        (outlet.mode === "control" ? viewed : pinned).add(BrowserSurfaceIdSchema.parse(id));
+    }
+    let message: Extract<BrowserClientMessage, { type: "session.state" }> = {
+      type: "session.state" as const,
+      ...facts,
+      viewed: [...viewed].sort(),
+      personUsed: [],
+      pinned: [...pinned].sort(),
+    };
+    let markBytes = 0;
+    for (const id of this.#pendingPersonUse) markBytes = Math.max(markBytes, keyedStreamBytes(id));
+    if (keyedStreamBytes(message) + markBytes > keyedStreamHardCapBytes)
+      message = {
+        type: "session.state",
+        runs: facts.runs,
+        viewed: [],
+        personUsed: [],
+        pinned: [],
+        keepAwake: true,
+      };
+    const encoded = JSON.stringify(message);
+    const baseBytes = keyedStreamBytes(message);
+    const send = async (ids: BrowserSurfaceId[]) => {
+      ids = this.#personUse.ended
+        ? []
+        : ids.filter((id) => this.#personUse.tabs.has(id) && this.#tabs.rows.has(id));
+      await this.#sendCommand({ ...message, personUsed: ids });
+      for (const id of ids) this.#pendingPersonUse.delete(id);
+      this.#lastSessionState = encoded;
+    };
+    let ids: BrowserSurfaceId[] = [];
+    let bytes = baseBytes;
+    for (const id of this.#pendingPersonUse) {
+      if (this.#personUse.ended || !this.#personUse.tabs.has(id)) {
+        this.#pendingPersonUse.delete(id);
+        continue;
+      }
+      if (!this.#tabs.rows.has(id)) continue;
+      const addition = keyedStreamBytes(id) + (ids.length ? 1 : 0);
+      if (bytes + addition > keyedStreamHardCapBytes) {
+        await send(ids);
+        if (!this.live || generation !== this.#sessionStateGeneration) return;
+        ids = [];
+        bytes = baseBytes;
+      }
+      bytes += keyedStreamBytes(id) + (ids.length ? 1 : 0);
+      ids.push(id);
+    }
+    if (ids.length || encoded !== this.#lastSessionState) await send(ids);
+  }
+
+  async #sendSavedTabs(): Promise<void> {
+    if (!this.#savedTabIds) return;
+    const rows = new Map(this.#savedTabIds.map((id) => [id, { id }]));
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({}),
+      targetBytes: 64 * 1024,
+      envelopeBytes: keyedStreamBytes({ type: "session.saved", stream: null }) - 4,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      await this.#sendCommand({ type: "session.saved", stream });
+      publisher.settled(stream, true);
+    }
+  }
+
   ready(): Promise<void> {
     return this.#readyPromise;
   }
@@ -5176,104 +5351,65 @@ class HostedBrowserBroker {
     return this.#runtimeReady && !this.#settled;
   }
 
-  get targetedStreaming(): boolean {
-    return this.#snapshot?.targetedStreamingVersion === 1;
+  get groupId(): BrowserSessionId {
+    return this.#groupId;
+  }
+  clientRows(presence: Pick<BrowserLiveRows, "acting" | "page">): BrowserLiveRows {
+    return {
+      groupId: this.#groupId,
+      records: this.#tabs.rows,
+      inventoryRevision: this.inventoryRevision,
+      navigation: this.#navigation,
+      ready: this.live,
+      ...presence,
+      iconRef: (id) => {
+        const row = this.#tabs.rows.get(id);
+        return row ? (this.#surfaceIcon(row)?.ref ?? null) : null;
+      },
+    };
   }
   get inventoryRevision(): number {
-    return this.#snapshot?.inventoryRevision ?? this.#inventoryRevision;
+    return this.#tabs.meta?.inventoryRevision ?? 0;
   }
-  #inventoryRevision = 0;
-  readonly #icons = new Map<
+  readonly #icons = new Map<string, { favicon: string; ref: string }>();
+  #iconBytes = 0;
+  readonly #restoredIcons = new Map<
     BrowserSurfaceId,
-    { url: string; favicon: string; ref: string; restoring: boolean }
+    { url: string; favicon: string; ref: string }
   >();
   readonly #dialogs = new Map<string, BrowserDialog>();
-  bumpCatalog(): void {
-    this.#catalogRevisions.announce();
-    this.#onTabsChanged();
-  }
   restoreIcon(id: BrowserSurfaceId, url: string, favicon: string): void {
-    this.#rememberIcon(id, url, favicon, true);
+    this.#restoredIcons.set(id, { url, favicon, ref: workspaceTabIconRef(this.#groupId, favicon) });
   }
-  #rememberIcon(id: BrowserSurfaceId, url: string, favicon: string, restoring: boolean): void {
-    if (this.#icons.size >= 64 && !this.#icons.has(id))
-      this.#icons.delete(this.#icons.keys().next().value!);
-    this.#icons.set(id, {
-      url,
-      favicon,
-      ref: workspaceTabIconRef(this.#groupId, favicon),
-      restoring,
-    });
-  }
-  #reconcileIcons(surfaces: readonly BrowserSurface[]): void {
-    for (const [id, icon] of this.#icons)
-      if (!icon.restoring && !surfaces.some((surface) => surface.id === id)) this.#icons.delete(id);
-    for (const surface of surfaces) {
-      const held = this.#icons.get(surface.id);
-      if (surface.favicon) this.#rememberIcon(surface.id, surface.url, surface.favicon, false);
-      else if (held?.url === surface.url) held.restoring = false;
-      else if (held && !(held.restoring && surface.url === "about:blank"))
-        this.#icons.delete(surface.id);
-    }
-  }
-  #surfaceIcon(surface: BrowserSurface) {
-    const icon = this.#icons.get(surface.id);
-    return icon && (icon.url === surface.url || (icon.restoring && surface.url === "about:blank"))
-      ? icon
+  #surfaceIcon(surface: Pick<BrowserSurface, "id" | "url">) {
+    const row = this.#tabs.rows.get(surface.id);
+    const current = row?.icon ? this.#icons.get(row.icon) : undefined;
+    if (current) return current;
+    const restored = this.#restoredIcons.get(surface.id);
+    return restored && (restored.url === surface.url || surface.url === "about:blank")
+      ? restored
       : undefined;
   }
   icon(iconRef: string): string | null {
     return (
-      this.#snapshot?.surfaces
+      this.#surfaces
         .map((surface) => this.#surfaceIcon(surface))
         .find((icon) => icon?.ref === iconRef)?.favicon ?? null
     );
   }
-  catalog(occupants: (surfaceId: string) => PlaceOccupant[], viewer?: UserId): BrowserTabCatalog {
-    const candidate = {
-      generation: this.#catalogGeneration,
-      revision: this.#catalogRevisions.revision,
-      inventoryRevision: this.inventoryRevision,
-      tabs:
-        this.#snapshot?.surfaces.map((surface, index) => ({
-          id: surface.id,
-          title: surface.title.slice(0, 256),
-          site: browserPageSite(surface.url).slice(0, 2048),
-          iconRef: this.#surfaceIcon(surface)?.ref ?? null,
-          order: surface.order ?? index,
-          openerId: surface.openerId ?? null,
-          availability: this.live ? "ready" : "unavailable",
-          ...(surface.loading ? { loading: true } : {}),
-          ...(surface.navigationFailed ? { navigationFailed: true } : {}),
-          ...(surface.canGoBack === undefined ? {} : { canGoBack: surface.canGoBack }),
-          ...(surface.canGoForward === undefined ? {} : { canGoForward: surface.canGoForward }),
-          documentId: surface.documentId ?? null,
-          occupants: occupants(surface.id),
-        })) ?? [],
-    };
-    const validated = BrowserTabCatalogSchema.parse(candidate);
-    if (!viewer) return validated;
-    const { catalog, unannounced } = this.#catalogRevisions.assign(viewer, validated);
-    // A change no announced mutation covered reaches the viewer's other connections
-    // through one notice. New or evicted readers get a fresh revision but no notice:
-    // more readers than the history bound would otherwise evict each other forever.
-    if (unannounced) this.#onTabsChanged();
-    return catalog;
-  }
-
   /** The page the person sees: the active tab's title and site. */
   get page(): BrowserPagePresence | null {
-    const surface = this.#snapshot?.surfaces.find((surface) => surface.active);
+    const surface = this.#surfaces.find((surface) => surface.active);
     if (!surface) return null;
     return { title: surface.title.slice(0, 256), url: browserPageSite(surface.url) };
   }
 
   geometryOf(surfaceId: string): number | undefined {
-    return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
+    return this.#surfaces.find((surface) => surface.id === surfaceId)?.geometryRevision;
   }
 
   surfaceStateOf(surfaceId: string) {
-    return this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId)?.state;
+    return this.#surfaces.find((surface) => surface.id === surfaceId)?.state;
   }
 
   /**
@@ -5281,7 +5417,7 @@ class HostedBrowserBroker {
    * that failed to load shows an address it never reached, so it records none.
    */
   pageOf(surfaceId: string): BrowserUsePage | null {
-    const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
+    const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     if (!surface) return null;
     return {
       site: surface.navigationFailed ? "" : browserPageSite(surface.url).slice(0, 2048),
@@ -5290,7 +5426,7 @@ class HostedBrowserBroker {
   }
 
   pageKeyOf(surfaceId: string): string | undefined {
-    const surface = this.#snapshot?.surfaces.find((surface) => surface.id === surfaceId);
+    const surface = this.#surfaces.find((surface) => surface.id === surfaceId);
     return surface
       ? JSON.stringify([surface.documentId, surface.url, surface.title, surface.navigationFailed])
       : undefined;
@@ -5333,6 +5469,7 @@ class HostedBrowserBroker {
       onClose();
       const wasSubscribed = outlet.subscription !== null;
       this.#consumers.delete(peer.id);
+      this.refreshSessionState();
       this.#passkeys?.refresh();
       if (
         outlet.mode === "control" &&
@@ -5365,7 +5502,11 @@ class HostedBrowserBroker {
       await outlet.sendText(
         JSON.stringify(
           browserViewerMessage(
-            this.#snapshot,
+            {
+              ...this.#snapshot,
+              surfaces: this.#surfaces,
+              inventoryRevision: this.inventoryRevision,
+            },
             outlet.editing,
             outlet.passkeys,
             outlet.clipboardToken,
@@ -5438,9 +5579,7 @@ class HostedBrowserBroker {
 
   assertActionTarget(request: BrowserActionRequest): void {
     if (["session.tabs", "surface.open"].includes(request.action.type)) return;
-    const surface = this.#snapshot?.surfaces.find(
-      (candidate) => candidate.id === request.surfaceId,
-    );
+    const surface = this.#surfaces.find((candidate) => candidate.id === request.surfaceId);
     if (!surface) throw browserActionFailure("target-closed", "The tab no longer exists.");
     if (request.action.type === "surface.resume") return;
     if (surface.state === "suspended" && request.action.type !== "surface.close")
@@ -5695,39 +5834,27 @@ class HostedBrowserBroker {
       if (decoded.header.watchToken) {
         throw new Error("Browser Runtime sent a Host-only Watch token.");
       }
-      const activeSurface = this.#snapshot?.surfaces.find(
-        (surface) =>
-          surface.id === decoded.header.surfaceId && (this.targetedStreaming || surface.active),
-      );
-      // A cast from the tab just deactivated can arrive after its surface
-      // update. It is old output, not a new image for the selected tab.
+      const targetSurface = this.#tabs.rows.get(decoded.header.surfaceId);
       if (
-        !activeSurface ||
-        decoded.header.surfaceId !== activeSurface.id ||
-        decoded.header.frameId <=
-          (this.targetedStreaming
-            ? (this.#frameIds.get(decoded.header.surfaceId) ?? -1)
-            : this.#lastFrameId)
+        !targetSurface ||
+        decoded.header.frameId <= (this.#frameIds.get(decoded.header.surfaceId) ?? -1)
       )
         return false;
-      if (
-        this.targetedStreaming &&
-        decoded.header.geometryRevision !== activeSurface.geometryRevision
-      )
-        return false;
+      if (decoded.header.geometryRevision !== targetSurface.geometryRevision) return false;
       if (
         ![...this.#consumers.values()].some(
           (consumer) =>
-            consumer.subscription === "frames" &&
-            (consumer.surfaceId === null
-              ? activeSurface.active
-              : consumer.surfaceId === decoded.header.surfaceId),
+            consumer.subscription === "frames" && consumer.surfaceId === decoded.header.surfaceId,
         )
       )
         return false;
       this.#frameIds.set(decoded.header.surfaceId, decoded.header.frameId);
       this.#latestFrames.delete(decoded.header.surfaceId);
-      this.#latestFrames.set(decoded.header.surfaceId, { frame, header: decoded.header });
+      this.#latestFrames.set(decoded.header.surfaceId, {
+        frame,
+        header: decoded.header,
+        documentId: targetSurface.documentId,
+      });
       let retainedBytes = [...this.#latestFrames.values()].reduce(
         (sum, entry) => sum + entry.frame.byteLength,
         0,
@@ -5737,15 +5864,8 @@ class HostedBrowserBroker {
         this.#latestFrames.delete(id);
         retainedBytes -= entry.frame.byteLength;
       }
-      this.#lastFrameId = decoded.header.frameId;
-      if (activeSurface.active) this.#latestFrame = { frame, header: decoded.header };
       for (const consumer of this.#consumers.values()) {
-        if (
-          consumer.subscription === "frames" &&
-          (consumer.surfaceId === null
-            ? activeSurface.active
-            : consumer.surfaceId === decoded.header.surfaceId)
-        )
+        if (consumer.subscription === "frames" && consumer.surfaceId === decoded.header.surfaceId)
           consumer.sendFrame(frame, decoded.header);
       }
       return false;
@@ -5773,12 +5893,14 @@ class HostedBrowserBroker {
         dialog: { ...olderBrowserDialogSchema.parse(decoded.dialog), id: randomUUID() },
       };
     }
-    const message = BrowserServerMessageSchema.parse(decoded);
+    let message: BrowserServerMessage | BrowserRuntimeServerMessage =
+      BrowserRuntimeServerMessageSchema.parse(decoded);
     if (message.type === "passkey.ceremony" || message.type === "passkey.cancel") {
       if (!this.#passkeys || !this.#runtimeReady)
         throw new Error("Browser passkeys were not negotiated.");
       if (message.type === "passkey.ceremony") {
-        if (!this.#snapshot?.surfaces.some((surface) => surface.id === message.surfaceId))
+        const surfaceId = message.surfaceId;
+        if (!this.#surfaces.some((surface) => surface.id === surfaceId))
           throw new Error("Unknown passkey surface.");
         this.#passkeys.ceremony(message);
       } else this.#passkeys.cancel(message.ceremonyId);
@@ -5854,19 +5976,25 @@ class HostedBrowserBroker {
       else pending.resolve();
       return false;
     }
-    if (message.type === "browser.workspace-tabs") {
-      this.#durableTabs = message.tabs;
-      this.#durableRevision++;
-      this.#durableReady.resolve();
-      for (const id of message.closed) this.#durableClosed.add(id);
-      this.#onTabsChanged();
+    if (message.type === "browser.tab.icon") {
+      if (createHash("sha256").update(message.favicon).digest("base64url") !== message.key)
+        throw new Error("Browser icon key mismatch.");
+      const bytes = Buffer.byteLength(message.favicon);
+      if (!this.#icons.has(message.key) && this.#iconBytes + bytes <= 16 * 1024 * 1024) {
+        this.#icons.set(message.key, {
+          favicon: message.favicon,
+          ref: workspaceTabIconRef(this.#groupId, message.favicon),
+        });
+        this.#iconBytes += bytes;
+      }
       return false;
     }
     if (message.type === "browser.snapshot") {
       if (this.#snapshot) throw new Error("Browser Runtime sent a duplicate snapshot.");
       if (message.sessionId !== this.#sessionId) throw new Error("Browser session ID mismatch.");
       if (message.access !== "read-write") throw new Error("Browser access negotiation failed.");
-      assertBrowserDialogSurface(message.dialog, message.surfaces);
+      if (message.targetedStreamingVersion !== 1)
+        throw new Error("Browser Runtime requires targeted streaming version 1.");
       if (
         message.editingVersion !== undefined &&
         (message.editingVersion !== this.editing ||
@@ -5875,126 +6003,138 @@ class HostedBrowserBroker {
         throw new Error("Browser editing was not negotiated by this Host.");
       if (
         (message.basicInput !== undefined && message.basicInput !== this.basicInput) ||
-        (message.surfaceState !== undefined && message.surfaceState !== this.surfaceState) ||
-        (message.surfaces.some((surface) => surface.state !== undefined) &&
-          message.surfaceState !== 1)
+        (message.surfaceState !== undefined && message.surfaceState !== this.surfaceState)
       )
         throw new Error("Browser basic input or surface state was not negotiated.");
       this.#snapshot = message;
-      this.#reconcileIcons(message.surfaces);
-      this.#reconcileHistory(message.surfaces);
-      this.#inventoryRevision = message.inventoryRevision ?? 1;
       if (message.dialog) this.#dialogs.set(message.dialog.surfaceId, message.dialog);
-      await this.#onState("ready");
-      this.#runtimeReady = true;
-      this.bumpCatalog();
-    } else if (message.type === "browser.surfaces.changed") {
-      if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
-      if (
-        message.surfaces.some((surface) => surface.state !== undefined) &&
-        this.#snapshot.surfaceState !== 1
-      )
-        throw new Error("Browser surface state was not negotiated.");
+      return false;
+    }
+    if (message.type === "browser.tabs") {
+      if (frame.byteLength > keyedStreamHardCapBytes)
+        throw new Error("Browser tab frame exceeds the hard byte cap.");
+      const withoutUnknownIcon = <T extends { icon?: string | null | undefined }>(row: T): T =>
+        row.icon && !this.#icons.has(row.icon) ? { ...row, icon: null } : row;
+      const stream =
+        message.stream.op === "rows"
+          ? { ...message.stream, rows: message.stream.rows.map(withoutUnknownIcon) }
+          : message.stream.op === "change"
+            ? {
+                ...message.stream,
+                ...(message.stream.add ? { add: message.stream.add.map(withoutUnknownIcon) } : {}),
+                ...(message.stream.update
+                  ? { update: message.stream.update.map(withoutUnknownIcon) }
+                  : {}),
+              }
+            : message.stream;
       const previousPage = this.page;
-      const previousActive = this.#snapshot.surfaces.find((surface) => surface.active)?.id ?? null;
-      assertBrowserDialogSurface(this.#snapshot.dialog, message.surfaces);
-      const previousSurfaces = this.#snapshot.surfaces;
-      for (const surface of previousSurfaces) {
-        const next = message.surfaces.find((candidate) => candidate.id === surface.id);
-        if (!next || next.documentId !== surface.documentId)
-          this.#passkeys?.documentChanged(surface.id);
+      const previousActive = this.#tabs.meta?.activeId ?? null;
+      let changed:
+        { added: string[]; updated: string[]; removed: string[]; structural: boolean } | undefined;
+      const unsubscribe = this.#tabs.onChange((value) => {
+        changed = value;
+      });
+      const result = this.#tabs.apply(stream);
+      unsubscribe();
+      if (result === "resync") {
+        await this.#sendCommand({ type: "tabs.resync" });
+        return false;
       }
-      const previousIcons = this.#durableIconRefs();
-      if (
-        this.surfaceState === 1 &&
-        JSON.stringify(previousSurfaces.map(({ id, state }) => [id, state])) !==
-          JSON.stringify(message.surfaces.map(({ id, state }) => [id, state]))
-      )
-        this.#surfaceStateRevision++;
-      const inventoryChanged =
-        JSON.stringify(previousSurfaces.map(({ id, order }) => [id, order])) !==
-        JSON.stringify(message.surfaces.map(({ id, order }) => [id, order]));
-      if (inventoryChanged) this.#inventoryRevision++;
-      this.#snapshot = {
-        ...this.#snapshot,
-        surfaces: message.surfaces,
-        ...(message.inventoryRevision === undefined
-          ? {}
-          : { inventoryRevision: message.inventoryRevision }),
-      };
-      for (const surfaceId of this.#editingContexts.keys())
-        if (!message.surfaces.some((surface) => surface.id === surfaceId))
-          this.#editingContexts.delete(surfaceId);
-      this.#reconcileIcons(message.surfaces);
-      this.#reconcileHistory(message.surfaces);
-      if (previousIcons !== this.#durableIconRefs()) {
-        this.#durableRevision++;
-        this.#onTabsChanged();
+      if (result !== "applied" || !changed) return false;
+      const changes = changed;
+      for (const id of [...changes.added, ...changes.updated]) {
+        const row = this.#tabs.rows.get(id)!;
+        const previous = this.#surfaces.find((surface) => surface.id === id);
+        if (previous && previous.documentId !== row.documentId)
+          this.#passkeys?.documentChanged(row.id);
+        if (previous?.state !== row.state) this.#tabStateRevision++;
+        const icon = row.icon ? this.#icons.get(row.icon) : undefined;
+        const restored = this.#restoredIcons.get(row.id);
+        const favicon =
+          icon?.favicon ??
+          (restored?.url === row.url || row.url === "about:blank" ? restored?.favicon : null) ??
+          null;
+        if (icon || (restored && row.url !== restored.url && row.url !== "about:blank"))
+          this.#restoredIcons.delete(row.id);
+        if (this.#restoreTabs)
+          this.#dirtyTabs.set(id, {
+            id: row.id,
+            title: row.title,
+            url: row.url,
+            order: row.order,
+            openerId: row.openerId,
+            favicon,
+          });
       }
-      const visible = (surfaces: readonly BrowserSurface[]) =>
-        surfaces.map(
-          ({
-            id,
-            order,
-            title,
-            url,
-            favicon,
-            loading,
-            documentId,
-            openerId,
-            canGoBack,
-            canGoForward,
-            state,
-          }) => ({
-            canGoBack,
-            canGoForward,
-            state,
-            id,
-            order,
-            title,
-            site: browserPageSite(url),
-            favicon,
-            loading,
-            documentId,
-            openerId,
-          }),
-        );
-      if (JSON.stringify(visible(previousSurfaces)) !== JSON.stringify(visible(message.surfaces)))
-        this.bumpCatalog();
-      for (const id of this.#dialogs.keys())
-        if (!message.surfaces.some((surface) => surface.id === id)) this.#dialogs.delete(id);
+      for (const id of changes.removed) {
+        const tabId = BrowserSurfaceIdSchema.parse(id);
+        this.#personUse.tabs.delete(tabId);
+        this.#pendingPersonUse.delete(tabId);
+        this.#passkeys?.documentChanged(tabId);
+        this.#editingContexts.delete(tabId);
+        this.#dialogs.delete(tabId);
+        this.#tabStateRevision++;
+        if (this.#restoreTabs && stream.op === "change") {
+          this.#dirtyTabs.delete(id);
+          this.#closedTabs.add(tabId);
+        }
+      }
+      const active = this.#tabs.meta?.activeId ?? null;
+      if (!this.#runtimeReady) {
+        const saved = new Set(this.#savedTabIds);
+        for (const id of this.#personUse.tabs)
+          if (!this.#tabs.rows.has(id) && !saved.has(id)) {
+            this.#personUse.tabs.delete(id);
+            this.#pendingPersonUse.delete(id);
+          }
+      }
+      this.#onPersonUseChanged();
+      this.#surfaces = [...this.#tabs.rows.values()].map((row) => {
+        const { icon, ...surface } = row;
+        return {
+          ...surface,
+          active: row.id === active,
+          ...(icon && this.#icons.has(icon) ? { favicon: this.#icons.get(icon)!.favicon } : {}),
+        };
+      });
+      assertBrowserDialogSurface(this.#snapshot?.dialog ?? null, this.#surfaces);
+      this.#reconcileHistory(this.#surfaces);
+      if (!this.#runtimeReady) {
+        await this.#sendSavedTabs();
+        await this.#onState("ready");
+        this.#runtimeReady = true;
+        await this.#sendSessionState();
+      }
+      this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
+      this.#onTabsChanged();
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();
-      // A title or address changing is not a new picture. Only another tab
-      // coming forward makes a picture that is not yet sent out of date.
-      const active = message.surfaces.find((surface) => surface.active)?.id ?? null;
-      if (this.targetedStreaming) {
-        void this.#reconcileStreaming().catch(() => undefined);
-      }
-      if (this.#latestFrame && this.#latestFrame.header.surfaceId !== active) {
-        this.#latestFrame = null;
-      }
-      for (const [id] of this.#latestFrames)
+      void this.#reconcileStreaming().catch(() => undefined);
+      for (const [id, frame] of this.#latestFrames)
         if (
-          !message.surfaces.some(
-            (surface) =>
-              surface.id === id &&
-              surface.geometryRevision === this.#latestFrames.get(id)?.header.geometryRevision,
-          )
+          this.#tabs.rows.get(id)?.geometryRevision !== frame.header.geometryRevision ||
+          this.#tabs.rows.get(id)?.documentId !== frame.documentId
         ) {
           this.#latestFrames.delete(id);
           this.#frameIds.delete(id);
         }
-      if (this.targetedStreaming)
-        this.#latestFrame = active ? (this.#latestFrames.get(active) ?? null) : null;
+      const changedIds = new Set([...changes.added, ...changes.updated, ...changes.removed]);
       for (const consumer of this.#consumers.values()) {
-        if (consumer.surfaceId === null && previousActive !== active) consumer.resetSubscription();
-        consumer.dropPendingOutside(consumer.surfaceId ?? active);
+        consumer.dropPendingOutside(consumer.surfaceId);
+        if (consumer.surfaceId && changedIds.has(consumer.surfaceId))
+          this.#sendViewerSurface(consumer);
       }
+      if (
+        previousActive !== active ||
+        changes.removed.length ||
+        changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
+      )
+        this.refreshSessionState();
+      return stream.op === "end";
     } else if (message.type === "browser.dialog.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
-      assertBrowserDialogSurface(message.dialog, this.#snapshot.surfaces);
+      assertBrowserDialogSurface(message.dialog, this.#surfaces);
       const dialogSurface = message.dialog?.surfaceId ?? message.surfaceId;
       if (dialogSurface) {
         if (message.dialog) this.#dialogs.set(dialogSurface, message.dialog);
@@ -6002,21 +6142,20 @@ class HostedBrowserBroker {
       }
       if (
         !message.surfaceId ||
-        message.surfaceId === this.#snapshot.surfaces.find((surface) => surface.active)?.id
+        message.surfaceId === this.#surfaces.find((surface) => surface.active)?.id
       )
         this.#snapshot = { ...this.#snapshot, dialog: message.dialog };
     } else if (message.type === "browser.status") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
       if (message.state === "closing") {
         this.#runtimeReady = false;
-        this.#latestFrame = null;
+        this.#latestFrames.clear();
         await this.#onState("closing");
       }
       if (message.state === "closed") this.#runtimeReady = false;
     }
 
     if (message.type === "browser.editing") this.#editingContexts.set(message.surfaceId, message);
-    const [unaddressedAuthor, ...otherSenders] = this.#unaddressedKeySenders;
     for (const consumer of this.#consumers.values()) {
       if (
         message.type.startsWith("browser.autofill.") &&
@@ -6031,8 +6170,7 @@ class HostedBrowserBroker {
         message.type === "browser.cursor" &&
         (consumer.mode !== "control" ||
           consumer.clipboardToken !== message.consumerToken ||
-          message.surfaceId !==
-            (consumer.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id))
+          message.surfaceId !== consumer.surfaceId)
       )
         continue;
       if (
@@ -6064,10 +6202,7 @@ class HostedBrowserBroker {
         message.consumerToken === consumer.clipboardToken
       ) {
         const projected = consumer.legacyClipboard.read(message);
-        if (
-          projected &&
-          (consumer.surfaceId === null || consumer.surfaceId === projected.surfaceId)
-        )
+        if (projected && consumer.surfaceId === projected.surfaceId)
           void consumer.sendText(JSON.stringify(projected)).catch(() => undefined);
       }
       if (
@@ -6123,9 +6258,7 @@ class HostedBrowserBroker {
       // targeted viewer would take the active surface's editing for its own.
       if (
         message.type === "browser.editing" &&
-        (consumer.subscription === null ||
-          message.surfaceId !==
-            (consumer.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id))
+        (consumer.subscription === null || message.surfaceId !== consumer.surfaceId)
       )
         continue;
       if (
@@ -6134,29 +6267,12 @@ class HostedBrowserBroker {
         consumer.clipboardToken !== message.consumerToken
       )
         continue;
-      // A runtime too old to stamp keys returns copies without a token. Their
-      // author is known only while one viewer has ever sent it such keys; once
-      // two have, or that one left, the text goes nowhere rather than into
-      // someone else's clipboard.
-      if (
-        message.type === "clipboard.data" &&
-        !message.consumerToken &&
-        (otherSenders.length > 0 || consumer.clipboardToken !== unaddressedAuthor)
-      )
-        continue;
+      if (message.type === "clipboard.data" && !message.consumerToken) continue;
       if (
         (message.type === "browser.dialog.changed" || message.type === "clipboard.data") &&
-        consumer.surfaceId !== null &&
         (message.surfaceId ??
           (message.type === "browser.dialog.changed" ? message.dialog?.surfaceId : null)) !==
           consumer.surfaceId
-      )
-        continue;
-      if (
-        message.type === "browser.dialog.changed" &&
-        consumer.surfaceId === null &&
-        message.surfaceId &&
-        message.surfaceId !== this.#snapshot?.surfaces.find((surface) => surface.active)?.id
       )
         continue;
       void consumer
@@ -6178,12 +6294,8 @@ class HostedBrowserBroker {
         )
         .catch(() => undefined);
     }
-    if (message.type === "browser.surfaces.changed" && this.#latestFrame) {
-      for (const consumer of this.#consumers.values())
-        if (consumer.subscription === "frames" && consumer.surfaceId === null)
-          consumer.sendFrame(this.#latestFrame.frame, this.#latestFrame.header);
-    }
     if (message.type === "browser.status" && message.state === "closed") {
+      if (message.reason === "retired") this.#stopping = true;
       if (this.#socket.readyState === WebSocket.OPEN) {
         this.#socket.close(1000, "Browser Runtime closed session");
       }
@@ -6193,7 +6305,7 @@ class HostedBrowserBroker {
         this.#stopping ? "Browser session closed" : "Browser Runtime disconnected",
       );
     }
-    return message.type === "browser.snapshot";
+    return false;
   }
 
   #handleCdpResponse(message: BrowserCdpWireResponse): void {
@@ -6210,6 +6322,34 @@ class HostedBrowserBroker {
       throw new Error("Browser Runtime returned the wrong correlated CDP response.");
     }
     pending.resolve(message);
+  }
+
+  #sendViewerSurface(outlet: BrowserConsumerOutlet): void {
+    if (!outlet.surfaceId || outlet.subscription === null) return;
+    const row = this.#tabs.rows.get(outlet.surfaceId);
+    if (!row) {
+      outlet.sendSurface(outlet.surfaceId, null);
+      return;
+    }
+    const {
+      icon: _icon,
+      order: _order,
+      openerId: _opener,
+      canGoBack: _back,
+      canGoForward: _forward,
+      ...surface
+    } = row;
+    const icon = this.#surfaceIcon(row);
+    outlet.sendSurface(
+      row.id,
+      { ...surface, favicon: null },
+      icon
+        ? {
+            key: row.icon ?? createHash("sha256").update(icon.favicon).digest("base64url"),
+            favicon: icon.favicon,
+          }
+        : null,
+    );
   }
 
   #handleConsumerFrame(
@@ -6367,18 +6507,18 @@ class HostedBrowserBroker {
             : "frames"
           : null;
       const surfaceId = message.type === "stream.subscribe" ? (message.surfaceId ?? null) : null;
+      if (subscription !== null && !surfaceId)
+        return Promise.reject(
+          new OpensteerError({
+            code: "bad_request",
+            message: "A viewer subscription requires a surface.",
+          }),
+        );
       if (subscription === "control" && outlet.mode !== "control")
         return Promise.reject(
           new OpensteerError({
             code: "forbidden",
             message: "Only control viewers may observe a target without pictures.",
-          }),
-        );
-      if (subscription === "control" && !surfaceId)
-        return Promise.reject(
-          new OpensteerError({
-            code: "bad_request",
-            message: "A control-only subscription requires a surface.",
           }),
         );
       if (subscription === "control" && !this.targetControl) {
@@ -6392,14 +6532,7 @@ class HostedBrowserBroker {
           throw new OpensteerError(error);
         });
       }
-      if (surfaceId && !this.targetedStreaming)
-        return Promise.reject(
-          new OpensteerError({
-            code: "conflict",
-            message: "Update the browser computer for targeted viewing.",
-          }),
-        );
-      if (surfaceId && !this.#snapshot?.surfaces.some((surface) => surface.id === surfaceId))
+      if (surfaceId && !this.#surfaces.some((surface) => surface.id === surfaceId))
         return Promise.reject(
           new OpensteerError({ code: "not_found", message: "Browser tab not found." }),
         );
@@ -6433,15 +6566,14 @@ class HostedBrowserBroker {
       if (outlet.surfaceId !== surfaceId || outlet.subscription === null) outlet.rasterDensity = 2;
       outlet.surfaceId = surfaceId;
       outlet.subscription = subscription;
+      this.refreshSessionState();
       this.#passkeys?.refresh();
       // Editing reaches a viewer only once it names what it shows, so each
       // subscription starts from that surface's current field.
       const shown =
         subscription === null
           ? undefined
-          : this.#snapshot?.surfaces.find((surface) =>
-              surfaceId ? surface.id === surfaceId : surface.active,
-            );
+          : this.#surfaces.find((surface) => surface.id === surfaceId);
       const context = shown && this.#editingContexts.get(shown.id);
       if (
         (outlet.editing || outlet.basicInput) &&
@@ -6453,9 +6585,10 @@ class HostedBrowserBroker {
       outlet.captureRegion = captureRegion;
       outlet.resetSubscription();
       outlet.subscription = subscription;
+      this.#sendViewerSurface(outlet);
       // Already streaming for someone else: this viewer starts from the
       // current picture rather than a blank until the page next paints.
-      const latest = surfaceId ? this.#latestFrames.get(surfaceId) : this.#latestFrame;
+      const latest = surfaceId ? this.#latestFrames.get(surfaceId) : undefined;
       if (subscription === "frames" && latest) outlet.sendFrame(latest.frame, latest.header);
       if (subscription !== null && surfaceId) {
         const dialog = this.#dialogs.get(surfaceId) ?? null;
@@ -6471,6 +6604,7 @@ class HostedBrowserBroker {
           outlet.frameWindow = previous.frameWindow;
           outlet.rasterDensity = previous.rasterDensity;
           outlet.surfaceId = previous.surfaceId;
+          this.refreshSessionState();
         }
         throw error;
       });
@@ -6539,13 +6673,11 @@ class HostedBrowserBroker {
         );
     }
     const addressedSurface =
-      "surfaceId" in message && message.surfaceId
-        ? message.surfaceId
-        : (outlet.surfaceId ?? this.#snapshot?.surfaces.find((surface) => surface.active)?.id);
+      "surfaceId" in message && message.surfaceId ? message.surfaceId : outlet.surfaceId;
     if (
       addressedSurface &&
       message.type !== "input.cancel" &&
-      this.#snapshot?.surfaces.some(
+      this.#surfaces.some(
         (surface) => surface.id === addressedSurface && surface.state === "suspended",
       )
     )
@@ -6601,19 +6733,18 @@ class HostedBrowserBroker {
       }
     }
     if (
-      this.targetedStreaming &&
-      (message.type === "input.key" ||
-        message.type === "clipboard.paste" ||
-        message.type === "input.command" ||
-        message.type === "input.compose" ||
-        message.type === "input.text" ||
-        message.type === "clipboard.copy" ||
-        message.type === "clipboard.cut" ||
-        message.type === "clipboard.paste-data" ||
-        message.type === "input.pointer" ||
-        message.type === "input.wheel")
+      message.type === "input.key" ||
+      message.type === "clipboard.paste" ||
+      message.type === "input.command" ||
+      message.type === "input.compose" ||
+      message.type === "input.text" ||
+      message.type === "clipboard.copy" ||
+      message.type === "clipboard.cut" ||
+      message.type === "clipboard.paste-data" ||
+      message.type === "input.pointer" ||
+      message.type === "input.wheel"
     )
-      message = { ...message, targeted: outlet.surfaceId !== null };
+      message = { ...message, targeted: true };
     if (message.type === "input.cancel" && this.#snapshot?.inputLanesVersion !== 1)
       return Promise.resolve();
     // A consumer can advance only its own generation, never choose its identity.
@@ -6643,15 +6774,6 @@ class HostedBrowserBroker {
         );
       outlet.clipboardOperations.set(message.operationId, message.surfaceId);
     }
-    // The complement of the stamping below for keys: the runtime cannot say
-    // whose copy follows a key it received without a token.
-    if (
-      message.type === "input.key" &&
-      !this.targetedStreaming &&
-      this.#snapshot?.editingVersion === undefined &&
-      !outlet.editing
-    )
-      this.#unaddressedKeySenders.add(outlet.clipboardToken);
     let navigationId: string | undefined;
     if (message.type === "navigation.go") {
       // Consumers cannot choose an attribution id, even if they know another viewer's id.
@@ -6660,19 +6782,16 @@ class HostedBrowserBroker {
             outlet.userId,
             message.typed === true,
             BrowserSurfaceIdSchema.optional().parse(
-              message.surfaceId ??
-                outlet.surfaceId ??
-                this.#snapshot?.surfaces.find((surface) => surface.active)?.id,
+              message.surfaceId ?? outlet.surfaceId ?? undefined,
             ),
           )
         : undefined;
       message = { ...message, navigationId };
     }
     return this.#sendCommand(
-      (message.type === "input.key" && this.targetedStreaming) ||
+      message.type === "input.key" ||
         ((this.#snapshot?.editingVersion !== undefined || outlet.editing || outlet.basicInput) &&
           (message.type === "input.pointer" ||
-            message.type === "input.key" ||
             message.type === "input.command" ||
             message.type === "clipboard.copy" ||
             message.type === "clipboard.cut" ||
@@ -6688,7 +6807,7 @@ class HostedBrowserBroker {
   #reconcileStreaming(): Promise<void> {
     const operation = this.#streamReconcileTail.then(async () => {
       if (this.#settled) return;
-      const surfaces = new Set<string>(this.#snapshot?.surfaces.map((surface) => surface.id));
+      const surfaces = new Set<string>(this.#surfaces.map((surface) => surface.id));
       const targets = new Set(
         [...this.#consumers.values()].flatMap((consumer) =>
           consumer.subscription === "frames" &&
@@ -6698,11 +6817,6 @@ class HostedBrowserBroker {
             : [],
         ),
       );
-      const legacy = [...this.#consumers.values()].some(
-        (consumer) => consumer.subscription === "frames" && consumer.surfaceId === null,
-      );
-      const active = this.#snapshot?.surfaces.find((surface) => surface.active)?.id;
-      if (this.targetedStreaming && legacy && active) targets.add(active);
       const admitted = new Set([...targets].slice(0, browserCaptureMaxTargets));
       // Picture demand wins for a shared surface; observation consumes no capture slot.
       const wanted = new Map([...admitted].map((target) => [target, true]));
@@ -6735,7 +6849,7 @@ class HostedBrowserBroker {
           });
           this.#runtimeTargets.set(target, frames);
         }
-      if (this.rasterDemand && this.targetedStreaming) {
+      if (this.rasterDemand) {
         for (const [target, frames] of wanted) {
           let raster = this.#runtimeRaster.get(target);
           if (!raster) {
@@ -6751,10 +6865,7 @@ class HostedBrowserBroker {
           }
           let density: BrowserRasterDensity = 0.75;
           for (const viewer of this.#consumers.values())
-            if (
-              viewer.subscription === "frames" &&
-              (viewer.surfaceId === target || (viewer.surfaceId === null && active === target))
-            )
+            if (viewer.subscription === "frames" && viewer.surfaceId === target)
               density = Math.max(density, viewer.rasterDensity) as BrowserRasterDensity;
           const now = performance.now();
           if (density !== raster.wanted) {
@@ -6784,39 +6895,9 @@ class HostedBrowserBroker {
       }
       for (const target of this.#frameIds.keys())
         if (!admitted.has(target)) this.#frameIds.delete(target);
-      if (!legacy) {
-        for (const target of this.#latestFrames.keys())
-          if (!admitted.has(target)) this.#latestFrames.delete(target);
-        if (this.#latestFrame && !admitted.has(this.#latestFrame.header.surfaceId))
-          this.#latestFrame = null;
-      }
       for (const consumer of this.#consumers.values())
         if (consumer.subscription === "frames" && consumer.surfaceId)
-          void consumer
-            .sendText(
-              JSON.stringify({
-                type: "browser.stream.state",
-                surfaceId: consumer.surfaceId,
-                state: admitted.has(consumer.surfaceId) ? "admitted" : "capacity",
-              }),
-            )
-            .catch(() => undefined);
-      if (this.targetedStreaming) {
-        this.#runtimeStreaming = legacy;
-        return;
-      }
-      const streaming = [...this.#consumers.values()].some(
-        (consumer) => consumer.subscription === "frames" && consumer.surfaceId === null,
-      );
-      if (streaming !== this.#runtimeStreaming) {
-        await this.#sendCommand({
-          type: streaming ? "stream.subscribe" : "stream.unsubscribe",
-          ...(streaming && this.captureRegion ? { captureRegion: true } : {}),
-        });
-        this.#runtimeStreaming = streaming;
-        // A stopped screencast leaves no picture that is still current.
-        if (!streaming) this.#latestFrame = null;
-      }
+          consumer.sendStreamState(admitted.has(consumer.surfaceId) ? "admitted" : "capacity");
     });
     this.#streamReconcileTail = operation.catch(() => undefined);
     return operation;
@@ -6840,7 +6921,9 @@ class HostedBrowserBroker {
           if (
             this.#settled ||
             this.#protocolFailed ||
-            !this.#runtimeReady ||
+            (!this.#runtimeReady &&
+              message.type !== "session.saved" &&
+              message.type !== "tabs.resync") ||
             this.#socket.readyState !== WebSocket.OPEN
           ) {
             reject(
@@ -6885,22 +6968,6 @@ class HostedBrowserBroker {
               const { geometryRevision: _revision, modifiers: _modifiers, ...wheel } = legacy;
               compatible = wheel;
             }
-          }
-          // Released relays parse strict messages before routing them; one
-          // unknown field would disconnect every browser on that computer.
-          if (!this.targetedStreaming && "targeted" in compatible) {
-            const {
-              targeted: _targeted,
-              producerId: _producerId,
-              inputGeneration: _inputGeneration,
-              inputSequence: _inputSequence,
-              inputSequenceStart: _inputSequenceStart,
-              ...released
-            } = compatible;
-            if (this.#snapshot?.editingVersion === undefined && "consumerToken" in released) {
-              const { consumerToken: _consumerToken, ...legacy } = released;
-              compatible = legacy;
-            } else compatible = released;
           }
           let runtimeMessage: object = compatible;
           if (!this.sharedControl) {
@@ -6956,6 +7023,7 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
     this.#historyNavigations.clear();
     this.#historyDocuments.clear();
     this.#historyIcons.clear();
@@ -7011,7 +7079,6 @@ class HostedBrowserBroker {
           await this.#onTerminal();
         } finally {
           this.#icons.clear();
-          this.#catalogRevisions.clear();
         }
       }
     });
@@ -7058,6 +7125,11 @@ const browserFrameRateEstimateMs = 10_000;
  * to avoid converting a frame-rate improvement into older pictures on screen.
  */
 export class BrowserConsumerOutlet {
+  #surfaceLast: string | null = null;
+  #streamState: "admitted" | "capacity" | null = null;
+  #surfacePending: { data: string; icon: { key: string; favicon: string } | null } | null = null;
+  readonly #sentIcons = new Set<string>();
+  #surfaceSending = false;
   frameWindow = false;
   #window = 1;
   #baselineDelay = Infinity;
@@ -7165,6 +7237,57 @@ export class BrowserConsumerOutlet {
     } catch (error) {
       this.#end(1011, "Browser consumer write failed");
       throw error;
+    }
+  }
+
+  sendStreamState(state: "admitted" | "capacity"): void {
+    if (
+      this.#closed ||
+      this.subscription !== "frames" ||
+      !this.surfaceId ||
+      this.#streamState === state
+    )
+      return;
+    this.#streamState = state;
+    void this.sendText(
+      JSON.stringify({ type: "browser.stream.state", surfaceId: this.surfaceId, state }),
+    ).catch(() => undefined);
+  }
+
+  sendSurface(
+    surfaceId: string,
+    surface: BrowserViewerSurface | null,
+    icon: { key: string; favicon: string } | null = null,
+  ): void {
+    if (this.#closed || this.subscription === null || this.surfaceId !== surfaceId) return;
+    const data = JSON.stringify({
+      type: "browser.surface",
+      surfaceId,
+      surface,
+      ...(surface ? { icon: icon?.key ?? null } : {}),
+    });
+    if (data === this.#surfaceLast) return;
+    this.#surfaceLast = data;
+    this.#surfacePending = { data, icon };
+    if (!this.#surfaceSending) void this.#flushSurface();
+  }
+
+  async #flushSurface(): Promise<void> {
+    this.#surfaceSending = true;
+    try {
+      while (!this.#closed && this.#surfacePending !== null) {
+        const { data, icon } = this.#surfacePending;
+        this.#surfacePending = null;
+        if (icon && !this.#sentIcons.has(icon.key)) {
+          await this.sendText(JSON.stringify({ type: "browser.tab.icon", ...icon }));
+          this.#sentIcons.add(icon.key);
+        }
+        await this.sendText(data);
+      }
+    } catch {
+      // sendText closes the outlet on a failed write.
+    } finally {
+      this.#surfaceSending = false;
     }
   }
 
@@ -7326,6 +7449,9 @@ export class BrowserConsumerOutlet {
 
   /** Subscribing again starts over: no credit owed, no picture waiting. */
   resetSubscription(): void {
+    this.#surfaceLast = null;
+    this.#streamState = null;
+    this.#surfacePending = null;
     for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
     this.#outstanding.clear();
     this.#window = 1;
@@ -7356,6 +7482,7 @@ export class BrowserConsumerOutlet {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#surfacePending = null;
     this.legacyClipboard.close();
     this.legacyClipboardKeys.clear();
     this.#pending = null;
@@ -7469,7 +7596,9 @@ function publicProfileGrant(record: {
   };
 }
 
-function isCdpResponse(message: BrowserServerMessage): message is BrowserCdpWireResponse {
+function isCdpResponse(
+  message: BrowserServerMessage | BrowserRuntimeServerMessage,
+): message is BrowserCdpWireResponse {
   return message.type === "cdp.error" || message.type === "cdp.result";
 }
 

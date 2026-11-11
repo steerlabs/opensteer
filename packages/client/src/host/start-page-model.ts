@@ -302,9 +302,7 @@ export function startPageIndex(input: {
       place,
       fillText:
         destination.kind === "browser"
-          ? (snapshot.browserSessions
-              .find((session) => session.id === destination.sessionId)
-              ?.tabs.find((tab) => tab.id === destination.tabId)?.url ??
+          ? (snapshot.browserTabs?.surface(destination.sessionId, destination.tabId)?.url ??
             place.site ??
             place.title)
           : place.title,

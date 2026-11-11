@@ -53,7 +53,7 @@ it("reports a reconnected socket's replay of the already drawn picture as presen
     claim: vi.fn(),
   };
   const presented = vi.fn();
-  const detach = attachBrowserCanvas(source, "browser-a", surfaceId, true, canvas, presented);
+  const detach = attachBrowserCanvas(source, "browser-a", surfaceId, canvas, presented);
   try {
     expect(source.claim).toHaveBeenCalledWith("browser-a", surfaceId, "first-socket");
     expect(source.accept).not.toHaveBeenCalled();
@@ -154,7 +154,7 @@ it("leases the raster density each targeted pane displays and releases it on unm
     },
     rasterDemand: vi.fn(() => lease),
   };
-  const detach = attachBrowserCanvas(source, "browser-b", surfaceId, true, canvas, vi.fn());
+  const detach = attachBrowserCanvas(source, "browser-b", surfaceId, canvas, vi.fn());
   expect(source.rasterDemand).toHaveBeenCalledWith("browser-b", surfaceId);
   // Unmeasured, the lease keeps asking for the densest raster.
   expect(lease.update).not.toHaveBeenCalled();
@@ -192,12 +192,6 @@ it("leases the raster density each targeted pane displays and releases it on unm
   expect(lease.release).toHaveBeenCalledTimes(1);
   expect(resized.size).toBe(0);
   expect(ratioListeners.size).toBe(0);
-
-  // The legacy session-wide stream has no exact target to state demand for.
-  const legacy = attachBrowserCanvas(source, "browser-b", surfaceId, false, canvas, vi.fn());
-  expect(source.rasterDemand).toHaveBeenCalledTimes(1);
-  legacy();
-  await Promise.resolve();
 });
 
 it("retains drawn pixels through missing frames and same-surface session restore, clearing on authorization or target change", async () => {
@@ -245,7 +239,7 @@ it("retains drawn pixels through missing frames and same-surface session restore
       return () => listeners.delete(listener);
     },
   };
-  let detach = attachBrowserCanvas(source, "first", surface, true, canvas, () => {}, false, {
+  let detach = attachBrowserCanvas(source, "first", surface, canvas, () => {}, false, {
     preservePixels: true,
   });
   try {
@@ -260,7 +254,7 @@ it("retains drawn pixels through missing frames and same-surface session restore
     expect(clear).not.toHaveBeenCalled();
     expect(canvas.width).toBe(width);
     detach();
-    detach = attachBrowserCanvas(source, "restored", surface, true, canvas, () => {}, false, {
+    detach = attachBrowserCanvas(source, "restored", surface, canvas, () => {}, false, {
       preservePixels: true,
       active: false,
     });
@@ -321,7 +315,7 @@ it("cannot draw an old authorization's pending decode after the new one uses the
       return () => listeners.delete(listener);
     },
   };
-  const detach = attachBrowserCanvas(source, "session", surfaceId, true, canvas, () => {}, false, {
+  const detach = attachBrowserCanvas(source, "session", surfaceId, canvas, () => {}, false, {
     preservePixels: true,
   });
   try {

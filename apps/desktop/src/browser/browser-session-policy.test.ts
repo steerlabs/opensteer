@@ -35,7 +35,9 @@ it("denies device permissions and external protocols for every browser session (
     setUserAgent: vi.fn(),
     getUserAgent: () => "Chrome/150",
   };
+  const onMainFrameRequest = vi.fn();
   applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    onMainFrameRequest,
     downloads: { accept: vi.fn() },
     pagePolicyPreloadPath: "/policy.cjs",
   });
@@ -56,6 +58,19 @@ it("denies device permissions and external protocols for every browser session (
   }
   expect(check({}, "fullscreen")).toBe(true);
   const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
+  for (const method of ["POST", "GET"])
+    before(
+      { url: "https://site.test/redirect", webContentsId: 7, resourceType: "mainFrame", method },
+      vi.fn(),
+    );
+  before(
+    { url: "https://site.test/frame", webContentsId: 7, resourceType: "subFrame", method: "POST" },
+    vi.fn(),
+  );
+  expect(onMainFrameRequest.mock.calls).toEqual([
+    [7, "POST"],
+    [7, "GET"],
+  ]);
   for (const url of ["file:///etc/passwd", "opensteer://test", "unknown:test"]) {
     const answer = vi.fn();
     before({ url }, answer);

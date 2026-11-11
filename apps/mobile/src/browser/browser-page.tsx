@@ -1,6 +1,13 @@
+import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
-import { useActionReview } from "@opensteer/client/react";
+import {
+  useActionReview,
+  useBrowserSessionGroupId,
+  useBrowserTab,
+  useBrowserTabs,
+  useBrowserViewerSurface,
+} from "@opensteer/client/react";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import {
   passkeyNotice,
@@ -76,12 +83,7 @@ import { GlassSurface } from "../ui/glass.js";
 import { appear, duration, exit, move } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import {
-  AddressCapsule,
-  AddressEditor,
-  type OpenTabSuggestion,
-  type PageDevice,
-} from "./address-bar.js";
+import { AddressCapsule, AddressEditor, type PageDevice } from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { LoginChips } from "./login-chips.js";
@@ -178,12 +180,43 @@ export function BrowserPage(props: {
   const dialog = session.dialog?.surfaceId === tabId ? session.dialog : null;
   const [prompt, setPrompt] = useState<{ readonly id: string; readonly text: string } | null>(null);
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
-  const catalogTab = session.tabCatalog?.tabs.find((candidate) => candidate.id === tabId);
-  const liveTab = session.tabs.find((candidate) => candidate.id === tabId);
+  // This tab's own row, and the exact page a viewer holds: nothing of the other tabs.
+  const groupId = useBrowserSessionGroupId(hostClient, session.id);
+  const row = useBrowserTab(hostClient, groupId, tabId);
+  const catalogTab = row?.documentId == null ? undefined : row;
+  const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
+  // A page waking keeps its row's title and site until it commits: never a blank address.
+  const committed =
+    viewer && !(row?.site && (viewer.url === "" || viewer.url === "about:blank"))
+      ? viewer
+      : undefined;
+  const liveTab = useMemo(
+    () =>
+      catalogTab && committed
+        ? {
+            active: false,
+            documentId: catalogTab.documentId ?? undefined,
+            favicon: committed.favicon ?? undefined,
+            id: surfaceId,
+            loading: committed.loading,
+            navigationFailed: committed.navigationFailed,
+            sizedByAgent: committed.sizedByAgent,
+            title: committed.title,
+            url: committed.url,
+          }
+        : undefined,
+    [catalogTab, committed, surfaceId],
+  );
   const tab =
     liveTab ??
     (catalogTab
-      ? { id: surfaceId, title: catalogTab.title, url: catalogTab.site, active: false }
+      ? {
+          id: surfaceId,
+          title: catalogTab.title,
+          url: catalogTab.site,
+          active: false,
+          navigationFailed: catalogTab.navigationFailed,
+        }
       : undefined);
   const navigationFailed = tab?.navigationFailed || catalogTab?.navigationFailed;
   const [problem, setProblem] = useState<string | null>(null);
@@ -484,17 +517,19 @@ export function BrowserPage(props: {
   const canGoBack = catalogTab?.canGoBack !== false;
   const canGoForward = catalogTab?.canGoForward !== false;
 
-  const tabs = useMemo(() => orderedTabs(session), [session]);
-  const position = tabs.findIndex(({ id }) => id === tabId);
+  const tabIds = useBrowserTabs(hostClient, groupId ?? "").ids;
+  const tabs = useTabSuggestions(hostClient, groupId ?? "", addressOpen);
+  const otherTabs = useMemo(() => tabs.filter(({ id }) => id !== tabId), [tabId, tabs]);
+  const position = useMemo(() => tabIds.indexOf(tabId), [tabId, tabIds]);
   const switchBy = useCallback(
     (direction: -1 | 1) => {
-      const next = tabs[position + direction];
-      if (position >= 0 && next !== undefined) onSwitchTab(next.id);
+      const next = tabIds[position + direction];
+      if (position >= 0 && next !== undefined) onSwitchTab(next);
     },
-    [onSwitchTab, position, tabs],
+    [onSwitchTab, position, tabIds],
   );
   const canSwitch =
-    position >= 0 && (tabs[position - 1] !== undefined || tabs[position + 1] !== undefined);
+    position >= 0 && (tabIds[position - 1] !== undefined || tabIds[position + 1] !== undefined);
   const fitted =
     picture.height > 0 &&
     Math.abs(picture.width - rested.width) <= 2 &&
@@ -737,8 +772,8 @@ export function BrowserPage(props: {
   const tabsButton = (
     <ToolbarButton
       accessibilityHint="Shows this browser’s tabs"
-      count={tabs.length}
-      label={`Tabs, ${tabs.length}`}
+      count={tabIds.length}
+      label={`Tabs, ${tabIds.length}`}
       onPress={props.onShowTabs}
     />
   );
@@ -776,7 +811,7 @@ export function BrowserPage(props: {
         setAddressOpen(false);
         onSwitchTab(next);
       }}
-      tabs={tabs.filter(({ id }) => id !== tabId)}
+      tabs={otherTabs}
       under={top}
     />
   );
@@ -1333,26 +1368,6 @@ export function slideFor(caret: EditingCaret | null, pageHeight: number, visible
   if (bottom + margin <= visible && top >= margin) return 0;
   const lowest = Math.min(0, visible - pageHeight);
   return Math.max(lowest, Math.min(0, visible * 0.4 - top));
-}
-
-/** A browser's tabs in its own order, as its tab strip shows them. */
-function orderedTabs(session: BrowserSessionSummary): readonly OpenTabSuggestion[] {
-  const catalog = session.tabCatalog?.tabs;
-  if (catalog !== undefined)
-    return [...catalog]
-      .sort((left, right) => left.order - right.order)
-      .map((tab) => ({
-        favicon: session.tabs.find(({ id }) => id === tab.id)?.favicon ?? null,
-        id: tab.id,
-        site: pageSite(tab.site),
-        title: tab.title || pageSite(tab.site) || "New tab",
-      }));
-  return session.tabs.map((tab) => ({
-    favicon: tab.favicon ?? null,
-    id: tab.id,
-    site: pageSite(tab.url),
-    title: browserTabTitle(tab),
-  }));
 }
 
 /**

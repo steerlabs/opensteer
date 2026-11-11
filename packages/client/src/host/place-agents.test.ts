@@ -1,3 +1,5 @@
+import { browserStoreFixture } from "../test-support/browser-snapshot.js";
+import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { describe, expect, it } from "vitest";
 import type { PlaceOccupant } from "@opensteer/protocol";
 import {
@@ -110,7 +112,15 @@ describe("place agents", () => {
     const browser = (tabs: { id: string; occupants: PlaceOccupant[] }[]) =>
       source({
         browserSessions: [
-          { id: "browser-a", state: "ready", acting: true, tabCatalog: { tabs } },
+          {
+            id: "browser-a",
+            state: "ready",
+            acting: true,
+            browserTabs: browserStoreFixture(
+              [{ id: "browser-a", sessionId: "browser-a" } as BrowserGroupRow],
+              [{ groupId: "browser-a", rows: tabs as BrowserTabRow[] }],
+            ),
+          },
         ] as unknown as PlaceAgentSource["browserSessions"],
       });
     expect(placeAgents(place([]), browser([{ id: "tab-a", occupants: [] }])).unnamedActing).toBe(

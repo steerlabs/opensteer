@@ -115,7 +115,7 @@ export function TabMenu({
         (result) =>
           show({
             kind: "browser",
-            sessionId: result.group.session.id,
+            sessionId: result.sessionId!,
             tabId: result.tabId,
           }),
         failed,

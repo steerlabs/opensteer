@@ -466,11 +466,11 @@ function scene(name: MockSubagentScene): readonly Turn[] {
  * its transcript, the questions its subagents ask, and each subagent's own
  * steps for its opened view.
  */
-export function seedMockSubagentScene(
-  snapshot: HostSnapshot,
+export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
+  snapshot: Snapshot,
   name: MockSubagentScene,
   now: Date,
-): { snapshot: HostSnapshot; events: readonly AgentEvent[]; threadId: string } {
+): { snapshot: Snapshot; events: readonly AgentEvent[]; threadId: string } {
   const base =
     snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId) ?? snapshot.threads[0];
   if (!base || !snapshot.user) throw new Error("Subagent scenes need a mock conversation.");

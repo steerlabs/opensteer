@@ -10,7 +10,15 @@ import {
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { useBrowserPresentationWait, useHostSelector } from "@opensteer/client/react";
+import {
+  useBrowserGroup,
+  useBrowserPresentationWait,
+  useBrowserSessionGroupId,
+  useBrowserTab,
+  useBrowserTabs,
+  useBrowserViewerSurface,
+  useHostSelector,
+} from "@opensteer/client/react";
 import type { BrowserSurfaceId } from "@opensteer/core";
 import {
   useCallback,
@@ -69,15 +77,13 @@ interface BrowserReads {
   readonly session: BrowserSessionSummary | null;
   readonly profiles: HostSnapshot["browserProfiles"];
   readonly workspaces: HostSnapshot["workspaces"];
-  readonly workspaceId: string | null;
 }
 
 function sameReads(left: BrowserReads, right: BrowserReads): boolean {
   return (
     left.session === right.session &&
     left.profiles === right.profiles &&
-    left.workspaces === right.workspaces &&
-    left.workspaceId === right.workspaceId
+    left.workspaces === right.workspaces
   );
 }
 
@@ -138,14 +144,18 @@ export function PlaceBrowserView({
       profiles: snapshot.browserProfiles,
       session: snapshot.browserSessions.find((session) => session.id === sessionId) ?? null,
       workspaces: snapshot.workspaces,
-      workspaceId:
-        snapshot.workspaceTabs?.find((group) => group.tabs?.some((tab) => tab.id === tabId))
-          ?.session.workspaceId ?? null,
     }),
-    [sessionId, tabId],
+    [sessionId],
   );
   const reads = useHostSelector(hostClient, select, sameReads);
   const { session } = reads;
+  // This tab's own row, its group's list and the exact page a viewer holds: nothing else.
+  const groupId =
+    useBrowserSessionGroupId(hostClient, sessionId) ?? hostClient.browserTabs.groupForTab(tabId);
+  const group = useBrowserGroup(hostClient, groupId ?? "");
+  const row = useBrowserTab(hostClient, groupId, tabId);
+  const whole = useBrowserTabs(hostClient, groupId ?? "").whole && groupId !== undefined;
+  const viewed = useBrowserViewerSurface(hostClient, sessionId, tabId);
   const toast = useToast();
   const navigate = useNavigate();
   const [signInOpen, setSignInOpen] = useState(false);
@@ -157,7 +167,10 @@ export function PlaceBrowserView({
   const stageRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const keyboardRef = useRef<BrowserKeyboardHandle | null>(null);
-  const dormant = !!place?.workspaceTab && place.workspaceTab.state !== "live";
+  // Asleep, restoring or not yet started: selecting it wakes it, and nothing is retained meanwhile.
+  const dormant = row
+    ? row.state !== "live"
+    : !!place?.workspaceTab && place.workspaceTab.state !== "live";
   const sessionReady = !dormant && session?.state === "ready";
   const mode = useBrowserPresentationMode(hostClient, sessionId, sessionReady);
   const native = mode.mode === "native";
@@ -184,10 +197,7 @@ export function PlaceBrowserView({
       ? retentionFailure.message
       : null;
 
-  const tabListed =
-    session?.tabCatalog?.tabs.some((tab) => tab.id === tabId) ??
-    session?.tabs.some((tab) => tab.id === tabId) ??
-    false;
+  const tabListed = row !== undefined && row.documentId !== null;
   // Held while the page is hidden as well: the client pauses its picture then and
   // keeps the last one, so showing the page again shows the tab at once.
   const watchable = sessionReady && tabListed;
@@ -441,12 +451,29 @@ export function PlaceBrowserView({
     [hostClient, sessionId, tabId, presentationPresented],
   );
 
-  const tab: BrowserTabSummary | undefined = dormant
-    ? undefined
-    : session?.tabs.find((candidate) => candidate.id === tabId);
-  const catalogTab = dormant
-    ? undefined
-    : session?.tabCatalog?.tabs.find((candidate) => candidate.id === tabId);
+  const catalogTab = dormant || !tabListed ? undefined : row;
+  // A page waking keeps its row's title and site until it commits: never a blank address.
+  const committed =
+    viewed && !(row?.site && (viewed.url === "" || viewed.url === "about:blank"))
+      ? viewed
+      : undefined;
+  const tab = useMemo<BrowserTabSummary | undefined>(
+    () =>
+      catalogTab && committed
+        ? {
+            active: false,
+            documentId: catalogTab.documentId ?? undefined,
+            favicon: committed.favicon ?? undefined,
+            id: catalogTab.id,
+            loading: committed.loading,
+            navigationFailed: committed.navigationFailed,
+            sizedByAgent: committed.sizedByAgent,
+            title: committed.title,
+            url: committed.url,
+          }
+        : undefined,
+    [catalogTab, committed],
+  );
   const url = tab?.url ?? "";
   const shownTab: BrowserTabSummary | undefined =
     tab ??
@@ -467,7 +494,7 @@ export function PlaceBrowserView({
   const blocked = signIn !== null || askingClose;
   const pageReachable = live && !dialog;
   const workspace = reads.workspaces.find(
-    (candidate) => candidate.id === (session?.workspaceId ?? reads.workspaceId),
+    (candidate) => candidate.id === (session?.workspaceId ?? group?.workspaceId),
   );
   const pageFollowsView = tab?.sizedByAgent !== undefined;
   const loading = place?.loading === true;
@@ -604,6 +631,7 @@ export function PlaceBrowserView({
         : placeEnded(
             session,
             tabListed,
+            whole,
             presentationError ??
               viewer.error ??
               retentionError ??
@@ -632,7 +660,8 @@ export function PlaceBrowserView({
   const notice =
     (navigationFailed ? "This page could not be loaded. Reload to try again." : null) ??
     (!ended && session?.error !== dismissedError ? session?.error : null);
-  const blankPage = url === "" || url === "about:blank";
+  // A tab whose row names a site is not blank while it wakes or waits for its first picture.
+  const blankPage = !row?.site && (url === "" || url === "about:blank");
   return (
     <>
       <div
@@ -831,7 +860,6 @@ export function PlaceBrowserView({
                 pageFollowsView={pageFollowsView}
                 phoneLayout={compact}
                 sessionId={sessionId}
-                targeted
                 visible={visible}
               />
               <AgentCursors
@@ -912,13 +940,15 @@ export function PlaceBrowserView({
 function placeEnded(
   session: BrowserSessionSummary | null,
   tabListed: boolean,
+  whole: boolean,
   viewerError: string | null,
 ): { readonly title: string; readonly detail: string | null } | null {
   if (!session || session.state === "closed")
     return { detail: null, title: "This browser was closed" };
   if (session.state === "failed")
     return { detail: session.error, title: "This browser stopped working" };
-  if (session.state === "ready" && !tabListed && session.tabCatalog)
+  // Only a list the client holds whole proves a tab missing from it closed.
+  if (session.state === "ready" && !tabListed && whole)
     return { detail: null, title: "This tab was closed" };
   if (viewerError) return { detail: viewerError, title: "This tab can’t be shown" };
   return null;

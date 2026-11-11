@@ -1,4 +1,5 @@
 import { RuntimeModeSchema, type RuntimeMode } from "@opensteer/core";
+import { browserMemoryBudgetBytes } from "@opensteer/browser-runtime-core";
 import { validateRunnerTransport } from "@opensteer/runner-client";
 import { requiredEnvironmentValue as required } from "@opensteer/shared/envParsing";
 import { createPublicKey, type KeyObject } from "node:crypto";
@@ -20,6 +21,7 @@ export const browserRuntimeEnvironmentKeys = {
 } as const;
 
 export interface BrowserRuntimeConfig {
+  memoryBudgetBytes?: number | undefined;
   /** Present when this process is itself a browser-only Runner. */
   relay:
     | {
@@ -38,8 +40,6 @@ export interface BrowserRuntimeConfig {
   executablePath: string;
   headless: boolean;
   host: string;
-  maxProfileHosts: number;
-  maxSessionsPerProfile: number;
   port: number;
   profileRoot: string;
   profileReadyTrustedHttpOrigin?: string;
@@ -121,6 +121,7 @@ export function readBrowserRuntimeConfig(
     });
   }
   return {
+    memoryBudgetBytes: browserMemoryBudgetBytes(environment.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
     chromiumSandbox,
     deploymentMode,
     bridgeToken,
@@ -128,20 +129,6 @@ export function readBrowserRuntimeConfig(
     executablePath,
     headless: booleanValue(environment.OPENSTEER_BROWSER_HEADLESS, true),
     host: environment.OPENSTEER_BROWSER_HOST?.trim() || "127.0.0.1",
-    maxProfileHosts: integerValue(
-      environment.OPENSTEER_BROWSER_MAX_PROFILE_HOSTS,
-      8,
-      1,
-      64,
-      "OPENSTEER_BROWSER_MAX_PROFILE_HOSTS",
-    ),
-    maxSessionsPerProfile: integerValue(
-      environment.OPENSTEER_BROWSER_MAX_SESSIONS_PER_PROFILE,
-      32,
-      1,
-      128,
-      "OPENSTEER_BROWSER_MAX_SESSIONS_PER_PROFILE",
-    ),
     port: portValue(environment.OPENSTEER_BROWSER_PORT),
     profileRoot,
     ...(profileReadyTrustedHttpOrigin ? { profileReadyTrustedHttpOrigin } : {}),
@@ -229,21 +216,6 @@ function portValue(value: string | undefined): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
     throw new Error("OPENSTEER_BROWSER_PORT must be an integer from 0 through 65535.");
-  }
-  return parsed;
-}
-
-function integerValue(
-  value: string | undefined,
-  defaultValue: number,
-  minimum: number,
-  maximum: number,
-  name: string,
-): number {
-  if (value === undefined || value === "") return defaultValue;
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`${name} must be an integer from ${minimum} through ${maximum}.`);
   }
   return parsed;
 }

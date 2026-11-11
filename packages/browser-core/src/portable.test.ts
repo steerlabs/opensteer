@@ -119,7 +119,7 @@ it("shares signed malicious-ticket vectors and commits replay admission before r
       },
     );
     if (vector.accepted) expect(await promise, vector.name).toEqual(tickets.claims);
-    else await expect(promise, vector.name).rejects.toThrow();
+    else await expect(promise, vector.name).rejects.toThrow(vector.error);
     expect(committed, vector.name).toBe(vector.accepted);
   }
   await expect(

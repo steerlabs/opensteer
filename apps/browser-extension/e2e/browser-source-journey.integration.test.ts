@@ -38,7 +38,7 @@ import {
   decodeBrowserFrameEnvelope,
   hostApiVersionHeader,
   personalWebBuildId,
-  type BrowserSurface,
+  type BrowserViewerSurface,
   type HostToRunnerMessage,
   type RunnerConnectionFence,
 } from "@opensteer/protocol";
@@ -962,6 +962,10 @@ async function launchEverydayChrome(
   const context = await chromium.launchPersistentContext(profileDirectory, {
     args: [
       ...hostedChromeArgs,
+      // Keep extension workers scheduled on loaded Macs: https://crbug.com/549552319.
+      ...(process.platform === "darwin"
+        ? ["--enable-features=CDPScreenshotNewSurface,ExtensionServiceWorkerVoter"]
+        : []),
       `--disable-extensions-except=${extensionDirectory}`,
       `--load-extension=${extensionDirectory}`,
     ],
@@ -1171,16 +1175,16 @@ class Viewer {
   readonly #socket: WebSocket;
   readonly #frames: { at: number; bytes: Uint8Array; encoding: string }[] = [];
   readonly #closed: Promise<void>;
-  #surfaces: BrowserSurface[] = [];
+  #surface: BrowserViewerSurface | null = null;
 
-  private constructor(socket: WebSocket) {
+  private constructor(socket: WebSocket, surfaceId: string) {
     this.#socket = socket;
     this.#closed = new Promise((done) => socket.once("close", () => done()));
     socket.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
       if (!isBinary) {
         const message = BrowserServerMessageSchema.parse(JSON.parse(data.toString()));
-        if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-          this.#surfaces = message.surfaces;
+        if (message.type === "browser.surface" && message.surfaceId === surfaceId)
+          this.#surface = message.surface;
         return;
       }
       const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
@@ -1221,9 +1225,14 @@ class Viewer {
       });
     });
     await once(socket, "open");
-    const viewer = new Viewer(socket);
     await snapshot;
-    viewer.send({ type: "stream.subscribe" });
+    const { browser } = await testRpcData(origin, "bootstrap.get", {}, { headers });
+    const group = browser.groups.rows.find((row) => row.sessionId === sessionId);
+    const surfaceId = browser.tabs.find((tabs) => tabs.groupId === group?.id)?.rows[0]?.id;
+    if (!surfaceId) throw new Error("The browser has no target surface.");
+    const viewer = new Viewer(socket, surfaceId);
+    viewer.send({ type: "stream.subscribe", surfaceId });
+    await vi.waitFor(() => expect(viewer.#surface).not.toBeNull(), { timeout: 10_000 });
     return viewer;
   }
 
@@ -1232,13 +1241,13 @@ class Viewer {
   }
 
   async navigate(url: string): Promise<void> {
-    const previous = this.#surfaces.find((surface) => surface.active);
-    if (!previous) throw new Error("The browser has no active surface.");
-    this.send({ type: "navigation.go", url });
+    const previous = this.#surface;
+    if (!previous) throw new Error("The viewer has no target surface.");
+    this.send({ type: "navigation.go", surfaceId: previous.id, url });
     // A request reaching the server does not prove Chromium accepted its Set-Cookie.
     await vi.waitFor(
       () => {
-        const surface = this.#surfaces.find((candidate) => candidate.id === previous.id);
+        const surface = this.#surface;
         expect(surface?.url, `the browser to commit ${url}`).toBe(url);
         expect(surface?.documentId, `a new document for ${url}`).not.toBe(previous.documentId);
         expect(surface?.loading, `the browser to finish loading ${url}`).not.toBe(true);

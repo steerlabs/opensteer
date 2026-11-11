@@ -1,3 +1,4 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
@@ -7,9 +8,11 @@ import { MockHostClient } from "@opensteer/client/mock";
 import {
   HostClientRequestError,
   placeList,
+  type BrowserTabStore,
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
+import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import { startPageLink } from "./navigation.js";
@@ -153,11 +156,7 @@ describe("the draft's places", () => {
         place,
         sessionId,
         tabId,
-        icon: () =>
-          client
-            .getSnapshot()
-            .browserSessions.find((session) => session.id === sessionId)
-            ?.tabCatalog?.tabs.find((tab) => tab.id === tabId)?.iconRef ?? null,
+        icon: () => client.browserTabs.sessionTab(sessionId, tabId)?.iconRef ?? null,
         go: async (url: string) => {
           await act(async () => {
             client.sendBrowserCommand(sessionId, { surfaceId, type: "navigation.go", url });
@@ -286,6 +285,34 @@ describe("the draft's places", () => {
       const catalogTitles = new Map<string, string>();
       const readTitles = new Map<string, string>();
       const listeners = new Set<() => void>();
+      const titled = new WeakMap<BrowserTabRow, Map<string, BrowserTabRow>>();
+      const retitle = (row: BrowserTabRow | undefined) => {
+        const title = row ? catalogTitles.get(row.id) : undefined;
+        if (!row || title === undefined) return row;
+        const held = titled.get(row) ?? new Map<string, BrowserTabRow>();
+        titled.set(row, held);
+        if (!held.has(title)) held.set(title, { ...row, title });
+        return held.get(title);
+      };
+      let tabsProxy: BrowserTabStore | null = null;
+      const titledTabs = (store: BrowserTabStore) =>
+        (tabsProxy ??= new Proxy(store, {
+          get(target, name) {
+            if (name === "tab")
+              return (groupId: string, tabId: string) => retitle(target.tab(groupId, tabId));
+            if (name === "subscribeTab")
+              return (groupId: string, tabId: string, listener: () => void) => {
+                listeners.add(listener);
+                const stop = target.subscribeTab(groupId, tabId, listener);
+                return () => {
+                  listeners.delete(listener);
+                  stop();
+                };
+              };
+            const value: unknown = Reflect.get(target, name);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }));
       let source: HostSnapshot | null = null;
       let shown: HostSnapshot | null = null;
       let readCandidate!: MockHostClient["readBrowserContextCandidate"];
@@ -320,17 +347,19 @@ describe("the draft's places", () => {
                     shown = {
                       ...current,
                       browserSessions: current.browserSessions.map((session) =>
-                        session.tabCatalog
-                          ? {
-                              ...session,
-                              tabCatalog: {
-                                ...session.tabCatalog,
-                                tabs: session.tabCatalog.tabs.map((tab) => ({
-                                  ...tab,
-                                  title: catalogTitles.get(tab.id) ?? tab.title,
-                                })),
+                        session.browserTabs!.inventory(session?.id)
+                          ? seedBrowserSession(
+                              { ...session },
+                              {
+                                ...session.browserTabs!.inventory(session?.id),
+                                rows: (session.browserTabs?.sessionTabs(session?.id) ?? []).map(
+                                  (tab) => ({
+                                    ...tab,
+                                    title: catalogTitles.get(tab.id) ?? tab.title,
+                                  }),
+                                ),
                               },
-                            }
+                            )
                           : session,
                       ),
                     };
@@ -345,6 +374,8 @@ describe("the draft's places", () => {
                       stop();
                     };
                   };
+                // The tab's own row says the same as its catalog row, and changes with it.
+                if (name === "browserTabs") return titledTabs(target.browserTabs);
                 const value: unknown = Reflect.get(target, name);
                 return typeof value === "function" ? value.bind(target) : value;
               },
@@ -696,7 +727,9 @@ describe("the draft's places", () => {
           throw new Error("tab");
         const { sessionId, tabId } = closed.destination;
         const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
-        await act(async () => client.closeBrowserTab(sessionId, tabId, session.tabCatalog!));
+        await act(async () =>
+          client.closeBrowserTab(sessionId, tabId, session.browserTabs!.inventory(session?.id)!),
+        );
         await settle(100);
       };
       await close(place);
@@ -776,7 +809,9 @@ describe("the draft's places", () => {
     if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
     const { sessionId, tabId } = place.destination;
     const session = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
-    await act(async () => client.closeBrowserTab(sessionId, tabId, session.tabCatalog!));
+    await act(async () =>
+      client.closeBrowserTab(sessionId, tabId, session.browserTabs!.inventory(session?.id)!),
+    );
     await settle(100);
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
@@ -1251,9 +1286,9 @@ describe("a link arriving at the start page", () => {
       const session = snapshot.browserSessions.find(
         (item) => item.profileId && item.state === "ready",
       )!;
-      const tab = session.tabs[0]!;
+      const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
       profileId = session.profileId;
-      url = tab.url;
+      url = `${(session.browserTabs?.sessionTabs(session?.id) ?? []).find((row) => row.id === tab.id)!.site}/`;
       localStorage.setItem(
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
         '{"kind":"guest"}',
@@ -1288,7 +1323,7 @@ describe("a link arriving at the start page", () => {
         (item) => item.profileId && item.state === "ready",
       )!;
       profileId = session.profileId;
-      from = `panel=browser&browser=${session.id}&browserTab=${session.tabs[0]!.id}`;
+      from = `panel=browser&browser=${session.id}&browserTab=${(session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id}`;
       localStorage.setItem(
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
         '{"kind":"guest"}',

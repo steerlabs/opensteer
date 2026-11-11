@@ -45,15 +45,6 @@ test("every phone relay variant crosses the native boundary without converting n
     dialog: null,
     sessionId: `bsn_${uuid}`,
     state: "ready",
-    surfaces: [
-      {
-        id: "tab",
-        active: true,
-        title: "Fixture",
-        url: "https://fixture.invalid/",
-        openerId: null,
-      },
-    ],
   };
   const request = { ...fence, requestId: "request" };
   const channel = { ...fence, capability, channelId };
@@ -117,25 +108,11 @@ test("every phone relay variant crosses the native boundary without converting n
       message: {
         ...snapshot,
         dialog: { id: uuid, message: "Fixture", surfaceId: "tab", type: "confirm" },
-        inventoryRevision: 1,
         targetedStreamingVersion: 1,
         inputLanesVersion: 1,
         navigationAttributionVersion: 1,
         basicInput: 1,
         surfaceState: 1,
-        surfaces: [
-          {
-            ...snapshot.surfaces[0],
-            documentId: "document",
-            geometryRevision: 1,
-            loading: false,
-            navigationFailed: false,
-            canGoBack: false,
-            canGoForward: false,
-            order: 0,
-            state: "live",
-          },
-        ],
       },
     },
     {

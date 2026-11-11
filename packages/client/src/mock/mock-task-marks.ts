@@ -32,7 +32,7 @@ export function mockGeneratedTaskIcon(text: string): WorkspaceIconName {
 }
 
 /** Errands and projects that exercise task marks alongside the existing demo journeys. */
-export function seedMockTaskMarks(snapshot: HostSnapshot): HostSnapshot {
+export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snapshot): Snapshot {
   const main = snapshot.workspaces[0]!;
   const template = snapshot.threads[0]!;
   const at = "2026-10-25T12:00:00.000Z";

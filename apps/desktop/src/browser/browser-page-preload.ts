@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { contextBridge } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
+import { seedSessionStorage } from "./page-restore.js";
 import {
   installBrowserPagePolicy,
   type BrowserPagePolicyConfig,
@@ -7,6 +8,12 @@ import {
 
 // Browser Session pages receive no Electron API: this sandboxed preload only
 // installs the page policy in the main world before the page's scripts run.
+if (process.isMainFrame && process.argv.includes("--opensteer-wake")) {
+  const items: unknown = ipcRenderer.sendSync("opensteer:wake-seed");
+  const parsed = z.array(z.tuple([z.string(), z.string()])).safeParse(items);
+  if (parsed.success)
+    contextBridge.executeInMainWorld({ func: seedSessionStorage, args: [parsed.data] });
+}
 const argument = process.argv.find((value) => value.startsWith("--opensteer-passkey-provider="));
 let config: BrowserPagePolicyConfig;
 if (argument) {

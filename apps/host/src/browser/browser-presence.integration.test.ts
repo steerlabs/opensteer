@@ -1,3 +1,5 @@
+import { browserRows } from "./browser-rows.test-support.js";
+import { keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 import { delegate_task } from "@opensteer/agent-tools/tools";
@@ -5,7 +7,13 @@ import { delegate_task } from "@opensteer/agent-tools/tools";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
-import { BrowserSurfaceIdSchema, HostToRunnerMessageSchema } from "@opensteer/protocol";
+import {
+  BrowserSurfaceIdSchema,
+  createBrowserSessionId,
+  HostToClientMessageSchema,
+  type HostToClientMessage,
+  HostToRunnerMessageSchema,
+} from "@opensteer/protocol";
 import { resolvedInputParts } from "@opensteer/harness";
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -44,29 +52,9 @@ import {
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
-/*
- * A person and an agent share one browser through a real Host on PostgreSQL,
- * a Runner holding a real Run, and a relayed Browser Runtime. Every assertion
- * is on what the realtime sockets were sent:
- *
- * - a page changing its title or site reaches the browser's viewers as a
- *   `host.browser-presence` patch, never as a list change that makes every
- *   client reread its Workspace, and nobody who may not see the browser hears
- *   of it;
- * - "acting" turns on with the agent's CDP commands, off once 15 seconds pass
- *   without one, and off at once when the Run ends, and a command answering
- *   after the end does not turn it back on;
- * - a conversation is told when its visible browser usage changes, including
- *   a revisited page's labels, naming exactly the conversations credited;
- * - the shared client's Live overview lists a conversation's browser from the
- *   catalog alone, on a device that never opened that conversation;
- * - a page a person includes is credited with its message, and refused, with
- *   no message kept, where the conversation's agent could not use it;
- * - a page an agent reaches is answered even when its use cannot be recorded,
- *   and presence the store could not address is sent once it can.
- *
- * The artifacts record the messages each socket received and the timings.
- */
+/* Real Host/PostgreSQL, a Runner holding a Run, and a relayed Browser Runtime.
+ * The shared client and realtime sockets prove row delivery, authority,
+ * activity expiry and durable conversation usage together. */
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -74,6 +62,7 @@ const actingWindowMs = 15_000;
 
 interface Listener {
   readonly messages: Record<string, unknown>[];
+  socket: WebSocket;
   close(): Promise<void>;
 }
 
@@ -83,6 +72,7 @@ async function listen(
   headers: Record<string, string>,
   workspaceId?: WorkspaceId,
   placeEvents = false,
+  browserStreams = true,
 ): Promise<Listener> {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, { headers });
   await new Promise<void>((resolve, reject) => {
@@ -115,13 +105,26 @@ async function listen(
     );
     await synchronized;
   }
+  if (browserStreams) socket.send(JSON.stringify({ type: "client.browser.resync" }));
   return {
+    socket,
     close: async () => {
       socket.close();
       await closed(socket);
     },
     messages,
   };
+}
+
+function waitForBrowser(socket: WebSocket, predicate: (message: HostToClientMessage) => boolean) {
+  return waitForMessage(
+    socket,
+    (message) => {
+      const parsed = HostToClientMessageSchema.safeParse(message);
+      return parsed.success && predicate(parsed.data);
+    },
+    5000,
+  );
 }
 
 async function until<Value>(
@@ -232,13 +235,35 @@ async function reader(
 const ofType = (listener: Listener, type: string, from = 0) =>
   listener.messages.slice(from).filter((message) => message.type === type);
 
+function browserChanges(
+  listener: Listener,
+  type: "host.browser-tabs" | "host.browser-groups",
+  from = 0,
+) {
+  const rows = new Map<string, Record<string, unknown>>();
+  const changes: Record<string, unknown>[] = [];
+  for (const [index, raw] of listener.messages.entries()) {
+    if (raw.type !== type) continue;
+    const frame = raw.stream as {
+      op: string;
+      rows?: Record<string, unknown>[];
+      add?: Record<string, unknown>[];
+      update?: Record<string, unknown>[];
+    };
+    for (const patch of [...(frame.rows ?? []), ...(frame.add ?? []), ...(frame.update ?? [])]) {
+      const id = `${raw.groupId ?? "groups"}:${String(patch.id)}`;
+      const row = { ...rows.get(id), ...patch };
+      rows.set(id, row);
+      if (index >= from) changes.push(row);
+    }
+  }
+  return changes;
+}
+
 function presenceOf(listener: Listener, from: number, sessionId: string) {
-  return ofType(listener, "host.browser-presence", from).flatMap(
-    (message) =>
-      (message.sessions as { sessionId: string; acting: boolean; page: unknown }[]).filter(
-        (session) => session.sessionId === sessionId,
-      ) ?? [],
-  );
+  return browserChanges(listener, "host.browser-groups", from)
+    .filter((row) => row.sessionId === sessionId)
+    .map(({ sessionId, acting, page }) => ({ sessionId, acting, page }));
 }
 
 integration("Browser presence and conversation usage", () => {
@@ -248,181 +273,327 @@ integration("Browser presence and conversation usage", () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
   });
 
-  it("projects durable lineage changes only for connected viewers, with a bare fallback for a missing read", async () => {
+  it("attaches browser streams only on the requesting socket and measures the additive prefixes and deltas", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
     cleanups.push(() => host.close());
-    const workspace = await createTestWorkspace(host.store, {
-      createdBy: host.ownerId,
-      idempotencyKey: "lineage-workspace",
-      name: "Lineage viewers",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: null,
-      },
+    const caller = await connectCallerMachine(host, {
+      name: "Keyed acting",
+      maxConcurrentRuns: 1,
+      token: await enrollmentToken(host, {
+        allowedModules: ["agents"],
+        idempotencyKey: "keyed-caller",
+        name: "Keyed acting",
+      }),
     });
-    const [viewer, offline, stranger] = await Promise.all(
-      ["viewer", "offline", "stranger"].map((name) =>
-        signUpUser(host, {
-          email: `lineage-${name}@example.com`,
-          password: `lineage-${name}-password`,
-        }),
-      ),
-    );
-    for (const member of [viewer!, offline!])
-      await host.store.database
-        .insertInto("workspaceMemberships")
-        .values({
-          id: createId("workspaceMembership"),
-          workspaceId: workspace.id,
-          userId: member.userId,
-          role: "collaborator",
-          state: "active",
-          generation: 1,
-          invitedBy: host.ownerId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          updatedAt: new Date(),
-        })
-        .execute();
-    const owner = await listen(host, host.ownerHeaders, workspace.id);
-    cleanups.push(() => owner.close());
-    const other = await listen(host, viewer!.headers, workspace.id);
-    let otherConnected = true;
-    cleanups.push(async () => {
-      if (otherConnected) await other.close();
+    cleanups.push(() => caller.close());
+    const run = await dispatchCallerRun(host, caller, {
+      key: "keyed-acting",
+      title: "Keyed acting",
     });
-    const outsider = await listen(host, stranger!.headers);
-    cleanups.push(() => outsider.close());
     const runtime = await startBrowserRuntime(
       host.hostPort,
       await enrollmentToken(host, {
         allowedModules: ["browser"],
-        idempotencyKey: "lineage-browser",
-        name: "Lineage browser",
+        idempotencyKey: "keyed-browser",
+        name: "Keyed browser",
       }),
       { agentReady: true, targetedStreaming: true, workspaceTabs: true },
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5000 });
+    const workspaceId = run.workspaceId;
+    const neighbors = await Promise.all(
+      ["Second", "Third"].map((name) =>
+        createTestWorkspace(host.store, {
+          createdBy: host.ownerId,
+          idempotencyKey: `keyed-${name}`,
+          name,
+          status: "ready",
+          backing: {
+            kind: "local-directory",
+            bindingId: createId("workspaceBinding"),
+            generation: 1,
+            ownerEnvironmentId: createId("environment"),
+            storageAuthorityId: null,
+          },
+        }),
+      ),
+    );
+    const a = await listen(host, host.ownerHeaders, workspaceId, false, false);
+    const b = await listen(host, host.ownerHeaders, neighbors[0]!.id, false, false);
+    cleanups.push(
+      () => a.close(),
+      () => b.close(),
+    );
+    const c = await listen(host, host.ownerHeaders, neighbors[1]!.id, false, false);
+    cleanups.push(() => c.close());
     const opened = await host.runtime.browser.start({
       fresh: true,
       ownerId: host.ownerId,
-      workspaceId: workspace.id,
+      workspaceId,
       origin: "workspace",
     });
-    const sessionId = opened.session.id;
-    // Settle the initial descriptor before measuring another durable change.
-    await vi.waitFor(
-      async () =>
-        expect(
-          (await host.runtime.browser.readWorkspaceTabs(host.ownerId, sessionId)).tabs,
-        ).toHaveLength(1),
-      { timeout: 5000 },
-    );
     await host.runtime.browser.flushPendingTabDescriptors();
-    const read = vi.spyOn(host.runtime.browser, "readWorkspaceTabs");
-    const storeRead = WorkspaceTabStore.prototype.read;
-    let missing = false;
-    vi.spyOn(WorkspaceTabStore.prototype, "read").mockImplementation(function (
-      this: WorkspaceTabStore,
-      ownerId,
-      ...args
-    ) {
-      return missing && ownerId === host.ownerId
-        ? Promise.resolve(null)
-        : storeRead.call(this, ownerId, ...args);
-    });
-    const change = (title: string, closed = false) => {
-      runtime.sendServer({
-        type: "browser.workspace-tabs",
-        tabs: closed
-          ? []
-          : [
-              {
-                id: "page-integration",
-                title,
-                url: "https://example.com",
-                order: 0,
-                openerId: null,
-                documentId: "document-lineage",
-              },
-            ],
-        closed: closed ? ["page-integration"] : [],
+    const fixtures: Array<{
+      sessionId: typeof opened.session.id;
+      rows: Record<string, unknown>[];
+    }> = [];
+    const publish = async (sessionId: typeof opened.session.id, index: number, count: number) => {
+      const rows = Array.from({ length: count }, (_, order) => ({
+        id: `measure_${index}_${order}`,
+        active: order === 0,
+        title: `Page ${order}`,
+        url: `https://measure.example/private/${index}/${order}?secret=never-on-client`,
+        order,
+        openerId: null,
+        documentId: `doc_${index}_${order}`,
+        geometryRevision: 1,
+      }));
+      runtime.publishTabs({ surfaces: rows, closed: ["page-integration"] }, sessionId);
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await browserRows(host.runtime.browser, host.ownerId, sessionId)).tabs,
+          ).toHaveLength(count),
+        { timeout: 5000 },
+      );
+      await host.runtime.browser.flushPendingTabDescriptors();
+      await host.runtime.browser.clientStreams.source.groupChanged(sessionId);
+      fixtures.push({ sessionId, rows });
+    };
+    await publish(opened.session.id, 0, 64);
+    const ended = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-tabs" &&
+        (message.stream as { op?: string } | undefined)?.op === "end",
+    );
+    a.socket.send(JSON.stringify({ type: "client.browser.resync" }));
+    await ended;
+    expect(a.messages.some((message) => message.type === "host.browser-groups")).toBe(true);
+    expect(
+      b.messages.some(
+        (message) => message.type === "host.browser-groups" || message.type === "host.browser-tabs",
+      ),
+    ).toBe(false);
+    const begin = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-tabs" &&
+        message.groupId === opened.session.id &&
+        (message.stream as { op?: string } | undefined)?.op === "begin",
+    );
+    a.socket.send(JSON.stringify({ type: "client.browser.resync", groupId: opened.session.id }));
+    await begin;
+    const samples: Record<string, unknown>[] = [];
+    const measure = async (count: number) => {
+      const bootstrap = await host.runtime.browser.bootstrap(host.ownerId);
+      const start = a.messages.length;
+      const begun = new Set<string>(),
+        complete = new Set<string>();
+      const snapshot = waitForBrowser(a.socket, (message) => {
+        if (message.type !== "host.browser-tabs") return false;
+        if (message.stream.op === "begin") begun.add(message.groupId);
+        if (message.stream.op === "end" && begun.has(message.groupId))
+          complete.add(message.groupId);
+        return complete.size === fixtures.length;
+      });
+      a.socket.send(JSON.stringify({ type: "client.browser.resync" }));
+      await snapshot;
+      const frames = a.messages
+        .slice(start)
+        .filter(
+          (message) =>
+            message.type === "host.browser-groups" || message.type === "host.browser-tabs",
+        );
+      const starts = [a, b, c].map((listener) => listener.messages.length);
+      const title = `Changed at ${count}`;
+      const changed = waitForBrowser(
+        a.socket,
+        (message) =>
+          message.type === "host.browser-tabs" &&
+          message.stream.op === "change" &&
+          message.stream.update?.some((row) => row.title === title) === true,
+      );
+      fixtures[0]!.rows[1] = { ...fixtures[0]!.rows[1], title };
+      runtime.publishTabs({ surfaces: fixtures[0]!.rows }, fixtures[0]!.sessionId);
+      await changed;
+      const deltas = [a, b, c].map((listener, index) => listener.messages.slice(starts[index]));
+      const next = deltas[0]!.filter((message) => message.type === "host.browser-tabs");
+      expect(next).toHaveLength(1);
+      expect(JSON.stringify(next)).not.toContain("private/");
+      expect(
+        deltas
+          .slice(1)
+          .flat()
+          .some(
+            (message) =>
+              message.type === "host.browser-tabs" || message.type === "host.browser-groups",
+          ),
+      ).toBe(false);
+      samples.push({
+        tabs: count,
+        groups: fixtures.length,
+        bootstrap: keyedStreamBytes(bootstrap),
+        freshAfter: {
+          total: frames.reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+          frames: frames.length,
+          largest: Math.max(...frames.map(keyedStreamBytes)),
+        },
+        titleAfter: next.reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+        titleThreeSocketsAfter: deltas
+          .flat()
+          .filter((message) => message.type === "host.browser-tabs")
+          .reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
       });
     };
-    const start = owner.messages.length,
-      otherStart = other.messages.length;
-    change("Changed lineage");
-    await vi.waitFor(
-      () => {
-        expect(ofType(owner, "host.browser-sessions-changed", start)).toContainEqual(
-          expect.objectContaining({
-            group: expect.objectContaining({
-              tabs: [expect.objectContaining({ title: "Changed lineage" })],
-              session: expect.objectContaining({ opener: { kind: "you" } }),
-            }),
-          }),
-        );
-        expect(ofType(other, "host.browser-sessions-changed", otherStart)).toContainEqual(
-          expect.objectContaining({
-            group: expect.objectContaining({
-              session: expect.objectContaining({ opener: { kind: "unknown" } }),
-            }),
-          }),
-        );
+    await measure(64);
+    for (let index = 1; index < 8; index++) {
+      const next = await host.runtime.browser.start({
+        fresh: true,
+        reuseExisting: false,
+        ownerId: host.ownerId,
+        workspaceId,
+        origin: "workspace",
+        placement: { kind: "runner", runnerId: runtime.runnerId },
+      });
+      await publish(next.session.id, index, index === 7 ? 64 : 62);
+    }
+    expect(fixtures.reduce((sum, fixture) => sum + fixture.rows.length, 0)).toBe(500);
+    await measure(500);
+    const cdp = await host.runtime.browser.attachCdpForAgent(
+      {
+        agentBindingId: `run:${run.runId}`,
+        ownerId: host.ownerId,
+        sessionId: opened.session.id,
+        workspaceId: run.workspaceId,
       },
-      { timeout: 5000 },
+      () => undefined,
     );
-    expect(new Set(read.mock.calls.map(([id]) => id))).toEqual(
-      new Set([host.ownerId, viewer!.userId]),
+    cleanups.push(async () => cdp.close());
+    await host.runtime.browser.clientStreams.source.groupChanged(opened.session.id);
+    const ready = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-tabs" &&
+        message.groupId === opened.session.id &&
+        message.stream.op === "end",
     );
-    expect(
-      ofType(owner, "host.browser-sessions-changed", start).every((message) => message.group),
-    ).toBe(true);
-    expect(ofType(outsider, "host.browser-sessions-changed")).toEqual([]);
-    expect(ofType(outsider, "host.browser-tabs-changed")).toEqual([]);
-    const firstGroup = ofType(owner, "host.browser-sessions-changed", start).at(-1)!.group as {
-      revision: number;
+    a.socket.send(JSON.stringify({ type: "client.browser.resync", groupId: opened.session.id }));
+    await ready;
+    const oldCommands = runtime.receivedCommands().length;
+    for (let index = 0; index < oldCommands; index++) await runtime.nextCommand();
+    const startActing = a.messages.length;
+    const nextActing = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-groups" &&
+        message.stream.op === "change" &&
+        message.stream.update?.some((row) => row.id === opened.session.id && row.acting) === true,
+    );
+    const request = cdp.request({ method: "Target.getTargets", parameters: {} });
+    const command = await withTimeout(runtime.nextCommand(), 5000, {
+      timeoutError: () => new Error("Acting command never reached the runtime"),
+    });
+    expect(command).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.getTargets" },
+    });
+    runtime.sendServer(
+      { type: "cdp.result", requestId: command.requestId, result: { targetInfos: [] } },
+      opened.session.id,
+    );
+    await Promise.all([request, nextActing]);
+    const actingFrames = a.messages.slice(startActing);
+    const actingBytes = {
+      after: actingFrames
+        .filter((frame) => frame.type === "host.browser-groups")
+        .reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
     };
-    missing = true;
-    const beforeMissing = owner.messages.length;
-    change("Missing projection");
-    await vi.waitFor(
-      () =>
-        expect(ofType(owner, "host.browser-sessions-changed", beforeMissing)).toContainEqual({
-          type: "host.browser-sessions-changed",
-          workspaceId: workspace.id,
-        }),
-      { timeout: 5000 },
-    );
-    missing = false;
-    await other.close();
-    otherConnected = false;
-    read.mockClear();
-    const beforeClose = owner.messages.length;
-    change("", true);
-    await vi.waitFor(
-      () =>
-        expect(ofType(owner, "host.browser-sessions-changed", beforeClose)).toContainEqual(
-          expect.objectContaining({
-            group: expect.objectContaining({ tabs: [], revision: expect.any(Number) }),
-          }),
-        ),
-      { timeout: 5000 },
-    );
-    const closedGroup = ofType(owner, "host.browser-sessions-changed", beforeClose).at(-1)!
-      .group as { revision: number };
-    expect(closedGroup.revision).toBeGreaterThan(firstGroup.revision);
-    expect(read.mock.calls.map(([id]) => id)).toEqual([host.ownerId]);
+    cdp.close();
+    await run.complete();
+    await Promise.all([a.close(), b.close(), c.close()]);
+    const tabs = new WorkspaceTabStore(host.store.database);
+    const dormant = Array.from({ length: 142 }, (_, index) => ({
+      id: createBrowserSessionId(),
+      index,
+    }));
+    const seededAt = new Date();
+    await host.store.database.transaction().execute(async (tx) => {
+      await tx
+        .insertInto("browserSessions")
+        .values(
+          dormant.map(({ id }) => ({
+            id,
+            tabGroupId: id,
+            tabRevision: 1,
+            origin: "workspace" as const,
+            opener: null,
+            placementKey: `runner:${runtime.runnerId}:browser`,
+            profileId: null,
+            runnerId: runtime.runnerId,
+            runtimeId: "browser-runtime-integration",
+            workspaceId,
+            state: "closed" as const,
+            createdAt: seededAt,
+            updatedAt: seededAt,
+            closedAt: null,
+          })),
+        )
+        .execute();
+      await tx
+        .insertInto("workspaceTabs")
+        .values(
+          dormant.flatMap(({ id, index }) =>
+            Array.from({ length: index < 80 ? 11 : 10 }, (_, order) => ({
+              id: `saved_${index}_${order}`,
+              groupId: id,
+              sessionId: id,
+              title: "界".repeat(256),
+              url: `https://saved.example/${index}/${order}`,
+              order,
+              openerId: null,
+              state: "live" as const,
+              createdAt: seededAt,
+              closedAt: null,
+            })),
+          ),
+        )
+        .execute();
+    });
+    expect(await tabs.groupIds(host.ownerId)).toHaveLength(150);
+    expect(await tabs.openTabs(await tabs.groupIds(host.ownerId))).toHaveLength(2000);
+    const reads = vi.spyOn(WorkspaceTabStore.prototype, "openTabs");
+    const large = await host.runtime.browser.bootstrap(host.ownerId);
+    expect(large.groups?.complete).toBe(false);
+    expect(large.tabs?.at(-1)?.complete).toBe(false);
+    expect(keyedStreamBytes(large.groups)).toBeLessThanOrEqual(64 * 1024);
+    expect(keyedStreamBytes(large.tabs)).toBeLessThanOrEqual(64 * 1024);
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    expect(reads.mock.calls.length).toBeLessThan(150);
+    expect(reads.mock.calls.every(([ids]) => ids.length === 1)).toBe(true);
+    const report = {
+      samples,
+      acting: actingBytes,
+      large: {
+        after: keyedStreamBytes({ groups: large.groups, tabs: large.tabs }),
+        additiveTotal: keyedStreamBytes(large),
+        legacyFields: ["sessions", "workspaceTabs"].filter((key) => key in large),
+        groupPrefix: keyedStreamBytes(large.groups),
+        tabPrefix: keyedStreamBytes(large.tabs),
+      },
+    };
+    const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
+    if (directory) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, "keyed-client-streams.json"),
+        JSON.stringify(report, null, 2),
+      );
+    }
   });
-
   it("shows a voice Run's browser as its own Thread and clears its cursor on Stop", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
@@ -510,8 +681,7 @@ integration("Browser presence and conversation usage", () => {
       () => undefined,
     );
     cleanups.push(async () => cdp.close());
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         {
           id: "voice-page",
@@ -522,9 +692,8 @@ integration("Browser presence and conversation usage", () => {
         },
       ],
     });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [
+    runtime.publishTabs({
+      surfaces: [
         {
           id: "voice-page",
           title: "Private title",
@@ -576,7 +745,7 @@ integration("Browser presence and conversation usage", () => {
     }
     await vi.waitFor(() => expect(ofType(owner, "host.show")).toHaveLength(3));
     await vi.waitFor(() => expect(ofType(owner, "host.place-activity").length).toBeGreaterThan(0));
-    const catalog = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
+    const catalog = await browserRows(host.runtime.browser, host.ownerId, sessionId);
     expect(catalog.tabs.find((tab) => tab.id === "voice-page")?.occupants).toEqual([
       expect.objectContaining({ threadId: run.threadId, home: false }),
     ]);
@@ -692,7 +861,7 @@ integration("Browser presence and conversation usage", () => {
       },
     );
     expect(
-      (await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).tabs.find(
+      (await browserRows(host.runtime.browser, host.ownerId, sessionId)).tabs.find(
         (tab) => tab.id === "voice-page",
       )?.occupants,
     ).toEqual([]);
@@ -710,7 +879,7 @@ integration("Browser presence and conversation usage", () => {
     ).toBe(false);
   }, 60_000);
 
-  it("cold-loads all 100 × 64 tab identities and 64 × 16 occupants after missing deferred notices", async () => {
+  it("cold-loads all 150 × 64 tab identities and 64 × 16 occupants through the carrier", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
@@ -740,7 +909,7 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => runtime.close());
     const producers = [runtime];
-    for (let index = 32; index < 100; index += 32) {
+    for (let index = 32; index < 150; index += 32) {
       const producer = await startBrowserRuntime(
         host.hostPort,
         await enrollmentToken(host, {
@@ -773,7 +942,7 @@ integration("Browser presence and conversation usage", () => {
       geometryRevision: 1,
       openerId: null,
     }));
-    for (let index = 0; index < 100; index++) {
+    for (let index = 0; index < 150; index++) {
       const producer = producers[Math.floor(index / 32)]!;
       const opened = await host.runtime.browser.start({
         ownerId: host.ownerId,
@@ -784,7 +953,7 @@ integration("Browser presence and conversation usage", () => {
         placement: { kind: "runner", runnerId: producer.runnerId },
       });
       sessionIds.push(opened.session.id);
-      producer.sendServer({ type: "browser.surfaces.changed", surfaces }, opened.session.id);
+      producer.publishTabs({ surfaces }, opened.session.id);
     }
     const sessionId = sessionIds[0]!;
     const source = (await host.store.getThreadForOwner(firstRun.threadId, host.ownerId))!;
@@ -828,24 +997,25 @@ integration("Browser presence and conversation usage", () => {
         .execute();
     }
     const omitted = await host.runtime.browser.bootstrap(host.ownerId);
-    expect(omitted.sessions).toHaveLength(100);
-    expect(omitted.sessions.every((session) => session.tabCatalog === undefined)).toBe(true);
-    // Let all coalesced notices go by before the cold client's realtime socket exists.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const deliverComplete = Promise.withResolvers<void>();
-    let holdComplete = false;
-    const client = await reader(host, 350, async (request) => {
-      if (
-        holdComplete &&
-        (request.url.includes("bootstrap.get") || request.url.includes("browser.tabs.get"))
-      )
-        await deliverComplete.promise;
-    });
+    expect(omitted).not.toHaveProperty("sessions");
+    expect(omitted.groups.complete).toBe(false);
+    const client = await reader(host, 350);
     cleanups.push(async () => client.dispose());
+    await client.waitForSnapshot(
+      (snapshot) =>
+        snapshot.browserSessions.length === 150 &&
+        snapshot.browserSessions.every(
+          (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length === 64,
+        ),
+    );
     const loaded = client.getSnapshot().browserSessions;
-    expect(loaded).toHaveLength(100);
-    expect(loaded.every((session) => session.tabCatalog?.tabs.length === 64)).toBe(true);
-    const occupied = loaded.find((session) => session.id === sessionId)!.tabCatalog!;
+    expect(loaded).toHaveLength(150);
+    expect(
+      loaded.every(
+        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length === 64,
+      ),
+    ).toBe(true);
+    const occupied = { tabs: client.getSnapshot().browserTabs!.sessionTabs(sessionId) };
     expect(occupied.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
     expect(occupied.tabs.every((tab) => tab.occupants.every((occupant) => occupant.holding))).toBe(
       true,
@@ -854,94 +1024,29 @@ integration("Browser presence and conversation usage", () => {
     const bytes = Buffer.byteLength(JSON.stringify(occupied));
     expect(bytes).toBeGreaterThan(128 * 1024);
     expect(client.requests.filter((request) => request.includes("browser.tabs.get"))).toHaveLength(
-      100,
+      0,
     );
-    for (const socket of client.sockets) {
-      if (socket.readyState !== WebSocket.OPEN)
-        await new Promise<void>((resolve) => socket.once("open", resolve));
-      await new Promise<void>((resolve) => {
-        socket.once("pong", () => resolve());
-        socket.ping();
-      });
-    }
-    // Capture both projections before publishing the older one. The first load
-    // has finished before the second query starts, so FIFO restoration cannot
-    // deadlock this delivery gate.
-    const partialCaptured = Promise.withResolvers<void>();
-    const publishPartial = Promise.withResolvers<void>();
-    const queryHoldings = host.store.listBrowserPlaceHoldings.bind(host.store);
-    const project = host.runtime.browser.catalogsForViewers.bind(host.runtime.browser);
-    const holdingsSpy = vi.spyOn(host.store, "listBrowserPlaceHoldings");
-    const projectionSpy = vi.spyOn(host.runtime.browser, "catalogsForViewers");
-    let partialRevision = -1;
-    let capture = true;
-    holdingsSpy.mockImplementation(async (id) => {
-      const rows = await queryHoldings(id);
-      return id === sessionId && capture ? rows.slice(0, 512) : rows;
-    });
-    projectionSpy.mockImplementation(async (id) => {
-      const catalogs = await project(id);
-      if (id === sessionId && capture) {
-        capture = false;
-        const partial = catalogs.get(host.ownerId)!;
-        expect(partial.tabs.every((tab) => tab.occupants.length === 8)).toBe(true);
-        partialRevision = partial.revision;
-        partialCaptured.resolve();
-        await publishPartial.promise;
-      } else if (id === sessionId) {
-        await deliverComplete.promise;
-      }
-      return catalogs;
-    });
-    try {
-      holdComplete = true;
-      runtime.sendServer(
-        {
-          type: "browser.surfaces.changed",
-          surfaces: surfaces.map((surface) => ({ ...surface, title: "Revised" })),
-        },
-        sessionId,
-      );
-      await withTimeout(partialCaptured.promise, 5_000, {
-        timeoutError: () => new Error("Partial projection was not captured"),
-      });
-      const complete = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
-      expect(complete.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
-      publishPartial.resolve();
-      await client.waitForSnapshot(
-        (snapshot) =>
-          snapshot.browserSessions
-            .find((session) => session.id === sessionId)
-            ?.tabCatalog?.tabs.every((tab) => tab.occupants.length === 8) === true,
-      );
-      holdComplete = false;
-      deliverComplete.resolve();
-      await client.refresh();
-      const converged = client
-        .getSnapshot()
-        .browserSessions.find((session) => session.id === sessionId)!.tabCatalog!;
-      expect(converged.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
-      expect(complete.revision).toBeGreaterThan(partialRevision);
-      expect((await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).revision).toBe(
-        complete.revision,
-      );
-    } finally {
-      publishPartial.resolve();
-      deliverComplete.resolve();
-      projectionSpy.mockRestore();
-      holdingsSpy.mockRestore();
-    }
+    runtime.publishTabs(
+      { surfaces: surfaces.map((surface) => ({ ...surface, title: "Revised" })) },
+      sessionId,
+    );
+    await client.waitForSnapshot(
+      (snapshot) =>
+        (snapshot.browserTabs?.sessionTabs(sessionId) ?? []).every(
+          (tab) => tab.title === "Revised" && tab.occupants.length === 16,
+        ) === true,
+    );
     const outsider = await signUpUser(host, {
       email: "maximum-stranger@example.com",
       password: "maximum-stranger-password",
     });
-    const refused = await testRpcRequest(
+    const refused = await testRpcData(
       host.origin,
-      "browser.tabs.get",
-      { sessionId },
+      "bootstrap.get",
+      {},
       { headers: outsider.headers },
     );
-    expect(refused.status).toBe(404);
+    expect(refused.browser.groups.rows).toEqual([]);
     const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
     if (directory) {
       await mkdir(directory, { recursive: true });
@@ -951,14 +1056,14 @@ integration("Browser presence and conversation usage", () => {
           {
             identities: loaded.map((session) => ({
               sessionId: session.id,
-              tabIds: session.tabCatalog!.tabs.map((tab) => tab.id),
+              tabIds: (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => tab.id),
             })),
             occupied,
             bytes,
             requests: client.requests,
             delayBootstrapMs: 350,
             refreshIntervalMs: 0,
-            outsiderStatus: refused.status,
+            outsiderGroups: refused.browser.groups.rows.length,
           },
           null,
           2,
@@ -1036,22 +1141,23 @@ integration("Browser presence and conversation usage", () => {
           }
         : {}),
     }));
-    runtime.sendServer({ type: "browser.surfaces.changed", surfaces });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: surfaces,
+    runtime.publishTabs({ surfaces });
+    runtime.publishTabs({
+      surfaces: surfaces,
       closed: ["page-integration"],
     });
-    let cold = await host.runtime.browser.bootstrap(host.ownerId);
+    let cold = await browserRows(host.runtime.browser, host.ownerId);
     await until(() =>
-      ofType(owner, "host.browser-tabs-changed").some(
-        (message) => (message.catalog as { tabs: unknown[] }).tabs.length === 3,
-      )
+      browserChanges(owner, "host.browser-tabs").filter((row) =>
+        ["page-x", "page-y", "page-z"].includes(String(row.id)),
+      ).length >= 3
         ? true
         : undefined,
     );
-    cold = await host.runtime.browser.bootstrap(host.ownerId);
-    const initial = cold.sessions.find((session) => session.id === sessionId)?.tabCatalog;
+    cold = await browserRows(host.runtime.browser, host.ownerId);
+    const initial = {
+      tabs: cold.browserTabs!.sessionTabs(sessionId).filter((tab) => tab.documentId !== null),
+    };
     expect(initial?.tabs.map(({ id }) => id)).toEqual(["page-x", "page-y", "page-z"]);
     expect(
       initial?.tabs.every((tab) => tab.occupants.length === 0 && !tab.site.includes("private")),
@@ -1169,81 +1275,16 @@ integration("Browser presence and conversation usage", () => {
     cleanups.push(async () => liveClient.dispose());
     liveClient.activateWorkspace(run.workspaceId);
     await until(() => (liveClient.getSnapshot().connection === "connected" ? true : undefined));
-    const projected = Promise.withResolvers<NonNullable<typeof initial>>();
-    const releaseProjection = Promise.withResolvers<void>();
-    const projectionJoined = Promise.withResolvers<void>();
-    const project = host.runtime.browser.catalogsForViewers.bind(host.runtime.browser);
-    let holdProjection = true;
-    const projection = vi
-      .spyOn(host.runtime.browser, "catalogsForViewers")
-      .mockImplementation(async (id) => {
-        const catalogs = await project(id);
-        if (id === sessionId && holdProjection) {
-          holdProjection = false;
-          projected.resolve(catalogs.get(host.ownerId)!);
-          try {
-            await releaseProjection.promise;
-          } finally {
-            projectionJoined.resolve();
-          }
-        }
-        return catalogs;
-      });
-    try {
-      runtime.sendServer({
-        type: "browser.surfaces.changed",
-        surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
-      });
-      const older = await withTimeout(projected.promise, 5_000, {
-        timeoutError: () => new Error("Host did not project the deferred catalog"),
-      });
-      runtime.sendServer({ type: "browser.surfaces.changed", surfaces });
-      await liveClient.waitForSnapshot((snapshot) =>
-        snapshot.browserSessions.some(
-          (session) =>
-            session.id === sessionId &&
-            session.tabCatalog !== undefined &&
-            session.tabCatalog.generation === older.generation &&
-            session.tabCatalog.revision > older.revision,
-        ),
-      );
-      const newer = liveClient
-        .getSnapshot()
-        .browserSessions.find((session) => session.id === sessionId)!.tabCatalog;
-      const realtime = liveClient.sockets.find((socket) => socket.url.includes("/v1/realtime"))!;
-      const received = Promise.withResolvers<void>();
-      const observe = (raw: WebSocket.RawData) => {
-        const message = JSON.parse(raw.toString()) as {
-          type: string;
-          catalog?: { revision: number };
-        };
-        if (
-          message.type === "host.browser-tabs-changed" &&
-          message.catalog?.revision === older.revision
-        )
-          received.resolve();
-      };
-      realtime.on("message", observe);
-      try {
-        releaseProjection.resolve();
-        await withTimeout(received.promise, 5_000, {
-          timeoutError: () => new Error("Host did not deliver the older catalog"),
-        });
-        expect(
-          liveClient.getSnapshot().browserSessions.find((session) => session.id === sessionId)
-            ?.tabCatalog,
-        ).toEqual(newer);
-      } finally {
-        realtime.off("message", observe);
-      }
-    } finally {
-      releaseProjection.resolve();
-      if (!holdProjection)
-        await withTimeout(projectionJoined.promise, 5_000, {
-          timeoutError: () => new Error("Deferred catalog projection did not join"),
-        });
-      projection.mockRestore();
-    }
+    runtime.publishTabs({
+      surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
+    });
+    await liveClient.waitForSnapshot(
+      (snapshot) => (snapshot.browserTabs?.sessionTabs(sessionId) ?? [])[0]?.title === "X deferred",
+    );
+    runtime.publishTabs({ surfaces });
+    await liveClient.waitForSnapshot(
+      (snapshot) => (snapshot.browserTabs?.sessionTabs(sessionId) ?? [])[0]?.title === "X",
+    );
     const releaseWatch = liveClient.retainBrowserWatch(sessionId, "page-y");
     cleanups.push(async () => releaseWatch());
     await until(() =>
@@ -1298,7 +1339,9 @@ integration("Browser presence and conversation usage", () => {
     });
     await attach;
     await until(async () => {
-      const catalogs = await host.runtime.browser.catalogsForViewers(sessionId);
+      const catalogs = new Map([
+        [host.ownerId, await browserRows(host.runtime.browser, host.ownerId, sessionId)],
+      ]);
       return [...catalogs.values()].some((catalog) =>
         catalog.tabs.some(
           (tab) => tab.id === "page-y" && tab.occupants.some((occupant) => occupant.holding),
@@ -1392,9 +1435,11 @@ integration("Browser presence and conversation usage", () => {
         place: { kind: "browser", sessionId, surfaceId: "page-y" },
       },
     });
-    const occupied = (await host.runtime.browser.bootstrap(host.ownerId)).sessions.find(
-      (session) => session.id === sessionId,
-    )?.tabCatalog;
+    const occupied = {
+      tabs: (await browserRows(host.runtime.browser, host.ownerId)).browserTabs!.sessionTabs(
+        sessionId,
+      ),
+    };
     expect(occupied?.tabs.find((tab) => tab.id === "page-y")?.occupants).toEqual([
       expect.objectContaining({ threadId: run.threadId, holding: true, acting: true }),
     ]);
@@ -1402,9 +1447,12 @@ integration("Browser presence and conversation usage", () => {
       snapshot.browserSessions.some(
         (session) =>
           session.id === sessionId &&
-          session.tabCatalog !== undefined &&
-          session.tabCatalog.generation === occupied?.generation &&
-          session.tabCatalog.revision === occupied?.revision,
+          (session.browserTabs?.sessionTabs(session?.id) ?? [])
+            .find((tab) => tab.id === "page-y")
+            ?.occupants.some(
+              (occupant) =>
+                occupant.threadId === run.threadId && occupant.holding && occupant.acting,
+            ) === true,
       ),
     );
     const latestBeforeExpiry = await host.runtime.browser.latestPlaces(host.ownerId);
@@ -1416,25 +1464,25 @@ integration("Browser presence and conversation usage", () => {
     clock.advanceBy(actingWindowMs);
     await until(
       () =>
-        ofType(owner, "host.browser-tabs-changed")
-          .flatMap((message) =>
-            (
-              message.catalog as {
-                tabs: { id: string; occupants: { holding: boolean; acting: boolean }[] }[];
-              }
-            ).tabs.filter((tab) => tab.id === "page-y"),
-          )
-          .at(-1)
-          ?.occupants.some((occupant) => occupant.holding && !occupant.acting)
+        browserChanges(owner, "host.browser-tabs")
+          .filter((tab) => tab.id === "page-y")
+          .at(-1)?.occupants &&
+        (
+          (browserChanges(owner, "host.browser-tabs")
+            .filter((tab) => tab.id === "page-y")
+            .at(-1)?.occupants ?? []) as { holding: boolean; acting: boolean }[]
+        ).some((occupant) => occupant.holding && !occupant.acting)
           ? true
           : undefined,
       actingWindowMs + 5_000,
     );
     expect(await host.runtime.browser.latestPlaces(host.ownerId)).toEqual(latestBeforeExpiry);
     host.runtime.browser.invalidatePlaceAuthority(run.workspaceId, [run.threadId]);
-    const stillHolding = (await host.runtime.browser.bootstrap(host.ownerId)).sessions.find(
-      (session) => session.id === sessionId,
-    )?.tabCatalog;
+    const stillHolding = {
+      tabs: (await browserRows(host.runtime.browser, host.ownerId)).browserTabs!.sessionTabs(
+        sessionId,
+      ),
+    };
     expect(stillHolding?.tabs.find((tab) => tab.id === "page-y")?.occupants).toEqual([
       expect.objectContaining({ threadId: run.threadId, holding: true, acting: false }),
     ]);
@@ -1449,19 +1497,15 @@ integration("Browser presence and conversation usage", () => {
       pointer: null,
     });
     await until(() =>
-      ofType(owner, "host.browser-tabs-changed", resumingFrom).some((message) =>
-        (
-          message.catalog as {
-            tabs: { id: string; occupants: { holding: boolean; acting: boolean }[] }[];
-          }
-        ).tabs.some(
-          (tab) => tab.id === "page-y" && tab.occupants.some((occupant) => occupant.acting),
-        ),
+      browserChanges(owner, "host.browser-tabs", resumingFrom).some(
+        (tab) =>
+          tab.id === "page-y" &&
+          (tab.occupants as { acting: boolean }[] | undefined)?.some((occupant) => occupant.acting),
       )
         ? true
         : undefined,
     );
-    expect(ofType(outsider, "host.browser-tabs-changed")).toHaveLength(0);
+    expect(ofType(outsider, "host.browser-tabs")).toHaveLength(0);
     expect(ofType(outsider, "host.place-activity")).toHaveLength(0);
     const page = {
       type: "browser-page" as const,
@@ -1506,14 +1550,13 @@ integration("Browser presence and conversation usage", () => {
       reason: "form" as const,
       checkedAt: new Date().toISOString(),
     };
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: surfaces.map((surface) =>
         surface.id === page.tabId ? { ...surface, documentId: candidate.documentId } : surface,
       ),
     });
     await until(async () =>
-      (await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).tabs.some(
+      (await browserRows(host.runtime.browser, host.ownerId, sessionId)).tabs.some(
         (tab) => tab.id === page.tabId && tab.documentId === candidate.documentId,
       )
         ? true
@@ -1646,8 +1689,7 @@ integration("Browser presence and conversation usage", () => {
       .where(sql<boolean>`content->0->>'text' = 'Use this page'`)
       .execute();
     expect(messages).toEqual([{ id: accepted[0].message.id }]);
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: surfaces.map((surface) =>
         surface.id === "page-y"
           ? { ...surface, documentId: "new-document", title: "Sign in" }
@@ -1757,14 +1799,13 @@ integration("Browser presence and conversation usage", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(ofType(owner, "host.place-activity")).toHaveLength(beforeLate);
     const beforeEmpty = runtime.receivedCommands().length;
-    runtime.sendServer({ type: "browser.surfaces.changed", surfaces: [] });
-    runtime.sendServer({
-      type: "browser.workspace-tabs",
-      tabs: [],
+    runtime.publishTabs({ surfaces: [] });
+    runtime.publishTabs({
+      surfaces: [],
       closed: surfaces.map(({ id }) => id),
     });
     await until(async () =>
-      (await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).tabs.length === 0
+      (await browserRows(host.runtime.browser, host.ownerId, sessionId)).tabs.length === 0
         ? true
         : undefined,
     );
@@ -1922,7 +1963,7 @@ integration("Browser presence and conversation usage", () => {
             ),
             owner: owner.messages.filter((message) =>
               [
-                "host.browser-tabs-changed",
+                "host.browser-tabs",
                 "host.place-activity",
                 "host.place-activity-cleared",
                 "host.thread-place-changed",
@@ -1982,8 +2023,7 @@ integration("Browser presence and conversation usage", () => {
     );
     if (opened.type !== "browser.session.start") throw new Error("Unexpected command");
     const sessionId = opened.session.id;
-    runtime.sendServer({
-      type: "browser.surfaces.changed",
+    runtime.publishTabs({
       surfaces: [
         {
           id: "page-shared",
@@ -1998,9 +2038,9 @@ integration("Browser presence and conversation usage", () => {
       ],
     });
     await until(async () =>
-      (await host.runtime.browser.bootstrap(host.ownerId)).sessions
-        .find((session) => session.id === sessionId)
-        ?.tabCatalog?.tabs.some((tab) => tab.id === "page-shared")
+      (await browserRows(host.runtime.browser, host.ownerId))
+        .browserTabs!.sessionTabs(sessionId)
+        .some((tab) => tab.id === "page-shared")
         ? true
         : undefined,
     );
@@ -2047,7 +2087,11 @@ integration("Browser presence and conversation usage", () => {
       await attach;
       // Acting is attributed once the Host has resolved this Run as the tab's holder.
       await until(async () =>
-        [...(await host.runtime.browser.catalogsForViewers(sessionId)).values()].some((catalog) =>
+        [
+          ...new Map([
+            [host.ownerId, await browserRows(host.runtime.browser, host.ownerId, sessionId)],
+          ]).values(),
+        ].some((catalog) =>
           catalog.tabs.some(
             (tab) =>
               tab.id === "page-shared" &&
@@ -2176,7 +2220,7 @@ integration("Browser presence and conversation usage", () => {
     // A. The page changes. Viewers are patched; nothing is reread.
     const beforeNavigation = owner.messages.length;
     const beforeNavigationElsewhere = ownerElsewhere.messages.length;
-    browserComputer.sendServer({
+    browserComputer.publishTabs({
       surfaces: [
         {
           active: true,
@@ -2185,16 +2229,23 @@ integration("Browser presence and conversation usage", () => {
           url: "https://shop.example/shoes?size=10",
         },
       ],
-      type: "browser.surfaces.changed",
     });
-    const navigated = await until(() => presenceOf(owner, beforeNavigation, sessionId)[0]);
+    const navigated = await until(() =>
+      presenceOf(owner, beforeNavigation, sessionId).find(
+        (presence) => (presence.page as { title: string } | null)?.title === "Running shoes",
+      ),
+    );
     expect(navigated).toEqual({
       acting: false,
       page: { title: "Running shoes", url: "https://shop.example" },
       sessionId,
     });
-    await until(() => presenceOf(ownerElsewhere, beforeNavigationElsewhere, sessionId)[0]);
-    browserComputer.sendServer({
+    await until(() =>
+      presenceOf(ownerElsewhere, beforeNavigationElsewhere, sessionId).find(
+        (presence) => (presence.page as { title: string } | null)?.title === "Running shoes",
+      ),
+    );
+    browserComputer.publishTabs({
       surfaces: [
         {
           active: true,
@@ -2203,7 +2254,6 @@ integration("Browser presence and conversation usage", () => {
           url: "https://shop.example/shoes?size=10&color=blue",
         },
       ],
-      type: "browser.surfaces.changed",
     });
     await until(() =>
       presenceOf(owner, beforeNavigation, sessionId).find(
@@ -2269,9 +2319,7 @@ integration("Browser presence and conversation usage", () => {
         headers: host.ownerHeaders,
       },
     );
-    const listed = bootstrap.browser.sessions.find(
-      (session: { id: string }) => session.id === sessionId,
-    );
+    const listed = bootstrap.browser.groups.rows.find((session) => session.sessionId === sessionId);
     expect(listed).toMatchObject({
       acting: true,
       attachedRunIds: [run.runId],
@@ -2296,8 +2344,7 @@ integration("Browser presence and conversation usage", () => {
 
     // A later attach sees navigation's new title/site and invalidates cached usage.
     const beforeRenamed = owner.messages.length;
-    browserComputer.sendServer({
-      type: "browser.surfaces.changed",
+    browserComputer.publishTabs({
       surfaces: [
         {
           active: true,
@@ -2375,7 +2422,7 @@ integration("Browser presence and conversation usage", () => {
       },
     );
     expect(
-      afterEnd.browser.sessions.find((session: { id: string }) => session.id === sessionId),
+      afterEnd.browser.groups.rows.find((session) => session.sessionId === sessionId),
     ).toMatchObject({ acting: false, attachedRunIds: [] });
 
     // E. Closing a browser while an agent acts clears every viewer, including a
@@ -2426,8 +2473,7 @@ integration("Browser presence and conversation usage", () => {
     );
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed", beforeClose)[0]);
     await until(() =>
-      device.getSnapshot().browserSessions.find((session) => session.id === sessionId)?.state ===
-      "closed"
+      !device.getSnapshot().browserSessions.some((session) => session.id === sessionId)
         ? true
         : undefined,
     );
@@ -2437,7 +2483,16 @@ integration("Browser presence and conversation usage", () => {
     const strangerBrowserMessages = strangerSocket.messages.filter((message) =>
       String(message.type).startsWith("host.browser"),
     );
-    expect(strangerBrowserMessages).toEqual([]);
+    expect(strangerBrowserMessages).toEqual([
+      {
+        type: "host.browser-groups",
+        stream: { op: "begin", generation: expect.any(String) },
+      },
+      {
+        type: "host.browser-groups",
+        stream: { op: "end", count: 0, revision: 0, meta: {} },
+      },
+    ]);
     cdp.close();
 
     const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
@@ -2615,9 +2670,7 @@ integration("Browser presence and conversation usage", () => {
       {},
       { headers: host.ownerHeaders },
     );
-    const listed = catalog.browser.sessions.find(
-      (session: { id: string }) => session.id === sessionId,
-    );
+    const listed = catalog.browser.groups.rows.find((session) => session.sessionId === sessionId);
     expect(listed?.threadIds).toEqual([run.threadId]);
     const usage = await testRpcData(
       host.origin,
@@ -2790,47 +2843,6 @@ integration("Browser presence and conversation usage", () => {
     expect(ofType(owner, "host.browser-usage-changed", beforeOutage)).toEqual([]);
     cdp.close();
 
-    // 5. Presence that cannot be addressed while the store is unavailable is
-    // sent once it is, though nothing about the page changes again.
-    await new Promise<void>((resolve) => setTimeout(resolve, 600));
-    const beforePresenceOutage = owner.messages.length;
-    await sql`alter table browser_profiles rename to browser_profiles_unavailable`.execute(
-      host.store.database,
-    );
-    let restoredAt = 0;
-    try {
-      browserComputer.sendServer({
-        surfaces: [
-          {
-            active: true,
-            id: "session",
-            title: "Price list — sorted",
-            url: "https://shop.example/prices?q=boots&sort=price",
-          },
-        ],
-        type: "browser.surfaces.changed",
-      });
-      await new Promise<void>((resolve) => setTimeout(resolve, 700));
-      expect(
-        presenceOf(owner, beforePresenceOutage, sessionId).some(
-          (presence) =>
-            (presence.page as { title: string } | null)?.title === "Price list — sorted",
-        ),
-      ).toBe(false);
-    } finally {
-      await sql`alter table browser_profiles_unavailable rename to browser_profiles`.execute(
-        host.store.database,
-      );
-      restoredAt = Date.now();
-    }
-    const resent = await until(() =>
-      presenceOf(owner, beforePresenceOutage, sessionId).find(
-        (presence) => (presence.page as { title: string } | null)?.title === "Price list — sorted",
-      ),
-    );
-    const presenceAfterRestoreMs = Date.now() - restoredAt;
-    expect(presenceAfterRestoreMs).toBeLessThan(5_000);
-
     const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
     if (directory) {
       await mkdir(directory, { recursive: true });
@@ -2865,10 +2877,6 @@ integration("Browser presence and conversation usage", () => {
             attachWhileUsageUnrecordable: {
               answer: attachAnswer,
               usageNotices: ofType(owner, "host.browser-usage-changed", beforeOutage).length,
-            },
-            presenceAfterStoreOutage: {
-              presence: resent,
-              deliveredAfterRestoreMs: presenceAfterRestoreMs,
             },
           },
           null,

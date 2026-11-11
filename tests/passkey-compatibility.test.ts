@@ -15,6 +15,7 @@ import {
 } from "../packages/browser-runtime-core/src/test-support/fakes.js";
 import {
   BrowserAttachTicketClaimsSchema,
+  BrowserRuntimeServerMessageSchema,
   BrowserServerMessageSchema,
   createBrowserSessionId,
 } from "../packages/protocol/src/browser.js";
@@ -47,7 +48,7 @@ it.each([
       modules: {
         browser: {
           runtimeId: "runtime",
-          wireVersion: 1,
+          wireVersion: 2,
           ...(advertised ? { passkeys: 1 } : {}),
         },
       },
@@ -61,6 +62,7 @@ it.each([
     privateKey: generateKeyPairSync("ed25519").privateKey,
   });
   const ticket = signer.issue({
+    creationOrigin: "person",
     access: "read-write",
     identity: { kind: "fresh" },
     runtimeId: "runtime",
@@ -72,7 +74,7 @@ it.each([
     Buffer.from(ticket.split(".")[1]!, "base64url").toString("utf8"),
   );
   expect(BrowserAttachTicketClaimsSchema.parse(payload).passkeys).toBe(enabled ? 1 : undefined);
-  expect(welcome.browserWireVersion).toBe(1);
+  expect(welcome.browserWireVersion).toBe(2);
 });
 
 it("keeps passkeys disabled without a signed page-provider claim", async () => {
@@ -94,7 +96,7 @@ it("keeps passkeys disabled without a signed page-provider claim", async () => {
     await runtime.shutdown();
   }
   for (const message of sink.messages)
-    BrowserServerMessageSchema.parse(JSON.parse(JSON.stringify(message)));
+    BrowserRuntimeServerMessageSchema.parse(JSON.parse(JSON.stringify(message)));
 });
 
 it("keeps ceremony details away from viewers without the capability", async () => {

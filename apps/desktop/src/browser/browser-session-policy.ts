@@ -5,6 +5,9 @@ import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/pa
 export interface BrowserSessionPolicyOptions {
   readonly provider?: boolean;
   readonly requestGate?: BrowserSessionRequestGate;
+  readonly onUploadRequest?: (webContentsId: number, requestId: number) => void;
+  readonly onRequestFinished?: (requestId: number) => void;
+  readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -29,11 +32,19 @@ export function applyBrowserSessionPolicy(
 ): void {
   if (options.requestGate) bindBrowserSessionRequestGate(session, options.requestGate);
   session.webRequest.onBeforeRequest((details, callback) => {
+    if (details.webContentsId !== undefined && !["GET", "HEAD"].includes(details.method))
+      options.onUploadRequest?.(details.webContentsId, details.id);
+    if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
+      options.onMainFrameRequest?.(details.webContentsId, details.method);
     if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
     else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);
     else callback({ cancel: false });
   });
+  if (options.onRequestFinished) {
+    session.webRequest.onCompleted((details) => options.onRequestFinished!(details.id));
+    session.webRequest.onErrorOccurred((details) => options.onRequestFinished!(details.id));
+  }
   session.setPermissionCheckHandler((_contents, permission) => permission === "fullscreen");
   session.setPermissionRequestHandler((_contents, permission, callback) =>
     callback(permission === "fullscreen"),

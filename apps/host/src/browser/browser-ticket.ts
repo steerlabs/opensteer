@@ -12,6 +12,7 @@ const ticketType = "opensteer-browser-attach+jwt";
 
 interface IssueBrowserAttachTicketInput {
   readonly access: "read-write";
+  readonly creationOrigin: "agent" | "person";
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
@@ -26,7 +27,6 @@ interface IssueBrowserAttachTicketInput {
   readonly clipboard?: boolean;
   readonly workspaceTabRestoreVersion?: 1;
   readonly initialSurfaceId?: BrowserAttachTicketClaims["initialSurfaceId"];
-  readonly dormantSurfaceIds?: BrowserAttachTicketClaims["dormantSurfaceIds"];
   /** The session's immutable native binding, or a temporary Guest. */
   readonly identity: BrowserAttachTicketIdentity;
   readonly runtimeId: string;
@@ -122,6 +122,7 @@ export class BrowserAttachTicketSigner {
     const issuedAt = this.#clock();
     const claims: BrowserAttachTicketClaims = BrowserAttachTicketClaimsSchema.parse({
       access: input.access,
+      creationOrigin: input.creationOrigin,
       ...(input.basicInput === 1 ? { basicInput: 1 } : {}),
       ...(input.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(input.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
@@ -144,13 +145,12 @@ export class BrowserAttachTicketSigner {
         ? {
             workspaceTabRestoreVersion: input.workspaceTabRestoreVersion,
             initialSurfaceId: input.initialSurfaceId,
-            dormantSurfaceIds: input.dormantSurfaceIds,
           }
         : {}),
       operationExpiresAt:
         input.operationExpiresAt ?? new Date(issuedAt.getTime() + 18_000).toISOString(),
       remainingBudgetMs: Math.min(18_000, input.remainingBudgetMs ?? 18_000),
-      wireVersion: 1,
+      wireVersion: 2,
       audience: "opensteer-browser-runtime",
       expiresAt: new Date(issuedAt.getTime() + this.#lifetimeMs).toISOString(),
       identity: input.identity,

@@ -24,7 +24,8 @@ vi.mock("../browser/electron-browser-launcher.js", () => ({
     close = fakes.close;
   },
 }));
-vi.mock("@opensteer/browser-runtime-core", () => ({
+vi.mock("@opensteer/browser-runtime-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opensteer/browser-runtime-core")>()),
   BrowserRuntime: class {
     constructor(options: unknown) {
       fakes.runtime(options);

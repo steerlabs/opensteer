@@ -1,10 +1,18 @@
+import { browserLineages } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeHasAgents, placeList, type AppTab, type HostSnapshot } from "@opensteer/client/host";
+import {
+  BrowserTabStore,
+  placeHasAgents,
+  placeList,
+  type AppTab,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
@@ -314,8 +322,12 @@ describe("tabs that read like a browser's", () => {
     // An opened tab sits right after its opener, at the same level as every tab.
     const session = client
       .getSnapshot()
-      .browserSessions.find((value) => value.tabCatalog?.tabs.some((tab) => tab.openerId))!;
-    const opened = session.tabCatalog!.tabs.find((tab) => tab.openerId)!;
+      .browserSessions.find((value) =>
+        (value.browserTabs?.sessionTabs(value?.id) ?? []).some((tab) => tab.openerId),
+      )!;
+    const opened = (session.browserTabs?.sessionTabs(session?.id) ?? []).find(
+      (tab) => tab.openerId,
+    )!;
     const openedKey = `browser:${session.id}:${opened.id}`;
     const keys = rowKeys();
     expect(keys[keys.indexOf(openedKey) - 1]).toBe(`browser:${session.id}:${opened.openerId}`);
@@ -773,7 +785,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       throw new Error("Not a browser tab");
     const { sessionId, tabId } = place.destination;
     const value = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
-    return { sessionId, tabId, catalog: value.tabCatalog! };
+    return { sessionId, tabId, catalog: value.browserTabs!.inventory(value?.id)! };
   };
   async function dispatch(target: EventTarget, event: Event) {
     await act(async () => {
@@ -918,7 +930,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
   it("follows a popup the person's input opened once it is listed, drops it if they left, and closing it returns to the tab that opened it", async () => {
     let announce: (popupId: string) => void = () => undefined;
     let unlisted: string | null = null;
-    const seen = new WeakMap<HostSnapshot, Map<string | null, HostSnapshot>>();
+    let publish = () => {};
     await mount((source) => {
       Object.assign(source, {
         subscribeBrowserPopups: (_sessionId: string, _tabId: string, listener: typeof announce) => {
@@ -926,28 +938,25 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
           return () => undefined;
         },
       });
-      const read = source.getSnapshot;
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-        const snapshot = read();
-        const views = seen.get(snapshot) ?? new Map<string | null, HostSnapshot>();
-        seen.set(snapshot, views);
-        const view = views.get(unlisted) ?? {
-          ...snapshot,
-          browserSessions: snapshot.browserSessions.map((value) =>
-            value.tabCatalog
-              ? {
-                  ...value,
-                  tabCatalog: {
-                    ...value.tabCatalog,
-                    tabs: value.tabCatalog.tabs.filter((row) => row.id !== unlisted),
-                  },
-                }
-              : value,
-          ),
-        };
-        views.set(unlisted, view);
-        return view;
+      source.getSnapshot();
+      const upstream = source.browserTabs;
+      const store = new BrowserTabStore();
+      store.seed({
+        groups: { rows: upstream.groups().ids.map((id) => upstream.group(id)!), complete: true },
+        tabs: [],
       });
+      let revision = 0;
+      publish = () => {
+        for (const groupId of upstream.groups().ids) {
+          const group = upstream.group(groupId)!;
+          const rows = upstream.sessionTabs(group.sessionId).filter((row) => row.id !== unlisted);
+          store.applyTabs(groupId, { op: "begin", generation: `popup-fixture-${revision++}` });
+          store.applyTabs(groupId, { op: "rows", rows: [...rows] });
+          store.applyTabs(groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+        }
+      };
+      publish();
+      vi.spyOn(source, "browserTabs", "get").mockReturnValue(store);
       return "/";
     });
     const opener = tab("Your reading list");
@@ -958,13 +967,17 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       const { sessionId, tabId, catalog } = session(close);
       await act(async () => {
         await client.closeBrowserTab(sessionId, tabId, catalog);
+        publish();
       });
       await settle(60);
     };
 
     await click(main(opener.key));
     unlisted = session(popup).tabId;
-    await act(async () => announce(session(popup).tabId));
+    await act(async () => {
+      publish();
+      announce(session(popup).tabId);
+    });
     await click(main(elsewhere.key));
     await list(tab("Launch brief"));
     expect(shown()).toBe(elsewhere.key);
@@ -974,7 +987,10 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     const path = history.at(-1)!.path;
     let before = history.length;
     unlisted = session(popup).tabId;
-    await act(async () => announce(session(popup).tabId));
+    await act(async () => {
+      publish();
+      announce(session(popup).tabId);
+    });
     await settle(60);
     expect(shown()).toBe(opener.key);
     await list(tab("Coffee shortlist"));
@@ -1003,19 +1019,22 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
         const snapshot = read();
         let changed = seen.get(snapshot);
         if (!changed) {
-          changed = {
-            ...snapshot,
-            browserSessions: snapshot.browserSessions.map((value) =>
-              value.id === closing && value.state === "ready"
-                ? { ...value, state: "closing" as const }
-                : value,
-            ),
-            workspaceTabs: snapshot.workspaceTabs?.map((lineage) =>
+          changed = seedBrowserSnapshot(
+            {
+              ...snapshot,
+              browserSessions: snapshot.browserSessions.map((value) =>
+                value.id === closing && value.state === "ready"
+                  ? { ...value, state: "closing" as const }
+                  : value,
+              ),
+            } as HostSnapshot,
+            browserLineages(snapshot)?.map((lineage) =>
               lineage.session.id === closing
                 ? { ...lineage, unavailableReason: "This browser is closing." }
                 : lineage,
             ),
-          };
+          );
+          changed = seedBrowserSnapshot(changed);
           seen.set(snapshot, changed);
         }
         return changed;

@@ -187,7 +187,7 @@ describe("BrowserCdpRelay", () => {
         const type = message.action.type;
         const result =
           type === "session.tabs"
-            ? { type, tabs: [binding] }
+            ? { type, nextCursor: null, tabs: [binding] }
             : type === "surface.attach"
               ? { type, binding }
               : type === "page.info"
@@ -1002,7 +1002,18 @@ async function fakeCdpServer(
     authorization = request.headers.authorization;
     socket.on("message", (raw) => {
       const message = JSON.parse(raw.toString()) as FakeCdpRequest;
-      socket.send(JSON.stringify({ id: message.id, result: resultFor(message) }));
+      const result =
+        message.method === "Opensteer.listTabs"
+          ? {
+              tabs: (
+                resultFor({ ...message, method: "Target.getTargets" }) as {
+                  targetInfos: Record<string, unknown>[];
+                }
+              ).targetInfos.map((tab) => ({ ...tab, state: "live" })),
+              nextCursor: null,
+            }
+          : resultFor(message);
+      socket.send(JSON.stringify({ id: message.id, result }));
     });
   });
   return {

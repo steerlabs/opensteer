@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { HostClient, HostSnapshot } from "../host/client.js";
-import { useHostSelector } from "./use-host-snapshot.js";
+import { useEffect, useRef, useState } from "react";
+import type { HostClient } from "../host/client.js";
+import { useBrowserSessionGroupId, useBrowserTab } from "./use-browser-tabs.js";
 
 /**
  * Brings forward a popup this client's own input opened, as a browser does,
@@ -30,16 +30,8 @@ export function useBrowserPopupFollow(
     };
   }, [hostClient, sessionId, tabId]);
   const popupId = opened?.openerId === tabId ? (opened?.popupId ?? null) : null;
-  const selectListed = useCallback(
-    (snapshot: HostSnapshot) =>
-      popupId !== null &&
-      snapshot.browserSessions.some(
-        (session) =>
-          session.id === sessionId && session.tabCatalog?.tabs.some((row) => row.id === popupId),
-      ),
-    [popupId, sessionId],
-  );
-  const listed = useHostSelector(hostClient, selectListed);
+  const groupId = useBrowserSessionGroupId(hostClient, sessionId ?? undefined);
+  const listed = useBrowserTab(hostClient, groupId, popupId ?? undefined);
   const latest = useRef(follow);
   latest.current = follow;
   useEffect(() => {

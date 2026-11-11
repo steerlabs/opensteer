@@ -3,7 +3,7 @@ import type { BrowserTabOpenInput, HostSnapshot } from "./client.js";
 import type { StartPageProfileChoice } from "./start-page-model.js";
 
 type DeviceSource = Pick<HostSnapshot, "browserProfileHomes" | "machines">;
-type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "workspaceTabs">;
+type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "browserTabs">;
 
 /**
  * Whether the device the reader is at lends a browser in this Deployment now,
@@ -93,7 +93,7 @@ export function recentProfileOn(snapshot: BrowsingSource, deviceId: string): str
   const latest = new Map<string, number>();
   const sessions = [
     ...snapshot.browserSessions,
-    ...(snapshot.workspaceTabs ?? []).map((group) => group.session),
+    ...(snapshot.browserTabs?.groups().ids ?? []).map((id) => snapshot.browserTabs!.group(id)!),
   ];
   for (const session of sessions) {
     if (session.placement.runnerId !== deviceId || session.profileId === null) continue;

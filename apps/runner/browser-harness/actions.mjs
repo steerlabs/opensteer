@@ -351,8 +351,17 @@ export function createActionsHarness(client, initialTargetId) {
     if (event.type === "dialog.changed") dialogs.set(event.surfaceId, event.dialog);
   });
   const listTabs = async () => {
-    const result = await client.request({}, { type: "session.tabs" });
-    inventory = result.tabs;
+    const tabs = [];
+    let cursor;
+    do {
+      const result = await client.request(
+        {},
+        { type: "session.tabs", ...(cursor ? { cursor } : {}) },
+      );
+      tabs.push(...result.tabs);
+      cursor = result.nextCursor;
+    } while (cursor);
+    inventory = tabs;
     for (const binding of inventory) bindings.set(binding.surfaceId, binding);
     return inventory.map(publicTab);
   };
@@ -381,6 +390,13 @@ export function createActionsHarness(client, initialTargetId) {
         type: bindings.get(surfaceId)?.state === "suspended" ? "surface.resume" : "surface.attach",
       },
     );
+    if (result.binding.state === "live" && bindings.get(surfaceId)?.state === "suspended") {
+      claimed.delete(surfaceId);
+      dialogs.delete(surfaceId);
+      process.stderr.write(
+        `[opensteer] Tab ${surfaceId} was asleep and has resumed. Observe it again before acting; it may have reloaded, so discard old page handles.\n`,
+      );
+    }
     bindings.set(surfaceId, result.binding);
     claimed.add(surfaceId);
     return result.binding;
@@ -393,6 +409,14 @@ export function createActionsHarness(client, initialTargetId) {
       return result;
     } catch (error) {
       if (error.dialog) dialogs.set(binding.surfaceId, error.dialog);
+      if (error.code === "target-suspended") {
+        claimed.delete(binding.surfaceId);
+        bindings.delete(binding.surfaceId);
+        dialogs.delete(binding.surfaceId);
+        process.stderr.write(
+          `[opensteer] Tab ${binding.surfaceId} is asleep. Resume it with --tab or switchTab, then observe it again before acting; it will reload and old page handles are invalid.\n`,
+        );
+      }
       if (["stale-document", "stale-geometry"].includes(error.code)) {
         const fresh = await client
           .request({ surfaceId: binding.surfaceId }, { type: "surface.attach" })
@@ -709,7 +733,7 @@ export function createActionsHarness(client, initialTargetId) {
     detach: async () => {},
     drainEvents: () => client.drainEvents(),
     switchTab: async (target) => {
-      const surfaceId = typeof target === "string" ? target : target.targetId;
+      const surfaceId = typeof target === "string" ? target : (target.surfaceId ?? target.targetId);
       await listTabs();
       const known = bindings.get(surfaceId);
       if (!known || closed.has(surfaceId))
@@ -733,7 +757,7 @@ export function createActionsHarness(client, initialTargetId) {
     },
     closeTab: async (target) => {
       const binding = target
-        ? bindings.get(typeof target === "string" ? target : target.targetId)
+        ? bindings.get(typeof target === "string" ? target : (target.surfaceId ?? target.targetId))
         : await bind();
       if (!binding)
         throw new BrowserActionError("target-closed", "Read listTabs before closing that tab");

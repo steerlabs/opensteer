@@ -86,22 +86,19 @@ export function runPlaceDestination(
   snapshot: {
     readonly machines: readonly MachineSummary[];
     readonly browserSessions?: readonly BrowserSessionSummary[];
-    readonly workspaceTabs?: HostSnapshot["workspaceTabs"];
+    readonly browserTabs?: HostSnapshot["browserTabs"];
   },
 ): SurfaceDestination | null {
   const place = entry.data.place;
   if (place.kind === "browser") {
-    const durable = snapshot.workspaceTabs
-      ?.flatMap((group) => group.tabs ?? [])
-      .find((tab) => tab.id === place.surfaceId);
-    const candidates = snapshot.browserSessions?.filter(
-      (session) =>
-        session.state === "ready" &&
-        session.tabCatalog?.tabs.some((tab) => tab.id === place.surfaceId),
-    );
-    const ready =
-      candidates?.find((session) => session.id === durable?.sessionId) ?? candidates?.[0];
-    return { kind: "browser", sessionId: ready?.id ?? place.sessionId, tabId: place.surfaceId };
+    const store = snapshot.browserTabs;
+    const groupId = store?.groupForSession(place.sessionId) ?? store?.groupForTab(place.surfaceId);
+    const tab = groupId ? store?.tab(groupId, place.surfaceId) : undefined;
+    return {
+      kind: "browser",
+      sessionId: tab?.sessionId ?? place.sessionId,
+      tabId: place.surfaceId,
+    };
   }
   const machine = snapshot.machines.find((machine) => machine.id === place.machineId);
   if (place.kind === "phone")

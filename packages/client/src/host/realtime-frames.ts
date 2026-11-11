@@ -1,6 +1,5 @@
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  browserTabCatalogMaxBytes,
   isRealtimeWireField,
   realtimeEnvelopeTypes,
   type HostToClientMessage,
@@ -8,7 +7,7 @@ import {
 } from "@opensteer/protocol";
 import { z } from "zod";
 
-export const maxInboundFrameCharacters = browserTabCatalogMaxBytes + 4 * 1024;
+export const maxInboundFrameCharacters = 2 * 1024 * 1024 + 4 * 1024;
 
 /**
  * How long a viewer socket must stay up before its failures are forgotten.
@@ -26,6 +25,7 @@ export const healthySocketMs = 30_000;
  */
 export type RealtimeFrameLoss =
   | "bootstrap"
+  | "browser-stream"
   | "browser-history"
   | "browser-usage"
   | "machines"
@@ -54,10 +54,10 @@ const realtimeFrameLosses = {
   "host.connections-changed": "snapshot",
   "host.plugins-changed": "snapshot",
 
-  "host.browser-presence": "bootstrap",
+  "host.browser-groups": "browser-stream",
+  "host.browser-tabs": "browser-stream",
   "host.app-tabs-changed": "bootstrap",
   "host.browser-sessions-changed": "bootstrap",
-  "host.browser-tabs-changed": "bootstrap",
   "host.computer-presence": "bootstrap",
   "host.computer-view.changed": "bootstrap",
   "host.computer-view.removed": "bootstrap",

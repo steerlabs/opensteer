@@ -79,7 +79,7 @@ test("listed browser edits and source siblings run once through test:browser", a
       const plan = localPlan([changed], [], [source, file]);
       assert.deepEqual(
         plan.commands.filter((command) => command[0] === "test:browser"),
-        [["test:browser", "--", file]],
+        [["test:browser", file]],
       );
       assert.ok(
         !plan.commands.some((command) => command.includes("vitest") && command.includes(file)),

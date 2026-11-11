@@ -1,3 +1,4 @@
+import type { Page, Request } from "playwright-core";
 import { nativeRuntimeProfile } from "./native-profile.test-support.js";
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { once } from "node:events";
@@ -66,6 +67,125 @@ import {
   waitFor,
   waitForAsync,
 } from "./chromium.test-support.js";
+it("keeps a 64 MiB upload alive through completion and the final sleep recheck", async () => {
+  const uploads: import("node:http").IncomingMessage[] = [];
+  let arrived = Promise.withResolvers<void>();
+  let completed = Promise.withResolvers<number>();
+  let aborted = false;
+  const server = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.end("Ready");
+      return;
+    }
+    uploads.push(request);
+    let bytes = 0;
+    request.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+    });
+    request.on("aborted", () => {
+      aborted = true;
+    });
+    request.on("end", () => {
+      response.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Length": 8,
+        Connection: "close",
+      });
+      response.end("Uploaded");
+      completed.resolve(bytes);
+    });
+    request.pause();
+    arrived.resolve();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+  const browser = await new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  }).launch({
+    partitionKey: `session:${validClaims().sessionId}`,
+    storage: { kind: "guest" },
+    initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+  });
+  cleanup.push(() => browser.close());
+  const ledger = new SurfaceLedger(browser.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const record = [...ledger.policyRecords()][0]!;
+  const { page, cdp } = ledger.active()!;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Upload server has no address");
+  const url = `http://127.0.0.1:${address.port}/`;
+  await cdp.send("Page.navigate", { url });
+  await vi.waitFor(
+    () => {
+      expect(record.url).toBe(url);
+      expect(record.live?.loading).toBe(false);
+    },
+    { timeout: 3000 },
+  );
+  const nativePage = (page as unknown as { page: Page }).page;
+  let finished: Promise<Request> | undefined;
+  const startUpload = async () => {
+    finished = nativePage.waitForEvent("requestfinished", {
+      predicate: (request) => request.url().endsWith("/upload"),
+      timeout: 5000,
+    });
+    void finished.catch(() => undefined);
+    // Blob bodies keep Playwright from copying the payload into request metadata.
+    await nativePage.evaluate(
+      "void fetch('/upload', { method: 'POST', body: new Blob([new Uint8Array(64 * 1024 * 1024)]) }).then(response => response.text()).catch(() => {})",
+    );
+    await withTimeout(arrived.promise, 5000, {
+      timeoutError: () => new Error("Upload never reached server"),
+    });
+  };
+  await startUpload();
+  expect(record.live?.loading).toBe(false);
+  expect(await page.keepAwake!()).toBe("upload");
+  expect(await ledger.sleep(record.id, () => null)).toBe(false);
+  uploads.at(-1)!.resume();
+  expect(
+    await withTimeout(completed.promise, 5000, {
+      timeoutError: () => new Error("Upload never completed"),
+    }),
+  ).toBe(64 * 1024 * 1024);
+  await finished;
+  expect(
+    await withTimeout(Promise.resolve(page.keepAwake!()), 2000, {
+      timeoutError: () => new Error("Protection did not settle after upload completion"),
+    }),
+  ).toBeNull();
+  arrived = Promise.withResolvers<void>();
+  completed = Promise.withResolvers<number>();
+  page.captureRestore = async () => {
+    await startUpload();
+    return {};
+  };
+  expect(await ledger.sleep(record.id, () => null)).toBe(false);
+  expect(record.live).not.toBeNull();
+  uploads.at(-1)!.resume();
+  expect(
+    await withTimeout(completed.promise, 5000, {
+      timeoutError: () => new Error("Final upload never completed"),
+    }),
+  ).toBe(64 * 1024 * 1024);
+  await finished;
+  expect(
+    await withTimeout(Promise.resolve(page.keepAwake!()), 2000, {
+      timeoutError: () => new Error("Protection did not settle after upload completion"),
+    }),
+  ).toBeNull();
+  expect(aborted).toBe(false);
+});
+
 async function verifyNativeProfilePersistence(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "os-native-chromium-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
@@ -273,8 +393,11 @@ describe("real Chromium runtime", () => {
     const binding = ledger.binding(ledger.snapshot()[0]!.id)!;
     const fragmentUrl = `${site.origin}/plain#/document/42`;
     await binding.cdp.send("Page.navigate", { url: fragmentUrl });
-    await waitForLedgerState(ledger, () => ledger.durableSnapshot()[0]?.url === fragmentUrl);
-    expect(ledger.durableSnapshot()[0]?.url).toBe(fragmentUrl);
+    await waitForLedgerState(
+      ledger,
+      () => ledger.toRecord(binding.surface.id)?.url === fragmentUrl,
+    );
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe(fragmentUrl);
     const reloaded = new Promise<void>((resolve) => {
       const loaded = () => {
         binding.cdp.off("Page.loadEventFired", loaded);
@@ -284,11 +407,11 @@ describe("real Chromium runtime", () => {
     });
     await binding.cdp.send("Page.reload");
     await withBrowserTestSignal(reloaded);
-    expect(ledger.durableSnapshot()[0]?.url).toBe(fragmentUrl);
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe(fragmentUrl);
     const longUrl = `${site.origin}/plain?q=${"x".repeat(9000)}#/document/43`;
     await binding.cdp.send("Page.navigate", { url: longUrl });
-    await waitForLedgerState(ledger, () => ledger.durableSnapshot()[0]?.url === longUrl);
-    expect(ledger.durableSnapshot()[0]?.url).toBe(longUrl);
+    await waitForLedgerState(ledger, () => ledger.toRecord(binding.surface.id)?.url === longUrl);
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe(longUrl);
     const overflowUrl = `${site.origin}/plain#${"x".repeat(16400)}`;
     await binding.cdp.send("Page.navigate", { url: overflowUrl });
     await waitFor(() => binding.page.url() === overflowUrl);
@@ -301,9 +424,9 @@ describe("real Chromium runtime", () => {
     });
     await waitForLedgerState(
       ledger,
-      () => ledger.durableSnapshot()[0]?.url === "opensteer:unavailable-url",
+      () => ledger.toRecord(binding.surface.id)?.url === "opensteer:unavailable-url",
     );
-    expect(ledger.durableSnapshot()[0]?.url).toBe("opensteer:unavailable-url");
+    expect(ledger.toRecord(binding.surface.id)?.url).toBe("opensteer:unavailable-url");
     const artifact = join(
       process.env.OPENSTEER_DURABLE_URL_EVIDENCE_DIR ?? tmpdir(),
       "durable-url-engine.json",
@@ -318,7 +441,7 @@ describe("real Chromium runtime", () => {
           fragmentUrl,
           longUrlLength: longUrl.length,
           overflowUrlLength: overflowUrl.length,
-          descriptor: ledger.durableSnapshot()[0],
+          descriptor: ledger.toRecord(binding.surface.id),
         },
         null,
         2,
@@ -834,16 +957,12 @@ describe("real Chromium runtime", () => {
     }
     // The viewer already holds the inventories sent before this window, so a frame of
     // a geometry they announced is in order whenever it lands.
-    const announcedBefore =
-      sink.messages
-        .flatMap((message) => (message.type === "browser.surfaces.changed" ? [message] : []))
-        .at(-1)
-        ?.surfaces.find((surface) => surface.id === y.surfaceId)?.geometryRevision ?? -1;
+    const announcedBefore = sink.tabs.rows.get(y.surfaceId)?.geometryRevision ?? -1;
     const order: { type: string; revision: number }[] = [];
     let releaseList: (() => void) | undefined;
     let blockList = false;
     sink.sendServerImplementation = async (message) => {
-      if (message.type === "browser.surfaces.changed") {
+      if (message.type === "browser.tabs" && message.stream.op === "change") {
         if (blockList) {
           blockList = false;
           await new Promise<void>((resolve) => {
@@ -852,8 +971,7 @@ describe("real Chromium runtime", () => {
         }
         order.push({
           type: "inventory",
-          revision:
-            message.surfaces.find((surface) => surface.id === y.surfaceId)?.geometryRevision ?? 0,
+          revision: sink.tabs.rows.get(y.surfaceId)?.geometryRevision ?? 0,
         });
       }
     };
@@ -1468,18 +1586,10 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     );
     const personPopupSize = await pageSize(String(personPopupAttach.sessionId));
     expect(personPopupSize).toEqual(emulated);
-    const latestSurfaces = sink.messages
-      .filter((message) => message.type === "browser.surfaces.changed")
-      .at(-1);
-    expect(latestSurfaces).toMatchObject({
-      surfaces: expect.arrayContaining([
-        expect.objectContaining({
-          active: true,
-          id: personPopup.surface.id,
-          openerId: person.surface.id,
-        }),
-      ]),
+    expect(sink.tabs.rows.get(personPopup.surface.id)).toMatchObject({
+      openerId: person.surface.id,
     });
+    expect(sink.tabs.meta?.activeId).toBe(personPopup.surface.id);
 
     // A closed page fails instead of being replaced.
     await request("Target.closeTarget", { targetId: rootTargetId });
@@ -1982,6 +2092,134 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     expect(seen).not.toContain("/direct-private");
   });
 
+  it("sleeps its only page and wakes by address while the Chromium context survives", async () => {
+    let requests = 0;
+    const site = createServer((request, response) => {
+      requests++;
+      if (request.method === "POST" && request.url === "/redirect") {
+        response.writeHead(303, { location: "/get" }).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "text/html",
+        "set-cookie": "sleep=retained; SameSite=Lax",
+      });
+      response.end("<!doctype html><title>Reloaded tab</title>");
+    });
+    cleanup.push(async () => {
+      await new Promise<void>((resolve, reject) =>
+        site.close((error) => (error ? reject(error) : resolve())),
+      );
+    });
+    site.listen(0, "127.0.0.1");
+    await once(site, "listening");
+    const address = site.address();
+    if (!address || typeof address === "string") throw new Error("Missing sleep fixture address");
+    const url = `http://127.0.0.1:${address.port}/`;
+    const launcher = new PlaywrightChromiumLauncher({
+      chromiumSandbox: false,
+      executablePath,
+      headless: true,
+    });
+    const claims = validClaims({ workspaceTabRestoreVersion: 1 });
+    const browser = await launcher.launch({
+      initialViewport: { devicePixelRatio: 1, width: 800, height: 600 },
+      partitionKey: `session:${claims.sessionId}`,
+      sessionId: claims.sessionId,
+      storage: { kind: "guest" },
+    });
+    if (!browser.context.pages().length) await browser.context.createPage();
+    const router = new SessionCdpRouter(browser.cdp);
+    const files = new SessionFiles(testSessionFilesRoot());
+    const ledger = new SurfaceLedger(browser.context, {
+      claimTarget: (target) => router.claimTarget(claims.sessionId, target),
+      releaseTarget: (target) => router.releaseTarget(claims.sessionId, target),
+    });
+    router.registerSession(
+      claims.sessionId,
+      await browser.context.pages()[0]!.targetId(),
+      (target) => ledger.resolveTarget(target),
+      files.root,
+    );
+    cleanup.push(() => router.close());
+    cleanup.push(() => ledger.close());
+    await ledger.start();
+    const id = ledger.snapshot()[0]!.id;
+    await ledger.navigate(id, url);
+    await vi.waitFor(
+      () => expect(ledger.snapshot()[0]).toMatchObject({ title: "Reloaded tab", url }),
+      { timeout: 5000 },
+    );
+    const documentId = ledger.snapshot()[0]!.documentId;
+    const originalTarget = ledger.binding(id)!.targetId;
+    const initialRequests = requests;
+    expect(await ledger.sleep(id, () => null)).toBe(true);
+    expect(browser.context.pages()).toHaveLength(0);
+    expect(browser.context.isConnected?.()).toBe(true);
+    const targets = (await browser.cdp.send("Target.getTargets")) as {
+      targetInfos: { targetId: string; type: string }[];
+    };
+    const anchor = targets.targetInfos.find((target) => target.type === "page");
+    expect(anchor).toBeDefined();
+    await expect(browser.cdp.attach(anchor!.targetId)).rejects.toThrow(/not an attachable page/);
+    const sink = new FakeSink();
+    const controller = new BrowserController({
+      claims,
+      ledger,
+      cdpRouter: router,
+      files,
+      signIns: testSignIns(),
+      sink,
+      replaceSiteCookies: () => Promise.resolve(),
+    });
+    cleanup.push(() => controller.close());
+    await controller.start();
+    const requestId = randomUUID();
+    await controller.handle({
+      type: "cdp.command",
+      requestId,
+      command: { method: "Opensteer.resumeTab", parameters: { surfaceId: id } },
+    });
+    expect(
+      sink.messages.findLast((m) => m.type === "cdp.result" && m.requestId === requestId),
+    ).toMatchObject({ result: { surfaceId: id, reloaded: true } });
+    await vi.waitFor(
+      () => expect(ledger.snapshot()[0]).toMatchObject({ title: "Reloaded tab", url }),
+      { timeout: 5000 },
+    );
+    expect(ledger.snapshot()[0]!.documentId).not.toBe(documentId);
+    expect(ledger.binding(id)!.targetId).not.toBe(originalTarget);
+    expect(browser.context.pages()).toHaveLength(1);
+    expect(requests).toBeGreaterThan(initialRequests);
+    const cookie = await ledger
+      .binding(id)!
+      .cdp.send<{ result: { value: string } }>("Runtime.evaluate", {
+        expression: "document.cookie",
+        returnByValue: true,
+      });
+    expect(cookie.result.value).toContain("sleep=retained");
+    const binding = ledger.binding(id)!;
+    const post = async (action: string) => {
+      const loaded = Promise.withResolvers<void>();
+      const finished = () => loaded.resolve();
+      binding.cdp.on("Page.loadEventFired", finished);
+      try {
+        await binding.cdp.send("Runtime.evaluate", {
+          expression: `(() => { const form=document.createElement('form');form.method='POST';form.action=${JSON.stringify(action)};document.body.append(form);form.submit(); })()`,
+        });
+        await withTimeout(loaded.promise, 5000, {
+          timeoutError: () => new Error("POST navigation never finished"),
+        });
+      } finally {
+        binding.cdp.off("Page.loadEventFired", finished);
+      }
+    };
+    await post("/post");
+    expect(await binding.page.keepAwake?.()).toBe("post");
+    expect(await ledger.sleep(id, () => null)).toBe(false);
+    await post("/redirect");
+    expect(await binding.page.keepAwake?.()).toBeNull();
+  });
   it("navigates, streams, inputs, handles dialogs, tracks popups, and closes cleanly", async () => {
     const site = createServer((request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

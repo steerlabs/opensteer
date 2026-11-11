@@ -47,7 +47,7 @@ class TransportTest {
         val rawToken = tickets["cases"]!!.jsonArray.first().jsonObject.text("token", max = 16384)
         init { online() }
         fun online() {
-            val welcome = JsonObject(fences.obj("welcome") + mapOf("browserWireVersion" to JsonPrimitive(1), "browserAttachPublicKeys" to JsonArray(listOf(
+            val welcome = JsonObject(fences.obj("welcome") + mapOf("browserWireVersion" to JsonPrimitive(2), "browserAttachPublicKeys" to JsonArray(listOf(
                 Wire.fields("keyId" to JsonPrimitive("fixture"), "publicKeyPem" to tickets.getValue("publicKeyPem"))))))
             transport.online(socket, welcome)
             transport.fence()

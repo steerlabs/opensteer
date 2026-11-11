@@ -7,20 +7,23 @@ even when they share a profile, and a session's identity is fixed at creation. C
 
 ## Open workspace tabs
 
-The Host database owns durable tab descriptors; live sessions and CDP handles die with their
-connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
-restores only on its saved computer and profile, waiting rather than substitute another computer or
-Guest. Each opening of a tab restores it automatically at most once; after a failure it waits for
-the person's Retry, because every attempt starts a Browser Session. Guest website state is never
-reused across sessions: Android uses one private on-disk profile for all tabs and popups in that
-session, tombstoned before first use, cleared when its last tab or session ends, and deleted at the
-next startup. Other sessions never reuse it. This is not RAM-only browsing.
-Trigger and watch browsers write no tabs. Only a
-lineage's latest session can close its tabs, late updates never resurrect a closed row, and reopen
-makes a new row. Only committed navigation becomes a restore URL, except that a failed navigation
-restores to the address it tried, as browsers do, without any credentials typed into it. An overlong
-address is never truncated. A row saved before that still holds Chromium's error URL: it names no
-site, and reopening it is refused like any other address that cannot be reopened.
+A tab is a durable record; its live page is a runtime lease. Workspace lineages survive a session
+ending. Trigger and watch browsers write no tabs. Only a lineage's latest session can close its
+records, late updates never resurrect a closed row, and reopen makes a new row. Only committed
+navigation becomes a restore URL, except that failed navigation keeps its attempted address.
+Overlong addresses are never truncated; legacy Chromium error URLs cannot be reopened.
+
+Old document, node and object handles become invalid after wake. A dormant tab whose session ended
+needs a new binding on its saved computer and profile, never a substitute or Guest; neither path
+restarts a finished Run. Failed automatic restoration waits for the person's Retry. Guest website
+state never crosses sessions: Android's private on-disk profile is tombstoned before use, cleared
+when its last tab or session ends, and deleted at the next startup. Guest browsing is not RAM-only.
+
+Groups and tabs use one keyed-stream protocol. A client selects one carrier for its authorized
+catalog; a viewer receives only its addressed surface. A snapshot replaces the committed view only
+after its matching generation, end and count; changes apply in sequence. An unfinished snapshot
+never closes a tab. Durable closure requires an explicit remove from the runtime's committed
+stream, never an omission during assembly or browser teardown.
 
 The Host's 20-second open budget sits inside the client's 25-second deadline, which covers first
 paint. An uncertain open retries with its original key and replays the recorded outcome, so it never
@@ -28,11 +31,21 @@ starts a second browser. Tickets, native creation and navigation are never blind
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
 
-An agent often works several tabs at once, and its activity arrives once per page command. A tab
-change therefore reaches each connected viewer as that viewer's lineage, which a client applies
-without rereading its bootstrap, and a closed lineage keeps its revision so a slower earlier one
-cannot reopen it. A Run's place history moves at most once a second and always lands where the Run
-settles; its usage is written once per new tab or page, not on every switch between them.
+The Host supplies Run attachments, control subscriptions from every device, Watch previews and
+pending sign-in, card and passkey steps. The runtime decides when an unprotected page may sleep,
+using its memory budget and idle policy; missing Host state keeps it awake. Harness disconnects
+do not release a Run's hold. Watch alone never marks a tab as used by a person. Selecting a sleeping
+tab or explicitly resuming it as an agent wakes the existing record within its admitted session.
+
+Restore state stays in runtime memory and never enters a stream, row, database or log. Electron
+restores navigation history, the active entry, window scroll, ordinary form values and same-origin
+session storage. Password/file inputs, nested scroll and arbitrary application state are not
+promised. Playwright and phones retain the descriptor and reload its URL, so they promise no
+in-page state restoration. Ending the runtime loses in-memory restore state; the durable descriptor
+still permits reopening.
+
+A Run's place history moves at most once a second and always lands where the Run settles; its usage
+is written once per new tab or page, not on every switch between them.
 
 ## Agent access and input
 
@@ -61,12 +74,10 @@ counting scrolls would send a message per frame and refuse agents' points mid-sc
 after submission is `outcome-unknown`, never permission to retry a click or insertion. The wire is
 defined in [browser-actions](../packages/protocol/src/browser-actions.ts).
 
-Browsers may negotiate live/suspended surface state. A suspended tab keeps its last in-memory
-picture, or just its named row if none exists, and refuses addressed commands and input with
-`target-suspended`. Watching does not resume, reload or create a native view. Selecting a sleeping
-tab uses the same saved-tab activation as any other browser; the Host resumes its existing surface
-instead of opening another tab. Agents keep their explicit resume path. Older peers without
-surface-state negotiation keep their existing behavior.
+Browsers negotiate live/suspended surface state. Sleep releases the page lease without closing
+its record. A suspended tab keeps its last picture, or its named row, and addressed commands refuse
+`target-suspended`. Watching never wakes it. Selection and agent resume wake the same tab; older
+peers without surface-state negotiation retain their existing behavior.
 
 A phone keeps at most two live views: its visible tab and one covered tab. The covered place belongs
 to an exact agent attachment or to people elsewhere. Each Android Harness connection owns its CDP

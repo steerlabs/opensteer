@@ -24,7 +24,7 @@ import {
   type CdpSession,
 } from "@opensteer/browser-runtime-core";
 import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
-import { type BrowserServerMessage, type BrowserSurfaceId } from "@opensteer/protocol";
+import { type BrowserRuntimeServerMessage, type BrowserSurfaceId } from "@opensteer/protocol";
 
 import { runHarness, sendAsAgent, startHarnessBridge } from "./browser-harness.test-support.js";
 import {
@@ -966,7 +966,7 @@ function evaluationValue(value: unknown): unknown {
 }
 
 /** The dialog the person sees now, as the latest `browser.dialog.changed` named it. */
-function shownDialog(messages: readonly BrowserServerMessage[]) {
+function shownDialog(messages: readonly BrowserRuntimeServerMessage[]) {
   const latest = messages.findLast((message) => message.type === "browser.dialog.changed");
   if (latest?.type !== "browser.dialog.changed" || !latest.dialog) {
     throw new Error("No browser dialog is shown.");

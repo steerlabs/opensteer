@@ -19,7 +19,7 @@ import {
   type WorkspaceNotificationPreference,
 } from "@opensteer/core";
 import { OpensteerStore } from "@opensteer/database";
-import { type HostToClientMessage, type WorkspaceTabLineage } from "@opensteer/protocol";
+import { type HostToClientMessage } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";
 
@@ -80,14 +80,6 @@ function mergeWorkspaceNotices(
   held: WorkspaceNotice | undefined,
   next: WorkspaceNotice,
 ): WorkspaceNotice {
-  if (
-    held?.type === "host.browser-sessions-changed" &&
-    next.type === "host.browser-sessions-changed" &&
-    held.group &&
-    next.group &&
-    held.group.revision > next.group.revision
-  )
-    return held;
   if (held?.type !== "host.browser-usage-changed" || next.type !== "host.browser-usage-changed") {
     return next;
   }
@@ -422,10 +414,7 @@ class Subscriber {
   enqueueMessage(message: HostToClientMessage): void {
     if (this.#state === "synchronizing") {
       if (isWorkspaceNotice(message)) {
-        const key =
-          message.type === "host.browser-sessions-changed" && message.group
-            ? `${message.type}:${message.group.id}`
-            : message.type;
+        const key = message.type;
         this.#syncNotices.set(key, mergeWorkspaceNotices(this.#syncNotices.get(key), message));
       } else if (
         message.type === "host.read-states" ||
@@ -1095,14 +1084,12 @@ export class RealtimeHub {
     workspaceId: WorkspaceId,
     viewerUserIds: readonly UserId[],
     source: BootstrapNoticeSource = "unspecified",
-    group?: WorkspaceTabLineage,
   ): void {
-    if (!group) this.bootstrapDiagnostics.record("host.browser-sessions-changed", source);
+    this.bootstrapDiagnostics.record("host.browser-sessions-changed", source);
     for (const userId of viewerUserIds) {
       this.#sendViewerMessage(userId, {
         type: "host.browser-sessions-changed",
         workspaceId,
-        ...(group ? { group } : {}),
       });
     }
   }

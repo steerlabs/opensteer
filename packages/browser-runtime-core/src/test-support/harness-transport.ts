@@ -5,12 +5,12 @@ import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import { z } from "zod";
 import type { CdpParameters } from "@opensteer/browser-core";
-import type { BrowserServerMessage } from "@opensteer/protocol";
+import type { BrowserRuntimeServerMessage } from "@opensteer/protocol";
 
 /** Standard CDP transport over the real controller, including virtual-session events. */
 export async function startHarnessBridge(
   request: (method: string, parameters?: CdpParameters, sessionId?: string) => Promise<unknown>,
-  subscribe?: (listener: (message: BrowserServerMessage) => void) => () => void,
+  subscribe?: (listener: (message: BrowserRuntimeServerMessage) => void) => () => void,
 ): Promise<{ readonly url: string; close(): Promise<void> }> {
   const requestInTest = AsyncLocalStorage.bind(request);
   const http = createServer((request, response) => {

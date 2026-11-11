@@ -1,35 +1,161 @@
 import { BrowserSurfaceIdSchema, BrowserTabGroupIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
+import type { HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "./mock-host-client.js";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { placeList } from "../host/places.js";
 import { runPages } from "../host/surfaces.js";
 
+it("publishes a burst of pending-open settlements once without rebuilding browser rows", async () => {
+  vi.useFakeTimers();
+  const client = new MockHostClient({ latencyMs: 0, now: () => new Date("2026-10-19T12:00:00Z") });
+  const seen: { snapshot: HostSnapshot; revision: number }[] = [];
+  const unsubscribe = client.subscribe(() =>
+    seen.push({ snapshot: client.getSnapshot(), revision: client.browserTabs.revision }),
+  );
+  try {
+    const session = client
+      .getSnapshot()
+      .browserSessions.find((session) => session.state === "ready")!;
+    await Promise.all(Array.from({ length: 200 }, () => client.openBrowserTab(session.id)));
+    const settled = client.getSnapshot();
+    expect(settled.pendingBrowserTabs).toEqual([]);
+    const revision = client.browserTabs.revision;
+    const settlements = () =>
+      seen
+        .filter(
+          (item) => item.revision === revision && item.snapshot.pendingBrowserTabs!.length < 200,
+        )
+        .map((item) => item.snapshot);
+    expect(settlements()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settlements()).toEqual([settled]);
+  } finally {
+    unsubscribe();
+    client.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("settles concurrent mock page loads in one publication and then stays quiet", async () => {
+  vi.useFakeTimers();
+  const client = new MockHostClient({ latencyMs: 0, now: () => new Date("2026-10-19T12:00:00Z") });
+  try {
+    const session = client
+      .getSnapshot()
+      .browserSessions.find((session) => session.state === "ready")!;
+    const opened = await Promise.all(
+      Array.from({ length: 200 }, (_, i) =>
+        client.openBrowserTab(session.id, { url: `https://bulk-${i}.example/` }),
+      ),
+    );
+    expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(0);
+    const updates = vi.fn();
+    const unsubscribe = client.subscribe(updates);
+    try {
+      await vi.advanceTimersByTimeAsync(900);
+      expect(
+        opened.every(
+          ({ tabId }) => client.browserTabs.sessionTab(session.id, tabId)?.loading === false,
+        ),
+      ).toBe(true);
+      expect(updates).toHaveBeenCalledTimes(1);
+      const settled = client.getSnapshot();
+      await vi.advanceTimersByTimeAsync(900);
+      expect(client.getSnapshot()).toBe(settled);
+      expect(updates).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    client.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("closes a sleeping mock tab from its keyed record", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const dormant = client.scriptDormantBrowser({ profileName: "Saved" });
+    const result = await client.closeWorkspaceTabs([dormant.tabId]);
+    expect(result.failed).toEqual([]);
+    expect(result.closed).toEqual([dormant.tabId]);
+    expect(client.browserTabs.sessionTab(dormant.sessionId, dormant.tabId)).toBeUndefined();
+  } finally {
+    client.dispose();
+  }
+});
+
 it("activates an existing mock surface without replacing its document or duplicating the tab", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   try {
     const session = client
       .getSnapshot()
-      .browserSessions.find((held) => held.tabCatalog?.tabs.length)!;
-    const tab = session.tabCatalog!.tabs[0]!;
+      .browserSessions.find((held) => client.browserTabs.sessionTabs(held.id).length)!;
+    const tab = client.browserTabs.sessionTabs(session.id)[0]!;
     const response = await client.rpc["commands.dispatch"]({
       type: "workspace.tab.activate",
       tabId: BrowserSurfaceIdSchema.parse(tab.id),
       idempotencyKey: "existing-surface",
     });
     expect(response.ok).toBe(true);
-    const updated = client.getSnapshot().browserSessions.find((held) => held.id === session.id)!;
-    expect(updated.tabCatalog?.tabs.find((held) => held.id === tab.id)?.documentId).toBe(
-      tab.documentId,
+    const rows = client.browserTabs.sessionTabs(session.id);
+    expect(client.browserTabs.sessionTab(session.id, tab.id)?.documentId).toBe(tab.documentId);
+    expect(rows.filter((held) => held.id === tab.id)).toHaveLength(1);
+    expect(client.browserTabs.sessionTab(session.id, tab.id)?.state).toBe("live");
+  } finally {
+    client.dispose();
+  }
+});
+
+it("publishes mock browser rows with stable sibling identities and no dormant live catalog", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const before = client.getSnapshot();
+    const store = client.browserTabs;
+    const own = before.browserSessions.find((session) =>
+      store.sessionTabs(session.id).some((tab) => tab.documentId !== null),
+    )!;
+    const other = before.browserSessions.find(
+      (session) =>
+        session.id !== own.id &&
+        store.sessionTabs(session.id).some((tab) => tab.documentId !== null),
+    )!;
+    const rows = store.sessionTabs(own.id);
+    const tab = rows[0]!;
+    client.setBrowserLoading(tab.id, !tab.loading);
+    const after = client.getSnapshot();
+    expect(after.browserSessions.find((session) => session.id === other.id)).toBe(other);
+    expect(store.sessionTab(own.id, tab.id)?.loading).toBe(!tab.loading);
+    expect(store.sessionTabs(own.id)[1]).toBe(rows[1]);
+    const dormant = client.scriptDormantBrowser({ profileName: "Saved" });
+    const snapshot = client.getSnapshot();
+    const groupId = store.groupForSession(dormant.sessionId)!;
+    expect(store.tabs(groupId).whole).toBe(true);
+    expect(store.tab(groupId, dormant.tabId)?.state).toBe("suspended");
+    expect(store.sessionTabs(dormant.sessionId).filter((tab) => tab.documentId !== null)).toEqual(
+      [],
     );
-    expect(updated.tabs.filter((held) => held.id === tab.id)).toHaveLength(1);
-    expect(
-      client
-        .getSnapshot()
-        .workspaceTabs?.find((group) => group.session.id === session.id)
-        ?.tabs?.find((held) => held.id === tab.id)?.state,
-    ).toBe("live");
+    const current = snapshot.browserSessions.find((session) =>
+      store.sessionTabs(session.id).some((tab) => tab.documentId !== null),
+    )!;
+    const currentTab = store.sessionTabs(current.id).find((tab) => tab.documentId !== null)!;
+    const currentGroup = store.groupForSession(current.id)!;
+    const seen: (typeof currentTab | undefined)[] = [];
+    const unsubscribe = store.subscribeTab(currentGroup, currentTab.id, () =>
+      seen.push(store.tab(currentGroup, currentTab.id)),
+    );
+    const release = client.retainBrowserViewer(current.id, currentTab.id);
+    await client.rpc["auth.signOut"]({});
+    expect(client.getSnapshot().browserSessions).toEqual([]);
+    expect(client.browserTabs).toBe(store);
+    expect(store.groups().ids).toEqual([]);
+    expect(store.tab(currentGroup, currentTab.id)).toBeUndefined();
+    expect(seen.at(-1)).toBeUndefined();
+    unsubscribe();
+    release();
   } finally {
     client.dispose();
   }
@@ -62,7 +188,7 @@ describe("moving mock workspace", () => {
         data: { title: homePlace.title },
       });
       expect(client.placeActivity(homePlace.key)[0]?.runId).toBe(homeRun.id);
-      expect(runPages(snapshot.browserSessions, [homeRun.id])).toEqual([
+      expect(runPages(snapshot.browserUses, snapshot.browserSessions, [homeRun.id])).toEqual([
         expect.objectContaining({
           destination: homePlace.destination,
           title: "Weekend ideas",
@@ -73,9 +199,9 @@ describe("moving mock workspace", () => {
         (run) => run.threadId === browser.occupants.find((occupant) => occupant.acting)?.threadId,
       )!;
       expect(client.placeActivity(browser.key)[0]?.runId).toBe(actingRun.id);
-      expect(runPages(snapshot.browserSessions, [actingRun.id])).toContainEqual(
-        expect.objectContaining({ destination: browser.destination, acting: true }),
-      );
+      expect(
+        runPages(snapshot.browserUses, snapshot.browserSessions, [actingRun.id]),
+      ).toContainEqual(expect.objectContaining({ destination: browser.destination, acting: true }));
       const phone = places.find(
         (place) => place.kind === "phone" && place.occupants.some((occupant) => occupant.acting),
       )!;
@@ -132,8 +258,11 @@ describe("moving mock workspace", () => {
       const loading = client.load();
       await vi.advanceTimersByTimeAsync(0);
       await loading;
-      const [first, second] = client.getSnapshot().browserSessions[0]!.tabs;
-      const sessionId = client.getSnapshot().browserSessions[0]!.id;
+      const session = client
+        .getSnapshot()
+        .browserSessions.find((session) => client.browserTabs.sessionTabs(session.id).length >= 2)!;
+      const [first, second] = client.browserTabs.sessionTabs(session.id);
+      const sessionId = session.id;
       // A tile scrolls into view, shows its picture, scrolls away and back within one tick.
       const release = client.retainBrowserWatch(sessionId, first!.id);
       const shown = client.browserWatchFrame(sessionId, first!.id)!;

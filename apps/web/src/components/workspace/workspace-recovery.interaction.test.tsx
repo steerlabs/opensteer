@@ -609,9 +609,9 @@ it("silently renews a stale close review and keeps the browser alive", async () 
       (candidate) =>
         candidate.state === "ready" &&
         candidate.attachedRunIds.length > 0 &&
-        candidate.tabCatalog?.tabs.length,
+        (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).length,
     )!;
-  const tab = session.tabCatalog!.tabs[0]!;
+  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
   const close = vi.spyOn(client, "closeBrowserTab").mockRejectedValueOnce(
     new HostClientRequestError({
       code: "conflict",

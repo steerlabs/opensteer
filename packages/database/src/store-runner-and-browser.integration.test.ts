@@ -3181,6 +3181,32 @@ describeStore("PostgreSQL store", (it) => {
         lastUsedAt: new Date(base + 1000),
       })
       .execute();
+    // Unused newer sessions must not displace this conversation's history.
+    const newer = await database
+      .selectFrom("browserSessions")
+      .selectAll()
+      .where("id", "=", sessionId)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("browserSessions")
+      .values(
+        Array.from({ length: 101 }, (_, index) => {
+          const id = createBrowserSessionId();
+          return {
+            ...newer,
+            id,
+            tabGroupId: id,
+            state: "closed" as const,
+            createdAt: new Date(Date.now() + index + 1),
+          };
+        }),
+      )
+      .execute();
+    await database
+      .updateTable("browserSessions")
+      .set({ state: "closed" })
+      .where("id", "=", sessionId)
+      .execute();
     const old = await store.getThreadBrowserUsage({
       ownerId: fixture.userId,
       threadId: fixture.thread.id,
@@ -4094,6 +4120,31 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).resolves.toMatchObject({ profileId: profile.id });
 
+    for (let index = 2; index < 33; index++)
+      await nativeSession(store, {
+        id: createBrowserSessionId(),
+        origin: "workspace",
+        placementKey: session.placementKey,
+        profileId: profile.id,
+        runnerId: hostedRunnerId,
+        runtimeId: "hosted-browser-1",
+        workspaceId: workspace.id,
+      });
+    await expect(
+      store.createBrowserSession({
+        id: createBrowserSessionId(),
+        origin: "workspace",
+        placementKey: `runner:${hostedRunnerId}:other-runtime`,
+        profileId: profile.id,
+        runnerId: hostedRunnerId,
+        runtimeId: "other-runtime",
+        workspaceId: workspace.id,
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "This browser profile is already active on another placement",
+    });
+
     await expect(
       store.attachBrowserSession({
         agentBindingId: "trigger:project-browser",
@@ -4193,7 +4244,7 @@ describeStore("PostgreSQL store", (it) => {
     await store.transitionBrowserSession({ from: ["closing"], sessionId, state: "closed" });
     expect(
       (await store.failActiveBrowserSessions(`runner:${hostedRunnerId}:hosted-browser-1`)).failed,
-    ).toBe(1);
+    ).toBe(32);
     expect((await store.getBrowserSessionForOwner(sessionId, ownerId))?.state).toBe("closed");
     await expect(
       nativeSession(store, {

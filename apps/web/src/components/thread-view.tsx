@@ -1127,6 +1127,7 @@ function ThreadView({
                     attachmentReader={hostClient}
                     activity={activity}
                     browserSessions={snapshot.browserSessions}
+                    browserUses={snapshot.browserUses}
                     // A conversation (Opensteer, a direct message) reads as messages, each
                     // turn's steps behind its reply; work keeps its whole trace in view.
                     conversation={conversational}
@@ -1253,6 +1254,7 @@ function ThreadView({
                   : (activityAnchor() ?? activityView.opener)
               }
               browserSessions={snapshot.browserSessions}
+              browserUses={snapshot.browserUses}
               entries={conversation}
               id={activityPanelId}
               inputQueuePaused={thread.inputQueuePaused}

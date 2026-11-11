@@ -103,7 +103,7 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     if admission.fence != nil { offline(reason: "stream-replaced") }
     guard ledger != nil else { throw PhoneBrowserFailure.unavailable }
     let keys = try Self.parseKeys(welcome)
-    _ = try WireField.int(welcome, "browserWireVersion", range: 1...1)
+    _ = try WireField.int(welcome, "browserWireVersion", range: 2...2)
     try admission.adopt(welcome, now: now())
     streamRevision = UUID()
     self.keys = keys; self.sender = sender; closeTransport = close

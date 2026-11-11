@@ -576,3 +576,120 @@ assert(JSON.stringify(await page.locator('#multi').selectOption([]))==='[]','mul
     "11",
   );
 });
+
+acceptance(
+  "sleep-audio",
+  "native frame media and Web Audio keep a server tab awake until playback stops",
+  async (kit) => {
+    const page = kit.ledger.binding(kit.surfaceId)!.page;
+    await kit.read(`(async () => {
+      const frame = document.createElement('iframe');
+      frame.id = 'audio-frame';
+      document.body.append(frame);
+      const audio = new frame.contentWindow.AudioContext();
+      frame.contentWindow.testAudio = audio;
+      const oscillator = audio.createOscillator();
+      oscillator.connect(audio.destination);
+      oscillator.start();
+      return audio.state;
+    })()`);
+    await (
+      await page.cdp()
+    ).send("Runtime.evaluate", {
+      expression: "document.querySelector('#audio-frame').contentWindow.testAudio.resume()",
+      userGesture: true,
+      awaitPromise: true,
+    });
+    expect(await page.keepAwake?.()).toBe("media");
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
+    await kit.read(
+      `document.querySelector('#audio-frame').contentWindow.testAudio.close().then(() => true)`,
+    );
+    expect(await page.keepAwake?.()).toBeNull();
+    const wav = Buffer.alloc(44 + 16_000);
+    wav.write("RIFF", 0);
+    wav.writeUInt32LE(wav.length - 8, 4);
+    wav.write("WAVEfmt ", 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8_000, 24);
+    wav.writeUInt32LE(16_000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("data", 36);
+    wav.writeUInt32LE(16_000, 40);
+    for (let i = 0; i < 8_000; i++)
+      wav.writeInt16LE(Math.round(10_000 * Math.sin((i * Math.PI) / 10)), 44 + 2 * i);
+    await (
+      await page.cdp()
+    ).send("Runtime.evaluate", {
+      expression: `(async () => {
+      const frame = document.querySelector('#audio-frame');
+      const media = frame.contentDocument.createElement('audio');
+      frame.contentWindow.testMedia = media;
+      media.loop = true; media.src = ${JSON.stringify(`data:audio/wav;base64,${wav.toString("base64")}`)};
+      frame.contentDocument.body.append(media);
+      await media.play();
+    })()`,
+      userGesture: true,
+      awaitPromise: true,
+    });
+    expect(await page.keepAwake?.()).toBe("media");
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
+    await kit.read(`document.querySelector('#audio-frame').contentWindow.testMedia.pause();true`);
+    expect(await page.keepAwake?.()).toBeNull();
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    await kit.ledger.wake(kit.surfaceId);
+  },
+  "01",
+);
+
+acceptance(
+  "sleep-resume",
+  "--tab resumes the exact sleeping surface and attaches its new target",
+  async (kit) => {
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    const inventory = await kit.run(`console.log(JSON.stringify(await listTabs()));`, {
+      inventory: true,
+    });
+    expect(JSON.parse(inventory.stdout)).toContainEqual(
+      expect.objectContaining({ surfaceId: kit.surfaceId, state: "suspended" }),
+    );
+    const out = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
+      tab: kit.surfaceId,
+    });
+    expect(out.stderr).toMatch(/asleep.*reloaded/i);
+    expect(JSON.parse(out.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    expect(kit.ledger.snapshot().find((tab) => tab.id === kit.surfaceId)?.state).toBe("live");
+    const implicit = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
+      inventory: true,
+    });
+    expect(JSON.parse(implicit.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    const implicitWake = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
+      inventory: true,
+    });
+    expect(implicitWake.stderr).toMatch(/asleep.*reloaded/i);
+    expect(JSON.parse(implicitWake.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+
+    let slept = false;
+    kit.hooks.before = async (method, _parameters, sessionId) => {
+      if (method !== "Runtime.evaluate" || !sessionId || slept) return;
+      slept = true;
+      expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    };
+    const existing = await kit.run(
+      `await currentTab(); await fails(() => js('true'), /asleep|Resume|suspended/i);`,
+      { tab: kit.surfaceId },
+    );
+    expect(existing.stderr).toMatch(/asleep.*Resume.*old page handles/i);
+    expect(slept).toBe(true);
+    delete kit.hooks.before;
+    await kit.run(`await currentTab();`, { tab: kit.surfaceId });
+    expect(kit.trace.find((entry) => entry.method === "Opensteer.resumeTab")?.parameters).toEqual({
+      surfaceId: kit.surfaceId,
+    });
+  },
+  "01",
+);

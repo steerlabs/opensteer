@@ -6,7 +6,7 @@ import {
   BrowserBinaryFrameHeaderSchema,
   BrowserClientMessageSchema,
   BrowserEngineSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   HeldLocalProfileSchema,
   InitialPageReadySchema,
   LocalProfileBindingSchema,
@@ -186,7 +186,7 @@ const BrowserRelayToHostWireSchema = z.discriminatedUnion("type", [
     ...relayEventBase,
     capability: BrowserCapabilityReferenceSchema,
     channelId: BrowserChannelIdSchema,
-    message: BrowserServerMessageSchema,
+    message: BrowserRuntimeServerMessageSchema,
     type: z.literal("browser.server-message"),
   }),
   z.strictObject({

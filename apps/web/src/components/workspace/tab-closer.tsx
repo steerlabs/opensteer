@@ -8,15 +8,14 @@ import {
   type ReactNode,
 } from "react";
 import {
-  browserTabCloseImpact,
   reviewHostAction,
   HostClientRequestError,
-  unwrapRpcResult,
+  type BrowserInventory,
   type BrowserTabCloseImpact,
   type HostClient,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { staleBrowserTabInventoryReason, type BrowserTabCatalog } from "@opensteer/protocol";
+import { staleBrowserTabInventoryReason } from "@opensteer/protocol";
 import { useActionReview } from "@opensteer/client/react";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
@@ -29,6 +28,31 @@ import { useToast } from "../toast.js";
  * leaves the list, its successor takes it ([place succession](./place-succession.ts)).
  */
 const TabCloserContext = createContext<((place: PlaceItem) => void) | null>(null);
+
+type Expected = BrowserInventory;
+
+/**
+ * A close's expected inventory and what it takes with it, from the tab's
+ * group as the client holds it: its sleeping tabs count, since they stay.
+ */
+function closeTarget(
+  hostClient: HostClient,
+  sessionId: string,
+  tabId: string,
+): { readonly expected: Expected; readonly impact: BrowserTabCloseImpact } | null {
+  const store = hostClient.browserTabs;
+  const groupId = store.groupForSession(sessionId);
+  const group = groupId ? store.group(groupId) : undefined;
+  const expected = store.inventory(sessionId);
+  if (!groupId || !group || !expected || !store.tab(groupId, tabId)) return null;
+  return {
+    expected,
+    impact: {
+      heldByLiveWork: group.attachedRunIds.length > 0,
+      discardsFreshSignIns: store.tabs(groupId).ids.length === 1 && group.profileId === null,
+    },
+  };
+}
 const TabGroupCloserContext = createContext<((tabIds: readonly string[]) => void) | null>(null);
 export function useTabGroupCloser() {
   const close = useContext(TabGroupCloserContext);
@@ -62,7 +86,7 @@ export function TabCloserProvider({
     readonly opener: HTMLElement | null;
   } | null>(null);
   const close = useCallback(
-    async (place: PlaceItem, expected: BrowserTabCatalog, opener: HTMLElement | null) => {
+    async (place: PlaceItem, expected: Expected, opener: HTMLElement | null) => {
       if (place.destination.kind !== "browser" || !place.destination.tabId) return;
       const { sessionId, tabId } = place.destination;
       try {
@@ -77,18 +101,13 @@ export function TabCloserProvider({
           error.reason === staleBrowserTabInventoryReason
         ) {
           try {
-            const catalog = unwrapRpcResult(
-              await hostClient.rpc["browser.tabs.get"]({ sessionId }),
-            );
-            const session = hostClient
-              .getSnapshot()
-              .browserSessions.find((candidate) => candidate.id === sessionId);
-            if (session && catalog.tabs.some((tab) => tab.id === tabId)) {
-              ask({ kind: "close-tab", sessionId, tabId }, () => close(place, catalog, opener));
-              setConfirming({
-                opener,
-                impact: browserTabCloseImpact({ ...session, tabCatalog: catalog }),
-              });
+            await hostClient.readWorkspaceTabs?.(sessionId);
+            const target = closeTarget(hostClient, sessionId, tabId);
+            if (target) {
+              ask({ kind: "close-tab", sessionId, tabId }, () =>
+                close(place, target.expected, opener),
+              );
+              setConfirming({ opener, impact: target.impact });
             }
           } catch (readError) {
             toast.error(actionErrorMessage(readError));
@@ -122,36 +141,15 @@ export function TabCloserProvider({
         return;
       }
       if (!place.closable || place.destination.kind !== "browser") return;
-      const sessionId = place.destination.sessionId;
-      const group = hostClient
-        .getSnapshot()
-        .workspaceTabs?.find((group) => group.id === place.workspaceTab?.lineageId);
-      if (
-        group &&
-        !hostClient.getSnapshot().browserSessions.find((session) => session.id === sessionId)
-          ?.tabCatalog
-      ) {
-        const tabId = place.destination.tabId;
-        if (tabId)
-          void hostClient
-            .closeBrowserTab(sessionId, tabId, { generation: 0, revision: group.revision })
-            .catch((error: unknown) => toast.error(actionErrorMessage(error)));
-        return;
-      }
-      const session = hostClient
-        .getSnapshot()
-        .browserSessions.find((candidate) => candidate.id === sessionId);
-      if (!session?.tabCatalog) return;
-      const impact = browserTabCloseImpact(session);
-      if (impact.heldByLiveWork) {
+      const { sessionId, tabId } = place.destination;
+      const target = tabId ? closeTarget(hostClient, sessionId, tabId) : null;
+      if (!tabId || !target) return;
+      if (target.impact.heldByLiveWork) {
         const opener =
           document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        const tabId = place.destination.tabId;
-        if (!tabId) return;
-        const expected = session.tabCatalog;
-        ask({ kind: "close-tab", sessionId, tabId }, () => close(place, expected, opener));
-        setConfirming({ impact, opener });
-      } else void close(place, session.tabCatalog, null);
+        ask({ kind: "close-tab", sessionId, tabId }, () => close(place, target.expected, opener));
+        setConfirming({ impact: target.impact, opener });
+      } else void close(place, target.expected, null);
     },
     [ask, close, hostClient, toast],
   );
@@ -171,13 +169,12 @@ export function TabCloserProvider({
   const requestGroup = useCallback(
     (tabIds: readonly string[]) => {
       const ids = [...tabIds];
-      const held = hostClient
-        .getSnapshot()
-        .browserSessions.some(
-          (session) =>
-            session.tabCatalog?.tabs.some((tab) => ids.includes(tab.id)) &&
-            browserTabCloseImpact(session).heldByLiveWork,
-        );
+      const store = hostClient.browserTabs;
+      const held = ids.some((id) => {
+        const groupId = store.groupForTab(id);
+        const group = groupId ? store.group(groupId) : undefined;
+        return group !== undefined && group.attachedRunIds.length > 0;
+      });
       if (held) setConfirmingGroup(ids);
       else closeGroup(ids);
     },

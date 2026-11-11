@@ -7,7 +7,7 @@ export function phoneBrowserDescriptor(
   if (!qualification.browser || !qualification.sharedControl) return undefined;
   return {
     runtimeId: qualification.runtimeId,
-    wireVersion: 1,
+    wireVersion: 2,
     localProfileStorage: {
       storageInstanceId: qualification.storageInstanceId,
       engine: qualification.platform === "ios" ? "wkwebview" : "android-webview",

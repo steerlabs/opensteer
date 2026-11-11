@@ -33,7 +33,7 @@ function fixture(negotiated = true) {
     url: new URL("http://127.0.0.1:4312"),
   });
   vi.spyOn(bridge, "capabilities").mockResolvedValue({
-    wireVersion: 1,
+    wireVersion: 2,
     localProfileStorage: storage,
   });
   const relay = new BrowserModuleRelay(bridge);
@@ -50,7 +50,7 @@ function fixture(negotiated = true) {
   });
   const keys = generateKeyPairSync("ed25519");
   const stream: RunnerModuleStream = {
-    ...(negotiated ? { browserWireVersion: 1 } : {}),
+    ...(negotiated ? { browserWireVersion: 2 } : {}),
     fence,
     browserAttachPublicKeys: [
       {
@@ -94,6 +94,30 @@ function fixture(negotiated = true) {
 }
 
 describe("BrowserModuleRelay native profiles", () => {
+  it("opens relay channel 33", async () => {
+    const f = fixture();
+    vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+    try {
+      await f.relay.attach(f.stream);
+      await f.send({ type: "capability.grant", lease: f.lease });
+      for (let index = 0; index < 33; index++) {
+        const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+        const attached = f.wait("browser.attached");
+        await f.send({
+          type: "browser.attach",
+          capability: f.capability,
+          channelId,
+          attachTicket: "abc.def.ghi",
+        });
+        await attached;
+        expect(f.messages.at(-1)).toMatchObject({ type: "browser.attached", channelId });
+      }
+      expect(f.messages.filter((message) => message.type === "browser.attached")).toHaveLength(33);
+    } finally {
+      f.relay.detach();
+    }
+  });
+
   it("sends every inventory claim in bounded batches before execution admission", async () => {
     const f = fixture();
     const profiles: HeldLocalProfile[] = Array.from({ length: 257 }, () => ({
@@ -320,4 +344,55 @@ describe("BrowserModuleRelay native profiles", () => {
       f.relay.detach();
     }
   });
+});
+
+it("closes only the channel whose runtime frame exceeds the module byte cap", async () => {
+  const f = fixture();
+  const sinks = new Map<
+    import("@opensteer/protocol/browser-relay").BrowserChannelId,
+    import("./browser-bridge.js").BrowserChannelSink
+  >();
+  vi.spyOn(f.bridge, "attach").mockImplementation(async (id, _ticket, sink) => {
+    sinks.set(id, sink);
+    return { type: "browser.attached" };
+  });
+  const close = vi.spyOn(f.bridge, "close").mockImplementation(() => undefined);
+  const ids = [
+    BrowserChannelIdSchema.parse(`bch_${randomUUID()}`),
+    BrowserChannelIdSchema.parse(`bch_${randomUUID()}`),
+  ];
+  try {
+    await f.relay.attach(f.stream);
+    await f.send({ type: "capability.grant", lease: f.lease });
+    for (const channelId of ids)
+      await f.send({
+        type: "browser.attach",
+        capability: f.capability,
+        channelId,
+        attachTicket: "abc.def.ghi",
+      });
+    const failed = f.wait("browser.channel-error");
+    sinks.get(ids[0]!)!.onServerMessage(ids[0]!, {
+      type: "cdp.result",
+      requestId: randomUUID(),
+      result: { text: "x".repeat(1.2 * 1024 * 1024) },
+    });
+    await failed;
+    expect(close).toHaveBeenCalledExactlyOnceWith(ids[0], 1011, "browser channel failed");
+    expect(f.messages.at(-1)).toMatchObject({ type: "browser.channel-error", channelId: ids[0] });
+    const next = f.wait("browser.server-message");
+    sinks.get(ids[1]!)!.onServerMessage(ids[1]!, {
+      type: "cdp.result",
+      requestId: randomUUID(),
+      result: { ok: true },
+    });
+    await next;
+    expect(f.messages.at(-1)).toMatchObject({
+      type: "browser.server-message",
+      channelId: ids[1],
+      message: { result: { ok: true } },
+    });
+  } finally {
+    f.relay.detach();
+  }
 });

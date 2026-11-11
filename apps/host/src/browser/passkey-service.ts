@@ -19,6 +19,7 @@ export interface PasskeyViewer {
   send(message: BrowserPasskeyMessage): void;
 }
 interface PasskeyServiceOptions {
+  onChanged?(): void;
   ownOrigins(): readonly string[];
   viewers(): readonly PasskeyViewer[];
   result(message: { type: "passkey.result"; ceremonyId: string; outcome: PasskeyOutcome }): void;
@@ -41,6 +42,9 @@ export class PasskeyService {
   #closed = false;
   constructor(options: PasskeyServiceOptions) {
     this.#options = options;
+  }
+  get pendingSurfaceIds(): readonly string[] {
+    return [...this.#pending.values()].map((pending) => pending.ceremony.surfaceId);
   }
   #eligible(viewer: PasskeyViewer, surfaceId: string): boolean {
     return (
@@ -129,6 +133,7 @@ export class PasskeyService {
     };
     pending.timer.unref();
     this.#pending.set(requestId, pending);
+    this.#options.onChanged?.();
     if (person) this.#request(pending, person);
     else
       for (const viewer of viewers)
@@ -241,6 +246,7 @@ export class PasskeyService {
   }
   #finish(pending: Pending, outcome: PasskeyOutcome): void {
     if (!this.#pending.delete(pending.requestId)) return;
+    this.#options.onChanged?.();
     pending.ended.resolve();
     clearTimeout(pending.timer);
     for (const viewer of this.#options.viewers())

@@ -72,7 +72,7 @@ export const RunnerAuxiliaryWelcomeSchema = z.strictObject({
    * tickets itself; a messaging stream never receives them.
    */
   browserAttachPublicKeys: BrowserAttachPublicKeysSchema.optional(),
-  browserWireVersion: z.literal(1).optional(),
+  browserWireVersion: z.literal(2).optional(),
   /** Opt in only when the descriptor offers it; old Hosts receive no new status fields. */
   passkeys: z.literal(1).optional(),
   loginText: z.literal(1).optional(),
