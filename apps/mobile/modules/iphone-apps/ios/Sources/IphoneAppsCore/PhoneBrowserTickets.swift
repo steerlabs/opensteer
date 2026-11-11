@@ -61,7 +61,7 @@ public enum PhoneBrowserTickets {
     guard Set(required).isSubset(of: Set(claims.keys)), Set(claims.keys).isSubset(of: Set(required + optional)),
       ["read", "read-write"].contains(claims["access"] as? String ?? ""),
       claims["audience"] as? String == "opensteer-browser-runtime" else { throw PhoneBrowserFailure.forbidden }
-    _ = try WireField.int(claims, "wireVersion", range: 1...1)
+    _ = try WireField.int(claims, "wireVersion", range: 2...2)
     _ = try WireField.int(claims, "remainingBudgetMs", range: 1...20_000)
     _ = try WireField.date(claims, "operationExpiresAt")
     for name in ["nonce", "runtimeId", "sessionId", "subject"] {

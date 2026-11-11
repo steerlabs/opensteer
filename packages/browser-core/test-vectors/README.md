@@ -1,6 +1,7 @@
 # Phone browser wire vectors
 
-These version-1 JSON fixtures are shared with Swift and Kotlin, not generated on a phone.
+These JSON fixtures use format version 1 independently of the browser runtime wire version;
+attach tickets carry wire version 2 and are shared with Swift and Kotlin, not generated on a phone.
 `attach-tickets.v1.json` has a disposable public key, exact compact JWS bytes, a fixed verification
 time and each expected admission outcome. It contains no private key. Verification must reject
 noncanonical base64url before trusting the claims; durable nonce admission precedes allocation.

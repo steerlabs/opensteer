@@ -327,7 +327,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         val qualified = endpoint!!.qualification(current.text("deploymentId"), current.text("runnerId"))
         Wire.requireThat(qualified["browser"] == JsonPrimitive(true) && qualified["sharedControl"] == JsonPrimitive(true) &&
             qualified["platform"] == JsonPrimitive("android"), "unsupported")
-        val browser = linkedMapOf<String, JsonElement>("runtimeId" to qualified.getValue("runtimeId"), "wireVersion" to JsonPrimitive(1),
+        val browser = linkedMapOf<String, JsonElement>("runtimeId" to qualified.getValue("runtimeId"), "wireVersion" to JsonPrimitive(2),
             "localProfileStorage" to Wire.fields("storageInstanceId" to qualified.getValue("storageInstanceId"), "engine" to JsonPrimitive("android-webview")))
         for (key in listOf("navigationVersion", "navigationAttributionVersion", "workspaceTabRestoreVersion", "popupFollowVersion", "targetControl", "rasterDemand", "basicInput", "surfaceState")) browser[key] = JsonPrimitive(1)
         if (qualified["sharedControl"] == JsonPrimitive(true)) browser["sharedControl"] = JsonPrimitive(1)
