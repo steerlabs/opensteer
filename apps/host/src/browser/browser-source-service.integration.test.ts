@@ -4,6 +4,7 @@ import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
 import {
   createId,
+  BrowserSurfaceIdSchema,
   HarnessIdSchema,
   ModelSelectionSchema,
   OpensteerError,
@@ -29,6 +30,7 @@ import {
 } from "@opensteer/deployment-authority";
 import type {
   BrowserClientMessage,
+  BrowserRuntimeServerMessage,
   LoginAuthorizationOutcome,
   PasswordSignInAuthorityCommand,
   PasswordSignInAuthorityEvent,
@@ -120,16 +122,50 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
           navigation: claims.initialNavigation.url ? "submitted" : "blank",
         }
       : undefined;
-    queueMicrotask(() =>
+    queueMicrotask(() => {
       this.#reply({
         access: "read-write",
         dialog: null,
         sessionId: claims.sessionId,
         state: "ready",
-        surfaces: [{ active: true, id: "page-1", title: "Example", url: "about:blank" }],
         type: "browser.snapshot",
-      }),
-    );
+        targetedStreamingVersion: 1,
+      });
+      this.#reply({ type: "browser.tabs", stream: { op: "begin", generation: "fixture" } });
+      this.#reply({
+        type: "browser.tabs",
+        stream: {
+          op: "rows",
+          rows: [
+            {
+              id: BrowserSurfaceIdSchema.parse("page-1"),
+              state: "live",
+              title: "Example",
+              url: "about:blank",
+              icon: null,
+              order: 0,
+              openerId: null,
+              documentId: "document-fixture",
+              geometryRevision: 0,
+              loading: false,
+              navigationFailed: false,
+              canGoBack: false,
+              canGoForward: false,
+              sizedByAgent: false,
+            },
+          ],
+        },
+      });
+      this.#reply({
+        type: "browser.tabs",
+        stream: {
+          op: "end",
+          revision: 0,
+          count: 1,
+          meta: { activeId: BrowserSurfaceIdSchema.parse("page-1"), inventoryRevision: 1 },
+        },
+      });
+    });
   }
 
   send(data: string, _options: { readonly binary: false }, callback: (error?: Error) => void) {
@@ -236,7 +272,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
     );
   }
 
-  #reply(message: unknown): void {
+  #reply(message: BrowserRuntimeServerMessage): void {
     this.emit("message", Buffer.from(JSON.stringify(message)), false);
   }
 }

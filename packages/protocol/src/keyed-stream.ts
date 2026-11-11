@@ -25,6 +25,14 @@ export function keyedStreamSchema<
   ]);
 }
 
+export function keyedStreamViewSchema<
+  Row extends z.ZodRawShape & { id: z.ZodType<string> },
+  Meta extends z.ZodRawShape,
+>(row: z.ZodObject<Row>, meta: z.ZodObject<Meta>) {
+  const [begin, rows, end, change] = keyedStreamSchema(row.strip(), meta.strip()).options;
+  return z.discriminatedUnion("op", [begin.strip(), rows.strip(), end.strip(), change.strip()]);
+}
+
 export type KeyedStreamMessage<Row extends { id: string }, Meta extends object> =
   | { op: "begin"; generation: string; prefix?: number | undefined }
   | { op: "rows"; rows: Row[] }

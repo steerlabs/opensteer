@@ -11,7 +11,7 @@ import {
   ThreadIdSchema,
 } from "@opensteer/core";
 import { PlaceOccupantSchema } from "./places.js";
-import { keyedStreamSchema } from "./keyed-stream.js";
+import { keyedStreamSchema, keyedStreamViewSchema } from "./keyed-stream.js";
 export const browserWorkspaceTabUrlMaxLength = 16_384;
 
 export const browserFaviconMaxBytes = 16 * 1_024;
@@ -130,11 +130,11 @@ export const BrowserTabRowSchema = z.strictObject({
 });
 export type BrowserTabRow = z.infer<typeof BrowserTabRowSchema>;
 
-export const BrowserGroupStreamSchema = keyedStreamSchema(
+export const BrowserGroupStreamSchema = keyedStreamViewSchema(
   BrowserGroupRowSchema,
   z.strictObject({}),
 );
-export const BrowserClientTabStreamSchema = keyedStreamSchema(
+export const BrowserClientTabStreamSchema = keyedStreamViewSchema(
   BrowserTabRowSchema,
   z.strictObject({}),
 );

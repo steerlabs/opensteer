@@ -121,7 +121,7 @@ describe("dormant team Host boundary", () => {
       });
       const app = await createHostServer(dependencies);
       try {
-        expect(hostApiVersion).toBe(51);
+        expect(hostApiVersion).toBe(52);
         expect(
           advertisedCapabilities(dependencies).some((capability) => capability.startsWith("team")),
         ).toBe(false);

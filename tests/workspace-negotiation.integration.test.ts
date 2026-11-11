@@ -1,8 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import { verifyAccessEndpoint } from "../packages/client/src/connections/deployment-catalog.js";
-import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
 import { zeroSequence } from "../packages/core/src/index.js";
 import { hostApiVersion } from "../packages/deployment-authority/src/index.js";
 import {
@@ -114,7 +112,7 @@ integration("workspace epoch and producer negotiation", () => {
           idempotencyKey: "old-producer",
           name: "Old producer",
         }),
-        { agentReady: true, workspaceTabs: true },
+        { agentReady: true, workspaceTabs: true, targetedStreaming: false },
       );
       cleanup.push(() => producer.close());
       // The Host admits sessions only after it reconciles the producer's profile inventory.
@@ -123,39 +121,17 @@ integration("workspace epoch and producer negotiation", () => {
           (placement) => placement.runnerId === producer.runnerId && placement.available,
         ),
       );
-      const started = await host.runtime.browser.start({
+      const start = host.runtime.browser.start({
         ownerId: host.ownerId,
         workspaceId: run.workspaceId,
         fresh: true,
         placement: { kind: "runner", runnerId: producer.runnerId },
       });
-      const client = new HttpHostClient({
-        baseUrl: new URL(host.origin),
-        refreshIntervalMs: 0,
-        fetch: (input, init) => {
-          const request = new Request(input, init);
-          for (const [key, value] of Object.entries(host.ownerHeaders))
-            request.headers.set(key, value);
-          return fetch(request);
-        },
-        webSocketFactory: (url) =>
-          new WebSocket(url, { headers: host.ownerHeaders }) as unknown as WebSocketClient,
+      await expect(start).rejects.toMatchObject({
+        code: "workspace_unavailable",
+        cause: { cause: { message: "Browser Runtime requires targeted streaming version 1." } },
       });
-      cleanup.push(async () => client.dispose());
-      await client.load();
-      client.activateWorkspace(run.workspaceId);
-      await until(() => client.getSnapshot().connection === "connected");
-      const release = client.retainBrowserWatch(started.session.id, "page-integration");
-      cleanup.push(async () => release());
-      await until(
-        () => client.browserWatchState(started.session.id, "page-integration").error !== null,
-      );
-      const producerRefusal = client.browserWatchState(started.session.id, "page-integration");
-      expect(producerRefusal).toMatchObject({
-        status: "unavailable",
-        error: "Update the Host and Browser Runtime for targeted viewing.",
-        frame: null,
-      });
+      const producerRefusal = await start.catch((error: unknown) => error);
       expect(
         producer.receivedCommands().some((command) => command.type === "stream.subscribe"),
       ).toBe(false);
