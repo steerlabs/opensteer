@@ -1,3 +1,4 @@
+import { isProjectDeploymentAuthority } from "@opensteer/database";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
 import { type AdministrationCommandIdentity } from "@opensteer/database";
@@ -209,6 +210,15 @@ export class AdministrationService {
     caller: AdministrationCaller,
     command: AdministrationCommand,
   ): Promise<HostApiCommandOutput> {
+    if (
+      command.type === "workspace.delete" &&
+      isProjectDeploymentAuthority(await this.dependencies.store.securityEffectAuthority())
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "team-unavailable",
+        message: "Team Projects require the team Project deletion command",
+      });
     if (caller.kind === "person") return this.#authorizedExecute(caller, command);
     return this.#mutations.run(JSON.stringify([caller.userId, command.idempotencyKey]), () =>
       this.#authorizedExecute(caller, command),
