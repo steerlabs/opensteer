@@ -182,12 +182,14 @@ it("dismisses a close review when another client closes its target", async () =>
       (candidate) =>
         candidate.state === "ready" &&
         candidate.attachedRunIds.length > 0 &&
-        candidate.tabCatalog?.tabs.length,
+        (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).length,
     )!;
-  const tab = session.tabCatalog!.tabs[0]!;
+  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
   await click(element(`[data-place-key="browser:${session.id}:${tab.id}"] .side-tab__close`));
   expect(document.querySelector(".dialog")).not.toBeNull();
-  await act(async () => client.closeBrowserTab(session.id, tab.id, session.tabCatalog!));
+  await act(async () =>
+    client.closeBrowserTab(session.id, tab.id, session.browserTabs!.inventory(session?.id)!),
+  );
   await settle(100);
   expect(document.querySelector(".dialog")).toBeNull();
   expect(document.querySelector(".toast--error")).toBeNull();
@@ -338,7 +340,9 @@ describe("a reply's live picture belongs to its working Run", () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Weekend ideas");
     const { session, tabId } = tabOf(place);
-    await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
+    await act(async () =>
+      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
+    );
     expect(picture()?.dataset.placeKey).toBe(place.key);
     await act(async () => client.stopRun(home));
     expect(picture()).toBeNull();
@@ -381,8 +385,10 @@ describe("a reply's live picture belongs to its working Run", () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Your reading list");
     const { session, tabId } = tabOf(place);
-    expect(session.tabCatalog!.tabs.length).toBeGreaterThan(1);
-    await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
+    expect((session.browserTabs?.sessionTabs(session?.id) ?? []).length).toBeGreaterThan(1);
+    await act(async () =>
+      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
+    );
     expect(
       client.getSnapshot().browserSessions.find((candidate) => candidate.id === session.id)?.state,
     ).toBe("ready");
@@ -411,7 +417,9 @@ describe("a reply's live picture belongs to its working Run", () => {
     await act(async () => client.actInPlace(home, next.key));
     expect(picture()!.dataset.placeKey).toBe(next.key);
     const { session, tabId } = tabOf(held);
-    await act(async () => client.closeBrowserTab(session.id, tabId, session.tabCatalog!));
+    await act(async () =>
+      client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
+    );
     // Closing another page does not change this Run's current place.
     expect(picture()!.dataset.placeKey).toBe(next.key);
   });

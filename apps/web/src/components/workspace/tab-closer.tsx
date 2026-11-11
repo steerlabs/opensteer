@@ -10,7 +10,7 @@ import {
 import {
   reviewHostAction,
   HostClientRequestError,
-  type BrowserTabCatalog,
+  type BrowserInventory,
   type BrowserTabCloseImpact,
   type HostClient,
   type PlaceItem,
@@ -29,7 +29,7 @@ import { useToast } from "../toast.js";
  */
 const TabCloserContext = createContext<((place: PlaceItem) => void) | null>(null);
 
-type Expected = Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">;
+type Expected = BrowserInventory;
 
 /**
  * A close's expected inventory and what it takes with it, from the tab's

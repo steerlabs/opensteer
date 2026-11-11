@@ -10,8 +10,10 @@ import { runPages } from "../host/surfaces.js";
 it("publishes a burst of pending-open settlements once without rebuilding browser rows", async () => {
   vi.useFakeTimers();
   const client = new MockHostClient({ latencyMs: 0, now: () => new Date("2026-10-19T12:00:00Z") });
-  const seen: HostSnapshot[] = [];
-  const unsubscribe = client.subscribe(() => seen.push(client.getSnapshot()));
+  const seen: { snapshot: HostSnapshot; revision: number }[] = [];
+  const unsubscribe = client.subscribe(() =>
+    seen.push({ snapshot: client.getSnapshot(), revision: client.browserTabs.revision }),
+  );
   try {
     const session = client
       .getSnapshot()
@@ -19,12 +21,13 @@ it("publishes a burst of pending-open settlements once without rebuilding browse
     await Promise.all(Array.from({ length: 200 }, () => client.openBrowserTab(session.id)));
     const settled = client.getSnapshot();
     expect(settled.pendingBrowserTabs).toEqual([]);
+    const revision = client.browserTabs.revision;
     const settlements = () =>
-      seen.filter(
-        (snapshot) =>
-          snapshot.browserSessions === settled.browserSessions &&
-          snapshot.pendingBrowserTabs!.length < 200,
-      );
+      seen
+        .filter(
+          (item) => item.revision === revision && item.snapshot.pendingBrowserTabs!.length < 200,
+        )
+        .map((item) => item.snapshot);
     expect(settlements()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(0);
     expect(settlements()).toEqual([settled]);

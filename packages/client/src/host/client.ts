@@ -736,27 +736,10 @@ export interface BrowserSessionUseSummary {
   readonly pageSite?: string | null | undefined;
 }
 
-export interface BrowserCatalogTab {
-  readonly id: BrowserSurfaceId;
-  readonly title: string;
-  readonly site: string;
-  readonly iconRef: string | null;
-  readonly order: number;
-  readonly openerId: BrowserSurfaceId | null;
-  readonly availability: "ready" | "starting" | "unavailable";
-  readonly documentId: string | null;
-  readonly occupants: import("@opensteer/protocol").PlaceOccupant[];
-  readonly loading?: boolean | undefined;
-  readonly navigationFailed?: boolean | undefined;
-  readonly canGoBack?: boolean | undefined;
-  readonly canGoForward?: boolean | undefined;
-}
-
-export interface BrowserTabCatalog {
+export interface BrowserInventory {
   readonly generation: number;
   readonly revision: number;
   readonly inventoryRevision?: number | undefined;
-  readonly tabs: BrowserCatalogTab[];
 }
 
 export interface WorkspaceTabLineage {
@@ -765,9 +748,7 @@ export interface WorkspaceTabLineage {
   revision: number;
   createdAt: string;
   unavailableReason?: string | undefined;
-  session: import("@opensteer/protocol").HostedBrowserSession & {
-    tabCatalog?: BrowserTabCatalog | undefined;
-  };
+  session: import("@opensteer/protocol").HostedBrowserSession;
   tabs?:
     | Array<{
         kind: "browser";
@@ -791,7 +772,6 @@ export interface BrowserSessionSummary {
   navigationVersion?: 1 | undefined;
   workspaceTabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
-  tabCatalog?: BrowserTabCatalog;
   access: "read" | "read-write";
   /**
    * An agent is acting in this browser now: it sent a command within the
@@ -816,7 +796,6 @@ export interface BrowserSessionSummary {
   profileId: string | null;
   runtimeId: string;
   state: HostedBrowserSessionState;
-  tabs: BrowserTabSummary[];
   viewerError: string | null;
   viewerState: "connecting" | "disconnected" | "synchronized";
   watchViewerError?: string | null;
@@ -880,7 +859,6 @@ export interface HostSnapshot {
   runQueue: RunQueueEntry[];
   browserProfileGrants: BrowserProfileGrantSummary[];
   workspaceTabRestoreVersion?: 1 | undefined;
-  workspaceTabs?: WorkspaceTabLineage[] | undefined;
   /** Tab activation calls owned by this client, before the Host reports restoration. */
   readonly activatingWorkspaceTabs?: readonly string[] | undefined;
   browserTabGroups?: BrowserTabLayout | undefined;
@@ -1430,7 +1408,7 @@ export interface HostClient {
   closeBrowserTab(
     sessionId: string,
     surfaceId: string,
-    expected: Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">,
+    expected: BrowserInventory,
   ): Promise<BrowserTabCloseResult>;
   browserWatchFrame(sessionId: string, surfaceId: string): BrowserFrameView | null;
   browserWatchState(sessionId: string, surfaceId: string): BrowserWatchState;

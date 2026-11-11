@@ -122,7 +122,7 @@ const session = client
 if (!session)
   throw new Error("Provide a ready, disposable browser session for the viewer journey.");
 const surfaceId = BrowserSurfaceIdSchema.parse(
-  query.get("surface") ?? session.tabs.find((tab) => tab.active)?.id,
+  query.get("surface") ?? session.browserTabs?.sessionList(session.id).ids[0],
 );
 let customMenu = false,
   pageWrite = false;

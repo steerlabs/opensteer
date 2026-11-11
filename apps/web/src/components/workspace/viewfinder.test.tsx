@@ -1,5 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { browserStoreFixture, seedBrowserSnapshot } from "@opensteer/client/test-support";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -55,15 +56,17 @@ const entry = (sequence = "1", session = sessionId, surface = surfaceId) =>
 it("keeps the card and its watch lease across independent inventories, Request waits and reconnect, then switches on the next entry", async () => {
   const store = new RunPlaceStore();
   store.accept(entry());
-  let snapshot = {
-    connection: "connected",
-    session: "authenticated",
-    machines: [],
-    browserSessions: [],
-    workspaceTabs: [],
-    runQueue: [{ id: runId, threadId, status: "running" }],
-  } as unknown as HostSnapshot;
-  snapshot = withBrowserTabStore(snapshot);
+  let snapshot = seedBrowserSnapshot(
+    {
+      connection: "connected",
+      session: "authenticated",
+      machines: [],
+      browserSessions: [],
+      runQueue: [{ id: runId, threadId, status: "running" }],
+    } as unknown as HostSnapshot,
+    [],
+  ) as unknown as HostSnapshot;
+  snapshot = seedBrowserSnapshot(snapshot);
   const listeners = new Set<() => void>();
   const release = vi.fn(),
     retain = vi.fn(() => release);
@@ -98,14 +101,14 @@ it("keeps the card and its watch lease across independent inventories, Request w
   expect(retain).toHaveBeenCalledTimes(1);
   for (const patch of [
     { browserSessions: [{ id: sessionId, state: "starting" }] },
-    { workspaceTabs: [{ tabs: [{ id: surfaceId, sessionId: "different-session" }] }] },
+    { browserTabs: browserStoreFixture([], []) },
     { browserSessions: [] },
     { runQueue: [{ id: runId, threadId, status: "waiting" }] },
     { connection: "connecting" },
-    { connection: "connected", workspaceTabs: [] },
+    { connection: "connected", browserTabs: browserStoreFixture([], []) },
   ]) {
     await act(async () => {
-      snapshot = withBrowserTabStore({ ...snapshot, ...patch } as HostSnapshot);
+      snapshot = seedBrowserSnapshot({ ...snapshot, ...patch } as HostSnapshot);
       listeners.forEach((listener) => listener());
     });
     expect(node.querySelector(".viewfinder")).toBe(card);
@@ -117,10 +120,10 @@ it("keeps the card and its watch lease across independent inventories, Request w
     snapshot = {
       ...snapshot,
       browserSessions: [
-        { id: replacement, state: "ready", tabCatalog: { tabs: [{ id: surfaceId }] } },
+        seedBrowserSession({ id: replacement, state: "ready" }, { rows: [{ id: surfaceId }] }),
       ],
     } as unknown as HostSnapshot;
-    snapshot = withBrowserTabStore(snapshot);
+    snapshot = seedBrowserSnapshot(snapshot);
     listeners.forEach((listener) => listener());
   });
   expect(store.get(runId)!.data.place).toMatchObject({ sessionId });

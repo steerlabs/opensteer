@@ -466,7 +466,9 @@ run("Browser Sessions through a whole deployment", () => {
     }[] = [];
     const note = (phase: string) => {
       const current = session();
-      const unrelatedTab = current?.tabCatalog?.tabs.find((tab) => tab.id === unrelated.surfaceId);
+      const unrelatedTab = (current?.browserTabs?.sessionTabs(current.id) ?? []).find(
+        (tab) => tab.id === unrelated.surfaceId,
+      );
       if (current?.state === "ready") expect(unrelatedTab).toBeDefined();
       expect(unrelatedTab?.occupants ?? []).toEqual([]);
       expect(
@@ -512,8 +514,8 @@ run("Browser Sessions through a whole deployment", () => {
         client
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runA && use.tabId === adaId) === true &&
-        session()
-          .tabCatalog?.tabs.find((tab) => tab.id === adaId)
+        (session().browserTabs?.sessionTabs(session()?.id) ?? [])
+          .find((tab) => tab.id === adaId)
           ?.occupants.some((occupant) => occupant.threadId === threadA && occupant.acting) === true,
       10_000,
     );
@@ -529,14 +531,14 @@ run("Browser Sessions through a whole deployment", () => {
     );
     await waitFor(
       async () =>
-        session().tabCatalog?.tabs.find((tab) => tab.id === adaId)?.title ===
-        "Ada Lovelace — updated",
+        (session().browserTabs?.sessionTabs(session()?.id) ?? []).find((tab) => tab.id === adaId)
+          ?.title === "Ada Lovelace — updated",
       15_000,
     );
-    expect(session().tabs.find((tab) => tab.id === adaId)).toMatchObject({
+    expect(client.browserTabs.sessionTab(sessionId, adaId)).toMatchObject({
       title: "Ada Lovelace — updated",
-      url: "",
     });
+    expect(client.browserViewerSurface(sessionId, adaId)).toBeUndefined();
     expect(
       client.getSnapshot().browserUses?.find((use) => use.runId === runA && use.tabId === adaId)
         ?.pageTitle,
@@ -562,8 +564,9 @@ run("Browser Sessions through a whole deployment", () => {
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runA && use.tabId === babbage.surfaceId) ===
           true &&
-        session().tabCatalog?.tabs.find((tab) => tab.id === babbage.surfaceId)?.title ===
-          "Charles Babbage",
+        (session().browserTabs?.sessionTabs(session()?.id) ?? []).find(
+          (tab) => tab.id === babbage.surfaceId,
+        )?.title === "Charles Babbage",
       15_000,
     );
     expect(note("Run A created Babbage").pagesA.map((page) => page.title)).toEqual([
@@ -576,7 +579,7 @@ run("Browser Sessions through a whole deployment", () => {
     await waitFor(
       async () =>
         session().acting === true &&
-        session().tabCatalog?.tabs.every((tab) =>
+        (session().browserTabs?.sessionTabs(session()?.id) ?? []).every((tab) =>
           tab.occupants.every((occupant) => !occupant.acting),
         ) === true,
       10_000,
@@ -596,8 +599,8 @@ run("Browser Sessions through a whole deployment", () => {
           .getSnapshot()
           .browserUses?.some((use) => use.runId === runB && use.tabId === babbage.surfaceId) ===
           true &&
-        session()
-          .tabCatalog?.tabs.find((tab) => tab.id === babbage.surfaceId)
+        (session().browserTabs?.sessionTabs(session()?.id) ?? [])
+          .find((tab) => tab.id === babbage.surfaceId)
           ?.occupants.some((occupant) => occupant.threadId === threadB && occupant.acting) === true,
       10_000,
     );
@@ -730,7 +733,9 @@ run("Browser Sessions through a whole deployment", () => {
       const result = await stack.api["bootstrap.get"]({});
       if (!result.ok) throw new Error(JSON.stringify(result));
       return (
-        (await browserInventory(stack)).workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? []
+        ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
+          (await browserInventory(stack)).browserTabs!,
+        ) ?? []
       );
     };
     await waitFor(async () => (await coldRows()).filter((row) => row.iconRef).length === 2, 10_000);

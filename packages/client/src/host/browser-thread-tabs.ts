@@ -1,4 +1,4 @@
-import type { BrowserCatalogTab as BrowserTabSummary } from "./client.js";
+import type { BrowserTabRow as BrowserTabSummary } from "@opensteer/protocol/browser-tabs";
 import type { BrowserSessionSummary, PlaceEntry } from "./client.js";
 
 export interface BrowserTabDestination {

@@ -1,5 +1,6 @@
+import { browserLineages } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
@@ -320,8 +321,12 @@ describe("tabs that read like a browser's", () => {
     // An opened tab sits right after its opener, at the same level as every tab.
     const session = client
       .getSnapshot()
-      .browserSessions.find((value) => value.tabCatalog?.tabs.some((tab) => tab.openerId))!;
-    const opened = session.tabCatalog!.tabs.find((tab) => tab.openerId)!;
+      .browserSessions.find((value) =>
+        (value.browserTabs?.sessionTabs(value?.id) ?? []).some((tab) => tab.openerId),
+      )!;
+    const opened = (session.browserTabs?.sessionTabs(session?.id) ?? []).find(
+      (tab) => tab.openerId,
+    )!;
     const openedKey = `browser:${session.id}:${opened.id}`;
     const keys = rowKeys();
     expect(keys[keys.indexOf(openedKey) - 1]).toBe(`browser:${session.id}:${opened.openerId}`);
@@ -752,7 +757,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       throw new Error("Not a browser tab");
     const { sessionId, tabId } = place.destination;
     const value = client.getSnapshot().browserSessions.find((item) => item.id === sessionId)!;
-    return { sessionId, tabId, catalog: value.tabCatalog! };
+    return { sessionId, tabId, catalog: value.browserTabs!.inventory(value?.id)! };
   };
   async function dispatch(target: EventTarget, event: Event) {
     await act(async () => {
@@ -984,20 +989,22 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
         const snapshot = read();
         let changed = seen.get(snapshot);
         if (!changed) {
-          changed = {
-            ...snapshot,
-            browserSessions: snapshot.browserSessions.map((value) =>
-              value.id === closing && value.state === "ready"
-                ? { ...value, state: "closing" as const }
-                : value,
-            ),
-            workspaceTabs: snapshot.workspaceTabs?.map((lineage) =>
+          changed = seedBrowserSnapshot(
+            {
+              ...snapshot,
+              browserSessions: snapshot.browserSessions.map((value) =>
+                value.id === closing && value.state === "ready"
+                  ? { ...value, state: "closing" as const }
+                  : value,
+              ),
+            } as HostSnapshot,
+            browserLineages(snapshot)?.map((lineage) =>
               lineage.session.id === closing
                 ? { ...lineage, unavailableReason: "This browser is closing." }
                 : lineage,
             ),
-          };
-          changed = withBrowserTabStore(changed);
+          );
+          changed = seedBrowserSnapshot(changed);
           seen.set(snapshot, changed);
         }
         return changed;

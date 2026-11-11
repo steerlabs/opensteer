@@ -105,7 +105,7 @@ import type {
   BrowserPlacementSummary,
   BrowserSessionSummary,
   BrowserStartIdentity,
-  BrowserTabCatalog,
+  BrowserInventory,
   BrowserTabOpenInput,
   BrowserTabOpenOptions,
   CreateThreadInput,
@@ -762,11 +762,7 @@ export class HttpHostClient {
     this.#tabGroups.removeClosed(result.closed);
     return result;
   };
-  async closeBrowserTab(
-    sessionId: string,
-    surfaceId: string,
-    expected: Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">,
-  ) {
+  async closeBrowserTab(sessionId: string, surfaceId: string, expected: BrowserInventory) {
     const viewer = this.#viewer.generation;
     const groupId = this.#browserTabs.groupForSession(sessionId);
     const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
@@ -785,7 +781,6 @@ export class HttpHostClient {
         type: "browser.tab.close" as const,
         sessionId: BrowserSessionIdSchema.parse(sessionId),
         outcome: "tab-closed" as const,
-        catalog: { generation: 0, revision: 0, tabs: [] },
       };
     }
     const inventoryRevision = expected.inventoryRevision ?? expected.revision;
@@ -5678,19 +5673,13 @@ export class HttpHostClient {
     if (snapshot.session === "authenticated")
       snapshot = {
         ...snapshot,
-        ...this.#browserSnapshot.derive(
-          snapshot,
-          this.#browserTabs,
-          (sessionId, surfaceId) =>
-            this.#targetedControl.surface(sessionId, surfaceId) ??
-            this.#targetedWatch.surface(sessionId, surfaceId),
-        ),
+        ...this.#browserSnapshot.derive(snapshot, this.#browserTabs),
       };
     const structure = this.#browserTabs.structure();
-    const workspaceTabsChanged = structure !== this.#browserStructure;
+    const browserStructureChanged = structure !== this.#browserStructure;
     const browserTabsChanged = this.#browserRevision !== this.#browserTabs.revision;
     const closedBrowserTabs: string[] = [];
-    if (workspaceTabsChanged) {
+    if (browserStructureChanged) {
       const tabIds = new Map<string, readonly string[]>();
       for (const groupId of this.#browserTabs.groups().ids) {
         const list = this.#browserTabs.tabs(groupId);
@@ -5818,12 +5807,6 @@ export class HttpHostClient {
         browserSessions: snapshot.browserSessions.filter(
           ({ workspaceId }) => !this.#forbiddenWorkspaces.has(workspaceId),
         ),
-        workspaceTabs: this.#browserTabs.groups().ids.flatMap((id) => {
-          const group = this.#browserTabs.group(id)!;
-          return this.#forbiddenWorkspaces.has(group.workspaceId)
-            ? []
-            : [workspaceTabLineage(this.#browserTabs, id)!];
-        }),
         homeThreadId: deniedHome ? null : snapshot.homeThreadId,
         homeWorkspaceId: deniedHome ? null : snapshot.homeWorkspaceId,
         inputQueues: Object.fromEntries(Object.entries(snapshot.inputQueues).filter(retainThread)),
@@ -5932,7 +5915,7 @@ export class HttpHostClient {
       revision: this.#snapshot.revision + 1,
     };
     if (closedBrowserTabs.length) this.#tabGroups.removeClosed(closedBrowserTabs);
-    if (workspaceTabsChanged)
+    if (browserStructureChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();

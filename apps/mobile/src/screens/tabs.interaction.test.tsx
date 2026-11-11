@@ -1,3 +1,4 @@
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
@@ -1579,12 +1580,9 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(notices()).toEqual([]);
     expect(placeRows(front(w)).length).toBeGreaterThan(0);
 
-    await host.change((snapshot) => ({
-      ...snapshot,
-      browserSessions: [],
-      machines: [],
-      workspaceTabs: [],
-    }));
+    await host.change((snapshot) =>
+      seedBrowserSnapshot({ ...snapshot, browserSessions: [], machines: [] } as HostSnapshot, []),
+    );
     expect(placeRows(front(w))).toEqual([]);
     expect(front(w).querySelector("[data-list]")!.textContent).toContain(
       "No tabs yetTabs you and your agents open appear here.",
@@ -2088,33 +2086,35 @@ it.each([
     const machine = snapshot.machines.find((m) =>
       kind === "phone" ? m.device?.platform === "android" : m.name === "Mac mini",
     )!;
-    return {
-      ...snapshot,
-      browserAvailable: false,
-      browserSessions: [],
-      workspaceTabs: [],
-      deploymentShape: {
-        ...snapshot.deploymentShape!,
-        kind: personal ? "personal" : "server",
-      },
-      machines: [
-        {
-          ...machine,
-          ownership:
-            personal || kind === "legacy-server"
-              ? "deployment"
-              : kind === "other"
-                ? "other"
-                : "mine",
-          tabOpenedAt: null,
-          computerUse:
-            kind === "no-computer-use"
-              ? null
-              : { ...machine.computerUse!, ownerViews: [], sessions: [] },
+    return seedBrowserSnapshot(
+      {
+        ...snapshot,
+        browserAvailable: false,
+        browserSessions: [],
+        deploymentShape: {
+          ...snapshot.deploymentShape!,
+          kind: personal ? "personal" : "server",
         },
-      ],
-      ...(kind.startsWith("legacy-") ? { deploymentPolicy: undefined } : {}),
-    } as HostSnapshot;
+        machines: [
+          {
+            ...machine,
+            ownership:
+              personal || kind === "legacy-server"
+                ? "deployment"
+                : kind === "other"
+                  ? "other"
+                  : "mine",
+            tabOpenedAt: null,
+            computerUse:
+              kind === "no-computer-use"
+                ? null
+                : { ...machine.computerUse!, ownerViews: [], sessions: [] },
+          },
+        ],
+        ...(kind.startsWith("legacy-") ? { deploymentPolicy: undefined } : {}),
+      } as HostSnapshot,
+      [],
+    ) as HostSnapshot;
   });
   const offered = !["other", "no-computer-use", "legacy-server"].includes(kind);
   expect(find(front(w), "Open") !== undefined).toBe(offered);

@@ -1,8 +1,4 @@
-import type {
-  BrowserGroupRow,
-  BrowserTabRow,
-  BrowserViewerSurface,
-} from "@opensteer/protocol/browser-tabs";
+import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
 import type { BrowserSessionSummary, HostSnapshot, WorkspaceTabLineage } from "./client.js";
 import type { BrowserTabStore } from "./browser-tab-store.js";
 
@@ -19,195 +15,38 @@ function same<T extends object>(previous: T | undefined, next: T): T {
     : next;
 }
 
-/** Snapshot arrays remain reader-compatible until the lists use row subscriptions. */
 export class BrowserSnapshotDerivation {
-  readonly #rows = new WeakMap<
-    BrowserTabRow,
-    {
-      catalog: NonNullable<BrowserSessionSummary["tabCatalog"]>["tabs"][number];
-      durable: NonNullable<WorkspaceTabLineage["tabs"]>[number];
-    }
-  >();
-  readonly #groups = new Map<
-    string,
-    {
-      revision: number;
-      catalog: NonNullable<BrowserSessionSummary["tabCatalog"]>["tabs"];
-      durable: NonNullable<WorkspaceTabLineage["tabs"]>;
-    }
-  >();
-  #previous: Pick<HostSnapshot, "browserSessions" | "workspaceTabs"> = {
-    browserSessions: [],
-    workspaceTabs: [],
-  };
+  #previous: BrowserSessionSummary[] = [];
   readonly #sessions = new WeakMap<BrowserGroupRow, ReturnType<typeof groupSession>>();
 
-  #session(group: BrowserGroupRow) {
-    let session = this.#sessions.get(group);
-    if (!session) {
-      session = groupSession(group);
-      this.#sessions.set(group, session);
-    }
-    return session;
-  }
-  #row(row: BrowserTabRow) {
-    let projected = this.#rows.get(row);
-    if (!projected) {
-      const {
-        id,
-        title,
-        site,
-        iconRef,
-        order,
-        openerId,
-        availability,
-        loading,
-        navigationFailed,
-        documentId,
-        canGoBack,
-        canGoForward,
-        occupants,
-      } = row;
-      projected = {
-        catalog: {
-          id,
-          title,
-          site,
-          iconRef,
-          order,
-          openerId,
-          availability,
-          loading,
-          navigationFailed,
-          documentId,
-          canGoBack,
-          canGoForward,
-          occupants,
-        },
-        durable: {
-          kind: "browser",
-          id,
-          title,
-          site,
-          iconRef,
-          order,
-          openerId,
-          sessionId: row.sessionId,
-          state: row.state,
-          createdAt: row.createdAt,
-        },
-      };
-      this.#rows.set(row, projected);
-    }
-    return projected;
-  }
   derive(
-    _snapshot: Pick<HostSnapshot, "browserSessions" | "workspaceTabs">,
+    snapshot: Pick<HostSnapshot, "browserSessions">,
     store: BrowserTabStore,
-    surface: (sessionId: string, surfaceId: string) => BrowserViewerSurface | undefined = () =>
-      undefined,
-  ): Pick<
-    HostSnapshot,
-    "browserSessions" | "workspaceTabs" | "workspaceTabRestoreVersion" | "browserTabs"
-  > {
-    const snapshot = this.#previous;
-    const heldSessions = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
-    const statuses = new Map(_snapshot.browserSessions.map((session) => [session.id, session]));
-    const heldGroups = new Map<string, WorkspaceTabLineage>(
-      snapshot.workspaceTabs?.map((group) => [group.id, group]),
-    );
-    const browserSessions: BrowserSessionSummary[] = [];
-    const workspaceTabs: WorkspaceTabLineage[] = [];
-    for (const id of store.groups().ids) {
+  ): Pick<HostSnapshot, "browserSessions" | "workspaceTabRestoreVersion" | "browserTabs"> {
+    const previous = new Map(this.#previous.map((session) => [session.id, session]));
+    const statuses = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
+    const sessions = store.groups().ids.map((id) => {
       const group = store.group(id)!;
-      const previous = heldSessions.get(group.sessionId);
-      const status = statuses.get(group.sessionId);
-      const heldGroup = heldGroups.get(id);
-      const session = this.#session(group);
-      const list = store.tabs(id);
-      const terminal = group.state === "closed" || group.state === "failed";
-      let projected = this.#groups.get(id);
-      const revision = store.tabRevision(id);
-      if (!projected || projected.revision !== revision) {
-        const rows = list.ids.map((tabId) => store.tab(id, tabId)!);
-        projected = {
-          revision,
-          catalog: shared(
-            projected?.catalog,
-            rows.filter((row) => row.documentId !== null).map((row) => this.#row(row).catalog),
-          ),
-          durable: shared(
-            projected?.durable,
-            rows.map((row) => this.#row(row).durable),
-          ),
-        };
-        this.#groups.set(id, projected);
+      let metadata = this.#sessions.get(group);
+      if (!metadata) {
+        metadata = groupSession(group);
+        this.#sessions.set(group, metadata);
       }
-      const catalogTabs = projected.catalog;
-      const tabCatalog = list.whole
-        ? same(previous?.tabCatalog, {
-            generation: 0,
-            revision: group.inventoryRevision,
-            inventoryRevision: group.inventoryRevision,
-            tabs: catalogTabs,
-          })
-        : undefined;
-      const heldTabs = new Map(previous?.tabs.map((tab) => [tab.id, tab]));
-      const tabs = shared(
-        previous?.tabs,
-        catalogTabs.map((row) => {
-          const viewed = terminal ? undefined : surface(group.sessionId, row.id);
-          return same(heldTabs.get(row.id), {
-            id: row.id,
-            title: viewed?.title ?? row.title,
-            documentId: row.documentId ?? undefined,
-            active: false,
-            loading: viewed?.loading ?? row.loading,
-            sizedByAgent: viewed?.sizedByAgent,
-            url: viewed?.url ?? "",
-            favicon: viewed?.favicon ?? undefined,
-          });
-        }),
-      );
-      browserSessions.push(
-        same(previous, {
-          ...session,
-          browserTabs: store,
-          opener: group.opener,
-          ...(tabCatalog ? { tabCatalog } : {}),
-          dialog: terminal ? null : (status?.dialog ?? null),
-          error: status?.error ?? null,
-          tabs,
-          viewerError: terminal ? null : (status?.viewerError ?? null),
-          viewerState: terminal ? "disconnected" : (status?.viewerState ?? "disconnected"),
-          watchViewerError: terminal ? null : (status?.watchViewerError ?? null),
-          watchViewerState: terminal
-            ? "disconnected"
-            : (status?.watchViewerState ?? "disconnected"),
-        }),
-      );
-      workspaceTabs.push(
-        same(heldGroup, {
-          id: group.id,
-          revision: group.inventoryRevision,
-          createdAt: group.createdAt,
-          ...(group.unavailableReason ? { unavailableReason: group.unavailableReason } : {}),
-          session,
-          whole: list.whole,
-          tabs: projected.durable,
-        }),
-      );
-    }
-    const ids = new Set(store.groups().ids);
-    for (const id of this.#groups.keys()) if (!ids.has(id)) this.#groups.delete(id);
-    const result = {
-      browserTabs: store,
-      workspaceTabRestoreVersion: 1 as const,
-      browserSessions: shared(snapshot.browserSessions, browserSessions),
-      workspaceTabs: shared(snapshot.workspaceTabs, workspaceTabs),
-    };
-    this.#previous = result;
-    return result;
+      const terminal = group.state === "closed" || group.state === "failed";
+      const status = statuses.get(group.sessionId);
+      return same(previous.get(group.sessionId), {
+        ...metadata,
+        browserTabs: store,
+        dialog: terminal ? null : (status?.dialog ?? null),
+        error: status?.error ?? null,
+        viewerError: terminal ? null : (status?.viewerError ?? null),
+        viewerState: terminal ? "disconnected" : (status?.viewerState ?? "disconnected"),
+        watchViewerError: terminal ? null : (status?.watchViewerError ?? null),
+        watchViewerState: terminal ? "disconnected" : (status?.watchViewerState ?? "disconnected"),
+      });
+    });
+    this.#previous = shared(this.#previous, sessions);
+    return { browserTabs: store, workspaceTabRestoreVersion: 1, browserSessions: this.#previous };
   }
 }
 

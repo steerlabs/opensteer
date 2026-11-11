@@ -220,13 +220,7 @@ async function resolvedOrder(stack: VerticalStack) {
   const layout = browser.tabGroups!;
   return resolveBrowserTabOrder(
     layout.order,
-    (browser.workspaceTabs ?? []).flatMap((lineage) =>
-      (lineage.tabs ?? []).map((tab) => ({
-        ...tab,
-        createdAt: tab.createdAt!,
-        lineageCreatedAt: lineage.createdAt,
-      })),
-    ),
+    browser.browserTabs!.structure().map((key) => ({ ...key, id: key.tabId })),
     new Map(layout.groups.flatMap((group) => group.tabIds.map((id) => [id, group.id]))),
   );
 }
@@ -782,9 +776,11 @@ integration("personal tab groups through a real deployment", () => {
       tabIds: [third.tabId],
       idempotencyKey: randomUUID(),
     });
-    expect((await bootstrap(stack)).workspaceTabs?.flatMap((l) => l.tabs ?? [])).toContainEqual(
-      expect.objectContaining({ id: third.tabId, state: "live" }),
-    );
+    expect(
+      ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
+        (await bootstrap(stack)).browserTabs!,
+      ),
+    ).toContainEqual(expect.objectContaining({ id: third.tabId, state: "live" }));
     const closed = await command(stack, {
       type: "workspace.tabs.close",
       tabIds: [first.tabId],
@@ -793,9 +789,11 @@ integration("personal tab groups through a real deployment", () => {
     expect(closed).toMatchObject({ closed: [first.tabId], failed: [] });
     const after = await bootstrap(stack);
     expect(after.tabGroups?.groups).toEqual([]);
-    expect(after.workspaceTabs?.flatMap((l) => l.tabs ?? []).map((t) => t.id)).toEqual(
-      expect.arrayContaining([second.tabId, third.tabId]),
-    );
+    expect(
+      ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
+        after.browserTabs!,
+      ).map((t) => t.id),
+    ).toEqual(expect.arrayContaining([second.tabId, third.tabId]));
     evidence.push({
       assertions: [
         "cross-identity membership",
@@ -922,7 +920,9 @@ integration("agent organization and durable ownership", () => {
             .map((session) => ({
               id: session.id,
               state: session.state,
-              tabIds: session.tabCatalog?.tabs.map((tab) => tab.id),
+              tabIds: (session.browserTabs?.sessionTabs(session?.id) ?? [])
+                .filter((tab) => tab.documentId !== null)
+                .map((tab) => tab.id),
             }))
             .sort((a, b) => a.id.localeCompare(b.id)),
         ).toEqual(
@@ -1437,7 +1437,9 @@ integration("agent organization and durable ownership", () => {
     ).not.toEqual([]);
     const after = await bootstrap(stack);
     expect(after.tabGroups?.order).toEqual([second.tabId, first.tabId]);
-    const tabs = after.workspaceTabs?.flatMap((l) => l.tabs ?? []);
+    const tabs = ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
+      after.browserTabs!,
+    );
     expect(tabs).toContainEqual(expect.objectContaining({ id: first.tabId, state: "live" }));
     expect(tabs).toContainEqual(expect.objectContaining({ id: second.tabId, state: "suspended" }));
     expect(activeSeen.every((id) => id === activeSeen[0])).toBe(true);
@@ -1743,9 +1745,7 @@ integration("tab group deletion and response bounds", () => {
         })
         .execute();
     }
-    expect(
-      (await bootstrap(stack)).workspaceTabs?.some((lineage) => lineage.id === first.sessionId),
-    ).toBe(true);
+    expect((await bootstrap(stack)).browserTabs!.groups().ids.includes(first.sessionId)).toBe(true);
     await command(stack, {
       type: "workspace.tabs.group",
       tabIds: [first.tabId],
@@ -1753,9 +1753,11 @@ integration("tab group deletion and response bounds", () => {
       idempotencyKey: randomUUID(),
     });
     const inventory = await bootstrap(stack);
-    expect(inventory.workspaceTabs).toHaveLength(102);
+    expect(inventory.browserTabs!.groups().ids).toHaveLength(102);
     expect(
-      inventory.workspaceTabs?.flatMap((lineage) => lineage.tabs ?? []).map((tab) => tab.id),
+      ((store) => store.structure().map((key) => store.tab(key.groupId, key.tabId)!))(
+        inventory.browserTabs!,
+      ).map((tab) => tab.id),
     ).toContain(first.tabId);
     evidence.push({
       assertions: [

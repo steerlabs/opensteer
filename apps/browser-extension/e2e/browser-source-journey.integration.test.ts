@@ -962,6 +962,10 @@ async function launchEverydayChrome(
   const context = await chromium.launchPersistentContext(profileDirectory, {
     args: [
       ...hostedChromeArgs,
+      // Keep extension workers scheduled on loaded Macs: https://crbug.com/549552319.
+      ...(process.platform === "darwin"
+        ? ["--enable-features=CDPScreenshotNewSurface,ExtensionServiceWorkerVoter"]
+        : []),
       `--disable-extensions-except=${extensionDirectory}`,
       `--load-extension=${extensionDirectory}`,
     ],

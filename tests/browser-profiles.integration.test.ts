@@ -437,13 +437,19 @@ run("Browser profiles through a whole deployment", () => {
         people[0]!
           .getSnapshot()
           .browserSessions.some(
-            (session) => session.id === sessionId && session.tabCatalog?.tabs.length,
+            (session) =>
+              session.id === sessionId &&
+              (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
           ),
       10_000,
     );
     const client = people[0]!;
-    const pageId = client.getSnapshot().browserSessions.find((session) => session.id === sessionId)!
-      .tabCatalog!.tabs[0]!.id;
+    const pageId = (client
+      .getSnapshot()
+      .browserSessions.find((session) => session.id === sessionId)!
+      .browserTabs?.sessionTabs(
+        client.getSnapshot().browserSessions.find((session) => session.id === sessionId)!.id,
+      ) ?? [])[0]!.id;
     const release = client.retainBrowserWatch(sessionId, pageId);
     try {
       await waitFor(async () => client.browserWatchFrames.get(sessionId, pageId) !== null, 10_000);

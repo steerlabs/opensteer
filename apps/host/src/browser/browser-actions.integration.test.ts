@@ -258,9 +258,7 @@ integration("session-scoped browser agent backends", () => {
       await noticed;
       expect((await group()).tabs?.[0]?.state).toBe(state);
       expect(
-        (await browserRows(f.host.runtime.browser, f.host.ownerId)).workspaceTabs?.find(
-          (held) => held.id === f.sessionId,
-        )?.tabs?.[0]?.state,
+        (await browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId)).tabs[0]?.state,
       ).toBe(state);
     };
     await publish("suspended");

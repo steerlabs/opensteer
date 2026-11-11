@@ -2,15 +2,33 @@ import { groupSession } from "../host/browser-snapshot.js";
 import { placeList } from "../host/places.js";
 import type {
   BrowserSessionSummary,
-  BrowserTabCatalog,
+  BrowserInventory,
+  BrowserTabSummary,
   HostSnapshot,
   WorkspaceTabLineage,
 } from "../host/client.js";
 
 /** Authored mock world data, independent of the client snapshot projections. */
+export interface MockBrowserCatalog extends BrowserInventory {
+  readonly tabs: (Omit<
+    import("@opensteer/protocol/browser-tabs").BrowserTabRow,
+    | "state"
+    | "createdAt"
+    | "sessionId"
+    | "loading"
+    | "navigationFailed"
+    | "canGoBack"
+    | "canGoForward"
+  > & {
+    loading?: boolean | undefined;
+    navigationFailed?: boolean | undefined;
+    canGoBack?: boolean | undefined;
+    canGoForward?: boolean | undefined;
+  })[];
+}
 export interface MockBrowserSession extends BrowserSessionSummary {
-  catalog?: BrowserTabCatalog;
-  surfaces: BrowserSessionSummary["tabs"];
+  catalog?: MockBrowserCatalog;
+  surfaces: BrowserTabSummary[];
 }
 export interface MockBrowserSource extends HostSnapshot {
   browserSessions: MockBrowserSession[];
@@ -27,7 +45,6 @@ export function mockPlaceList(snapshot: MockBrowserSource) {
     if (!sessions.has(group.sessionId))
       sessions.set(group.sessionId, {
         ...groupSession(group),
-        tabs: [],
         dialog: null,
         error: null,
         viewerState: "disconnected",

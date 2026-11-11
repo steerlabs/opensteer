@@ -6300,11 +6300,7 @@ class MockHostState {
       this.#browserStream = new MockBrowserStream(this.browserTabs);
       this.#published = null;
     }
-    this.#published = this.#browserStream.publish(
-      this.snapshot,
-      this.#published,
-      (sessionId, surfaceId) => this.places?.viewerSurface(sessionId, surfaceId),
-    );
+    this.#published = this.#browserStream.publish(this.snapshot, this.#published);
   }
   tabGroups: BrowserTabLayout = { revision: 0, groups: [], order: [] };
   projectTabGroups: (() => BrowserTabLayout | undefined) | undefined;
@@ -10060,7 +10056,7 @@ class MockHostState {
       attachedRunIds: [],
       acting: false,
       catalog: { generation: 1, revision: 1, tabs: [tab] },
-      tabs: [],
+
       surfaces: [{ active: true, id: tab.id, title: tab.title, url: "about:blank" }],
       page: { title: "New tab", url: "about:blank" },
     };
@@ -10087,7 +10083,6 @@ class MockHostState {
                     },
                   }
                 : {}),
-              tabs: [],
             }
           : session,
       ),
