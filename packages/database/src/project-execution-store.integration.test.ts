@@ -320,20 +320,18 @@ describeStore("Project durable controls", (it) => {
         currentPeerIsProjectCapable: () => true,
         canContinue: async () => false,
       });
-    const stored = await database
-      .transaction()
-      .execute((transaction) =>
-        new ProjectExecutionStore().enqueueCommand(transaction, {
-          binding,
-          idempotencyKey: "uncertain-proposal",
-          control: {
-            kind: "request.refuse",
-            requestId: createId("request"),
-            callId: "uncertain-call",
-            reason: "unsupported-request-kind",
-          },
-        }),
-      );
+    const stored = await database.transaction().execute((transaction) =>
+      new ProjectExecutionStore().enqueueCommand(transaction, {
+        binding,
+        idempotencyKey: "uncertain-proposal",
+        control: {
+          kind: "request.refuse",
+          requestId: createId("request"),
+          callId: "uncertain-call",
+          reason: "unsupported-request-kind",
+        },
+      }),
+    );
     const delivery = await makeDelivery().claim(stored.commandId, "before-crash");
     if (delivery.state !== "ready") throw new Error("Project refusal was not ready");
     await makeDelivery().recordResult(peer, {

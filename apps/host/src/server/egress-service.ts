@@ -105,6 +105,8 @@ export class ProjectEgressService {
 
   async forward(token: string, request: unknown) {
     await this.#capabilities.verify(token, "opensteer-project-egress");
-    return this.#gateway.forward(request);
+    const response = await this.#gateway.forward(request);
+    await this.#capabilities.verify(token, "opensteer-project-egress");
+    return response;
   }
 }

@@ -1,7 +1,9 @@
+import { HostEgressGateway } from "@opensteer/access/host";
+import { ProjectEgressService } from "../server/egress-service.js";
 import { createId, ProjectRunBindingSchema } from "@opensteer/core";
 import { ProjectCapabilityClaimsSchema } from "@opensteer/protocol";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SignedTokenService } from "../identity/host-keys.js";
 import {
   ProjectCapabilityTokenService,
@@ -79,6 +81,30 @@ describe("Project Run capabilities", () => {
     revoke();
     for (const { audience, token } of issued)
       await expect(service.verify(token, audience)).rejects.toThrow("Binding is no longer current");
+  });
+
+  it("withholds upstream bytes if the Project binding is revoked during egress", async () => {
+    const { binding, service, revoke } = setup();
+    const egress = new ProjectEgressService({
+      capabilities: service,
+      publicUrl: new URL("https://project.test.invalid"),
+    });
+    const { relayToken } = await egress.issue(binding);
+    const upstream = vi
+      .spyOn(HostEgressGateway.prototype, "forward")
+      .mockImplementation(async () => {
+        revoke();
+        return {
+          bodyBase64: Buffer.from("Private upstream response").toString("base64"),
+          headers: {},
+          status: 200,
+        };
+      });
+    try {
+      await expect(egress.forward(relayToken, {})).rejects.toThrow("Binding is no longer current");
+    } finally {
+      upstream.mockRestore();
+    }
   });
 
   it("refuses cross-field forgeries, legacy envelopes and a different Host before consulting a binding", async () => {
