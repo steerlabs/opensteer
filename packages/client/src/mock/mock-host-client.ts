@@ -2755,6 +2755,7 @@ function placeMockMessage(
 
 async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
   switch (command.type) {
+    case "team.computer.replace":
     case "team.project.create":
     case "team.access.apply":
     case "team.access.selfGrant":

@@ -15,6 +15,8 @@ const viewer = "usr_0192f4a1-0000-4000-8000-000000000001";
 
 /** Every team read, with an input each scenario's fixtures can answer. */
 const reads = {
+  "team.projects.list": {},
+  "team.computer.get": {},
   "team.invitations.list": {},
   "team.summary.get": {},
   "team.people.list": { limit: 3 },
@@ -55,7 +57,11 @@ describe("the shared team mock", () => {
           input: unknown,
         ) => Promise<{ ok: boolean; data?: unknown; error?: { reason?: string } }>;
         const result = await call(input);
-        if (scenario === "admin") expect(result.ok ? null : result.error, name).toBeNull();
+        if (scenario === "admin") {
+          if (name === "team.projects.list" || name === "team.computer.get")
+            expect(result.error?.reason, name).toBe("team-not-implemented");
+          else expect(result.ok ? null : result.error, name).toBeNull();
+        }
         if (result.ok) {
           expect(() => teamReadSchemas[name].output.parse(result.data), name).not.toThrow();
         } else {

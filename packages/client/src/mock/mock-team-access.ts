@@ -982,6 +982,13 @@ export class MockTeamAccess {
     this.#requireMember();
     const base = () => ({ accessRevision: this.#revision, commandId: this.#commandId() });
     switch (command.type) {
+      case "team.computer.replace":
+        this.#requireAdmin();
+        throw refusal(
+          "forbidden",
+          "team-not-implemented",
+          "The team computer preview is not implemented yet.",
+        );
       case "team.project.create": {
         if (this.#viewer.kind !== "full")
           throw refusal("forbidden", "team-admin-required", "Guests can't create projects.");
@@ -1214,6 +1221,22 @@ export class MockTeamAccess {
     const matches = (text: string, query: string | undefined) =>
       !query || text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
     return {
+      "team.projects.list": run("team.projects.list", () => {
+        this.#requireAdmin();
+        throw refusal(
+          "forbidden",
+          "team-not-implemented",
+          "The all-projects preview is not implemented yet.",
+        );
+      }),
+      "team.computer.get": run("team.computer.get", () => {
+        this.#requireAdmin();
+        throw refusal(
+          "forbidden",
+          "team-not-implemented",
+          "The team computer preview is not implemented yet.",
+        );
+      }),
       "team.invitations.list": (input) =>
         run("team.invitations.list", () => {
           this.#requireAdmin();
