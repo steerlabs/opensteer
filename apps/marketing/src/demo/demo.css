@@ -1654,12 +1654,15 @@ button.ip-row:hover {
     -webkit-mask-image: none;
     mask-image: none;
   }
-  .rig,
   .floor,
   .beam,
   .note--caption svg,
   .note--caption .note__dot {
     display: none;
+  }
+  /* Hidden, not removed: scenes measure their hooks on this copy of the desktop. */
+  .rig {
+    visibility: hidden;
   }
 }
 @media (prefers-reduced-motion: reduce) {

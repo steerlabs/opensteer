@@ -61,7 +61,7 @@ export const PHONE = `<div class="iphone" data-view="list">
     </div>
     <div class="ip-task">
       <div class="ip-head"><button class="ip-back" type="button" aria-label="Back to your tasks">${icon("m-chevl")}</button><div class="ip-cap" data-part="capsule"><span class="tmark" data-part="mark"></span><b data-part="title"></b><i class="pip"></i></div></div>
-      <div class="ip-live"><div class="mirror"></div><span class="ip-live__chip"><i></i>Your MacBook</span></div>
+      <div class="ip-live"><div class="mirror" aria-hidden="true"></div><span class="ip-live__chip"><i></i>Your MacBook</span></div>
       <span class="ip-grab"></span>
       <div class="ip-feed" data-part="feed"></div>
       <div class="ip-req" data-state="open"><b></b><p></p><div class="ip-req__btns"><button type="button" data-answer="deny">Don’t Allow</button><button type="button" data-answer="allow">Allow</button></div><div class="ip-req__done">${icon("i-check")}<span></span></div></div>
