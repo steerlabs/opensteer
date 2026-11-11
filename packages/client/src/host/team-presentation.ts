@@ -10,6 +10,7 @@ import {
   type MemberPreview,
   type MemberState,
   type RuntimeState,
+  type TeamComputerView,
   type TeamReason,
 } from "@opensteer/protocol";
 import { HostClientRequestError } from "./client.js";
@@ -450,4 +451,38 @@ export function teamHomeEmpty(input: {
     title: "No projects yet",
     body: `When someone adds you to a project, it appears here.${input.canCreate ? " You can also start one." : ""}`,
   };
+}
+
+/** The team computer's state, in the words of its settings page. */
+export function teamComputerState(
+  computer: TeamComputerView["computer"],
+  team: string,
+): { readonly title: string; readonly detail: string } {
+  if (computer === null)
+    return {
+      title: "No computer yet",
+      detail: `Projects can’t run tasks until ${team} has a computer. It must be a Linux machine with Docker that whoever runs ${team}’s server sets up.`,
+    };
+  switch (computer.state) {
+    case "connected":
+      return {
+        title: `${computer.name} · Connected`,
+        detail: `Every project in ${team} runs its tasks here.`,
+      };
+    case "offline":
+      return {
+        title: `${computer.name} · Offline`,
+        detail: `Tasks wait until it’s back. Whoever runs ${team}’s server can restart it.`,
+      };
+    case "update-required":
+      return {
+        title: `${computer.name} · Needs an update`,
+        detail: `It’s running an older Opensteer than ${team}’s server, so it can’t run tasks. Whoever runs it needs to update it.`,
+      };
+  }
+}
+
+/** The trusted-members statement, as a footnote where nothing is being confirmed. */
+export function teamComputerTrustNote(team: string): string {
+  return `${team} runs every project on one computer. People in ${team}, and the agents working for them, can reach that computer and anything on its network.`;
 }

@@ -1077,7 +1077,7 @@ export class MockTeamAccess {
         return TeamCommandResultSchema.parse({
           ...base(),
           type: command.type,
-          enrollmentId: `enr_mock_${this.#commandCount}`,
+          enrollmentId: `ren_00000000-0000-4000-8000-${String(this.#commandCount).padStart(12, "0")}`,
           token: `MOCK-TEAM-COMPUTER-CODE-${String(this.#commandCount).padStart(4, "0")}`,
           expiresAt,
         });

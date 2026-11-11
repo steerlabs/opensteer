@@ -599,6 +599,7 @@ export function App({
               <Route path="team/people/:userId" element={<TeamSettingsRoute page="person" />} />
               <Route path="team/groups" element={<TeamSettingsRoute page="groups" />} />
               <Route path="team/groups/:groupId" element={<TeamSettingsRoute page="group" />} />
+              <Route path="team/computer" element={<TeamSettingsRoute page="computer" />} />
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
               <Route
                 path="devices/computers"

@@ -69,6 +69,7 @@ import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import {
   TeamAddScreen,
+  TeamComputerScreen,
   TeamGroupScreen,
   TeamGroupsScreen,
   TeamInviteScreen,
@@ -364,6 +365,7 @@ const RootStack = createNativeStackNavigator({
     TeamPerson: { screen: TeamPersonScreen, options: { title: "Person" } },
     TeamInvite: { screen: TeamInviteScreen, options: { title: "Invite" } },
     TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
+    TeamComputer: { screen: TeamComputerScreen, options: { title: "Team computer" } },
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
     TeamAdd: { screen: TeamAddScreen, options: { title: "Add" } },
     TeamProjectRuntime: { screen: TeamProjectRuntimeScreen, options: { title: "How it runs" } },
@@ -569,6 +571,7 @@ type OpensteerRootParamList = {
   readonly TeamPerson: { readonly deploymentId: string; readonly userId: string };
   readonly TeamInvite: { readonly deploymentId: string };
   readonly TeamGroups: { readonly deploymentId: string };
+  readonly TeamComputer: { readonly deploymentId: string };
   readonly TeamGroup: { readonly deploymentId: string; readonly groupId: string };
   readonly TeamAdd: {
     readonly deploymentId: string;

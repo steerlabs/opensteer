@@ -44,6 +44,7 @@ import {
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { DeploymentGate, useAttachedHost } from "../screens/deployment-gate.js";
+import { TeamComputer } from "./team-computer.js";
 import {
   Avatar,
   ShowMoreRow,
@@ -63,7 +64,7 @@ function TeamScreen(props: {
   readonly deploymentId: string;
   readonly title: string;
   /** The Host's permission this screen needs; null for screens a Project read gates itself. */
-  readonly requires: "people" | "groups" | "invite" | null;
+  readonly requires: "people" | "groups" | "invite" | "computer" | null;
   readonly children: (hostClient: HostClient) => ReactNode;
 }): ReactNode {
   const hostClient = useAttachedHost(props.deploymentId);
@@ -83,7 +84,7 @@ function TeamScreen(props: {
  */
 function TeamBody(props: {
   readonly hostClient: HostClient;
-  readonly requires: "people" | "groups" | "invite" | null;
+  readonly requires: "people" | "groups" | "invite" | "computer" | null;
   readonly children: (hostClient: HostClient) => ReactNode;
 }): ReactNode {
   const { identity, summary, error, refresh } = useTeam(props.hostClient);
@@ -875,6 +876,16 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
   );
 }
 
+/* ---- Team computer ---- */
+
+export function TeamComputerScreen({ route }: DeploymentProps) {
+  return (
+    <TeamScreen deploymentId={route.params.deploymentId} requires="computer" title="Team computer">
+      {(hostClient) => <TeamComputer hostClient={hostClient} />}
+    </TeamScreen>
+  );
+}
+
 /* ---- Groups ---- */
 
 export function TeamGroupsScreen({ route }: DeploymentProps) {
@@ -1420,12 +1431,19 @@ export function TeamProjectRuntimeScreen({
 }: DeploymentProps<{ readonly workspaceId: string }>) {
   return (
     <TeamScreen deploymentId={route.params.deploymentId} requires={null} title="How it runs">
-      {(hostClient) => <Runtime hostClient={hostClient} workspaceId={route.params.workspaceId} />}
+      {(hostClient) => (
+        <Runtime
+          deploymentId={route.params.deploymentId}
+          hostClient={hostClient}
+          workspaceId={route.params.workspaceId}
+        />
+      )}
     </TeamScreen>
   );
 }
 
 function Runtime(props: {
+  readonly deploymentId: string;
   readonly hostClient: HostClient;
   readonly workspaceId: string;
 }): ReactNode {
@@ -1492,6 +1510,20 @@ function Runtime(props: {
             {problem}
           </AppText>
         </View>
+      ) : null}
+      {summary?.can.computer?.allowed &&
+      (choices.instances.length === 0 ||
+        (current.runtime.state === "unavailable" &&
+          (current.runtime.reason === "computer-offline" ||
+            current.runtime.reason === "runner-update-required"))) ? (
+        <SecondaryButton
+          label={
+            choices.instances.length === 0
+              ? `Connect ${teamName}’s computer first`
+              : "Team computer"
+          }
+          onPress={() => navigation.navigate("TeamComputer", { deploymentId: props.deploymentId })}
+        />
       ) : null}
       <RowGroup>
         {[
