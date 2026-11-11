@@ -548,6 +548,7 @@ export async function taskPageForUser(
       }
       let page = tasks
         .selectAll("threads")
+        .select(storedProjectDeployment.as("projectAuthority"))
         .select([
           threadPendingRequestsSelection,
           threadProviderSessionSelection,
@@ -566,7 +567,21 @@ export async function taskPageForUser(
           .execute(),
         tasks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
-      const threads = threadsFromRows(rows.slice(0, maxItems));
+      const audiences = rows.some((row) => row.projectAuthority)
+        ? await teamProjectAudiences(
+            transaction,
+            input.userId,
+            rows.map((row) => row.workspaceId),
+          )
+        : new Map();
+      const threads = threadsFromRows(
+        rows.slice(0, maxItems).map(({ projectAuthority: _projectAuthority, ...row }) => row),
+      ).map((thread) => ({
+        ...thread,
+        ...(audiences.has(thread.workspaceId)
+          ? { audience: audiences.get(thread.workspaceId) }
+          : {}),
+      }));
       const lines = await taskLines(
         transaction,
         threads.map(({ id }) => id),
