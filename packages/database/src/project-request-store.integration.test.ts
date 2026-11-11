@@ -272,6 +272,18 @@ describeStore("Project Requests", (it) => {
         database,
       ),
     ).rejects.toMatchObject({ code: "23514" });
+    const other = await storeFixture.store.createUser("Administrator without this Project");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date(), instanceRole: "administrator" })
+      .where("id", "=", other)
+      .execute();
+    await expect(
+      sql`update requests set status = 'fulfilled', resolved_by = ${other}, resolved_at = now(),
+      response = '{"kind":"choice","optionId":"yes"}'::jsonb where id = ${event.data.request.id}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
     const constraints = await sql<{ convalidated: boolean }>`select convalidated from pg_constraint
       where conname in ('requests_originating_grant_id_fkey', 'requests_requester_audience')`.execute(
       database,
@@ -694,6 +706,10 @@ describeStore("Unattended Project Requests", (it) => {
         },
       }),
     ).toEqual({ runIds: [], events: [] });
+    await expect(
+      sql`update requests set status = 'pending', cancellation_reason = null, resolved_at = null
+      where id = ${event.data.request.id}`.execute(database),
+    ).rejects.toMatchObject({ code: "23514" });
     expect(
       await database.transaction().execute((tx) => requests.canContinue(tx, event.data.request.id)),
     ).toBe(false);
