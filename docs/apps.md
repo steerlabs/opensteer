@@ -5,18 +5,10 @@ its app ID to the latest publication, even in old history, and the origin Thread
 HTML and the database belong in the same backup as Host attachments. App authors follow the shipped
 [apps reference](../apps/runner/agent-skills/skills/threads/references/apps.md).
 
-There is no full-window view: a person must be able to look at an app and ask for a change. An open
-tab is one fact about the app, shared by the Workspace like a Guest browser tab, so it reaches every
-member's devices. It travels on the bootstrap, not the event stream, because clients follow only some
-Workspace channels; a type-only frame prompts the reread, and the bootstrap poll repairs a lost one.
-A Workspace holds at most 50, and the bootstrap lists a viewer's newest 500. Past that a tab drops
-from the list and its frame unmounts, though the app and its cards stay.
-
-A frame loses its running state when it reloads, so a client runs one copy: while an app is a tab, its
-cards show a link instead of a frame. Web and desktop keep a shown tab's frame mounted and never move
-it, since moving an iframe reloads it. Opening a tab, leaving for Settings on web, and leaving an
-app's page on mobile all reload the frame. Browser storage stays on one device, and some routes have
-none, so data that must reach other devices belongs in a server app.
+An app stays beside its conversation so the person can ask for changes. Open tabs are shared
+Workspace state. A client mounts one copy: moving or reloading an iframe loses its running state.
+Browser storage stays on one device and is unavailable on some routes, so cross-device data belongs
+in a server app.
 
 An HTML app is a self-contained document the Host stores. A server app runs from a folder in the
 publishing Run's local-directory Workspace, on the computer that owns that directory, and its folder
@@ -75,12 +67,10 @@ Cookie flooding remains: a bad page can make a browser send too many cookies for
 It steals nothing, and Connect neighbors could already do it. Apps can move to their own domain
 later by changing the origin the Host chooses and the router; logins and browser storage stay behind.
 
-`apps.view` mints a one-use ticket, which the first request exchanges for a signed cookie, so opening
-an app costs no extra round trip. A fresh ticket replaces the gateway cookie. The cookie survives
-Host restart and binds the app, origin, person and session. Recovery can replace a session silently,
-so bootstrap reports the session and clients open a new frame when it changes. Every request rechecks that session and Workspace membership, and requests and sockets
-still open stop within 30 seconds of access ending. A service worker can still show pages it
-cached, but gets no new data.
+Viewing tickets exchange for session-bound cookies without an extra round trip. Every request
+rechecks the session and Workspace membership; access loss must also stop open sockets. A service
+worker may still show cached pages, but gets no new data. Recovery that replaces a session must
+replace the app frame's viewing authority too.
 
 ## Capability path
 

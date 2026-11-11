@@ -35,44 +35,28 @@ opaque, repeated or mismatched Origins fail. Native OAuth Bearer and Personal re
 credentials are not ambient and need no Origin. CORS is not authorization, route headers never prove
 who is calling, and Origin checks cannot protect a stolen non-browser credential.
 
-`claimLocalMachineOwner` spends the supervisor's process-launch capability to create an ordinary
-owner session with no extra powers. The same capability authenticates the desktop's private executor
-and tunnel-credential delivery; those credentials never reach an owner session or an administration
-status payload.
+The supervisor's process-launch capability creates an ordinary owner session, never extra user
+powers. Executor and tunnel credentials remain on its private channel, outside session and status
+payloads. [Session authority](../packages/identity/src/identity-service.ts) checks revocation on
+every call; native OAuth revocation ends the session, not just a refresh token.
 
-[IdentityService](../packages/identity/src/identity-service.ts) checks the native token's session
-row on every call. Revocation commits before success; realtime teardown follows the response.
-Revoking native OAuth ends its session, not just its refresh token, and leaves other devices signed
-in. Session lists use fixed device names, never echoed user agents.
-
-Account Connect grants bind `clientSurface`, from which the exchange derives cookie or header
-delivery; pairing-code clients declare what they can hold. Delivery is pinned for the session's
-lifetime, and a remote session fails canonical cookie authentication even if the cookie is renamed.
-The exchange compares `Host` and `X-Forwarded-Proto` to pin a signed route origin and generation,
-but any process reaching the loopback listener can set those headers. Authorization rests on the
-signed short-lived grant and its single-use `jti`, or the single-use pairing code, plus the envelope
-hash and route generation. Rotating the route ends sessions tied to the old one.
+Remote credential delivery stays pinned to its session and signed route generation. Renaming a
+cookie cannot turn it into a canonical session. Route headers can be forged by a loopback process:
+authentication rests on the signed short-lived grant or single-use pairing code, never those
+headers. Route rotation ends the old route's sessions.
 
 First-party native clients come from [`opensteerNativeClients`](../packages/core/src/identity.ts),
 shared by Host and Account registration. Add a signed build there, never a per-Deployment allowlist.
 
 ### Connected agents (MCP OAuth)
 
-External agents use the MCP OAuth issuer at `/oauth/mcp` for the single resource `/internal/v1/mcp`
-([source](../apps/host/src/mcp/connections)), with PKCE S256, stateless signed client registration
-and explicit resource binding. It works on Personal loopback without an Account and is separate from
-server-only Host-native OAuth. Discovery is pinned to the configured Host origin or its current
-signed Personal route, kept exactly through consent and code exchange. Only a signed-in owner
-approves; a Personal browser without a session hands a request ID to the signed-in desktop app, or
-from a phone to the mobile app, and the link grants nothing. The app answers it, then opens
-completion on the consent's `resource` origin, because completion is bound to the origin the agent
-signed in through. Consent picks an access ceiling and either everything the person can reach or one
-Workspace they own, lost when ownership ends.
+External MCP OAuth is separate from Host-native OAuth and works on Personal loopback without an
+Account. Discovery, consent and exchange bind the exact resource origin; an app handoff link carries
+no authority. Only a signed-in owner approves the access ceiling and reach, and losing Workspace
+ownership ends Workspace-scoped consent. See [the issuer](../apps/host/src/mcp/connections).
 
-Settings → External agents guides cloud agents to the Host's networked origin or Personal Remote
-access route; Opensteer already runs local agents itself, so on the Host computer it only adds the
-loopback address for other MCP clients. Client names are self-reported, so a connection is shown by
-its label and never matched to a product's logo.
+Client names are self-reported labels, never verified product identity. Settings must offer an
+origin the external agent can reach without treating reachability as consent.
 
 MCP credentials are opaque, stored hashed in their own record, and never become Host sessions or
 authenticate Runners, Runs or programs. A connection works only on the route origin it was approved
@@ -80,7 +64,7 @@ for, and Runs and programs only on the runtime origin. Every call rechecks expir
 MCP transport sessions hold no authority. Revocation stops future calls, including in an open
 session and waits that wake later, but does not cancel admitted tasks or undo their effects.
 Revoking a login leaves connections alone; people remove them in Settings → External agents.
-Connections expire after 30 days with no refresh grant.
+Connections expire without a refresh grant.
 
 ## API boundaries
 
