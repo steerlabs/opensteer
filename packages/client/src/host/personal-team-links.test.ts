@@ -18,7 +18,9 @@ function client(
     rpc: { "teams.threadTask.get": threadTask } as never,
     getSnapshot: () =>
       ({
-        threadReadStates: state ? { [taskId]: { threadId: taskId, asOfSequence: "9", ...state } } : {},
+        threadReadStates: state
+          ? { [taskId]: { threadId: taskId, asOfSequence: "9", ...state } }
+          : {},
       }) as never,
   };
 }
