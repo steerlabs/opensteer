@@ -1,7 +1,7 @@
 import {
   BrowserListTabsParametersSchema,
   BrowserResumeTabParametersSchema,
-  browserListTabsMaxBytes,
+  pageBrowserTabs,
   type AgentTab,
 } from "@opensteer/protocol/browser-actions";
 import {
@@ -325,6 +325,7 @@ export class BrowserController {
   private readonly claims: BrowserAttachTicketClaims;
   private readonly files: SessionFiles;
   private readonly ledger: SurfaceLedger;
+  private rootSurfaceId: BrowserSurfaceId | undefined;
   private readonly maxPendingCommands: number;
   private readonly maxPendingMessageBytes: number;
   private readonly maxPendingMessages: number;
@@ -516,6 +517,7 @@ export class BrowserController {
 
   async start(): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
+    this.rootSurfaceId = this.claims.initialSurfaceId ?? this.ledger.snapshot()[0]?.id;
     this.unsubscribeCdp = this.cdpRouter.onEvent(this.claims.sessionId, (event) => {
       if (this.closed || !this.initialSnapshotQueued) return;
       void this.send({ event, type: "cdp.event" }).catch(() => undefined);
@@ -3226,56 +3228,43 @@ export class BrowserController {
     if (message.command.method === browserHostMethods.listTabs) {
       const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
       if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
-      const after = parsed.data.cursor === undefined ? -1 : Number(parsed.data.cursor);
-      if (!Number.isSafeInteger(after))
-        throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
-      const tabs: AgentTab[] = [];
-      let nextCursor: string | null = null;
-      for (const record of this.ledger.policyRecords()) {
-        if (!record.announced || record.order <= after) continue;
-        const row = this.ledger.toRecord(record.id)!;
-        const dialog = this.ledger.dialogOf(record.id);
-        const tab: AgentTab = {
-          surfaceId: record.id,
-          targetId: record.live?.targetId ?? null,
-          state: row.state,
-          title: row.title,
-          url: row.url,
-          order: record.order,
-          openerId: record.openerId,
-          userActivity: record.userActivity
-            ? {
-                ...record.userActivity,
-                sinceLastAgentCommand: record.userActivitySequence > record.agentSequence,
-              }
-            : null,
-          pageResize: record.pageResize
-            ? {
-                ...record.pageResize,
-                sinceLastAgentCommand: record.pageResizeSequence > record.agentSequence,
-              }
-            : null,
-          dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
-        };
-        const result = {
-          type: "cdp.result",
-          requestId: message.requestId,
-          result: { tabs: [...tabs, tab], nextCursor: String(record.order) },
-        };
-        if (
-          tabs.length &&
-          Buffer.byteLength(JSON.stringify(result), "utf8") > browserListTabsMaxBytes
-        ) {
-          nextCursor = String(tabs.at(-1)!.order);
-          break;
+      const ledger = this.ledger;
+      const records = function* () {
+        for (const record of ledger.policyRecords()) {
+          if (!record.announced) continue;
+          const row = ledger.toRecord(record.id)!;
+          const dialog = ledger.dialogOf(record.id);
+          const tab: AgentTab = {
+            surfaceId: record.id,
+            targetId: record.live?.targetId ?? null,
+            state: row.state,
+            title: row.title,
+            url: row.url,
+            order: record.order,
+            openerId: record.openerId,
+            userActivity: record.userActivity
+              ? {
+                  ...record.userActivity,
+                  sinceLastAgentCommand: record.userActivitySequence > record.agentSequence,
+                }
+              : null,
+            pageResize: record.pageResize
+              ? {
+                  ...record.pageResize,
+                  sinceLastAgentCommand: record.pageResizeSequence > record.agentSequence,
+                }
+              : null,
+            dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
+          };
+          yield { order: record.order, tab };
         }
-        tabs.push(tab);
-      }
-      await this.send({
-        type: "cdp.result",
+      };
+      const envelope = (result: { tabs: AgentTab[]; nextCursor: string | null }) => ({
+        type: "cdp.result" as const,
         requestId: message.requestId,
-        result: { tabs, nextCursor },
+        result,
       });
+      await this.send(envelope(pageBrowserTabs(records(), parsed.data.cursor, envelope)));
       return;
     }
     if (message.command.method === browserHostMethods.resumeTab) {
@@ -3590,7 +3579,14 @@ export class BrowserController {
       };
     };
     return method === "Target.getTargets" && Array.isArray(record.targetInfos)
-      ? { ...record, targetInfos: record.targetInfos.map(decorate) }
+      ? {
+          ...record,
+          rootSurfaceId: this.rootSurfaceId,
+          rootTargetId: this.rootSurfaceId
+            ? (this.ledger.binding(this.rootSurfaceId)?.targetId ?? null)
+            : record.rootTargetId,
+          targetInfos: record.targetInfos.map(decorate),
+        }
       : method === "Target.getTargetInfo"
         ? { ...record, targetInfo: decorate(record.targetInfo) }
         : result;

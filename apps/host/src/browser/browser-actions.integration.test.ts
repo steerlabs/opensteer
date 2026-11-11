@@ -496,7 +496,7 @@ integration("session-scoped browser agent backends", () => {
     const noTarget = { surfaceId: undefined, documentId: undefined, geometryRevision: undefined };
     const tabs = await forward(
       { type: "session.tabs" },
-      { type: "session.tabs", tabs: [] },
+      { type: "session.tabs", tabs: [], nextCursor: null },
       noTarget,
     );
     expect(tabs).not.toHaveProperty("surfaceId");

@@ -596,22 +596,50 @@ describe("phone browser manager", () => {
     expect(fixture.native.tabs.size).toBe(2);
   });
 
-  test("opens and lists phone tab 129 through typed actions", async () => {
+  test("pages 1,000 typed-action tabs within the byte budget without losing long records", async () => {
     const fixture = await setup();
     await fixture.agentAttach();
-    for (let index = 1; index < 129; index++) {
-      await fixture.sessionAction({ type: "surface.open" });
+    for (let index = 1; index < 1000; index++) {
+      await fixture.sessionAction({
+        type: "surface.open",
+        url: `https://example.test/${"界".repeat(200)}?${index}`,
+      });
       expect(fixture.server().at(-1)).toMatchObject({
         type: "agent.result",
         result: { type: "surface.open" },
       });
     }
-    await fixture.sessionAction({ type: "session.tabs" });
-    const listed = fixture.server().at(-1);
-    expect(listed).toMatchObject({ type: "agent.result", result: { type: "session.tabs" } });
-    if (listed?.type !== "agent.result" || listed.result.type !== "session.tabs")
-      throw new Error("Tabs were not listed");
-    expect(listed.result.tabs).toHaveLength(129);
+    await fixture.sessionAction({
+      type: "surface.open",
+      url: `https://large.test/${"\u0001".repeat(16_000)}`,
+    });
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    let oversized = 0;
+    do {
+      await fixture.sessionAction({ type: "session.tabs", ...(cursor ? { cursor } : {}) });
+      const listed = fixture.server().at(-1);
+      expect(listed).toMatchObject({ type: "agent.result", result: { type: "session.tabs" } });
+      if (listed?.type !== "agent.result" || listed.result.type !== "session.tabs")
+        throw new Error("Tabs were not listed");
+      const result = listed.result;
+      const bytes = Buffer.byteLength(JSON.stringify(listed));
+      expect(bytes).toBeLessThan(432 * 1024);
+      if (bytes > 64 * 1024) {
+        expect(result.tabs).toHaveLength(1);
+        expect(result.tabs[0]?.url).toBe(`https://large.test/${"\u0001".repeat(16_000)}`);
+        oversized++;
+      }
+      ids.push(...result.tabs.map((tab) => tab.surfaceId));
+      cursor = result.nextCursor ?? undefined;
+      pages++;
+      expect(pages).toBeLessThan(100);
+    } while (cursor !== undefined);
+    expect(new Set(ids).size).toBe(1001);
+    expect(ids).toHaveLength(1001);
+    expect(pages).toBeGreaterThan(1);
+    expect(oversized).toBe(1);
   });
 
   test.each(["retained", "discarded"] as const)(

@@ -128,10 +128,15 @@ export const BrowserStageFileParametersSchema = z.strictObject({
     .max(512 * 1_024 * 1_024)
     .optional(),
 });
+const tabCursor = z
+  .string()
+  .regex(/^\d+$/u)
+  .refine((value) => Number.isSafeInteger(Number(value)));
+const tabPage = { cursor: tabCursor.optional() };
 const emptyAction = <Name extends string>(type: Name) => z.strictObject({ type: z.literal(type) });
 const locatorFields = { locator: BrowserActionLocatorSchema };
 export const BrowserActionSchema = z.discriminatedUnion("type", [
-  emptyAction("session.tabs"),
+  z.strictObject({ type: z.literal("session.tabs"), ...tabPage }),
   emptyAction("surface.attach"),
   emptyAction("surface.resume"),
   emptyAction("surface.close"),
@@ -345,6 +350,7 @@ export const BrowserActionResultSchema = z
     z.strictObject({
       type: z.literal("session.tabs"),
       tabs: z.array(BrowserActionBindingSchema),
+      nextCursor: tabCursor.nullable(),
     }),
     bindingResult("surface.attach"),
     bindingResult("surface.resume"),
@@ -485,9 +491,7 @@ export const BrowserResumeTabResultSchema = z.strictObject({
   reloaded: z.boolean(),
 });
 export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;
-export const BrowserListTabsParametersSchema = z.strictObject({
-  cursor: z.string().regex(/^\d+$/u).optional(),
-});
+export const BrowserListTabsParametersSchema = z.strictObject(tabPage);
 export const AgentTabSchema = z.strictObject({
   surfaceId: BrowserSurfaceIdSchema,
   targetId: identifier.nullable(),
@@ -527,3 +531,28 @@ export const BrowserListTabsResultSchema = z.strictObject({
 });
 
 export type BrowserListTabsResult = z.infer<typeof BrowserListTabsResultSchema>;
+
+export function pageBrowserTabs<T>(
+  records: Iterable<{ readonly order: number; readonly tab: T }>,
+  cursor: string | undefined,
+  envelope: (page: { tabs: T[]; nextCursor: string | null }) => unknown,
+): { tabs: T[]; nextCursor: string | null } {
+  const after = cursor === undefined ? -1 : Number(tabCursor.parse(cursor));
+  const tabs: T[] = [];
+  let lastOrder = after;
+  for (const record of records) {
+    if (record.order <= after) continue;
+    const candidate = { tabs: [...tabs, record.tab], nextCursor: String(record.order) };
+    if (
+      tabs.length &&
+      Math.max(
+        utf8Size(JSON.stringify(envelope(candidate))),
+        utf8Size(JSON.stringify(envelope({ ...candidate, nextCursor: null }))),
+      ) > browserListTabsMaxBytes
+    )
+      return { tabs, nextCursor: String(lastOrder) };
+    tabs.push(record.tab);
+    lastOrder = record.order;
+  }
+  return { tabs, nextCursor: null };
+}

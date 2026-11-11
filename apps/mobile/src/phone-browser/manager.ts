@@ -44,6 +44,7 @@ import {
 import { z } from "zod";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import type { ProtocolError } from "@opensteer/protocol";
+import { pageBrowserTabs } from "@opensteer/protocol/browser-actions";
 import { PhoneCdpSession } from "./cdp.js";
 import { phoneBrowserDescriptor } from "./descriptor.js";
 import {
@@ -1192,7 +1193,9 @@ export class PhoneBrowserManager {
           )
         )
           return;
-        const value = await this.#bounded(channel.epoch, () => cdp.send(command));
+        const value = await this.#bounded(channel.epoch, () =>
+          cdp.send(command, message.requestId),
+        );
         if (!value || typeof value !== "object" || Array.isArray(value))
           throw new PhoneBrowserError("unsupported-operation", "Invalid CDP result.");
         result = value as Record<string, unknown>;
@@ -1238,9 +1241,21 @@ export class PhoneBrowserManager {
       )
         throw new PhoneBrowserError("forbidden", "Control access is required.");
       let result: BrowserActionResult;
-      if (action.type === "session.tabs")
-        result = { type: "session.tabs", tabs: [...session.tabs.values()].map(actionBinding) };
-      else if (action.type === "surface.open") {
+      if (action.type === "session.tabs") {
+        const records = function* () {
+          for (const tab of session.tabs.values())
+            yield { order: tab.order, tab: actionBinding(tab) };
+        };
+        result = {
+          type: "session.tabs",
+          ...pageBrowserTabs(records(), action.cursor, (page) => ({
+            type: "agent.result",
+            attachmentId: message.attachmentId,
+            requestId: message.requestId,
+            result: { type: "session.tabs", ...page },
+          })),
+        };
+      } else if (action.type === "surface.open") {
         let opened!: PhoneTab;
         await this.#coveredTurn(async () => {
           const owner = { channel, attachmentId: message.attachmentId };

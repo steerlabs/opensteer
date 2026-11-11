@@ -594,6 +594,31 @@ acceptance(
     expect(out.stderr).toMatch(/asleep.*reloaded/i);
     expect(JSON.parse(out.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
     expect(kit.ledger.snapshot().find((tab) => tab.id === kit.surfaceId)?.state).toBe("live");
+    const implicit = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
+      inventory: true,
+    });
+    expect(JSON.parse(implicit.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    const implicitWake = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
+      inventory: true,
+    });
+    expect(implicitWake.stderr).toMatch(/asleep.*reloaded/i);
+    expect(JSON.parse(implicitWake.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+
+    let slept = false;
+    kit.hooks.before = async (method, _parameters, sessionId) => {
+      if (method !== "Runtime.evaluate" || !sessionId || slept) return;
+      slept = true;
+      expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    };
+    const existing = await kit.run(
+      `await currentTab(); await fails(() => js('true'), /asleep|Resume|suspended/i);`,
+      { tab: kit.surfaceId },
+    );
+    expect(existing.stderr).toMatch(/asleep.*Resume.*old page handles/i);
+    expect(slept).toBe(true);
+    delete kit.hooks.before;
+    await kit.run(`await currentTab();`, { tab: kit.surfaceId });
     expect(kit.trace.find((entry) => entry.method === "Opensteer.resumeTab")?.parameters).toEqual({
       surfaceId: kit.surfaceId,
     });

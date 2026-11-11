@@ -351,8 +351,17 @@ export function createActionsHarness(client, initialTargetId) {
     if (event.type === "dialog.changed") dialogs.set(event.surfaceId, event.dialog);
   });
   const listTabs = async () => {
-    const result = await client.request({}, { type: "session.tabs" });
-    inventory = result.tabs;
+    const tabs = [];
+    let cursor;
+    do {
+      const result = await client.request(
+        {},
+        { type: "session.tabs", ...(cursor ? { cursor } : {}) },
+      );
+      tabs.push(...result.tabs);
+      cursor = result.nextCursor;
+    } while (cursor);
+    inventory = tabs;
     for (const binding of inventory) bindings.set(binding.surfaceId, binding);
     return inventory.map(publicTab);
   };

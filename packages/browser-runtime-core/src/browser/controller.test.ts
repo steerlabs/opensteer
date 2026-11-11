@@ -145,6 +145,61 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
+  it("refuses an existing attachment as suspended, invalidates it after wake, and forgets closed tabs", async () => {
+    const controller = createController(
+      undefined,
+      {},
+      validClaims({ workspaceTabRestoreVersion: 1 }),
+    );
+    await controller.start();
+    const id = ledger.snapshot()[0]!.id;
+    const command = async (
+      method: string,
+      parameters: Record<string, unknown> = {},
+      sessionId?: string,
+    ) => {
+      const requestId = randomUUID();
+      await controller.handle({
+        type: "cdp.command",
+        requestId,
+        command: { method, parameters, ...(sessionId ? { sessionId } : {}) },
+      });
+      return sink.messages.findLast(
+        (m) => (m.type === "cdp.result" || m.type === "cdp.error") && m.requestId === requestId,
+      );
+    };
+    try {
+      const attached = await command("Target.attachToTarget", {
+        targetId: await page.targetId(),
+        flatten: true,
+      });
+      if (attached?.type !== "cdp.result") throw new Error("Missing attachment");
+      const sessionId = (attached.result as { sessionId: string }).sessionId;
+      expect(await ledger.sleep(id, () => null)).toBe(true);
+      expect(await command("Runtime.evaluate", { expression: "true" }, sessionId)).toMatchObject({
+        type: "cdp.error",
+        error: { reason: "target-suspended" },
+      });
+      await ledger.wake(id);
+      expect(await command("Target.getTargets")).toMatchObject({
+        type: "cdp.result",
+        result: { rootSurfaceId: id, rootTargetId: ledger.binding(id)!.targetId },
+      });
+      expect(await command("Runtime.evaluate", { expression: "true" }, sessionId)).toMatchObject({
+        type: "cdp.error",
+        error: { code: "not_found" },
+      });
+      await ledger.closeSurface(id);
+      expect(await command("Runtime.evaluate", { expression: "true" }, sessionId)).toMatchObject({
+        type: "cdp.error",
+        error: { code: "not_found" },
+      });
+    } finally {
+      await controller.close();
+      await ledger.close();
+    }
+  });
+
   it("holds an agent command's lease and protects a subscribed viewer without marking person use", async () => {
     const controller = createController();
     await controller.start();
