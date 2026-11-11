@@ -219,6 +219,37 @@ describe("BrowserClientStreams", () => {
     expect(frames[0]!.stream).not.toHaveProperty("prefix");
     f.streams.close();
   });
+  it("finishes a continued attach revoked after its prefix read without retaining a tab publisher", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const prefix = await f.streams.source.bootstrap(alice);
+    const bootstrap = f.streams.source.bootstrap.bind(f.streams.source);
+    vi.spyOn(f.streams.source, "bootstrap").mockImplementationOnce(async (user) => {
+      const rows = await bootstrap(user);
+      f.visible = false;
+      await f.streams.source.reauthorize(alice);
+      return rows;
+    });
+    const frames: BrowserClientStreamMessage[] = [];
+    await f.streams.attach(
+      alice,
+      {
+        bufferedAmount: () => 0,
+        send: async (frame) => {
+          frames.push(frame);
+        },
+      },
+      prefix.continuation,
+    );
+    await vi.advanceTimersByTimeAsync(50);
+    expect(frames.at(-1)).toMatchObject({
+      type: "host.browser-groups",
+      stream: { op: "change", remove: [groupId] },
+    });
+    expect(frames.some((frame) => frame.type === "host.browser-tabs")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    f.streams.close();
+  });
   it("shares viewer projections but keeps each connection's revision independent", async () => {
     vi.useFakeTimers();
     const f = fixture();

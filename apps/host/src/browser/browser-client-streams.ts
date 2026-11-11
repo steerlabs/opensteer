@@ -610,7 +610,9 @@ export class BrowserClientStreams {
     };
     if (prefix?.continuation === continuation && prefix) {
       connection.groups.seed(prefix.groups.rows);
-      for (const entry of prefix.tabs) this.#tabs(connection, entry.groupId).seed(entry.rows);
+      for (const entry of prefix.tabs)
+        if (projection.groups.has(entry.groupId))
+          this.#tabs(connection, entry.groupId).seed(entry.rows);
     }
     this.#connections.add(connection);
     for (const id of projection.groups.keys()) this.#tabs(connection, id);
