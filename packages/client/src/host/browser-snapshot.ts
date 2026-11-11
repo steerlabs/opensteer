@@ -1,4 +1,8 @@
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import type {
+  BrowserGroupRow,
+  BrowserTabRow,
+  BrowserViewerSurface,
+} from "@opensteer/protocol/browser-tabs";
 import type { BrowserSessionSummary, HostSnapshot, WorkspaceTabLineage } from "./client.js";
 import type { BrowserTabStore } from "./browser-tab-store.js";
 
@@ -30,7 +34,6 @@ export class BrowserSnapshotDerivation {
       revision: number;
       catalog: NonNullable<BrowserSessionSummary["tabCatalog"]>["tabs"];
       durable: NonNullable<WorkspaceTabLineage["tabs"]>;
-      viewer: BrowserSessionSummary["tabs"] | undefined;
     }
   >();
   readonly #sessions = new WeakMap<BrowserGroupRow, ReturnType<typeof groupSession>>();
@@ -97,6 +100,8 @@ export class BrowserSnapshotDerivation {
   derive(
     snapshot: HostSnapshot,
     store: BrowserTabStore,
+    surface: (sessionId: string, surfaceId: string) => BrowserViewerSurface | undefined = () =>
+      undefined,
   ): Pick<HostSnapshot, "browserSessions" | "workspaceTabs" | "workspaceTabRestoreVersion"> {
     const heldSessions = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
     const heldGroups = new Map<string, WorkspaceTabLineage>(
@@ -125,7 +130,6 @@ export class BrowserSnapshotDerivation {
             projected?.durable,
             rows.map((row) => this.#row(row).durable),
           ),
-          viewer: undefined,
         };
         this.#groups.set(id, projected);
       }
@@ -138,27 +142,23 @@ export class BrowserSnapshotDerivation {
             tabs: catalogTabs,
           })
         : undefined;
-      let tabs = projected.viewer;
-      if (!tabs || tabs !== previous?.tabs) {
-        const heldTabs = new Map(previous?.tabs.map((tab) => [tab.id, tab]));
-        tabs = shared(
-          previous?.tabs,
-          catalogTabs.map((row) => {
-            const held = heldTabs.get(row.id);
-            return same(held, {
-              id: row.id,
-              title: row.title,
-              documentId: row.documentId ?? undefined,
-              active: held?.active ?? false,
-              loading: row.loading,
-              sizedByAgent: held?.sizedByAgent,
-              url: held?.url ?? "",
-              favicon: held?.favicon ?? undefined,
-            });
-          }),
-        );
-      }
-      projected.viewer = tabs;
+      const heldTabs = new Map(previous?.tabs.map((tab) => [tab.id, tab]));
+      const tabs = shared(
+        previous?.tabs,
+        catalogTabs.map((row) => {
+          const viewed = terminal ? undefined : surface(group.sessionId, row.id);
+          return same(heldTabs.get(row.id), {
+            id: row.id,
+            title: viewed?.title ?? row.title,
+            documentId: row.documentId ?? undefined,
+            active: false,
+            loading: viewed?.loading ?? row.loading,
+            sizedByAgent: viewed?.sizedByAgent,
+            url: viewed?.url ?? "",
+            favicon: viewed?.favicon ?? undefined,
+          });
+        }),
+      );
       browserSessions.push(
         same(previous, {
           ...session,

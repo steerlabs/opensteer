@@ -210,8 +210,7 @@ const field = (sensitive = false) =>
     },
   });
 if (mode === "mock") field();
-const targeted = mode === "mock" || (await client.browserTargetControlAvailable?.()) === true;
-const release = client.retainBrowserViewer(session.id, targeted ? surfaceId : undefined);
+const release = client.retainBrowserViewer(session.id, surfaceId);
 const root = createRoot(document.getElementById("root")!);
 const render = () =>
   root.render(
@@ -261,7 +260,6 @@ const render = () =>
         client.sendBrowserCommand(session.id, command);
       }}
       sessionId={session.id}
-      targeted={targeted}
       visible
     />,
   );
@@ -326,7 +324,7 @@ const api: RemoteEditingJourneyApi = {
   edit: (edit) => target.send({ kind: "edit", edit }),
   openedLinks: () => openedLinks,
   ready: () =>
-    !!frames.get(session.id, targeted ? surfaceId : undefined) &&
+    !!frames.get(session.id, surfaceId) &&
     (query.has("baseline") && query.get("viewer") !== "2"
       ? !target.get().negotiated
       : target.get().negotiated),

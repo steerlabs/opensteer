@@ -370,7 +370,6 @@ function BrowserFinder({
       hostClient.browserWatchFrames,
       sessionId,
       tabId,
-      true,
       canvas,
       (frame) => {
         rememberBrowserLastPicture(hostClient.browserWatchFrames, sessionId, tabId, frame);

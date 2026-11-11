@@ -56,7 +56,6 @@ export function attachBrowserCanvas(
   source: BrowserFrameStore,
   sessionId: string,
   surfaceId: string,
-  targeted: boolean,
   canvas: HTMLCanvasElement,
   presented: (frame: BrowserFrameView) => void,
   allowUpscale = false,
@@ -74,15 +73,7 @@ export function attachBrowserCanvas(
     presenter = new BrowserPicturePresenter(surfaceId);
     targets.set(key, presenter);
   }
-  const detach = presenter.attach(
-    source,
-    sessionId,
-    targeted,
-    canvas,
-    presented,
-    allowUpscale,
-    options,
-  );
+  const detach = presenter.attach(source, sessionId, canvas, presented, allowUpscale, options);
   const current = presenter;
   return () => {
     detach();
@@ -121,7 +112,6 @@ class BrowserPicturePresenter {
   attach(
     source: BrowserFrameStore,
     sessionId: string,
-    targeted: boolean,
     canvas: HTMLCanvasElement,
     presented: (frame: BrowserFrameView) => void,
     allowUpscale: boolean,
@@ -130,19 +120,11 @@ class BrowserPicturePresenter {
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) {
       const discard = () => {
-        const frame = source.get(sessionId, targeted ? this.#surfaceId : undefined);
+        const frame = source.get(sessionId, this.#surfaceId);
         if (frame?.header.watchToken)
-          source.accept?.(
-            sessionId,
-            targeted ? this.#surfaceId : undefined,
-            frame.header.watchToken,
-          );
+          source.accept?.(sessionId, this.#surfaceId, frame.header.watchToken);
       };
-      const unsubscribe = source.subscribe(
-        sessionId,
-        discard,
-        targeted ? this.#surfaceId : undefined,
-      );
+      const unsubscribe = source.subscribe(sessionId, discard, this.#surfaceId);
       discard();
       return unsubscribe;
     }
@@ -157,7 +139,7 @@ class BrowserPicturePresenter {
         presented(frame);
       },
       demand:
-        targeted && options.active !== false
+        options.active !== false
           ? (source.rasterDemand?.(sessionId, this.#surfaceId) ?? null)
           : null,
       active: true,
@@ -187,14 +169,14 @@ class BrowserPicturePresenter {
         target.active = false;
         return;
       }
-      const frame = source.get(sessionId, targeted ? this.#surfaceId : undefined);
+      const frame = source.get(sessionId, this.#surfaceId);
       const token = frame?.header.watchToken;
-      if (token) source.claim?.(sessionId, targeted ? this.#surfaceId : undefined, token);
+      if (token) source.claim?.(sessionId, this.#surfaceId, token);
       let settled = false;
       const settle = () => {
         if (settled) return;
         settled = true;
-        if (token) source.accept?.(sessionId, targeted ? this.#surfaceId : undefined, token);
+        if (token) source.accept?.(sessionId, this.#surfaceId, token);
       };
       target.active = frame?.header.surfaceId === this.#surfaceId;
       if (!target.active || !frame) {
@@ -208,7 +190,7 @@ class BrowserPicturePresenter {
         if (![...this.#targets].some((entry) => entry.active)) this.#invalidate();
         return;
       }
-      this.#receive(frame, token ? `${targeted ? "target" : "legacy"}:${token}` : "", settle);
+      this.#receive(frame, token ? `target:${token}` : "", settle);
       if (this.#current && pictureKey(frame) === this.#current.picture.key) {
         this.#draw(target, this.#current);
         // A replay of the picture already drawn is this delivery's picture too.
@@ -218,7 +200,7 @@ class BrowserPicturePresenter {
         }
       }
     };
-    const unsubscribe = source.subscribe(sessionId, read, targeted ? this.#surfaceId : undefined);
+    const unsubscribe = source.subscribe(sessionId, read, this.#surfaceId);
     const relayout = () => {
       const frame = drawn.get(canvas);
       if (frame) layoutBrowserCanvas(canvas, frame, target.allowUpscale, target.demand);
@@ -238,9 +220,9 @@ class BrowserPicturePresenter {
         layoutBrowserCanvas(canvas, null);
       }
       // This subscription deliberately discards every receipt it still owns.
-      const frame = source.get(sessionId, targeted ? this.#surfaceId : undefined);
+      const frame = source.get(sessionId, this.#surfaceId);
       if (frame?.header.watchToken)
-        source.accept?.(sessionId, targeted ? this.#surfaceId : undefined, frame.header.watchToken);
+        source.accept?.(sessionId, this.#surfaceId, frame.header.watchToken);
       canvas.dispatchEvent(new Event(browserPicturePresentedEvent, { bubbles: true }));
     };
   }

@@ -35,6 +35,41 @@ it("activates an existing mock surface without replacing its document or duplica
   }
 });
 
+it("publishes mock browser rows with stable sibling identities and no dormant live catalog", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const before = client.getSnapshot();
+    const own = before.browserSessions.find((s) => s.tabCatalog?.tabs.length)!;
+    const other = before.browserSessions.find((s) => s.id !== own.id && s.tabCatalog?.tabs.length)!;
+    const tab = own.tabCatalog!.tabs[0]!;
+    client.setBrowserLoading(tab.id, !tab.loading);
+    const after = client.getSnapshot();
+    expect(after.browserSessions.find((s) => s.id === other.id)).toBe(other);
+    expect(after.browserSessions.find((s) => s.id === own.id)!.tabCatalog!.tabs[0]!.loading).toBe(
+      !tab.loading,
+    );
+    expect(after.browserSessions.find((s) => s.id === own.id)!.tabCatalog!.tabs[1]).toBe(
+      own.tabCatalog!.tabs[1],
+    );
+    const dormant = client.scriptDormantBrowser({ profileName: "Saved" });
+    const snapshot = client.getSnapshot();
+    const group = snapshot.workspaceTabs!.find((g) => g.session.id === dormant.sessionId)!;
+    expect(group.whole).toBe(true);
+    expect(group.tabs!.find((t) => t.id === dormant.tabId)!.state).toBe("suspended");
+    expect(
+      snapshot.browserSessions.find((s) => s.id === dormant.sessionId)?.tabCatalog?.tabs ?? [],
+    ).toEqual([]);
+    const current = snapshot.browserSessions.find((s) => s.tabCatalog?.tabs.length)!;
+    const release = client.retainBrowserViewer(current.id, current.tabCatalog!.tabs[0]!.id);
+    await client.rpc["auth.signOut"]({});
+    expect(client.getSnapshot().browserSessions).toEqual([]);
+    expect(client.getSnapshot().workspaceTabs).toEqual([]);
+    release();
+  } finally {
+    client.dispose();
+  }
+});
+
 describe("moving mock workspace", () => {
   it("moves cursors independently, churns tabs, resolves icons and shares targeted demand", async () => {
     vi.useFakeTimers();
@@ -132,8 +167,11 @@ describe("moving mock workspace", () => {
       const loading = client.load();
       await vi.advanceTimersByTimeAsync(0);
       await loading;
-      const [first, second] = client.getSnapshot().browserSessions[0]!.tabs;
-      const sessionId = client.getSnapshot().browserSessions[0]!.id;
+      const session = client
+        .getSnapshot()
+        .browserSessions.find((session) => session.tabs.length >= 2)!;
+      const [first, second] = session.tabs;
+      const sessionId = session.id;
       // A tile scrolls into view, shows its picture, scrolls away and back within one tick.
       const release = client.retainBrowserWatch(sessionId, first!.id);
       const shown = client.browserWatchFrame(sessionId, first!.id)!;

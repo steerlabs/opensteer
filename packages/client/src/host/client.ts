@@ -708,10 +708,10 @@ export interface BrowserFrameStore {
   /** Application/auth scope shared by Control and Watch picture presenters. */
   readonly scope?: object;
   /** Hold this delivery until accept; unclaimed replacements can be discarded by the store. */
-  claim?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
-  accept?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
-  get: (sessionId: string, surfaceId?: string) => BrowserFrameView | null;
-  subscribe: (sessionId: string, listener: () => void, surfaceId?: string) => () => void;
+  claim?: (sessionId: string, surfaceId: string, token: string) => void;
+  accept?: (sessionId: string, surfaceId: string, token: string) => void;
+  get: (sessionId: string, surfaceId: string) => BrowserFrameView | null;
+  subscribe: (sessionId: string, listener: () => void, surfaceId: string) => () => void;
   /**
    * Leases the raster density one presenter of an exact target needs. Holders
    * retained with `rasterDemand` share their leases' maximum; until measured a
@@ -1295,7 +1295,7 @@ export interface HostClient {
   ): Promise<WorkspaceFilePreview>;
   readonly retainBrowserViewer: (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly picture?: boolean;
       readonly captureRegion?: boolean;
@@ -1308,7 +1308,7 @@ export interface HostClient {
   readonly browserTargetControlAvailable?: () => Promise<boolean | null>;
   readonly retainBrowserWatch: (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
@@ -1400,7 +1400,7 @@ export interface HostClient {
    * The view is done with this Control or Watch picture — drawn, or dropped because it
    * could not be — so the next may come. A late or repeated token is ignored.
    */
-  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId?: string): void;
+  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId: string): void;
   /** Only a person's explicit Retry may reopen a terminal realtime refusal. */
   refresh(options?: { readonly retryConnection?: boolean }): Promise<void>;
   /**

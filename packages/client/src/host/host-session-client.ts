@@ -16,7 +16,6 @@ import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
-import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
 import { browserTabOrderTabs } from "./browser-tab-order.js";
@@ -73,21 +72,17 @@ import {
 } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  BrowserServerMessageSchema,
   BrowserSessionIdSchema,
   DisplaySourceSchema,
   HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
   WorkspaceSnapshotSchema,
   browserUsageRunBatchSize,
-  browserViewerCloseCodes,
-  decodeBrowserFrameEnvelope,
   hostApi,
   realtimeEnvelopeTypes,
   threadPageMaxItems,
   workspaceFilePreviewMaxBytes,
   workspaceSnapshotMaxThreads,
-  type BrowserServerMessage,
   type BrowserSessionUsageProjection,
   type DurableWindow,
   type HostApiClient,
@@ -107,7 +102,6 @@ import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserFrameView,
   BrowserPlacementSummary,
   BrowserSessionSummary,
   BrowserStartIdentity,
@@ -169,7 +163,6 @@ import {
 } from "./transcript.js";
 import {
   describeRealtimeFrameFailure,
-  healthySocketMs,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
   realtimeFrameLoss,
@@ -246,7 +239,6 @@ const defaultReconnectMaxDelayMs = 12_000;
 const realtimeReplayAttempts = 3;
 /** Each try can cost a whole snapshot over cellular, so a frame that keeps failing waits longest. */
 const unreadableFrameMaxDelayMs = 5 * 60_000;
-const maxBrowserFrameBytes = 8 * 1_024 * 1_024;
 const workspacePrefetchDebounceMs = 150;
 /** Notification ids remembered after delivery, enough to cover every socket's copy. */
 const rememberedNotificationIds = 256;
@@ -402,27 +394,6 @@ interface LiveReread {
   timer: Timer | null;
 }
 
-interface BrowserChannelState {
-  basicInputOnly?: boolean;
-  /**
-   * The Watch frame this socket delivered and has not yet acknowledged. The
-   * Host sends the next only after it, so it is returned exactly once: when
-   * the view has shown the picture, or when the picture is dropped unshown.
-   */
-  awaitingAck: string | null;
-  reconnectAttempt: number;
-  reconnectTimer: Timer | null;
-  retainers: number;
-  sessionId: string;
-  socket: WebSocketClient | null;
-  synchronized: boolean;
-  /** Frames this viewer could not read since a socket last stayed up. */
-  unreadableFrames: number;
-}
-
-type BrowserChannel = BrowserChannelState &
-  ({ mode: "control" } | { mode: "watch"; captureRegionRetainers: number });
-
 /** The connection owner keeps discovery evidence within its attachment fence. */
 export type HostCapabilityReader = (options?: {
   readonly revalidate: boolean;
@@ -489,12 +460,6 @@ export class HttpHostClient {
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
-  readonly #browserChannels = new Map<string, BrowserChannel>();
-  readonly #browserWatchChannels = new Map<string, BrowserChannel>();
-  readonly #browserFrameListeners = new Map<string, Set<() => void>>();
-  readonly #browserFrameValues = new Map<string, BrowserFrameView>();
-  readonly #browserWatchFrameListeners = new Map<string, Set<() => void>>();
-  readonly #browserWatchFrameValues = new Map<string, BrowserFrameView>();
   readonly #channels = new Map<string, WorkspaceChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
@@ -549,21 +514,16 @@ export class HttpHostClient {
           message.basicInput,
         );
       else this.#browserEditing.receive(sessionId, message, surfaceId);
-      if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-        this.#patchBrowserSession(sessionId, {
-          tabs: browserTabs(message.surfaces),
-          ...(message.type === "browser.snapshot" ? { state: message.state } : {}),
-        });
-      if (message.type === "browser.status")
-        this.#patchBrowserSession(sessionId, { state: message.state });
+      if (message.type === "browser.surface") this.#update(this.#snapshot);
       if (message.type === "browser.snapshot" || message.type === "browser.dialog.changed")
         this.#patchBrowserSession(sessionId, { dialog: message.dialog });
     },
     (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    (sessionId, surfaceId) => {
+    (sessionId, surfaceId, hadSurface) => {
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
+      if (hadSurface) this.#update(this.#snapshot);
     },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
@@ -571,13 +531,14 @@ export class HttpHostClient {
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
     "watch",
-    (sessionId, message) => {
-      if (message.type === "browser.snapshot" || message.type === "browser.status")
-        this.#patchBrowserSession(sessionId, { state: message.state });
+    (_sessionId, message) => {
+      if (message.type === "browser.surface") this.#update(this.#snapshot);
     },
     (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    undefined,
+    (_sessionId, _surfaceId, hadSurface) => {
+      if (hadSurface) this.#update(this.#snapshot);
+    },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
   );
@@ -586,13 +547,17 @@ export class HttpHostClient {
     surfaceId: string,
     mode: "control" | "watch",
   ): WebSocketClient {
-    const session = this.#snapshot.browserSessions.find((session) => session.id === sessionId);
+    const groupId = this.#browserTabs.groupForSession(sessionId);
+    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      session?.state !== "ready" ||
-      this.#forbiddenWorkspaces.has(session.workspaceId) ||
-      !session.tabCatalog?.tabs.some((tab) => tab.id === surfaceId)
+      group?.state !== "ready" ||
+      this.#forbiddenWorkspaces.has(group.workspaceId) ||
+      tab?.availability !== "ready" ||
+      tab.state !== "live" ||
+      tab.documentId === null
     )
       throw new Error("The browser target is unavailable.");
     const url = new URL(
@@ -1139,57 +1104,26 @@ export class HttpHostClient {
     editing: this.#browserEditing,
     cursor: this.#browserCursor,
     scope: this.#browserPresentationScope,
-    claim: (sessionId, surfaceId, token) => {
-      if (surfaceId) this.#targetedControl.claim(sessionId, surfaceId, token);
-    },
-    accept: (sessionId, surfaceId, token) => {
-      if (surfaceId) this.#targetedControl.accept(sessionId, surfaceId, token);
-      else {
-        const channel = this.#browserChannels.get(sessionId);
-        if (channel?.awaitingAck === token) this.#returnWatchCredit(channel);
-      }
-    },
-    get: (sessionId, surfaceId) =>
-      surfaceId
-        ? this.#targetedControl.get(sessionId, surfaceId).frame
-        : (this.#browserFrameValues.get(sessionId) ?? null),
+    claim: (sessionId, surfaceId, token) =>
+      this.#targetedControl.claim(sessionId, surfaceId, token),
+    accept: (sessionId, surfaceId, token) =>
+      this.#targetedControl.accept(sessionId, surfaceId, token),
+    get: (sessionId, surfaceId) => this.#targetedControl.get(sessionId, surfaceId).frame,
     rasterDemand: (sessionId, surfaceId) =>
       this.#targetedControl.rasterDemand(sessionId, surfaceId),
-    subscribe: (sessionId, listener, surfaceId) => {
-      if (surfaceId) return this.#targetedControl.subscribe(sessionId, surfaceId, listener);
-      if (this.#disposed) return () => undefined;
-      const listeners = this.#browserFrameListeners.get(sessionId) ?? new Set<() => void>();
-      listeners.add(listener);
-      this.#browserFrameListeners.set(sessionId, listeners);
-      return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) this.#browserFrameListeners.delete(sessionId);
-      };
-    },
+    subscribe: (sessionId, listener, surfaceId) =>
+      this.#targetedControl.subscribe(sessionId, surfaceId, listener),
   };
   readonly browserWatchFrames: BrowserFrameStore = {
     invalidationKey: this.#targetedWatch.invalidationKey,
     scope: this.#browserPresentationScope,
-    claim: (sessionId, surfaceId, token) => {
-      if (surfaceId) this.#targetedWatch.claim(sessionId, surfaceId, token);
-    },
+    claim: (sessionId, surfaceId, token) => this.#targetedWatch.claim(sessionId, surfaceId, token),
     accept: (sessionId, surfaceId, token) =>
       this.acceptBrowserWatchFrame(sessionId, token, surfaceId),
-    get: (sessionId, surfaceId) =>
-      surfaceId
-        ? this.#targetedWatch.get(sessionId, surfaceId).frame
-        : (this.#browserWatchFrameValues.get(sessionId) ?? null),
+    get: (sessionId, surfaceId) => this.#targetedWatch.get(sessionId, surfaceId).frame,
     rasterDemand: (sessionId, surfaceId) => this.#targetedWatch.rasterDemand(sessionId, surfaceId),
-    subscribe: (sessionId, listener, surfaceId) => {
-      if (surfaceId) return this.#targetedWatch.subscribe(sessionId, surfaceId, listener);
-      const listeners = this.#browserWatchFrameListeners.get(sessionId) ?? new Set<() => void>();
-      listeners.add(listener);
-      this.#browserWatchFrameListeners.set(sessionId, listeners);
-      return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) this.#browserWatchFrameListeners.delete(sessionId);
-      };
-    },
+    subscribe: (sessionId, listener, surfaceId) =>
+      this.#targetedWatch.subscribe(sessionId, surfaceId, listener),
   };
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -1255,7 +1189,6 @@ export class HttpHostClient {
         break;
       case "browser.session.start":
         await this.#waitBrowser(() => this.#browserTabs.groupForSession(result.session.id));
-        this.#ensureBrowserChannel(result.session.id);
         break;
       case "browser.profile.create":
         this.#update(
@@ -1298,20 +1231,6 @@ export class HttpHostClient {
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               grantId: parsedCommand.grantId,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "browser.session.close":
-        if (commandIs(parsedCommand, result.type)) {
-          // Nothing will arrive on the viewer socket again; drop it and its
-          // retained frame before the session is marked closed.
-          this.#closeBrowserChannel(parsedCommand.sessionId);
-          this.#closeBrowserChannel(parsedCommand.sessionId, "watch");
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              sessionId: parsedCommand.sessionId,
               type: result.type,
             }),
           );
@@ -2841,7 +2760,7 @@ export class HttpHostClient {
 
   readonly retainBrowserViewer = (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly picture?: boolean;
       readonly captureRegion?: boolean;
@@ -2851,108 +2770,22 @@ export class HttpHostClient {
   ): (() => void) => {
     if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
       throw new Error("This Host does not advertise browser-target-control-v1.");
-    if (options?.picture === false && !surfaceId)
-      throw new Error("A control-only browser viewer must name a target.");
-    return surfaceId
-      ? this.#targetedControl.retain(sessionId, surfaceId, options)
-      : this.#retainBrowser(sessionId, "control", options);
+    return this.#targetedControl.retain(sessionId, surfaceId, options);
   };
 
   readonly retainBrowserWatch = (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
     },
-  ): (() => void) =>
-    surfaceId
-      ? this.#targetedWatch.retain(sessionId, surfaceId, options)
-      : this.#retainBrowser(sessionId, "watch", options);
+  ): (() => void) => this.#targetedWatch.retain(sessionId, surfaceId, options);
 
-  #retainBrowser(
-    sessionId: string,
-    mode: "control" | "watch",
-    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
-  ): () => void {
-    if (this.#disposed) return () => undefined;
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (!session || session.state === "closed" || session.state === "failed") {
-      return () => undefined;
-    }
-    const channels = mode === "watch" ? this.#browserWatchChannels : this.#browserChannels;
-    const channel: BrowserChannel =
-      channels.get(sessionId) ??
-      ({
-        awaitingAck: null,
-        ...(mode === "watch" ? { mode, captureRegionRetainers: 0 } : { mode }),
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        retainers: 0,
-        sessionId,
-        socket: null,
-        synchronized: false,
-        unreadableFrames: 0,
-      } satisfies BrowserChannel);
-    const captureRegion = options?.captureRegion === true;
-    const previouslyOptedIn =
-      channel.mode === "watch" && channel.captureRegionRetainers === channel.retainers;
-    channel.retainers += 1;
-    if (channel.mode === "watch") {
-      if (captureRegion) channel.captureRegionRetainers += 1;
-      if (previouslyOptedIn !== (channel.captureRegionRetainers === channel.retainers))
-        this.#subscribeBrowserWatch(channel);
-    }
-    channels.set(sessionId, channel);
-    this.#ensureBrowserChannel(sessionId, mode);
-
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const previouslyOptedIn =
-        channel.mode === "watch" && channel.captureRegionRetainers === channel.retainers;
-      channel.retainers = Math.max(0, channel.retainers - 1);
-      if (channel.mode === "watch") {
-        if (captureRegion) channel.captureRegionRetainers -= 1;
-        if (previouslyOptedIn !== (channel.captureRegionRetainers === channel.retainers))
-          this.#subscribeBrowserWatch(channel);
-      }
-      // A channel that was dropped and replaced belongs to newer retainers.
-      if (channel.retainers > 0 || channels.get(sessionId) !== channel) return;
-      this.#closeBrowserChannel(sessionId, mode);
-      this.#patchBrowserViewerState(sessionId, mode, {
-        viewerError: null,
-        viewerState: "disconnected",
-      });
-    };
-  }
-
-  /**
-   * The view has finished with this Control or Watch picture. A token that is not the
-   * one outstanding — already returned, or from a socket since replaced — is
-   * late and changes nothing.
-   */
-  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId?: string): void {
-    if (surfaceId) {
-      this.#targetedWatch.accept(sessionId, surfaceId, token);
-      this.#targetedControl.accept(sessionId, surfaceId, token);
-      return;
-    }
-    for (const channel of [
-      this.#browserWatchChannels.get(sessionId),
-      this.#browserChannels.get(sessionId),
-    ])
-      if (channel?.awaitingAck === token) this.#returnWatchCredit(channel);
-  }
-
-  #returnWatchCredit(channel: BrowserChannel): void {
-    const token = channel.awaitingAck;
-    channel.awaitingAck = null;
-    if (token && channel.socket?.readyState === 1) {
-      channel.socket.send(JSON.stringify({ type: "stream.ack", token }));
-    }
+  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId: string): void {
+    this.#targetedWatch.accept(sessionId, surfaceId, token);
+    this.#targetedControl.accept(sessionId, surfaceId, token);
   }
 
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void {
@@ -2985,32 +2818,8 @@ export class HttpHostClient {
       this.#targetedControl.send(sessionId, command.surfaceId, command);
       return;
     }
-    const channel = this.#browserChannels.get(sessionId);
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (
-      !channel?.socket ||
-      channel.socket.readyState !== 1 ||
-      !channel.synchronized ||
-      session?.state !== "ready"
-    ) {
-      if (browserCommandNeedsNoView(command)) return;
-      throw new Error("The browser view is not synchronized.");
-    }
-    if (channel.basicInputOnly && !browserBasicInputAllows(command)) return;
-    channel.socket.send(JSON.stringify(command));
-  }
-
-  #subscribeBrowserWatch(channel: BrowserChannel): void {
-    if (channel.mode !== "watch" || !channel.synchronized || !channel.retainers) return;
-    channel.socket?.send(
-      JSON.stringify({
-        type: "stream.subscribe",
-        ...(channel.captureRegionRetainers === channel.retainers &&
-        this.#capabilities?.includes("browser-capture-region-v1")
-          ? { captureRegion: true }
-          : {}),
-      }),
-    );
+    if (browserCommandNeedsNoView(command)) return;
+    throw new Error("The browser view is not synchronized.");
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
@@ -3478,10 +3287,6 @@ export class HttpHostClient {
     this.#readAutomations.clear();
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
-    for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
-    for (const sessionId of this.#browserWatchChannels.keys())
-      this.#closeBrowserChannel(sessionId, "watch");
-    this.#clearBrowserFrames();
     this.#forgetLiveRereads();
     this.#listeners.clear();
     this.#personShowListeners.clear();
@@ -3491,8 +3296,6 @@ export class HttpHostClient {
     this.#targetedWatch.dispose();
     this.#targetedControl.dispose();
     this.#browserEditing.dispose();
-    this.#browserFrameListeners.clear();
-    this.#browserWatchFrameListeners.clear();
   }
 
   async #bootstrap(
@@ -3875,8 +3678,6 @@ export class HttpHostClient {
     if (changed) {
       this.#targetedControl.capabilitiesChanged();
       this.#targetedWatch.capabilitiesChanged();
-      for (const channel of this.#browserWatchChannels.values())
-        this.#subscribeBrowserWatch(channel);
     }
   }
 
@@ -3904,10 +3705,6 @@ export class HttpHostClient {
       this.#stopRefresh();
       for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
       this.#channels.clear();
-      for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
-      for (const sessionId of this.#browserWatchChannels.keys())
-        this.#closeBrowserChannel(sessionId, "watch");
-      this.#clearBrowserFrames();
       const identityConfig = unwrapRpcResult(await this.rpc["auth.config"]({}));
       if (
         this.#disposed ||
@@ -4167,14 +3964,6 @@ export class HttpHostClient {
         channel.reconnectTimer = null;
       }
     }
-    for (const channel of this.#browserChannels.values()) {
-      if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-      channel.reconnectTimer = null;
-    }
-    for (const channel of this.#browserWatchChannels.values()) {
-      if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-      channel.reconnectTimer = null;
-    }
   }
 
   /**
@@ -4203,23 +3992,6 @@ export class HttpHostClient {
         continue;
       }
       this.#replaceChannel(channel);
-    }
-    for (const channel of [
-      ...this.#browserChannels.values(),
-      ...this.#browserWatchChannels.values(),
-    ]) {
-      // A resumed Watch must get a new snapshot and frame credit. A socket the
-      // platform kept open while hidden can otherwise leave an old picture
-      // looking current without any new screencast frame to replace it.
-      if (channel.mode === "watch") {
-        this.#replaceBrowserChannel(channel);
-        continue;
-      }
-      // The browser viewer protocol carries no client-initiated liveness probe,
-      // so a retained socket is trusted for the same window and replaced after
-      // it. Its snapshot is the whole of its state, so replacing costs one.
-      if (trusted && channel.socket?.readyState === 1) continue;
-      this.#replaceBrowserChannel(channel);
     }
     this.#recomputeConnection();
     this.#startRefresh();
@@ -4258,8 +4030,6 @@ export class HttpHostClient {
     this.#targetedControl.reconnect();
     this.#targetedWatch.reconnect();
     for (const channel of this.#channels.values()) this.#replaceChannel(channel);
-    for (const channel of this.#browserChannels.values()) this.#replaceBrowserChannel(channel);
-    for (const channel of this.#browserWatchChannels.values()) this.#replaceBrowserChannel(channel);
     this.#recomputeConnection();
     for (const listener of this.#lifecycleListeners) listener("network");
   }
@@ -4396,20 +4166,6 @@ export class HttpHostClient {
     if (this.#snapshot.session !== "authenticated") return;
     channel.reconnectAttempt = 0;
     this.#connect(channel);
-  }
-
-  #replaceBrowserChannel(channel: BrowserChannel): void {
-    if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-    channel.reconnectTimer = null;
-    const socket = channel.socket;
-    channel.socket = null;
-    channel.synchronized = false;
-    socket?.close(1000, "Client closed");
-    this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-    if (channel.retainers === 0 || this.#reconnectSuspended()) return;
-    if (this.#snapshot.session !== "authenticated") return;
-    channel.reconnectAttempt = 0;
-    this.#connectBrowser(channel);
   }
 
   async #waitBrowser(read: () => unknown, signal?: AbortSignal): Promise<void> {
@@ -5527,251 +5283,6 @@ export class HttpHostClient {
       : { ...snapshot, connectionInterrupted: interrupted };
   }
 
-  #ensureBrowserChannel(sessionId: string, mode: "control" | "watch" = "control"): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (!session || session.state === "closed" || session.state === "failed") return;
-    const existing = (mode === "watch" ? this.#browserWatchChannels : this.#browserChannels).get(
-      sessionId,
-    );
-    if (!existing || existing.retainers === 0 || existing.socket || existing.reconnectTimer) return;
-    this.#connectBrowser(existing);
-  }
-
-  #connectBrowser(channel: BrowserChannel): void {
-    if (this.#disposed || channel.socket) return;
-    // Same fence as the Workspace channel: the retainer is kept, so returning
-    // to the foreground or to a network opens the viewer socket.
-    if (this.#reconnectSuspended()) return;
-    const socket = this.#webSocketFactory(
-      this.#webSocketUrl(
-        `/v1/browser-sessions/${encodeURIComponent(channel.sessionId)}/connect?editing=2${channel.mode === "watch" ? "&mode=watch" : "&basicInput=1"}`,
-      ),
-    );
-    socket.binaryType = "arraybuffer";
-    channel.socket = socket;
-    channel.awaitingAck = null;
-    channel.reconnectTimer = null;
-    channel.synchronized = false;
-    this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-      viewerError: null,
-      viewerState: "connecting",
-    });
-    let gaveUp = false;
-    const openedAt = Date.now();
-    socket.addEventListener("message", (event) => {
-      if (channel.socket !== socket || socket.readyState >= 2) return;
-      try {
-        this.#handleBrowserFrame(channel, event.data);
-        if (Date.now() - openedAt >= healthySocketMs) channel.unreadableFrames = 0;
-      } catch {
-        gaveUp = true;
-        channel.unreadableFrames += 1;
-        this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-        socket.close(4002, "Invalid browser protocol frame");
-      }
-    });
-    socket.addEventListener("close", (event) => {
-      if (channel.socket !== socket) return;
-      channel.socket = null;
-      channel.synchronized = false;
-      if (channel.mode === "control") this.#browserEditing.disconnect(channel.sessionId);
-      this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-      const session = this.#snapshot.browserSessions.find((item) => item.id === channel.sessionId);
-      if (!session || session.state === "closed" || session.state === "failed") {
-        (channel.mode === "watch" ? this.#browserWatchChannels : this.#browserChannels).delete(
-          channel.sessionId,
-        );
-        return;
-      }
-      // The Host's own 4002 refuses what this client sent, and stays a refusal.
-      if (
-        (event.code === browserViewerCloseCodes.protocolViolation && !gaveUp) ||
-        event.code === browserViewerCloseCodes.accessEnded
-      ) {
-        this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-          viewerError:
-            (channel.mode === "watch" ? session.watchViewerError : session.viewerError) ||
-            event.reason ||
-            "The browser viewer protocol failed.",
-          viewerState: "disconnected",
-        });
-        return;
-      }
-      // A snapshot is the whole of a viewer's state, so a new socket repairs
-      // anything lost; retrying one that keeps failing should say so.
-      const unreadable = channel.unreadableFrames > realtimeReplayAttempts;
-      this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-        viewerError: unreadable ? "The browser viewer protocol failed." : null,
-        viewerState: unreadable ? "disconnected" : "connecting",
-      });
-      this.#scheduleBrowserReconnect(channel);
-    });
-  }
-
-  #handleBrowserFrame(channel: BrowserChannel, frame: unknown): void {
-    if (typeof frame === "string") {
-      if (frame.length > maxInboundFrameCharacters) {
-        throw new Error("Browser protocol frame is too large.");
-      }
-      this.#projectBrowserMessage(channel, BrowserServerMessageSchema.parse(JSON.parse(frame)));
-      return;
-    }
-    if (!(frame instanceof ArrayBuffer)) {
-      throw new Error("Browser binary frame was not delivered as an ArrayBuffer.");
-    }
-    if (!channel.synchronized) {
-      throw new Error("Browser viewer frame arrived before its snapshot.");
-    }
-    const decoded = decodeBrowserFrameEnvelope(new Uint8Array(frame), maxBrowserFrameBytes);
-    const data = new Uint8Array(decoded.data.byteLength);
-    data.set(decoded.data);
-    if (decoded.header.watchToken || channel.mode === "watch") {
-      if (!decoded.header.watchToken) {
-        throw new Error("Browser Watch frame omitted its acknowledgement token.");
-      }
-      channel.awaitingAck = decoded.header.watchToken;
-    }
-    this.#setBrowserFrame(
-      channel.sessionId,
-      { data: data.buffer, header: decoded.header },
-      channel.mode,
-    );
-  }
-
-  #projectBrowserMessage(channel: BrowserChannel, message: BrowserServerMessage): void {
-    const sessionId = channel.sessionId;
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (!session) return;
-    if (message.type === "browser.snapshot") {
-      if (channel.synchronized) throw new Error("Browser viewer received a duplicate snapshot.");
-      if (message.sessionId !== sessionId) throw new Error("Browser session ID mismatch.");
-      assertBrowserDialogSurface(message.dialog, message.surfaces);
-      channel.synchronized = true;
-      channel.basicInputOnly = message.editingVersion === undefined && message.basicInput === 1;
-      if (channel.mode === "control")
-        this.#browserEditing.negotiate(
-          sessionId,
-          message.editingVersion,
-          undefined,
-          message.clipboard,
-          message.basicInput,
-        );
-      channel.reconnectAttempt = 0;
-      this.#patchBrowserSession(sessionId, {
-        access: message.access,
-        dialog: message.dialog,
-        error: null,
-        state: message.state,
-        tabs: browserTabs(message.surfaces),
-      });
-      this.#patchBrowserViewerState(sessionId, channel.mode, {
-        viewerError: null,
-        viewerState: "synchronized",
-      });
-      this.#subscribeBrowserWatch(channel);
-      return;
-    }
-    if (!channel.synchronized) throw new Error("Browser viewer event arrived before its snapshot.");
-    if (message.type === "browser.status") {
-      this.#patchBrowserSession(sessionId, { state: message.state });
-      this.#setBrowserFrame(sessionId, null, channel.mode);
-      return;
-    }
-    if (message.type === "browser.error") {
-      if (
-        message.error.reason === "unsupported-operation" ||
-        message.error.reason === "target-suspended"
-      ) {
-        if (channel.mode === "control") this.#browserEditing.receive(sessionId, message);
-        return;
-      }
-      this.#patchBrowserSession(sessionId, { error: message.error.message });
-      return;
-    }
-    if (message.type === "browser.dialog.changed") {
-      assertBrowserDialogSurface(message.dialog, session.tabs);
-      this.#patchBrowserSession(sessionId, { dialog: message.dialog });
-      return;
-    }
-    if (channel.mode === "control") {
-      this.#browserEditing.receive(sessionId, message);
-      this.#browserCursor.receive(sessionId, message);
-    }
-    if (message.type === "browser.surfaces.changed") {
-      assertBrowserDialogSurface(session.dialog, message.surfaces);
-      // A new title or address is the same picture; another tab coming
-      // forward is not, and its picture follows.
-      const active = message.surfaces.find((surface) => surface.active)?.id ?? null;
-      const shown = (
-        channel.mode === "watch" ? this.#browserWatchFrameValues : this.#browserFrameValues
-      ).get(sessionId);
-      if (shown && shown.header.surfaceId !== active) {
-        this.#setBrowserFrame(sessionId, null, channel.mode);
-      }
-      this.#patchBrowserSession(sessionId, { tabs: browserTabs(message.surfaces) });
-    }
-  }
-
-  #scheduleBrowserReconnect(channel: BrowserChannel): void {
-    if (this.#disposed || channel.retainers === 0 || channel.reconnectTimer) return;
-    if (this.#reconnectSuspended()) return;
-    const delay = this.#retryDelay(channel.reconnectAttempt++, channel.unreadableFrames);
-    channel.reconnectTimer = globalThis.setTimeout(() => {
-      channel.reconnectTimer = null;
-      this.#connectBrowser(channel);
-    }, delay);
-  }
-
-  #closeBrowserChannel(sessionId: string, mode: "control" | "watch" = "control"): void {
-    if (mode === "control") this.#browserEditing.disconnect(sessionId);
-    const channels = mode === "watch" ? this.#browserWatchChannels : this.#browserChannels;
-    const channel = channels.get(sessionId);
-    if (channel) {
-      if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-      channel.reconnectTimer = null;
-      const socket = channel.socket;
-      this.#returnWatchCredit(channel);
-      channel.socket = null;
-      channel.synchronized = false;
-      socket?.close(1000, "Client closed");
-      channels.delete(sessionId);
-    }
-    this.#setBrowserFrame(sessionId, null, mode);
-  }
-
-  #setBrowserFrame(
-    sessionId: string,
-    frame: BrowserFrameView | null,
-    mode: "control" | "watch" = "control",
-  ): void {
-    if (this.#disposed && frame) return;
-    const values = mode === "watch" ? this.#browserWatchFrameValues : this.#browserFrameValues;
-    const listeners =
-      mode === "watch" ? this.#browserWatchFrameListeners : this.#browserFrameListeners;
-    // A picture dropped before the view showed it still returns its credit.
-    const dropped = values.get(sessionId)?.header.watchToken;
-    const channel = (mode === "watch" ? this.#browserWatchChannels : this.#browserChannels).get(
-      sessionId,
-    );
-    if (channel && dropped && channel.awaitingAck === dropped) this.#returnWatchCredit(channel);
-    if (frame) {
-      values.set(sessionId, frame);
-    } else if (!values.delete(sessionId)) {
-      return;
-    }
-    for (const listener of listeners.get(sessionId) ?? []) listener();
-  }
-
-  #clearBrowserFrames(): void {
-    for (const sessionId of this.#browserFrameValues.keys()) {
-      this.#setBrowserFrame(sessionId, null);
-    }
-    for (const sessionId of this.#browserWatchFrameValues.keys()) {
-      this.#setBrowserFrame(sessionId, null, "watch");
-    }
-  }
-
   #patchBrowserSession(sessionId: string, patch: Partial<BrowserSessionSummary>): void {
     const browserSessions = this.#snapshot.browserSessions.map((session) =>
       session.id === sessionId ? { ...session, ...patch } : session,
@@ -5781,19 +5292,6 @@ export class HttpHostClient {
     ) {
       this.#update({ ...this.#snapshot, browserSessions });
     }
-  }
-
-  #patchBrowserViewerState(
-    sessionId: string,
-    mode: "control" | "watch",
-    patch: Pick<BrowserSessionSummary, "viewerError" | "viewerState">,
-  ): void {
-    this.#patchBrowserSession(
-      sessionId,
-      mode === "watch"
-        ? { watchViewerError: patch.viewerError, watchViewerState: patch.viewerState }
-        : patch,
-    );
   }
 
   async #loadEarlierTranscript(
@@ -5994,10 +5492,6 @@ export class HttpHostClient {
     this.#stopRefresh();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
-    for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
-    for (const sessionId of this.#browserWatchChannels.keys())
-      this.#closeBrowserChannel(sessionId, "watch");
-    this.#clearBrowserFrames();
     this.#update({
       ...emptySnapshot(),
       connection: "connected",
@@ -6026,10 +5520,16 @@ export class HttpHostClient {
     }
   }
 
-  #browserTargetAuthorized(sessionId: string): boolean {
+  #browserTargetAuthorized(sessionId: string, surfaceId: string): boolean {
     const groupId = this.#browserTabs.groupForSession(sessionId);
     const group = groupId ? this.#browserTabs.group(groupId) : undefined;
-    return !!group && !this.#forbiddenWorkspaces.has(group.workspaceId);
+    return (
+      !!group &&
+      group.state !== "closed" &&
+      group.state !== "failed" &&
+      !this.#forbiddenWorkspaces.has(group.workspaceId) &&
+      (!this.#browserTabs.tabs(group.id).whole || !!this.#browserTabs.tab(group.id, surfaceId))
+    );
   }
 
   #refuseWorkspace(workspaceId: string): void {
@@ -6043,7 +5543,8 @@ export class HttpHostClient {
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#forbiddenWorkspaces.add(workspaceId);
-    const authorized = (sessionId: string) => this.#browserTargetAuthorized(sessionId);
+    const authorized = (sessionId: string, surfaceId: string) =>
+      this.#browserTargetAuthorized(sessionId, surfaceId);
     this.#targetedControl.reconcile(undefined, authorized);
     this.#targetedWatch.reconcile(undefined, authorized);
     this.#notificationPreferences.delete(workspaceId);
@@ -6054,12 +5555,6 @@ export class HttpHostClient {
       this.#historicalThreads.delete(threadId);
       this.#hydratedThreads.delete(threadId);
       this.#browserUses.delete(threadId);
-    }
-    for (const session of this.#snapshot.browserSessions) {
-      if (session.workspaceId === workspaceId) {
-        this.#closeBrowserChannel(session.id);
-        this.#closeBrowserChannel(session.id, "watch");
-      }
     }
     if (this.#activeWorkspaceId === workspaceId) this.#activeWorkspaceId = null;
     this.#update(this.#snapshot);
@@ -6171,7 +5666,13 @@ export class HttpHostClient {
     if (snapshot.session === "authenticated")
       snapshot = {
         ...snapshot,
-        ...this.#browserSnapshot.derive(snapshot, this.#browserTabs),
+        ...this.#browserSnapshot.derive(
+          snapshot,
+          this.#browserTabs,
+          (sessionId, surfaceId) =>
+            this.#targetedControl.surface(sessionId, surfaceId) ??
+            this.#targetedWatch.surface(sessionId, surfaceId),
+        ),
       };
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const closedBrowserTabs = workspaceTabsChanged
@@ -6234,12 +5735,19 @@ export class HttpHostClient {
           this.#placeActivity.reconcile(
             new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),
           );
-        const authorized = (sessionId: string) => this.#browserTargetAuthorized(sessionId);
-        const allowed = (sessionId: string, surfaceId: string) =>
-          places.some(
-            (place) =>
-              place.key === `browser:${sessionId}:${surfaceId}` && place.availability === "ready",
+        const authorized = (sessionId: string, surfaceId: string) =>
+          this.#browserTargetAuthorized(sessionId, surfaceId);
+        const allowed = (sessionId: string, surfaceId: string) => {
+          const groupId = this.#browserTabs.groupForSession(sessionId);
+          const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+          const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
+          return (
+            group?.state === "ready" &&
+            tab?.availability === "ready" &&
+            tab.state === "live" &&
+            tab.documentId !== null
           );
+        };
         reconcileBrowserTargets = () => {
           this.#targetedWatch.reconcile(allowed, authorized);
           this.#targetedControl.reconcile(allowed, authorized);
@@ -6402,16 +5910,6 @@ export class HttpHostClient {
     if (workspaceTabsChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     this.#runPlaces.flush();
-    for (const [mode, channels] of [
-      ["control", this.#browserChannels],
-      ["watch", this.#browserWatchChannels],
-    ] as const) {
-      for (const sessionId of channels.keys()) {
-        const session = this.#snapshot.browserSessions.find((session) => session.id === sessionId);
-        if (!session || session.state === "closed" || session.state === "failed")
-          this.#closeBrowserChannel(sessionId, mode);
-      }
-    }
     reconcileBrowserTargets?.();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
@@ -6991,30 +6489,6 @@ function withNewerComputerPresence(
       }),
     },
   };
-}
-
-function browserTabs(
-  surfaces: Extract<BrowserServerMessage, { type: "browser.snapshot" }>["surfaces"],
-): BrowserSessionSummary["tabs"] {
-  return surfaces.map(({ active, documentId, favicon, id, loading, sizedByAgent, title, url }) => ({
-    documentId,
-    active,
-    favicon,
-    id,
-    loading,
-    sizedByAgent,
-    title,
-    url,
-  }));
-}
-
-function assertBrowserDialogSurface(
-  dialog: BrowserSessionSummary["dialog"],
-  surfaces: readonly { readonly id: string }[],
-): void {
-  if (dialog && !surfaces.some((surface) => surface.id === dialog.surfaceId)) {
-    throw new Error("Browser dialog references an unknown surface.");
-  }
 }
 
 function toWorkspaceSummary(

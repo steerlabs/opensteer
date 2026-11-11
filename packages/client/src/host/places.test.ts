@@ -183,6 +183,10 @@ describe("place catalog", () => {
     try {
       const snapshot = {
         ...client.getSnapshot(),
+        browserSessions: client.getSnapshot().browserSessions.map((session) => ({
+          ...session,
+          workspaceTabRestoreVersion: undefined,
+        })),
         workspaceTabs: undefined,
         workspaceTabRestoreVersion: undefined,
       };
@@ -198,7 +202,13 @@ describe("place catalog", () => {
   it("suppresses the live projection only for a participating durable session", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
-      const snapshot = client.getSnapshot();
+      const snapshot = {
+        ...client.getSnapshot(),
+        browserSessions: client.getSnapshot().browserSessions.map((session) => ({
+          ...session,
+          workspaceTabRestoreVersion: undefined as 1 | undefined,
+        })),
+      };
       const participating = snapshot.browserSessions[0]!;
       const source = {
         ...snapshot,

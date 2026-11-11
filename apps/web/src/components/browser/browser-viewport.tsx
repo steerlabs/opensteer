@@ -64,7 +64,6 @@ export function BrowserViewport({
   onLeave,
   onTouchTap,
   sessionId,
-  targeted = false,
   visible,
 }: {
   activeSurfaceId: BrowserTabSummary["id"] | null;
@@ -91,12 +90,6 @@ export function BrowserViewport({
   /** A finger tapped the page, which is when a text field there may want the keyboard. */
   onTouchTap?: (() => void) | undefined;
   sessionId: string;
-  /**
-   * The view holds exactly `activeSurfaceId` through its own targeted stream:
-   * pictures are that tab's, and the stream's demand is the retain, not a
-   * session-wide subscribe.
-   */
-  targeted?: boolean | undefined;
   visible: boolean;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -112,7 +105,7 @@ export function BrowserViewport({
   fitAvailableRef.current = onFitAvailable;
   // Read while hidden too: the client pauses the picture and keeps its last one
   // for the moment the page is shown again.
-  const receivedFrame = useBrowserFrame(frames, sessionId, targeted ? activeSurfaceId : null);
+  const receivedFrame = useBrowserFrame(frames, sessionId, activeSurfaceId);
   const frame = receivedFrame?.header.surfaceId === activeSurfaceId ? receivedFrame : null;
   const [presentedSurfaceId, setPresentedSurfaceId] = useState<string | null>(null);
   const presentedFrameRef = useRef<BrowserFrameView | null>(null);
@@ -536,14 +529,6 @@ export function BrowserViewport({
       setPresentedSurfaceId(null);
     }
   }, [frame, live]);
-
-  useEffect(() => {
-    if (targeted || !live || !visible || occluded) return;
-    onCommandRef.current({ type: "stream.subscribe", captureRegion: true });
-    return () => {
-      onCommandRef.current({ type: "stream.unsubscribe" });
-    };
-  }, [live, occluded, targeted, visible]);
 
   useEffect(
     () => () => {
@@ -1021,7 +1006,6 @@ export function BrowserViewport({
             frames={frames}
             sessionId={sessionId}
             surfaceId={activeSurfaceId!}
-            targeted={targeted}
             onPresented={markFramePresented}
           />
         ) : null}
@@ -1036,12 +1020,13 @@ function useBrowserFrame(
   surfaceId: string | null,
 ): BrowserFrameView | null {
   const subscribe = useCallback(
-    (listener: () => void) => frames.subscribe(sessionId, listener, surfaceId ?? undefined),
+    (listener: () => void) =>
+      surfaceId ? frames.subscribe(sessionId, listener, surfaceId) : () => {},
     [frames, sessionId, surfaceId],
   );
   const geometry = useRef<BrowserFrameView | null>(null);
   const getSnapshot = useCallback(() => {
-    const next = frames.get(sessionId, surfaceId ?? undefined);
+    const next = surfaceId ? frames.get(sessionId, surfaceId) : null;
     if (!sameBrowserFrameGeometry(geometry.current, next))
       geometry.current = next ? { header: next.header, data: new ArrayBuffer(0) } : null;
     return geometry.current;
@@ -1053,22 +1038,19 @@ function BrowserFrameImage({
   frames,
   sessionId,
   surfaceId,
-  targeted,
   onPresented,
 }: {
   frames: BrowserFrameStore;
   sessionId: string;
   surfaceId: string;
-  targeted: boolean;
   onPresented: (frame: BrowserFrameView) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (canvas)
-      return attachBrowserCanvas(frames, sessionId, surfaceId, targeted, canvas, onPresented);
+    if (canvas) return attachBrowserCanvas(frames, sessionId, surfaceId, canvas, onPresented);
     return;
-  }, [frames, sessionId, surfaceId, targeted, onPresented]);
+  }, [frames, sessionId, surfaceId, onPresented]);
   return <canvas aria-label="Live browser page" ref={canvasRef} role="img" />;
 }
 

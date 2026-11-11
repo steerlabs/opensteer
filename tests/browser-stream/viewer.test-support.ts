@@ -128,7 +128,7 @@ window.browserStreamBench = {
       rasterDemand: (id) => watch.rasterDemand(id, surfaceId),
       invalidationKey: watch.invalidationKey,
     };
-    const detach = attachBrowserCanvas(source, sessionId, surfaceId, true, canvas, (frame) => {
+    const detach = attachBrowserCanvas(source, sessionId, surfaceId, canvas, (frame) => {
       const at = performance.now();
       const decoded = readMarker(canvas, frame.header.viewportWidth);
       if (decoded)
