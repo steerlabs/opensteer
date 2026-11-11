@@ -1,3 +1,4 @@
+import { requireTeamProjectManager } from "./team-project-store.js";
 import {
   isProjectDeploymentAuthority,
   readInitializedDeploymentAuthority,
@@ -1306,6 +1307,10 @@ export class OpensteerStore {
 
   async assignEnvironmentRunner(environmentId: EnvironmentId, runnerId: RunnerId): Promise<void> {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
+  }
+
+  assertTeamProjectManager(workspaceId: WorkspaceId, userId: UserId) {
+    return requireTeamProjectManager(this.#database, { userId }, workspaceId);
   }
 
   async #ensureProjectChat(workspace: Workspace): Promise<Workspace> {
