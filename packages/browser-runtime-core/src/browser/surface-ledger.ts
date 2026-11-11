@@ -26,6 +26,8 @@ import { PageScriptTargets, type ScriptTarget } from "./script-targets.js";
 
 /** How long Chromium lets one person input open a popup. */
 const userActivationLifespanMs = 5_000;
+/** Inputs one page's timeline keeps, far more than a person can make in its window. */
+const inputTimelineLimit = 1_024;
 
 export type SurfaceLedgerEvent =
   | BrowserNavigationCommitted
@@ -135,6 +137,17 @@ export interface TabRecord {
   userActivitySequence: number;
   /** The viewer behind this page's latest person input, while it can still open a popup. */
   viewerInput: BrowserViewerInput | null;
+  /**
+   * When each recent input reached this page, and whose it was: a viewer's,
+   * or null for an agent's command or input from no known viewer.
+   */
+  inputTimeline: {
+    readonly at: number;
+    readonly consumerToken: string | null;
+    readonly native: boolean;
+  }[];
+  /** When the newest input dropped from the timeline arrived: nothing after it is missing. */
+  inputTimelineFloor: number;
   popupInputSequence: number;
   readonly lease: TabLease;
   live: LivePage | null;
@@ -941,9 +954,11 @@ export class SurfaceLedger {
     const record = this.records.get(surfaceId);
     if (!record) return;
     this.touch(surfaceId, true);
+    const at = Date.now();
     record.viewerInput = consumerToken
-      ? { at: Date.now(), consumerToken, sequence: ++this.sequence, native }
+      ? { at, consumerToken, sequence: ++this.sequence, native }
       : null;
+    this.#recordInput(record, { at, consumerToken: consumerToken ?? null, native });
   }
 
   /**
@@ -973,10 +988,49 @@ export class SurfaceLedger {
       : null;
   }
 
+  /**
+   * The viewer whose input a page acted on at `at` (its own clock, which is
+   * this machine's): the latest input recorded at or before then, if a
+   * viewer's and recent. Agent commands do not queue behind a viewer's input,
+   * so one in that window could be what acted: then it is nobody's. An event
+   * is judged by when it happened, never by when its report arrives.
+   */
+  viewerInputAt(
+    surfaceId: BrowserSurfaceId,
+    at: number,
+  ): { readonly consumerToken: string; readonly native: boolean } | null {
+    const since = at - userActivationLifespanMs;
+    const record = this.records.get(surfaceId);
+    // A window the timeline no longer covers could have held an agent's command.
+    if (!record || record.inputTimelineFloor > since) return null;
+    let input: TabRecord["inputTimeline"][number] | undefined;
+    for (const entry of record.inputTimeline) {
+      if (entry.at > at || entry.at <= since) continue;
+      if (!entry.consumerToken) return null;
+      input = entry;
+    }
+    return input?.consumerToken
+      ? { consumerToken: input.consumerToken, native: input.native }
+      : null;
+  }
+
+  #recordInput(record: TabRecord, entry: TabRecord["inputTimeline"][number]): void {
+    const timeline = record.inputTimeline;
+    timeline.push(entry);
+    // Input older than any edit still being judged can go; past the cap, the
+    // dropped input's time is kept so its window is refused, not trusted.
+    while (
+      timeline.length > inputTimelineLimit ||
+      (timeline[0] && timeline[0].at < entry.at - 2 * userActivationLifespanMs)
+    )
+      record.inputTimelineFloor = timeline.shift()!.at;
+  }
+
   recordAgentCommand(targetId: string): void {
     const record = this.recordForTarget(targetId);
     if (record) {
       this.touch(record.id);
+      this.#recordInput(record, { at: Date.now(), consumerToken: null, native: false });
       record.agentSequence = ++this.sequence;
       for (const listener of this.agentCommandListeners) listener(record.id);
     }
@@ -1386,6 +1440,8 @@ export class SurfaceLedger {
             url: page.url(),
             userActivitySequence: 0,
             viewerInput: null,
+            inputTimeline: [],
+            inputTimelineFloor: 0,
             popupInputSequence: 0,
             lease: new TabLease(() => this.policyChanged()),
             lastTargetId: targetId,

@@ -500,6 +500,7 @@ describe("Passwords in settings", () => {
         "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.",
         "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
         "In Opensteer’s browser, tap a sign-in field to fill your own saved login. Studio Mac types it; it never comes to this phone.",
+        "When you sign in by hand there, Opensteer offers to save that login on Studio Mac. The password stays there.",
       ],
       title: "Passwords",
     });

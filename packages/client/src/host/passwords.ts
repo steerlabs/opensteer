@@ -447,6 +447,10 @@ export const passwordsAgentSignInsDetail = "Turn this off or on in the Passwords
 export const passwordsPersonFillLabel = "Fill passwords for me in Opensteer";
 export const passwordsPersonFillWindowDetail =
   "Offers your saved logins when you click a sign-in field in Opensteer’s browser, on this Mac or another device.";
+/** The Passwords window's switch for offering to save a person's own sign-ins; pinned by CopyParityTests. */
+export const passwordsPersonSaveLabel = "Offer to save passwords in Opensteer";
+export const passwordsPersonSaveWindowDetail =
+  "After you sign in by hand in Opensteer’s browser, on this Mac or another device, asks to keep that login on this Mac.";
 export const passwordsWaitingLabel = "Waiting for you";
 export const passwordsDeclineAllAction = "Don’t allow all";
 export const passwordsDecliningAllAction = "Not allowing…";
@@ -544,6 +548,8 @@ export type PasswordsSettingsState =
       readonly agentSignIns: "off" | "on";
       /** Null when this Mac's Passwords predates filling for people. */
       readonly personFill: "off" | "on" | null;
+      /** Null when this Mac's Passwords predates saving for people. */
+      readonly personSave: "off" | "on" | null;
       readonly development: boolean;
       readonly kind: "ready";
     };
@@ -564,6 +570,7 @@ export function passwordsSettingsState(status: DesktopPasswordsStatus): Password
           return {
             agentSignIns: broker.agentSignIns,
             personFill: broker.personFill ?? null,
+            personSave: broker.personSave ?? null,
             development,
             kind: "ready",
           };

@@ -424,7 +424,8 @@ export class FakePasswordsBroker {
           requested !== 5 &&
           requested !== 6 &&
           requested !== 7 &&
-          requested !== 8
+          requested !== 8 &&
+          requested !== 9
         )
           throw new Error("Unsupported protocol");
         const negotiated =

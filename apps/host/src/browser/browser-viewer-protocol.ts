@@ -1,3 +1,4 @@
+import type { PersonFillVersion } from "@opensteer/protocol";
 import type { BrowserServerMessage } from "@opensteer/protocol/browser";
 
 type Snapshot = Extract<BrowserServerMessage, { type: "browser.snapshot" }>;
@@ -22,7 +23,8 @@ export function browserViewerMessage(
   negotiation: {
     readonly basicInput: boolean;
     readonly surfaceState: boolean;
-    readonly autofill?: boolean;
+    /** The person fill version the viewer understands, or 0. */
+    readonly autofill?: 0 | PersonFillVersion;
   } = { basicInput: false, surfaceState: false },
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
@@ -56,8 +58,9 @@ export function browserViewerMessage(
       message = { ...message, surfaceState: 1 };
     if (passkeys) message = { ...message, passkeys, passkeyConsumerToken: consumerToken };
     if (popups) message = { ...message, consumerToken };
-    if (negotiation.autofill && _personFillVersion === 1)
-      message = { ...message, personFillVersion: 1 };
+    const personFill = Math.min(_personFillVersion ?? 0, negotiation.autofill ?? 0);
+    if (personFill === 1 || personFill === 2)
+      message = { ...message, personFillVersion: personFill };
   }
   return message;
 }

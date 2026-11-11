@@ -48,6 +48,7 @@ import {
   type BrowserProfileAccess,
   type BrowserSessionId,
   type HostedBrowserSessionState,
+  type PersonFillVersion,
 } from "@opensteer/protocol";
 import { BrowserPasskeyOfferSchema } from "@opensteer/protocol/passkeys";
 import type { Clock } from "@opensteer/shared/clock";
@@ -97,7 +98,7 @@ function runnerTarget(options: {
   readonly navigationAttributionVersion?: boolean;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
-  readonly personFill?: boolean;
+  readonly personFill?: PersonFillVersion | undefined;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
   readonly rasterDemand?: boolean;
@@ -157,7 +158,7 @@ function runnerTarget(options: {
             navigationVersion: options.navigationVersion ?? false,
             navigationAttributionVersion: options.navigationAttributionVersion ?? false,
             passkeys: options.passkeys === true,
-            personFill: options.personFill === true,
+            personFill: options.personFill,
             cdpBoundary: true,
             surfaceState: options.surfaceState ? 1 : undefined,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
@@ -5808,7 +5809,7 @@ function freshService(options: {
   readonly onError?: (error: unknown) => void;
   readonly passkeysEnabled?: boolean;
   readonly passkeys?: boolean;
-  readonly personFill?: boolean;
+  readonly personFill?: PersonFillVersion | undefined;
   readonly personal?: boolean;
   readonly sharedControl?: boolean;
   readonly targetControl?: boolean;
@@ -5854,7 +5855,7 @@ function freshService(options: {
       targetControl: options.targetControl ?? false,
       rasterDemand: options.rasterDemand ?? false,
       passkeys: options.passkeys === true,
-      personFill: options.personFill === true,
+      personFill: options.personFill,
       editing: options.editing,
       clipboard: options.clipboard,
     }),
@@ -6925,7 +6926,7 @@ async function startFakeRuntime(
             ? { navigationAttributionVersion: 1 }
             : {}),
           ...(claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
-          ...(claims.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
+          ...(claims.personFillVersion ? { personFillVersion: claims.personFillVersion } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
@@ -7559,7 +7560,7 @@ it.each([
       runtime,
       repository: new MemoryBrowserRepository(ownerId, workspaceId),
       personal,
-      personFill,
+      personFill: personFill ? 1 : undefined,
     });
     const opened = await service.openAgentSession({
       ownerId,
@@ -7571,7 +7572,7 @@ it.each([
     const peer = new RecordingPeer("autofill-negotiation");
     const attachment = await service.attach(ownerId, opened.session.id, peer, {
       ...consumerOptions(),
-      autofill: true,
+      autofill: 1,
     });
     expect(peer.text()[0]).toMatchObject(personal && personFill ? { personFillVersion: 1 } : {});
     if (!(personal && personFill)) {
@@ -7598,6 +7599,7 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     targetedStreaming: true,
+    inputLanes: true,
   });
   const ownerId = createId("user"),
     workspaceId = createId("workspace");
@@ -7606,7 +7608,7 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
     runtime,
     repository: new MemoryBrowserRepository(ownerId, workspaceId),
     personal: true,
-    personFill: true,
+    personFill: 2,
   });
   const opened = await service.openAgentSession({
     ownerId,
@@ -7614,22 +7616,29 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
     agentBindingId: "autofill",
     fresh: true,
   });
-  const attach = async (id: string, autofill: boolean, mode: "control" | "watch" = "control") => {
+  const attach = async (
+    id: string,
+    autofill: 0 | PersonFillVersion,
+    mode: "control" | "watch" = "control",
+  ) => {
     const peer = new RecordingPeer(id);
     const attachment = await service.attach(ownerId, opened.session.id, peer, {
       ...consumerOptions(),
       mode,
-      autofill,
+      ...(autofill ? { autofill } : {}),
       popups: true,
     });
     const snapshot = BrowserServerMessageSchema.parse(peer.text()[0]);
     if (snapshot.type !== "browser.snapshot") throw new Error("Missing snapshot");
     return { peer, attachment, token: snapshot.consumerToken };
   };
-  const actor = await attach("actor", true),
-    bystander = await attach("bystander", true),
-    old = await attach("old", false),
-    watch = await attach("watch", true, "watch");
+  const actor = await attach("actor", 2),
+    bystander = await attach("bystander", 2),
+    fillOnly = await attach("fill-only", 1),
+    old = await attach("old", 0),
+    watch = await attach("watch", 2, "watch");
+  expect(actor.peer.text()[0]).toMatchObject({ personFillVersion: 2 });
+  expect(fillOnly.peer.text()[0]).toMatchObject({ personFillVersion: 1 });
   expect(old.peer.text()[0]).not.toHaveProperty("personFillVersion");
   expect(watch.peer.text()[0]).not.toHaveProperty("personFillVersion");
   const offerId = randomUUID(),
@@ -7658,11 +7667,28 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
     consumerToken: actor.token,
     offerId,
   });
+  const saveOfferId = randomUUID();
+  for (const consumerToken of [actor.token, fillOnly.token]) {
+    runtime.sendServer({
+      type: "browser.passwordSave.offer",
+      surfaceId: "page-1",
+      consumerToken,
+      offerId: saveOfferId,
+      offer: { kind: "save", origin: "https://example.com", username: "fixture" },
+    });
+    runtime.sendServer({
+      type: "browser.passwordSave.ended",
+      surfaceId: "page-1",
+      consumerToken,
+      offerId: saveOfferId,
+      status: "saved",
+    });
+  }
   runtime.sendServer({
     type: "browser.error",
     error: { code: "conflict", message: "autofill-route-marker", retryable: false },
   });
-  for (const viewer of [actor, bystander, old, watch]) {
+  for (const viewer of [actor, bystander, fillOnly, old, watch]) {
     await vi.waitFor(() =>
       expect(viewer.peer.text(), "Viewer never received the routing barrier").toContainEqual(
         expect.objectContaining({ type: "browser.error" }),
@@ -7670,12 +7696,20 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
     );
   }
   const messages = (viewer: typeof actor) =>
-    viewer.peer.text().filter((message) => message.type.startsWith("browser.autofill."));
-  expect(messages(actor)).toHaveLength(3);
+    viewer.peer
+      .text()
+      .filter(
+        (message) =>
+          message.type.startsWith("browser.autofill.") ||
+          message.type.startsWith("browser.passwordSave."),
+      );
+  expect(messages(actor)).toHaveLength(5);
+  // A viewer that predates saving never receives a save offer, even one naming it.
+  expect(messages(fillOnly)).toEqual([]);
   expect(messages(bystander)).toEqual([]);
   expect(messages(old)).toEqual([]);
   expect(messages(watch)).toEqual([]);
-  const late = await attach("late", true);
+  const late = await attach("late", 2);
   expect(messages(late)).toEqual([]);
   const fill = {
     type: "autofill.fill",
@@ -7699,6 +7733,37 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
   expect(runtime.receivedCommands().filter((command) => command.type === "autofill.fill")).toEqual([
     expect.objectContaining({ ...fill, producerId: actor.token }),
   ]);
+  const answer = {
+    type: "passwordSave.answer",
+    surfaceId: "page-1",
+    offerId: saveOfferId,
+    save: true,
+    producerId: randomUUID(),
+  };
+  const answerFrom = (viewer: typeof actor) =>
+    viewer.attachment.handle(Buffer.from(JSON.stringify(answer)), false);
+  await expect(answerFrom(fillOnly)).rejects.toThrow("autofill was not negotiated");
+  await expect(answerFrom(watch)).rejects.toThrow("autofill was not negotiated");
+  await answerFrom(actor);
+  await vi.waitFor(() =>
+    expect(
+      runtime.receivedCommands().some((command) => command.type === "passwordSave.answer"),
+      "Runtime never received the save answer",
+    ).toBe(true),
+  );
+  expect(
+    runtime.receivedCommands().filter((command) => command.type === "passwordSave.answer"),
+  ).toEqual([expect.objectContaining({ ...answer, producerId: actor.token })]);
+  // A viewer that leaves for good says so, which ends its save offers.
+  actor.attachment.close();
+  await vi.waitFor(
+    () =>
+      expect(
+        runtime.receivedCommands().filter((command) => command.type === "input.cancel"),
+        "Runtime never heard the viewer left",
+      ).toContainEqual(expect.objectContaining({ producerId: actor.token, ended: true })),
+    { timeout: 2_000 },
+  );
 });
 
 it("records a retired Guest closed, saves its tabs and closes viewers gracefully", async () => {

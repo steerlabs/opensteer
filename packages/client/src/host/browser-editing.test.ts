@@ -312,3 +312,52 @@ describe("browser autofill offers", () => {
     store.dispose();
   });
 });
+
+describe("browser password save offers", () => {
+  const consumerToken = crypto.randomUUID();
+  const offer = (offerId: string) =>
+    ({
+      type: "browser.passwordSave.offer",
+      consumerToken,
+      surfaceId,
+      offerId,
+      offer: { kind: "save", origin: "https://acme.co", username: "alex@acme.co" },
+    }) as const;
+  const ended = (offerId: string, status: "saved" | "dismissed" | "ended") =>
+    ({ type: "browser.passwordSave.ended", consumerToken, surfaceId, offerId, status }) as const;
+
+  it("answers once, keeps a result to show, and forgets an offer that ended quietly", () => {
+    const { store, target, commands } = setup();
+    const first = crypto.randomUUID();
+    store.receive(sessionId, offer(first));
+    target.answerPasswordSave(true);
+    target.answerPasswordSave(false);
+    expect(commands).toEqual([
+      { type: "passwordSave.answer", surfaceId, offerId: first, save: true },
+    ]);
+    expect(target.get().passwordSave).toMatchObject({ pending: true, result: null });
+    store.receive(sessionId, ended(crypto.randomUUID(), "saved"));
+    expect(target.get().passwordSave?.pending).toBe(true);
+    store.receive(sessionId, ended(first, "saved"));
+    expect(target.get().passwordSave).toMatchObject({ pending: false, result: "saved" });
+    target.clearPasswordSave();
+    expect(target.get().passwordSave).toBeNull();
+
+    const second = crypto.randomUUID();
+    store.receive(sessionId, offer(second));
+    store.receive(sessionId, ended(second, "ended"));
+    expect(target.get().passwordSave).toBeNull();
+    store.dispose();
+  });
+
+  it("says it could not save when the answer never left this viewer", () => {
+    const store = new BrowserEditingStore(() => {
+      throw new Error("The browser socket is closed.");
+    });
+    const target = store.target(sessionId, surfaceId);
+    store.receive(sessionId, offer(crypto.randomUUID()));
+    target.answerPasswordSave(true);
+    expect(target.get().passwordSave).toMatchObject({ pending: false, result: "unavailable" });
+    store.dispose();
+  });
+});

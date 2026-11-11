@@ -7,6 +7,7 @@ import type {
   BrowserLoginAuthorizeInput,
   PersonFillInput,
   PersonFillScope,
+  PersonSaveCandidate,
 } from "@opensteer/browser-runtime-core";
 import {
   CardFieldSchema,
@@ -34,6 +35,7 @@ import {
   type PasswordsBrokerCardSession,
 } from "./broker-session.js";
 import { PasswordsPersonFillAuthority } from "./person-fill.js";
+import { PasswordsPersonSaveAuthority } from "./person-save.js";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { sealLoginEnvelope } from "./login-envelope.js";
 
@@ -67,6 +69,7 @@ interface Operation {
 export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   readonly #broker: PasswordsBrokerSession;
   readonly #personFill: PasswordsPersonFillAuthority;
+  readonly #personSave: PasswordsPersonSaveAuthority;
   readonly #unobserveStatus: (() => void) | undefined;
   readonly #cardBroker: (PasswordsBrokerSession & PasswordsBrokerCardSession) | undefined;
   readonly #epochs = new WeakMap<Electron.WebContents, { value: number }>();
@@ -84,6 +87,13 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   }) {
     this.#broker = options.broker;
     this.#personFill = new PasswordsPersonFillAuthority(options.broker);
+    this.#personSave = new PasswordsPersonSaveAuthority(options.broker, (origin) => {
+      try {
+        return this.#allowedOrigin(origin, browserSiteFromUrl(origin));
+      } catch {
+        return false;
+      }
+    });
     this.#unobserveStatus = options.observeStatus?.((status) =>
       this.#personFill.statusChanged(status),
     );
@@ -104,6 +114,18 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
 
   personFill(input: PersonFillInput) {
     return this.#personFill.fill(input);
+  }
+
+  personSaveBegin(input: PersonSaveCandidate) {
+    return this.#personSave.begin(input);
+  }
+
+  personSaveCommit(transactionId: string) {
+    return this.#personSave.commit(transactionId);
+  }
+
+  personSaveCancel(transactionId: string) {
+    this.#personSave.cancel(transactionId);
   }
 
   async probe(input: { site: string }) {
@@ -933,6 +955,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   async close(): Promise<void> {
     this.#unobserveStatus?.();
     await this.#personFill.close();
+    this.#personSave.close();
     await Promise.all([...this.#operations.keys()].map((id) => this.end(id)));
   }
 

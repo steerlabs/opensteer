@@ -17128,7 +17128,7 @@ it.each([false, true])(
       const connection = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
       expect(new URL(connection.url).searchParams.get("passkeys")).toBe(capable ? "notice" : null);
       expect(new URL(connection.url).searchParams.get("popups")).toBe("1");
-      expect(new URL(connection.url).searchParams.get("autofill")).toBe("1");
+      expect(new URL(connection.url).searchParams.get("autofill")).toBe("2");
       const popups: string[] = [];
       const stopPopups = client.subscribeBrowserPopups(sessionId, tabId, (id) => popups.push(id));
       connection.socket.open();

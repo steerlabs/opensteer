@@ -1313,3 +1313,67 @@ it("reads native or remote viewer attribution without consuming it, after agent 
     await ledger.close();
   }
 });
+
+it("names the viewer whose input a page edit followed, judged by when the edit happened", async () => {
+  const page = new FakePage(),
+    context = new FakeContext([page]);
+  const ledger = new SurfaceLedger(context);
+  await ledger.start();
+  const surfaceId = ledger.active()!.surface.id;
+  const targetId = await page.targetId();
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(10_000);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    now.mockReturnValue(10_020);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    // An edit's report can arrive after later input: only when it happened decides.
+    expect(ledger.viewerInputAt(surfaceId, 10_005)).toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
+    expect(ledger.viewerInputAt(surfaceId, 9_999), "before any input").toBeNull();
+    expect(ledger.viewerInputAt(surfaceId, 15_020), "past the activation lifetime").toBeNull();
+    // An agent's command does not wait for the viewer's input, so an edit
+    // after one, even with viewer input between, is nobody's for a while.
+    now.mockReturnValue(10_030);
+    ledger.recordAgentCommand(targetId);
+    now.mockReturnValue(10_040);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 10_045)).toBeNull();
+    now.mockReturnValue(15_040);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 15_041), "once the agent's command is old").toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
+    // Fast typing is still the person's: old input ages out without losing the window.
+    now.mockReturnValue(16_000);
+    for (let key = 0; key < 200; key++) {
+      now.mockReturnValue(16_000 + key * 20);
+      ledger.recordViewerInput(surfaceId, "viewer");
+    }
+    expect(ledger.viewerInputAt(surfaceId, 19_981)).toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
+    // A window the capped timeline no longer covers is nobody's: it could have held an agent.
+    now.mockReturnValue(20_000);
+    ledger.recordAgentCommand(targetId);
+    for (let key = 1; key <= 1_024; key++) ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 20_001)).toBeNull();
+    now.mockReturnValue(25_100);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 25_101), "once the lost window is old").toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
+    // Input that names no viewer is nobody's.
+    now.mockReturnValue(25_150);
+    ledger.recordViewerInput(surfaceId, null);
+    expect(ledger.viewerInputAt(surfaceId, 25_151)).toBeNull();
+  } finally {
+    now.mockRestore();
+    await ledger.close();
+  }
+});

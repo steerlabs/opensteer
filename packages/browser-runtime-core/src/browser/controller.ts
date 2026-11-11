@@ -36,6 +36,8 @@ import {
   type PersonFillAccountView,
   type PersonFillPresence,
   type PersonFillStatus,
+  personSaveVerdictMaxMs,
+  type PersonSaveStatus,
   CardFieldSchema,
   LoginRefSchema,
   previousReleaseEligibility,
@@ -78,6 +80,8 @@ import {
   PageEditingObserver,
   type PersonFillBinding,
   type PersonFillObservation,
+  type PersonSaveObservation,
+  type PersonSaveSnapshot,
 } from "./editing-observer.js";
 import type { BrowserLoginAuthority } from "./sign-in.js";
 import type { HostSignIns } from "./host-sign-ins.js";
@@ -236,10 +240,33 @@ interface PersonOffer {
   claimed: boolean;
 }
 
+/** A save offer for one tab, for the one viewer whose typing it was. */
+interface SaveOffer {
+  readonly offerId: string;
+  readonly consumerToken: string;
+  readonly abort: AbortController;
+  transactionId: string | null;
+  expiry: ReturnType<typeof setTimeout> | undefined;
+  shown: boolean;
+  claimed: boolean;
+  ended: boolean;
+}
+/** Who typed into a password field, or null once anyone else may have. */
+type SaveAuthor = { readonly consumerToken: string; readonly native: boolean } | null;
+/** Password fields whose authorship one tab keeps; past it, taints alone fill it. */
+const personSaveFieldLimit = 256;
+/** A setup offer is not backed by a broker deadline. */
+const personSaveSetupOfferMs = 2 * 60_000;
+
 export class BrowserController {
   private readonly sessionState: BrowserControllerOptions["sessionState"];
   private readonly legacySubscriptions = new Set<BrowserSurfaceId>();
   private readonly personAuthority: BrowserLoginAuthority | undefined;
+  private readonly saveAuthority: BrowserLoginAuthority | undefined;
+  private readonly saveOffers = new Map<BrowserSurfaceId, SaveOffer>();
+  private readonly saveAuthors = new Map<BrowserSurfaceId, Map<string, SaveAuthor>>();
+  /** Tabs whose taints outgrew what is kept: nothing there is offered again. */
+  private readonly saveRefused = new Set<BrowserSurfaceId>();
   private readonly nativePresentation: BrowserControllerOptions["nativePresentation"];
   private readonly personOffers = new Map<BrowserSurfaceId, PersonOffer>();
 
@@ -400,10 +427,17 @@ export class BrowserController {
   constructor(options: BrowserControllerOptions) {
     this.sessionState = options.sessionState;
     this.personAuthority =
-      options.claims.personFillVersion === 1 &&
+      options.claims.personFillVersion &&
       options.loginAuthority?.personFillAccounts &&
       options.loginAuthority.personFill
         ? options.loginAuthority
+        : undefined;
+    this.saveAuthority =
+      options.claims.personFillVersion === 2 &&
+      this.personAuthority?.personSaveBegin &&
+      this.personAuthority.personSaveCommit &&
+      this.personAuthority.personSaveCancel
+        ? this.personAuthority
         : undefined;
     this.nativePresentation = options.nativePresentation;
     this.verifyOpenAuthority = options.verifyOpenAuthority;
@@ -524,9 +558,10 @@ export class BrowserController {
       if (this.closed || !this.initialSnapshotQueued) return;
       void this.send({ event, type: "cdp.event" }).catch(() => undefined);
     });
-    this.unsubscribeAgentCommand = this.ledger.onAgentCommand((surfaceId) =>
-      this.withdrawPersonOffer(surfaceId),
-    );
+    this.unsubscribeAgentCommand = this.ledger.onAgentCommand((surfaceId) => {
+      this.withdrawPersonOffer(surfaceId);
+      this.agentActedOnSave(surfaceId);
+    });
     const publishDialog = this.cdpRouter.useDialogEvents(this.claims.sessionId);
     this.unsubscribeLedger = this.ledger.subscribe((event) => {
       if (event.type === "dialog-event") {
@@ -559,7 +594,11 @@ export class BrowserController {
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
       ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
-      ...(this.personAuthority ? { personFillVersion: 1 } : {}),
+      ...(this.saveAuthority
+        ? { personFillVersion: 2 }
+        : this.personAuthority
+          ? { personFillVersion: 1 }
+          : {}),
       ...(this.claims.navigationAttributionVersion === 1
         ? { navigationAttributionVersion: 1 }
         : {}),
@@ -674,6 +713,7 @@ export class BrowserController {
   close(reason?: "retired"): Promise<void> {
     if (!this.closePromise) this.closeReason = reason;
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
+    for (const [surfaceId, offer] of this.saveOffers) this.endPersonSave(surfaceId, offer, "ended");
     for (const entry of this.cursorHints.values()) {
       entry.unsubscribe();
       entry.hints.close();
@@ -755,6 +795,9 @@ export class BrowserController {
     }
 
     if (message.type === "autofill.fill") return this.fillPersonOffer(message);
+    if (message.type === "passwordSave.answer") return this.answerPersonSave(message);
+    if (message.type === "input.cancel" && message.ended && message.producerId)
+      this.viewerLeftSave(message.producerId);
     if (
       (message.type === "navigation.go" || message.type === "cdp.command") &&
       message.navigationId !== undefined &&
@@ -1695,6 +1738,8 @@ export class BrowserController {
       }
       const observer = await this.editingObserver(active.surface.id);
       this.ledger.recordHumanActivity(active.surface.id, { kind: "typing" });
+      // Text, composition and paste are a viewer's input as surely as its keys.
+      this.ledger.recordViewerInput(active.surface.id, message.producerId);
       if (message.type === "input.compose" || message.type === "input.text") {
         if (
           !(await observer.edit(
@@ -1969,6 +2014,7 @@ export class BrowserController {
     if (message.type === "clipboard.paste") {
       if (message.surfaceId !== active.surface.id) return;
       this.ledger.recordHumanActivity(message.surfaceId, { kind: "typing" });
+      this.ledger.recordViewerInput(message.surfaceId, message.producerId);
       this.recordPasskeyInput(message, active.surface.id);
       await cdp.send("Input.insertText", { text: message.text });
       return;
@@ -2501,6 +2547,7 @@ export class BrowserController {
         },
         undefined,
         this.personAuthority ? (event) => this.observePersonFill(surfaceId, event) : undefined,
+        this.saveAuthority ? (event) => this.observePersonSave(surfaceId, event) : undefined,
       );
       const unsubscribeCapture =
         binding.page.capture?.subscribe(() => observer.refresh()) ?? (() => {});
@@ -2515,6 +2562,173 @@ export class BrowserController {
     }
     await entry.ready;
     return entry.observer;
+  }
+
+  /**
+   * A password field counts as the person's only while every edit to it
+   * followed one viewer's input, with no agent command on the tab just before
+   * it (`viewerInputAt`).
+   */
+  private observePersonSave(surfaceId: BrowserSurfaceId, event: PersonSaveObservation): void {
+    if (this.saveRefused.has(surfaceId)) return;
+    let authors = this.saveAuthors.get(surfaceId);
+    if (event.type === "edit") {
+      if (!authors) {
+        authors = new Map();
+        this.saveAuthors.set(surfaceId, authors);
+      }
+      const input = this.ledger.viewerInputAt(surfaceId, event.at);
+      const previous = authors.get(event.fieldId);
+      authors.delete(event.fieldId);
+      authors.set(
+        event.fieldId,
+        !input || previous === null || (previous && previous.consumerToken !== input.consumerToken)
+          ? null
+          : { consumerToken: input.consumerToken, native: input.native },
+      );
+      // A field's taint is never forgotten: only attributed fields make room.
+      if (authors.size > personSaveFieldLimit) {
+        const attributed = [...authors].find(([, author]) => author !== null)?.[0];
+        if (attributed) authors.delete(attributed);
+        else {
+          // Taints alone fill the tab: nothing there is offered again, so none is kept.
+          this.saveRefused.add(surfaceId);
+          this.saveAuthors.delete(surfaceId);
+        }
+      }
+      return;
+    }
+    const [first, ...others] = event.snapshot.fieldIds.map((fieldId) => authors?.get(fieldId));
+    if (!first || others.some((author) => author?.consumerToken !== first.consumerToken)) return;
+    void this.beginPersonSave(surfaceId, event.snapshot, first);
+  }
+
+  /** A viewer that left can answer nothing, and nothing it typed counts any more. */
+  private viewerLeftSave(consumerToken: string): void {
+    for (const authors of this.saveAuthors.values())
+      for (const [fieldId, author] of authors)
+        if (author?.consumerToken === consumerToken) authors.set(fieldId, null);
+    for (const [surfaceId, offer] of this.saveOffers)
+      if (offer.consumerToken === consumerToken) this.endPersonSave(surfaceId, offer, "ended");
+  }
+
+  private agentActedOnSave(surfaceId: BrowserSurfaceId): void {
+    const authors = this.saveAuthors.get(surfaceId);
+    if (authors) for (const fieldId of authors.keys()) authors.set(fieldId, null);
+    // Once shown, the person's answer stands; until then an agent could steer the verdict.
+    const offer = this.saveOffers.get(surfaceId);
+    if (offer && !offer.shown) this.endPersonSave(surfaceId, offer, "ended");
+  }
+
+  private async beginPersonSave(
+    surfaceId: BrowserSurfaceId,
+    snapshot: PersonSaveSnapshot,
+    author: NonNullable<SaveAuthor>,
+  ): Promise<void> {
+    const authority = this.saveAuthority;
+    const surface = this.ledger.binding(surfaceId);
+    if (!authority || !surface || this.closed) return;
+    this.endPersonSave(surfaceId, this.saveOffers.get(surfaceId), "ended");
+    const offer: SaveOffer = {
+      offerId: randomUUID(),
+      consumerToken: author.consumerToken,
+      abort: new AbortController(),
+      transactionId: null,
+      expiry: undefined,
+      shown: false,
+      claimed: false,
+      ended: false,
+    };
+    this.saveOffers.set(surfaceId, offer);
+    const { origin, username, verdict } = snapshot;
+    try {
+      const begun = await authority.personSaveBegin!({
+        targetId: surface.targetId,
+        origin,
+        username,
+        password: snapshot.password,
+        presence: author.native ? "here" : "elsewhere",
+      });
+      if (begun.kind === "offer") {
+        if (offer.ended) return authority.personSaveCancel!(begun.transactionId);
+        offer.transactionId = begun.transactionId;
+        begun.ended.addEventListener("abort", () => this.endPersonSave(surfaceId, offer, "ended"), {
+          once: true,
+        });
+      }
+      if (begun.kind === "skip" || offer.ended)
+        return this.endPersonSave(surfaceId, offer, "ended");
+      const done = await verdict(
+        AbortSignal.any([offer.abort.signal, AbortSignal.timeout(personSaveVerdictMaxMs)]),
+      );
+      if (!done || offer.ended) return this.endPersonSave(surfaceId, offer, "ended");
+      offer.shown = true;
+      offer.expiry = setTimeout(
+        () => this.endPersonSave(surfaceId, offer, "ended"),
+        begun.kind === "offer" ? Math.max(0, begun.expiresAt - Date.now()) : personSaveSetupOfferMs,
+      );
+      await this.send({
+        type: "browser.passwordSave.offer",
+        surfaceId,
+        consumerToken: offer.consumerToken,
+        offerId: offer.offerId,
+        offer: begun.kind === "offer" ? { kind: "save", origin, username } : { kind: "setup" },
+      });
+    } catch {
+      // Authority errors can carry the login; nothing of them crosses the wire.
+      this.endPersonSave(surfaceId, offer, "ended");
+    }
+  }
+
+  private async answerPersonSave(
+    message: Extract<BrowserClientMessage, { type: "passwordSave.answer" }>,
+  ): Promise<void> {
+    const offer = this.saveOffers.get(message.surfaceId);
+    if (
+      !this.saveAuthority ||
+      !offer ||
+      !offer.shown ||
+      offer.claimed ||
+      offer.ended ||
+      offer.offerId !== message.offerId ||
+      message.producerId !== offer.consumerToken
+    )
+      return;
+    offer.claimed = true;
+    if (!message.save || !offer.transactionId)
+      return this.endPersonSave(message.surfaceId, offer, "dismissed", true);
+    let status: PersonSaveStatus = "unavailable";
+    try {
+      status = await this.saveAuthority.personSaveCommit!(offer.transactionId);
+    } catch {
+      status = "unavailable";
+    }
+    // The commit consumed the transaction, whatever it answered.
+    offer.transactionId = null;
+    this.endPersonSave(message.surfaceId, offer, status, true);
+  }
+
+  /** Ends an offer once; a claimed one ends only with the person's answer. */
+  private endPersonSave(
+    surfaceId: BrowserSurfaceId,
+    offer: SaveOffer | undefined,
+    status: PersonSaveStatus,
+    answered = false,
+  ): void {
+    if (!offer || offer.ended || (offer.claimed && !answered)) return;
+    offer.ended = true;
+    offer.abort.abort();
+    clearTimeout(offer.expiry);
+    if (this.saveOffers.get(surfaceId) === offer) this.saveOffers.delete(surfaceId);
+    if (offer.transactionId) this.saveAuthority?.personSaveCancel?.(offer.transactionId);
+    if (offer.shown)
+      void this.send({
+        type: "browser.passwordSave.ended",
+        surfaceId,
+        consumerToken: offer.consumerToken,
+        offerId: offer.offerId,
+        status,
+      }).catch(() => undefined);
   }
 
   private withdrawPersonOffer(surfaceId: BrowserSurfaceId): void {
@@ -2795,10 +3009,19 @@ export class BrowserController {
   }
 
   private onLedgerEvent(event: SurfaceLedgerEvent): void {
-    if (event.type === "closed")
+    if (event.type === "closed") {
       for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
-    if (event.type === "changed" && event.change === "closed")
+      for (const [surfaceId, offer] of this.saveOffers)
+        this.endPersonSave(surfaceId, offer, "ended");
+      this.saveAuthors.clear();
+      this.saveRefused.clear();
+    }
+    if (event.type === "changed" && event.change === "closed") {
       this.withdrawPersonOffer(event.surface.id);
+      this.endPersonSave(event.surface.id, this.saveOffers.get(event.surface.id), "ended");
+      this.saveAuthors.delete(event.surface.id);
+      this.saveRefused.delete(event.surface.id);
+    }
 
     if (event.type === "navigation.committed") {
       if (!this.closed && this.claims.navigationAttributionVersion === 1)

@@ -2,6 +2,7 @@ import {
   BrowserSurfaceIdSchema,
   type BrowserServerMessage,
   type PersonFillStatus,
+  type PersonSaveStatus,
 } from "@opensteer/protocol";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import {
@@ -48,6 +49,21 @@ export interface BrowserAutofillState {
   readonly pending: string | null;
   readonly result: PersonFillStatus | null;
 }
+export type BrowserPasswordSaveOffer = Extract<
+  BrowserServerMessage,
+  { type: "browser.passwordSave.offer" }
+>;
+/**
+ * The page asking this viewer whether to keep the login it just typed. It
+ * stays until the person answers or the page ends it; a result that says
+ * something stays until the viewer shows and clears it.
+ */
+export interface BrowserPasswordSaveState {
+  readonly offer: BrowserPasswordSaveOffer;
+  /** The person answered and the page has not said how it went. */
+  readonly pending: boolean;
+  readonly result: Extract<PersonSaveStatus, "saved" | "exists" | "unavailable"> | null;
+}
 export interface BrowserEditingState {
   readonly input: BrowserInputMode;
   readonly negotiated: boolean;
@@ -56,6 +72,7 @@ export interface BrowserEditingState {
   readonly geometryRevision?: number;
   readonly menu: BrowserContextMenu | null;
   readonly autofill: BrowserAutofillState | null;
+  readonly passwordSave: BrowserPasswordSaveState | null;
 }
 export interface BrowserEditingTarget {
   get(): BrowserEditingState;
@@ -73,6 +90,10 @@ export interface BrowserEditingTarget {
   moveAutofill(delta: 1 | -1): void;
   /** Asks the page to fill this offered account; the caller has done any device check. */
   fillAutofill(loginId: string): void;
+  /** Answers the save offer: Save, or Not now. */
+  answerPasswordSave(save: boolean): void;
+  /** Forgets a save result the viewer has shown, or a setup offer it handled itself. */
+  clearPasswordSave(): void;
 }
 const full: EditingTargetAbilities = {
   composition: true,
@@ -95,6 +116,7 @@ const empty: BrowserEditingState = {
   context: null,
   menu: null,
   autofill: null,
+  passwordSave: null,
 };
 interface Target {
   readonly sessionId: string;
@@ -196,6 +218,29 @@ export class BrowserEditingStore {
           ? (autofill.highlighted + delta + count) % count
           : autofill.highlighted;
         this.#set(target, { ...target.state, autofill: { ...autofill, open: true, highlighted } });
+      },
+      answerPasswordSave: (save) => {
+        const current = target.state.passwordSave;
+        if (!current || current.pending || current.result) return;
+        this.#set(target, { ...target.state, passwordSave: { ...current, pending: true } });
+        try {
+          this.sendCommand(target.sessionId, target.surfaceId, {
+            type: "passwordSave.answer",
+            surfaceId: BrowserSurfaceIdSchema.parse(target.surfaceId),
+            offerId: current.offer.offerId,
+            save,
+          });
+        } catch {
+          // Nothing reached the page; the offer itself still stands there until it lapses.
+          if (target.state.passwordSave?.offer.offerId === current.offer.offerId)
+            this.#set(target, {
+              ...target.state,
+              passwordSave: save ? { ...current, result: "unavailable" } : null,
+            });
+        }
+      },
+      clearPasswordSave: () => {
+        if (target.state.passwordSave) this.#set(target, { ...target.state, passwordSave: null });
       },
       fillAutofill: (loginId) => {
         const autofill = target.state.autofill;
@@ -472,6 +517,29 @@ export class BrowserEditingStore {
             message.type === "browser.autofill.withdrawn"
               ? null
               : { ...current, pending: null, result: message.status },
+        });
+      }
+      return;
+    }
+    if (
+      message.type === "browser.passwordSave.offer" ||
+      message.type === "browser.passwordSave.ended"
+    ) {
+      const target = this.#target(sessionId, message.surfaceId);
+      const current = target.state.passwordSave;
+      if (message.type === "browser.passwordSave.offer")
+        this.#set(target, {
+          ...target.state,
+          passwordSave: { offer: message, pending: false, result: null },
+        });
+      else if (current?.offer.offerId === message.offerId) {
+        const status = message.status;
+        this.#set(target, {
+          ...target.state,
+          passwordSave:
+            status === "saved" || status === "exists" || status === "unavailable"
+              ? { ...current, pending: false, result: status }
+              : null,
         });
       }
       return;

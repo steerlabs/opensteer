@@ -34,6 +34,8 @@ export function createMobileBrowserEditing(
     get: target.get,
     dismissMenu: target.dismissMenu,
     fillAutofill: target.fillAutofill,
+    answerPasswordSave: target.answerPasswordSave,
+    clearPasswordSave: target.clearPasswordSave,
     subscribe: target.subscribe,
     activate(onError: (message: string) => void) {
       active = true;

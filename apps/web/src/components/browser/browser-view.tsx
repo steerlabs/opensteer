@@ -60,6 +60,7 @@ import {
 } from "./browser-viewport.js";
 import { NativeAgentCursors } from "./native-agent-cursors.js";
 import { useNativeAutofill } from "./native-autofill.js";
+import { PasswordSaveBubble } from "./password-save-bubble.js";
 import {
   nativeBrowserGeometry,
   useBrowserPresentationMode,
@@ -326,6 +327,11 @@ export function PlaceBrowserView({
     [hostClient, nativePlacement?.sessionId, nativePlacement?.surfaceId],
   );
   const autofillShown = useNativeAutofill(nativeEditing, nativePlacement);
+  // Native or streamed, a tab's save offer arrives on this viewer's editing target.
+  const savingTarget = useMemo(
+    () => hostClient.browserFrames.editing?.target(sessionId, tabId) ?? null,
+    [hostClient, sessionId, tabId],
+  );
   const focusPage = () => (native ? nativePresentation.focusPage() : keyboardRef.current?.focus());
   const live = sessionReady && tabListed && viewer.status === "live";
   const closeFind = () => {
@@ -799,6 +805,7 @@ export function PlaceBrowserView({
           }}
         />
         <div className="browser-stage" data-native={native || undefined} ref={stageRef}>
+          {live ? <PasswordSaveBubble target={savingTarget} /> : null}
           {!native && viewer.inputError ? (
             <div className="browser-action-error" role="status">
               {viewer.inputError}

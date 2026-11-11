@@ -42,6 +42,14 @@ pnpm test:vm -- --mobile bash scripts/test-macos-journeys.sh saved-password
 pnpm test:vm -- pnpm test:electron-passwords
 ```
 
+Saving a typed login: the real-Chromium detection and attribution cases, then the authority,
+ledger and Host routing units.
+
+```sh
+pnpm exec vitest run --config vitest.browser.config.ts apps/browser-runtime/src/browser/person-save.test.ts
+pnpm exec vitest run apps/desktop/src/passwords/person-save.test.ts packages/browser-runtime-core/src/browser/surface-ledger.test.ts apps/host/src/browser/browser-service.test.ts -t "save|judged by when|autofill"
+```
+
 The VM journey needs a zero-match leak scan over observations, logs and artifacts. For a real phone
 receiver, run `agent-phone-passwords.device.test.ts` through the
 [agent-phone skill](../../agent-phone/references/testing.md); receiver unit tests do not prove a

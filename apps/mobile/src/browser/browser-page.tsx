@@ -11,6 +11,7 @@ import {
 import { ActionReviewSheet } from "../ui/action-review.js";
 import {
   passkeyNotice,
+  passwordSaveResultMessage,
   browserActingTabId,
   browserSiteForTab,
   browserTabTitle,
@@ -87,6 +88,7 @@ import { AddressCapsule, AddressEditor, type PageDevice } from "./address-bar.js
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { LoginChips } from "./login-chips.js";
+import { PasswordSaveBanner } from "./password-save-banner.js";
 import { createPageAutofill } from "./page-autofill.js";
 import { pageSite, viewedPage } from "./surface-route.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "./place-bar.js";
@@ -309,6 +311,34 @@ export function BrowserPage(props: {
     const timer = setTimeout(() => setFillNotice(null), fillNoticeMs);
     return () => clearTimeout(timer);
   }, [fillNotice]);
+  const [saveNotice, setSaveNotice] = useState<{ title: string; detail: string } | null>(null);
+  useEffect(() => {
+    if (saveNotice === null) return;
+    const timer = setTimeout(() => setSaveNotice(null), fillNoticeMs);
+    return () => clearTimeout(timer);
+  }, [saveNotice]);
+  const passwordSave = editingState.passwordSave;
+  useEffect(() => {
+    const result = passwordSave?.result;
+    if (!passwordSave || !result) return;
+    const said = passwordSaveResultMessage(result);
+    void Haptics.notificationAsync(
+      said?.ok
+        ? Haptics.NotificationFeedbackType.Success
+        : Haptics.NotificationFeedbackType.Warning,
+    );
+    const { offer } = passwordSave.offer;
+    if (said)
+      setSaveNotice(
+        said.ok && offer.kind === "save"
+          ? {
+              title: said.message,
+              detail: `${offer.username} · ${pageSite(offer.origin) ?? offer.origin}`,
+            }
+          : { title: "Your login wasn’t saved", detail: said.message },
+      );
+    editing.clearPasswordSave();
+  }, [editing, passwordSave]);
   const autofill = useMemo(
     () =>
       createPageAutofill({
@@ -1052,7 +1082,8 @@ export function BrowserPage(props: {
             !refused &&
             !feed.inputError &&
             !passkey &&
-            !fillNotice ? null : (
+            !fillNotice &&
+            !saveNotice ? null : (
               <View pointerEvents="box-none" style={styles.top}>
                 {passkey ? (
                   <View style={styles.card}>
@@ -1076,10 +1107,28 @@ export function BrowserPage(props: {
                   <Animated.View entering={appear} exiting={exit}>
                     <Notice detail={fillNotice} title="Your login wasn’t filled" tone="neutral" />
                   </Animated.View>
+                ) : saveNotice !== null ? (
+                  <Animated.View entering={appear} exiting={exit}>
+                    <Notice detail={saveNotice.detail} title={saveNotice.title} tone="neutral" />
+                  </Animated.View>
                 ) : null}
               </View>
             )}
             {pageDialog}
+            {passwordSave &&
+            !passwordSave.result &&
+            passwordSave.offer.offer.kind === "save" &&
+            !signingIn &&
+            !keyboardOpen ? (
+              <PasswordSaveBanner
+                bottom={space[12] + status.height}
+                onAnswer={(save) => {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  editing.answerPasswordSave(save);
+                }}
+                save={passwordSave}
+              />
+            ) : null}
             {signingIn && signInSite !== null && tab !== undefined ? (
               <View style={[styles.card, styles.bottom, { bottom: space[12] + status.height }]}>
                 <View style={styles.row}>

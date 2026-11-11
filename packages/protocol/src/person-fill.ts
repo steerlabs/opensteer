@@ -2,11 +2,16 @@ import { z } from "zod";
 
 /**
  * A person filling a saved login into an Opensteer browser page from any
- * viewer. See docs/passwords.md#filling-for-people.
+ * viewer, and, from version 2, saving one they typed there. See
+ * docs/passwords.md#filling-for-people and #saving-for-people.
  */
+export const PersonFillVersionSchema = z.union([z.literal(1), z.literal(2)]);
+export type PersonFillVersion = z.infer<typeof PersonFillVersionSchema>;
 
 /** The longest one confirmed person fill may be reused, decided by the broker. */
 export const personFillTransactionMaxMs = 5 * 60_000;
+/** The longest a submitted login waits for its sign-in to look done before it is dropped. */
+export const personSaveVerdictMaxMs = 30_000;
 /** The most accounts one offer lists. */
 export const personFillMaxAccounts = 20;
 
@@ -65,3 +70,42 @@ export type PersonFillStatus = z.infer<typeof PersonFillStatusSchema>;
 /** Where a write lands among the elements bound when the field was activated. */
 export const PersonFillSlotSchema = z.enum(["target", "partner", "group"]);
 export type PersonFillSlot = z.infer<typeof PersonFillSlotSchema>;
+
+/**
+ * What a save offer asks. `save`: keep the login the person just typed on
+ * `origin` as `username`; the password never leaves the Mac. `setup`: the
+ * person typed one on the Mac itself before Passwords was set up there.
+ */
+export const PersonSaveOfferSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("save"),
+    origin: z
+      .string()
+      .max(2_048)
+      .refine((value) => {
+        try {
+          const url = new URL(value);
+          return url.protocol === "https:" && url.origin === value;
+        } catch {
+          return false;
+        }
+      }, "Expected an exact HTTPS origin."),
+    username: z.string().min(1).max(1_024),
+  }),
+  z.strictObject({ kind: z.literal("setup") }),
+]);
+export type PersonSaveOffer = z.infer<typeof PersonSaveOfferSchema>;
+
+/**
+ * `saved`: the login is in Opensteer Passwords. `exists`: one for that site
+ * and username was saved meanwhile. `dismissed`: the person said Not now.
+ * `ended`: the offer lapsed, an agent acted, or the viewer left.
+ */
+export const PersonSaveStatusSchema = z.enum([
+  "saved",
+  "exists",
+  "dismissed",
+  "ended",
+  "unavailable",
+]);
+export type PersonSaveStatus = z.infer<typeof PersonSaveStatusSchema>;

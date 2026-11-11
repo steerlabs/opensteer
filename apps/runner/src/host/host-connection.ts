@@ -748,7 +748,7 @@ export class ReconnectingHostConnection {
                 editing: 2,
                 clipboard: false,
                 ...(bridge.signIn ? { signIn: { version: 3 }, cardFill: 1 } : {}),
-                ...(bridge.personFill ? { personFill: 1 } : {}),
+                ...(bridge.personFill ? { personFill: 2 } : {}),
               },
             }
           : {}),

@@ -102,6 +102,9 @@ import {
   PersonFillAnchorSchema,
   PersonFillRoleSchema,
   PersonFillStatusSchema,
+  PersonFillVersionSchema,
+  PersonSaveOfferSchema,
+  PersonSaveStatusSchema,
   personFillMaxAccounts,
 } from "./person-fill.js";
 export * from "./browser-profile-storage.js";
@@ -236,10 +239,11 @@ export const BrowserAttachTicketClaimsSchema = z
     /**
      * The Host relays person autofill (`person-fill.ts`): the runtime may put
      * `personFillVersion` in its snapshot, emit `browser.autofill.*` and accept
-     * `autofill.fill`. Issued only on a Personal Deployment to a runtime
-     * advertising `modules.browser.personFill`.
+     * `autofill.fill`; version 2 adds `browser.passwordSave.*` and
+     * `passwordSave.answer`. Issued only on a Personal Deployment to a runtime
+     * advertising `modules.browser.personFill`, at the version both support.
      */
-    personFillVersion: z.literal(1).optional(),
+    personFillVersion: PersonFillVersionSchema.optional(),
     initialSurfaceId: BrowserSurfaceIdSchema.optional(),
     expiresAt: IsoDateTimeSchema,
     identity: BrowserAttachTicketIdentitySchema,
@@ -615,6 +619,11 @@ const BaselineBrowserClientMessageSchema = z
       ...browserBase,
       type: z.literal("input.cancel"),
       surfaceId: BrowserSurfaceIdSchema.optional(),
+      /**
+       * The producer's viewer left for good, not just its stream. Sent only to a
+       * runtime with person fill 2, which ends that viewer's save offers.
+       */
+      ended: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserBase,
@@ -767,6 +776,18 @@ const BaselineBrowserClientMessageSchema = z
       revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
       producerId: z.uuid().optional(),
     }),
+    /**
+     * A person's answer to a save offer: Save, or Not now. Only the offer's
+     * viewer may send it; the Host stamps `producerId` as for `autofill.fill`.
+     */
+    z.strictObject({
+      ...browserBase,
+      type: z.literal("passwordSave.answer"),
+      surfaceId: BrowserSurfaceIdSchema,
+      offerId: z.uuid(),
+      save: z.boolean(),
+      producerId: z.uuid().optional(),
+    }),
   ])
   .superRefine((message, context) => {
     const viewport =
@@ -810,7 +831,7 @@ export const BrowserViewerSnapshotSchema = z
     /** Only v2 carries this flag; v1 implies an isolated engine clipboard. */
     clipboard: z.boolean().optional(),
     /** Present only when the attach ticket claimed it, and projected only to viewers that opted in. */
-    personFillVersion: z.literal(1).optional(),
+    personFillVersion: PersonFillVersionSchema.optional(),
     inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     surfaces: BrowserSurfacesSchema,
     type: z.literal("browser.snapshot"),
@@ -1004,6 +1025,27 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     surfaceId: BrowserSurfaceIdSchema,
     offerId: z.uuid(),
     status: PersonFillStatusSchema,
+  }),
+  /**
+   * Asks the viewer whose typing it was whether to save the login it just
+   * signed in with. Sent only to that viewer, after the sign-in looks done,
+   * and never stored.
+   */
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.passwordSave.offer"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+    offer: PersonSaveOfferSchema,
+  }),
+  z.strictObject({
+    ...browserBase,
+    type: z.literal("browser.passwordSave.ended"),
+    consumerToken: z.uuid(),
+    surfaceId: BrowserSurfaceIdSchema,
+    offerId: z.uuid(),
+    status: PersonSaveStatusSchema,
   }),
   z.strictObject({
     ...browserBase,

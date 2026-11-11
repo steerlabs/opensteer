@@ -7,7 +7,10 @@ import { createId } from "@opensteer/core";
 import { ComputerUseSessionIdSchema, type PasswordSignInAuthorityEvent } from "@opensteer/protocol";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { PasswordsBrokerSignInRequestParamsSchema } from "@opensteer/protocol/passwords-broker";
-import type { PasswordsBrokerStatus } from "@opensteer/protocol/passwords-broker";
+import type {
+  PasswordsBrokerProtocolVersion,
+  PasswordsBrokerStatus,
+} from "@opensteer/protocol/passwords-broker";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { SignedHelperProcess } from "../signed-helpers/signed-helper.js";
 import { passwordsBrokerAppName, passwordsBrokerSocketPath } from "./paths.js";
@@ -310,6 +313,40 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
     await harness.broker.waitFor("signin.cancel");
     expect(harness.broker.received("signin.cancel")[0]?.params).toEqual({ transactionId });
     expect(harness.broker.received("signin.release")).toEqual([]);
+  });
+
+  it("ends a held save with its own setting, never the agents' one", async () => {
+    const ready = {
+      agentSignIns: "on",
+      personFill: "on",
+      personSave: "on",
+      vault: "ready",
+    } as const;
+    const harness = await serviceHarness("save lifetime", {
+      clientProtocolVersion: 9,
+      status: ready,
+    });
+    const session = harness.service.broker();
+    await harness.service.status();
+    harness.broker.reply("save.begin", () => ({
+      decision: "offer",
+      expiresAt: new Date(Date.now() + 120_000).toISOString(),
+    }));
+    const { lifetime } = await session.saveBegin!(
+      {
+        transactionId,
+        origin: "https://example.com",
+        username: "synthetic@example.com",
+        password: "synthetic-password",
+      },
+      new AbortController().signal,
+    );
+    harness.broker.setStatus({ ...ready, agentSignIns: "off" });
+    await harness.service.status();
+    expect(lifetime.aborted, "agent sign-ins turning off keeps a save").toBe(false);
+    harness.broker.setStatus({ ...ready, personSave: "off" });
+    await harness.service.status();
+    expect(lifetime.aborted, "saving turning off ends it").toBe(true);
   });
 
   it("binds card transactions to their kind and original v7 connection", async () => {
@@ -824,7 +861,7 @@ async function serviceHarness(
     readonly bundled?: boolean;
     readonly development?: boolean;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5 | 6 | 7 | 8;
+    readonly clientProtocolVersion?: PasswordsBrokerProtocolVersion;
     readonly status?: PasswordsBrokerStatus;
   } = {},
 ) {

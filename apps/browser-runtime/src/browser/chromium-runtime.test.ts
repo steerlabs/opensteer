@@ -2201,7 +2201,17 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
     const binding = ledger.binding(id)!;
     const post = async (action: string) => {
       const loaded = Promise.withResolvers<void>();
-      const finished = () => loaded.resolve();
+      // The woken page's own load can still arrive: only a load after the
+      // post's navigation commits is the post's.
+      let navigated = false;
+      const committed = (parameters: unknown) => {
+        const frame = (parameters as { frame?: { parentId?: string } } | undefined)?.frame;
+        if (frame && !frame.parentId) navigated = true;
+      };
+      const finished = () => {
+        if (navigated) loaded.resolve();
+      };
+      binding.cdp.on("Page.frameNavigated", committed);
       binding.cdp.on("Page.loadEventFired", finished);
       try {
         await binding.cdp.send("Runtime.evaluate", {
@@ -2211,6 +2221,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
           timeoutError: () => new Error("POST navigation never finished"),
         });
       } finally {
+        binding.cdp.off("Page.frameNavigated", committed);
         binding.cdp.off("Page.loadEventFired", finished);
       }
     };
