@@ -314,6 +314,7 @@ interface AuthSsoProviderTable {
 }
 
 interface AuthAdmissionTable {
+  trustedMembersAcknowledgedAt: Generated<Date | null>;
   id: AuthAdmissionId;
   purpose: "setup" | "recovery" | "invitation";
   subjectSelector: string;

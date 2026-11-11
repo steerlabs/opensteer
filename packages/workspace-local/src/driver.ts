@@ -52,10 +52,44 @@ export interface LocalWorkspaceReadAuthority {
  * but only this side ever opens a path.
  */
 export class LocalWorkspaceAuthority {
-  readonly #registry: LocalWorkspaceRegistry;
+  #registry: LocalWorkspaceRegistry;
+  readonly #options: LocalWorkspaceAuthorityOptions;
 
   constructor(options: LocalWorkspaceAuthorityOptions) {
+    this.#options = options;
     this.#registry = new LocalWorkspaceRegistry(options);
+  }
+
+  selectProjectStorage(environmentId: EnvironmentId): void {
+    const { legacyRegistryFilePath: _legacyRegistryFilePath, ...options } = this.#options;
+    this.#registry = new LocalWorkspaceRegistry({
+      ...options,
+      namespace: { kind: "team-project", ownerEnvironmentId: environmentId },
+      registryFilePath: `${this.#options.registryFilePath}.team`,
+      visibleRootPath: `${this.#options.visibleRootPath}-team`,
+    });
+  }
+
+  async provisionProject(
+    binding: LocalWorkspaceBindingRequest,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    if (this.#registry.namespace.kind !== "team-project")
+      throw new Error("Team Project storage has not been admitted by the Host");
+    await this.#assertAuthority(binding, signal);
+    const provisioned = await this.#registry.provision({
+      bindingId: binding.bindingId,
+      generation: binding.generation,
+      idempotencyKey,
+      fingerprint: {
+        kind: "project",
+        ownerEnvironmentId: binding.ownerEnvironmentId,
+        workspaceId: binding.workspaceId,
+      },
+      ...(signal ? { signal } : {}),
+    });
+    return this.#registry.resolvePath(provisioned);
   }
 
   async preflight(signal?: AbortSignal) {
@@ -129,6 +163,8 @@ export class LocalWorkspaceAuthority {
     },
     signal?: AbortSignal,
   ): Promise<string> {
+    if (this.#registry.namespace.kind === "team-project")
+      throw new Error("Team storage refuses legacy provisioning");
     await this.#assertAuthority(input.binding, signal);
     const fingerprint: ProvisionFingerprint = {
       ...(input.fingerprint.slug ? { slug: input.fingerprint.slug } : {}),
@@ -138,9 +174,9 @@ export class LocalWorkspaceAuthority {
       workspaceId: input.binding.workspaceId,
     };
     const matches = matchesLocalWorkspaceBindingId(input.binding.bindingId, {
-      createdBy: fingerprint.createdBy,
+      createdBy: input.fingerprint.createdBy,
       idempotencyKey: input.idempotencyKey,
-      kind: fingerprint.kind,
+      kind: input.fingerprint.workspaceKind,
       ownerEnvironmentId: fingerprint.ownerEnvironmentId,
       workspaceId: fingerprint.workspaceId,
     });

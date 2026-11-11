@@ -33,6 +33,27 @@ afterEach(async () => {
 });
 
 describe("LocalWorkspaceService", () => {
+  it("requires team admission for the separate Project provisioning message", async () => {
+    const machine = await fixture();
+    const legacy = await machine.provisionRequest();
+    machine.authority.selectProjectStorage(legacy.binding.ownerEnvironmentId);
+    const storageAuthorityId = await machine.authority.storageAuthorityId();
+    const request: HostWorkspaceLocalRequest = {
+      type: "host.workspace.project.provision",
+      binding: { ...legacy.binding, storageAuthorityId },
+      fence: { ...legacy.fence, storageAuthorityId },
+      operationId: legacy.operationId,
+      requestId: legacy.requestId,
+    };
+    const identity = request.fence;
+    expect(
+      await machine.service.handle(request, identity, new AbortController().signal),
+    ).toMatchObject({ type: "runner.workspace.local.error" });
+    machine.service.admitProjectStorage(true);
+    expect(
+      await machine.service.handle(request, identity, new AbortController().signal),
+    ).toMatchObject({ type: "runner.workspace.local.provisioned" });
+  });
   it.each(["disconnect", "deadline"])(
     "bounds a stalled metadata scan on %s and retains failed inventory",
     async (reason) => {

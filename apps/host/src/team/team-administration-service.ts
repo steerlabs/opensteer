@@ -23,15 +23,19 @@ import {
   checkAccess,
   getProjectRuntimeSettings,
   mutateAccess,
+  prepareTeamComputerReplacement,
+  deleteTeamProject,
   mutateTeamInvitation,
   previewAccess,
   previewMemberAccess,
   readDeploymentAuthority,
   readTeamInvitation,
-  resolveProjectRuntime,
+  teamProjectRuntimes,
   revokeTeamConnection,
   setProjectRuntimeSettings,
   type DatabaseSchema,
+  type ProjectHomeChatPort,
+  type ProjectComputerRevocationPort,
   type AccessWorkRevocationPort,
 } from "@opensteer/database";
 import {
@@ -89,6 +93,19 @@ function headersFrom(context: HostApiServerContext): Headers {
 
 export class TeamAdministrationService {
   readonly #database: Kysely<DatabaseSchema>;
+  readonly #deletionRetentionDays: number;
+  readonly #runnerImage: string | null;
+  readonly #enrollComputer:
+    | ((
+        revision: number,
+        actor: AuthenticatedHuman,
+        key: string,
+      ) => Promise<{ enrollmentId: string; token: string; expiresAt: string }>)
+    | undefined;
+  readonly #revokeComputer: ((id: RunnerId) => Promise<void>) | undefined;
+  readonly #computerRevocation: ProjectComputerRevocationPort | undefined;
+  readonly #homeChat: ProjectHomeChatPort | undefined;
+  readonly #provisionProject: ((id: WorkspaceId) => Promise<void>) | undefined;
   readonly #work: AccessWorkRevocationPort | undefined;
   readonly #reads: TeamAccessReadStore;
   readonly #identity: Identity;
@@ -99,6 +116,16 @@ export class TeamAdministrationService {
 
   constructor(options: {
     database: Kysely<DatabaseSchema>;
+    deletionRetentionDays?: number;
+    homeChat?: ProjectHomeChatPort;
+    computerRevocation?: ProjectComputerRevocationPort;
+    enrollComputer?: (
+      revision: number,
+      actor: AuthenticatedHuman,
+      key: string,
+    ) => Promise<{ enrollmentId: string; token: string; expiresAt: string }>;
+    revokeComputer?: (id: RunnerId) => Promise<void>;
+    provisionProject?: (id: WorkspaceId) => Promise<void>;
     workRevocation?: AccessWorkRevocationPort;
     identity: Identity;
     teamName: string;
@@ -106,6 +133,20 @@ export class TeamAdministrationService {
     invalidate: (userIds: readonly UserId[]) => void;
   }) {
     this.#database = options.database;
+    this.#deletionRetentionDays = options.deletionRetentionDays ?? 14;
+    if (!Number.isSafeInteger(this.#deletionRetentionDays) || this.#deletionRetentionDays < 0)
+      throw new TypeError("Project deletion retention must be a nonnegative integer");
+    const revision =
+      process.env.OPENSTEER_RUNNER_SOURCE_REVISION || process.env.OPENSTEER_SOURCE_REVISION;
+    this.#runnerImage =
+      revision && /^[a-f0-9]{40}$/u.test(revision)
+        ? `${process.env.OPENSTEER_IMAGE_REGISTRY || "opensteer"}/runner:sha-${revision}`
+        : null;
+    this.#homeChat = options.homeChat;
+    this.#computerRevocation = options.computerRevocation;
+    this.#enrollComputer = options.enrollComputer;
+    this.#revokeComputer = options.revokeComputer;
+    this.#provisionProject = options.provisionProject;
     this.#work = options.workRevocation;
     this.#reads = new TeamAccessReadStore(options.database);
     this.#identity = options.identity;
@@ -221,11 +262,6 @@ export class TeamAdministrationService {
     input: unknown,
     context: HostApiServerContext,
   ): Promise<unknown> {
-    if (procedure === "team.projects.list" || procedure === "team.computer.get") {
-      this.#session(context);
-      await this.#authority();
-      refuse("team-not-implemented");
-    }
     if (procedure === "team.invitation.preview" || procedure === "team.invitation.exchange") {
       if (context.headers.authorization !== undefined) this.#session(context);
       await this.#authority();
@@ -265,11 +301,21 @@ export class TeamAdministrationService {
     const { actor, user, activeAdmins } = await this.#human(context);
     const admin = user.instanceRole === "administrator";
     switch (procedure) {
+      case "team.projects.list":
+        return this.#reads.projects(actor, teamReadSchemas[procedure].input.parse(input));
+      case "team.computer.get":
+        teamReadSchemas[procedure].input.parse(input);
+        return this.#reads.computer(actor, this.#runnerIsConnected);
       case "team.invitations.list":
         return this.#reads.invitations(actor, teamReadSchemas[procedure].input.parse(input));
       case "team.summary.get": {
         const parsed = teamReadSchemas[procedure].input.parse(input);
-        const summary = await this.#reads.summary(actor, this.#teamName, parsed.knownRevision);
+        const summary = await this.#reads.summary(
+          actor,
+          this.#teamName,
+          parsed.knownRevision,
+          this.#runnerIsConnected,
+        );
         if ("notModified" in summary) return summary;
         return {
           ...summary,
@@ -280,6 +326,8 @@ export class TeamAdministrationService {
             groups: allowed(admin, "team-admin-required"),
             audit: allowed(admin, "team-admin-required"),
             invite: allowed(admin, "team-admin-required"),
+            computer: allowed(admin, "team-admin-required"),
+            projects: allowed(admin, "team-admin-required"),
           },
         };
       }
@@ -362,6 +410,7 @@ export class TeamAdministrationService {
             editInstructions: allowed(manage, "project-manage-required"),
             appointManager: allowed(manage || admin, "project-manage-required"),
             selfGrant: allowed(admin && !use, "team-admin-required"),
+            delete: allowed(manage || admin, "project-manage-required"),
           },
         };
       }
@@ -423,11 +472,12 @@ export class TeamAdministrationService {
           .execute(async (database) => {
             await this.#manage(actor, parsed.workspaceId, database);
             const settings = await getProjectRuntimeSettings(database, parsed.workspaceId);
-            const runtime = await resolveProjectRuntime(
-              database,
-              parsed.workspaceId,
-              this.#runnerIsConnected,
-            );
+            const runtime = (
+              await teamProjectRuntimes(database, [parsed.workspaceId], this.#runnerIsConnected)
+            ).get(parsed.workspaceId) ?? {
+              state: "unavailable" as const,
+              reason: "not-configured" as const,
+            };
             return {
               settings: settings
                 ? { ...settings, updatedAt: settings.updatedAt.toISOString() }
@@ -522,16 +572,53 @@ export class TeamAdministrationService {
   }
 
   async command(input: TeamCommand, context: HostApiServerContext) {
-    if (input.type === "team.computer.replace") {
-      this.#session(context);
-      await this.#authority();
-      refuse("team-not-implemented");
-    }
     const { actor, user } = await this.#human(context);
     const command = TeamCommandSchema.parse(input);
     const identity = `${actor.userId}:${command.type}:${command.idempotencyKey}`;
     const commandId = CommandIdSchema.parse(`cmd_${uuidFor(identity)}`);
     const base = { type: command.type, commandId };
+    if (command.type === "team.computer.replace") {
+      if (user.instanceRole !== "administrator") refuse("team-admin-required");
+      if (!this.#enrollComputer) refuse("team-not-implemented");
+      const result = await prepareTeamComputerReplacement(
+        this.#database,
+        actor,
+        {
+          commandId,
+          expectedRevision: command.expectedRevision,
+          expectedComputerId: command.expectedComputerId,
+        },
+        this.#computerRevocation,
+      );
+      if (result.revokedComputerId) await this.#revokeComputer?.(result.revokedComputerId);
+      const enrollment = await this.#enrollComputer(result.accessRevision, actor, commandId);
+      await this.#reads.authority(actor);
+      this.#invalidate([actor.userId]);
+      return TeamCommandResultSchema.parse({
+        ...base,
+        accessRevision: result.accessRevision,
+        ...enrollment,
+        runnerImage: this.#runnerImage,
+      });
+    }
+    if (command.type === "team.project.delete") {
+      const result = await deleteTeamProject(
+        this.#database,
+        actor,
+        {
+          workspaceId: command.workspaceId,
+          commandId,
+          expectedRevision: command.expectedRevision,
+          retentionMilliseconds: this.#deletionRetentionDays * 86400000,
+        },
+        this.#work,
+      );
+      this.#invalidate([
+        actor.userId,
+        ...result.transitions.map((transition) => transition.userId),
+      ]);
+      return TeamCommandResultSchema.parse({ ...base, accessRevision: result.revision });
+    }
     const administratorOnly =
       command.type === "team.member.change" ||
       command.type === "team.access.selfGrant" ||
@@ -557,6 +644,18 @@ export class TeamAdministrationService {
         expectedSettingsRevision: command.expectedSettingsRevision,
         commandIdentity: commandId,
       });
+      const project = await this.#database
+        .selectFrom("workspaces")
+        .select(["createdBy", "homeThreadId"])
+        .where("id", "=", command.workspaceId)
+        .executeTakeFirstOrThrow();
+      if (!project.homeThreadId)
+        await this.#homeChat?.ensureHomeChat({
+          workspaceId: command.workspaceId,
+          createdBy: project.createdBy,
+          settingsRevision: settings.revision,
+          inheritsMain: false,
+        });
       this.#invalidate([actor.userId]);
       return TeamCommandResultSchema.parse({
         ...base,
@@ -581,8 +680,6 @@ export class TeamAdministrationService {
     let projectId: WorkspaceId | undefined;
     const entryId = uuidFor(`${identity}:entry`);
     switch (command.type) {
-      case "team.computer.replace":
-        refuse("team-not-implemented");
       case "team.project.create": {
         if (user.memberKind !== "full") refuse("team-admin-required");
         const environments = await this.#database
@@ -594,6 +691,8 @@ export class TeamAdministrationService {
             "runners.ownerUserId",
             "runners.device",
             "runners.allowedModules",
+            "runners.moduleDescriptors",
+            "runners.capabilities",
           ])
           .where("runners.ownerKind", "=", "deployment")
           .where("runners.ownerUserId", "is", null)
@@ -602,6 +701,18 @@ export class TeamAdministrationService {
           .limit(2)
           .execute();
         const fixed = environments.filter(teamComputerHasExecutionGrant);
+        if (
+          fixed.some(
+            (row) =>
+              !row.capabilities.includes("project-authority-v1") ||
+              !row.moduleDescriptors.agents?.localStorage,
+          )
+        )
+          throw new OpensteerError({
+            code: "workspace_unavailable",
+            reason: "runner-update-required",
+            message: "Update the team computer before creating a Project",
+          });
         if (fixed.length !== 1) refuse("team-object-unavailable", "not_found");
         projectId = WorkspaceIdSchema.parse(`wsp_${uuidFor(`${identity}:project`)}`);
         changes = [
@@ -616,7 +727,8 @@ export class TeamAdministrationService {
               bindingId: WorkspaceBindingIdSchema.parse(`wbd_${uuidFor(`${identity}:binding`)}`),
               generation: 1,
               ownerEnvironmentId: fixed[0]!.id,
-              storageAuthorityId: null,
+              storageAuthorityId:
+                fixed[0]!.moduleDescriptors.agents!.localStorage!.storageAuthorityId,
             },
           },
         ];
@@ -659,6 +771,15 @@ export class TeamAdministrationService {
     ]);
     switch (command.type) {
       case "team.project.create":
+        if (projectId) {
+          await this.#provisionProject?.(projectId);
+          await this.#homeChat?.ensureHomeChat({
+            workspaceId: projectId,
+            createdBy: actor.userId,
+            settingsRevision: null,
+            inheritsMain: false,
+          });
+        }
         return TeamCommandResultSchema.parse({
           ...base,
           accessRevision: result.revision,

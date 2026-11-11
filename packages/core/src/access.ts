@@ -56,11 +56,10 @@ export type AccessMutation =
       readonly admit?: boolean;
       readonly administrator?: boolean;
     }
-  | {
-      readonly kind: "delete-project";
-      readonly workspaceId: WorkspaceId;
-      readonly purgeAfter: Date;
-    };
+  | ({ readonly kind: "delete-project"; readonly workspaceId: WorkspaceId } & (
+      | { readonly purgeAfter: Date; readonly retentionMilliseconds?: never }
+      | { readonly purgeAfter?: never; readonly retentionMilliseconds: number }
+    ));
 
 export interface AuthenticatedHuman {
   readonly userId: UserId;
