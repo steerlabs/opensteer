@@ -1607,11 +1607,11 @@ export const HostedBrowserBootstrapSchema = z.object({
     .string()
     .regex(/^[a-f0-9]{64}$/u)
     .optional(),
-  groups: z.strictObject({ rows: z.array(BrowserGroupRowSchema), complete: z.boolean() }),
+  groups: z.object({ rows: z.array(BrowserGroupRowSchema.strip()), complete: z.boolean() }),
   tabs: z.array(
-    z.strictObject({
+    z.object({
       groupId: BrowserSessionIdSchema,
-      rows: z.array(BrowserTabRowSchema),
+      rows: z.array(BrowserTabRowSchema.strip()),
       complete: z.boolean(),
     }),
   ),

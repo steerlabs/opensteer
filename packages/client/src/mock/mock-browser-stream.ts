@@ -135,7 +135,7 @@ export class MockBrowserStream {
     for (const id of this.#tabs.keys()) if (!rows.tabs.has(id)) this.#tabs.delete(id);
     const derived = this.#derive.derive(snapshot, this.#store);
     const order = new Map(snapshot.browserSessions.map((session, index) => [session.id, index]));
-    const sessions = derived.browserSessions.toSorted(
+    const sessions = [...derived.browserSessions].sort(
       (a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity),
     );
     const { browserGroups: _groups, ...metadata } = snapshot;
