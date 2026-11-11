@@ -775,6 +775,7 @@ export async function finalizeProjectRunTransaction(
           status: "cancelled",
           finishedAt: input.completedAt,
           resultStatus: "undeliverable",
+          completedAt: input.completedAt,
           resultReason: input.stopReason,
           resultAttemptedAt: input.completedAt,
           revision: eb("revision", "+", 1),

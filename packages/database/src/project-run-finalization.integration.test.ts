@@ -28,6 +28,12 @@ describeStore("Project Run terminalization", (it) => {
       grantId: grant.id,
     });
     if (!original) throw new Error("Original Project binding is missing");
+    const child = await store.delegateProjectWork({
+      binding: original.binding,
+      title: "Revoked child",
+      content: [{ type: "text", text: "Do child work" }],
+      idempotencyKey: randomUUID(),
+    });
     await database
       .updateTable("users")
       .set({ authorityGeneration: "2" })
@@ -58,6 +64,32 @@ describeStore("Project Run terminalization", (it) => {
       }),
     );
     expect(events.filter((event) => event.type === "run.failed")).toHaveLength(1);
+    await database.transaction().execute((tx) =>
+      finalizeProjectRunTransaction(tx, {
+        runId: child.runId,
+        source: "host",
+        status: "failed",
+        failure: {
+          code: "workspace_access_revoked",
+          message: "Captured root revoked",
+          retryable: false,
+          status: "failed",
+        },
+        stopReason: "authority-revoked",
+        completedAt: new Date(),
+      }),
+    );
+    expect(
+      await database
+        .selectFrom("delegations")
+        .select(["status", "resultStatus", "completedAt"])
+        .where("id", "=", child.assignmentId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      status: "cancelled",
+      resultStatus: "undeliverable",
+      completedAt: expect.any(Date),
+    });
     expect(
       await database
         .selectFrom("runs")
