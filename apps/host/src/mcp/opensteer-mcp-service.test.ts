@@ -228,6 +228,54 @@ async function connect(url: URL, token: string) {
   return client;
 }
 describe("Opensteer MCP spine", () => {
+  it("drains connection reauthentication before shutdown releases its database owner", async () => {
+    const f = await httpFixture();
+    const client = await connect(f.url, "connection");
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let active = 0;
+    const caller = f.callers.get("connection")!;
+    f.options.callers.authenticate.mockImplementation(async () => {
+      active++;
+      try {
+        await held;
+        return caller;
+      } finally {
+        active--;
+      }
+    });
+    f.change();
+    f.change();
+    expect(active).toBe(2);
+    let closed = false;
+    vi.useFakeTimers();
+    const closing = f.service.close().then(() => {
+      closed = true;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(closed, "MCP shutdown returned while credential queries were still running").toBe(
+        false,
+      );
+      f.change();
+      expect(active).toBe(2);
+      release();
+      vi.useRealTimers();
+      await withTimeout(closing, 1000, {
+        timeoutError: () => new Error("MCP shutdown did not drain released credential queries"),
+      });
+      expect(active).toBe(0);
+      expect(closed).toBe(true);
+    } finally {
+      release();
+      vi.useRealTimers();
+      await closing;
+      await client.close();
+    }
+  });
+
   it.each([
     "pending",
     "pending-active",

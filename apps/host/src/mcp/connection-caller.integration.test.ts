@@ -50,8 +50,10 @@ import { knowledgeForCaller } from "../knowledge/knowledge-eligibility.js";
 
 const servers: Server[] = [];
 const clients: Client[] = [];
+const services: OpensteerMcpService[] = [];
 afterEach(async () => {
   await Promise.allSettled(clients.splice(0).map((client) => client.close()));
+  await Promise.all(services.splice(0).map((service) => service.close()));
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await withTimeout(
@@ -246,6 +248,7 @@ async function serveMcp(
     store,
     publicUrl: options.runScope || options.runScopes ? url : new URL("http://runtime.invalid"),
   });
+  services.push(service);
   return url;
 }
 

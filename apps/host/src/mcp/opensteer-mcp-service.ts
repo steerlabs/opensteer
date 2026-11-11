@@ -68,6 +68,8 @@ export class OpensteerMcpService {
   readonly #activeSessions = new Set<McpSession>();
   readonly #reservations = new Map<string, number>();
   readonly #detachObserve: (() => void) | undefined;
+  readonly #revalidations = new Set<Promise<void>>();
+  #closing: Promise<void> | undefined;
   readonly options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
     readonly handlers: AgentToolHandlers;
@@ -99,7 +101,14 @@ export class OpensteerMcpService {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
     this.#detachObserve = options.realtime?.observe((change) => {
-      if (change.type.startsWith("host.")) void this.#revalidateConnections();
+      if (!this.#closing && change.type.startsWith("host.")) {
+        const pending = this.#revalidateConnections();
+        this.#revalidations.add(pending);
+        void pending.then(
+          () => this.#revalidations.delete(pending),
+          () => this.#revalidations.delete(pending),
+        );
+      }
     });
   }
   /**
@@ -215,7 +224,11 @@ export class OpensteerMcpService {
     }
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    return (this.#closing ??= this.#close());
+  }
+
+  async #close(): Promise<void> {
     this.#detachObserve?.();
     const sessions = [...this.#activeSessions];
     this.#activeSessions.clear();
@@ -226,6 +239,7 @@ export class OpensteerMcpService {
         await session.server.close();
       }),
     );
+    await Promise.allSettled(this.#revalidations);
   }
 
   /**
