@@ -131,8 +131,8 @@ still alter a value the person typed, so Save can add a wrong login; it must nev
 one or grant agent access. Submit binds the site's document origin before navigation, and the
 broker owns the captured values from then. Only the originating viewer can answer the offer.
 
-A successful-looking navigation decides when to offer, never authority. Changed documents,
-intervening agent activity or the viewer leaving end the offer. The broker commits a new login
+A successful-looking navigation decides when to offer, never authority. Agent activity before the
+offer appears or the viewer leaving ends it. The broker commits a new login
 only if no matching username exists, discarding its temporary values on expiry or cancellation.
 Sign-ins from a phone may save while the vault Mac is locked, as remembered sign-ins do.
 
