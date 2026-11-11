@@ -1,3 +1,4 @@
+import { readableThreadsForOwner } from "./thread-store.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   AuthSessionIdSchema,
@@ -564,12 +565,16 @@ export class ProjectRequestStore {
     transaction: Transaction<DatabaseSchema>,
     input: { requestId: RequestId; userId: UserId },
   ) {
-    if (!(await this.recipients(transaction, input.requestId)).includes(input.userId)) denied();
-    return transaction
+    await assertProjectAuthority(transaction);
+    const row = await transaction
       .selectFrom("requests")
       .selectAll()
       .where("id", "=", input.requestId)
-      .executeTakeFirstOrThrow();
+      .where("originatingGrantId", "is not", null)
+      .where(projectRequestReadSql(transaction, input.userId))
+      .executeTakeFirst();
+    if (!row) denied();
+    return row;
   }
 
   async viewFacts(
@@ -613,10 +618,12 @@ export class ProjectRequestStore {
         "resolver.displayName as resolverName",
         "automation.name as sourceName",
         "askingRun.authoritySource",
+        projectRequestAudienceSql(input.userId).as("canAnswer"),
       ])
       .where("requests.id", "in", [...input.requestIds])
       .where(storedProjectDeployment)
-      .where(projectRequestAudienceSql(input.userId))
+      .where("requests.originatingGrantId", "is not", null)
+      .where(projectRequestReadSql(transaction, input.userId))
       .execute();
     return new Map(
       rows.map((row) => {
@@ -640,7 +647,18 @@ export class ProjectRequestStore {
         return [
           row.id,
           {
-            ...(row.status === "pending" ? { answer: CanSchema.parse({ allowed: true }) } : {}),
+            ...(row.status === "pending"
+              ? {
+                  answer: CanSchema.parse(
+                    row.canAnswer
+                      ? { allowed: true }
+                      : {
+                          allowed: false,
+                          reason: row.requestedBy === null ? "manager-only" : "requester-only",
+                        },
+                  ),
+                }
+              : {}),
             waitingOn:
               row.status === "pending"
                 ? RequestWaitingOnSchema.parse(
@@ -778,7 +796,12 @@ export class ProjectRequestStore {
       .where("id", "=", input.requestId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    if (!(await this.recipients(transaction, row.id)).includes(input.userId)) denied();
+    if (!(await this.recipients(transaction, row.id)).includes(input.userId))
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: row.requestedBy === null ? "manager-only" : "requester-only",
+        message: "Only the Request audience may answer",
+      });
     if (row.status !== "pending") {
       if (row.resolvedBy !== input.userId || !isDeepStrictEqual(row.response, input.response))
         throw new OpensteerError({
@@ -865,7 +888,12 @@ export class ProjectRequestStore {
     );
     await fencePeople(transaction, [input.userId]);
     await authenticatedResponder(transaction, input.userId, input.sessionId);
-    if (!(await this.recipients(transaction, row.id)).includes(input.userId)) denied();
+    if (!(await this.recipients(transaction, row.id)).includes(input.userId))
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: row.requestedBy === null ? "manager-only" : "requester-only",
+        message: "Only the Request audience may answer",
+      });
     return { replayed: false, events };
   }
 
@@ -1180,6 +1208,10 @@ export async function projectRunRecipients(
     originConnectionId: row.originConnectionId,
   });
   return (await liveRoot(database, row.workspaceId, root)) ? [root.userId] : [];
+}
+
+function projectRequestReadSql(database: Kysely<DatabaseSchema>, userId: UserId) {
+  return sql<boolean>`requests.originating_thread_id in (${readableThreadsForOwner(database, userId).select("threads.id")})`;
 }
 
 export function projectRequestAudienceSql(userId: UserId) {

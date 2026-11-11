@@ -76,7 +76,8 @@ describeStore("Project Requests", (it) => {
       })
       .execute();
     const event = proposal(fixture.binding);
-    await database.transaction().execute((tx) => requests.propose(tx, event));
+    const opened = await database.transaction().execute((tx) => requests.propose(tx, event));
+    if (opened.state !== "ready") throw new Error("Expected shared Request");
     let refusedQueries = 0;
     const poisonDatabase = database.withPlugin({
       transformQuery(args) {
@@ -137,10 +138,10 @@ describeStore("Project Requests", (it) => {
     let viewQueries = 0;
     const viewDatabase = database.withPlugin({
       transformQuery(args) {
-        viewQueries++;
         return args.node;
       },
       async transformResult(args) {
+        viewQueries++;
         return args.result;
       },
     });
@@ -151,20 +152,65 @@ describeStore("Project Requests", (it) => {
 
     expect(await read(outsider)).toEqual(new Map());
     const snapshot = await legacy.workspaceSnapshot(fixture.workspace.id, { viewerId: member });
-    expect(snapshot.pendingRequests).toEqual([]);
-    expect(snapshot.pendingRequestWindow.totalItems).toBe(0);
+    expect(snapshot.pendingRequests).toMatchObject([
+      {
+        id: event.data.request.id,
+        presentation: { title: "Run command?" },
+        answer: { allowed: false, reason: "requester-only" },
+      },
+    ]);
+    expect(snapshot.pendingRequestWindow.totalItems).toBe(1);
     expect(
       snapshot.threads.find((thread) => thread.id === fixture.thread.id)?.requestWaits,
     ).toEqual(facts.requestWaits);
-    expect(JSON.stringify(snapshot)).not.toContain("Run command?");
+    const memberView = await database
+      .transaction()
+      .execute((tx) =>
+        requests.detailView(tx, { requestId: event.data.request.id, userId: member }),
+      );
+    expect(memberView).toMatchObject({
+      presentation: { title: "Run command?", options: [{ id: "yes" }] },
+      answer: { allowed: false, reason: "requester-only" },
+    });
+    await database.transaction().execute(async (tx) => {
+      expect(await requests.list(tx, member)).toEqual([]);
+      expect(await requests.count(tx, member)).toBe(0);
+      expect(
+        (await requests.viewFacts(tx, { userId: outsider, requestIds: [event.data.request.id] }))
+          .size,
+      ).toBe(0);
+    });
+    await expect(
+      database
+        .transaction()
+        .execute((tx) =>
+          requests.detailView(tx, { requestId: event.data.request.id, userId: outsider }),
+        ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const notificationRecipients = await new ProjectNotificationStore(database).decide(
+      opened.events[0]!,
+    );
+    expect(notificationRecipients.map((entry) => entry.userId)).toEqual([fixture.userId]);
+    const session = await database
+      .selectFrom("authSessions")
+      .selectAll()
+      .where("id", "=", fixture.sessionId)
+      .executeTakeFirstOrThrow();
+    const memberSessionId = createId("authSession");
+    await database
+      .insertInto("authSessions")
+      .values({ ...session, id: memberSessionId, userId: member, token: `member-${session.token}` })
+      .execute();
     await expect(
       database.transaction().execute((tx) =>
-        requests.detail(tx, {
+        requests.answer(tx, {
           requestId: event.data.request.id,
           userId: member,
+          sessionId: memberSessionId,
+          response: { kind: "choice", optionId: "yes" },
         }),
       ),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({ code: "forbidden", reason: "requester-only" });
     await database.transaction().execute((tx) =>
       requests.answer(tx, {
         requestId: event.data.request.id,
@@ -187,6 +233,17 @@ describeStore("Project Requests", (it) => {
     expect(settledView.answer).toBeUndefined();
     expect(settledView.waitingOn).toBeNull();
     expect(settledView.resolvedByName).toBe("Renamed");
+    expect(
+      await database
+        .transaction()
+        .execute((tx) =>
+          requests.detailView(tx, { requestId: event.data.request.id, userId: member }),
+        ),
+    ).toMatchObject({
+      status: "fulfilled",
+      resolvedByName: "Renamed",
+      response: { kind: "choice", optionId: "yes" },
+    });
     await expect(
       database.transaction().execute((tx) =>
         requests.answer(tx, {
@@ -289,6 +346,18 @@ describeStore("Project Requests", (it) => {
       .transaction()
       .execute((tx) => requests.cancelledEventViews(tx, [parsedCancellation], fixture.userId));
     expect(eventView[0]?.data.cancelledFor).toEqual({ name: "Renamed" });
+    expect(
+      (
+        await database
+          .transaction()
+          .execute((tx) => requests.cancelledEventViews(tx, [parsedCancellation], member))
+      )[0]?.data.cancelledFor,
+    ).toEqual({ name: "Renamed" });
+    expect(
+      await database
+        .transaction()
+        .execute((tx) => requests.cancelledEventViews(tx, [parsedCancellation], outsider)),
+    ).toEqual([]);
 
     expect(cancelled.requestWaits).toEqual({ total: 0, items: [] });
     expect(cancelled.requestOutcomes).toHaveLength(32);
@@ -429,11 +498,14 @@ describeStore("Project Requests", (it) => {
       expect(await store.list(tx, managerId)).toEqual([]);
       expect(await store.count(tx, managerId)).toBe(0);
     });
-    await expect(
-      controls.transact(database, (tx) =>
-        store.detail(tx, { requestId: event.data.request.id, userId: managerId }),
+    expect(
+      await controls.transact(database, (tx) =>
+        store.detailView(tx, { requestId: event.data.request.id, userId: managerId }),
       ),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).toMatchObject({
+      presentation: { title: "Run command?" },
+      answer: { allowed: false, reason: "requester-only" },
+    });
     const answer = {
       requestId: event.data.request.id,
       userId: fixture.userId,
@@ -550,14 +622,16 @@ describeStore("Project Requests", (it) => {
     await expect(
       controls.transact(database, (tx) => store.propose(tx, wrong)),
     ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      controls.transact(database, (tx) =>
-        store.propose(tx, {
-          ...event,
-          data: { request: { ...event.data.request, kind: "browser.access" } },
-        } as unknown as ProjectEngineRequestEvent),
-      ),
-    ).rejects.toThrow();
+    for (const kind of ["browser.access", "browser.sign-in"]) {
+      await expect(
+        controls.transact(database, (tx) =>
+          store.propose(tx, {
+            ...event,
+            data: { request: { ...event.data.request, kind } },
+          } as unknown as ProjectEngineRequestEvent),
+        ),
+      ).rejects.toThrow();
+    }
     await database
       .updateTable("users")
       .set({ authorityGeneration: "2" })
@@ -924,6 +998,32 @@ describeStore("Unattended Project Requests", (it) => {
         )?.requestWaits,
       ).toMatchObject({ total: 1, items: [{ waitingOn: { kind: "managers" } }] });
     }
+    expect(
+      await database
+        .transaction()
+        .execute((tx) =>
+          requests.detail(tx, { requestId: event.data.request.id, userId: outsider }),
+        ),
+    ).toMatchObject({ presentation: { title: "Run command?" } });
+    const readonlyFacts = await database
+      .transaction()
+      .execute((tx) =>
+        requests.viewFacts(tx, { userId: outsider, requestIds: [event.data.request.id] }),
+      );
+    expect(readonlyFacts.get(event.data.request.id)?.answer).toEqual({
+      allowed: false,
+      reason: "manager-only",
+    });
+    await expect(
+      database.transaction().execute((tx) =>
+        requests.answer(tx, {
+          requestId: event.data.request.id,
+          userId: outsider,
+          sessionId: fixture.sessionId,
+          response: { kind: "choice", optionId: "yes" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "manager-only" });
     const answer = {
       requestId: event.data.request.id,
       userId: fixture.userId,
