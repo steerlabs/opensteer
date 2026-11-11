@@ -1,4 +1,4 @@
-# Messaging: channels, identities, and deliveries
+# Messaging bridges
 
 Provider setup and focused tests are in the [setup skill](../.agents/skills/setup/SKILL.md).
 
@@ -45,10 +45,10 @@ asked, and declined senders cannot recreate requests by repeating themselves
 Provider installation, membership and Opensteer admission are separate facts. Existing conversations
 keep their binding; new ones take the most specific matching route and refuse ties. An external-ID
 allowlist restricts a sender policy but never grants access by itself. Except under linked-members
-policy, execution uses the binding creator's authority while attributing the external actor. Shared
-conversations withhold Main inheritance even under the owner's Main; only an owner-linked DM routed
-to that owner's Main inherits it, and a channel cannot gain inheritance by delegating. Agents may
-inspect, pause, resume or revoke channels but never connect accounts, link identities or approve
+policy, execution uses the binding creator's authority while attributing the external actor. Bridges start or continue private tasks in a chosen folder. Shared conversations, non-owner
+senders and unlinked DMs receive no automatic personal memory; only an owner-linked DM may
+receive personal context. Audience changes require fresh engine context. Agents may
+inspect, pause, resume or revoke bridges but never connect accounts, link identities or approve
 senders.
 
 Each conversation and authority pair has its own context, and policy, placement or consent changes

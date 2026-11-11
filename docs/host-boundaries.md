@@ -13,9 +13,8 @@ Development must configure local origins explicitly.
 
 [Config validation](../packages/config/src/config.ts) owns which combinations of shape, exposure,
 Account attachment and external Runner admission are valid, with the reason for each. Loopback
-exposure needs both a loopback hostname and bind address. Native OAuth is server-only, since on a
-Personal Host it would bypass the loopback tenancy check. `acceptsExternalRunners` (the `agents`
-module, not SSH-only computers) requires `runtimeOrigin` to equal `canonicalOrigin`.
+exposure needs both a loopback hostname and bind address. Native Account OAuth belongs to team sign-in; personal Opensteer uses its owner-session paths.
+A team server exposes no personal resource or execution admission.
 
 ## Credentials and session authority
 
@@ -26,7 +25,7 @@ through to a browser cookie.
 
 Authority comes from the authenticated user and the existing ownership, membership and role checks,
 never from the device or route. Every Personal owner session can administer remote access and see
-the linked Account identity. Server administration needs an administrator. People can remove only
+the linked Account identity. Team administration needs the appropriate team role. People can remove only
 their own sessions, including the current one.
 
 Cookie mutations need one exact Origin: the configured origin for a canonical cookie, or the stored
@@ -61,13 +60,13 @@ shared by Host and Account registration. Add a signed build there, never a per-D
 External agents use the MCP OAuth issuer at `/oauth/mcp` for the single resource `/internal/v1/mcp`
 ([source](../apps/host/src/mcp/connections)), with PKCE S256, stateless signed client registration
 and explicit resource binding. It works on Personal loopback without an Account and is separate from
-server-only Host-native OAuth. Discovery is pinned to the configured Host origin or its current
+team Host-native OAuth. Discovery is pinned to the configured Host origin or its current
 signed Personal route, kept exactly through consent and code exchange. Only a signed-in owner
 approves; a Personal browser without a session hands a request ID to the signed-in desktop app, or
 from a phone to the mobile app, and the link grants nothing. The app answers it, then opens
 completion on the consent's `resource` origin, because completion is bound to the origin the agent
-signed in through. Consent picks an access ceiling and either everything the person can reach or one
-Workspace they own, lost when ownership ends.
+signed in through. Consent picks an access ceiling within the one personal scope. Team membership never
+authorizes personal resources.
 
 Settings → External agents guides cloud agents to the Host's networked origin or Personal Remote
 access route; Opensteer already runs local agents itself, so on the Host computer it only adds the
@@ -106,8 +105,11 @@ consumed ticket reusable ([DisplayStreamHub](../apps/host/src/computer-use/displ
 
 ## Compatibility
 
-[`hostApiVersion`](../packages/deployment-authority/src/authority.ts) is the client protocol epoch;
-its comments record each change. Bump it only when an older counterpart would misstate a meaning or
+A personal Host checks only [`hostApiVersion`](../packages/deployment-authority/src/authority.ts).
+A team Host checks only `teamApiVersion`, including auth/bootstrap, binary routes and the link,
+before authentication or parsing; discovery advertises kind and its API version. See
+[Teams](teams.md#transport-and-versions). The personal epoch's
+comments record each change. Bump it only when an older counterpart would misstate a meaning or
 act unsafely, because a mismatch stops every app on the other epoch. Clients check the raw discovery
 epoch before parsing identity, so an old Host gets an upgrade message, not a parse error; RPC and
 `client.subscribe` refuse a missing or mismatched epoch before dispatch. The epoch and optional

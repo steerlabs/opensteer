@@ -2,7 +2,7 @@
 
 In the desktop app, open Settings → Devices → Computers → **Add a computer**. Let the owner-session
 Host choose the grant and target. Personal remote access (Settings → Account → Remote access) must
-be on before a remote computer connects, and Personal computers other than Main cannot run agents.
+be on before a remote computer connects, and tasks execute only on the hosting computer; other enrolled computers are tool targets.
 Never remove and re-add a computer to change what it may run or reach: removal deletes its identity
 and SSH host key. Configure Files and commands separately from Apps.
 

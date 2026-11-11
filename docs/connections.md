@@ -33,7 +33,7 @@ Reconnecting resumes from the cursor and loses nothing, so a connection that ret
 still need a synchronized Host, so controls may dim through a drop nobody is told about. Stopping is
 said at once, and nothing counts while hidden, because a frozen timer fires mid-reconnect on return.
 
-Only the Workspaces being read decide the connection; the others retry quietly. An outage settles on
+The personal event stream decides the personal connection; team transports retry independently. An outage settles on
 Unavailable with Retry, and the sockets keep trying behind it. Saying it never moves content: a new
 surface reads this state in existing chrome or floats over the page.
 
@@ -87,7 +87,7 @@ only the supervisor's private executor channel; owner sessions request intents a
 which clients read only while Settings or first-run setup is open.
 
 Desktop updates reach only the installation supervising its own Personal Host, never a borrowed
-Runner or a server Deployment. The epoch-independent [maintenance v1 contract](../packages/protocol/src/maintenance.ts)
+Runner or a team server. The epoch-independent [maintenance v1 contract](../packages/protocol/src/maintenance.ts)
 is its sole browser API. A page its Host served calls it same-origin. Phones and the desktop's main
 process verify identity and reuse session authentication below ordinary attachment, so they can
 update a Host they can't attach to. All of them long-poll only while Updates is visible. An
@@ -102,7 +102,7 @@ phone signs in to its own Account and opens that ID only from its authenticated 
 Tailscale and an own address are the existing Private mode. For Tailscale, desktop main serves the
 Host's loopback port with `tailscale serve` (tailnet only, never Funnel); Tailscale keeps `Host`
 and sends `X-Forwarded-Proto: https`, which the session exchange needs to see the signed route.
-Main records exactly the handler it created and removes or re-points only that one, whenever the
+The desktop main process records exactly the handler it created and removes or re-points only that one, whenever the
 Host route stops being that origin or its port moves, from any device's mode change; a handler it
 did not create is never touched. Private mode's QR is the [pairing link](../packages/core/src/deep-links.ts):
 it carries the origin and a ten-minute one-time code, so the phone fills them in and pairs only
@@ -114,10 +114,10 @@ signed in to that Account; push is published through the Account.
 
 ## Durable stream and live progress
 
-Durable events arrive strictly in Workspace sequence order, since an early event makes clients
+Durable events arrive strictly in personal Deployment sequence order, since an early event makes clients
 discard the lower events it overtook; the [hub](../packages/orchestration/src/realtime-hub.ts) fills
 publication holes from the store. Readers skip unknown kinds and Thread statuses, validate every
-event's Workspace before changing batch state, and advance cursors in order.
+event's Deployment before changing batch state, and advance cursors in order.
 
 A frame a client cannot read costs what [losing it costs](../packages/client/src/host/realtime-frames.ts),
 and never strands the channel. A notice is dropped with the socket up and repaired by the read that

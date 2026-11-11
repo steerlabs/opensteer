@@ -1,14 +1,14 @@
 # Integration OAuth
 
-An app registration, a user's connected account and a Workspace grant are separate authority
-resources; sharing an app across the Deployment never shares user credentials. Messaging setup is
+An app registration, a user's connected account and person-approved access are separate authority
+resources; an app registration never shares the person's credentials with a team. Messaging setup is
 independent. Registration and testing are in the [setup skill](../.agents/skills/setup/SKILL.md);
 shipping code never registers or approves a provider app.
 
 ## App ownership and selection
 
-Members manage private apps and administrators manage Deployment-shared ones; saving an app never
-transfers ownership. Consent and completion pin the exact app, revision and callback authority;
+The personal owner manages app registrations and connected accounts; team administration never
+grants that authority. Saving an app never transfers ownership. Consent and completion pin the exact app, revision and callback authority;
 credential use and refresh pin the app and revision, so a new consent redirect does not invalidate a
 grant. An unavailable or replaced app needs explicit action, never fallback, and historical source
 pins are never rewritten. See
@@ -16,8 +16,7 @@ pins are never rewritten. See
 
 ## Deployment behavior
 
-Managed authorization binds both the Deployment and the initiating Account subject; the owner's
-sign-in never substitutes for another member. Launch and completion resolve the same account-link
+Managed authorization binds both the Deployment and the initiating Account subject; team sign-in never substitutes for the personal owner's consent. Launch and completion resolve the same account-link
 generation, so unlink or relink invalidates outstanding consent and ordinary token refresh does not
 ([account binding](../apps/host/src/integrations/integration-account-binding.ts)).
 
@@ -86,7 +85,7 @@ creation, never chosen by the browser:
   desktop attempt can also carry a port, and the callback page posts the proof to the app's
   listener on `127.0.0.1` with no click; the app link stays on the page as the fallback.
 - **Account session** (web, and peers without `integration-app-finish-v1`). Launch needs the
-  initiating member's exact Account identity in the browser. A mismatch never consumes the ticket,
+  initiating person's exact Account identity in the browser. A mismatch never consumes the ticket,
   and the page never names the expected Account. A web origin cannot be the proof, because an
   attacker's Host serves a real Opensteer origin.
 
@@ -108,9 +107,8 @@ link. The resign notification only closes the listener sooner; pending attempts 
 and get their sealed port back if it is still free. The app's attempts live in memory, so a
 restarted app refuses them and the person starts again.
 
-This covers links from Deployments the person does not belong to, not a hostile operator of a joined
-server Deployment, malware on the device, or a deliberately hostile process under another login on
-the same computer. Launch consumes a one-use ticket, and the atomic callback claim matches state,
+This covers forwarded links from another Deployment. It cannot defend against malware controlling
+the personal Host or a deliberately hostile process under another login on the same computer. Launch consumes a one-use ticket, and the atomic callback claim matches state,
 provider and that attempt's own browser-binding cookie. That ticket is known to the Host that
 created the attempt, so its cookie can never authorize releasing a proof. A relay claim authorizes
 one exchange; a failed exchange needs fresh consent. Completion rechecks the Account-link generation
@@ -122,8 +120,8 @@ credentials.
 
 ## Integration access requests
 
-Installation needs an administrator, account consent belongs to the requester, and Project access
-needs an explicit grant ([Run tool authority](agent-orchestration.md#run-tool-authority)). Reviewed
+Installation and account consent belong to the personal owner; team membership grants no
+private integration access ([Run tool authority](agent-orchestration.md#run-tool-authority)). Reviewed
 manifests, requested access and explicit account choices are pinned through installation; a pinned
 account is repaired or the request declined, never fulfilled by another. Installation alone does not
 resolve access or resume the agent. Proposals can impersonate catalog names, so every approval

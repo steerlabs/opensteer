@@ -4,6 +4,18 @@ Release builders consume a green main SHA; there is no local release requalifica
 [release.yml](../.github/workflows/release.yml) and the [desktop-builds skill](../.agents/skills/desktop-builds/SKILL.md).
 Tim performs every credential operation; agents never read or operate on key material.
 
+## Fresh baseline and team servers
+
+This baseline refuses old databases. Desktop Start fresh renames personal data aside and creates
+a new Deployment identity; it never deletes the old data or touches `~/Opensteer`. Phones must
+pair again, and the old Account/Connect entry remains removable. Test reset only in disposable
+fixtures or a VM.
+
+Team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
+scheduler-driven build-before-replace updates. A failed build leaves the running stack in place;
+there is no desktop team supervisor. Stable and Beta select the corresponding published tags.
+Personal Host epoch and team API version advance independently.
+
 ## Build inputs and local proof
 
 Contributor builds ([desktop README](../apps/desktop/README.md)) need no Developer ID or
