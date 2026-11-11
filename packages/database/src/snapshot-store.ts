@@ -1,4 +1,4 @@
-import { ProjectRequestStore, projectRequestAudienceSql } from "./project-request-store.js";
+import { ProjectRequestStore } from "./project-request-store.js";
 import { storedProjectDeployment } from "./deployment-execution-authority.js";
 import { teamProjectAudiences } from "./team-project-store.js";
 import { type RunId } from "@opensteer/core";
@@ -328,12 +328,8 @@ export async function workspaceSnapshot(
                 .selectFrom("requests")
                 .selectAll()
                 .where("originatingThreadId", "in", threadIds)
-                .$if(projectAuthority, (query) =>
-                  query.where(
-                    options.viewerId
-                      ? projectRequestAudienceSql(options.viewerId)
-                      : sql<boolean>`false`,
-                  ),
+                .$if(projectAuthority && options.viewerId === undefined, (query) =>
+                  query.where(sql<boolean>`false`),
                 )
                 .where("status", "=", "pending")
                 .orderBy("createdAt", "desc")
@@ -344,12 +340,8 @@ export async function workspaceSnapshot(
                 .selectFrom("requests")
                 .select(({ fn }) => fn.countAll<string>().as("count"))
                 .where("originatingThreadId", "in", threadIds)
-                .$if(projectAuthority, (query) =>
-                  query.where(
-                    options.viewerId
-                      ? projectRequestAudienceSql(options.viewerId)
-                      : sql<boolean>`false`,
-                  ),
+                .$if(projectAuthority && options.viewerId === undefined, (query) =>
+                  query.where(sql<boolean>`false`),
                 )
                 .where("status", "=", "pending")
                 .executeTakeFirstOrThrow(),
