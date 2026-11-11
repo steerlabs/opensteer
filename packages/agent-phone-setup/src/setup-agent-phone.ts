@@ -148,7 +148,9 @@ type AgentPhoneSetupIssueCode =
   | "pairing-timed-out"
   | "phone-app-refused"
   | "phone-app-unresponsive"
-  | "signature-mismatch";
+  | "signature-mismatch"
+  /** Android refused a change over USB that a developer option on the phone must allow. */
+  | "usb-restricted";
 
 export interface AgentPhoneSetupIssue {
   readonly code: AgentPhoneSetupIssueCode;
@@ -394,7 +396,14 @@ class PhoneSetup {
       await this.#removeForeignBuild();
       result = await this.#adb.install(this.#artifact.bytes);
     }
-    if (!result.ok) stop("install-failed", result.output);
+    if (!result.ok) {
+      stop(
+        result.output.includes("INSTALL_FAILED_USER_RESTRICTED")
+          ? "usb-restricted"
+          : "install-failed",
+        result.output,
+      );
+    }
     if (!(await this.#installedSignedBy(manifest))) {
       stop(
         "artifact-invalid",
@@ -452,13 +461,20 @@ class PhoneSetup {
 
   /* ---- Configure --------------------------------------------------------- */
 
+  /**
+   * Writes only what does not already hold: some Android builds refuse the
+   * shell's writes until the person allows them on the phone, and a phone set
+   * up before then must still pass setup.
+   */
   async #configure(phone: AgentPhoneFacts): Promise<void> {
     this.#emit({ step: "configure" });
     await this.#enableAccessibility();
-    await this.#exemptFromBatteryOptimization();
+    if (!(await this.#readStatus())?.batteryOptimizationExempt) {
+      await this.#exemptFromBatteryOptimization();
+    }
     // Android 13 made notifications a runtime permission; older versions
     // reject the grant of a permission they do not have.
-    if (phone.sdk >= 33) {
+    if (phone.sdk >= 33 && !(await this.#notificationsGranted())) {
       await this.#configureCommand([
         "pm",
         "grant",
@@ -466,17 +482,13 @@ class PhoneSetup {
         "android.permission.POST_NOTIFICATIONS",
       ]);
     }
-    // AppOps checks uid mode before package mode. Grant both so a previous
-    // uid denial cannot override the package grant (AOSP AppOpsService.Shell).
-    for (const target of [["--uid", agentPhonePackageName], [agentPhonePackageName]]) {
-      await this.#configureCommand(["appops", "set", ...target, "PROJECT_MEDIA", "allow"]);
-      await this.#configureCommand([
-        "appops",
-        "set",
-        ...target,
-        "REQUEST_INSTALL_PACKAGES",
-        "allow",
-      ]);
+    for (const op of ["PROJECT_MEDIA", "REQUEST_INSTALL_PACKAGES"] as const) {
+      if (await this.#appOpAllowed(op)) continue;
+      // AppOps checks uid mode before package mode. Grant both so a previous
+      // uid denial cannot override the package grant (AOSP AppOpsService.Shell).
+      for (const target of [["--uid", agentPhonePackageName], [agentPhonePackageName]]) {
+        await this.#configureCommand(["appops", "set", ...target, op, "allow"]);
+      }
     }
     let projectionAllowed = false;
     let updatesAllowed = false;
@@ -497,28 +509,8 @@ class PhoneSetup {
         const status = await this.#readStatus();
         if (status) last = status;
         held = await this.#accessibilityHeld();
-        const projection = await this.#configureCommand([
-          "appops",
-          "get",
-          agentPhonePackageName,
-          "PROJECT_MEDIA",
-        ]);
-        // AOSP's get prints "Uid mode: " on uid entries and usage metadata
-        // after the mode. Missing uid entries mean the package mode applies.
-        const modes = [...projection.matchAll(/^\s*(?:Uid mode: )?PROJECT_MEDIA:\s*(\w+)/gm)];
-        projectionAllowed = modes.length > 0 && modes.every((match) => match[1] === "allow");
-
-        const updates = await this.#configureCommand([
-          "appops",
-          "get",
-          agentPhonePackageName,
-          "REQUEST_INSTALL_PACKAGES",
-        ]);
-        const updateModes = [
-          ...updates.matchAll(/^\s*(?:Uid mode: )?REQUEST_INSTALL_PACKAGES:\s*(\w+)/gm),
-        ];
-        updatesAllowed =
-          updateModes.length > 0 && updateModes.every((match) => match[1] === "allow");
+        projectionAllowed = await this.#appOpAllowed("PROJECT_MEDIA");
+        updatesAllowed = await this.#appOpAllowed("REQUEST_INSTALL_PACKAGES");
         return held &&
           updatesAllowed &&
           projectionAllowed &&
@@ -539,6 +531,19 @@ class PhoneSetup {
         stop("configure-failed", "Android did not exempt the app from battery optimization.");
       },
     );
+  }
+
+  async #appOpAllowed(op: "PROJECT_MEDIA" | "REQUEST_INSTALL_PACKAGES"): Promise<boolean> {
+    const listed = await this.#configureCommand(["appops", "get", agentPhonePackageName, op]);
+    // AOSP's get prints "Uid mode: " on uid entries and usage metadata
+    // after the mode. Missing uid entries mean the package mode applies.
+    const modes = [...listed.matchAll(new RegExp(`^\\s*(?:Uid mode: )?${op}:\\s*(\\w+)`, "gmu"))];
+    return modes.length > 0 && modes.every((match) => match[1] === "allow");
+  }
+
+  async #notificationsGranted(): Promise<boolean> {
+    const listed = await this.#configureCommand(["dumpsys", "package", agentPhonePackageName]);
+    return /^\s*android\.permission\.POST_NOTIFICATIONS: granted=true\b/mu.test(listed);
   }
 
   async #exemptFromBatteryOptimization(): Promise<void> {
@@ -586,7 +591,10 @@ class PhoneSetup {
   async #configureCommand(argv: readonly string[]): Promise<string> {
     const result = await this.#adb.shell(argv);
     if (result.exitCode !== 0) {
-      stop("configure-failed", `${argv.join(" ")}: ${(result.stderr || result.stdout).trim()}`);
+      const output = (result.stderr || result.stdout).trim();
+      const refusal = /java\.lang\.SecurityException: (.+)/u.exec(output)?.[1];
+      if (refusal) stop("usb-restricted", `${argv.join(" ")}: ${refusal}`);
+      stop("configure-failed", `${argv.join(" ")}: ${output}`);
     }
     return result.stdout;
   }
