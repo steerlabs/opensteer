@@ -32,7 +32,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
 import { assertRequestResponse } from "./command-store.js";
-import { projectWorkIsCurrent } from "./execution-authority.js";
+import { assertActiveProjectBinding, projectWorkIsCurrent } from "./execution-authority.js";
 import { checkAccess } from "./access-store.js";
 import {
   storedProjectDeployment,
@@ -42,6 +42,12 @@ import { lockRequestWorkspaces } from "./request-workspace-locks.js";
 import { requestSettlementActor } from "./request-settlement.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
+import {
+  threadFromRow,
+  threadPendingRequestsSelection,
+  threadProviderSessionSelection,
+  threadContinuationIdentitySelection,
+} from "./thread-row-mappers.js";
 
 import {
   ProjectExecutionStore,
@@ -279,10 +285,39 @@ export class ProjectRequestStore {
     this.controls = controls;
   }
 
-  async threadFacts(input: {
-    readonly threadIds: readonly ThreadId[];
-    readonly userId: UserId;
-  }): Promise<
+  async threadFacts(input: { readonly threadIds: readonly ThreadId[]; readonly userId: UserId }) {
+    return this.readFacts(input);
+  }
+
+  async activityFacts(
+    binding: ProjectRunBinding,
+    input: { readonly threadId: ThreadId; readonly requestIds: readonly RequestId[] },
+    runnerIsAttached: (runnerId: import("@opensteer/core").RunnerId, bootId: string) => boolean,
+  ) {
+    if (binding.authority.principal.workspaceId !== binding.workspaceId) denied();
+    await assertActiveProjectBinding(this.database, binding, { runnerIsAttached });
+    if (input.requestIds.length > threadRequestFactLimit)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "project-request-activity-unavailable",
+        message: "Request activity exceeds its bounded fact window",
+      });
+    return this.readFacts({
+      threadIds: [input.threadId],
+      workspaceId: binding.workspaceId,
+      requestIds: input.requestIds,
+    });
+  }
+
+  private async readFacts(
+    input: {
+      readonly threadIds: readonly ThreadId[];
+      readonly requestIds?: readonly RequestId[];
+    } & (
+      | { readonly userId: UserId; readonly workspaceId?: never }
+      | { readonly workspaceId: WorkspaceId; readonly userId?: never }
+    ),
+  ): Promise<
     ReadonlyMap<
       ThreadId,
       {
@@ -299,12 +334,16 @@ export class ProjectRequestStore {
     }>`with visible as materialized (
       select t.id from threads t
       join workspaces w on w.id = t.workspace_id
-      join workspace_memberships m on m.workspace_id = w.id and m.user_id = ${input.userId}
-      join users u on u.id = m.user_id
+      ${
+        input.userId
+          ? sql`join workspace_memberships m on m.workspace_id = w.id and m.user_id = ${input.userId}
+      join users u on u.id = m.user_id`
+          : sql``
+      }
       where t.id in (${sql.join(input.threadIds)}) and ${storedProjectDeployment}
         and w.kind = 'project' and w.deleted_at is null
-        and w.status not in ('deleting', 'deleted') and m.state = 'active'
-        and u.member_state = 'active' and u.admitted_at is not null and u.disabled_at is null
+        and w.status not in ('deleting', 'deleted')
+        ${input.userId ? sql`and m.state = 'active' and u.member_state = 'active' and u.admitted_at is not null and u.disabled_at is null` : sql`and w.id = ${input.workspaceId}`}
     ), ranked as (
       select r.id, r.originating_thread_id as thread_id, r.kind, r.status,
         r.created_at, r.resolved_at, r.resolved_by, r.requested_by, r.cancellation_reason,
@@ -315,6 +354,7 @@ export class ProjectRequestStore {
             case when r.status = 'pending' then r.id end asc, r.id desc) as position
       from requests r join visible v on v.id = r.originating_thread_id
       where r.originating_grant_id is not null
+        ${input.requestIds ? sql`and r.id in (${input.requestIds.length ? sql.join(input.requestIds) : sql`null`})` : sql``}
     ), facts as (
       select r.*, case when r.kind = 'harness.input' then 'question' else 'approval' end as class,
         requester.display_name as requester_name, resolver.display_name as resolver_name
@@ -489,6 +529,13 @@ export class ProjectRequestStore {
               workspaceId: source.binding.workspaceId,
             }),
           ];
+    events.push(
+      ...(await appendRequestFactInvalidations(transaction, [row.originatingThreadId], {
+        requestId: row.id,
+        runId: row.originatingRunId,
+        type: "opened",
+      })),
+    );
     await fencePeople(transaction, recipients);
     if (source.origin && !(await liveRoot(transaction, source.binding.workspaceId, source.origin)))
       denied();
@@ -652,6 +699,13 @@ export class ProjectRequestStore {
               workspaceId: source.binding.workspaceId,
             }),
           ];
+    events.push(
+      ...(await appendRequestFactInvalidations(transaction, [row.originatingThreadId], {
+        requestId: row.id,
+        runId: row.originatingRunId,
+        type: "resolved",
+      })),
+    );
     await fencePeople(transaction, [input.userId]);
     await authenticatedResponder(transaction, input.userId, input.sessionId);
     if (!(await this.recipients(transaction, row.id)).includes(input.userId)) denied();
@@ -883,6 +937,48 @@ async function cancelRows(
         workspaceId: row.originatingWorkspaceId,
       }),
     );
+  events.push(
+    ...(await appendRequestFactInvalidations(
+      transaction,
+      rows.map((row) => row.originatingThreadId),
+    )),
+  );
+  return events;
+}
+
+async function appendRequestFactInvalidations(
+  transaction: Transaction<DatabaseSchema>,
+  threadIds: readonly ThreadId[],
+  requestFact?: {
+    readonly requestId: RequestId;
+    readonly runId: RunId | null;
+    readonly type: "opened" | "resolved";
+  },
+): Promise<AgentEvent[]> {
+  if (!threadIds.length) return [];
+  const threads = await transaction
+    .selectFrom("threads")
+    .selectAll()
+    .select([
+      threadPendingRequestsSelection,
+      threadProviderSessionSelection,
+      threadContinuationIdentitySelection,
+    ])
+    .where("id", "in", [...new Set(threadIds)])
+    .orderBy("id")
+    .execute();
+  const events: AgentEvent[] = [];
+  for (const row of threads)
+    events.push(
+      await appendHostWorkspaceEvent(transaction, {
+        type: "thread.execution-updated",
+        data: { thread: threadFromRow(row), ...(requestFact ? { requestFact } : {}) },
+        environmentId: row.environmentId,
+        workspaceId: row.workspaceId,
+        threadId: row.id,
+        runId: null,
+      }),
+    );
   return events;
 }
 
@@ -1032,5 +1128,45 @@ export function projectRequestRevocationHooks(
           requestEvents: cancelled.events,
         });
     },
+  };
+}
+
+export function projectRequestActivityFact(
+  fact: ThreadRequestWaits["items"][number] | ThreadRequestOutcome,
+) {
+  const title = fact.class === "question" ? "Question" : "Approval";
+  if ("waitingOn" in fact)
+    return {
+      title,
+      status: "pending",
+      text:
+        fact.waitingOn.kind === "person"
+          ? `Waiting for ${fact.waitingOn.name}`
+          : "Waiting for managers",
+    };
+  if (fact.status !== "cancelled") {
+    const text =
+      fact.status === "fulfilled"
+        ? `Answered by ${fact.resolvedByName}`
+        : fact.status === "declined"
+          ? `Declined by ${fact.resolvedByName}`
+          : "Withdrawn";
+    return { title, status: fact.status, text };
+  }
+  const reasons = {
+    "run-ended": "Cancelled: run ended",
+    "process-lost": "Cancelled: process lost",
+    "source-closed": "Cancelled: source closed",
+    "thread-archived": "Cancelled: task closed",
+    "workspace-deleted": "Cancelled: Project deleted",
+    "resource-deleted": "Cancelled: resource deleted",
+    "membership-revoked": "Cancelled: membership revoked",
+    "authority-revoked": "Cancelled: authority revoked",
+    "no-eligible-manager": "Cancelled: no manager left",
+  };
+  return {
+    title,
+    status: fact.status,
+    text: fact.cancelledFor ? `Cancelled: ${fact.cancelledFor.name} left` : reasons[fact.reason],
   };
 }
