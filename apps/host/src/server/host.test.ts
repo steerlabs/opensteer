@@ -88,6 +88,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   ) as typeof complete.runners;
   const store = Object.assign(
     {
+      securityEffectAuthority: async () => ({ kind: "server" as const, model: 1 as const }),
       countLiveThreadsByEnvironment: async () => new Map(),
       listLocalWorkspacesForEnvironments: async () => [],
       listPendingRunnerEnrollments: async () => [],

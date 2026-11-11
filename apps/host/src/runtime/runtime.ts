@@ -1,4 +1,4 @@
-import { requireHumanRequester } from "@opensteer/database";
+import { requireHumanRequester, teamComputerModules } from "@opensteer/database";
 import { authorityPreflight } from "./authority-preflight.js";
 import { createExecutionRuntime } from "./execution-runtime.js";
 import { deploymentPolicy } from "@opensteer/core";
@@ -1165,7 +1165,10 @@ export async function createHostRuntime(
     };
     // Every Deployment can hold the directories of machines lent to it, whatever
     // its own default backing is.
-    const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({ runners: runnerStorage });
+    const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({
+      runners: runnerStorage,
+      database,
+    });
     const localWorkspaceFiles = new RunnerLocalWorkspaceFilesDriver({ runners: runnerStorage });
     const workspaces = new WorkspaceService({
       providerAuthorizations: (owner) => integrations.providerAuthorizations(owner),
@@ -2555,6 +2558,24 @@ export async function createHostRuntime(
       {
         teamAdministration: new TeamAdministrationService({
           database,
+          deletionRetentionDays: config.workspace.deletionRetentionDays,
+          revokeComputer: (id) => requiredService(runnerRegistry, "Runner registry").revoke(id),
+          enrollComputer: (revision, actor, key) =>
+            runnerAuthenticator.createEnrollment({
+              expectedTeamAccessRevision: revision,
+              expectedTeamActor: actor,
+              allowedModules: teamComputerModules,
+              createdBy: actor.userId,
+              idempotencyKey: key,
+              lifetimeSeconds: 600,
+              name: "Team computer",
+              runnerKind: "managed",
+            }),
+          provisionProject: async (id) => {
+            const workspace = await store.getWorkspace(id);
+            if (workspace && !["ready", "deleting", "deleted"].includes(workspace.status))
+              await workspaces.provision(workspace);
+          },
           identity,
           teamName: config.deploymentName ?? new URL(config.runtimeOrigin).hostname,
           runnerIsConnected: (runnerId) =>

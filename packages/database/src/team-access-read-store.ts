@@ -1,3 +1,5 @@
+import { teamProjectRuntimes } from "./team-project-store.js";
+import { teamComputerHasExecutionGrant } from "./team-computer.js";
 import { isEveryoneMember } from "./everyone-membership.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
@@ -25,7 +27,6 @@ import { requireTeamHuman, teamRefusal } from "./team-administration-authority.j
 import { requireTeamAuthority } from "./team-administration-authority.js";
 import { safeGeneration } from "./store-primitives.js";
 import { conversationUnreadPredicate } from "./message-visibility.js";
-import { resolveProjectRuntime } from "./project-runtime-settings-store.js";
 
 const groupPeople = sql`with recursive group_people(group_id, user_id) as (
   select g.id, u.id from access_groups g join access_group_members e on e.group_id = g.id and e.member_kind = 'user'
@@ -507,7 +508,9 @@ export class TeamAccessReadStore {
           context.database,
         )
       ).rows;
-      const runtime = await resolveProjectRuntime(context.database, project.id, runnerIsConnected);
+      const runtime = (
+        await teamProjectRuntimes(context.database, [project.id], runnerIsConnected)
+      ).get(project.id) ?? { state: "unavailable" as const, reason: "not-configured" as const };
       return {
         project,
         runtime: runtime.state === "ready" ? { state: "ready" as const } : runtime,
@@ -536,7 +539,79 @@ export class TeamAccessReadStore {
     });
   }
 
-  summary(actor: AuthenticatedHuman, teamName: string, knownRevision?: string) {
+  projects(actor: AuthenticatedHuman, input: Page & { query?: string | undefined }) {
+    return this.#snapshot(actor, true, async ({ database, accessRevision }) => {
+      const limit = input.limit ?? 30;
+      const scope = this.#scope(actor, ["projects", input.query]);
+      const position = this.#position(input.cursor, scope);
+      const rows = (
+        await sql<{
+          id: WorkspaceId;
+          name: string;
+          color: import("@opensteer/core").MarkColor;
+          people: number;
+          myLevel: Level | null;
+          sortKey: string;
+        }>`
+        select w.id, w.name, w.color, lower(w.name collate "C") collate "C" as sort_key,
+          (select count(*)::int from workspace_memberships m join users u on u.id = m.user_id where m.workspace_id = w.id and m.state = 'active' and u.admitted_at is not null and u.member_state = 'active' and u.disabled_at is null) as people,
+          (select case when m.role = 'owner' then 'manage' else 'use' end from workspace_memberships m where m.workspace_id = w.id and m.user_id = ${actor.userId} and m.state = 'active') as my_level
+        from workspaces w where w.kind = 'project' and w.deleted_at is null and w.status not in ('deleting', 'deleted')
+          and (lower(w.name collate "C") collate "C", w.id collate "C") > (${position.sort}, ${position.id})
+          and position(lower(${input.query ?? ""}) in lower(w.name)) > 0
+        order by sort_key, w.id collate "C" limit ${limit + 1}`.execute(database)
+      ).rows;
+      return { ...this.#namePage(rows, limit, scope), accessRevision };
+    });
+  }
+
+  computer(actor: AuthenticatedHuman, connected: (id: RunnerId) => boolean) {
+    return this.#snapshot(actor, true, async ({ database }) => {
+      const rows = await database
+        .selectFrom("runners")
+        .select([
+          "id",
+          "name",
+          "lastSeenAt",
+          "updateRequired",
+          "capabilities",
+          "device",
+          "allowedModules",
+          "ownerKind",
+          "ownerUserId",
+        ])
+        .where("ownerKind", "=", "deployment")
+        .where("ownerUserId", "is", null)
+        .where("revokedAt", "is", null)
+        .orderBy("id")
+        .limit(2)
+        .execute();
+      const row = rows.filter(teamComputerHasExecutionGrant)[0];
+      return {
+        computer: row
+          ? {
+              id: row.id,
+              name: row.name,
+              lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
+              state:
+                row.updateRequired || !row.capabilities.includes("project-authority-v1")
+                  ? ("update-required" as const)
+                  : connected(row.id)
+                    ? ("connected" as const)
+                    : ("offline" as const),
+            }
+          : null,
+        can: { replace: { allowed: true } },
+      };
+    });
+  }
+
+  summary(
+    actor: AuthenticatedHuman,
+    teamName: string,
+    knownRevision?: string,
+    connected: (id: RunnerId) => boolean = () => false,
+  ) {
     return this.#snapshot(actor, false, async (context) => {
       const deployment = await context.database
         .selectFrom("deployments")
@@ -564,6 +639,11 @@ export class TeamAccessReadStore {
           context.database,
         )
       ).rows;
+      const runtimes = await teamProjectRuntimes(
+        context.database,
+        projects.map((project) => project.id),
+        connected,
+      );
       const data = {
         accessRevision: context.accessRevision,
         team: { id: deployment.id, name: teamName },
@@ -576,6 +656,7 @@ export class TeamAccessReadStore {
         projects: projects.map((project) => ({
           ...project,
           lastActivity: project.lastActivity?.toISOString() ?? null,
+          runtime: runtimes.get(project.id),
         })),
         needsYou: projects.reduce((total, project) => total + project.needsYou, 0),
       };

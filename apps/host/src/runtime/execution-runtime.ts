@@ -6,7 +6,7 @@ export type {
   ProjectRecoveryPort,
 } from "./project-runtime-ports.js";
 import { deploymentPolicy, OpensteerError, type Deployment } from "@opensteer/core";
-import { OpensteerStore, readDeploymentAuthority, type DatabaseSchema } from "@opensteer/database";
+import { OpensteerStore, type DatabaseSchema } from "@opensteer/database";
 import type { Kysely } from "kysely";
 import { isProjectDeploymentAuthority } from "@opensteer/database";
 import type { ProjectRuntimeInfrastructure, ProjectRuntime } from "./project-runtime.js";
@@ -22,8 +22,9 @@ export async function createExecutionRuntime(
   dependencies: ConstructorParameters<typeof OpensteerStore>[1],
   infrastructure?: ProjectRuntimeInfrastructure,
 ): Promise<ExecutionRuntime> {
-  const authority = await readDeploymentAuthority(database);
-  if (authority.kind !== deployment.deploymentShape.kind)
+  const store = new OpensteerStore(database, dependencies);
+  const authority = await store.securityEffectAuthority();
+  if (!authority || authority.kind !== deployment.deploymentShape.kind)
     throw new OpensteerError({
       code: "conflict",
       message: "Deployment authority does not match stored identity",
@@ -46,5 +47,5 @@ export async function createExecutionRuntime(
       code: "conflict",
       message: "Unsupported Deployment authority model; Project execution runtime is unavailable",
     });
-  return { kind: "person", store: new OpensteerStore(database, dependencies) };
+  return { kind: "person", store };
 }

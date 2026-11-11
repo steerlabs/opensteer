@@ -5,7 +5,6 @@ import {
   type MessageId,
   type RequestId,
   type RunId,
-  type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
 import { sql, type Transaction } from "kysely";
@@ -17,22 +16,20 @@ import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { projectThreadState } from "./thread-status.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";
 
-export type ProjectWorkRevocationRoot =
-  | { readonly kind: "member"; readonly userId: UserId; readonly memberGenerationCutoff: number }
-  | {
-      readonly kind: "membership";
-      readonly userId: UserId;
-      readonly workspaceId: WorkspaceId;
-      readonly membershipGenerationCutoff: number;
-    }
-  | {
-      readonly kind: "connection";
-      readonly userId: UserId;
-      readonly workspaceId: WorkspaceId;
-      readonly connectionId: string;
-      readonly memberGenerationCutoff: number;
-      readonly membershipGenerationCutoff: number;
-    };
+export type ProjectWorkRevocationRoot = import("./access-store.js").AccessWorkRevocationRoot;
+type CapturedRoot = Exclude<ProjectWorkRevocationRoot, { kind: "project" }>;
+
+function capturedRoots(roots: readonly ProjectWorkRevocationRoot[]): readonly CapturedRoot[] {
+  return roots.map((root) => {
+    if (root.kind === "project")
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        reason: "team-not-implemented",
+        message: "Whole-Project work cancellation is not implemented",
+      });
+    return root;
+  });
+}
 
 export interface ProjectWorkRevocationScope {
   readonly runIds: readonly RunId[];
@@ -43,12 +40,9 @@ export interface ProjectWorkRevocationScope {
 export interface ProjectRequestRevocationHooks {
   discover(
     transaction: Transaction<DatabaseSchema>,
-    roots: readonly ProjectWorkRevocationRoot[],
+    roots: readonly CapturedRoot[],
   ): Promise<ProjectWorkRevocationScope>;
-  cancel(
-    transaction: Transaction<DatabaseSchema>,
-    roots: readonly ProjectWorkRevocationRoot[],
-  ): Promise<void>;
+  cancel(transaction: Transaction<DatabaseSchema>, roots: readonly CapturedRoot[]): Promise<void>;
 }
 
 export interface PlannedManagerlessRequestHooks {
@@ -77,7 +71,7 @@ export function projectRevocationRootPredicate(
   table: "runs" | "threadInputs",
 ) {
   const column = (name: string) => sql.ref(`${table}.${name}`);
-  const predicates = roots.map((root) => {
+  const predicates = capturedRoots(roots).map((root) => {
     const cutoffs = [
       ...(root.kind !== "membership" ? [root.memberGenerationCutoff] : []),
       ...(root.kind !== "member" ? [root.membershipGenerationCutoff] : []),
@@ -131,6 +125,7 @@ export class ProjectWorkRevocationStore implements ProjectRequestRevocationHooks
     transaction: Transaction<DatabaseSchema>,
     roots: readonly ProjectWorkRevocationRoot[],
   ): Promise<Scope> {
+    roots = capturedRoots(roots);
     await assertProjectAuthority(transaction);
     const planned = [...new Set(this.plannedManagerless(transaction))].sort();
     if (planned.length && !this.managerlessRequests)
@@ -199,7 +194,7 @@ export class ProjectWorkRevocationStore implements ProjectRequestRevocationHooks
             )
             .execute()
         : [];
-    const requests = await this.requests.discover(transaction, roots);
+    const requests = await this.requests.discover(transaction, capturedRoots(roots));
     const managerless =
       planned.length && this.managerlessRequests
         ? await this.managerlessRequests.discover(transaction, planned)
@@ -276,7 +271,7 @@ export class ProjectWorkRevocationStore implements ProjectRequestRevocationHooks
         .execute();
     }
     await reserveProjectWorkStop(transaction, scope);
-    await this.requests.cancel(transaction, roots);
+    await this.requests.cancel(transaction, capturedRoots(roots));
     await this.work.stop(transaction, {
       runIds: scope.activeRunIds,
       reason: "authority-revoked",

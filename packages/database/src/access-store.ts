@@ -74,6 +74,7 @@ export interface MembershipTransition extends Pair {
 }
 
 export type AccessWorkRevocationRoot =
+  | { readonly kind: "project"; readonly workspaceId: WorkspaceId }
   | { readonly kind: "member"; readonly userId: UserId; readonly memberGenerationCutoff: number }
   | {
       readonly kind: "membership";
@@ -717,7 +718,14 @@ function propose(graph: Graph, change: AccessMutation, actorId: UserId, now: Dat
       break;
     }
     case "delete-project":
-      if (!Number.isFinite(change.purgeAfter.getTime()) || change.purgeAfter < now)
+      if (change.retentionMilliseconds !== undefined) {
+        if (
+          !Number.isSafeInteger(change.retentionMilliseconds) ||
+          change.retentionMilliseconds < 0 ||
+          !Number.isFinite(new Date(now.getTime() + change.retentionMilliseconds).getTime())
+        )
+          refuse("Invalid Project retention duration");
+      } else if (!Number.isFinite(change.purgeAfter.getTime()) || change.purgeAfter < now)
         refuse("Project deletion requires a future retention deadline");
       if (!next.projects.some((project) => project.id === change.workspaceId))
         refuse("Live Project is required");
@@ -1202,7 +1210,10 @@ async function applySource(
           deletedAt: null,
           deletionRequestedAt: now,
           deletionRequestedBy: input.actor.userId,
-          purgeAfter: change.purgeAfter,
+          purgeAfter:
+            change.retentionMilliseconds !== undefined
+              ? new Date(now.getTime() + change.retentionMilliseconds)
+              : change.purgeAfter,
           updatedAt: now,
         })
         .where("id", "=", change.workspaceId)
@@ -1596,6 +1607,7 @@ async function authorizeMutation(
   let workspaceId: WorkspaceId | undefined;
   if (change.kind === "grant" && change.target.kind === "project")
     workspaceId = change.target.workspaceId;
+  if (change.kind === "delete-project") workspaceId = change.workspaceId;
   if (change.kind === "revoke") {
     const entry = await transaction
       .selectFrom("accessEntries")
@@ -1768,10 +1780,87 @@ async function coordinateAccess(
           message: "Planned managerless Request cancellation is unavailable",
         });
     }
+    const deletedProjects = roots.flatMap((root) =>
+      root.kind === "project" ? [root.workspaceId] : [],
+    );
+    const projectRuns = deletedProjects.length
+      ? await transaction
+          .selectFrom("runs")
+          .innerJoin("threads", "threads.id", "runs.threadId")
+          .select(["runs.id", "threads.workspaceId"])
+          .where("threads.workspaceId", "in", deletedProjects)
+          .where("runs.status", "in", nonTerminalRunStatuses)
+          .execute()
+      : [];
+    if (!work && deletedProjects.length) {
+      const pending = await transaction
+        .selectFrom("requests")
+        .select("id")
+        .where("status", "=", "pending")
+        .where((eb) =>
+          eb.or([
+            eb("originatingWorkspaceId", "in", deletedProjects),
+            eb("targetWorkspaceId", "in", deletedProjects),
+          ]),
+        )
+        .limit(1)
+        .executeTakeFirst();
+      const watch = await transaction
+        .selectFrom("triggerWatchActivations")
+        .select("id")
+        .where("workspaceId", "in", deletedProjects)
+        .where("desired", "=", "active")
+        .limit(1)
+        .executeTakeFirst();
+      const program = await transaction
+        .selectFrom("triggerOccurrences")
+        .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+        .select("triggerOccurrences.id")
+        .where("triggers.workspaceId", "in", deletedProjects)
+        .where("triggerOccurrences.status", "in", ["pending", "running"])
+        .limit(1)
+        .executeTakeFirst();
+      const queuedInput = await transaction
+        .selectFrom("threadInputs")
+        .innerJoin("threads", "threads.id", "threadInputs.threadId")
+        .select("threadInputs.messageId")
+        .where("threads.workspaceId", "in", deletedProjects)
+        .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
+        .limit(1)
+        .executeTakeFirst();
+      const continuation = await transaction
+        .selectFrom("requestContinuations")
+        .innerJoin("requests", "requests.id", "requestContinuations.requestId")
+        .select("requestContinuations.requestId")
+        .where((eb) =>
+          eb.or([
+            eb("requests.originatingWorkspaceId", "in", deletedProjects),
+            eb("requests.targetWorkspaceId", "in", deletedProjects),
+          ]),
+        )
+        .where("requestContinuations.status", "in", ["waiting", "queued"])
+        .limit(1)
+        .executeTakeFirst();
+      if (projectRuns.length || pending || watch || program || queuedInput || continuation)
+        throw new OpensteerError({
+          code: "workspace_unavailable",
+          reason: "team-not-implemented",
+          message:
+            "Project work cancellation must be connected before deleting a Project with live work",
+        });
+    }
     return {
       ...scope,
-      runIds: [...new Set([...scope.runIds, ...(execution?.runIds ?? [])])],
-      workspaceIds: [...new Set([...scope.workspaceIds, ...(execution?.workspaceIds ?? [])])],
+      runIds: [
+        ...new Set([
+          ...scope.runIds,
+          ...(execution?.runIds ?? []),
+          ...projectRuns.map((run) => run.id),
+        ]),
+      ],
+      workspaceIds: [
+        ...new Set([...scope.workspaceIds, ...(execution?.workspaceIds ?? []), ...deletedProjects]),
+      ],
     };
   };
   const fingerprint = createHash("sha256")
@@ -1960,6 +2049,13 @@ async function coordinateAccess(
               ]
             : [];
         });
+        roots.push(
+          ...input.changes.flatMap((change) =>
+            change.kind === "delete-project"
+              ? [{ kind: "project" as const, workspaceId: change.workspaceId }]
+              : [],
+          ),
+        );
         const changed = pairs.filter(
           (pair) =>
             effective(beforePairs.get(pairKey(pair))?.entries ?? []).level !== null &&

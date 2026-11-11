@@ -127,6 +127,10 @@ export const HostWorkspaceLocalRequestSchema = z.discriminatedUnion("type", [
     type: z.literal("host.workspace.local.specialist.remove"),
     specialistId: z.string().regex(/^[a-zA-Z0-9-]+$/u),
   }),
+  z.strictObject({
+    ...workspaceLocalRequestBase,
+    type: z.literal("host.workspace.project.provision"),
+  }),
   ProvisionLocalWorkspaceSchema,
   InspectLocalWorkspaceSchema,
   DestroyLocalWorkspaceSchema,

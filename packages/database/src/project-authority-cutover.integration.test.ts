@@ -7,7 +7,6 @@ import {
   insertProjectRunFixture,
 } from "./project-work.test-support.js";
 import { createId } from "@opensteer/core";
-import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { projectAuthorityCutoverMigration } from "./project-authority-migration.js";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
@@ -216,13 +215,16 @@ describeStore("additive Project authority preparation", (it) => {
     await expect(
       sql`update principals set workspace_id = null where kind = 'project'`.execute(database),
     ).rejects.toMatchObject({ code: "23514" });
-    const main = await createTestWorkspace(storeFixture.store, {
-      backing: { ...fixture.workspace.backing, bindingId: createId("workspaceBinding") },
-      createdBy: fixture.userId,
-      idempotencyKey: "main-principal",
-      kind: "main",
-      name: "Main",
-      status: "ready",
+    const main = { id: createId("workspace") };
+    await database.transaction().execute(async (transaction) => {
+      await sql`insert into workspaces (id, kind, name, created_by, color, backing, status)
+        values (${main.id}, 'main', 'Main', ${fixture.userId}, 'blue', ${JSON.stringify({ ...fixture.workspace.backing, bindingId: createId("workspaceBinding") })}::jsonb, 'ready')`.execute(
+        transaction,
+      );
+      await sql`insert into workspace_memberships (id, workspace_id, user_id, role, state)
+        values (${createId("workspaceMembership")}, ${main.id}, ${fixture.userId}, 'owner', 'active')`.execute(
+        transaction,
+      );
     });
     await expect(insert("project", null, main.id)).rejects.toMatchObject({ code: "23514" });
   });
@@ -511,10 +513,10 @@ describeStore("additive Project authority preparation", (it) => {
                   await sql`
         select 'column:' || table_name || ':' || column_name as name,
           data_type || ':' || is_nullable || ':' || coalesce(column_default, '') as definition
-        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'team_invitations', 'deployments')
+        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'team_invitations', 'deployments', 'auth_admissions')
         union all select 'constraint:' || conrelid::regclass::text || ':' || conname, pg_get_constraintdef(oid)
-          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass, 'team_invitations'::regclass, 'deployments'::regclass)
-        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'team_invitations', 'deployments')
+          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass, 'team_invitations'::regclass, 'deployments'::regclass, 'auth_admissions'::regclass)
+        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'team_invitations', 'deployments', 'auth_admissions')
         union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('opensteer_project_principal_scope', 'opensteer_enforce_project_event_receipt', 'opensteer_prevent_last_workspace_owner_removal', 'opensteer_require_workspace_owner', 'opensteer_project_membership_change', 'opensteer_refresh_account_directory_user')
         union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where (tgrelid = 'principals'::regclass and tgname = 'project_principal_scope') or (tgrelid = 'agent_control_requests'::regclass and tgname = 'agent_control_requests_project_event')
         order by name
@@ -544,13 +546,14 @@ describeStore("additive Project authority preparation", (it) => {
         alter table trigger_watch_activations drop column created_by_principal_id;
         alter table team_invitations drop column trusted_computer_confirmed_at;
         alter table deployments drop column trusted_members_acknowledged_at;
+        alter table auth_admissions drop column trusted_members_acknowledged_at;
         insert into principals (id, kind, display_name) select 'pri_ddl_' || item, 'system', 'System' from generate_series(1, 100) item
       `.execute(transaction);
               const facts = async () =>
                 (
                   await sql<{ relname: string; relfilenode: number; scans: string | null }>`
         select relname, relfilenode, case when relname <> 'principals' then pg_stat_get_xact_numscans(oid) end as scans
-        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass, 'team_invitations'::regclass, 'deployments'::regclass)
+        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass, 'team_invitations'::regclass, 'deployments'::regclass, 'auth_admissions'::regclass)
         order by relname
       `.execute(transaction)
                 ).rows;
@@ -588,7 +591,7 @@ describeStore("additive Project authority preparation", (it) => {
               const locks = (
                 await sql<{ relname: string; mode: string }>`
         select distinct c.relname, l.mode from pg_locks l join pg_class c on c.oid = l.relation
-        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'agent_connections', 'workspaces', 'team_invitations', 'deployments')
+        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'agent_connections', 'workspaces', 'team_invitations', 'deployments', 'auth_admissions')
         order by c.relname, l.mode
       `.execute(transaction)
               ).rows;
@@ -603,6 +606,7 @@ describeStore("additive Project authority preparation", (it) => {
                 "team_invitations",
                 "deployments",
                 "agent_control_requests",
+                "auth_admissions",
               ])
                 expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
               expect(locks).toContainEqual({

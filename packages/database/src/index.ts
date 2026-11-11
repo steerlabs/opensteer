@@ -142,3 +142,4 @@ export { ProjectRunRecoveryStore } from "./project-run-recovery.js";
 export { type ProjectRunRequestCancellation } from "./run-finalization.js";
 
 export { plannedManagerlessProjects } from "./access-store.js";
+export * from "./team-project-store.js";

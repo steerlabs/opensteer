@@ -387,6 +387,8 @@ async function startAgentsRunner(input: {
             localWorkspaces: {
               // Re-read on every connect, so a reconnect reconciles against
               // what the disk holds now rather than what it held at startup.
+              selectProjectStorage: () =>
+                localWorkspace.authority.selectProjectStorage(environmentId),
               inventory: () => localWorkspace.authority.inventory(signal),
               service: new LocalWorkspaceService({
                 relocate: (workspaceId, move) => runtime.relocateWorkspace(workspaceId, move),

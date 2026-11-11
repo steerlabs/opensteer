@@ -1,3 +1,10 @@
+import {
+  isProjectDeploymentAuthority,
+  readDeploymentAuthority,
+  teamComputerHasExecutionGrant,
+  type DatabaseSchema,
+} from "@opensteer/database";
+import type { Kysely } from "kysely";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -41,10 +48,15 @@ const requestTimeoutMs = 30_000;
 export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriver<"local-directory"> {
   readonly kind = "local-directory" as const;
   readonly #runners: RunnerStorageRegistry;
+  readonly #database: Kysely<DatabaseSchema> | undefined;
   readonly #provisionedPaths = new WeakMap<object, Map<Workspace["id"], string>>();
 
-  constructor(options: { readonly runners: RunnerStorageRegistry }) {
+  constructor(options: {
+    readonly runners: RunnerStorageRegistry;
+    readonly database?: Kysely<DatabaseSchema>;
+  }) {
     this.#runners = options.runners;
+    this.#database = options.database;
   }
 
   /**
@@ -106,23 +118,35 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
     const identity = this.#runners.identityForEnvironment(
       input.workspace.backing.ownerEnvironmentId,
     );
+    const projectStorage = await this.#projectStorage(input.workspace);
     const result = await this.#request(
       input.workspace.backing,
-      {
-        binding: bindingRef(input.workspace.backing, input.workspace.id),
-        fingerprint: {
-          ...(input.workspace.slug ? { slug: input.workspace.slug } : {}),
-          createdBy: input.workspace.createdBy,
-          workspaceKind: input.workspace.kind,
-        },
-        operationId: workspaceLocalOperationId({
-          generation: input.workspace.backing.generation,
-          operation: "provision",
-          workspaceId: input.workspace.id,
-        }),
-        requestId: randomUUID(),
-        type: "host.workspace.local.provision",
-      },
+      projectStorage
+        ? {
+            binding: bindingRef(input.workspace.backing, input.workspace.id),
+            operationId: workspaceLocalOperationId({
+              generation: input.workspace.backing.generation,
+              operation: "provision",
+              workspaceId: input.workspace.id,
+            }),
+            requestId: randomUUID(),
+            type: "host.workspace.project.provision",
+          }
+        : {
+            binding: bindingRef(input.workspace.backing, input.workspace.id),
+            fingerprint: {
+              ...(input.workspace.slug ? { slug: input.workspace.slug } : {}),
+              createdBy: input.workspace.createdBy,
+              workspaceKind: input.workspace.kind,
+            },
+            operationId: workspaceLocalOperationId({
+              generation: input.workspace.backing.generation,
+              operation: "provision",
+              workspaceId: input.workspace.id,
+            }),
+            requestId: randomUUID(),
+            type: "host.workspace.local.provision",
+          },
       "runner.workspace.local.provisioned",
       signal,
     );
@@ -133,6 +157,43 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
       this.#provisionedPaths.set(identity.fence, paths);
     }
     return { backing: input.workspace.backing, status: "ready" };
+  }
+
+  async #projectStorage(workspace: LocalWorkspace): Promise<boolean> {
+    if (!this.#database) return false;
+    const authority = await readDeploymentAuthority(this.#database);
+    if (!isProjectDeploymentAuthority(authority)) return false;
+    if (workspace.kind !== "project")
+      throw new OpensteerError({ code: "forbidden", message: "Team storage holds only Projects" });
+    const placement = await this.#database
+      .selectFrom("executionEnvironments")
+      .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .select([
+        "runners.id",
+        "runners.ownerKind",
+        "runners.ownerUserId",
+        "runners.device",
+        "runners.allowedModules",
+        "runners.revokedAt",
+      ])
+      .where("executionEnvironments.id", "=", workspace.backing.ownerEnvironmentId)
+      .executeTakeFirst();
+    const identity = this.#runners.identityForEnvironment(workspace.backing.ownerEnvironmentId);
+    if (
+      !placement ||
+      placement.revokedAt ||
+      !teamComputerHasExecutionGrant(placement) ||
+      !identity?.capabilities.includes("project-authority-v1") ||
+      !isProjectDeploymentAuthority(identity.deploymentAuthority ?? null) ||
+      identity.runnerId !== placement.id
+    )
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        reason: "computer-offline",
+        message: "The Project's team computer is unavailable",
+        retryable: true,
+      });
+    return true;
   }
 
   storageLocation(workspace: Workspace): string | null {
@@ -148,6 +209,7 @@ export class RunnerLocalWorkspaceDriver implements WorkspaceBackingLifecycleDriv
   }
 
   async relocate(workspace: LocalWorkspace, adopt = false): Promise<void> {
+    if (await this.#projectStorage(workspace)) return;
     if (workspace.kind === "project" && !workspace.slug) throw new Error("Project slug is missing");
     await this.#request(
       workspace.backing,

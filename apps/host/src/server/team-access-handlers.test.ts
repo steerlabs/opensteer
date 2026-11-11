@@ -38,6 +38,7 @@ const procedures = {
 const commands = [
   { ...base, type: "team.computer.replace", expectedComputerId: null },
   { ...base, type: "team.project.create", name: "Support", color: "blue" },
+  { ...base, type: "team.project.delete", workspaceId },
   { ...base, type: "team.access.apply", changes },
   { ...base, type: "team.access.selfGrant", workspaceId },
   {

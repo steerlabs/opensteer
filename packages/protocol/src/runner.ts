@@ -1371,6 +1371,9 @@ export const RunnerModulesSchema = z
   });
 export type RunnerModules = z.infer<typeof RunnerModulesSchema>;
 
+/** Team storage control travels through agents.localStorage. */
+export const teamComputerModules = ["agents", "shell"] as const;
+
 export function advertisedRunnerModules(modules: RunnerModules): readonly RunnerModuleName[] {
   return RunnerModuleNameSchema.options.filter((name) => modules[name] !== undefined);
 }
@@ -1454,6 +1457,7 @@ export const RunnerChallengeSchema = z.object({
   nonce: z.string().regex(/^[A-Za-z0-9_-]{32,255}$/),
   // Missing on a pre-v2 Host, so the producer can report an actionable refusal.
   proofFormatVersion: z.number().int().positive().optional(),
+  projectStorage: z.literal(true).optional(),
   type: z.literal("host.challenge"),
 });
 export type RunnerChallenge = z.infer<typeof RunnerChallengeSchema>;
@@ -1821,6 +1825,7 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
     serverTime: IsoDateTimeSchema,
+    projectStorage: z.literal(true).optional(),
     type: z.literal("host.welcome"),
   }),
   z.strictObject({

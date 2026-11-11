@@ -3,8 +3,8 @@ import { storedProjectDeployment } from "./deployment-execution-authority.js";
 import { OpensteerError, sameStringSet } from "@opensteer/core";
 import type { RunnerDescriptor, RunnerModules, RunnerModuleName } from "@opensteer/protocol";
 
-/** Storage control is carried by agents' environment/localStorage, not a sixth module. */
-export const teamComputerModules = ["agents", "shell"] as const;
+import { teamComputerModules } from "@opensteer/protocol";
+export { teamComputerModules } from "@opensteer/protocol";
 const capabilities = new Set([
   "project-authority-v1",
   "assignments-v1",

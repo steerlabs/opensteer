@@ -1,9 +1,20 @@
-import { createProjectIdentityFixture } from "@opensteer/database/test-support/project";
+import { prepareProjectAdmission } from "@opensteer/database/test-support/project";
+import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
-import { mutateAccess, TeamAccessReadStore } from "@opensteer/database";
-import { describeStore, type StoreFixture } from "@opensteer/database/test-support/store";
+import {
+  OpensteerStore,
+  mutateAccess,
+  TeamAccessReadStore,
+  type ProjectHomeChatPort,
+  ProjectWorkStore,
+} from "@opensteer/database";
+import {
+  describeStore,
+  testModelSelection,
+  type StoreFixture,
+} from "@opensteer/database/test-support/store";
 import { IdentityService } from "@opensteer/identity";
 import {
   TeamSummarySchema,
@@ -22,7 +33,8 @@ import { TeamAdministrationService } from "./team-administration-service.js";
 
 const origin = "http://127.0.0.1:4310";
 async function setup(fixture: StoreFixture) {
-  const run = await createProjectIdentityFixture(fixture, "team-host");
+  const projectWork = await prepareProjectAdmission(fixture);
+  const run = projectWork.project;
   const database = fixture.database;
   const createIdentity = () =>
     new IdentityService(database, {
@@ -61,6 +73,7 @@ async function setup(fixture: StoreFixture) {
     .updateTable("runners")
     .set({
       allowedModules: sql`'["agents","shell"]'::jsonb`,
+      capabilities: sql`'["project-authority-v1"]'::jsonb`,
       device: sql`'{"platform":"linux","form":"server"}'::jsonb`,
     })
     .where("id", "=", run.runnerId)
@@ -116,7 +129,14 @@ async function setup(fixture: StoreFixture) {
   await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
     database,
   );
+  const homeChatCalls: Parameters<ProjectHomeChatPort["ensureHomeChat"]>[0][] = [];
   const service = new TeamAdministrationService({
+    homeChat: {
+      ensureHomeChat: async (input) => {
+        homeChatCalls.push(input);
+        return { state: "not-configured", homeThreadId: null };
+      },
+    },
     database,
     identity,
     teamName: "Test team",
@@ -126,6 +146,7 @@ async function setup(fixture: StoreFixture) {
   const app = await createHostServer(
     hostServerTestDependencies({
       teamAdministration: service,
+      store: new OpensteerStore(database),
       authenticator: new HostAuthenticator({ identity, publicUrl: new URL(origin) }),
       discovery: signHostDiscovery(generateKeyPairSync("ed25519"), {
         canonicalOrigin: origin,
@@ -141,10 +162,453 @@ async function setup(fixture: StoreFixture) {
     session: person.session,
     headers: { cookie: person.cookie, origin },
   });
-  return { ...run, database, app, service, identity, admin, manager, pending, context };
+  return {
+    ...run,
+    projectWork,
+    database,
+    app,
+    service,
+    identity,
+    admin,
+    manager,
+    pending,
+    context,
+    homeChatCalls,
+  };
 }
 
 describeStore("team administration Host boundary", (it) => {
+  it("attributes a post-crash settings retry to the acting manager after the Project creator left", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    try {
+      await f.database
+        .deleteFrom("projectRuntimeSettings")
+        .where("workspaceId", "=", f.workspace.id)
+        .execute();
+      const instance = f.projectWork.prepared.harnessInstance;
+      await f.database
+        .updateTable("users")
+        .set({ memberState: "removed" })
+        .where("id", "=", f.userId)
+        .execute();
+      const work = new ProjectWorkStore(f.database, {
+        runnerIsConnected: () => true,
+        runnerIsAttached: () => true,
+      });
+      const homeChat: ProjectHomeChatPort = {
+        ensureHomeChat: async (input) => {
+          const { events: _events, ...state } = await work.ensureHomeChat(input);
+          return state;
+        },
+      };
+      let failAfterSettingsCommit = true;
+      const service = new TeamAdministrationService({
+        database: f.database,
+        identity: f.identity,
+        teamName: "Team",
+        runnerIsConnected: () => true,
+        invalidate: () => undefined,
+        homeChat: {
+          ensureHomeChat: async (input) => {
+            if (failAfterSettingsCommit) throw new Error("Crash after settings commit");
+            return homeChat.ensureHomeChat(input);
+          },
+        },
+      });
+      const command = {
+        type: "team.project.settings.set" as const,
+        workspaceId: f.workspace.id,
+        expectedRevision: 2,
+        expectedSettingsRevision: null,
+        idempotencyKey: "configure-after-creator-left",
+        settings: {
+          harnessInstanceId: instance.id,
+          modelSelection: testModelSelection,
+          accessMode: "full-access" as const,
+          instructions: "Project only",
+          timeZone: "UTC",
+        },
+      };
+      await expect(service.command(command, f.context(f.manager))).rejects.toThrow(
+        "Crash after settings commit",
+      );
+      expect((await storeFixture.store.getWorkspace(f.workspace.id))?.homeThreadId).toBeNull();
+      expect(
+        await f.database
+          .selectFrom("projectRuntimeSettings")
+          .select("revision")
+          .where("workspaceId", "=", f.workspace.id)
+          .executeTakeFirst(),
+      ).toMatchObject({ revision: "1" });
+      expect(
+        await service.read(
+          "team.project.settings.get",
+          { workspaceId: f.workspace.id },
+          f.context(f.manager),
+        ),
+      ).toMatchObject({ runtime: { state: "unavailable", reason: "not-configured" } });
+      failAfterSettingsCommit = false;
+      await service.command(command, f.context(f.manager));
+      const project = await storeFixture.store.getWorkspace(f.workspace.id);
+      if (!project?.homeThreadId)
+        throw new Error("The settings retry did not create the home chat");
+      expect(
+        await f.database
+          .selectFrom("threads")
+          .select([
+            "createdBy",
+            "environmentId",
+            "harnessInstanceId",
+            "modelSelection",
+            "accessMode",
+            "inheritsMain",
+          ])
+          .where("id", "=", project.homeThreadId)
+          .executeTakeFirst(),
+      ).toMatchObject({
+        createdBy: f.manager.session.user.id,
+        environmentId: f.environmentId,
+        harnessInstanceId: instance.id,
+        modelSelection: testModelSelection,
+        accessMode: "full-access",
+        inheritsMain: false,
+      });
+      expect(
+        await storeFixture.store.findMainWorkspaceForOwner(f.manager.session.user.id),
+      ).toBeUndefined();
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("deletes failed-provisioning Projects through the writer, authorizes before target reads and repeats as a no-op", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    try {
+      const created = await f.service.command(
+        {
+          type: "team.project.create",
+          expectedRevision: 2,
+          idempotencyKey: "delete-create",
+          name: "Delete me",
+          color: "blue",
+        },
+        f.context(f.manager),
+      );
+      if (created.type !== "team.project.create") throw new Error("Wrong command result");
+      await f.database
+        .updateTable("workspaces")
+        .set({ status: "failed" })
+        .where("id", "=", created.projectId)
+        .execute();
+      await f.database
+        .updateTable("users")
+        .set({ admittedAt: new Date() })
+        .where("id", "=", f.pending.session.user.id)
+        .execute();
+      const command = {
+        type: "team.project.delete" as const,
+        workspaceId: created.projectId,
+        expectedRevision: 3,
+        idempotencyKey: "delete",
+      };
+      for (const workspaceId of [created.projectId, createId("workspace")])
+        await expect(
+          f.service.command({ ...command, workspaceId }, f.context(f.pending)),
+        ).rejects.toMatchObject({ code: "not_found", reason: "team-object-unavailable" });
+      expect(
+        await f.service.read(
+          "team.project.access.get",
+          { workspaceId: created.projectId },
+          f.context(f.manager),
+        ),
+      ).toMatchObject({ can: { delete: { allowed: true } } });
+      expect(await f.service.command(command, f.context(f.manager))).toMatchObject({
+        type: "team.project.delete",
+        accessRevision: 4,
+      });
+      expect(
+        await f.service.command(
+          { ...command, idempotencyKey: "delete-again" },
+          f.context(f.manager),
+        ),
+      ).toMatchObject({ type: "team.project.delete", accessRevision: 4 });
+      expect(await storeFixture.store.getWorkspace(created.projectId)).toMatchObject({
+        status: "deleting",
+      });
+      expect(
+        await f.database
+          .selectFrom("principals")
+          .select("id")
+          .where("workspaceId", "=", created.projectId)
+          .execute(),
+      ).toHaveLength(1);
+      const legacy = await injectRpcRequest(
+        f.app,
+        "commands.dispatch",
+        {
+          type: "workspace.delete",
+          workspaceId: created.projectId,
+          idempotencyKey: "legacy-delete",
+        },
+        f.context(f.manager).headers,
+      );
+      expect(legacy.statusCode, legacy.body).toBe(403);
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("bootstraps an admitted person with zero Projects without asking for Main or private services", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    try {
+      const response = await injectRpcRequest(
+        f.app,
+        "bootstrap.get",
+        {},
+        f.context(f.admin).headers,
+      );
+      expect(response.statusCode, response.body).toBe(200);
+      const payload = JSON.parse(response.body).data;
+      expect(payload).toMatchObject({
+        homeWorkspace: null,
+        workspaces: [],
+        workspaceWindow: { totalItems: 0 },
+      });
+      expect(
+        await storeFixture.store.findMainWorkspaceForOwner(f.admin.session.user.id),
+      ).toBeUndefined();
+      for (const command of [
+        { type: "machine.revoke", machineId: f.runnerId, idempotencyKey: "legacy-revoke" },
+        {
+          type: "runner.enrollment.createManaged",
+          name: "extra computer",
+          allowedModules: ["agents", "shell"],
+          idempotencyKey: "legacy-enroll",
+        },
+      ]) {
+        const refused = await injectRpcRequest(
+          f.app,
+          "commands.dispatch",
+          command,
+          f.context(f.admin).headers,
+        );
+        expect(refused.statusCode, refused.body).toBe(403);
+      }
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("does not issue an enrollment if the administrator's session ends during old-computer teardown", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    const issuer = new RunnerAuthenticator({
+      store: new OpensteerStore(f.database),
+      issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
+    });
+    const service = new TeamAdministrationService({
+      database: f.database,
+      identity: f.identity,
+      teamName: "Test team",
+      runnerIsConnected: () => false,
+      invalidate: () => undefined,
+      revokeComputer: async () => {
+        await f.database.deleteFrom("authSessions").where("id", "=", f.admin.session.id).execute();
+      },
+      enrollComputer: (revision, actor, key) =>
+        issuer.createEnrollment({
+          expectedTeamAccessRevision: revision,
+          expectedTeamActor: actor,
+          allowedModules: ["agents", "shell"],
+          createdBy: actor.userId,
+          idempotencyKey: key,
+          lifetimeSeconds: 600,
+          name: "Team computer",
+          runnerKind: "managed",
+        }),
+    });
+    try {
+      await expect(
+        service.command(
+          {
+            type: "team.computer.replace",
+            expectedRevision: 2,
+            expectedComputerId: f.runnerId,
+            idempotencyKey: "session-ended",
+          },
+          f.context(f.admin),
+        ),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+      expect(
+        await f.database
+          .selectFrom("runnerEnrollments")
+          .select("id")
+          .where("createdBy", "=", f.admin.session.user.id)
+          .where("consumedAt", "is", null)
+          .execute(),
+      ).toEqual([]);
+      expect(
+        (
+          await f.database
+            .selectFrom("runners")
+            .select("revokedAt")
+            .where("id", "=", f.runnerId)
+            .executeTakeFirst()
+        )?.revokedAt,
+      ).toBeInstanceOf(Date);
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("replaces the expected team computer before enrollment and refuses a stale screen", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    const issued: number[] = [];
+    const enrollmentIssuer = new RunnerAuthenticator({
+      store: new OpensteerStore(f.database),
+      issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
+    });
+    vi.stubEnv("OPENSTEER_RUNNER_SOURCE_REVISION", "b".repeat(40));
+    vi.stubEnv("OPENSTEER_SOURCE_REVISION", "a".repeat(40));
+    vi.stubEnv("OPENSTEER_IMAGE_REGISTRY", "registry.team.test/opensteer");
+    const service = new TeamAdministrationService({
+      database: f.database,
+      identity: f.identity,
+      teamName: "Test team",
+      runnerIsConnected: () => false,
+      invalidate: () => undefined,
+      enrollComputer: async (revision, actor, key) => {
+        expect(
+          await f.database
+            .selectFrom("runners")
+            .select("revokedAt")
+            .where("id", "=", f.runnerId)
+            .executeTakeFirst(),
+        ).toEqual({ revokedAt: expect.any(Date) });
+        issued.push(revision);
+        return enrollmentIssuer.createEnrollment({
+          expectedTeamAccessRevision: revision,
+          expectedTeamActor: actor,
+          allowedModules: ["agents", "shell"],
+          createdBy: actor.userId,
+          idempotencyKey: key,
+          lifetimeSeconds: 600,
+          name: "Team computer",
+          runnerKind: "managed",
+        });
+      },
+    });
+    try {
+      const command = {
+        type: "team.computer.replace" as const,
+        expectedRevision: 2,
+        expectedComputerId: f.runnerId,
+        idempotencyKey: "replace",
+      };
+      const result = await service.command(command, f.context(f.admin));
+      if (result.type !== "team.computer.replace") throw new Error("Wrong replacement result");
+      expect(result.accessRevision).toBe(3);
+      expect(result.runnerImage).toBe(`registry.team.test/opensteer/runner:sha-${"b".repeat(40)}`);
+      const replay = await service.command(command, f.context(f.admin));
+      if (replay.type !== "team.computer.replace") throw new Error("Wrong replacement replay");
+      expect(replay.enrollmentId).toBe(result.enrollmentId);
+      expect(replay.expiresAt).toBe(result.expiresAt);
+      expect(replay.token === result.token).toBe(true);
+      expect(
+        await f.database
+          .selectFrom("runnerEnrollments")
+          .select(["allowedModules", "ownerKind", "ownerUserId"])
+          .where("id", "=", result.enrollmentId)
+          .executeTakeFirst(),
+      ).toEqual({
+        allowedModules: ["agents", "shell"],
+        ownerKind: "deployment",
+        ownerUserId: null,
+      });
+      await expect(
+        service.command({ ...command, idempotencyKey: "stale" }, f.context(f.admin)),
+      ).rejects.toMatchObject({ reason: "access-revision-changed" });
+      await expect(
+        service.command({ ...command, idempotencyKey: "non-admin" }, f.context(f.manager)),
+      ).rejects.toMatchObject({ reason: "team-admin-required" });
+      expect(issued).toEqual([3, 3]);
+    } finally {
+      vi.unstubAllEnvs();
+      await f.app.close();
+    }
+  });
+
+  it("creates a Project without Main or chat, invokes the chat port as attribution, and exposes names-only pages", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    try {
+      const result = await f.service.command(
+        {
+          type: "team.project.create",
+          expectedRevision: 2,
+          idempotencyKey: "create-no-main",
+          name: "New Support",
+          color: "blue",
+        },
+        f.context(f.manager),
+      );
+      if (result.type !== "team.project.create") throw new Error("Wrong command result");
+      expect(f.homeChatCalls).toEqual([
+        {
+          workspaceId: result.projectId,
+          createdBy: f.manager.session.user.id,
+          settingsRevision: null,
+          inheritsMain: false,
+        },
+      ]);
+      const project = await storeFixture.store.getWorkspace(result.projectId);
+      expect(project).toMatchObject({ status: "provisioning", homeThreadId: null });
+      expect(
+        await storeFixture.store.findMainWorkspaceForOwner(f.manager.session.user.id),
+      ).toBeUndefined();
+      const page = await f.service.read(
+        "team.projects.list",
+        { limit: 1, query: "New Support" },
+        f.context(f.admin),
+      );
+      expect(page).toMatchObject({
+        items: [{ id: result.projectId, name: "New Support", people: 1, myLevel: null }],
+      });
+      await expect(
+        f.service.read("team.projects.list", {}, f.context(f.manager)),
+      ).rejects.toMatchObject({ reason: "team-admin-required" });
+      const summary = await f.service.read("team.summary.get", {}, f.context(f.manager));
+      expect(summary).toMatchObject({
+        can: { computer: { allowed: false } },
+        projects: expect.arrayContaining([
+          {
+            id: result.projectId,
+            name: "New Support",
+            color: "blue",
+            level: "manage",
+            unread: false,
+            needsYou: 0,
+            lastActivity: null,
+            canOpen: { allowed: true },
+            runtime: { state: "unavailable", reason: "not-configured" },
+          },
+        ]),
+      });
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("isolates anonymous caller exhaustion and retains a shared invitation cap", async ({
     storeFixture,
   }) => {
@@ -255,6 +719,17 @@ describeStore("team administration Host boundary", (it) => {
       expect(JSON.stringify(summary)).not.toMatch(
         /email|instructions|presentation|password|tokenHash/,
       );
+      const snapshot = await new OpensteerStore(database).workspaceSnapshot(prepared.workspace.id, {
+        viewerId: manager.session.user.id,
+      });
+      expect(snapshot.workspace.audience).toEqual({ people: 2, myLevel: "manage" });
+      expect(snapshot.threads.length).toBeGreaterThan(0);
+      for (const thread of snapshot.threads)
+        expect(thread.audience).toEqual(snapshot.workspace.audience);
+      expect(summary.can.projects).toEqual({ allowed: true });
+      await expect(service.read("team.computer.get", {}, context(manager))).rejects.toMatchObject({
+        reason: "team-admin-required",
+      });
       const managerSummary = TeamSummarySchema.parse(
         await service.read(
           "team.summary.get",

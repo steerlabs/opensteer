@@ -21,6 +21,7 @@ export async function enrollTestTeamComputer(
     name: "Team computer",
     runnerKind: "main",
   });
+  if (!descriptor.modules.agents) throw new Error("Team computer fixture requires agents");
   await enrollTestRunner(store, {
     ...input,
     createdBy: input.userId,
@@ -29,7 +30,14 @@ export async function enrollTestTeamComputer(
     device: { platform: "linux", form: "server" },
     capabilities: ["filesystem", "project-authority-v1"],
     modules: {
-      agents: descriptor.modules.agents,
+      agents: {
+        ...descriptor.modules.agents,
+        localStorage: {
+          bindings: [],
+          truncated: false,
+          storageAuthorityId: createId("storageAuthority"),
+        },
+      },
       shell: {
         platform: "linux",
         fullDiskAccess: false,

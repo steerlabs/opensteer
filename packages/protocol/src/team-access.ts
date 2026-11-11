@@ -221,6 +221,7 @@ export const TeamSummarySchema = z.object({
     audit: CanSchema,
     invite: CanSchema,
     computer: CanSchema.optional(),
+    projects: CanSchema.optional(),
   }),
 });
 export const ModelSelectionInputSchema = ModelSelectionSchema.omit({ nativeModelId: true });
@@ -589,6 +590,10 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     name,
     color: MarkColorSchema,
   }),
+  MutationBaseSchema.extend({
+    type: z.literal("team.project.delete"),
+    workspaceId: WorkspaceIdSchema,
+  }),
   MutationBaseSchema.extend({ type: z.literal("team.access.apply"), changes: AccessChangesSchema }),
   MutationBaseSchema.extend({
     type: z.literal("team.access.selfGrant"),
@@ -613,11 +618,13 @@ const resultBase = z.object({ accessRevision: RevisionSchema, commandId: Command
 export const TeamCommandResultSchema = z.discriminatedUnion("type", [
   resultBase.extend({
     type: z.literal("team.computer.replace"),
+    runnerImage: z.string().min(1).max(512).nullable().optional(),
     enrollmentId: z.string().min(1).max(256),
     token: z.string().min(16).max(4096),
     expiresAt: timestamp,
   }),
   resultBase.extend({ type: z.literal("team.project.create"), projectId: WorkspaceIdSchema }),
+  resultBase.extend({ type: z.literal("team.project.delete") }),
   resultBase.extend({
     type: z.literal("team.access.apply"),
     transitions: z.array(MembershipTransitionSchema).max(2048),

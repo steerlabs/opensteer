@@ -1,4 +1,5 @@
 import {
+  teamComputerModules,
   ProjectHostToRunnerMessageSchema,
   ProjectRunnerToHostMessageSchema,
 } from "@opensteer/protocol";
@@ -230,6 +231,7 @@ export interface RunnerAgentsConnection {
   readonly localWorkspaces?: {
     readonly inventory: () => Promise<RunnerLocalStorageInventory>;
     readonly service: LocalWorkspaceService;
+    readonly selectProjectStorage?: () => void;
   };
   readonly runtime: RunnerRuntime;
   readonly workspaceBackings: readonly import("@opensteer/workspace").WorkspaceExecutionAccessPlan["kind"][];
@@ -621,6 +623,13 @@ export class ReconnectingHostConnection {
     if (Date.parse(first.expiresAt) <= Date.now()) {
       throw new Error("Host Runner challenge is expired");
     }
+    const local = this.#agents?.localWorkspaces;
+    if (first.projectStorage) {
+      if (!this.#agents?.runtime.projectExecutionAvailable || !local?.selectProjectStorage)
+        throw new Error("Update this computer for team Project storage");
+      local.service.admitProjectStorage(false);
+      local.selectProjectStorage();
+    }
     const descriptor = await this.#descriptor();
     const proof = this.#proof(first, descriptor);
     await sendWireMessage(socket, proof);
@@ -664,6 +673,13 @@ export class ReconnectingHostConnection {
         runnerId: this.#identity.runnerId,
       });
       throw new Error("Host Runner connection generation restarted; re-enrollment is required");
+    }
+    if (!!response.projectStorage !== !!first.projectStorage)
+      throw new Error("Host changed Project storage authority during admission");
+    if (response.projectStorage) {
+      if (!sameStringSet(response.allowedModules, teamComputerModules))
+        throw new Error("Team Project storage requires the team-computer grant");
+      local?.service.admitProjectStorage(true);
     }
     this.#fence.adopt(
       {
@@ -1467,6 +1483,7 @@ class AgentsWorkSession implements RunnerWorkSession {
       case "host.app.cancel":
         void this.#answerAppRequest(message).catch(() => this.#options.fail("App response failed"));
         return;
+      case "host.workspace.project.provision":
       case "host.workspace.local.provision":
       case "host.workspace.local.relocate":
       case "host.workspace.local.inspect":
@@ -2006,6 +2023,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             error: notRunningAgents,
           });
           return;
+        case "host.workspace.project.provision":
         case "host.workspace.local.provision":
         case "host.workspace.local.relocate":
         case "host.workspace.local.inspect":
@@ -2371,6 +2389,7 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
     case "host.app.connect":
     case "host.app.stop":
     case "host.app.cancel":
+    case "host.workspace.project.provision":
     case "host.workspace.local.provision":
     case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":

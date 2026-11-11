@@ -1,7 +1,9 @@
+import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { createTestDeploymentIdentity } from "@opensteer/database/test-support/deployment";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { expect, onTestFinished } from "vitest";
-import { createId, ProjectEngineRequestSchema } from "@opensteer/core";
+import { createId, ProjectEngineRequestSchema, type AgentEvent } from "@opensteer/core";
 import {
   ProjectExecutionStore,
   readProjectRunBinding,
@@ -27,6 +29,51 @@ import { createExecutionRuntime } from "./execution-runtime.js";
 import type { ProjectRuntimeInfrastructure } from "./project-runtime.js";
 
 describeStore("stored Project runtime composition", (it) => {
+  for (const kind of ["personal", "server"] as const)
+    it(`reuses the factory authority read on the first ${kind} bootstrap check`, async ({
+      storeFixture,
+    }) => {
+      const { database } = storeFixture;
+      await createTestDeploymentIdentity(database, {
+        shape: { kind, defaultWorkspaceBacking: "local-directory" },
+        model: 1,
+      });
+      const deployment = await storeFixture.store.getDeployment();
+      if (!deployment) throw new Error("Cold identity is missing");
+      const userId = await storeFixture.store.createUser("First-screen person");
+      let reads = 0;
+      const observed = database.withPlugin({
+        transformQuery({ node }) {
+          if (JSON.stringify(node).includes('"name":"deployments"')) reads++;
+          return node;
+        },
+        async transformResult({ result }) {
+          return result;
+        },
+      });
+      const runtime = await createExecutionRuntime(observed, deployment, {});
+      if (runtime.kind !== "person") throw new Error("Model 1 must select the person runtime");
+      expect(reads).toBe(1);
+      expect(await runtime.store.securityEffectAuthority()).toEqual({ kind, model: 1 });
+      expect(await runtime.store.securityEffectAuthority()).toEqual({ kind, model: 1 });
+      expect(reads).toBe(1);
+      await createTestWorkspace(runtime.store, {
+        kind: "main",
+        createdBy: userId,
+        name: "Main",
+        idempotencyKey: "first-main",
+        status: "ready",
+        backing: {
+          kind: "local-directory",
+          ownerEnvironmentId: createId("environment"),
+          bindingId: createId("workspaceBinding"),
+          generation: 1,
+          storageAuthorityId: null,
+        },
+      });
+      expect(reads).toBe(1);
+    });
+
   it("recovers durable startup work, binds Request proposal and cancellation, and joins shutdown work", async ({
     storeFixture,
   }) => {
@@ -71,6 +118,7 @@ describeStore("stored Project runtime composition", (it) => {
       environmentIds: [project.environmentId],
       fence,
     };
+    const published: AgentEvent[] = [];
     const commands: ProjectExecutableCommand[] = [];
     const frames: ProjectHostToRunnerMessage[] = [];
     const entered = Promise.withResolvers<void>();
@@ -123,7 +171,9 @@ describeStore("stored Project runtime composition", (it) => {
       },
       dispatcherId: "Project Host fixture",
       executionLeaseMs: 60_000,
-      publish: () => undefined,
+      publish: (events) => {
+        published.push(...events);
+      },
       live: () => undefined,
       collectAccessEvents: () => undefined,
       onQueueWake: (wake) => {
@@ -156,6 +206,18 @@ describeStore("stored Project runtime composition", (it) => {
       await active.close();
     });
     expect(commands.map((command) => command.type)).toEqual(["run.execute.project"]);
+    const home = await active.homeChat.ensureHomeChat({
+      workspaceId: project.workspace.id,
+      createdBy: project.userId,
+      settingsRevision: 1,
+      inheritsMain: false,
+    });
+    expect(home.state).toBe("ready");
+    expect(
+      published.filter(
+        (event) => event.type === "thread.created" && event.data.thread.id === home.homeThreadId,
+      ),
+    ).toHaveLength(1);
     const grant = await database
       .selectFrom("grants")
       .select("id")

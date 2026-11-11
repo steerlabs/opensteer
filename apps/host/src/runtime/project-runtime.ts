@@ -20,6 +20,7 @@ import {
   ProjectWorkStopStore,
   ProjectWorkStore,
   type DatabaseSchema,
+  type ProjectHomeChatPort,
 } from "@opensteer/database";
 import type { Clock } from "@opensteer/shared/clock";
 import type { Kysely } from "kysely";
@@ -64,6 +65,7 @@ export interface ProjectRuntimeInfrastructure {
 /** Constructed only by the stored-authority factory; startup policy remains independently fenced. */
 export class ProjectRuntime implements ProjectRuntimePorts {
   readonly admission: ProjectWorkStore;
+  readonly homeChat: ProjectHomeChatPort;
   readonly capabilities: ProjectCapabilityTokenService;
   readonly dispatch: ProjectCommandDispatcher;
   readonly recovery: ProjectRunRecoveryStore;
@@ -106,6 +108,13 @@ export class ProjectRuntime implements ProjectRuntimePorts {
       runnerIsAttached: attached,
       cancelRunRequests,
     });
+    this.homeChat = {
+      ensureHomeChat: async (input) => {
+        const { events, ...state } = await this.admission.ensureHomeChat(input);
+        if (events.length) publish(events);
+        return state;
+      },
+    };
     this.capabilities = new ProjectCapabilityTokenService({
       tokens: infrastructure.tokens,
       authorizer: {

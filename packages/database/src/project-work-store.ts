@@ -1,3 +1,5 @@
+import { checkAccess } from "./access-store.js";
+import type { ProjectHomeChatPort } from "./team-project-store.js";
 import { readProjectThreadActivity } from "./agent-thread-history.js";
 import { appendDoneState } from "./task-done.js";
 import { claimMessageAttachments } from "./attachment-store.js";
@@ -1086,7 +1088,68 @@ export class ProjectWorkStore {
     return { thread, accessMode: snapshot.accessMode };
   }
 
+  async ensureHomeChat(input: Parameters<ProjectHomeChatPort["ensureHomeChat"]>[0]): Promise<
+    Awaited<ReturnType<ProjectHomeChatPort["ensureHomeChat"]>> & {
+      readonly events: readonly AgentEvent[];
+    }
+  > {
+    await assertProjectAuthority(this.database);
+    const actor = await this.database
+      .selectFrom("workspaceMemberships as m")
+      .innerJoin("users as u", "u.id", "m.userId")
+      .select(["u.authorityGeneration", "m.generation"])
+      .where("m.workspaceId", "=", input.workspaceId)
+      .where("m.userId", "=", input.createdBy)
+      .where("m.role", "=", "owner")
+      .where("m.state", "=", "active")
+      .where("u.admittedAt", "is not", null)
+      .where("u.disabledAt", "is", null)
+      .where("u.memberState", "=", "active")
+      .where("u.memberKind", "=", "full")
+      .executeTakeFirst();
+    if (!actor) admissionUnavailable("project-manage-required");
+    try {
+      const result = await this.createThread(
+        {
+          workspaceId: input.workspaceId,
+          origin: HumanRootSchema.parse({
+            userId: input.createdBy,
+            initiatorGeneration: Number(actor.authorityGeneration),
+            membershipGeneration: Number(actor.generation),
+            originConnectionId: null,
+          }),
+          title: "Chat",
+          role: "conversation",
+          home: true,
+          idempotencyKey: "project-home-chat",
+        },
+        input.settingsRevision,
+      );
+      return { state: "ready", homeThreadId: result.thread.id, events: result.events };
+    } catch (error) {
+      if (
+        error instanceof OpensteerError &&
+        [
+          "not-configured",
+          "computer-offline",
+          "engine-unavailable",
+          "model-unavailable",
+          "runner-update-required",
+        ].includes(error.reason ?? "")
+      )
+        return { state: "not-configured", homeThreadId: null, events: [] };
+      throw error;
+    }
+  }
+
   async createProjectThread(input: z.input<typeof ProjectThreadCreationSchema>) {
+    return this.createThread(input);
+  }
+
+  private async createThread(
+    input: z.input<typeof ProjectThreadCreationSchema>,
+    homeSettingsRevision?: number | null,
+  ) {
     const request = ProjectThreadCreationSchema.parse(input);
     requireBoundedIdentity(request.idempotencyKey, "Project Thread identity", 4096);
     if (request.home && request.role !== "conversation")
@@ -1132,9 +1195,21 @@ export class ProjectWorkStore {
         .where("id", "=", request.workspaceId)
         .where("kind", "=", "project")
         .where("deletedAt", "is", null)
-        .where("status", "=", "ready")
         .executeTakeFirst();
-      if (!workspace) admissionUnavailable("workspace-unavailable");
+      if (!workspace || ["deleting", "deleted"].includes(workspace.status))
+        admissionUnavailable("workspace-unavailable");
+      if (homeSettingsRevision === undefined && workspace.status !== "ready")
+        admissionUnavailable("workspace-unavailable");
+      if (homeSettingsRevision !== undefined) {
+        const allowed = await checkAccess(transaction, {
+          principal: { kind: "person", userId: request.origin.userId },
+          callerKind: "person",
+          target: { kind: "project", workspaceId: workspace.id },
+          action: "manage",
+          expectedMemberGeneration: request.origin.initiatorGeneration,
+        });
+        if (!allowed.allowed) admissionUnavailable("project-manage-required");
+      }
       const prior = await transaction
         .selectFrom("commands")
         .select(["payload", "threadId"])
@@ -1165,12 +1240,24 @@ export class ProjectWorkStore {
           wasDuplicate: true,
         };
       }
+      if (homeSettingsRevision !== undefined && workspace.status !== "ready")
+        admissionUnavailable("not-configured");
       const { environmentId, snapshot, principalId } = await reserveProjectRuntime(
         transaction,
         workspace.id,
         request.origin,
         this.dependencies.runnerIsConnected,
       );
+      if (
+        homeSettingsRevision !== undefined &&
+        homeSettingsRevision !== null &&
+        snapshot.settingsRevision !== homeSettingsRevision
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "settings-revision-changed",
+          message: "Project runtime settings changed before chat creation",
+        });
       const actorPrincipalId = await principalIdForUser(transaction, request.origin.userId);
       const now = new Date();
       const threadId = createId("thread");

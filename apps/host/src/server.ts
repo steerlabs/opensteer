@@ -1,3 +1,4 @@
+import { isProjectDeploymentAuthority } from "@opensteer/database";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
@@ -1185,6 +1186,45 @@ export async function createHostServer(
         const diagnostic = dependencies.realtime.bootstrapDiagnostics.report(diagnosticHeader);
         if (diagnostic) app.log.warn(diagnostic, "host.bootstrap.loop");
       }
+      if (isProjectDeploymentAuthority(await dependencies.store.securityEffectAuthority())) {
+        const [page, identityConfig] = await Promise.all([
+          dependencies.store.workspacePageForOwner({ ownerId }),
+          dependencies.authenticator.identity.configuration(),
+        ]);
+        return rpcSuccess(
+          HostBootstrapSchema.parse({
+            browser: {
+              available: false,
+              placements: [],
+              profiles: [],
+              sessions: [],
+              profileGrants: [],
+            },
+            appTabs: [],
+            latestPlaces: [],
+            notificationPreferences: page.notificationPreferences,
+            deploymentId: dependencies.discovery.document.deploymentId,
+            deploymentShape: dependencies.discovery.document.deploymentShape,
+            deploymentPolicy: deploymentClientPolicy(
+              deploymentPolicy({
+                kind: dependencies.discovery.document.deploymentShape.kind,
+                defaultWorkspaceBacking: "local-directory",
+              }),
+            ),
+            environments: [],
+            harnesses: [],
+            homeWorkspace: null,
+            identityConfig,
+            machines: [],
+            ...(context.surface ? { sessionSurface: context.surface } : {}),
+            sessionId: session.id,
+            user: session.user,
+            workspaceSharingAvailable: true,
+            workspaces: page.workspaces,
+            workspaceWindow: page.window,
+          }),
+        );
+      }
       const homeWorkspace = await dependencies.workspaces
         .ensureMainWorkspace(ownerId)
         .catch((error: unknown) => {
@@ -1734,6 +1774,17 @@ export async function createHostServer(
     }
     const session = requireRpcSession(context);
     const userId = session.user.id;
+    if (
+      (command.type === "runner.enrollment.createManaged" ||
+        command.type === "runner.enrollment.createLocal" ||
+        command.type === "runner.enrollment.createPhone") &&
+      isProjectDeploymentAuthority(await dependencies.store.securityEffectAuthority())
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "team-unavailable",
+        message: "Team computers are enrolled through team computer replacement",
+      });
     if (isAdministrationCommand(command))
       return administration.execute(
         { kind: "person", userId, isAdministrator: session.user.instanceRole === "administrator" },
@@ -2826,7 +2877,8 @@ export async function createHostServer(
     phoneUpdates.attach(socket, releaseChallenge);
   });
 
-  app.get(hostInternalRoutePaths.runners, { websocket: true }, (socket) => {
+  app.get(hostInternalRoutePaths.runners, { websocket: true }, async (socket) => {
+    const storageAuthority = await dependencies.store.securityEffectAuthority();
     const releaseChallenge = runnerChallenges.acquire();
     if (!releaseChallenge) {
       socket.close(1013, "Runner authentication capacity reached");
@@ -2844,6 +2896,7 @@ export async function createHostServer(
           notifyMachinesChanged(dependencies.realtime, "machine.command");
         }
       },
+      storageAuthority,
     );
   });
 
@@ -3195,6 +3248,7 @@ function attachRunnerSocket(
     readonly connectionGeneration: number;
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   }) => Promise<void>,
+  storageAuthority: { readonly kind: "personal" | "server"; readonly model: 1 | 2 } | null,
 ): void {
   const peer = jsonPeer<HostToRunnerMessage>(socket, `runner-peer:${randomUUID()}`);
   // A Run can stream many small events at once, for example a command's output
@@ -3212,7 +3266,10 @@ function attachRunnerSocket(
   });
   /** The proven identity behind this socket, once it has proven one. */
   let runner: RunnerIdentity | undefined;
-  const challenge = authenticator.issueChallenge();
+  const challenge = {
+    ...authenticator.issueChallenge(),
+    ...(isProjectDeploymentAuthority(storageAuthority) ? { projectStorage: true as const } : {}),
+  };
   const challengeTimeout = setTimeout(
     () => {
       if (!runner && socket.readyState === socket.OPEN) {

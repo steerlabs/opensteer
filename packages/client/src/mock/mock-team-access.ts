@@ -161,6 +161,7 @@ const denied = (reason?: TeamReason): Can =>
  * counts and previews it shows stay consistent with its own fixtures.
  */
 export class MockTeamAccess {
+  readonly #deletedProjects = new Set<WorkspaceId>();
   readonly scenario: MockTeamScenario;
   readonly #now: () => Date;
   #revision = 41;
@@ -696,6 +697,7 @@ export class MockTeamAccess {
         addPeople: editable,
         editInstructions: myLevel === "manage" ? allowed : denied("project-manage-required"),
         appointManager: editable,
+        delete: editable,
         selfGrant:
           this.#admin && myLevel === null
             ? allowed
@@ -989,6 +991,19 @@ export class MockTeamAccess {
           "team-not-implemented",
           "The team computer preview is not implemented yet.",
         );
+      case "team.project.delete": {
+        if (this.#deletedProjects.has(command.workspaceId))
+          return { type: command.type, ...base() };
+        if (!this.#canEditAccess(command.workspaceId).allowed)
+          throw refusal("forbidden", "project-manage-required", "Project management is required.");
+        this.#project(command.workspaceId);
+        this.#checkRevision(command.expectedRevision);
+        this.#projects.delete(command.workspaceId);
+        this.#entries = this.#entries.filter((entry) => entry.workspaceId !== command.workspaceId);
+        this.#deletedProjects.add(command.workspaceId);
+        this.#bump();
+        return { type: command.type, ...base() };
+      }
       case "team.project.create": {
         if (this.#viewer.kind !== "full")
           throw refusal("forbidden", "team-admin-required", "Guests can't create projects.");

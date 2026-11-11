@@ -4,6 +4,17 @@ import { hostProcessEntries } from "./src/process-entries.js";
 
 export default defineConfig(
   nodeApp({
+    define: {
+      "process.env.OPENSTEER_RUNNER_SOURCE_REVISION": JSON.stringify(
+        process.env.OPENSTEER_RUNNER_SOURCE_REVISION ?? process.env.OPENSTEER_SOURCE_REVISION ?? "",
+      ),
+      "process.env.OPENSTEER_SOURCE_REVISION": JSON.stringify(
+        process.env.OPENSTEER_SOURCE_REVISION ?? "",
+      ),
+      "process.env.OPENSTEER_IMAGE_REGISTRY": JSON.stringify(
+        process.env.OPENSTEER_IMAGE_REGISTRY ?? "",
+      ),
+    },
     entry: {
       main: hostProcessEntries.main,
       ...hostProcessEntries.workers,

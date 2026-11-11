@@ -197,6 +197,9 @@ function createStore(
     pages,
     stateChanges,
     store: {
+      async securityEffectAuthority() {
+        return { kind: "personal" as const, model: 1 as const };
+      },
       async findMainWorkspaceForOwner(ownerId: Workspace["createdBy"]) {
         return (
           workspaces.find((item) => item.createdBy === ownerId && item.kind === "main") ?? null

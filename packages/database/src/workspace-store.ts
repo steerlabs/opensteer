@@ -1,3 +1,9 @@
+import {
+  isProjectDeploymentAuthority,
+  readInitializedDeploymentAuthority,
+  storedProjectDeployment,
+} from "./deployment-execution-authority.js";
+import { teamProjectAudiences } from "./team-project-store.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
 import { SpecialistStore } from "./specialist-store.js";
@@ -550,6 +556,11 @@ export async function requestWorkspaceDeletion(
   readonly requestEvents: readonly AgentEvent[];
   readonly workspace: Workspace;
 }> {
+  if (isProjectDeploymentAuthority(await readInitializedDeploymentAuthority(database)))
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Team Project deletion requires the access writer",
+    });
   if (!Number.isFinite(input.purgeAfter.getTime())) {
     throw new OpensteerError({ code: "bad_request", message: "Invalid Workspace purge time" });
   }
@@ -880,9 +891,11 @@ export async function workspacePageForOwner(
         .selectFrom("workspaces")
         .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
         .selectAll("workspaces")
+        .select(storedProjectDeployment.as("projectAuthority"))
         .where("workspaceMemberships.userId", "=", input.ownerId)
         .where("workspaceMemberships.state", "=", "active")
-        .where("workspaces.status", "!=", "deleted");
+        .where("workspaces.status", "!=", "deleted")
+        .where(sql<boolean>`(not ${storedProjectDeployment} or workspaces.kind = 'project')`);
       if (anchor) {
         query = query.where((expressions) =>
           expressions.or([
@@ -907,13 +920,24 @@ export async function workspacePageForOwner(
           .where("workspaceMemberships.userId", "=", input.ownerId)
           .where("workspaceMemberships.state", "=", "active")
           .where("workspaces.status", "!=", "deleted")
+          .where(sql<boolean>`(not ${storedProjectDeployment} or workspaces.kind = 'project')`)
           .executeTakeFirstOrThrow(databaseOperationOptions()),
       ]);
+      const audiences = rows.some((row) => row.projectAuthority)
+        ? await teamProjectAudiences(
+            transaction,
+            input.ownerId,
+            rows.map((row) => row.id),
+          )
+        : new Map();
       const window = boundedSerializedPrefix(
         rows
           .slice(0, maxItems)
-          .map(workspaceFromRow)
-          .map((workspace) => workspaceViewFromWorkspace(workspace)),
+          .map(({ projectAuthority: _projectAuthority, ...row }) => workspaceFromRow(row))
+          .map((workspace) => ({
+            ...workspaceViewFromWorkspace(workspace),
+            ...(audiences.has(workspace.id) ? { audience: audiences.get(workspace.id) } : {}),
+          })),
         maxItems,
         maxBytes,
       );

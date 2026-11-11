@@ -8,7 +8,7 @@ import type {
   ThreadInput,
   ThreadInputPolicy,
 } from "@opensteer/core";
-import type { ProjectWorkSource } from "@opensteer/database";
+import type { ProjectWorkSource, ProjectHomeChatPort } from "@opensteer/database";
 import type {
   ProjectCapabilityClaims,
   ProjectCapabilityScope,
@@ -55,6 +55,7 @@ export interface ProjectRecoveryPort {
 }
 
 export interface ProjectRuntimePorts {
+  readonly homeChat: ProjectHomeChatPort;
   readonly admission: ProjectAdmissionPort;
   readonly capabilities: ProjectCapabilityPort;
   readonly dispatch: ProjectDispatchPort;

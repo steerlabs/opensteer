@@ -2759,6 +2759,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
   switch (command.type) {
     case "team.computer.replace":
     case "team.project.create":
+    case "team.project.delete":
     case "team.access.apply":
     case "team.access.selfGrant":
     case "team.member.change":

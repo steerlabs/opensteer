@@ -1,4 +1,8 @@
-import { readInitializedDeploymentAuthority } from "./deployment-execution-authority.js";
+import { requireTeamProjectManager } from "./team-project-store.js";
+import {
+  isProjectDeploymentAuthority,
+  readInitializedDeploymentAuthority,
+} from "./deployment-execution-authority.js";
 import { readTeamRealtimeAuthority, type TeamRealtimeAuthority } from "./access-store.js";
 import { claimAccessSecurityEffects } from "./access-effects.js";
 import { enqueueNodeStop } from "./node-control.js";
@@ -1306,11 +1310,22 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
+  assertTeamProjectManager(workspaceId: WorkspaceId, userId: UserId) {
+    return requireTeamProjectManager(this.#database, { userId }, workspaceId);
+  }
+
+  async #ensureProjectChat(workspace: Workspace): Promise<Workspace> {
+    if (isProjectDeploymentAuthority(await this.securityEffectAuthority())) return workspace;
+    return ensureProjectChat(this.#database, workspace);
+  }
+
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
-    return ensureProjectChat(
-      this.#database,
-      await workspaceStore.createWorkspace(this.#database, input),
-    );
+    if (isProjectDeploymentAuthority(await this.securityEffectAuthority()))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team Projects require the access writer",
+      });
+    return this.#ensureProjectChat(await workspaceStore.createWorkspace(this.#database, input));
   }
 
   async setWorkspaceIcon(input: {
@@ -1365,8 +1380,7 @@ export class OpensteerStore {
   async listWorkspaces(): Promise<readonly Workspace[]> {
     const workspaces = await workspaceStore.listWorkspaces(this.#database);
     const result: Workspace[] = [];
-    for (const workspace of workspaces)
-      result.push(await ensureProjectChat(this.#database, workspace));
+    for (const workspace of workspaces) result.push(await this.#ensureProjectChat(workspace));
     return result;
   }
 
@@ -1425,8 +1439,7 @@ export class OpensteerStore {
     readonly status: Workspace["status"];
     readonly workspaceId: WorkspaceId;
   }): Promise<Workspace> {
-    return ensureProjectChat(
-      this.#database,
+    return this.#ensureProjectChat(
       await workspaceStore.setWorkspaceProvisioningResult(this.#database, input),
     );
   }

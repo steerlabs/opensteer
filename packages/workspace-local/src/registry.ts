@@ -49,7 +49,7 @@ const ProvisionFingerprintSchema = z.strictObject({
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
     .optional(),
-  createdBy: UserIdSchema,
+  createdBy: UserIdSchema.optional(),
   kind: z.preprocess((value) => (value === "specialized" ? "project" : value), WorkspaceKindSchema),
   ownerEnvironmentId: EnvironmentIdSchema,
   workspaceId: WorkspaceIdSchema,
@@ -65,7 +65,7 @@ const RegistryBindingBaseSchema = z.strictObject({
     })
     .optional(),
   bindingId: WorkspaceBindingIdSchema,
-  createdBy: UserIdSchema,
+  createdBy: UserIdSchema.optional(),
   generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   idempotencyKey: z.string().min(1).max(512),
   ownerEnvironmentId: EnvironmentIdSchema,
@@ -96,6 +96,7 @@ const LocalWorkspaceNamespaceSchema = z.discriminatedUnion("kind", [
     ownerEnvironmentId: EnvironmentIdSchema,
   }),
   z.strictObject({ kind: z.literal("owner-scoped") }),
+  z.strictObject({ kind: z.literal("team-project"), ownerEnvironmentId: EnvironmentIdSchema }),
 ]);
 
 const DestructionReceiptSchema = z.strictObject({
@@ -147,7 +148,8 @@ export type LocalWorkspaceNamespace =
       readonly kind: "single-owner";
       readonly ownerEnvironmentId: EnvironmentId;
     }
-  | { readonly kind: "owner-scoped" };
+  | { readonly kind: "owner-scoped" }
+  | { readonly kind: "team-project"; readonly ownerEnvironmentId: EnvironmentId };
 
 export interface LocalWorkspaceRegistryOptions {
   readonly filesystemAuthority?: Pick<
@@ -281,6 +283,16 @@ export class LocalWorkspaceRegistry {
         return this.#finishProvision(document, byIdempotencyKey, true, input.signal);
       }
 
+      if (document.namespace.kind === "team-project") {
+        if (
+          input.fingerprint.kind !== "project" ||
+          input.fingerprint.createdBy ||
+          input.fingerprint.slug
+        )
+          throw new Error("Team storage refuses person-owned provisioning");
+      } else if (!input.fingerprint.createdBy) {
+        throw new Error("Legacy storage requires a person-owned provisioning intent");
+      }
       assertProvisionDoesNotConflict(document, input);
       assertOwnerAllowed(this.#options.namespace, input.fingerprint.ownerEnvironmentId);
       const relativeSegments = [
@@ -1193,7 +1205,7 @@ function assertOwnerAllowed(
   namespace: LocalWorkspaceNamespace,
   ownerEnvironmentId: EnvironmentId,
 ): void {
-  if (namespace.kind === "single-owner" && namespace.ownerEnvironmentId !== ownerEnvironmentId) {
+  if (namespace.kind !== "owner-scoped" && namespace.ownerEnvironmentId !== ownerEnvironmentId) {
     throw new LocalWorkspaceError({
       code: LocalWorkspaceErrorCode.environmentMismatch,
       message: "This local Workspace registry belongs to another execution environment.",
@@ -1266,7 +1278,24 @@ function assertProvisionDoesNotConflict(
   }
 }
 
-function assertRegistryUniqueness(document: Pick<RegistryDocument, "bindings">): void {
+function assertRegistryUniqueness(
+  document: Pick<RegistryDocument, "bindings" | "namespace">,
+): void {
+  for (const binding of document.bindings) {
+    const project = document.namespace.kind === "team-project";
+    if (
+      project
+        ? binding.createdBy !== undefined ||
+          binding.provisionFingerprint.createdBy !== undefined ||
+          binding.provisionFingerprint.kind !== "project" ||
+          binding.provisionFingerprint.slug !== undefined
+        : !binding.createdBy || !binding.provisionFingerprint.createdBy
+    )
+      throw new LocalWorkspaceError({
+        code: LocalWorkspaceErrorCode.registryInvalid,
+        message: "Workspace binding does not match its storage namespace",
+      });
+  }
   assertUnique(
     document.bindings.map((binding) => binding.bindingId),
     "binding ID",
@@ -1626,7 +1655,7 @@ function sameNamespace(left: LocalWorkspaceNamespace, right: LocalWorkspaceNames
   if (left.kind !== right.kind) return false;
   return (
     left.kind === "owner-scoped" ||
-    (right.kind === "single-owner" && left.ownerEnvironmentId === right.ownerEnvironmentId)
+    (right.kind !== "owner-scoped" && left.ownerEnvironmentId === right.ownerEnvironmentId)
   );
 }
 
