@@ -1140,6 +1140,7 @@ async function runDesktop(
     .resumeIfConfigured()
     .catch((error) => reportNonFatal("desktop.personal.resume-failed", error));
   const mainWindows = new ElectronWindowFactory(loaded.config, {
+    log: reportEvent,
     policy: appOriginPolicy,
     onCreated: (window) => {
       workspaceContents = window.webContents;

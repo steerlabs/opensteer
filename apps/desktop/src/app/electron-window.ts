@@ -187,6 +187,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
   readonly #preloadPath: string;
   readonly #quit: () => void;
   readonly #onCreated: (window: ElectronAppWindow) => void;
+  readonly #log: DesktopWindowLog;
 
   constructor(
     config: DesktopConfiguration,
@@ -195,6 +196,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       readonly preloadPath: string;
       readonly quit: () => void;
       readonly onCreated?: (window: ElectronAppWindow) => void;
+      readonly log?: DesktopWindowLog;
       readonly policy?: DesktopAppOriginPolicy;
     },
   ) {
@@ -204,6 +206,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     this.#preloadPath = options.preloadPath;
     this.#quit = options.quit;
     this.#onCreated = options.onCreated ?? (() => undefined);
+    this.#log = options.log ?? (() => undefined);
   }
 
   create(
@@ -228,14 +231,10 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     this.#onCreated(window);
     configureDesktopWindowNavigation(window.webContents, this.#policy);
     window.webContents.on("preload-error", (_event, preloadPath, error) => {
-      process.stdout.write(
-        `${JSON.stringify({ error: error.message, event: "desktop.preload.error", preloadPath })}\n`,
-      );
+      this.#log("desktop.preload.error", { error: error.message, preloadPath });
     });
     window.webContents.on("render-process-gone", (_event, { exitCode, reason }) => {
-      process.stdout.write(
-        `${JSON.stringify({ event: "desktop.renderer.gone", exitCode, reason })}\n`,
-      );
+      this.#log("desktop.renderer.gone", { exitCode, reason });
     });
     window.webContents.on("before-input-event", (event, input) => {
       if (!desktopQuitShortcut(input, process.platform)) return;
@@ -243,9 +242,10 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       this.#quit();
     });
     const reportLoad = (phase: "committed" | "dom-ready" | "finished" | "failed") => {
-      process.stdout.write(
-        `${JSON.stringify({ event: "desktop.window.load", phase, elapsedMs: Math.round(performance.now() - started) })}\n`,
-      );
+      this.#log("desktop.window.load", {
+        phase,
+        elapsedMs: Math.round(performance.now() - started),
+      });
     };
     // Only the launch load is timed: the page reloads itself later.
     const committed = () => reportLoad("committed");
@@ -278,6 +278,11 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     return { window, loaded };
   }
 }
+
+type DesktopWindowLog = (
+  event: string,
+  fields: Readonly<Record<string, string | number | boolean>>,
+) => void;
 
 /** Explicit siblings let the application cover a live page when an overlay opens. */
 export interface ElectronAppWindow extends BaseWindow {

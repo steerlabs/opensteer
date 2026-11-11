@@ -42,7 +42,6 @@ it("paints the window ground inside the compositor beneath the transparent app v
 });
 
 it("shows a foreground window before its page loads and keeps a login launch hidden", async () => {
-  vi.spyOn(process.stdout, "write").mockReturnValue(true);
   let finishLoading!: () => void;
   pageLoad.next = new Promise((resolve) => {
     finishLoading = resolve;
@@ -58,7 +57,6 @@ it("shows a foreground window before its page loads and keeps a login launch hid
   finishLoading();
   await Promise.all([foreground.loaded, login.loaded]);
   expect(vi.mocked(login.window.show)).not.toHaveBeenCalled();
-  vi.restoreAllMocks();
 });
 
 it("opens only HTTP(S) links from the focused published-app frame in the system browser", () => {
