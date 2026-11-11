@@ -37,7 +37,12 @@ import {
   threadExecutionIsAvailableToUser,
   safeGeneration,
 } from "./store-primitives.js";
-import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
+import {
+  endStoppedUnconfirmedRun,
+  finalizeRunTransaction,
+  finalizeProjectRunTransaction,
+  reserveProjectWorkStop,
+} from "./run-finalization.js";
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
@@ -1264,8 +1269,85 @@ export async function failActiveRunsForAccessRevocation(
     readonly userId: UserId;
     readonly workspaceId: WorkspaceId;
     readonly membershipGenerationCutoff: number;
+    readonly initiatorGenerationCutoff?: number;
+    readonly originConnectionId?: string;
   },
+  cancelProjectRequests?: (
+    transaction: Transaction<DatabaseSchema>,
+    runIds: readonly RunId[],
+  ) => Promise<readonly AgentEvent[]>,
 ): Promise<RunRecoveryOutcome> {
+  if (input.initiatorGenerationCutoff !== undefined || input.originConnectionId !== undefined) {
+    const { assertProjectAuthority } = await import("./deployment-execution-authority.js");
+    await assertProjectAuthority(database);
+    if (
+      [input.membershipGenerationCutoff, input.initiatorGenerationCutoff].some(
+        (value) => value !== undefined && (!Number.isSafeInteger(value) || value < 1),
+      )
+    )
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Invalid captured revocation cutoff",
+      });
+    const events: AgentEvent[] = [];
+    const terminatedRuns: RecoveredRunTarget[] = [];
+    const candidates = await database
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .innerJoin("principals", "principals.id", "runs.actorPrincipalId")
+      .select("runs.id")
+      .where("principals.kind", "=", "project")
+      .whereRef("principals.workspaceId", "=", "threads.workspaceId")
+      .where("runs.status", "in", nonTerminalRunStatuses)
+      .where("runs.requestedBy", "=", input.userId)
+      .where("runs.membershipGeneration", "<=", String(input.membershipGenerationCutoff))
+      .$if(input.initiatorGenerationCutoff !== undefined, (query) =>
+        query.where("runs.initiatorGeneration", "<=", String(input.initiatorGenerationCutoff)),
+      )
+      .$if(input.originConnectionId !== undefined, (query) =>
+        query.where("runs.originConnectionId", "=", input.originConnectionId ?? ""),
+      )
+      .where("threads.workspaceId", "=", input.workspaceId)
+      .orderBy("runs.id")
+      .execute();
+    for (const candidate of candidates) {
+      const stopped = await withDatabaseTransaction(database, async (transaction) => {
+        await reserveProjectWorkStop(transaction, { runIds: [candidate.id] });
+        const run = await transaction
+          .selectFrom("runs")
+          .selectAll()
+          .where("id", "=", candidate.id)
+          .executeTakeFirstOrThrow();
+        if (!nonTerminalRunStatuses.includes(run.status as (typeof nonTerminalRunStatuses)[number]))
+          return null;
+        const requestEvents = cancelProjectRequests
+          ? await cancelProjectRequests(transaction, [run.id])
+          : [];
+        const terminalEvents = await finalizeProjectRunTransaction(transaction, {
+          runId: run.id,
+          source: "host",
+          status: "failed",
+          stopReason: "authority-revoked",
+          completedAt: new Date(),
+          failure: {
+            code: "workspace_access_revoked",
+            message: "The captured Project work origin lost authority",
+            retryable: false,
+            status: "failed",
+          },
+        });
+        return {
+          events: [...requestEvents, ...terminalEvents],
+          target: { environmentId: run.environmentId, runId: run.id, threadId: run.threadId },
+        };
+      });
+      if (stopped) {
+        events.push(...stopped.events);
+        terminatedRuns.push(stopped.target);
+      }
+    }
+    return { events, terminatedRuns };
+  }
   return recoverAbandonedRuns(database, links, {
     code: "workspace_access_revoked",
     kind: "membership-revocation",
