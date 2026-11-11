@@ -331,7 +331,7 @@ const sqlExceptions: Record<
         "deployment.deployment_shape->>'kind' = 'personal'": 1,
       },
       "projectExecutionPreparationMigration/public.opensteer_project_runtime_settings_scope": {
-        "d.kind = 'server'": 1,
+        "d.deployment_shape->>'kind' = 'server'": 1,
       },
       "runnerOwnedLocalWorkspacesMigration/deployments_shape_check": {
         "deployment_shape->>'kind' = any (array['personal', 'server'])": 1,
