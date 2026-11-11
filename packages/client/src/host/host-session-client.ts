@@ -494,6 +494,7 @@ export class HttpHostClient {
   #browserContinuation: string | undefined;
   readonly #browserWaiters = new Set<() => void>();
   readonly #browserTabs = new BrowserTabStore((groupId) => this.#resyncBrowser(groupId));
+  readonly browserTabs = this.#browserTabs;
   readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
@@ -640,8 +641,7 @@ export class HttpHostClient {
       this.closeBrowserTab(
         result.sessionId,
         result.tabId,
-        this.#snapshot.browserSessions.find((session) => session.id === result.sessionId)
-          ?.tabCatalog ?? { generation: 0, revision: 0 },
+        this.browserTabs.inventory(result.sessionId) ?? { generation: 0, revision: 0 },
       ),
     changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
   });

@@ -1,35 +1,61 @@
 import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import {
   KeyedStreamReceiver,
+  equal,
   type KeyedStreamMessage,
   type KeyedStreamChanges,
 } from "@opensteer/protocol/keyed-stream";
 
 type Listener = () => void;
-type List = { readonly ids: readonly string[]; readonly syncing: boolean; readonly whole: boolean };
+export interface BrowserTabKey {
+  readonly groupId: string;
+  readonly tabId: string;
+  readonly sessionId: string;
+  readonly openerId: string | null;
+  readonly order: number;
+  readonly createdAt: string;
+  readonly lineageCreatedAt: string;
+}
+export type BrowserTabList = {
+  readonly ids: readonly string[];
+  readonly syncing: boolean;
+  readonly whole: boolean;
+};
 type Meta = Record<string, never>;
-const empty: List = { ids: [], syncing: true, whole: false };
+const noRows: readonly BrowserTabRow[] = [];
+const empty: BrowserTabList = { ids: [], syncing: true, whole: false };
 class Rows<Row extends { id: string }> {
   readonly receiver = new KeyedStreamReceiver<Row, Meta>();
-  list: List = empty;
+  list: BrowserTabList = empty;
   readonly listeners = new Set<Listener>();
   readonly rows = new Map<string, Set<Listener>>();
   readonly #order: (a: Row, b: Row) => number;
-  readonly #changed: Listener;
+  readonly #changed: (structural: boolean) => void;
+  readonly #structure = new Map<string, readonly unknown[]>();
+  readonly #structureKeys: readonly (keyof Row)[];
   readonly #removed: ((id: string) => void) | undefined;
   #changes: KeyedStreamChanges | null = null;
   #whole = false;
   revision = 0;
   constructor(
     order: (a: Row, b: Row) => number,
-    changed: Listener,
+    changed: (structural: boolean) => void,
+    structureKeys: readonly (keyof Row)[],
     removed?: (id: string) => void,
     received?: (change: KeyedStreamChanges) => void,
   ) {
     this.#order = order;
     this.#changed = changed;
+    this.#structureKeys = structureKeys;
     this.#removed = removed;
     this.receiver.onChange((change) => {
+      for (const id of change.removed) this.#structure.delete(id);
+      for (const id of [...change.added, ...change.updated]) {
+        const row = this.receiver.rows.get(id)!;
+        const values = this.#structureKeys.map((key) => row[key]);
+        if (!equal(values, this.#structure.get(id))) change.structural = true;
+        this.#structure.set(id, values);
+      }
       this.#changes = change;
       received?.(change);
     });
@@ -48,20 +74,21 @@ class Rows<Row extends { id: string }> {
         syncing,
         whole: this.#whole,
       };
+    if (change) for (const id of change.removed) this.#removed?.(id);
+    const changed =
+      listChanged ||
+      !!(change && (change.added.length || change.updated.length || change.removed.length));
+    if (changed) {
+      this.revision++;
+      this.#changed(change?.structural ?? false);
+    }
     if (change) {
-      for (const id of change.removed) this.#removed?.(id);
       for (const id of [...change.added, ...change.updated, ...change.removed])
         for (const listener of this.rows.get(id) ?? []) listener();
     }
     if (listChanged) for (const listener of this.listeners) listener();
-    if (
-      listChanged ||
-      (change && (change.added.length || change.updated.length || change.removed.length))
-    ) {
-      this.revision++;
-      this.#changed();
-    }
   }
+
   apply(message: KeyedStreamMessage<Row, Meta>) {
     const result = this.receiver.apply(message);
     if (result === "applied") this.#whole = true;
@@ -85,28 +112,46 @@ function subscribe(listeners: Set<Listener>, listener: Listener) {
     listeners.delete(listener);
   };
 }
-function rowSubscribe<Row extends { id: string }>(rows: Rows<Row>, id: string, listener: Listener) {
-  let listeners = rows.rows.get(id);
+function keySubscribe(rows: Map<string, Set<Listener>>, id: string, listener: Listener) {
+  let listeners = rows.get(id);
   if (!listeners) {
     listeners = new Set();
-    rows.rows.set(id, listeners);
+    rows.set(id, listeners);
   }
   const release = subscribe(listeners, listener);
   return () => {
     release();
-    if (!listeners.size) rows.rows.delete(id);
+    if (!listeners.size) rows.delete(id);
   };
 }
+
 export class BrowserTabStore {
   readonly #listeners = new Set<Listener>();
+  readonly #structureListeners = new Set<Listener>();
+  #structure: readonly BrowserTabKey[] | undefined;
+  #keys = new Map<string, BrowserTabKey>();
+  readonly #sessionRows = new Map<string, { revision: number; rows: readonly BrowserTabRow[] }>();
+  readonly #tabGroups = new Map<string, Set<string>>();
   readonly #tabs = new Map<string, Rows<BrowserTabRow>>();
+  readonly #changedSessions = new Set<string>();
+  readonly #sessionListeners = new Map<string, Set<Listener>>();
   readonly #sessionGroups = new Map<string, string>();
   readonly #groupSessions = new Map<string, string>();
   readonly #groups = new Rows<BrowserGroupRow>(
     (a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
-    () => this.#changed(),
+    (structural) => this.#changed(structural),
+    ["sessionId", "createdAt", "placement", "profileId"],
     (id) => this.#drop(id),
     (change) => {
+      const previous = new Map<string, string | undefined>();
+      for (const id of [...change.removed, ...change.updated]) {
+        const sessionId = this.#groupSessions.get(id);
+        if (sessionId) previous.set(sessionId, this.#sessionGroups.get(sessionId));
+      }
+      for (const id of [...change.added, ...change.updated]) {
+        const sessionId = this.group(id)!.sessionId;
+        if (!previous.has(sessionId)) previous.set(sessionId, this.#sessionGroups.get(sessionId));
+      }
       for (const id of [...change.removed, ...change.updated]) {
         const sessionId = this.#groupSessions.get(id);
         if (sessionId) this.#sessionGroups.delete(sessionId);
@@ -117,6 +162,8 @@ export class BrowserTabStore {
         this.#sessionGroups.set(sessionId, id);
         this.#groupSessions.set(id, sessionId);
       }
+      for (const [sessionId, before] of previous)
+        if (before !== this.#sessionGroups.get(sessionId)) this.#changedSessions.add(sessionId);
     },
   );
   readonly resync: (groupId?: string) => void;
@@ -124,8 +171,16 @@ export class BrowserTabStore {
     this.resync = resync;
   }
   revision = 0;
-  #changed() {
+  #changed(structural = false) {
     this.revision++;
+    if (structural) {
+      this.#structure = undefined;
+      for (const listener of this.#structureListeners) listener();
+    }
+    const sessions = [...this.#changedSessions];
+    this.#changedSessions.clear();
+    for (const sessionId of sessions)
+      for (const listener of this.#sessionListeners.get(sessionId) ?? []) listener();
     for (const listener of this.#listeners) listener();
   }
   #prune(id: string) {
@@ -133,6 +188,7 @@ export class BrowserTabStore {
     if (!this.group(id) && rows && !rows.listeners.size && !rows.rows.size) this.#tabs.delete(id);
   }
   #drop(id: string) {
+    this.#sessionRows.delete(id);
     this.#tabs.get(id)?.seed([]);
     this.#prune(id);
   }
@@ -141,20 +197,34 @@ export class BrowserTabStore {
     if (!rows) {
       rows = new Rows<BrowserTabRow>(
         (a, b) => a.order - b.order || a.id.localeCompare(b.id),
-        () => this.#changed(),
+        (structural) => this.#changed(structural),
+        ["order", "openerId", "sessionId", "createdAt"],
+        (tabId) => {
+          const groups = this.#tabGroups.get(tabId);
+          groups?.delete(id);
+          if (!groups?.size) this.#tabGroups.delete(tabId);
+        },
+        (change) => {
+          for (const tabId of change.added) {
+            const groups = this.#tabGroups.get(tabId) ?? new Set<string>();
+            groups.add(id);
+            this.#tabGroups.set(tabId, groups);
+          }
+        },
       );
       this.#tabs.set(id, rows);
     }
     return rows;
   }
-  groups = (): List => this.#groups.list;
+  groups = (): BrowserTabList => this.#groups.list;
   group = (id: string) => this.#groups.receiver.rows.get(id);
-  tabs = (groupId: string): List => this.#tabs.get(groupId)?.list ?? empty;
+  tabs = (groupId: string): BrowserTabList => this.#tabs.get(groupId)?.list ?? empty;
   tabRevision = (groupId: string) => this.#tabs.get(groupId)?.revision ?? 0;
   tab = (groupId: string, tabId: string) => this.#tabs.get(groupId)?.receiver.rows.get(tabId);
   subscribe = (listener: Listener) => subscribe(this.#listeners, listener);
   subscribeGroups = (listener: Listener) => subscribe(this.#groups.listeners, listener);
-  subscribeGroup = (id: string, listener: Listener) => rowSubscribe(this.#groups, id, listener);
+  subscribeGroup = (id: string, listener: Listener) =>
+    keySubscribe(this.#groups.rows, id, listener);
   subscribeTabs = (id: string, listener: Listener) => {
     const release = subscribe(this.#ensure(id).listeners, listener);
     return () => {
@@ -163,15 +233,106 @@ export class BrowserTabStore {
     };
   };
   subscribeTab = (groupId: string, tabId: string, listener: Listener) => {
-    const release = rowSubscribe(this.#ensure(groupId), tabId, listener);
+    const release = keySubscribe(this.#ensure(groupId).rows, tabId, listener);
     return () => {
       release();
       this.#prune(groupId);
     };
   };
-  sessionTabs(sessionId: string) {
+  subscribeSessionGroup = (sessionId: string, listener: Listener) =>
+    keySubscribe(this.#sessionListeners, sessionId, listener);
+  subscribeStructure = (listener: Listener) => subscribe(this.#structureListeners, listener);
+  structure = (): readonly BrowserTabKey[] => {
+    if (this.#structure) return this.#structure;
+    const keys = new Map<string, BrowserTabKey>();
+    const result: BrowserTabKey[] = [];
+    for (const groupId of this.groups().ids) {
+      const group = this.group(groupId)!;
+      const ids = this.tabs(groupId).ids;
+      const children = new Map<string, string[]>();
+      for (const id of ids) {
+        const parent = this.tab(groupId, id)!.openerId;
+        if (parent && this.tab(groupId, parent)) {
+          const list = children.get(parent) ?? [];
+          list.push(id);
+          children.set(parent, list);
+        }
+      }
+      const seen = new Set<string>();
+      const append = (roots: readonly string[]) => {
+        const pending = [...roots].reverse();
+        while (pending.length) {
+          const tabId = pending.pop()!;
+          if (seen.has(tabId)) continue;
+          seen.add(tabId);
+          const tab = this.tab(groupId, tabId)!;
+          const next = {
+            groupId,
+            tabId,
+            sessionId: tab.sessionId,
+            openerId: tab.openerId,
+            order: tab.order,
+            createdAt: tab.createdAt,
+            lineageCreatedAt: group.createdAt,
+          };
+          const key = `${groupId}:${tabId}`;
+          const before = this.#keys.get(key);
+          const kept = before && equal(before, next) ? before : next;
+          keys.set(key, kept);
+          result.push(kept);
+          const descendants = children.get(tabId);
+          if (descendants)
+            for (let i = descendants.length - 1; i >= 0; i--) pending.push(descendants[i]!);
+        }
+      };
+      append(
+        ids.filter((id) => {
+          const parent = this.tab(groupId, id)!.openerId;
+          return !parent || !this.tab(groupId, parent);
+        }),
+      );
+      append(ids);
+    }
+    this.#keys = keys;
+    this.#structure = result;
+    return result;
+  };
+  groupForTab = (tabId: string) => {
+    const groups = this.#tabGroups.get(tabId);
+    return groups?.size === 1 ? groups.values().next().value : undefined;
+  };
+  sessionTab = (sessionId: string, tabId: string) => {
+    const groupId = this.groupForSession(sessionId);
+    return groupId ? this.tab(groupId, tabId) : undefined;
+  };
+  sessionList = (sessionId: string) => {
+    const groupId = this.groupForSession(sessionId);
+    return groupId ? this.tabs(groupId) : empty;
+  };
+  inventory = (sessionId: string) => {
+    const groupId = this.groupForSession(sessionId);
+    const group = groupId ? this.group(groupId) : undefined;
+    return group
+      ? {
+          generation: 0,
+          revision: group.inventoryRevision,
+          inventoryRevision: group.inventoryRevision,
+        }
+      : undefined;
+  };
+  sessionTabs(sessionId: string): readonly BrowserTabRow[] {
     const id = this.groupForSession(sessionId);
-    return id ? this.tabs(id).ids.map((tabId) => this.tab(id, tabId)!) : [];
+    if (!id) return noRows;
+    const revision = this.tabRevision(id);
+    const previous = this.#sessionRows.get(id);
+    if (previous?.revision === revision) return previous.rows;
+    const next = this.tabs(id).ids.map((tabId) => this.tab(id, tabId)!);
+    const rows =
+      previous?.rows.length === next.length && next.every((row, i) => row === previous.rows[i])
+        ? previous.rows
+        : next;
+    this.#sessionRows.set(id, { revision, rows });
+    return rows;
   }
   groupForSession(sessionId: string) {
     return this.#sessionGroups.get(sessionId);
@@ -199,6 +360,7 @@ export class BrowserTabStore {
     this.#changed();
   }
   clear() {
+    this.#keys.clear();
     this.#groups.seed([]);
     for (const id of this.#tabs.keys()) this.#drop(id);
     this.#changed();

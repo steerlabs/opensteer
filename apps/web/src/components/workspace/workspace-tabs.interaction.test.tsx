@@ -4,7 +4,13 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import { placeHasAgents, placeList, type AppTab, type HostSnapshot } from "@opensteer/client/host";
+import {
+  BrowserTabStore,
+  placeHasAgents,
+  placeList,
+  type AppTab,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
@@ -888,7 +894,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
   it("follows a popup the person's input opened once it is listed, drops it if they left, and closing it returns to the tab that opened it", async () => {
     let announce: (popupId: string) => void = () => undefined;
     let unlisted: string | null = null;
-    const seen = new WeakMap<HostSnapshot, Map<string | null, HostSnapshot>>();
+    let publish = () => {};
     await mount((source) => {
       Object.assign(source, {
         subscribeBrowserPopups: (_sessionId: string, _tabId: string, listener: typeof announce) => {
@@ -896,28 +902,25 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
           return () => undefined;
         },
       });
-      const read = source.getSnapshot;
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-        const snapshot = read();
-        const views = seen.get(snapshot) ?? new Map<string | null, HostSnapshot>();
-        seen.set(snapshot, views);
-        const view = views.get(unlisted) ?? {
-          ...snapshot,
-          browserSessions: snapshot.browserSessions.map((value) =>
-            value.tabCatalog
-              ? {
-                  ...value,
-                  tabCatalog: {
-                    ...value.tabCatalog,
-                    tabs: value.tabCatalog.tabs.filter((row) => row.id !== unlisted),
-                  },
-                }
-              : value,
-          ),
-        };
-        views.set(unlisted, view);
-        return view;
+      source.getSnapshot();
+      const upstream = source.browserTabs;
+      const store = new BrowserTabStore();
+      store.seed({
+        groups: { rows: upstream.groups().ids.map((id) => upstream.group(id)!), complete: true },
+        tabs: [],
       });
+      let revision = 0;
+      publish = () => {
+        for (const groupId of upstream.groups().ids) {
+          const group = upstream.group(groupId)!;
+          const rows = upstream.sessionTabs(group.sessionId).filter((row) => row.id !== unlisted);
+          store.applyTabs(groupId, { op: "begin", generation: `popup-fixture-${revision++}` });
+          store.applyTabs(groupId, { op: "rows", rows: [...rows] });
+          store.applyTabs(groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+        }
+      };
+      publish();
+      vi.spyOn(source, "browserTabs", "get").mockReturnValue(store);
       return "/";
     });
     const opener = tab("Your reading list");
@@ -928,13 +931,17 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       const { sessionId, tabId, catalog } = session(close);
       await act(async () => {
         await client.closeBrowserTab(sessionId, tabId, catalog);
+        publish();
       });
       await settle(60);
     };
 
     await click(main(opener.key));
     unlisted = session(popup).tabId;
-    await act(async () => announce(session(popup).tabId));
+    await act(async () => {
+      publish();
+      announce(session(popup).tabId);
+    });
     await click(main(elsewhere.key));
     await list(tab("Launch brief"));
     expect(shown()).toBe(elsewhere.key);
@@ -944,7 +951,10 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     const path = history.at(-1)!.path;
     let before = history.length;
     unlisted = session(popup).tabId;
-    await act(async () => announce(session(popup).tabId));
+    await act(async () => {
+      publish();
+      announce(session(popup).tabId);
+    });
     await settle(60);
     expect(shown()).toBe(opener.key);
     await list(tab("Coffee shortlist"));

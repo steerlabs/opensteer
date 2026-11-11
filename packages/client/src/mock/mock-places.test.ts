@@ -39,31 +39,47 @@ it("publishes mock browser rows with stable sibling identities and no dormant li
   const client = new MockHostClient({ latencyMs: 0 });
   try {
     const before = client.getSnapshot();
-    const own = before.browserSessions.find((s) => s.tabCatalog?.tabs.length)!;
-    const other = before.browserSessions.find((s) => s.id !== own.id && s.tabCatalog?.tabs.length)!;
-    const tab = own.tabCatalog!.tabs[0]!;
+    const store = client.browserTabs;
+    const own = before.browserSessions.find((session) =>
+      store.sessionTabs(session.id).some((tab) => tab.documentId !== null),
+    )!;
+    const other = before.browserSessions.find(
+      (session) =>
+        session.id !== own.id &&
+        store.sessionTabs(session.id).some((tab) => tab.documentId !== null),
+    )!;
+    const rows = store.sessionTabs(own.id);
+    const tab = rows[0]!;
     client.setBrowserLoading(tab.id, !tab.loading);
     const after = client.getSnapshot();
-    expect(after.browserSessions.find((s) => s.id === other.id)).toBe(other);
-    expect(after.browserSessions.find((s) => s.id === own.id)!.tabCatalog!.tabs[0]!.loading).toBe(
-      !tab.loading,
-    );
-    expect(after.browserSessions.find((s) => s.id === own.id)!.tabCatalog!.tabs[1]).toBe(
-      own.tabCatalog!.tabs[1],
-    );
+    expect(after.browserSessions.find((session) => session.id === other.id)).toBe(other);
+    expect(store.sessionTab(own.id, tab.id)?.loading).toBe(!tab.loading);
+    expect(store.sessionTabs(own.id)[1]).toBe(rows[1]);
     const dormant = client.scriptDormantBrowser({ profileName: "Saved" });
     const snapshot = client.getSnapshot();
-    const group = snapshot.workspaceTabs!.find((g) => g.session.id === dormant.sessionId)!;
-    expect(group.whole).toBe(true);
-    expect(group.tabs!.find((t) => t.id === dormant.tabId)!.state).toBe("suspended");
-    expect(
-      snapshot.browserSessions.find((s) => s.id === dormant.sessionId)?.tabCatalog?.tabs ?? [],
-    ).toEqual([]);
-    const current = snapshot.browserSessions.find((s) => s.tabCatalog?.tabs.length)!;
-    const release = client.retainBrowserViewer(current.id, current.tabCatalog!.tabs[0]!.id);
+    const groupId = store.groupForSession(dormant.sessionId)!;
+    expect(store.tabs(groupId).whole).toBe(true);
+    expect(store.tab(groupId, dormant.tabId)?.state).toBe("suspended");
+    expect(store.sessionTabs(dormant.sessionId).filter((tab) => tab.documentId !== null)).toEqual(
+      [],
+    );
+    const current = snapshot.browserSessions.find((session) =>
+      store.sessionTabs(session.id).some((tab) => tab.documentId !== null),
+    )!;
+    const currentTab = store.sessionTabs(current.id).find((tab) => tab.documentId !== null)!;
+    const currentGroup = store.groupForSession(current.id)!;
+    const seen: (typeof currentTab | undefined)[] = [];
+    const unsubscribe = store.subscribeTab(currentGroup, currentTab.id, () =>
+      seen.push(store.tab(currentGroup, currentTab.id)),
+    );
+    const release = client.retainBrowserViewer(current.id, currentTab.id);
     await client.rpc["auth.signOut"]({});
     expect(client.getSnapshot().browserSessions).toEqual([]);
-    expect(client.getSnapshot().workspaceTabs).toEqual([]);
+    expect(client.browserTabs).toBe(store);
+    expect(store.groups().ids).toEqual([]);
+    expect(store.tab(currentGroup, currentTab.id)).toBeUndefined();
+    expect(seen.at(-1)).toBeUndefined();
+    unsubscribe();
     release();
   } finally {
     client.dispose();

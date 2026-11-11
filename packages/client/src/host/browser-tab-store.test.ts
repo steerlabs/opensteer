@@ -96,6 +96,100 @@ describe("BrowserTabStore", () => {
     commit(store);
     expect(store.tab("g", "2")).toBe(sibling);
   });
+  it("selects structure independently from live rows and keeps it through partial resync", () => {
+    const store = new BrowserTabStore();
+    commit(store);
+    const structure = store.structure();
+    const changed = vi.fn();
+    store.subscribeStructure(changed);
+    store.sessionTabs("s");
+    const observed: {
+      title: string | undefined;
+      structure: ReturnType<BrowserTabStore["structure"]>;
+    }[] = [];
+    const row = vi.fn(() =>
+      observed.push({
+        title: store.sessionTabs("s").find((tab) => tab.id === "1")?.title,
+        structure: store.structure(),
+      }),
+    );
+    const sibling = vi.fn();
+    store.subscribeTab("g", "1", row);
+    store.subscribeTab("g", "2", sibling);
+    const second = store.tab("g", "2");
+    store.applyTabs("g", {
+      op: "change",
+      generation: "t",
+      base: 0,
+      revision: 1,
+      update: [{ id: "1", title: "New title", loading: true }],
+    });
+    expect(row).toHaveBeenCalledTimes(1);
+    expect(observed[0]?.title).toBe("New title");
+    expect(sibling).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+    expect(store.structure()).toBe(structure);
+    expect(store.tab("g", "2")).toBe(second);
+    store.applyTabs("g", {
+      op: "change",
+      generation: "t",
+      base: 1,
+      revision: 2,
+      update: [{ id: "1", openerId: tab("2").id }],
+    });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(store.structure()).not.toBe(structure);
+    const reordered = store.structure();
+    expect(observed[1]?.structure).toBe(reordered);
+    store.applyTabs("g", { op: "begin", generation: "replacement" });
+    store.applyTabs("g", { op: "rows", rows: [tab("3")] });
+    store.disconnected();
+    expect(store.structure()).toBe(reordered);
+    expect(store.tab("g", "2")).toBe(second);
+    store.applyTabs("g", { op: "begin", generation: "complete" });
+    store.applyTabs("g", { op: "rows", rows: [tab("3")] });
+    store.applyTabs("g", { op: "end", revision: 0, count: 1, meta: {} });
+    expect(store.structure().map(({ tabId }) => tabId)).toEqual(["3"]);
+    expect(changed).toHaveBeenCalledTimes(2);
+  });
+  it("keeps session index listeners quiet for unchanged bindings and fences ambiguous surface IDs", () => {
+    const store = new BrowserTabStore();
+    commit(store);
+    const structure = store.structure();
+    const secondKey = structure.find(({ tabId }) => tabId === "2");
+    const original = vi.fn();
+    const replacement = vi.fn();
+    const stop = store.subscribeSessionGroup("s", original);
+    store.subscribeSessionGroup("next", replacement);
+    store.applyGroups({
+      op: "change",
+      generation: "g",
+      base: 0,
+      revision: 1,
+      update: [{ id: "g", tabCount: 3 }],
+    });
+    expect(original).not.toHaveBeenCalled();
+    expect(store.structure()).toBe(structure);
+    store.applyTabs("g", { op: "change", generation: "t", base: 0, revision: 1, add: [tab("3")] });
+    expect(store.structure().find(({ tabId }) => tabId === "2")).toBe(secondKey);
+    expect(store.groupForTab("1")).toBe("g");
+    const other = { ...group, id: "h", sessionId: "next" } as BrowserGroupRow;
+    store.applyGroups({ op: "change", generation: "g", base: 1, revision: 2, add: [other] });
+    store.applyTabs("h", { op: "begin", generation: "h" });
+    store.applyTabs("h", { op: "rows", rows: [tab("1")] });
+    store.applyTabs("h", { op: "end", revision: 0, count: 1, meta: {} });
+    expect(replacement).toHaveBeenCalledTimes(1);
+    expect(store.groupForTab("1")).toBeUndefined();
+    expect(store.sessionTab("s", "1")).toBe(store.tab("g", "1"));
+    expect(store.sessionTab("next", "1")).toBe(store.tab("h", "1"));
+    store.applyGroups({ op: "change", generation: "g", base: 2, revision: 3, remove: ["h"] });
+    expect(store.groupForTab("1")).toBe("g");
+    expect(replacement).toHaveBeenCalledTimes(2);
+    stop();
+    store.clear();
+    expect(original).not.toHaveBeenCalled();
+    expect(store.groupForTab("1")).toBeUndefined();
+  });
   it("keeps committed rows through gaps and discards staged rows when a group is removed", () => {
     const resync = vi.fn();
     const store = new BrowserTabStore(resync);

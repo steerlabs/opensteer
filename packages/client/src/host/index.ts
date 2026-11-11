@@ -98,4 +98,4 @@ export * from "./team-join.js";
 export * from "./team-paging.js";
 export * from "./team-settings.js";
 
-export { BrowserTabStore } from "./browser-tab-store.js";
+export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./browser-tab-store.js";

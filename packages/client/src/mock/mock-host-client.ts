@@ -1,6 +1,7 @@
 import { BrowserSessionIdSchema } from "@opensteer/core";
 import type { WorkspaceTabLineage } from "../host/client.js";
 import { mockBrowserRows } from "./mock-browser-stream.js";
+import { BrowserTabStore } from "../host/browser-tab-store.js";
 import { MockBrowserStream } from "./mock-browser-stream.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
@@ -4090,6 +4091,9 @@ export class MockHostClient implements HostClient {
     for (const listener of this.#state.remoteAdministrationListeners) listener();
   }
 
+  get browserTabs() {
+    return this.#state.browserTabs;
+  }
   readonly getSnapshot = (): HostSnapshot => {
     this.#ownerViews.expire();
     return this.#state.publishedSnapshot();
@@ -6259,7 +6263,8 @@ class MockHostState {
   private sessions: AuthSessionSummary[];
   private snapshot: HostSnapshot;
   #published: HostSnapshot | null = null;
-  #browserStream = new MockBrowserStream();
+  readonly browserTabs = new BrowserTabStore();
+  #browserStream = new MockBrowserStream(this.browserTabs);
   publishedSnapshot(): HostSnapshot {
     if (!this.#published) this.publishBrowser();
     return this.#published!;
@@ -6274,7 +6279,8 @@ class MockHostState {
         this.#published.user?.id !== this.snapshot.user?.id ||
         this.snapshot.session !== "authenticated")
     ) {
-      this.#browserStream = new MockBrowserStream();
+      this.browserTabs.clear();
+      this.#browserStream = new MockBrowserStream(this.browserTabs);
       this.#published = null;
     }
     this.#published = this.#browserStream.publish(
