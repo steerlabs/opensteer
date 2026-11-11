@@ -2551,6 +2551,7 @@ export async function createHostRuntime(
       {
         teamAdministration: new TeamAdministrationService({
           database,
+          deletionRetentionDays: config.workspace.deletionRetentionDays,
           revokeComputer: (id) => requiredService(runnerRegistry, "Runner registry").revoke(id),
           enrollComputer: (revision, actor, key) =>
             runnerAuthenticator.createEnrollment({
