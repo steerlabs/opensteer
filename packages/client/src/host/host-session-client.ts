@@ -110,7 +110,6 @@ import type {
   BrowserFrameView,
   BrowserPlacementSummary,
   BrowserSessionSummary,
-  BrowserSessionUseSummary,
   BrowserStartIdentity,
   BrowserTabCatalog,
   BrowserTabOpenInput,
@@ -513,14 +512,7 @@ export class HttpHostClient {
    */
   readonly #browserUsageRead = new Map<string, Set<string>>();
   readonly #browserUsageReads = new Map<string, { again: "full" | "missing" | null }>();
-  /**
-   * What each conversation's usage reads answered, by conversation. A use of
-   * a browser the catalog does not list yet waits here until it does.
-   */
-  readonly #browserUses = new Map<
-    string,
-    readonly { readonly sessionId: string; readonly use: BrowserSessionUseSummary }[]
-  >();
+  readonly #browserUses = new Map<string, readonly BrowserSessionUsageProjection[]>();
   /**
    * The shape a conversation's Runs were last collected from: a streamed reply
    * changes none of it, so it is not walked again for each word.
@@ -2064,8 +2056,6 @@ export class HttpHostClient {
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      // With no browser in the catalog there is nothing a conversation can show.
-      this.#snapshot.browserSessions.length === 0 ||
       !ThreadIdSchema.safeParse(threadId).success ||
       !this.#showsThread(threadId)
     )
@@ -2185,8 +2175,6 @@ export class HttpHostClient {
   /**
    * Replaces what a read answered for: a whole read replaces every use of the
    * Thread; a read of some Runs replaces the Thread's own uses and those Runs'.
-   * A use of a browser the catalog does not list yet is kept, and appears on
-   * that browser once a catalog read brings it.
    */
   #replaceBrowserUsage(
     threadId: string,
@@ -2197,34 +2185,15 @@ export class HttpHostClient {
     const replaced = scope.runIds === null ? null : new Set(scope.runIds);
     this.#browserUses.set(threadId, [
       ...(this.#browserUses.get(threadId) ?? []).filter(
-        ({ use }) => replaced !== null && use.runId !== null && !replaced.has(use.runId),
+        (use) => replaced !== null && use.runId !== null && !replaced.has(use.runId),
       ),
-      ...uses.map(({ sessionId, ...use }) => ({ sessionId, use })),
+      ...uses,
     ]);
-    const bySession = this.#browserUsesBySession();
     this.#update({
       ...this.#snapshot,
       browserUsage: { ...this.#snapshot.browserUsage, [threadId]: { loading: false, error } },
-      browserSessions: this.#snapshot.browserSessions.map((session) => {
-        const sessionUses = bySession.get(session.id) ?? [];
-        return sameElements(session.uses ?? [], sessionUses)
-          ? session
-          : { ...session, uses: sessionUses };
-      }),
+      browserUses: [...this.#browserUses.values()].flat(),
     });
-  }
-
-  /** Every use this client has read, by browser, each the object its read answered. */
-  #browserUsesBySession(): ReadonlyMap<string, readonly BrowserSessionUseSummary[]> {
-    const bySession = new Map<string, BrowserSessionUseSummary[]>();
-    for (const uses of this.#browserUses.values()) {
-      for (const { sessionId, use } of uses) {
-        const sessionUses = bySession.get(sessionId) ?? [];
-        sessionUses.push(use);
-        bySession.set(sessionId, sessionUses);
-      }
-    }
-    return bySession;
   }
 
   /**
@@ -6202,11 +6171,7 @@ export class HttpHostClient {
     if (snapshot.session === "authenticated")
       snapshot = {
         ...snapshot,
-        ...this.#browserSnapshot.derive(
-          snapshot,
-          this.#browserTabs,
-          (id) => this.#browserUsesBySession().get(id) ?? [],
-        ),
+        ...this.#browserSnapshot.derive(snapshot, this.#browserTabs),
       };
     const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
     const closedBrowserTabs = workspaceTabsChanged
@@ -6319,6 +6284,7 @@ export class HttpHostClient {
       }
       snapshot = {
         ...snapshot,
+        browserUses: snapshot.browserUses.filter((use) => !deniedThreads.has(use.threadId)),
         browserSessions: snapshot.browserSessions.filter(
           ({ workspaceId }) => !this.#forbiddenWorkspaces.has(workspaceId),
         ),
@@ -6874,6 +6840,7 @@ function emptySnapshot(): HostSnapshot {
     browserPlacements: [],
     browserProfiles: [],
     browserSessions: [],
+    browserUses: [],
     connection: "connecting",
     connectionInterrupted: false,
     network: "unknown",
@@ -6985,10 +6952,6 @@ function harnessSummary(record: z.infer<typeof HarnessRecordSchema>): HarnessSum
     sourceId,
     stateKind,
   };
-}
-
-function sameElements<Item>(left: readonly Item[], right: readonly Item[]): boolean {
-  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 /** One use of a browser within a conversation, by session, Run and page. */

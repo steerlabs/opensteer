@@ -2328,6 +2328,18 @@ describe("surfaces belonging to one reply", () => {
         run: null,
         threadId,
       }),
+      browserUses: [
+        {
+          sessionId: "reply-browser",
+          threadId,
+          runId,
+          tabId: "reply-page",
+          firstUsedAt: at,
+          lastUsedAt: at,
+          pageTitle: "Shared page",
+          pageSite: "https://example.com",
+        },
+      ],
       browserSessions: [
         {
           access: "read-write",
@@ -2341,17 +2353,6 @@ describe("surfaces belonging to one reply", () => {
           runtimeId: "reply-runtime",
           state: "closed",
           tabs: [],
-          uses: [
-            {
-              threadId,
-              runId,
-              tabId: "reply-page",
-              firstUsedAt: at,
-              lastUsedAt: at,
-              pageTitle: "Shared page",
-              pageSite: "https://example.com",
-            },
-          ],
           viewerError: null,
           viewerState: "disconnected",
           workspaceId,

@@ -2541,25 +2541,11 @@ describe("HttpHostClient durable realtime", () => {
     mock.dispose();
   });
 
-  it("loads conversation browser facts separately and preserves other scopes across bootstrap", async () => {
+  it("loads browser history without live sessions and preserves other scopes across bootstrap", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
     const a = createId("thread");
     const b = createId("thread");
-    const sessions = [
-      {
-        access: "read-write" as const,
-        createdAt: now,
-        id: sessionId,
-        origin: "agent" as const,
-        placement: { kind: "runner" as const, runnerId },
-        profileId: null,
-        runtimeId: "runtime",
-        state: "ready" as const,
-        updatedAt: now,
-        workspaceId: workspace.id,
-      },
-    ];
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
       if (url.pathname.endsWith("thread.browserUsage.get")) {
@@ -2585,7 +2571,7 @@ describe("HttpHostClient durable realtime", () => {
           available: true,
           placements: [],
           profiles: [],
-          sessions,
+          sessions: [],
         }),
       );
     };
@@ -2597,21 +2583,17 @@ describe("HttpHostClient durable realtime", () => {
     await client.load();
     client.activateThread(a);
     await vi.waitFor(() =>
-      expect(client.getSnapshot().browserSessions[0]?.uses?.some((use) => use.threadId === a)).toBe(
-        true,
-      ),
+      expect(client.getSnapshot().browserUses?.some((use) => use.threadId === a)).toBe(true),
     );
     client.activateThread(b);
     await vi.waitFor(() =>
-      expect(client.getSnapshot().browserSessions[0]?.uses?.some((use) => use.threadId === b)).toBe(
-        true,
-      ),
+      expect(client.getSnapshot().browserUses?.some((use) => use.threadId === b)).toBe(true),
     );
     await client.refresh();
     expect(
       client
         .getSnapshot()
-        .browserSessions[0]?.uses?.map((use) => use.threadId)
+        .browserUses?.map((use) => use.threadId)
         .sort(),
     ).toEqual([a, b].sort());
     client.dispose();
@@ -15313,7 +15295,7 @@ describe("realtime protocol recovery journey", () => {
       try {
         f.client.activateThread(f.thread.id);
         await vi.advanceTimersByTimeAsync(0);
-        expect(f.client.getSnapshot().browserSessions[0]?.uses ?? []).toEqual([]);
+        expect(f.client.getSnapshot().browserUses ?? []).toEqual([]);
         used = true;
         f.sockets[0]!.receiveRaw({
           type: "host.browser-usage-changed",
@@ -15321,9 +15303,9 @@ describe("realtime protocol recovery journey", () => {
           workspaceId: f.workspace.id,
         });
         await vi.advanceTimersByTimeAsync(0);
-        expect(f.client.getSnapshot().browserSessions[0]?.uses?.map((use) => use.threadId)).toEqual(
-          [f.thread.id],
-        );
+        expect(f.client.getSnapshot().browserUses?.map((use) => use.threadId)).toEqual([
+          f.thread.id,
+        ]);
       } finally {
         f.client.dispose();
       }

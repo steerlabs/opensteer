@@ -547,34 +547,53 @@ integration("Browser presence and conversation usage", () => {
     await run.complete();
     await Promise.all([a.close(), b.close(), c.close()]);
     const tabs = new WorkspaceTabStore(host.store.database);
-    for (let index = 0; index < 142; index++) {
-      const id = createBrowserSessionId();
-      await host.store.createBrowserSession({
-        id,
-        origin: "workspace",
-        placementKey: `runner:${runtime.runnerId}:browser`,
-        profileId: null,
-        runnerId: runtime.runnerId,
-        runtimeId: "browser-runtime-integration",
-        workspaceId,
-      });
-      await tabs.recordChanges(
-        id,
-        Array.from({ length: index < 80 ? 11 : 10 }, (_, order) => ({
-          id: BrowserSurfaceIdSchema.parse(`saved_${index}_${order}`),
-          title: "界".repeat(256),
-          url: `https://saved.example/${index}/${order}`,
-          order,
-          openerId: null,
-        })),
-        [],
-      );
-      await host.store.database
-        .updateTable("browserSessions")
-        .set({ state: "closed" })
-        .where("id", "=", id)
+    const dormant = Array.from({ length: 142 }, (_, index) => ({
+      id: createBrowserSessionId(),
+      index,
+    }));
+    const seededAt = new Date();
+    await host.store.database.transaction().execute(async (tx) => {
+      await tx
+        .insertInto("browserSessions")
+        .values(
+          dormant.map(({ id }) => ({
+            id,
+            tabGroupId: id,
+            tabRevision: 1,
+            origin: "workspace" as const,
+            opener: null,
+            placementKey: `runner:${runtime.runnerId}:browser`,
+            profileId: null,
+            runnerId: runtime.runnerId,
+            runtimeId: "browser-runtime-integration",
+            workspaceId,
+            state: "closed" as const,
+            createdAt: seededAt,
+            updatedAt: seededAt,
+            closedAt: null,
+          })),
+        )
         .execute();
-    }
+      await tx
+        .insertInto("workspaceTabs")
+        .values(
+          dormant.flatMap(({ id, index }) =>
+            Array.from({ length: index < 80 ? 11 : 10 }, (_, order) => ({
+              id: `saved_${index}_${order}`,
+              groupId: id,
+              sessionId: id,
+              title: "界".repeat(256),
+              url: `https://saved.example/${index}/${order}`,
+              order,
+              openerId: null,
+              state: "live" as const,
+              createdAt: seededAt,
+              closedAt: null,
+            })),
+          ),
+        )
+        .execute();
+    });
     expect(await tabs.groupIds(host.ownerId)).toHaveLength(150);
     expect(await tabs.openTabs(await tabs.groupIds(host.ownerId))).toHaveLength(2000);
     const reads = vi.spyOn(WorkspaceTabStore.prototype, "openTabs");

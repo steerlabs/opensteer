@@ -634,17 +634,6 @@ function session(
   return {
     access: "read-write",
     attachedRunIds: [],
-    uses:
-      workspaceId === unrelated.id
-        ? []
-        : [
-            {
-              threadId: "thread-parent",
-              runId: "run-parent",
-              firstUsedAt: "2026-10-13T00:00:00.000Z",
-              lastUsedAt: "2026-10-13T00:00:00.000Z",
-            },
-          ],
     dialog: null,
     error: null,
     id,
@@ -669,6 +658,15 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     browserProfiles: [],
     activeTasks: [],
     browserSessions: sessions,
+    browserUses: sessions
+      .filter((session) => session.workspaceId !== unrelated.id)
+      .map((session) => ({
+        sessionId: session.id,
+        threadId: "thread-parent",
+        runId: "run-parent",
+        firstUsedAt: "2026-10-13T00:00:00.000Z",
+        lastUsedAt: "2026-10-13T00:00:00.000Z",
+      })),
     connection: "connected",
     deploymentShape: {},
     homeThreadId: null,

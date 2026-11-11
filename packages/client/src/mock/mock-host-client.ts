@@ -158,6 +158,7 @@ import {
   WorkspaceTabLineageSchema,
   androidPhoneDefinitionId,
   browserUsageTabsPerRun,
+  browserUsageSessionsPerRead,
   computerAppIdentityKey,
   hostApi,
   machineAccessPolicyDefault,
@@ -2517,8 +2518,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         a: { readonly lastUsedAt: string },
         b: { readonly lastUsedAt: string },
       ) => b.lastUsedAt.localeCompare(a.lastUsedAt);
-      const uses = client.getSnapshot().browserSessions.flatMap((session) => {
-        const scoped = (session.uses ?? []).filter((use) => use.threadId === threadId);
+      const scopedUses = client
+        .getSnapshot()
+        .browserUses.filter((use) => use.threadId === threadId);
+      const sessionIds = [
+        ...new Set([...scopedUses].sort(latestFirst).map((use) => use.sessionId)),
+      ].slice(0, browserUsageSessionsPerRead);
+      const uses = sessionIds.flatMap((sessionId) => {
+        const scoped = scopedUses.filter((use) => use.sessionId === sessionId);
         if (scoped.length === 0) return [];
         const seen = [...scoped].sort(latestFirst).find((use) => use.pageSite);
         const pages = (runId: string | null) => {
@@ -2541,7 +2548,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
             threadId,
           },
           ...[null, ...runIds].flatMap((runId) => pages(runId)),
-        ].map((use) => ({ ...use, sessionId: session.id }));
+        ].map((use) => ({ ...use, sessionId }));
       });
       return rpcSuccess(hostApi["thread.browserUsage.get"].success.parse({ threadId, uses }));
     },
@@ -3815,7 +3822,11 @@ function mockBootstrap(
         ...session,
         updatedAt: session.createdAt,
         threadIds: session.threadIds ?? [
-          ...new Set((session.uses ?? []).map((use) => use.threadId)),
+          ...new Set(
+            snapshot.browserUses
+              .filter((use) => use.sessionId === session.id)
+              .map((use) => use.threadId),
+          ),
         ],
       })),
     },
@@ -9954,6 +9965,7 @@ class MockHostState {
       // An address that does not parse names no site.
     }
     const use = {
+      sessionId: page.sessionId,
       firstUsedAt: now,
       lastUsedAt: now,
       pageSite: site,
@@ -9962,29 +9974,23 @@ class MockHostState {
       tabId: page.tabId,
       threadId,
     };
+    const uses = this.snapshot.browserUses;
+    const existing = uses.find(
+      (held) =>
+        held.sessionId === page.sessionId &&
+        held.threadId === threadId &&
+        held.runId === null &&
+        held.tabId === page.tabId,
+    );
     this.update({
       ...this.snapshot,
-      browserSessions: this.snapshot.browserSessions.map((session) =>
-        session.id !== page.sessionId
-          ? session
-          : {
-              ...session,
-              uses: [
-                ...(session.uses ?? []).filter(
-                  (existing) =>
-                    !(
-                      existing.threadId === threadId &&
-                      existing.runId === null &&
-                      (existing.tabId ?? null) === page.tabId
-                    ),
-                ),
-                ...(session.uses?.some((existing) => existing.threadId === threadId)
-                  ? []
-                  : [{ ...use, pageSite: null, pageTitle: null, tabId: null }]),
-                use,
-              ],
-            },
-      ),
+      browserUses: [
+        ...uses.filter((held) => held !== existing),
+        ...(uses.some((held) => held.sessionId === page.sessionId && held.threadId === threadId)
+          ? []
+          : [{ ...use, pageSite: null, pageTitle: null, tabId: null }]),
+        { ...use, firstUsedAt: existing?.firstUsedAt ?? now },
+      ],
     });
   }
 
@@ -12992,6 +12998,7 @@ function firstRunWorld(snapshot: HostSnapshot): HostSnapshot {
     activeTasks: [],
     assignments: {},
     browserSessions: [],
+    browserUses: [],
     machines: snapshot.machines.map((machine) =>
       machine.computerUse
         ? { ...machine, computerUse: { ...machine.computerUse, sessions: [] } }
@@ -13636,6 +13643,7 @@ function createInitialSnapshot(): HostSnapshot {
     browserPlacements: [],
     browserProfiles: [],
     browserSessions: [],
+    browserUses: [],
     connection: "connecting",
     connectionInterrupted: false,
     network: "unknown",

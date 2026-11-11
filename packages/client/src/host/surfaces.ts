@@ -9,7 +9,12 @@ import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.j
 import { browserTabTitle } from "./browser-presentation.js";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import type { Turn } from "./agent-activity-model.js";
-import type { BrowserSessionSummary, HostSnapshot, PlaceEntry } from "./client.js";
+import type {
+  BrowserSessionSummary,
+  BrowserSessionUseSummary,
+  HostSnapshot,
+  PlaceEntry,
+} from "./client.js";
 import { phoneTabOpen } from "./phone-tab.js";
 import { runPlaceDestination } from "./run-place.js";
 import { mergeTaskEntries } from "./task-entries.js";
@@ -107,6 +112,7 @@ export function ownerViewDestination(view: ComputerView): WorkspaceSurfaceDestin
 const conversationSurfaceKeys = [
   "assignments",
   "browserSessions",
+  "browserUses",
   "browserProfiles",
   "connection",
   "machines",
@@ -174,11 +180,12 @@ function hostName(url: string): string | null {
  * browser, whether or not this client has opened them; a usage read of a
  * conversation can say so before the catalog is read again.
  */
-function browserUsedBy(session: BrowserSessionSummary, threadId: string): boolean {
-  return (
-    session.threadIds?.includes(threadId) === true ||
-    session.uses?.some((use) => use.threadId === threadId) === true
-  );
+function browserUsedBy(
+  session: BrowserSessionSummary,
+  usedSessions: ReadonlySet<string>,
+  threadId: string,
+): boolean {
+  return session.threadIds?.includes(threadId) === true || usedSessions.has(session.id);
 }
 
 /**
@@ -220,8 +227,14 @@ export function conversationSurfaces(
   snapshot: ConversationSurfaceSource,
   threadId: string,
 ): SurfaceItem[] {
+  const usedSessions = new Set(
+    snapshot.browserUses.filter((use) => use.threadId === threadId).map((use) => use.sessionId),
+  );
   const browsers = snapshot.browserSessions
-    .filter((session) => openBrowserStates.has(session.state) && browserUsedBy(session, threadId))
+    .filter(
+      (session) =>
+        openBrowserStates.has(session.state) && browserUsedBy(session, usedSessions, threadId),
+    )
     .flatMap((session) => browserItems(session, snapshot.browserProfiles));
   const threads = conversationThreadIds(snapshot, threadId);
   return [...browsers, ...computerItems(snapshot, (session) => threads.has(session.threadId))].sort(
@@ -364,10 +377,11 @@ export interface RunPage {
  * open pages; missing or ended pages keep that use's recorded title and site.
  */
 export function runPages(
+  uses: readonly BrowserSessionUseSummary[],
   sessions: readonly BrowserSessionSummary[],
   runIds: readonly string[],
 ): RunPage[] {
-  return usedPages(sessions, runIds).map(({ firstUsedAt: _firstUsedAt, ...page }) => page);
+  return usedPages(uses, sessions, runIds).map(({ firstUsedAt: _firstUsedAt, ...page }) => page);
 }
 
 /**
@@ -422,39 +436,42 @@ function pageState(
 }
 
 function usedPages(
+  uses: readonly BrowserSessionUseSummary[],
   sessions: readonly BrowserSessionSummary[],
   runIds: readonly string[],
 ): (RunPage & { readonly firstUsedAt: string })[] {
   const runs = new Set(runIds);
+  const byId = new Map(sessions.map((session) => [session.id, session]));
   const pages = new Map<string, RunPage & { readonly firstUsedAt: string }>();
-  for (const session of sessions) {
-    const catalog = openBrowserStates.has(session.state) ? session.tabCatalog : undefined;
-    for (const use of session.uses ?? []) {
-      if (use.runId === null || !runs.has(use.runId) || !use.tabId) continue;
-      const tabId = use.tabId;
-      const key = `${session.id}:${tabId}`;
-      const tab = catalog?.tabs.find((candidate) => candidate.id === tabId);
-      const { acting, ended, favicon } = pageState(session, tabId, use.runId, use.threadId);
-      const held = pages.get(key);
-      if (held && held.firstUsedAt <= use.firstUsedAt) {
-        if (acting) pages.set(key, { ...held, acting: true });
-        continue;
-      }
-      const recordedSite = use.pageSite ? hostName(use.pageSite) : null;
-      const site = tab ? hostName(tab.site) : recordedSite;
-      const title =
-        (tab?.title.trim() || null) ?? (use.pageTitle?.trim() || null) ?? site ?? "Page";
-      pages.set(key, {
-        acting: acting || held?.acting === true,
-        destination: { kind: "browser", sessionId: session.id, tabId },
-        ended,
-        favicon,
-        firstUsedAt: use.firstUsedAt,
-        key,
-        site,
-        title,
-      });
+  for (const use of uses) {
+    if (use.runId === null || !runs.has(use.runId) || !use.tabId) continue;
+    const { sessionId, tabId } = use;
+    const session = byId.get(sessionId);
+    const catalog =
+      session && openBrowserStates.has(session.state) ? session.tabCatalog : undefined;
+    const key = `${sessionId}:${tabId}`;
+    const tab = catalog?.tabs.find((candidate) => candidate.id === tabId);
+    const { acting, ended, favicon } = session
+      ? pageState(session, tabId, use.runId, use.threadId)
+      : { acting: false, ended: true, favicon: null };
+    const held = pages.get(key);
+    if (held && held.firstUsedAt <= use.firstUsedAt) {
+      if (acting) pages.set(key, { ...held, acting: true });
+      continue;
     }
+    const recordedSite = use.pageSite ? hostName(use.pageSite) : null;
+    const site = tab ? hostName(tab.site) : recordedSite;
+    const title = (tab?.title.trim() || null) ?? (use.pageTitle?.trim() || null) ?? site ?? "Page";
+    pages.set(key, {
+      acting: acting || held?.acting === true,
+      destination: { kind: "browser", sessionId, tabId },
+      ended,
+      favicon,
+      firstUsedAt: use.firstUsedAt,
+      key,
+      site,
+      title,
+    });
   }
   return [...pages.values()].sort(
     (left, right) =>
@@ -659,14 +676,17 @@ export function placeReply(
  */
 export function replyPlaces(
   turn: Pick<Turn, "runId" | "subagentWork" | "work">,
+  uses: readonly BrowserSessionUseSummary[],
   sessions: readonly BrowserSessionSummary[],
   machines: readonly MachineSummary[],
 ): ReplyPlace[] {
   const used: { readonly at: string; readonly place: ReplyPlace }[] = [
-    ...(turn.runId ? usedPages(sessions, [turn.runId]) : []).map(({ firstUsedAt, ...page }) => ({
-      at: firstUsedAt,
-      place: { kind: "page" as const, page },
-    })),
+    ...(turn.runId ? usedPages(uses, sessions, [turn.runId]) : []).map(
+      ({ firstUsedAt, ...page }) => ({
+        at: firstUsedAt,
+        place: { kind: "page" as const, page },
+      }),
+    ),
     ...turnPhones(turn, machines).map((phone) => ({
       at: phone.firstUsedAt,
       place: { kind: "phone" as const, phone },

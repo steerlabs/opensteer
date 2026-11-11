@@ -727,6 +727,7 @@ export interface BrowserFrameStore {
  * browser that has ended can still say which site it was.
  */
 export interface BrowserSessionUseSummary {
+  readonly sessionId: string;
   readonly threadId: string;
   readonly runId: string | null;
   readonly tabId?: string | null | undefined;
@@ -768,8 +769,6 @@ export interface BrowserSessionSummary {
    * catalog names them, most recently active first and bounded per browser.
    */
   threadIds?: readonly string[];
-  /** The uses of this browser by the conversations this client shows. */
-  uses?: readonly BrowserSessionUseSummary[];
   dialog: BrowserDialog | null;
   error: string | null;
   id: string;
@@ -855,6 +854,8 @@ export interface HostSnapshot {
   browserProfileHomes?: readonly string[] | undefined;
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
+  /** Recorded browser uses of the conversations this client shows, including ended sessions. */
+  readonly browserUses: readonly BrowserSessionUseSummary[];
   connection: HostConnectionState;
   /** The connection has been down long enough to say so, or stopped trying. */
   connectionInterrupted: boolean;
