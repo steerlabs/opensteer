@@ -88,12 +88,14 @@ export const ThreadRequestOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
     requestId: RequestIdSchema,
     status: z.enum(["fulfilled", "declined", "withdrawn"]),
+    class: z.enum(["question", "approval"]).optional(),
     at: z.iso.datetime({ offset: true }),
     resolvedByName: name,
   }),
   z.object({
     requestId: RequestIdSchema,
     status: z.literal("cancelled"),
+    class: z.enum(["question", "approval"]).optional(),
     at: z.iso.datetime({ offset: true }),
     reason: ProjectRequestCancellationReasonSchema,
     cancelledFor: RequestCancelledForSchema.optional(),
