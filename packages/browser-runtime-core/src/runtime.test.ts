@@ -18,6 +18,43 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntime", () => {
+  it("retires an idle Guest process with a reason and preserves suspended tab records", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(process, "availableMemory").mockReturnValue(0);
+    const context = new FakeContext([new FakePage()]);
+    const browser = new FakeLaunchedBrowser(context);
+    const runtime = new BrowserRuntime({
+      launcher: Object.assign(new FakeLauncher(browser), { hostCost: "process" as const }),
+      memoryBudgetBytes: 100 * 1024 ** 2,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(
+        freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 }),
+      ),
+    });
+    const sink = new FakeSink();
+    try {
+      const attachment = await runtime.attach("fresh-ticket", sink);
+      await attachment.handle(
+        JSON.stringify({ type: "session.state", runs: 0, viewed: [], pinned: [] }),
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.waitFor(
+        () => expect(runtime.health().sessionCount, "Idle Guest never retired").toBe(0),
+        { timeout: 1000 },
+      );
+      expect(sink.messages).toContainEqual({
+        type: "browser.status",
+        state: "closed",
+        reason: "retired",
+      });
+      expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(["suspended"]);
+    } finally {
+      await runtime.shutdown();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
   it("receives Host session state before releasing an agent's page and drops its timer on detach", async () => {
     vi.useFakeTimers();
     const context = new FakeContext([new FakePage()]);

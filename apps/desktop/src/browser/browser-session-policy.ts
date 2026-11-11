@@ -5,6 +5,7 @@ import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/pa
 export interface BrowserSessionPolicyOptions {
   readonly provider?: boolean;
   readonly requestGate?: BrowserSessionRequestGate;
+  readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -29,6 +30,8 @@ export function applyBrowserSessionPolicy(
 ): void {
   if (options.requestGate) bindBrowserSessionRequestGate(session, options.requestGate);
   session.webRequest.onBeforeRequest((details, callback) => {
+    if (details.resourceType === "mainFrame" && details.webContentsId !== undefined)
+      options.onMainFrameRequest?.(details.webContentsId, details.method);
     if (!isAllowedBrowserRequest(details.url)) callback({ cancel: true });
     else if (requestGates.has(session))
       requestGates.get(session)!.beforeRequest(details.webContentsId, callback);

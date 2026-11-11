@@ -6291,6 +6291,7 @@ class HostedBrowserBroker {
           consumer.sendFrame(this.#latestFrame.frame, this.#latestFrame.header);
     }
     if (message.type === "browser.status" && message.state === "closed") {
+      if (message.reason === "retired") this.#stopping = true;
       if (this.#socket.readyState === WebSocket.OPEN) {
         this.#socket.close(1000, "Browser Runtime closed session");
       }

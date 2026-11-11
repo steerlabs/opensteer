@@ -10,6 +10,7 @@ export const smokeConfig = {
   // policy broker) are built after this step.
   clean: true,
   entry: [
+    "scripts/electron-tab-restore-trial.ts",
     "scripts/electron-downloads-smoke.ts",
     "scripts/editing-engine-journey.ts",
     "scripts/electron-attachment-smoke.ts",

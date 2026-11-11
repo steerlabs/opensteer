@@ -148,7 +148,7 @@ export interface TabRecord {
   typed: boolean;
   usedAt: number;
   unrestorable: boolean;
-  restore: { url: string; engine: unknown | null } | null;
+  restore: { url: string; engine: unknown | null; bytes: number } | null;
 }
 
 export interface LivePage {
@@ -443,15 +443,20 @@ export class SurfaceLedger {
     const live = record.live;
     const documentId = record.documentId;
     try {
-      const [engine, keepAwake] = await withTimeout(
-        Promise.all([
-          live.page.captureRestore ? live.page.captureRestore() : null,
-          live.page.keepAwake?.() ?? null,
-        ]),
+      if (await this.engineProtection(record)) return false;
+      const engine = await withTimeout(
+        live.page.captureRestore ? live.page.captureRestore() : Promise.resolve(null),
         2_000,
         { timeoutError: () => new Error("Tab capture timed out.") },
       );
-      if (live.page.captureRestore && engine === null) record.unrestorable = true;
+      if (
+        live.page.captureRestore &&
+        engine === null &&
+        record.live === live &&
+        record.documentId === documentId
+      )
+        record.unrestorable = true;
+      const finalProtection = await this.engineProtection(record);
       if (
         record.lease.demanded ||
         record.lease.state !== "sleeping" ||
@@ -459,11 +464,15 @@ export class SurfaceLedger {
         this.records.get(id) !== record ||
         record.documentId !== documentId ||
         blocked(record) ||
-        keepAwake ||
+        finalProtection ||
         record.unrestorable
       )
         return false;
-      record.restore = { url: record.url, engine };
+      record.restore = {
+        url: record.url,
+        engine,
+        bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
+      };
       const disposing = this.disposeRecord(record);
       this.pageIds.delete(live.page);
       this.releaseTarget?.(record.lastTargetId);
@@ -474,11 +483,31 @@ export class SurfaceLedger {
       await Promise.all([disposing, live.page.close()]);
       return true;
     } catch {
-      if (record.live === live) record.unrestorable = true;
+      if (record.live === live && record.documentId === documentId) record.unrestorable = true;
       return false;
     } finally {
       if (record.lease.state === "sleeping") record.lease.endSleep(false);
     }
+  }
+  private async engineProtection(record: TabRecord): Promise<boolean> {
+    return withTimeout(this.readEngineProtection(record), 2_000, {
+      timeoutError: () => new Error("Tab protection read timed out."),
+    });
+  }
+  private async readEngineProtection(record: TabRecord): Promise<boolean> {
+    if (
+      !record.live ||
+      (await record.live.page.keepAwake?.()) ||
+      (await record.live.page.hasOpenerAccess?.())
+    )
+      return true;
+    for (const other of this.records.values()) {
+      if (!other.live || !other.openerId || !this.records.get(other.openerId)?.live) continue;
+      if (other.id !== record.id && other.openerId !== record.id) continue;
+      if (other.live.page.hasOpenerAccess ? await other.live.page.hasOpenerAccess() : true)
+        return true;
+    }
+    return false;
   }
   async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
     const record = this.records.get(id);
@@ -540,8 +569,16 @@ export class SurfaceLedger {
           }
           this.releaseTarget?.(record.lastTargetId);
           record.live = null;
-          if (record.restore) record.restore.engine = null;
-          throw error;
+          if (record.restore) {
+            record.restore.engine = null;
+            record.restore.bytes = 0;
+          }
+          if (error instanceof BrowserRuntimeError) throw error;
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Resuming this tab failed. Retry to reopen its address.",
+            { cause: error, retryable: true },
+          );
         } finally {
           accepting = false;
           this.creatingPage = null;

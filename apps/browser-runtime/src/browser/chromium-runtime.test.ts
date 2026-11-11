@@ -1974,8 +1974,12 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
 
   it("sleeps its only page and wakes by address while the Chromium context survives", async () => {
     let requests = 0;
-    const site = createServer((_request, response) => {
+    const site = createServer((request, response) => {
       requests++;
+      if (request.method === "POST" && request.url === "/redirect") {
+        response.writeHead(303, { location: "/get" }).end();
+        return;
+      }
       response.writeHead(200, {
         "content-type": "text/html",
         "set-cookie": "sleep=retained; SameSite=Lax",
@@ -2074,6 +2078,27 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
         returnByValue: true,
       });
     expect(cookie.result.value).toContain("sleep=retained");
+    const binding = ledger.binding(id)!;
+    const post = async (action: string) => {
+      const loaded = Promise.withResolvers<void>();
+      const finished = () => loaded.resolve();
+      binding.cdp.on("Page.loadEventFired", finished);
+      try {
+        await binding.cdp.send("Runtime.evaluate", {
+          expression: `(() => { const form=document.createElement('form');form.method='POST';form.action=${JSON.stringify(action)};document.body.append(form);form.submit(); })()`,
+        });
+        await withTimeout(loaded.promise, 5000, {
+          timeoutError: () => new Error("POST navigation never finished"),
+        });
+      } finally {
+        binding.cdp.off("Page.loadEventFired", finished);
+      }
+    };
+    await post("/post");
+    expect(await binding.page.keepAwake?.()).toBe("post");
+    expect(await ledger.sleep(id, () => null)).toBe(false);
+    await post("/redirect");
+    expect(await binding.page.keepAwake?.()).toBeNull();
   });
   it("navigates, streams, inputs, handles dialogs, tracks popups, and closes cleanly", async () => {
     const site = createServer((request, response) => {

@@ -665,7 +665,9 @@ export class BrowserController {
     this.releaseDisconnect();
   }
 
-  close(): Promise<void> {
+  private closeReason: "retired" | undefined;
+  close(reason?: "retired"): Promise<void> {
+    if (!this.closePromise) this.closeReason = reason;
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const entry of this.cursorHints.values()) {
       entry.unsubscribe();
@@ -724,7 +726,11 @@ export class BrowserController {
       ]);
     }
     this.terminated = true;
-    await this.send({ state: "closed", type: "browser.status" }).catch(() => undefined);
+    await this.send({
+      state: "closed",
+      type: "browser.status",
+      ...(this.closeReason ? { reason: this.closeReason } : {}),
+    }).catch(() => undefined);
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
