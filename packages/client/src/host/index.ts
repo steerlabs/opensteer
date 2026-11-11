@@ -99,3 +99,4 @@ export * from "./team-paging.js";
 export * from "./team-settings.js";
 export * from "./subagent-model.js";
 export * from "./node-detail.js";
+export * from "./team-place.js";

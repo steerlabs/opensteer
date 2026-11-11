@@ -12,6 +12,7 @@ import {
   type PluginSummary,
   type WorkspaceMemberSummary,
   type WorkspaceSummary,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { WorkspaceIdSchema, type SpecialistRegistration } from "@opensteer/core";
 import type { IntegrationGrant } from "@opensteer/integration-core";
@@ -46,7 +47,7 @@ export function ProjectSettingsRoute() {
     if (activeWorkspaceId) hostClient.activateWorkspace(activeWorkspaceId);
   }, [activeWorkspaceId, hostClient]);
   if (!workspace || workspace.kind !== "project")
-    return snapshot.teamAdministrationAvailable && workspaceId ? (
+    return isTeamPlace(snapshot) && workspaceId ? (
       <TeamProjectPage key={identity ?? "signed-out"} workspaceId={workspaceId} />
     ) : (
       <Navigate replace to="/projects" />
@@ -59,7 +60,7 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
   const userId = snapshot.user?.id ?? null;
   const administrator = snapshot.user?.instanceRole === "administrator";
   const connected = canRespondToRequests(snapshot);
-  const teamProject = snapshot.teamAdministrationAvailable === true;
+  const teamProject = isTeamPlace(snapshot);
   const teamAccess = useProjectAccess(workspace.id);
   const teamName = useShellTeam().summary?.team.name ?? null;
   const members = useHostRead(

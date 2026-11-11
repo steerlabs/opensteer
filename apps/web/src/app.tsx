@@ -41,6 +41,7 @@ import {
   type HostClient,
   type InitialOwnerClaimInput,
   type PasswordSignInInput,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
@@ -154,8 +155,7 @@ export function App({
   const [setupExchangeAttempt, setSetupExchangeAttempt] = useState(0);
   const [setupExchangeError, setSetupExchangeError] = useState<string | null>(null);
   const invitationRoute = isInvitationPath(window.location.pathname);
-  const teamJoinRoute =
-    snapshot.teamAdministrationAvailable === true && isTeamJoinPath(window.location.pathname);
+  const teamJoinRoute = isTeamPlace(snapshot) && isTeamJoinPath(window.location.pathname);
   const recoveryRoute = window.location.pathname === "/recover";
   const autoOidcProvider =
     snapshot.session === "authentication-required" &&

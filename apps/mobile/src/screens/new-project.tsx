@@ -5,6 +5,7 @@ import {
   teamErrorText,
   teamReasonText,
   type HostClient,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useTeam } from "@opensteer/client/react";
 import { markColorAllocationOrder, type MarkColor, type WorkspaceIconName } from "@opensteer/core";
@@ -131,7 +132,7 @@ function NewProjectForm(props: {
       });
   };
 
-  if (snapshot.teamAdministrationAvailable && summary && !summary.can.createProject.allowed)
+  if (isTeamPlace(snapshot) && summary && !summary.can.createProject.allowed)
     return (
       <Sheet onClose={() => navigation.goBack()}>
         <Notice

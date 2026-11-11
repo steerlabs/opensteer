@@ -6,6 +6,7 @@ import {
   projectStatusLabel,
   taskList,
   type ProjectFolder,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useMinuteClock } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
@@ -32,8 +33,7 @@ export function ProjectsPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [query, setQuery] = useState("");
   const { summary } = useShellTeam();
-  const canCreate =
-    snapshot.teamAdministrationAvailable !== true || summary?.can.createProject.allowed === true;
+  const canCreate = !isTeamPlace(snapshot) || summary?.can.createProject.allowed === true;
   const folders = useMemo(
     () => groupTasksByProject(snapshot, taskList(snapshot)).folders,
     [snapshot],

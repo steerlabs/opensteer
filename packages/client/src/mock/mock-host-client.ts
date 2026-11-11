@@ -6470,13 +6470,16 @@ class MockHostState {
       quietTasksAvailable: options.quietTasksAvailable ?? true,
     };
     const firstRun = options.world === "first-run";
-    this.snapshot = firstRun
-      ? firstRunWorld(initial)
-      : options.initialHome === "absent"
-        ? withoutInitialHome(initial)
-        : initial;
+    const teamPlace = this.team.available;
+    this.snapshot = teamPlace
+      ? teamPlaceWorld(initial)
+      : firstRun
+        ? firstRunWorld(initial)
+        : options.initialHome === "absent"
+          ? withoutInitialHome(initial)
+          : initial;
     this.applyAutomaticEligibility();
-    if (options.initialHome !== "absent" && !firstRun) this.seedHomeTask();
+    if (options.initialHome !== "absent" && !firstRun && !teamPlace) this.seedHomeTask();
     for (const thread of this.snapshot.threads) {
       if (thread.icon === null && thread.id !== this.snapshot.homeThreadId)
         this.#provisionalIcons.add(thread.id);
@@ -13126,6 +13129,54 @@ function firstRunWorld(snapshot: HostSnapshot): HostSnapshot {
     transcripts: {},
     transcriptWindows: {},
     waitingRequests: [],
+  };
+}
+
+/**
+ * A team server as the Host serves it: no Main, no Chat, no Voice, only the
+ * shared Projects and their Threads.
+ */
+function teamPlaceWorld(snapshot: HostSnapshot): HostSnapshot {
+  const projects = new Set(
+    snapshot.workspaces.filter(({ kind }) => kind === "project").map(({ id }) => id),
+  );
+  const threads = snapshot.threads.filter((thread) => projects.has(thread.workspaceId));
+  const kept = new Set(threads.map(({ id }) => id));
+  const keep = <T>(record: Record<string, T>) =>
+    Object.fromEntries(Object.entries(record).filter(([threadId]) => kept.has(threadId)));
+  return {
+    ...snapshot,
+    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+    ...(snapshot.identityConfig
+      ? {
+          identityConfig: {
+            ...snapshot.identityConfig,
+            deployment: { kind: "self-hosted", name: "Acme" },
+            machineOwner: false,
+          },
+        }
+      : {}),
+    homeWorkspaceId: null,
+    homeThreadId: null,
+    voiceThreadId: null,
+    voiceAvailable: false,
+    machines: snapshot.machines.map((machine) =>
+      machine.computerUse
+        ? {
+            ...machine,
+            computerUse: {
+              ...machine.computerUse,
+              sessions: machine.computerUse.sessions.filter(({ threadId }) => kept.has(threadId)),
+            },
+          }
+        : machine,
+    ),
+    requests: keep(snapshot.requests),
+    runQueue: snapshot.runQueue.filter(({ threadId }) => kept.has(threadId)),
+    threads,
+    transcripts: keep(snapshot.transcripts),
+    transcriptWindows: keep(snapshot.transcriptWindows),
+    workspaces: snapshot.workspaces.filter(({ id }) => projects.has(id)),
   };
 }
 
