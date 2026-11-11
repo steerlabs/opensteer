@@ -5,10 +5,14 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { TeamLinkService } from "./link-service.js";
+import { parseTeamLinkOffer } from "@opensteer/protocol";
 import { TeamFileService } from "./file-service.js";
 import { startTeamServices } from "./services.js";
 import { createId, type TeamActor, type KnowledgeTopicId } from "@opensteer/core";
-import { createTeamFixture } from "@opensteer/database/test-support/team";
+import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
+import { hostApi } from "@opensteer/protocol";
+import { teamChannelTopics } from "../../../../packages/database/src/team-topics-store.js";
 import { sql } from "kysely";
 import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
@@ -16,37 +20,25 @@ import { TeamGroupsStore } from "@opensteer/database/team-groups";
 import { TeamMembersStore } from "@opensteer/database/team-members";
 import { TeamInvitesStore } from "@opensteer/database/team-invites";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
+import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team-outbox";
 import { TeamFilesStore } from "@opensteer/database/team-files";
 
 describe("team transaction authority", () => {
-  let fixture: Awaited<ReturnType<typeof createTeamFixture>>;
+  let fixture: Awaited<ReturnType<typeof createTeamKnowledgeFixture>>;
   let access: TeamAccessStore,
     chat: TeamChatStore,
     groups: TeamGroupsStore,
     requests: TeamRequestsStore;
   let owner: TeamActor;
   beforeEach(async () => {
-    fixture = await createTeamFixture();
+    fixture = await createTeamKnowledgeFixture();
     access = new TeamAccessStore(fixture.database);
     await access.initialize();
     owner = { kind: "human", userId: fixture.userId };
-    await sql`create schema knowledge`.execute(fixture.database);
-    await sql`create table knowledge.topics(id text primary key,name text,origin_channel_id text,people_only boolean not null default false,archived_at timestamptz)`.execute(
-      fixture.database,
-    );
-    chat = new TeamChatStore(
-      access,
-      {
-        async createChannelTopic(t, input) {
-          const id = createId("knowledgeTopic");
-          await sql`insert into knowledge.topics(id,name,origin_channel_id,people_only) values(${id},${input.name},${input.channelId},${input.peopleOnly})`.execute(
-            t,
-          );
-          return id;
-        },
-      },
-      { teamId: fixture.deploymentId, teamName: "Acme" },
-    );
+    chat = new TeamChatStore(access, teamChannelTopics, {
+      teamId: fixture.deploymentId,
+      teamName: "Acme",
+    });
     groups = new TeamGroupsStore(access);
     requests = new TeamRequestsStore(access, chat);
   });
@@ -138,7 +130,7 @@ describe("team transaction authority", () => {
       topicId = createId("knowledgeTopic");
     await groups.create(owner, group, "Topic readers");
     await groups.person(owner, group, member.userId, true);
-    await sql`insert into knowledge.topics(id,name,people_only) values(${topicId},'Shared',false)`.execute(
+    await sql`insert into knowledge.topics(id,name,people_only,created_by) values(${topicId},'Shared',false,${owner.userId})`.execute(
       fixture.database,
     );
     await access.mutate(async (t) => {
@@ -161,7 +153,7 @@ describe("team transaction authority", () => {
     const topicRights = (actor: TeamActor) =>
       fixture.database.transaction().execute((t) => access.topic(t, actor, topicId));
     expect(await topicRights(agent)).toMatchObject({ read: true, write: false, manage: false });
-    expect(await topicRights(owner)).toMatchObject({ read: false, write: false, manage: true });
+    expect(await topicRights(owner)).toMatchObject({ read: false, write: false, manage: false });
     await access.mutate(async (t) => {
       await sql`update knowledge.topics set people_only=true where id=${topicId}`.execute(t);
       return {
@@ -327,6 +319,22 @@ describe("team transaction authority", () => {
     await expect(requests.authorize(l, accepted.id, "read")).rejects.toThrow();
     expect(await requests.receipt(l, accepted.id)).toBe(replyId);
   });
+  it("bounds request context while preserving the original ask after a long thread", async () => {
+    const c = await channel();
+    const l = await link();
+    const root = await send(c.id, "original ask " + "x".repeat(12000), owner, [
+      { kind: "agent", userId: owner.userId },
+    ]);
+    for (let i = 0; i < 55; i++) await send(c.id, `later reply ${i}`, owner, [], root.message.id);
+    const request = (await requests.pending(l))[0]!.request;
+    await requests.accept(l, request.id);
+    const context = await requests.context(l, request.id);
+    expect(context.messages.length).toBeLessThanOrEqual(50);
+    expect(Buffer.byteLength(JSON.stringify(context.messages))).toBeLessThanOrEqual(32768);
+    expect(context.messages.some((m) => m.id === root.message.id)).toBe(true);
+    expect(context.request.triggerMessageId).toBe(root.message.id);
+  });
+
   it("fences pending requests across people-only then clear and prevents later buffered delivery", async () => {
     const c = await channel();
     const l = await link();
@@ -407,6 +415,66 @@ describe("team transaction authority", () => {
     expect(a.generation).toBe(b.generation);
     await new TeamMembersStore(access).change(owner, member.userId, "remove");
     await expect(invites.accept(member.userId, selector, url.hash.slice(1))).rejects.toThrow();
+  });
+
+  it("mints hashed ten-minute link codes, replaces only pending codes, and revokes requests before returning", async () => {
+    const links = new TeamLinkService(access, {
+      teamId: fixture.deploymentId,
+      origin: "https://team.example.invalid",
+      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
+    });
+    const c = await channel(),
+      active = await link();
+    const first = await links.createCode(owner);
+    expect(first.replacing?.id).toBe(active);
+    const offer = parseTeamLinkOffer(first.offer)!;
+    expect(offer.teamId).toBe(fixture.deploymentId);
+    const pending = await fixture.database
+      .selectFrom("teamLinks")
+      .selectAll()
+      .where("state", "=", "pending")
+      .executeTakeFirstOrThrow();
+    expect(pending.codeHash).toBe(createHash("sha256").update(offer.code).digest("hex"));
+    expect(pending.codeHash).not.toContain(offer.code);
+    expect(pending.codeExpiresAt.getTime() - Date.now()).toBeLessThanOrEqual(600000);
+    expect(pending.codeExpiresAt.getTime() - Date.now()).toBeGreaterThan(590000);
+    await links.createCode(owner);
+    expect(
+      (
+        await fixture.database
+          .selectFrom("teamLinks")
+          .select("state")
+          .where("id", "=", pending.id)
+          .executeTakeFirstOrThrow()
+      ).state,
+    ).toBe("revoked");
+    expect((await links.list(owner)).links).toHaveLength(2);
+    const stranger = await person("LinkStranger");
+    await expect(links.revoke(stranger, active)).rejects.toThrow();
+    await send(c.id, "queued ask", owner, [{ kind: "agent", userId: owner.userId }]);
+    const request = (await requests.pending(active))[0]!.request;
+    let closed = false;
+    const stop = access.onRevoke(async (effects) => {
+      if (!effects.links.includes(active)) return;
+      expect(
+        (
+          await fixture.database
+            .selectFrom("teamAgentRequests")
+            .select("state")
+            .where("id", "=", request.id)
+            .executeTakeFirstOrThrow()
+        ).state,
+      ).toBe("cancelled");
+      closed = true;
+    });
+    try {
+      await links.revoke(owner, active);
+      expect(closed).toBe(true);
+    } finally {
+      stop();
+    }
+    await expect(requests.accept(active, request.id)).rejects.toThrow();
+    expect((await links.list(owner)).links.map((row) => row.state)).toEqual(["pending"]);
   });
 
   it("holds the content share lock through commit and rechecks posts after the last access path is removed", async () => {
@@ -702,8 +770,8 @@ describe("team transaction authority", () => {
         },
       );
       const outcome = upload.then(
-        () => "accepted",
-        () => "cancelled",
+        () => null,
+        (error: unknown) => error,
       );
       await withTimeout(started.promise, 5000, {
         timeoutError: () => new Error("Upload never began streaming"),
@@ -713,7 +781,7 @@ describe("team transaction authority", () => {
         await withTimeout(outcome, 5000, {
           timeoutError: () => new Error("Removed uploader kept its stream"),
         }),
-      ).toBe("cancelled");
+      ).toMatchObject({ message: "Team file access revoked" });
       expect(
         (await readdir(join(directory, "team-files"))).some((name) => name.startsWith("pending-")),
       ).toBe(false);
@@ -724,12 +792,102 @@ describe("team transaction authority", () => {
     }
   });
 
+  it("claims push once, checks live recipients, follows mentions, and publishes owner agent status after reading", async () => {
+    const member = await person("PushReader"),
+      c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: member.userId }, level: "read", manage: false },
+    ]);
+    await fixture.database
+      .insertInto("accountDirectoryProvider")
+      .values({
+        singletonKey: "opensteer-account",
+        providerId: "fixture-account",
+        issuer: "https://account.example.invalid",
+      })
+      .execute();
+    for (const actor of [owner, member])
+      await fixture.database
+        .insertInto("authAccounts")
+        .values({
+          id: createId("authAccount"),
+          userId: actor.userId,
+          accountId: `acct_${randomUUID()}`,
+          providerId: "fixture-account",
+        })
+        .execute();
+    const root = await send(c.id, "mentioned", owner, [{ kind: "person", userId: member.userId }]);
+    const outbox = new TeamOutboxStore(access),
+      started = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const delivered: TeamPushDelivery[] = [];
+    const first = outbox.drain(async (delivery) => {
+      delivered.push(delivery);
+      started.resolve();
+      await withTimeout(release.promise, 5000, {
+        timeoutError: () => new Error("Push fixture was not released"),
+      });
+    });
+    try {
+      await withTimeout(started.promise, 5000, {
+        timeoutError: () => new Error("Push was not claimed"),
+      });
+      expect(
+        await outbox.drain(async () => {
+          throw new Error("Duplicate push claim");
+        }),
+      ).toBe(0);
+    } finally {
+      release.resolve();
+      await first;
+    }
+    expect(delivered.map((d) => d.userId)).toEqual([member.userId]);
+    await send(c.id, "followed reply", owner, [], root.message.id);
+    delivered.length = 0;
+    await outbox.drain(async (delivery) => {
+      delivered.push(delivery);
+    });
+    expect(delivered.map((d) => d.userId)).toEqual([member.userId]);
+    const l = await link();
+    const ask = await send(c.id, "own ask", owner, [{ kind: "agent", userId: owner.userId }]);
+    const request = (await requests.pending(l))[0]!.request;
+    await requests.accept(l, request.id);
+    await chat.readMarker(owner, c.id, ask.message.id);
+    await requests.status(l, request.id, { state: "needs_you", steps: [] });
+    delivered.length = 0;
+    await outbox.drain(async (delivery) => {
+      delivered.push(delivery);
+    });
+    expect(delivered).toContainEqual(
+      expect.objectContaining({ userId: owner.userId, kind: "team-agent-needs-you" }),
+    );
+    await requests.reply(l, request.id, { bodyMarkdown: "agent reply", attachmentIds: [] });
+    delivered.length = 0;
+    await outbox.drain(async (delivery) => {
+      delivered.push(delivery);
+    });
+    expect(delivered).toContainEqual(
+      expect.objectContaining({ userId: owner.userId, kind: "team-agent-completed" }),
+    );
+    await send(c.id, "late mention", owner, [{ kind: "person", userId: member.userId }]);
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+    ]);
+    delivered.length = 0;
+    await outbox.drain(async (delivery) => {
+      delivered.push(delivery);
+    });
+    expect(delivered).toEqual([]);
+  });
+
   it("uses teamApiVersion before authentication and parsing and ignores the personal epoch", async () => {
     const services = await startTeamServices({
       kind: "team",
       database: fixture.database,
       teamId: fixture.deploymentId,
       teamName: "Acme",
+      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
       origin: "https://team.example.invalid",
       dataDirectory: tmpdir(),
       topics: chat.topics,
@@ -742,16 +900,21 @@ describe("team transaction authority", () => {
           throw new Error("Unexpected knowledge command");
         },
       },
-      links: {
-        async createCode() {
-          throw new Error("Unexpected link code");
-        },
-        async list() {
-          return { links: [] };
-        },
-        async revoke() {},
-      },
       async publishPush() {},
+      async registerPreviewKey(session, command) {
+        await fixture.database
+          .insertInto("notificationPreviewKeys")
+          .values({
+            userId: session.user.id,
+            authSessionId: session.id,
+            installationId: command.installationId,
+            accountId: command.accountId,
+            keyId: command.keyId,
+            encryptedKey: Buffer.alloc(32),
+            encryptionKeyVersion: 1,
+          })
+          .execute();
+      },
       backgroundError() {},
     });
     try {
@@ -800,6 +963,54 @@ describe("team transaction authority", () => {
       );
       expect(result).toMatchObject({ teamId: fixture.deploymentId });
       expect(authenticate).toHaveBeenCalledOnce();
+      const session = await authenticate();
+      await fixture.database
+        .insertInto("authSessions")
+        .values({
+          id: session.id,
+          userId: owner.userId,
+          token: randomUUID(),
+          memberGeneration: "0",
+          deviceLabel: "Test",
+          expiresAt: new Date(Date.now() + 60000),
+          absoluteExpiresAt: new Date(Date.now() + 60000),
+        })
+        .execute();
+      const preview = {
+        type: "notification.preview.register",
+        installationId: "preview-installation",
+        accountId: "acct_00000000-0000-4000-8000-000000000001",
+        keyId: Buffer.alloc(16).toString("base64url"),
+        key: Buffer.alloc(32).toString("base64url"),
+      };
+      const headers = new Headers({ "x-opensteer-team-api-version": "1" });
+      await expect(
+        services.rpc(headers, "commands.dispatch", preview, async () => session),
+      ).rejects.toThrow("Team access denied");
+      expect(
+        await fixture.database.selectFrom("notificationPreviewKeys").select("userId").execute(),
+      ).toEqual([]);
+      await fixture.database
+        .updateTable("authSessions")
+        .set({ memberGeneration: "1" })
+        .where("id", "=", session.id)
+        .execute();
+      const registered = await services.rpc(
+        headers,
+        "commands.dispatch",
+        preview,
+        async () => session,
+      );
+      expect(hostApi["commands.dispatch"].success.parse(registered)).toMatchObject({
+        type: preview.type,
+        registered: true,
+      });
+      expect(
+        await fixture.database
+          .selectFrom("notificationPreviewKeys")
+          .select("authSessionId")
+          .execute(),
+      ).toEqual([{ authSessionId: session.id }]);
     } finally {
       await services.close();
     }

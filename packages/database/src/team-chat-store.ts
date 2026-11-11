@@ -31,6 +31,7 @@ import type { ChannelTopicPort } from "./team-topics-port.js";
 import {
   TeamAccessStore,
   bumpTeamChannel,
+  lockTeamMessages,
   emptyTeamAccessEffects,
   requireTeam,
   teamConflict,
@@ -245,6 +246,16 @@ export class TeamChatStore {
     entries: readonly ChannelAccess[],
   ) {
     await this.#validateAccess(transaction, entries);
+    await transaction
+      .selectFrom("teamChannelMembers")
+      .select(["channelId", "subjectKind", "subjectId"])
+      .where("channelId", "=", channelId)
+      .orderBy("channelId")
+      .orderBy("subjectKind")
+      .orderBy("subjectId")
+      // FOR UPDATE: Replacing the ACL deletes these entries.
+      .forUpdate()
+      .execute();
     await transaction.deleteFrom("teamChannelMembers").where("channelId", "=", channelId).execute();
     if (entries.length)
       await transaction
@@ -924,6 +935,48 @@ export class TeamChatStore {
           (input === null && authority.manage),
       );
       if (row.deletedAt) return;
+      await lockTeamMessages(transaction, [
+        messageId,
+        ...(row.threadRootId ? [row.threadRootId] : []),
+      ]);
+      if (!input) {
+        const bindings = await transaction
+          .selectFrom("teamMessageAttachments")
+          .select("blobId")
+          .where("messageId", "=", messageId)
+          .execute();
+        if (bindings.length)
+          await transaction
+            .selectFrom("teamBlobs")
+            .select("id")
+            .where(
+              "id",
+              "in",
+              bindings.map((r) => r.blobId),
+            )
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+        await transaction
+          .selectFrom("teamMessageAttachments")
+          .select(["messageId", "position"])
+          .where("messageId", "=", messageId)
+          .orderBy("messageId")
+          .orderBy("position")
+          // FOR UPDATE: A deleted message loses its attachment bindings.
+          .forUpdate()
+          .execute();
+      }
+      await transaction
+        .selectFrom("teamMentions")
+        .selectAll()
+        .where("messageId", "=", messageId)
+        .orderBy("messageId")
+        .orderBy("targetKind")
+        .orderBy("targetUserId")
+        // FOR UPDATE: An edit or deletion replaces these mentions.
+        .forUpdate()
+        .execute();
       const { changeSeq } = await bumpTeamChannel(transaction, channelId);
       if (input) {
         TeamMarkdownSchema.parse(input.bodyMarkdown);
@@ -967,6 +1020,14 @@ export class TeamChatStore {
           .where("id", "=", row.threadRootId)
           .execute();
       if (!input) {
+        await transaction
+          .selectFrom("teamAgentRequests")
+          .select("id")
+          .where("triggerMessageId", "=", messageId)
+          .where("state", "=", "queued")
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
         const queued = await transaction
           .updateTable("teamAgentRequests")
           .set({

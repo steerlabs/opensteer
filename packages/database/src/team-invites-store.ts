@@ -10,7 +10,7 @@ import {
   requireTeam,
   teamConflict,
 } from "./team-access-store.js";
-import { admitTeamMember } from "./team-members-store.js";
+import { admitTeamMember, publishTeamMember } from "./team-members-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 
 export class TeamInvitesStore {
@@ -147,10 +147,13 @@ export class TeamInvitesStore {
   }
   async accept(userId: UserId, selector: string, verifier: string) {
     await this.verify(selector, verifier);
-    return this.access.mutate(async (transaction) => ({
-      value: await this.acceptInTransaction(transaction, userId, selector),
-      effects: emptyTeamAccessEffects,
-    }));
+    return this.access.mutate(
+      async (transaction) => ({
+        value: await this.acceptInTransaction(transaction, userId, selector),
+        effects: emptyTeamAccessEffects,
+      }),
+      (transaction) => publishTeamMember(transaction, userId),
+    );
   }
   async revoke(actor: TeamActor, id: TeamInviteId) {
     return this.access.mutateAs(actor, "invite.revoke", async (transaction) => {

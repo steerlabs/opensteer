@@ -209,6 +209,7 @@ export class TeamFileService {
     id: TeamBlobId,
     part: "original" | "preview",
     requestId?: TeamAgentRequestId,
+    signal?: AbortSignal,
   ): Promise<{ body: Readable; sizeBytes: number; headers: Record<string, string> }> {
     const revision = this.access.revision;
     const row = await this.store.authorized(actor, id, requestId);
@@ -231,7 +232,10 @@ export class TeamFileService {
         requireTeam(!controller.signal.aborted);
         stream = createReadStream(
           join(this.#directory, part === "original" ? row.storageKey : row.previewStorageKey!),
-          { highWaterMark: 64 * 1024, signal: controller.signal },
+          {
+            highWaterMark: 64 * 1024,
+            signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+          },
         );
         stream.once("close", () => this.#active.delete(transfer));
         return {

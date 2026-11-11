@@ -22,7 +22,7 @@ export function registerTeamSetupRoutes(
   app: FastifyInstance,
   options: { identity: IdentityService; accountPortalOrigin: string },
 ) {
-  const gate = (request: FastifyRequest) => assertTeamApiVersion(headers(request));
+  const gate = async (request: FastifyRequest) => assertTeamApiVersion(headers(request));
   app.get("/setup", async (_request, reply) => {
     const nonce = randomBytes(18).toString("base64url");
     return reply

@@ -3,6 +3,7 @@ import { TeamMemberSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { TeamAccessStore, emptyTeamAccessEffects, requireTeam } from "./team-access-store.js";
+import { deleteTeamTopicGrantsFor } from "./team-topics-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 
 export async function publishTeamMember(transaction: Transaction<DatabaseSchema>, userId: UserId) {
@@ -54,7 +55,6 @@ export async function admitTeamMember(
       })
       .execute();
   }
-  await publishTeamMember(transaction, userId);
   return transaction
     .selectFrom("teamMembers")
     .selectAll()
@@ -101,78 +101,102 @@ export class TeamMembersStore {
     });
   }
   async change(actor: TeamActor, userId: UserId, change: "remove" | "owner" | "admin" | "member") {
-    return this.access.mutateAs(actor, `member.${change}`, async (transaction) => {
-      const selfLeave = change === "remove" && userId === actor.userId;
-      const caller = selfLeave
-        ? await this.access.member(transaction, actor.userId)
-        : await this.access.admin(transaction, actor);
-      const rows = await transaction
-        .selectFrom("teamMembers")
-        .selectAll()
-        .where((e) => e.or([e("role", "=", "owner"), e("userId", "in", [actor.userId, userId])]))
-        .orderBy("userId")
-        .forNoKeyUpdate()
-        .execute();
-      const target = rows.find((r) => r.userId === userId);
-      requireTeam(target?.state === "active");
-      requireTeam(
-        selfLeave || caller.role === "owner" || target.role === "member",
-        "Only an owner can change administrators",
-      );
-      if (change === "owner")
-        requireTeam(caller.role === "owner", "Only an owner can transfer ownership");
-      if (target.role === "owner" && change !== "owner")
+    return this.access.mutateAs(
+      actor,
+      `member.${change}`,
+      async (transaction) => {
+        const selfLeave = change === "remove" && userId === actor.userId;
+        const caller = selfLeave
+          ? await this.access.member(transaction, actor.userId)
+          : await this.access.admin(transaction, actor);
+        const rows = await transaction
+          .selectFrom("teamMembers")
+          .selectAll()
+          .where((e) => e.or([e("role", "=", "owner"), e("userId", "in", [actor.userId, userId])]))
+          .orderBy("userId")
+          .forNoKeyUpdate()
+          .execute();
+        const target = rows.find((r) => r.userId === userId);
+        requireTeam(target?.state === "active");
         requireTeam(
-          rows.filter((r) => r.role === "owner" && r.state === "active").length > 1,
-          "The last owner cannot leave",
+          selfLeave || caller.role === "owner" || target.role === "member",
+          "Only an owner can change administrators",
         );
-      if (change === "owner" && target.userId !== actor.userId)
-        await transaction
-          .updateTable("teamMembers")
-          .set({ role: "admin", changedAt: new Date(), changedBy: actor.userId })
-          .where("userId", "=", actor.userId)
-          .execute();
-      const changed =
-        change === "remove" ||
-        target.role !== change ||
-        (change === "owner" && target.userId !== actor.userId);
-      if (changed) {
-        await transaction
-          .updateTable("teamMembers")
-          .set(
-            change === "remove"
-              ? {
-                  state: "removed",
-                  generation: sql`generation+1`,
-                  changedAt: new Date(),
-                  changedBy: actor.userId,
-                }
-              : { role: change, changedAt: new Date(), changedBy: actor.userId },
-          )
-          .where("userId", "=", userId)
-          .execute();
-        if (change === "remove") {
-          await transaction.deleteFrom("teamGroupPeople").where("userId", "=", userId).execute();
+        if (change === "owner")
+          requireTeam(caller.role === "owner", "Only an owner can transfer ownership");
+        if (target.role === "owner" && change !== "owner")
+          requireTeam(
+            rows.filter((r) => r.role === "owner" && r.state === "active").length > 1,
+            "The last owner cannot leave",
+          );
+        if (change === "owner" && target.userId !== actor.userId)
           await transaction
-            .deleteFrom("teamChannelMembers")
-            .where("subjectKind", "=", "person")
-            .where("subjectId", "=", userId)
+            .updateTable("teamMembers")
+            .set({ role: "admin", changedAt: new Date(), changedBy: actor.userId })
+            .where("userId", "=", actor.userId)
             .execute();
+        let topics: import("@opensteer/core").KnowledgeTopicId[] = [];
+        const changed =
+          change === "remove" ||
+          target.role !== change ||
+          (change === "owner" && target.userId !== actor.userId);
+        if (changed) {
           await transaction
-            .deleteFrom("teamTopicGrants")
-            .where("subjectKind", "=", "person")
-            .where("subjectId", "=", userId)
+            .updateTable("teamMembers")
+            .set(
+              change === "remove"
+                ? {
+                    state: "removed",
+                    generation: sql`generation+1`,
+                    changedAt: new Date(),
+                    changedBy: actor.userId,
+                  }
+                : { role: change, changedAt: new Date(), changedBy: actor.userId },
+            )
+            .where("userId", "=", userId)
             .execute();
+          if (change === "remove") {
+            await transaction
+              .selectFrom("teamGroupPeople")
+              .selectAll()
+              .where("userId", "=", userId)
+              .orderBy("groupId")
+              .orderBy("userId")
+              // FOR UPDATE: Removal deletes these group paths.
+              .forUpdate()
+              .execute();
+            await transaction.deleteFrom("teamGroupPeople").where("userId", "=", userId).execute();
+            await transaction
+              .selectFrom("teamChannelMembers")
+              .selectAll()
+              .where("subjectKind", "=", "person")
+              .where("subjectId", "=", userId)
+              .orderBy("channelId")
+              .orderBy("subjectKind")
+              .orderBy("subjectId")
+              // FOR UPDATE: Removal deletes these direct ACL entries.
+              .forUpdate()
+              .execute();
+            await transaction
+              .deleteFrom("teamChannelMembers")
+              .where("subjectKind", "=", "person")
+              .where("subjectId", "=", userId)
+              .execute();
+            topics = await deleteTeamTopicGrantsFor(transaction, { kind: "person", userId });
+          }
+          await appendTeamAudit(transaction, {
+            actor,
+            action: `member.${change}`,
+            resourceKind: "member",
+            resourceId: userId,
+          });
         }
-        await publishTeamMember(transaction, userId);
-        await appendTeamAudit(transaction, {
-          actor,
-          action: `member.${change}`,
-          resourceKind: "member",
-          resourceId: userId,
-        });
-      }
-      return { value: undefined, effects: { ...emptyTeamAccessEffects, users: [userId] } };
-    });
+        return {
+          value: undefined,
+          effects: { ...emptyTeamAccessEffects, users: [userId], topics },
+        };
+      },
+      (transaction) => publishTeamMember(transaction, userId),
+    );
   }
 }

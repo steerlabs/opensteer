@@ -7,6 +7,7 @@ import {
   requireTeam,
   teamConflict,
 } from "./team-access-store.js";
+import { deleteTeamTopicGrantsFor } from "./team-topics-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 
 export class TeamGroupsStore {
@@ -106,6 +107,7 @@ export class TeamGroupsStore {
           .where("id", "=", id)
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
+        let topics: import("@opensteer/core").KnowledgeTopicId[] = [];
         if ((name === null && !row.deletedAt) || (name !== null && row.name !== name)) {
           await transaction
             .updateTable("teamGroups")
@@ -120,6 +122,8 @@ export class TeamGroupsStore {
             )
             .where("id", "=", id)
             .execute();
+          if (name === null)
+            topics = await deleteTeamTopicGrantsFor(transaction, { kind: "group", groupId: id });
           await appendTeamAudit(transaction, {
             actor,
             action: name === null ? "group.delete" : "group.rename",
@@ -127,7 +131,7 @@ export class TeamGroupsStore {
             resourceId: id,
           });
         }
-        return { value: undefined, effects: emptyTeamAccessEffects };
+        return { value: undefined, effects: { ...emptyTeamAccessEffects, topics } };
       },
     );
   }

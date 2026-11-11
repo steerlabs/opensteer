@@ -10,7 +10,12 @@ import { TeamMarkdownSchema, TeamRequestContextSchema } from "@opensteer/protoco
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
-import { TeamAccessStore, bumpTeamChannel, requireTeam } from "./team-access-store.js";
+import {
+  TeamAccessStore,
+  bumpTeamChannel,
+  requireTeam,
+  lockTeamMessages,
+} from "./team-access-store.js";
 import { TeamChatStore, teamRequestView, teamMessageViews } from "./team-chat-store.js";
 
 export class TeamRequestsStore implements TeamRequestStorePort {
@@ -134,6 +139,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       async (t) => {
         const row = await this.#record(t, linkId, id, false, true);
         if (row.acceptedAt) return teamRequestView(row);
+        await lockTeamMessages(t, [row.threadRootId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
         const updated = await t
           .updateTable("teamAgentRequests")
@@ -188,7 +194,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       );
       const messages = [...merged.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
       const protectedIds = new Set([request.threadRootId, request.triggerMessageId]);
-      while (Buffer.byteLength(JSON.stringify(messages)) > 32768) {
+      while (messages.length > 50 || Buffer.byteLength(JSON.stringify(messages)) > 32768) {
         const removable = messages.findIndex((m) => !protectedIds.has(m.id));
         if (removable >= 0) {
           messages.splice(removable, 1);
@@ -252,6 +258,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           return;
         }
         const row = await this.#record(t, linkId, id);
+        await lockTeamMessages(t, [row.threadRootId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
         const terminal = ["failed", "stopped", "cancelled"].includes(input.state);
         await t
@@ -393,6 +400,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
             .where("expiresAt", "<=", new Date())
             .executeTakeFirst();
           if (!row) return;
+          await lockTeamMessages(t, [row.threadRootId]);
           const { changeSeq } = await bumpTeamChannel(t, row.channelId);
           await t
             .updateTable("teamAgentRequests")

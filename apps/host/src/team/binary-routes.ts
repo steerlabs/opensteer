@@ -22,7 +22,7 @@ export function registerTeamBinaryRoutes(
     binary.addContentTypeParser("application/octet-stream", (_request, payload, done) =>
       done(null, payload),
     );
-    const gate = (request: FastifyRequest) => {
+    const gate = async (request: FastifyRequest) => {
       const headers = new Headers();
       const value = request.headers["x-opensteer-team-api-version"];
       if (typeof value === "string") headers.set("x-opensteer-team-api-version", value);

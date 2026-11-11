@@ -46,7 +46,17 @@ export class TeamOutboxStore {
       for (const row of rows) {
         if (Date.now() - row.createdAt.getTime() < 15 * 60000) {
           const recipients = await this.#recipients(t, row);
-          for (const delivery of recipients) await publish(delivery);
+          for (let offset = 0; offset < recipients.length; offset += 8) {
+            const results = await Promise.allSettled(
+              recipients.slice(offset, offset + 8).map(publish),
+            );
+            const failed = results.filter((result) => result.status === "rejected");
+            if (failed.length)
+              throw new AggregateError(
+                failed.map((result) => result.reason),
+                "Team push batch failed",
+              );
+          }
         }
         await t.deleteFrom("teamOutbox").where("id", "=", row.id).execute();
       }
@@ -110,7 +120,9 @@ export class TeamOutboxStore {
           .executeTakeFirst();
         if (
           state?.notificationLevel === "muted" ||
-          (state?.lastReadMessageId && BigInt(state.lastReadMessageId) >= BigInt(message.id))
+          (row.kind !== "agent-status" &&
+            state?.lastReadMessageId &&
+            BigInt(state.lastReadMessageId) >= BigInt(message.id))
         )
           continue;
         const mentions = await t
@@ -132,12 +144,8 @@ export class TeamOutboxStore {
           body = request.state === "needs_you" ? "Your agent needs you" : "Your agent finished";
         } else {
           if (message.authorKind === "human" && message.authorUserId === account.userId) continue;
-          if (
-            message.authorKind === "agent" &&
-            message.authorUserId !== account.userId &&
-            !mentions
-          )
-            continue;
+          if (message.authorKind === "agent" && message.authorUserId === account.userId)
+            kind = "team-agent-completed";
           let followed = false;
           if (message.threadRootId)
             followed = !!(await t
@@ -149,7 +157,19 @@ export class TeamOutboxStore {
                   e("threadRootId", "=", message.threadRootId!),
                 ]),
               )
-              .where("authorUserId", "=", account.userId)
+              .where((e) =>
+                e.or([
+                  e("authorUserId", "=", account.userId),
+                  e.exists(
+                    e
+                      .selectFrom("teamMentions as n")
+                      .select("n.messageId")
+                      .whereRef("n.messageId", "=", "teamMessages.id")
+                      .where("n.targetKind", "=", "person")
+                      .where("n.targetUserId", "=", account.userId),
+                  ),
+                ]),
+              )
               .where("deletedAt", "is", null)
               .executeTakeFirst());
           if (

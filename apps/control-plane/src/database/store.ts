@@ -424,9 +424,31 @@ export class ControlPlaneStore {
           );
         }
         await lockAccountDeploymentCapacity(transaction, ownerAccountId);
-        await requireDeploymentAuthorityAvailable(transaction, input.authority);
-        await requireAccount(transaction, ownerAccountId);
-        await requireAccountDeploymentCapacity(transaction, ownerAccountId);
+        await lockDeploymentIdentity(transaction, input.authority.deploymentId);
+        await lockDeploymentOrigin(transaction, input.authority.canonicalOrigin);
+        const existing = await transaction
+          .selectFrom("deployments")
+          .selectAll()
+          .where("id", "=", input.authority.deploymentId)
+          .executeTakeFirst();
+        if (
+          existing &&
+          (existing.ownerAccountId !== ownerAccountId ||
+            existing.lifecycle !== "active" ||
+            existing.reachability !== "canonical" ||
+            existing.canonicalOrigin !== input.authority.canonicalOrigin ||
+            existing.activeHostInstanceId !== input.authority.hostInstanceId ||
+            existing.hostKeyFingerprint !== input.authority.hostKeyFingerprint)
+        )
+          throw new ControlPlaneError(
+            "conflict",
+            "Account adoption authority is no longer current",
+          );
+        const owner = await requireAccount(transaction, ownerAccountId);
+        if (!existing) {
+          await requireDeploymentAuthorityAvailable(transaction, input.authority);
+          await requireAccountDeploymentCapacity(transaction, ownerAccountId);
+        }
         let verifiedReceipt: ConsumeHostAccountAdoptionProofResponse;
         try {
           verifiedReceipt = await this.#adoptionProofVerifier!.verify({
@@ -438,16 +460,23 @@ export class ControlPlaneStore {
         } catch {
           throw new ControlPlaneError("forbidden", "Host adoption proof is invalid or expired");
         }
-        const response = await this.#provisionDeployment(
-          ownerAccountId,
-          {
-            ...input.authority,
-            reachability: "canonical",
-            name: input.name,
-          },
-          transaction,
-          true,
-        );
+        let response: DeploymentProvisioningResult;
+        if (existing) {
+          if (!("admissionId" in verifiedReceipt.authorizedBy))
+            throw new ControlPlaneError("conflict", "Deployment is already registered");
+          response = {
+            deployment: { id: existing.id, reachability: "canonical" },
+            owner: accountOwnerProfile(owner),
+            oidc: this.#hostOidcClient(existing.id, existing.canonicalOrigin),
+            ...(await this.#rotateHostCredential(transaction, ownerAccountId, existing.id)),
+          };
+        } else
+          response = await this.#provisionDeployment(
+            ownerAccountId,
+            { ...input.authority, reachability: "canonical", name: input.name },
+            transaction,
+            true,
+          );
         const bundle = adoptedHostProvisioningBundle(this.#issuer, input, response);
         const sealed = this.#adoptionOperationCipher!.seal(input.proof.proofId, bundle);
         const now = new Date();
@@ -925,33 +954,42 @@ export class ControlPlaneStore {
     ownerAccountId: ControlPlaneAccountId,
     deploymentId: DeploymentId,
   ): Promise<{ readonly hostCredential: string; readonly oidcClientSecret: string }> {
+    return this.#database
+      .transaction()
+      .execute((transaction) =>
+        this.#rotateHostCredential(transaction, ownerAccountId, deploymentId),
+      );
+  }
+  async #rotateHostCredential(
+    transaction: Transaction<ControlPlaneDatabaseSchema>,
+    ownerAccountId: ControlPlaneAccountId,
+    deploymentId: DeploymentId,
+  ) {
     const hostCredential = createHostCredential();
     const oidcClientSecret = createOAuthClientSecret();
-    await this.#database.transaction().execute(async (transaction) => {
-      const deployment = await requireOwnedDeployment(
-        transaction,
-        ownerAccountId,
-        deploymentId,
-        true,
+    const deployment = await requireOwnedDeployment(
+      transaction,
+      ownerAccountId,
+      deploymentId,
+      true,
+    );
+    if (!deployment.oidcClientId) {
+      throw new ControlPlaneError(
+        "forbidden",
+        "Personal loopback Hosts do not use an OIDC client credential",
       );
-      if (!deployment.oidcClientId) {
-        throw new ControlPlaneError(
-          "forbidden",
-          "Personal loopback Hosts do not use an OIDC client credential",
-        );
-      }
-      const now = new Date();
-      await transaction
-        .updateTable("deploymentCredentials")
-        .set({ tokenHash: hashCredential(hostCredential), rotatedAt: now })
-        .where("deploymentId", "=", deploymentId)
-        .executeTakeFirstOrThrow();
-      await transaction
-        .updateTable("oauthClients")
-        .set({ clientSecret: hashCredential(oidcClientSecret), updatedAt: now })
-        .where("clientId", "=", deployment.oidcClientId)
-        .executeTakeFirstOrThrow();
-    });
+    }
+    const now = new Date();
+    await transaction
+      .updateTable("deploymentCredentials")
+      .set({ tokenHash: hashCredential(hostCredential), rotatedAt: now })
+      .where("deploymentId", "=", deploymentId)
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable("oauthClients")
+      .set({ clientSecret: hashCredential(oidcClientSecret), updatedAt: now })
+      .where("clientId", "=", deployment.oidcClientId)
+      .executeTakeFirstOrThrow();
     return { hostCredential, oidcClientSecret };
   }
 

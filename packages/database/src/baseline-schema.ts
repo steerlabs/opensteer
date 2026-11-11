@@ -643,6 +643,7 @@ create table auth_jwks (
   primary key ("id")
 );
 
+-- Better Auth's Kysely adapter serializes OAuth string arrays as JSON on PostgreSQL.
 create table host_oauth_resources (
   "id" text not null,
   "identifier" text not null,

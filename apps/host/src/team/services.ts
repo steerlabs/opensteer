@@ -7,7 +7,13 @@ import {
   TeamChannelIdSchema,
 } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
-import { TeamCommandSchema, TeamBootstrapSchema, teamReadSchemas } from "@opensteer/protocol";
+import {
+  TeamCommandSchema,
+  TeamBootstrapSchema,
+  teamReadSchemas,
+  hostApi,
+  type HostApiCommand,
+} from "@opensteer/protocol";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
 import type { ChannelTopicPort, DatabaseSchema } from "@opensteer/database";
@@ -21,6 +27,7 @@ import { TeamAuditStore } from "@opensteer/database/team-audit";
 import { TeamNoticesStore } from "@opensteer/database/team-notices";
 import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team-outbox";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
+import { TeamLinkService } from "./link-service.js";
 import { TeamFileService } from "./file-service.js";
 import { TeamRealtimeHub } from "./realtime.js";
 
@@ -35,8 +42,10 @@ export function assertTeamApiVersion(headers: Headers) {
 export interface TeamServiceOptions {
   readonly kind: DeploymentKind;
   readonly database: Kysely<DatabaseSchema>;
+  readonly access?: TeamAccessStore;
   readonly teamId: DeploymentId;
   readonly teamName: string;
+  readonly hostKeyFingerprint: string;
   readonly origin: string;
   readonly dataDirectory: string;
   readonly topics: ChannelTopicPort;
@@ -45,11 +54,10 @@ export interface TeamServiceOptions {
     read(actor: TeamActor, name: string, input: unknown): Promise<unknown>;
     command(actor: TeamActor, command: z.infer<typeof TeamCommandSchema>): Promise<unknown>;
   };
-  readonly links: {
-    createCode(actor: TeamActor): Promise<unknown>;
-    list(actor: TeamActor): Promise<unknown>;
-    revoke(actor: TeamActor, id: import("@opensteer/core").TeamLinkId): Promise<void>;
-  };
+  readonly registerPreviewKey?: (
+    session: AuthenticatedSession,
+    command: Extract<HostApiCommand, { type: "notification.preview.register" }>,
+  ) => Promise<void>;
   readonly publishPush: (delivery: TeamPushDelivery) => Promise<void>;
   readonly backgroundError: (area: "team-maintenance" | "team-push") => void;
 }
@@ -61,7 +69,11 @@ export async function startTeamServices(options: TeamServiceOptions) {
     .where("id", "=", options.teamId)
     .executeTakeFirstOrThrow();
   requireTeam(durable.deploymentShape.kind === "team");
-  const access = new TeamAccessStore(options.database);
+  const access = options.access ?? new TeamAccessStore(options.database);
+  requireTeam(
+    access.database === options.database,
+    "Team services must share the authority database",
+  );
   await access.initialize();
   await options.ensureKnowledge();
   const members = new TeamMembersStore(access),
@@ -70,6 +82,11 @@ export async function startTeamServices(options: TeamServiceOptions) {
   const chat = new TeamChatStore(access, options.topics, {
     teamId: options.teamId,
     teamName: options.teamName,
+  });
+  const links = new TeamLinkService(access, {
+    teamId: options.teamId,
+    origin: options.origin,
+    hostKeyFingerprint: options.hostKeyFingerprint,
   });
   const requests = new TeamRequestsStore(access, chat);
   const files = new TeamFilesStore(access);
@@ -247,10 +264,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.link.code.create":
         return {
           type: command.type,
-          ...((await options.links.createCode(actor)) as Record<string, unknown>),
+          ...((await links.createCode(actor)) as Record<string, unknown>),
         };
       case "team.link.revoke":
-        await options.links.revoke(actor, command.linkId);
+        await links.revoke(actor, command.linkId);
         break;
       case "team.notice.read":
         await notices.markRead(actor.userId, command.noticeId);
@@ -369,7 +386,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
         }));
       }
       case "team.links.list":
-        return options.links.list(actor);
+        return links.list(actor);
       case "team.mentions.page":
       case "team.pins.page": {
         const input = teamReadSchemas[name].input.parse(raw);
@@ -417,6 +434,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     resolver: access,
     locks: access,
     members,
+    links,
     groups,
     invites,
     chat,
@@ -438,6 +456,44 @@ export async function startTeamServices(options: TeamServiceOptions) {
       const session = await authenticate();
       const actor: TeamActor = { kind: "human", userId: session.user.id };
       await options.database.transaction().execute((t) => access.member(t, actor.userId));
+      if (
+        name === "commands.dispatch" &&
+        typeof raw === "object" &&
+        raw !== null &&
+        "type" in raw &&
+        raw.type === "notification.preview.register"
+      ) {
+        const command = hostApi["commands.dispatch"].payload.parse(raw);
+        requireTeam(
+          command.type === "notification.preview.register" && options.registerPreviewKey,
+          "Preview registration unavailable",
+        );
+        await options.database.transaction().execute(async (t) => {
+          await t
+            .selectFrom("teamAccessState")
+            .select("revision")
+            .where("singletonKey", "=", "team")
+            .forShare()
+            .executeTakeFirstOrThrow();
+          const member = await access.member(t, actor.userId);
+          const active = await t
+            .selectFrom("authSessions")
+            .select("id")
+            .where("id", "=", session.id)
+            .where("userId", "=", actor.userId)
+            .where("memberGeneration", "=", member.generation)
+            .where("expiresAt", ">", new Date())
+            .executeTakeFirst();
+          requireTeam(active);
+          await options.registerPreviewKey!(session, command);
+        });
+        return {
+          type: command.type,
+          installationId: command.installationId,
+          keyId: command.keyId,
+          registered: true,
+        };
+      }
       if (name === "commands.dispatch") {
         const revision = access.revision;
         const command = TeamCommandSchema.parse(raw);

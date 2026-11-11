@@ -110,8 +110,117 @@ export class TeamIdentityAdmission {
     proof: TeamAdmissionProof | null,
     sessionId?: import("@opensteer/core").AuthSessionId,
   ) {
-    return this.access.mutate(async (t) => {
-      const finish = async (generation: string) => {
+    return this.access.mutate(
+      async (t) => {
+        const finish = (generation: string) => ({
+          value: generation,
+          effects: emptyTeamAccessEffects,
+        });
+        const provider = await t
+          .selectFrom("accountDirectoryProvider")
+          .selectAll()
+          .executeTakeFirst();
+        requireTeam(provider, "Complete Opensteer Account adoption first");
+        const account = await t
+          .selectFrom("authAccounts")
+          .selectAll()
+          .where("userId", "=", userId)
+          .where("providerId", "=", provider.providerId)
+          .executeTakeFirst();
+        requireTeam(account, "Sign in with Opensteer Account");
+        const existing = await t
+          .selectFrom("teamMembers")
+          .selectAll()
+          .where("userId", "=", userId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (existing?.state === "active") return finish(existing.generation);
+        requireTeam(proof, "A setup or invitation admission is required");
+        const admission = await t
+          .selectFrom("authAdmissions")
+          .selectAll()
+          .where("id", "=", proof.id)
+          .where("expiresAt", ">", new Date())
+          .where("consumedAt", "is", null)
+          .executeTakeFirst();
+        requireTeam(admission);
+        if (admission.purpose === "invitation")
+          await t
+            .selectFrom("teamInvites")
+            .select("id")
+            .where("selector", "=", admission.subjectSelector)
+            .forNoKeyUpdate()
+            .execute();
+        await t
+          .selectFrom("authAdmissions")
+          .select("id")
+          .where("id", "=", admission.id)
+          .forNoKeyUpdate()
+          .execute();
+        let member;
+        if (admission.purpose === "setup") {
+          requireTeam(
+            !(await t
+              .selectFrom("teamMembers")
+              .select("userId")
+              .where("role", "=", "owner")
+              .where("state", "=", "active")
+              .executeTakeFirst()),
+            "The first owner is already set",
+          );
+          const enrollment = await t
+            .selectFrom("ownerEnrollments")
+            .selectAll()
+            .where(
+              "id",
+              "=",
+              admission.subjectSelector as import("@opensteer/core").OwnerEnrollmentId,
+            )
+            .where("consumedAt", "is", null)
+            .where("expiresAt", ">", new Date())
+            .executeTakeFirst();
+          requireTeam(enrollment);
+          const completed = await t
+            .selectFrom("authVerifications")
+            .select("value")
+            .where("identifier", "like", "team-account-adoption:%")
+            .execute();
+          requireTeam(
+            completed.some((r) => {
+              const p = proofSchema.parse(JSON.parse(r.value));
+              return (
+                p.completed &&
+                p.account.issuer === provider.issuer &&
+                p.account.subject === account.accountId
+              );
+            }),
+            "Use the Account that adopted this team",
+          );
+          member = await admitTeamMember(t, userId, "owner");
+          await t
+            .updateTable("ownerEnrollments")
+            .set({ consumedAt: new Date(), consumedBy: userId })
+            .where("id", "=", enrollment.id)
+            .execute();
+        } else {
+          requireTeam(admission.purpose === "invitation");
+          member = await this.invites.acceptInTransaction(t, userId, admission.subjectSelector);
+        }
+        await t
+          .updateTable("authAdmissions")
+          .set({ consumedAt: new Date(), consumedBy: userId })
+          .where("id", "=", admission.id)
+          .execute();
+        await appendTeamAudit(t, {
+          actor: { kind: "human", userId },
+          action: "member.admitted",
+          resourceKind: "member",
+          resourceId: userId,
+        });
+        return finish(member.generation);
+      },
+      async (t, generation) => {
+        await publishTeamMember(t, userId);
         if (sessionId) {
           const updated = await t
             .updateTable("authSessions")
@@ -123,98 +232,8 @@ export class TeamIdentityAdmission {
             .executeTakeFirst();
           requireTeam(updated, "Sign-in session ended before team admission");
         }
-        return { value: generation, effects: emptyTeamAccessEffects };
-      };
-      const provider = await t
-        .selectFrom("accountDirectoryProvider")
-        .selectAll()
-        .executeTakeFirst();
-      requireTeam(provider, "Complete Opensteer Account adoption first");
-      const account = await t
-        .selectFrom("authAccounts")
-        .selectAll()
-        .where("userId", "=", userId)
-        .where("providerId", "=", provider.providerId)
-        .executeTakeFirst();
-      requireTeam(account, "Sign in with Opensteer Account");
-      const existing = await t
-        .selectFrom("teamMembers")
-        .selectAll()
-        .where("userId", "=", userId)
-        .executeTakeFirst();
-      if (existing?.state === "active") return finish(existing.generation);
-      requireTeam(proof, "A setup or invitation admission is required");
-      const admission = await t
-        .selectFrom("authAdmissions")
-        .selectAll()
-        .where("id", "=", proof.id)
-        .where("expiresAt", ">", new Date())
-        .where("consumedAt", "is", null)
-        .executeTakeFirst();
-      requireTeam(admission);
-      let member;
-      if (admission.purpose === "setup") {
-        requireTeam(
-          !(await t
-            .selectFrom("teamMembers")
-            .select("userId")
-            .where("role", "=", "owner")
-            .where("state", "=", "active")
-            .executeTakeFirst()),
-          "The first owner is already set",
-        );
-        const enrollment = await t
-          .selectFrom("ownerEnrollments")
-          .selectAll()
-          .where(
-            "id",
-            "=",
-            admission.subjectSelector as import("@opensteer/core").OwnerEnrollmentId,
-          )
-          .where("consumedAt", "is", null)
-          .where("expiresAt", ">", new Date())
-          .executeTakeFirst();
-        requireTeam(enrollment);
-        const completed = await t
-          .selectFrom("authVerifications")
-          .select("value")
-          .where("identifier", "like", "team-account-adoption:%")
-          .execute();
-        requireTeam(
-          completed.some((r) => {
-            const p = proofSchema.parse(JSON.parse(r.value));
-            return (
-              p.completed &&
-              p.account.issuer === provider.issuer &&
-              p.account.subject === account.accountId
-            );
-          }),
-          "Use the Account that adopted this team",
-        );
-        member = await admitTeamMember(t, userId, "owner");
-        await t
-          .updateTable("ownerEnrollments")
-          .set({ consumedAt: new Date(), consumedBy: userId })
-          .where("id", "=", enrollment.id)
-          .execute();
-      } else {
-        requireTeam(admission.purpose === "invitation");
-        member = await this.invites.acceptInTransaction(t, userId, admission.subjectSelector);
-      }
-      await t
-        .updateTable("authAdmissions")
-        .set({ consumedAt: new Date(), consumedBy: userId })
-        .where("id", "=", admission.id)
-        .execute();
-      await publishTeamMember(t, userId);
-      await appendTeamAudit(t, {
-        actor: { kind: "human", userId },
-        action: "member.admitted",
-        resourceKind: "member",
-        resourceId: userId,
-      });
-      return finish(member.generation);
-    });
+      },
+    );
   }
   async issueAdoption(
     proof: TeamAdmissionProof,

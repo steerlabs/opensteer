@@ -698,6 +698,15 @@ export class IdentityService {
         // fail to restart. Exchange also checks both durable conditions before admitting signup.
         return;
       }
+      if (this.#options.team)
+        await transaction
+          .selectFrom("authAdmissions")
+          .select("id")
+          .where("purpose", "=", "setup")
+          .where("consumedAt", "is", null)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
       const existingEnrollment = await transaction
         .selectFrom("ownerEnrollments")
         .selectAll()
@@ -729,7 +738,11 @@ export class IdentityService {
         // code moves its deadline forward, because a local Host that sat idle
         // past the original window must not become permanently unclaimable. An
         // operator-configured code keeps its fixed deadline.
-        if (enrollment.renewable && existingEnrollment.expiresAt < enrollment.expiresAt) {
+        if (
+          !this.#options.team &&
+          enrollment.renewable &&
+          existingEnrollment.expiresAt < enrollment.expiresAt
+        ) {
           await transaction
             .updateTable("ownerEnrollments")
             .set({ expiresAt: enrollment.expiresAt })

@@ -53,7 +53,7 @@ export class TeamRealtimeHub {
       this.#dirty.add(id);
       void this.#pump();
     });
-    this.#unsubscribeAccess = access.onRevoke(async () => {
+    this.#unsubscribeAccess = access.onRevoke(async (effects) => {
       for (const peer of this.#peers) {
         try {
           await access.database.transaction().execute(async (t) => {
@@ -72,6 +72,8 @@ export class TeamRealtimeHub {
           this.#close(peer, "Team access changed");
         }
       }
+      for (const channelId of effects.channels) this.#dirty.add(channelId);
+      void this.#pump();
     });
     this.#timer = setInterval(() => this.#expire(), 1000);
     this.#timer.unref();

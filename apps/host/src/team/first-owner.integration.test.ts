@@ -1,3 +1,7 @@
+import Fastify from "fastify";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { registerTeamSetupRoutes } from "./setup-routes.js";
+import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { createId, HostKeyFingerprintSchema } from "@opensteer/core";
@@ -152,7 +156,7 @@ it("uses a setup admission to adopt an empty team, provisions Account OIDC, admi
       },
     },
   });
-  const adopted = await accountStore.adoptExistingDeployment(
+  let adopted = await accountStore.adoptExistingDeployment(
     accountId,
     AdoptExistingDeploymentRequestSchema.parse({
       name: "Acme",
@@ -161,6 +165,30 @@ it("uses a setup admission to adopt an empty team, provisions Account OIDC, admi
       proof: { proofId: proof.proofId, proofCredential: proof.proofCredential },
     }),
   );
+  const abandonedCredential = adopted.provisioningBundle.hostCredential;
+  const retry = await identity.exchangeInitialOwnerEnrollment(
+    token,
+    new Headers({ origin: authority.canonicalOrigin }),
+  );
+  headers.set(
+    "cookie",
+    retry.headers
+      .getSetCookie()
+      .map((value) => value.split(";", 1)[0])
+      .join("; "),
+  );
+  const renewedProof = await identity.issueSetupAccountAdoptionProof(headers, account);
+  adopted = await accountStore.adoptExistingDeployment(
+    accountId,
+    AdoptExistingDeploymentRequestSchema.parse({
+      name: "Acme",
+      reachability: "canonical",
+      authority,
+      proof: { proofId: renewedProof.proofId, proofCredential: renewedProof.proofCredential },
+    }),
+  );
+  expect(adopted.provisioningBundle.hostCredential).not.toBe(abandonedCredential);
+  expect(await accountDatabase.selectFrom("deployments").select("id").execute()).toHaveLength(1);
   await identity.completeTeamAccountAdoption(adopted.completionGrant, adopted.provisioningBundle);
   expect(installed).toBe(1);
   expect(await admission.hasOwner()).toBe(false);
@@ -284,6 +312,44 @@ it("expires a setup capability across restart and rotates unfinished setup witho
     initialOwnerEnrollment: { token, expiresAt: new Date(Date.now() + 86400000) },
   });
   await identity.initialize();
+  const http = Fastify();
+  registerTeamSetupRoutes(http, {
+    identity,
+    accountPortalOrigin: "https://account.example.invalid",
+  });
+  try {
+    const page = await http.inject({ method: "GET", url: "/setup" });
+    expect(page.statusCode).toBe(200);
+    expect(page.headers["cache-control"]).toBe("no-store");
+    expect(page.headers["referrer-policy"]).toBe("no-referrer");
+    expect(page.body).not.toContain(token);
+    const gate = await withTimeout(
+      http.inject({
+        method: "POST",
+        url: "/v1/team/setup/exchange",
+        headers: { "content-type": "application/json" },
+        payload: "{invalid",
+      }),
+      5000,
+      { timeoutError: () => new Error("Setup version gate never completed") },
+    );
+    expect(gate.json().message).toBe("Team API version mismatch");
+    const exchanged = await withTimeout(
+      http.inject({
+        method: "POST",
+        url: "/v1/team/setup/exchange",
+        headers: { [teamApiVersionHeader]: String(teamApiVersion) },
+        payload: { token },
+      }),
+      5000,
+      { timeoutError: () => new Error("Setup exchange never completed") },
+    );
+    expect(exchanged.statusCode).toBe(200);
+    expect(exchanged.json()).toEqual({ admitted: true });
+    expect(exchanged.headers["set-cookie"]).toBeTruthy();
+  } finally {
+    await http.close();
+  }
   await identity.exchangeInitialOwnerEnrollment(token);
   await fixture.database
     .updateTable("ownerEnrollments")
