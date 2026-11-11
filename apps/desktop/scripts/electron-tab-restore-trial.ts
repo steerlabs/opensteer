@@ -1299,6 +1299,7 @@ if (sleepTrialRoot) {
   const userData = path.join(sleepTrialRoot, "user-data");
   mkdirSync(userData, { recursive: true });
   app.setPath("userData", userData);
+  app.on("window-all-closed", () => undefined);
   void app.whenReady().then(async () => {
     try {
       await runPageSleepRestoreTrial(sleepTrialRoot);
