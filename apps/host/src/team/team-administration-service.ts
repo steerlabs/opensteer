@@ -9,6 +9,8 @@ import {
   OpensteerError,
   createId,
   storedModelSelection,
+  deploymentPolicy,
+  type DeploymentPolicy,
   type AccessMutation,
   type AuthenticatedHuman,
   type AuthenticatedSession,
@@ -80,6 +82,19 @@ function memberChange(userId: UserId, change: MemberChange): AccessMutation {
     case "set-administrator":
       return { kind: "member", userId, administrator: change.value };
   }
+}
+
+function requestsGuest(command: TeamCommand): boolean {
+  return (
+    (command.type === "team.invitation.create" && command.memberKind === "guest") ||
+    (command.type === "team.member.change" &&
+      command.change.kind === "set-kind" &&
+      command.change.value === "guest")
+  );
+}
+
+function requireGuests(policy: DeploymentPolicy): void {
+  if (!policy.team.guests) refuse("guests-unavailable");
 }
 
 function headersFrom(context: HostApiServerContext): Headers {
@@ -155,9 +170,10 @@ export class TeamAdministrationService {
     this.#invalidate = options.invalidate;
   }
 
-  async #authority(): Promise<void> {
+  async #authority(): Promise<DeploymentPolicy> {
     const authority = await readDeploymentAuthority(this.#database);
     if (authority.kind !== "server" || authority.model !== 2) refuse("team-unavailable");
+    return deploymentPolicy({ kind: authority.kind, defaultWorkspaceBacking: "local-directory" });
   }
 
   #session(context: HostApiServerContext): AuthenticatedSession {
@@ -165,13 +181,15 @@ export class TeamAdministrationService {
     return context.session;
   }
 
-  async #human(context: HostApiServerContext) {
+  async #human(context: HostApiServerContext, command?: TeamCommand) {
     const session = this.#session(context);
-    await this.#authority();
+    const policy = await this.#authority();
+    if (command && requestsGuest(command)) requireGuests(policy);
     const actor = { userId: session.user.id, sessionId: session.id };
     const authority = await this.#reads.authority(actor);
     return {
       ...authority,
+      policy,
       actor: { ...actor, authorityGeneration: Number(authority.user.authorityGeneration) },
     };
   }
@@ -179,6 +197,7 @@ export class TeamAdministrationService {
   #member(
     member: Omit<MemberSummary, "can">,
     activeAdmins: number,
+    guests: boolean,
     administrator = true,
   ): MemberSummary {
     const last = member.administrator && member.state === "active" && activeAdmins === 1;
@@ -195,7 +214,10 @@ export class TeamAdministrationService {
     return {
       ...member,
       can: {
-        setKind: allowed(member.state !== "removed", "member-removed"),
+        setKind:
+          member.state === "removed"
+            ? allowed(false, "member-removed")
+            : allowed(member.kind === "guest" || guests, "guests-unavailable"),
         setState: allowed(
           !last && member.state !== "removed",
           last ? "last-active-admin" : "member-removed",
@@ -298,7 +320,7 @@ export class TeamAdministrationService {
         },
       };
     }
-    const { actor, user, activeAdmins } = await this.#human(context);
+    const { actor, user, activeAdmins, policy } = await this.#human(context);
     const admin = user.instanceRole === "administrator";
     switch (procedure) {
       case "team.projects.list":
@@ -333,7 +355,10 @@ export class TeamAdministrationService {
       }
       case "team.people.list": {
         const page = await this.#reads.people(actor, teamReadSchemas[procedure].input.parse(input));
-        return { ...page, items: page.items.map((member) => this.#member(member, activeAdmins)) };
+        return {
+          ...page,
+          items: page.items.map((member) => this.#member(member, activeAdmins, policy.team.guests)),
+        };
       }
       case "team.member.get": {
         const member = await this.#reads.member(
@@ -342,7 +367,7 @@ export class TeamAdministrationService {
         );
         return {
           ...member,
-          can: this.#member(member, activeAdmins, admin).can,
+          can: this.#member(member, activeAdmins, policy.team.guests, admin).can,
           directEntries: {
             ...member.directEntries,
             items: member.directEntries.items.map((entry) => ({
@@ -449,6 +474,8 @@ export class TeamAdministrationService {
       }
       case "team.member.preview": {
         const parsed = teamReadSchemas[procedure].input.parse(input);
+        if (parsed.change.kind === "set-kind" && parsed.change.value === "guest")
+          requireGuests(policy);
         const impact = await this.#reads.memberImpact(actor, parsed.userId);
         const preview = await previewMemberAccess(this.#database, {
           actor,
@@ -571,8 +598,14 @@ export class TeamAdministrationService {
     }
   }
 
+  async assertCommandAvailable(command: TeamCommand, context: HostApiServerContext): Promise<void> {
+    if (!requestsGuest(command)) return;
+    this.#session(context);
+    requireGuests(await this.#authority());
+  }
+
   async command(input: TeamCommand, context: HostApiServerContext) {
-    const { actor, user } = await this.#human(context);
+    const { actor, user, policy } = await this.#human(context, input);
     const command = TeamCommandSchema.parse(input);
     const identity = `${actor.userId}:${command.type}:${command.idempotencyKey}`;
     const commandId = CommandIdSchema.parse(`cmd_${uuidFor(identity)}`);
@@ -815,6 +848,7 @@ export class TeamAdministrationService {
           member: this.#member(
             member,
             Number(count.count),
+            policy.team.guests,
             viewer.administrator && viewer.state === "active",
           ),
           effects: "queued",

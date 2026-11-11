@@ -19,6 +19,10 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
     count: 2,
     reason: "Mock Host authors its bootstrap projection.",
   },
+  "packages/client/src/mock/mock-team-access.ts": {
+    count: 1,
+    reason: "Mock team Host follows the server policy for guest permissions and mutations.",
+  },
   "apps/desktop/src/supervisor/local-runner-authority.ts": {
     count: 2,
     reason: "Pre-bootstrap Runner launch authority from signed discovery.",

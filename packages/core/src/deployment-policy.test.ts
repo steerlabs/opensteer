@@ -49,6 +49,7 @@ describe("deployment policy", () => {
           localBrowserProfileInventory: true,
           managedBrowserEnrollment: false,
         },
+        team: { guests: false },
         integrationAccountBinding: "personal-link",
         runnerEnrollment: {
           mode: "reach-only",
@@ -97,6 +98,7 @@ describe("deployment policy", () => {
           localBrowserProfileInventory: false,
           managedBrowserEnrollment: true,
         },
+        team: { guests: false },
         integrationAccountBinding: "identity-provider",
         runnerEnrollment: { mode: "unrestricted" },
         localRunnerDefaultModules: ["agents", "browser", "shell"],

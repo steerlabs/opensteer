@@ -174,5 +174,6 @@ export async function handleTeamCommand(
 ) {
   if (!context.session) refuseTeamUnavailable(context);
   if (!service) return refuseTeamUnavailable(context);
+  await service.assertCommandAvailable(command, context);
   return rpcSuccess(await service.command(command, context));
 }

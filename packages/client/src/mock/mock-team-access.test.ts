@@ -73,6 +73,34 @@ describe("the shared team mock", () => {
     const host = client("admin");
     const team = new TeamAccess(host);
     const revision = async () => (await team.summary()).accessRevision;
+    expect((await team.member({ userId: sam })).can.setKind).toEqual({
+      allowed: false,
+      reason: "guests-unavailable",
+    });
+    await expect(
+      team.changeMember(await revision(), sam, { kind: "set-kind", value: "guest" }),
+    ).rejects.toMatchObject({ reason: "guests-unavailable" });
+    await expect(
+      team.previewMember("usr_00000000-0000-4000-8000-000000000099", {
+        kind: "set-kind",
+        value: "guest",
+      }),
+    ).rejects.toMatchObject({ reason: "guests-unavailable" });
+    const guestInvite = createTeamInvitationDraft();
+    expect(
+      await host.rpc["commands.dispatch"]({
+        type: "team.invitation.create",
+        id: guestInvite.id,
+        selector: guestInvite.selector,
+        tokenHash: guestInvite.tokenHash,
+        idempotencyKey: guestInvite.idempotencyKey,
+        expectedRevision: await revision(),
+        memberKind: "guest",
+        intendedEmail: "guest@example.test",
+        trustedComputerConfirmed: true,
+        validFor: "1d",
+      }),
+    ).toMatchObject({ ok: false, error: { reason: "guests-unavailable" } });
     const results: unknown[] = [
       await team.createProject(await revision(), { name: "Support", color: "sky" }),
       await team.applyAccess(await revision(), [

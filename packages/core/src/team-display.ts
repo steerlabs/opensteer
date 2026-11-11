@@ -6,6 +6,7 @@ import { UserIdSchema, RequestIdSchema } from "./ids.js";
 export const TeamReasonSchema = z.enum([
   "team-unavailable",
   "team-not-implemented",
+  "guests-unavailable",
   "requester-only",
   "manager-only",
   "human-session-required",
