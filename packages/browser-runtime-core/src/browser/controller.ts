@@ -2724,8 +2724,10 @@ export class BrowserController {
     }
     if (row) {
       this.tabRows.set(id, row);
-      const favicon = [...this.ledger.policyRecords()].find((record) => record.id === id)?.favicon;
-      if (row.icon && favicon) this.tabIcons.set(row.icon, favicon);
+      if (row.icon) {
+        const favicon = this.ledger.faviconOf(id);
+        if (favicon) this.tabIcons.set(row.icon, favicon);
+      }
     } else this.tabRows.delete(id);
     if (previousIcon) this.pruneTabIcon(previousIcon);
     this.tabPublisher.mark(id);

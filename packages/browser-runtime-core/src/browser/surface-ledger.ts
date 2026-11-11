@@ -314,6 +314,7 @@ export class SurfaceLedger {
   private followedSize: PageSize;
   private readonly listeners = new Set<(event: SurfaceLedgerEvent) => void>();
   private readonly pageIds = new Map<BrowserPage, BrowserSurfaceId>();
+  private readonly surfaceIdsByTarget = new Map<string, BrowserSurfaceId>();
   private readonly rootPages: readonly BrowserPage[] | null;
   private readonly records = new Map<BrowserSurfaceId, TabRecord>();
   private readonly registrations = new Map<BrowserPage, Promise<void>>();
@@ -387,6 +388,9 @@ export class SurfaceLedger {
   stateOf(id: BrowserSurfaceId): "live" | "suspended" | undefined {
     const record = this.records.get(id);
     return record ? surfaceState(record) : undefined;
+  }
+  faviconOf(id: BrowserSurfaceId): string | null {
+    return this.records.get(id)?.favicon ?? null;
   }
   demand(id: BrowserSurfaceId): void {
     this.records.get(id)?.lease.demand();
@@ -998,7 +1002,7 @@ export class SurfaceLedger {
   }
 
   surfaceIdForTarget(targetId: string): BrowserSurfaceId | undefined {
-    return [...this.records.values()].find((record) => record.lastTargetId === targetId)?.id;
+    return this.surfaceIdsByTarget.get(targetId);
   }
 
   /**
@@ -1217,6 +1221,7 @@ export class SurfaceLedger {
       records = [...this.records.values()];
       this.records.clear();
       this.pageIds.clear();
+      this.surfaceIdsByTarget.clear();
       this.adoptedTargetIds.clear();
       this.activeId = null;
     });
@@ -1242,9 +1247,8 @@ export class SurfaceLedger {
   }
 
   private recordForTarget(targetId: string): SurfaceRecord | undefined {
-    return [...this.records.values()]
-      .filter(isLive)
-      .find((record) => record.live.targetId === targetId);
+    const id = this.surfaceIdsByTarget.get(targetId);
+    return id ? this.liveRecord(id) : undefined;
   }
 
   /**
@@ -1330,6 +1334,7 @@ export class SurfaceLedger {
     const id = surfaceId ?? BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
     let cdp: CdpSession | null = null;
     let registered: SurfaceRecord | undefined;
+    let wakeCleanup = false;
     try {
       const acquiredCdp = await page.cdp();
       cdp = acquiredCdp;
@@ -1362,6 +1367,7 @@ export class SurfaceLedger {
           makeActive ||
           (answersPerson && Date.now() < this.legacyPersonUntil && openerId === this.activeId);
         const follower = page.openedInBackground ? null : this.takeViewerInput(openerRecord);
+        const previousTargetId = waking?.lastTargetId;
         const record: SurfaceRecord = Object.assign(
           waking ?? {
             documentId: randomUUID(),
@@ -1487,6 +1493,7 @@ export class SurfaceLedger {
               faviconReader: null,
               scriptTargets: null,
               onClose: () => {
+                if (wakeCleanup || record.live?.page !== page) return;
                 void this.remove(record).catch(() => undefined);
               },
               onDialogClosed: (parameters: unknown) => {
@@ -1572,6 +1579,8 @@ export class SurfaceLedger {
           async () => this.beforeResize?.(id),
         );
         this.records.set(id, record);
+        if (previousTargetId) this.surfaceIdsByTarget.delete(previousTargetId);
+        this.surfaceIdsByTarget.set(targetId, id);
         record.live.faviconReader = new PageFavicon(acquiredCdp, targetId, (favicon) => {
           if (
             this.records.get(id) !== record ||
@@ -1648,11 +1657,16 @@ export class SurfaceLedger {
       // A dialog makes the page reachable immediately; initialization keeps
       // its per-page lock until Chromium answers, without holding other pages.
       void initialized
-        .catch(() => (record.announced ? page.close() : undefined))
+        .catch(() => {
+          if (record.live?.page !== page) return;
+          wakeCleanup = waking !== undefined;
+          return record.announced ? page.close() : undefined;
+        })
         .catch(() => undefined);
       await Promise.race([initialized, dialogOpening]);
       announce();
     } catch (error) {
+      wakeCleanup = waking !== undefined;
       const cleanup = await Promise.allSettled([
         ...(registered
           ? [
@@ -1921,6 +1935,7 @@ export class SurfaceLedger {
   private async removeOnce(record: TabRecord): Promise<void> {
     await this.viewportMutex.run(async () => {
       if (!this.records.delete(record.id)) return;
+      this.surfaceIdsByTarget.delete(record.lastTargetId);
       record.lease.close();
       this.adoptedTargetIds.delete(record.lastTargetId);
       this.releaseTarget?.(record.lastTargetId);

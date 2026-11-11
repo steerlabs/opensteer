@@ -481,6 +481,62 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
+  it.each([false, true])(
+    "visits tabs linearly for snapshots and only the changed tab for updates (icon: %s)",
+    async (withIcon) => {
+      const controller = createController();
+      for (let index = 1; index < 12; index++) await ledger.openSurface({ activate: false });
+      await flushMicrotasks();
+      if (withIcon)
+        for (const record of ledger.policyRecords()) record.favicon = "data:image/png;base64,AAAA";
+      const id = ledger.snapshot()[0]!.id;
+      const records = (ledger as unknown as { records: Map<string, unknown> }).records;
+      const values = records.values.bind(records);
+      let visits = 0;
+      vi.spyOn(records, "values").mockImplementation(function* (): Generator<unknown, undefined> {
+        for (const record of values()) {
+          visits++;
+          yield record;
+        }
+      });
+      try {
+        await controller.start();
+        expect
+          .soft(visits, "Initial publication revisited the tab collection per row.")
+          .toBeLessThanOrEqual(12 * 4);
+        visits = 0;
+        const nextSink = new FakeSink();
+        await controller.reattach(nextSink);
+        expect
+          .soft(visits, "Reattachment revisited the tab collection per row.")
+          .toBeLessThanOrEqual(12 * 4);
+        visits = 0;
+        page.setMetadata("Changed title", page.url());
+        await flushMicrotasks();
+        expect(ledger.toRecord(id)?.title).toBe("Changed title");
+        expect(visits, "Updating one tab iterated other tabs.").toBe(0);
+        visits = 0;
+        const requestId = randomUUID();
+        await controller.handle({
+          type: "cdp.command",
+          requestId,
+          command: { method: "Target.getTargets" },
+        });
+        const result = nextSink.messages.findLast(
+          (message) => message.type === "cdp.result" && message.requestId === requestId,
+        );
+        expect(result).toMatchObject({ result: { targetInfos: expect.any(Array) } });
+        expect(visits, "Target metadata revisited the tab collection per row.").toBeLessThanOrEqual(
+          12 * 4,
+        );
+      } finally {
+        await controller.close();
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+
   it("sends a content keyed icon before its row once on each connection", async () => {
     const favicon = "data:image/png;base64,AAAA";
     const record = [...ledger.policyRecords()][0]!;

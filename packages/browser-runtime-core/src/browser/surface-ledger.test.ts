@@ -136,12 +136,14 @@ describe("SurfaceLedger", () => {
     await ledger.start();
     await flushMicrotasks();
     const before = ledger.snapshot()[0]!;
+    const oldTargetId = await page.targetId();
     const revision = ledger.inventoryRevision;
     const metrics = { width: 800, height: 600, deviceScaleFactor: 1, mobile: false };
     await ledger.agentMetrics(await page.targetId(), metrics);
     try {
       expect(await ledger.sleep(before.id, () => null)).toBe(true);
       expect(ledger.binding(before.id)).toBeNull();
+      expect(ledger.surfaceIdForTarget(oldTargetId)).toBe(before.id);
       expect(ledger.stateOf(before.id)).toBe("suspended");
       expect(ledger.snapshot()[0]).toMatchObject({
         id: before.id,
@@ -154,6 +156,9 @@ describe("SurfaceLedger", () => {
       const create = vi.spyOn(context, "createPage");
       const [first, second] = await Promise.all([ledger.wake(before.id), ledger.wake(before.id)]);
       expect(first).toEqual(second);
+      expect(ledger.surfaceIdForTarget(oldTargetId)).toBeUndefined();
+      expect(ledger.surfaceIdForTarget(first.targetId)).toBe(before.id);
+      expect(await ledger.resolveTarget(first.targetId)).toBe(true);
       expect(create).toHaveBeenCalledTimes(1);
       expect(ledger.snapshot()[0]).toMatchObject({
         id: before.id,
@@ -257,35 +262,69 @@ describe("SurfaceLedger", () => {
       }
     },
   );
-  it("keeps a failed wake suspended and permits a new address wake", async () => {
-    const page = new FakePage({ url: "https://retry.test/" });
-    const context = new FakeContext([page]);
-    const ledger = new SurfaceLedger(context);
-    await ledger.start();
-    const id = ledger.snapshot()[0]!.id;
-    await ledger.sleep(id, () => null);
-    const create = vi
-      .spyOn(context, "createPage")
-      .mockRejectedValueOnce(new Error("creation refused"));
-    try {
-      await expect(ledger.wake(id)).rejects.toMatchObject({
-        code: "conflict",
-        retryable: true,
-        cause: { message: "creation refused" },
+  it.each(["createPage", "Page.enable", "Page.getFrameTree", "Emulation.setDeviceMetricsOverride"])(
+    "keeps a failed %s wake suspended and permits a new address wake",
+    async (failure) => {
+      const page = new FakePage({ url: "https://retry.test/" });
+      const context = new FakeContext([page]);
+      const ledger = new SurfaceLedger(context);
+      await ledger.start();
+      const id = ledger.snapshot()[0]!.id;
+      await ledger.sleep(id, () => null);
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((event) => events.push(event));
+      const failedPage = new FakePage();
+      let lateClose: (() => void) | undefined;
+      const onClose = failedPage.onClose.bind(failedPage);
+      vi.spyOn(failedPage, "onClose").mockImplementation((listener) => {
+        lateClose = listener;
+        onClose(listener);
       });
-      expect(ledger.stateOf(id)).toBe("suspended");
-      const resumed = await ledger.wake(id);
-      expect(resumed.surface.id).toBe(id);
-      expect(create).toHaveBeenCalledTimes(2);
-      expect((resumed.page as FakePage).cdpSession.sent).toContainEqual({
-        method: "Page.navigate",
-        parameters: { url: "https://retry.test/" },
+      const create = vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        if (failure === "createPage") throw new Error("wake refused");
+        failedPage.cdpSession.responses.set(failure, () => {
+          throw new Error("wake refused");
+        });
+        context.addPage(failedPage);
+        return failedPage;
       });
-    } finally {
-      await ledger.closeOwnedPages();
-      await ledger.close();
-    }
-  });
+      try {
+        await expect(ledger.wake(id)).rejects.toMatchObject({
+          code: "conflict",
+          retryable: true,
+          cause: { message: "wake refused" },
+        });
+        expect(ledger.stateOf(id)).toBe("suspended");
+        expect(ledger.snapshot()).toMatchObject([
+          { id, state: "suspended", url: "https://retry.test/" },
+        ]);
+        expect(
+          events.filter((event) => event.type === "changed" && event.change === "closed"),
+        ).toEqual([]);
+        if (failure !== "createPage") expect(failedPage.isClosed()).toBe(true);
+        const resumed = await ledger.wake(id);
+        expect(resumed.surface.id).toBe(id);
+        expect(create).toHaveBeenCalledTimes(2);
+        expect((resumed.page as FakePage).cdpSession.sent).toContainEqual({
+          method: "Page.navigate",
+          parameters: { url: "https://retry.test/" },
+        });
+        lateClose?.();
+        await flushMicrotasks();
+        expect(ledger.binding(id)?.page).toBe(resumed.page);
+        expect(ledger.surfaceIdForTarget(await failedPage.targetId())).toBeUndefined();
+        expect(ledger.surfaceIdForTarget(resumed.targetId)).toBe(id);
+        await ledger.closeSurface(id);
+        expect(ledger.surfaceIdForTarget(resumed.targetId)).toBeUndefined();
+        expect(
+          events.filter((event) => event.type === "changed" && event.change === "closed"),
+        ).toHaveLength(1);
+      } finally {
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
   it("keeps title, address, opener and size through a delayed first wake commit", async () => {
     const page = new FakePage({ url: "https://keep.test/", title: "Saved title" });
     const ledger = new SurfaceLedger(new FakeContext([page]));
