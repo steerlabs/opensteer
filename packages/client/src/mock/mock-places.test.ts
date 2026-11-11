@@ -1,10 +1,76 @@
 import { BrowserSurfaceIdSchema, BrowserTabGroupIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
+import type { HostSnapshot } from "../host/client.js";
 import { MockHostClient } from "./mock-host-client.js";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { placeList } from "../host/places.js";
 import { runPages } from "../host/surfaces.js";
+
+it("publishes a burst of pending-open settlements once without rebuilding browser rows", async () => {
+  vi.useFakeTimers();
+  const client = new MockHostClient({ latencyMs: 0, now: () => new Date("2026-10-19T12:00:00Z") });
+  const seen: HostSnapshot[] = [];
+  const unsubscribe = client.subscribe(() => seen.push(client.getSnapshot()));
+  try {
+    const session = client
+      .getSnapshot()
+      .browserSessions.find((session) => session.state === "ready")!;
+    await Promise.all(Array.from({ length: 200 }, () => client.openBrowserTab(session.id)));
+    const settled = client.getSnapshot();
+    expect(settled.pendingBrowserTabs).toEqual([]);
+    const settlements = () =>
+      seen.filter(
+        (snapshot) =>
+          snapshot.browserSessions === settled.browserSessions &&
+          snapshot.pendingBrowserTabs!.length < 200,
+      );
+    expect(settlements()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settlements()).toEqual([settled]);
+  } finally {
+    unsubscribe();
+    client.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("settles concurrent mock page loads in one publication and then stays quiet", async () => {
+  vi.useFakeTimers();
+  const client = new MockHostClient({ latencyMs: 0, now: () => new Date("2026-10-19T12:00:00Z") });
+  try {
+    const session = client
+      .getSnapshot()
+      .browserSessions.find((session) => session.state === "ready")!;
+    const opened = await Promise.all(
+      Array.from({ length: 200 }, (_, i) =>
+        client.openBrowserTab(session.id, { url: `https://bulk-${i}.example/` }),
+      ),
+    );
+    expect(client.getSnapshot().pendingBrowserTabs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(0);
+    const updates = vi.fn();
+    const unsubscribe = client.subscribe(updates);
+    try {
+      await vi.advanceTimersByTimeAsync(900);
+      expect(
+        opened.every(
+          ({ tabId }) => client.browserTabs.sessionTab(session.id, tabId)?.loading === false,
+        ),
+      ).toBe(true);
+      expect(updates).toHaveBeenCalledTimes(1);
+      const settled = client.getSnapshot();
+      await vi.advanceTimersByTimeAsync(900);
+      expect(client.getSnapshot()).toBe(settled);
+      expect(updates).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    client.dispose();
+    vi.useRealTimers();
+  }
+});
 
 it("closes a sleeping mock tab from its keyed record", async () => {
   const client = new MockHostClient({ latencyMs: 0 });

@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
+import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 
 export function useBrowserGroups(client: HostClient) {
   return useSyncExternalStore(
@@ -70,4 +71,63 @@ export function useBrowserTabStructure(client: HostClient) {
     client.browserTabs.structure,
     client.browserTabs.structure,
   );
+}
+
+/**
+ * The exact page a viewer of this tab holds (its address and icon), for the
+ * page's own chrome; undefined until one is admitted. Rows read `useBrowserTab`.
+ */
+export function useBrowserViewerSurface(
+  client: HostClient,
+  sessionId: string | undefined,
+  surfaceId: string | undefined,
+) {
+  const get = useCallback(
+    () =>
+      sessionId === undefined || surfaceId === undefined
+        ? undefined
+        : client.browserViewerSurface(sessionId, surfaceId),
+    [client, sessionId, surfaceId],
+  );
+  return useSyncExternalStore(hostSnapshotStore(client).subscribe, get, get);
+}
+
+/**
+ * Whether this tab's page is awake. A Watch holds a sleeping tab's last
+ * picture and never retains it, which would wake it; a tab the client does
+ * not hold counts as awake.
+ */
+export function useBrowserTabAwake(
+  client: Pick<HostClient, "browserTabs">,
+  sessionId: string | undefined,
+  tabId: string | undefined,
+): boolean {
+  const store = client.browserTabs;
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (sessionId === undefined || tabId === undefined) return () => {};
+      let release = () => {};
+      const follow = () => {
+        release();
+        const groupId = store.groupForSession(sessionId);
+        release = groupId ? store.subscribeTab(groupId, tabId, listener) : () => {};
+        listener();
+      };
+      const stop = store.subscribeSessionGroup(sessionId, follow);
+      follow();
+      return () => {
+        stop();
+        release();
+      };
+    },
+    [sessionId, store, tabId],
+  );
+  const get = useCallback(() => {
+    const row =
+      sessionId === undefined || tabId === undefined
+        ? undefined
+        : store.sessionTab(sessionId, tabId);
+    return row === undefined || row.state === "live";
+  }, [sessionId, store, tabId]);
+  return useSyncExternalStore(subscribe, get, get);
 }

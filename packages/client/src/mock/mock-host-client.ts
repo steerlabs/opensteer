@@ -225,6 +225,7 @@ import type {
   BrowserProfileGrantSummary,
   BrowserTabOpenInput,
   BrowserTabOpenOptions,
+  PendingBrowserTab,
   CreateHarnessInstanceInput,
   CreateThreadInput,
   CreateWorkspaceInput,
@@ -4096,6 +4097,19 @@ export class MockHostClient implements HostClient {
   get browserTabs() {
     return this.#state.browserTabs;
   }
+  readonly #viewerSurfaces = new Map<
+    string,
+    import("@opensteer/protocol/browser-tabs").BrowserViewerSurface
+  >();
+  browserViewerSurface(sessionId: string, surfaceId: string) {
+    const key = `${sessionId}\u0000${surfaceId}`;
+    const next = this.browserTabs.surface(sessionId, surfaceId);
+    const held = this.#viewerSurfaces.get(key);
+    if (!next) this.#viewerSurfaces.delete(key);
+    else if (held && JSON.stringify(held) === JSON.stringify(next)) return held;
+    else this.#viewerSurfaces.set(key, next);
+    return next;
+  }
   readonly getSnapshot = (): PublicHostSnapshot => {
     this.#ownerViews.expire();
     return this.#state.publishedSnapshot();
@@ -4384,8 +4398,7 @@ export class MockHostClient implements HostClient {
         this.#state.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
           ?.catalog ?? { generation: 0, revision: 0, inventoryRevision: 0 },
       ),
-    changed: (pendingBrowserTabs) =>
-      this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
+    changed: (pendingBrowserTabs) => this.#state.updatePendingBrowserTabs(pendingBrowserTabs),
   });
   readonly beginBrowserTabOpen = this.#pendingBrowserTabs.begin;
   readonly browserPresentationDeadline = this.#pendingBrowserTabs.presentationDeadline;
@@ -6263,6 +6276,7 @@ class MockHostState {
   private sessions: AuthSessionSummary[];
   private snapshot: HostSnapshot;
   #published: PublicHostSnapshot | null = null;
+  #pendingBrowserNotification: ReturnType<typeof setTimeout> | null = null;
   readonly browserTabs = new BrowserTabStore(
     () => {},
     (sessionId, tabId) => this.places?.viewerSurface(sessionId, tabId),
@@ -6720,6 +6734,17 @@ class MockHostState {
           displayName: `${displayName} on ${template.computer.runnerId === studio?.id ? "Studio Mac" : "Mac mini"}`,
           computer: { ...template.computer, app: { bundleId, displayName, teamId: null } },
         });
+  }
+  updatePendingBrowserTabs(pendingBrowserTabs: readonly PendingBrowserTab[]): void {
+    const published = this.publishedSnapshot();
+    this.snapshot = { ...this.snapshot, pendingBrowserTabs, revision: this.snapshot.revision + 1 };
+    this.#published = { ...published, pendingBrowserTabs, revision: this.snapshot.revision };
+    // Synchronous mock RPCs can settle thousands of opens in one microtask chain.
+    if (this.#pendingBrowserNotification !== null) return;
+    this.#pendingBrowserNotification = setTimeout(() => {
+      this.#pendingBrowserNotification = null;
+      for (const listener of this.listeners) listener();
+    }, 0);
   }
   updatePlaces(snapshot: HostSnapshot): void {
     this.update(snapshot);
@@ -10137,6 +10162,8 @@ class MockHostState {
   }
 
   dispose(): void {
+    if (this.#pendingBrowserNotification !== null) clearTimeout(this.#pendingBrowserNotification);
+    this.#pendingBrowserNotification = null;
     for (const timer of this.#titleTimers.values()) clearTimeout(timer);
     this.#titleTimers.clear();
     this.#provisionalTitles.clear();
@@ -12149,6 +12176,8 @@ class MockHostState {
   }
 
   private emit(): void {
+    if (this.#pendingBrowserNotification !== null) clearTimeout(this.#pendingBrowserNotification);
+    this.#pendingBrowserNotification = null;
     this.publishBrowser();
     for (const listener of this.listeners) listener();
   }

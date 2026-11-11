@@ -17,6 +17,7 @@ import * as Clipboard from "expo-clipboard";
 import { fitOffer, pictureBox, pinched, slideFor } from "../browser/browser-page.js";
 import { BrowserPageContentPartSchema } from "@opensteer/core";
 import { BrowserSurfaceIdSchema, type MachineSummary } from "@opensteer/protocol";
+import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import type { SurfacesRoute } from "../browser/surface-route.js";
 import {
@@ -156,6 +157,15 @@ vi.mock("@opensteer/client/react", async () => {
       if (state.snapshot === null) throw new Error("Missing snapshot fixture");
       return placeList(withBrowserTabStore(state.snapshot));
     },
+    // The keyed tab reads, from the same fixture as the snapshot.
+    useBrowserSessionGroupId: (_client: unknown, sessionId: string | undefined) =>
+      sessionId !== undefined && fixtureRows(sessionId) ? sessionId : undefined,
+    useBrowserTab: (_client: unknown, groupId?: string, tabId?: string) =>
+      groupId && tabId ? fixtureRows(groupId)?.get(tabId) : undefined,
+    useBrowserTabs: (_client: unknown, groupId: string) => fixtureList(groupId),
+    useBrowserViewerSurface: (_client: unknown, sessionId?: string, tabId?: string) =>
+      sessionId && tabId ? fixtureSurface(sessionId, tabId) : undefined,
+    useBrowserTabAwake: () => true,
     // No Run place in these fixtures: the agent's tab is the one its Thread occupies.
     useThreadAgentTab: (_client: unknown, threadId: string | null) =>
       threadId === null
@@ -692,12 +702,62 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
   } as unknown as HostSnapshot);
 }
 
+/** A browser's tabs as the fixture's snapshot lists them: its catalog, else its viewer's tabs. */
+function fixtureRows(sessionId: string): ReadonlyMap<string, BrowserTabRow> | undefined {
+  const session = state.snapshot?.browserSessions.find(({ id }) => id === sessionId);
+  if (!session) return undefined;
+  const tabs = session.tabCatalog?.tabs ?? session.tabs;
+  return new Map(
+    tabs.map((tab, order) => {
+      const viewed = session.tabs.find(({ id }) => id === tab.id);
+      const site = "site" in tab ? tab.site : tab.url;
+      return [
+        tab.id,
+        {
+          id: tab.id,
+          sessionId,
+          title: tab.title,
+          site,
+          iconRef: null,
+          order: "order" in tab ? tab.order : order,
+          openerId: null,
+          createdAt: "2026-10-13T00:00:00.000Z",
+          state: "live",
+          availability: "ready",
+          loading: tab.loading ?? false,
+          navigationFailed: tab.navigationFailed ?? false,
+          documentId: tab.documentId ?? viewed?.documentId ?? `document-${tab.id}`,
+          // A tab with no catalog row, as from an older Host, admits its history.
+          canGoBack: "canGoBack" in tab ? tab.canGoBack !== false : true,
+          canGoForward: "canGoForward" in tab ? tab.canGoForward !== false : true,
+          occupants: [],
+        } as unknown as BrowserTabRow,
+      ];
+    }),
+  );
+}
+function fixtureList(sessionId: string) {
+  const rows = fixtureRows(sessionId);
+  return { ids: rows ? [...rows.keys()] : [], syncing: false, whole: rows !== undefined };
+}
+const fixtureTabs = {
+  sessionTab: (sessionId: string, tabId: string) => fixtureRows(sessionId)?.get(tabId),
+  sessionList: fixtureList,
+  tab: (groupId: string, tabId: string) => fixtureRows(groupId)?.get(tabId),
+};
+const fixtureSurface = (sessionId: string, tabId: string) =>
+  state.snapshot?.browserSessions
+    .find(({ id }) => id === sessionId)
+    ?.tabs.find(({ id }) => id === tabId);
+
 const liveFeed = { status: "live", error: null, frame: null } as const;
 function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
   state.hostClient.getSnapshot ??= () => state.snapshot && withBrowserTabStore(state.snapshot);
+  state.hostClient.browserTabs ??= fixtureTabs;
+  state.hostClient.browserViewerSurface ??= fixtureSurface;
   state.drafts ??= createThreadDraftStore({
     filePath: "/private/drafts.json",
     now: () => new Date("2026-10-13T00:00:00.000Z"),

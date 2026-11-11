@@ -1,6 +1,12 @@
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
-import { useActionReview } from "@opensteer/client/react";
+import {
+  useActionReview,
+  useBrowserSessionGroupId,
+  useBrowserTab,
+  useBrowserTabs,
+  useBrowserViewerSurface,
+} from "@opensteer/client/react";
 import { ActionReviewSheet } from "../ui/action-review.js";
 import {
   passkeyNotice,
@@ -178,12 +184,43 @@ export function BrowserPage(props: {
   const dialog = session.dialog?.surfaceId === tabId ? session.dialog : null;
   const [prompt, setPrompt] = useState<{ readonly id: string; readonly text: string } | null>(null);
   const promptText = prompt?.id === dialog?.id ? (prompt?.text ?? "") : "";
-  const catalogTab = session.tabCatalog?.tabs.find((candidate) => candidate.id === tabId);
-  const liveTab = session.tabs.find((candidate) => candidate.id === tabId);
+  // This tab's own row, and the exact page a viewer holds: nothing of the other tabs.
+  const groupId = useBrowserSessionGroupId(hostClient, session.id);
+  const row = useBrowserTab(hostClient, groupId, tabId);
+  const catalogTab = row?.documentId == null ? undefined : row;
+  const viewer = useBrowserViewerSurface(hostClient, session.id, tabId);
+  // A page waking keeps its row's title and site until it commits: never a blank address.
+  const committed =
+    viewer && !(row?.site && (viewer.url === "" || viewer.url === "about:blank"))
+      ? viewer
+      : undefined;
+  const liveTab = useMemo(
+    () =>
+      catalogTab && committed
+        ? {
+            active: false,
+            documentId: catalogTab.documentId ?? undefined,
+            favicon: committed.favicon ?? undefined,
+            id: surfaceId,
+            loading: committed.loading,
+            navigationFailed: committed.navigationFailed,
+            sizedByAgent: committed.sizedByAgent,
+            title: committed.title,
+            url: committed.url,
+          }
+        : undefined,
+    [catalogTab, committed, surfaceId],
+  );
   const tab =
     liveTab ??
     (catalogTab
-      ? { id: surfaceId, title: catalogTab.title, url: catalogTab.site, active: false }
+      ? {
+          id: surfaceId,
+          title: catalogTab.title,
+          url: catalogTab.site,
+          active: false,
+          navigationFailed: catalogTab.navigationFailed,
+        }
       : undefined);
   const navigationFailed = tab?.navigationFailed || catalogTab?.navigationFailed;
   const [problem, setProblem] = useState<string | null>(null);
@@ -484,7 +521,11 @@ export function BrowserPage(props: {
   const canGoBack = catalogTab?.canGoBack !== false;
   const canGoForward = catalogTab?.canGoForward !== false;
 
-  const tabs = useMemo(() => orderedTabs(session), [session]);
+  const tabIds = useBrowserTabs(hostClient, groupId ?? "").ids;
+  const tabs = useMemo(
+    () => (groupId === undefined ? [] : orderedTabs(hostClient, session.id, groupId, tabIds)),
+    [groupId, hostClient, session.id, tabIds],
+  );
   const position = tabs.findIndex(({ id }) => id === tabId);
   const switchBy = useCallback(
     (direction: -1 | 1) => {
@@ -1336,23 +1377,24 @@ export function slideFor(caret: EditingCaret | null, pageHeight: number, visible
 }
 
 /** A browser's tabs in its own order, as its tab strip shows them. */
-function orderedTabs(session: BrowserSessionSummary): readonly OpenTabSuggestion[] {
-  const catalog = session.tabCatalog?.tabs;
-  if (catalog !== undefined)
-    return [...catalog]
-      .sort((left, right) => left.order - right.order)
-      .map((tab) => ({
-        favicon: session.tabs.find(({ id }) => id === tab.id)?.favicon ?? null,
-        id: tab.id,
+function orderedTabs(
+  hostClient: HostClient,
+  sessionId: string,
+  groupId: string,
+  ids: readonly string[],
+): readonly OpenTabSuggestion[] {
+  return ids.flatMap((id) => {
+    const tab = hostClient.browserTabs.tab(groupId, id);
+    if (!tab) return [];
+    return [
+      {
+        favicon: hostClient.browserViewerSurface(sessionId, id)?.favicon ?? null,
+        id,
         site: pageSite(tab.site),
         title: tab.title || pageSite(tab.site) || "New tab",
-      }));
-  return session.tabs.map((tab) => ({
-    favicon: tab.favicon ?? null,
-    id: tab.id,
-    site: pageSite(tab.url),
-    title: browserTabTitle(tab),
-  }));
+      },
+    ];
+  });
 }
 
 /**

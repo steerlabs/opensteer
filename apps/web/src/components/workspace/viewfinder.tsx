@@ -26,7 +26,12 @@ import {
   type HostClient,
   type SurfaceDestination,
 } from "@opensteer/client/host";
-import { useHostSelector, useRunPlace, useRunPlaceBinding } from "@opensteer/client/react";
+import {
+  useBrowserTabAwake,
+  useHostSelector,
+  useRunPlace,
+  useRunPlaceBinding,
+} from "@opensteer/client/react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
@@ -329,16 +334,18 @@ function BrowserFinder({
     onLive(enabled && status === "live");
     return () => onLive(false);
   }, [enabled, onLive, status]);
+  // A sleeping tab shows its last picture: watching it would wake it.
+  const awake = useBrowserTabAwake(hostClient, sessionId, tabId);
   useEffect(
     () =>
-      enabled && surfaceId
+      enabled && awake && surfaceId
         ? hostClient.retainBrowserWatch(sessionId, tabId, {
             captureRegion: true,
             frameWindow: true,
             rasterDemand: true,
           })
         : undefined,
-    [hostClient, sessionId, tabId, surfaceId, enabled],
+    [awake, hostClient, sessionId, tabId, surfaceId, enabled],
   );
   const frameRef = useRef<HTMLSpanElement | null>(null);
   const imageRef = useRef<HTMLSpanElement | null>(null);

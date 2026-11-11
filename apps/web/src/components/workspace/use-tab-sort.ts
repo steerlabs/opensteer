@@ -7,7 +7,7 @@ import {
   type RefObject,
 } from "react";
 import type { BrowserTabMove } from "@opensteer/protocol";
-import type { BrowserTabStrip } from "@opensteer/client/host";
+import type { BrowserTabStrip, PlaceDescriptor } from "@opensteer/client/host";
 import { rowPositions, type RowMotion } from "./row-motion.js";
 import { snapTop } from "./scroll-edges.js";
 import {
@@ -31,7 +31,7 @@ const glide = 0.3;
 
 /** A lift in progress: the list shows the strip as it was until the drop. */
 export interface TabSortLift {
-  readonly strip: BrowserTabStrip;
+  readonly strip: BrowserTabStrip<PlaceDescriptor>;
   readonly rows: readonly SortRow[];
   readonly key: string;
   /** The group being moved; its tabs fold under its header while it moves. */
@@ -98,7 +98,7 @@ interface Drag {
  * drop then moves only the rows the new order moves.
  */
 export function useTabSort(input: {
-  readonly strip: BrowserTabStrip;
+  readonly strip: BrowserTabStrip<PlaceDescriptor>;
   readonly rows: readonly SortRow[];
   readonly movable: boolean;
   readonly list: RefObject<HTMLElement | null>;

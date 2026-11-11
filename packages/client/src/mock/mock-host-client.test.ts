@@ -928,6 +928,7 @@ describe("MockHostClient Chat messaging", () => {
         threadInput(client, "wsp_00000000-0000-4000-8000-000000000001"),
       );
       expect(thread.role).toBe("work");
+      vi.useFakeTimers();
       const first = sendMessage(client, thread.id, "First turn");
       const queued = unwrapSend(await sendMessage(client, thread.id, "Then this"));
       expect(queued.input.state).toBe("pending");
@@ -943,6 +944,7 @@ describe("MockHostClient Chat messaging", () => {
       ).toBe(true);
       expect(entry(client, queued.message.id, thread.id)).toBeDefined();
       expect(entry(client, queued.message.id, thread.id)).not.toHaveProperty("delivery");
+      await vi.advanceTimersByTimeAsync(0);
       await first;
       expect(client.getSnapshot().inputQueues[thread.id]?.items).toHaveLength(1);
       await client.resumeThreadInputQueue(thread.id);
@@ -951,6 +953,7 @@ describe("MockHostClient Chat messaging", () => {
       ).toBe(false);
     } finally {
       client.dispose();
+      vi.useRealTimers();
     }
   });
 });

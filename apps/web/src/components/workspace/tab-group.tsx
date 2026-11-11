@@ -1,7 +1,8 @@
 import { memo, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { BrowserTabGroup } from "@opensteer/protocol";
 import { BrowserTabGroupColorSchema, browserTabGroupTitleMaxLength } from "@opensteer/protocol";
-import type { HostClient, PlaceItem, PlaceOccupant } from "@opensteer/client/host";
+import type { HostClient, PlaceItem, PlaceOccupant, PlaceDescriptor } from "@opensteer/client/host";
+import { usePlaces } from "@opensteer/client/react";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -24,8 +25,8 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   hostClient,
   onEdit,
   onOpenMark,
-  places,
-  groupPlaces = places,
+  places: slots,
+  groupPlaces = slots,
   rowKey = group.id,
   sort,
 }: {
@@ -37,9 +38,9 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   readonly onEdit: (id: string | null) => void;
   readonly onOpenMark: (place: PlaceItem, threadId: string) => void;
   /** The members listed under this header: under a device, only those that run there. */
-  readonly places: readonly PlaceItem[];
+  readonly places: readonly PlaceDescriptor[];
   /** Every member, wherever it runs: closing closes the whole group. */
-  readonly groupPlaces?: readonly PlaceItem[];
+  readonly groupPlaces?: readonly PlaceDescriptor[];
   /** The header's key in the list, apart from the group's own where it stands under two devices. */
   readonly rowKey?: string;
   /** Drag-and-drop and ⌘↑/⌘↓ for the whole group. */
@@ -48,6 +49,12 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const toast = useToast();
   const [at, setAt] = useState<{ x: number; y: number } | undefined>();
+  // Collapsed, it wears its members' marks: only then does it read them live.
+  const keys = useMemo(
+    () => (group.collapsed ? slots.map((slot) => slot.key) : []),
+    [group.collapsed, slots],
+  );
+  const places = usePlaces(hostClient, keys);
   const occupants = useMemo(() => {
     const members = new Map<string, PlaceOccupant>();
     for (const place of places)
@@ -79,7 +86,7 @@ export const TabGroupHeader = memo(function TabGroupHeader({
       <button
         aria-current={active && group.collapsed ? "true" : undefined}
         aria-expanded={!group.collapsed}
-        aria-label={`${name}, ${places.length} tabs`}
+        aria-label={`${name}, ${slots.length} tabs`}
         className="side-tab__main side-tab-group__main"
         onClick={() =>
           void hostClient
@@ -106,7 +113,7 @@ export const TabGroupHeader = memo(function TabGroupHeader({
         >
           {group.title}
         </span>
-        {group.collapsed ? <span className="side-tab-group__count">{places.length}</span> : null}
+        {group.collapsed ? <span className="side-tab-group__count">{slots.length}</span> : null}
       </button>
       {group.collapsed ? (
         <OccupantMarks

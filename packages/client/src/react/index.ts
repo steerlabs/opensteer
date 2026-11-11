@@ -25,3 +25,5 @@ export * from "./use-team.js";
 export * from "./use-paged-list.js";
 
 export * from "./use-browser-tabs.js";
+export * from "./use-browser-tab-icon.js";
+export * from "./use-syncing-placeholder.js";

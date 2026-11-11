@@ -1393,30 +1393,25 @@ function WorkspaceKeys({
     let cancelled = false;
     if (remembered?.kind === "browser") {
       void (async () => {
-        const snapshot = hostClient.getSnapshot();
-        let group = snapshot.workspaceTabs?.find(
-          (group) =>
-            group.id === remembered.sessionId ||
-            group.session.id === remembered.sessionId ||
-            group.tabs?.some((tab) => tab.id === remembered.tabId),
-        );
-        const legacy = snapshot.browserSessions.find(
-          (session) =>
-            session.id === remembered.sessionId &&
-            session.workspaceTabRestoreVersion !== 1 &&
-            session.state !== "closed" &&
-            session.state !== "failed",
-        );
-        if ((!group?.tabs || group.whole === false) && !legacy && hostClient.readWorkspaceTabs)
-          group = (await hostClient.readWorkspaceTabs(remembered.sessionId)) ?? undefined;
+        const store = hostClient.browserTabs;
+        const groupId = store.group(remembered.sessionId)
+          ? remembered.sessionId
+          : (store.groupForSession(remembered.sessionId) ??
+            (remembered.tabId ? store.groupForTab(remembered.tabId) : undefined));
+        let sessionId =
+          groupId && remembered.tabId && store.tab(groupId, remembered.tabId)
+            ? store.group(groupId)!.sessionId
+            : null;
+        // A group the client holds only part of cannot say the tab is gone; the Host can.
+        if (sessionId === null && !(groupId && store.tabs(groupId).whole)) {
+          const read = await hostClient.readWorkspaceTabs?.(remembered.sessionId);
+          if (read?.tabs?.some((tab) => tab.id === remembered.tabId)) sessionId = read.session.id;
+        }
         if (cancelled) return;
         const params = new URLSearchParams(search);
         params.set("panel", "browser");
-        if (
-          group?.tabs?.some((tab) => tab.id === remembered.tabId) ||
-          legacy?.tabCatalog?.tabs.some((tab) => tab.id === remembered.tabId)
-        ) {
-          params.set("browser", group?.session.id ?? remembered.sessionId);
+        if (sessionId !== null) {
+          params.set("browser", sessionId);
           params.set("browserTab", remembered.tabId ?? "");
         }
         void navigate({ pathname, search: `?${params}` }, { replace: true });
@@ -1436,12 +1431,13 @@ function WorkspaceKeys({
     const next = canonicalPlaceSearch(search, (sessionId) => {
       const session = sessions.find((candidate) => candidate.id === sessionId);
       if (!session) return known ? null : undefined;
-      return session.tabs.find((tab) => tab.active)?.id ?? session.tabCatalog?.tabs[0]?.id ?? null;
+      const groupId = hostClient.browserTabs.groupForSession(sessionId);
+      return (groupId && hostClient.browserTabs.tabs(groupId).ids[0]) ?? null;
     });
     if (next === null) return;
     canonicalized.current = key;
     void navigate({ pathname, search: next }, { replace: true });
-  }, [key, known, navigate, pathname, search, sessions]);
+  }, [hostClient, key, known, navigate, pathname, search, sessions]);
   // The place the person put in the middle — by a row, a link, Back or a
   // typed address — is the one Show computer returns to.
   useEffect(() => {

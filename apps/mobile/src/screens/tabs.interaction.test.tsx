@@ -1274,13 +1274,22 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       .getSnapshot()
       .browserSessions.find((session) => session.state === "ready")!;
     let opening!: ReturnType<typeof w.host.beginBrowserTabOpen>;
-    act(() => {
-      opening = w.host.beginBrowserTabOpen(session.id, {
-        url: "https://pending.example/",
-        idempotencyKey: "mobile-list",
+    const published = Promise.withResolvers<void>();
+    const stop = w.host.subscribe(() => published.resolve());
+    try {
+      await act(async () => {
+        opening = w.host.beginBrowserTabOpen(session.id, {
+          url: "https://pending.example/",
+          idempotencyKey: "mobile-list",
+        });
+        void opening.result.catch(() => undefined);
+        await withTimeout(published.promise, 1_000, {
+          timeoutError: () => new Error("The pending browser opening was never published."),
+        });
       });
-      void opening.result.catch(() => undefined);
-    });
+    } finally {
+      stop();
+    }
     await press(control(front(w), "https://pending.example/"));
     expect(w.stack.top.params).toMatchObject({
       scope: "workspace",

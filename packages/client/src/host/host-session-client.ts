@@ -503,6 +503,12 @@ export class HttpHostClient {
   #browserStructure: ReturnType<BrowserTabStore["structure"]> = [];
   #browserRevision = -1;
   #browserTabIds = new Map<string, readonly string[]>();
+  browserViewerSurface(sessionId: string, surfaceId: string) {
+    return (
+      this.#targetedControl.surface(sessionId, surfaceId) ??
+      this.#targetedWatch.surface(sessionId, surfaceId)
+    );
+  }
   readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();

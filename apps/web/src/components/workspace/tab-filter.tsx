@@ -1,5 +1,11 @@
 import { useMemo, useRef, useState } from "react";
-import { placeHasAgents, type PlaceBrowserIdentity, type PlaceItem } from "@opensteer/client/host";
+import {
+  placeHasAgents,
+  type HostClient,
+  type PlaceBrowserIdentity,
+  type PlaceItem,
+} from "@opensteer/client/host";
+import { usePlaceList } from "@opensteer/client/react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { ProfileAvatar } from "./identity.js";
@@ -52,14 +58,16 @@ function filterWords(filter: TabFilterValue): string {
  * Shown while there is something to narrow: two profiles, or an agent in a tab.
  */
 export function TabFilter({
+  hostClient,
   onChange,
-  places,
   value,
 }: {
+  readonly hostClient: HostClient;
   readonly onChange: (filter: TabFilterValue) => void;
-  readonly places: readonly PlaceItem[];
   readonly value: TabFilterValue;
 }) {
+  // Its counts read every place; the list beside it arranges slots alone.
+  const places = usePlaceList(hostClient);
   const anchor = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const profiles = useMemo(() => {

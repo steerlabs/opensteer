@@ -1,3 +1,4 @@
+import { placeList } from "@opensteer/client/host";
 import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
@@ -14,10 +15,17 @@ import {
   type HostSnapshot,
   type PlaceItem,
   type PlaceKind,
+  type PlaceDescriptor,
   type TabSectionDevice,
 } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import {
+  useBrowserGroups,
+  useHostSelector,
+  usePlace,
+  usePlaceStructure,
+  useSyncingPlaceholder,
+} from "@opensteer/client/react";
 import {
   StackActions,
   useIsFocused,
@@ -139,12 +147,12 @@ interface PlaceGroup {
   readonly device: TabSectionDevice | null;
   /** Sections wear their device as a heading once anything runs elsewhere than this phone. */
   readonly headed: boolean;
-  readonly data: readonly PlaceItem[];
+  readonly data: readonly PlaceDescriptor[];
 }
 
 /** Places as sections by device, in the order every surface lists devices in. */
 function placeGroups(
-  places: readonly PlaceItem[],
+  places: readonly PlaceDescriptor[],
   machines: readonly MachineSummary[],
   hereId: string | null,
 ): readonly PlaceGroup[] {
@@ -195,13 +203,27 @@ function TabsForReader(props: {
   const navigation = useNavigation();
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
-  const places = usePlaceList(hostClient);
+  // The list arranges slots; each row reads its own place, so a title repaints one row.
+  const places = usePlaceStructure(hostClient);
+  const groupList = useBrowserGroups(hostClient);
   const machines = useHostSelector(hostClient, selectMachines);
   const hereId = useHereDeviceId(deploymentId);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const signInKeys = useHostSelector(hostClient, selectSignIns);
   const [agents, setAgents] = useState(false);
-  const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
+  const selectWithAgents = useCallback(
+    () =>
+      placeList(hostClient.getSnapshot())
+        .filter(placeHasAgents)
+        .map((place) => place.key)
+        .join("\n"),
+    [hostClient],
+  );
+  const agentKeys = useHostSelector(hostClient, selectWithAgents);
+  const withAgents = useMemo(() => {
+    const keys = new Set(agentKeys ? agentKeys.split("\n") : []);
+    return places.filter((place) => keys.has(place.key));
+  }, [agentKeys, places]);
   const canOpen = useHostSelector(hostClient, selectCanOpen);
   const openApp = useCallback(
     () => navigation.dispatch(StackActions.push("OpenApp", { deploymentId })),
@@ -216,7 +238,11 @@ function TabsForReader(props: {
   const shown = agents ? withAgents : places;
   const sections = useMemo(() => placeGroups(shown, machines, hereId), [hereId, machines, shown]);
   const signIns = useMemo(() => new Set(signInKeys.split("\n")), [signInKeys]);
-  const showProfile = useMemo(() => profileBadgesVisible(places), [places]);
+  const selectShowProfile = useCallback(
+    () => profileBadgesVisible(placeList(hostClient.getSnapshot())),
+    [hostClient],
+  );
+  const showProfile = useHostSelector(hostClient, selectShowProfile);
   const open = useCallback(
     (place: PlaceItem) =>
       navigation.dispatch(
@@ -225,8 +251,8 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const renderItem = useCallback(
-    ({ index, item, section }: SectionListRenderItemInfo<PlaceItem, PlaceGroup>) => (
-      <PlaceRow
+    ({ index, item, section }: SectionListRenderItemInfo<PlaceDescriptor, PlaceGroup>) => (
+      <KeyedPlaceRow
         first={index === 0}
         headed={section.headed}
         hostClient={hostClient}
@@ -236,42 +262,46 @@ function TabsForReader(props: {
           signIns.has(`${item.destination.sessionId}:${item.destination.tabId}`)
         }
         onOpen={open}
-        place={item}
+        placeKey={item.key}
         shown={props.active}
         showProfile={showProfile}
       />
     ),
     [hostClient, open, props.active, showProfile, signIns],
   );
-  const loading = !loaded && places.length === 0;
+  // Still syncing with nothing to list: no empty state, and past a moment the loading line.
+  const loading = (!loaded || groupList.syncing) && places.length === 0;
+  const finding = useSyncingPlaceholder(!loaded || groupList.syncing, places.length);
   return (
     <Screen edgeToEdge>
-      <SectionList<PlaceItem, PlaceGroup>
+      <SectionList<PlaceDescriptor, PlaceGroup>
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
         keyExtractor={(item) => item.key}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <AppText role="bodyMedium" tone={loading ? "muted" : "default"}>
-              {loading ? "Finding tabs…" : agents ? "No tasks are using tabs" : "No tabs yet"}
-            </AppText>
-            {loading ? null : (
-              <AppText role="secondary" style={styles.centred} tone="muted">
-                {agents
-                  ? "Tabs appear here while a task works in them."
-                  : "Tabs you and your agents open appear here."}
+          loading && !finding ? undefined : (
+            <View style={styles.empty}>
+              <AppText role="bodyMedium" tone={loading ? "muted" : "default"}>
+                {loading ? "Finding tabs…" : agents ? "No tasks are using tabs" : "No tabs yet"}
               </AppText>
-            )}
-            {loading ? null : agents ? (
-              <View style={styles.emptyAction}>
-                <SecondaryButton compact label="Show all tabs" onPress={() => setAgents(false)} />
-              </View>
-            ) : canOpen ? (
-              <View style={styles.emptyAction}>
-                <SecondaryButton compact label="Open an app" onPress={openApp} />
-              </View>
-            ) : null}
-          </View>
+              {loading ? null : (
+                <AppText role="secondary" style={styles.centred} tone="muted">
+                  {agents
+                    ? "Tabs appear here while a task works in them."
+                    : "Tabs you and your agents open appear here."}
+                </AppText>
+              )}
+              {loading ? null : agents ? (
+                <View style={styles.emptyAction}>
+                  <SecondaryButton compact label="Show all tabs" onPress={() => setAgents(false)} />
+                </View>
+              ) : canOpen ? (
+                <View style={styles.emptyAction}>
+                  <SecondaryButton compact label="Open an app" onPress={openApp} />
+                </View>
+              ) : null}
+            </View>
+          )
         }
         ListHeaderComponent={
           <>
@@ -387,6 +417,15 @@ interface PlaceRowProps {
  * page's own pill marks them. It reads only its own occupants, so an agent
  * arriving redraws this row alone and a streamed token redraws none.
  */
+/** A row reads its own place, so one tab's title or loading repaints only it. */
+const KeyedPlaceRow = memo(function KeyedPlaceRow({
+  placeKey,
+  ...props
+}: Omit<PlaceRowProps, "place"> & { readonly placeKey: string }): ReactNode {
+  const place = usePlace(props.hostClient, placeKey);
+  return place ? <PlaceRow {...props} place={place} /> : null;
+});
+
 const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
   const { hostClient, place } = props;
   const selectAgents = useCallback(

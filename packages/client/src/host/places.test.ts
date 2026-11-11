@@ -318,6 +318,34 @@ describe("place catalog", () => {
       client.dispose();
     }
   });
+  it("lists a tab its browser put to sleep as suspended, so selecting it wakes it", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const snapshot = client.getSnapshot();
+      const store = client.browserTabs;
+      const group = store
+        .groups()
+        .ids.map((id) => store.group(id)!)
+        .find((group) => group.state === "ready" && store.tabs(group.id).ids.length)!;
+      const rows = store.sessionTabs(group.sessionId);
+      const asleep = rows[0]!.id;
+      store.applyTabs(group.id, { op: "begin", generation: "sleeping" });
+      store.applyTabs(group.id, {
+        op: "rows",
+        rows: rows.map((tab) => (tab.id === asleep ? { ...tab, state: "suspended" } : tab)),
+      });
+      store.applyTabs(group.id, { op: "end", revision: 0, count: rows.length, meta: {} });
+      const states = new Map(
+        placeList(snapshot).flatMap((place) =>
+          place.workspaceTab ? [[place.workspaceTab.id, place.workspaceTab.state] as const] : [],
+        ),
+      );
+      expect(states.get(asleep)).toBe("suspended");
+      expect([...states.values()]).toContain("live");
+    } finally {
+      client.dispose();
+    }
+  });
   it("does not treat a browser missing from the bounded durable catalog as closed", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {

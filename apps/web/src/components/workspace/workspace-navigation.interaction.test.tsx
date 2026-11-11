@@ -1,3 +1,4 @@
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 import type { WorkspaceTabLineage } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
@@ -225,6 +226,9 @@ describe("selection actions own exactly their axis, one history entry each", () 
           workspaceTabs: [],
         };
         vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
+        Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
+        // Outside the bounded catalog, the client holds none of this browser's rows.
+        source.browserTabs.clear();
         const listeners = new Set<() => void>();
         vi.spyOn(source, "subscribe").mockImplementation((listener) => {
           listeners.add(listener);
@@ -233,7 +237,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
           };
         });
         read.mockImplementation(async () => {
-          snapshot = { ...snapshot, workspaceTabs: [group] };
+          snapshot = withBrowserTabStore({ ...snapshot, workspaceTabs: [group] });
           for (const listener of listeners) listener();
           return group;
         });

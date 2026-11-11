@@ -12,7 +12,7 @@ import {
   type HostClient,
   type RunPageMoment,
 } from "@opensteer/client/host";
-import { useRunPageView, useRunPlace } from "@opensteer/client/react";
+import { useBrowserTabAwake, useRunPageView, useRunPlace } from "@opensteer/client/react";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import {
   memo,
@@ -179,16 +179,18 @@ export const RunPage = memo(function RunPage({
     destination?.kind === "browser" && destination.tabId
       ? { sessionId: destination.sessionId, tabId: destination.tabId }
       : null;
+  // A sleeping tab shows its last picture: watching it would wake it.
+  const awake = useBrowserTabAwake(hostClient, tab?.sessionId, tab?.tabId);
   useEffect(
     () =>
-      tab
+      tab && awake
         ? hostClient.retainBrowserWatch(tab.sessionId, tab.tabId, {
             captureRegion: true,
             frameWindow: true,
             rasterDemand: true,
           })
         : undefined,
-    [hostClient, tab?.sessionId, tab?.tabId],
+    [awake, hostClient, tab?.sessionId, tab?.tabId],
   );
 
   const shown = place !== null && (open || foldedHere);

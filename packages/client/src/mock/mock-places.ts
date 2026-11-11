@@ -620,7 +620,8 @@ export class MockPlaceWorld {
   readonly #now: () => Date;
   readonly #started: number;
   #timer: ReturnType<typeof setInterval> | null = null;
-  readonly #loads = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #loads = new Map<string, { sessionId: string; surfaceId: string; at: number }>();
+  #loadTimer: ReturnType<typeof setTimeout> | null = null;
   /** The size each targeted page was last given, and how many times it changed. */
   readonly #viewports = new Map<
     string,
@@ -1071,23 +1072,63 @@ export class MockPlaceWorld {
   }
   #loading(sessionId: string, surfaceId: string, loading: boolean): void {
     const key = this.#key(sessionId, surfaceId);
-    clearTimeout(this.#loads.get(key));
     this.#loads.delete(key);
-    if (!loading) return;
-    this.#loads.set(
-      key,
-      setTimeout(() => {
-        this.#loads.delete(key);
-        try {
-          this.command(sessionId, {
-            surfaceId: BrowserSurfaceIdSchema.parse(surfaceId),
-            type: "navigation.stop",
-          });
-        } catch {
-          // The browser ended while the page loaded; nothing is left to stop.
-        }
-      }, mockPageLoadMs),
-    );
+    if (loading) this.#loads.set(key, { sessionId, surfaceId, at: Date.now() + mockPageLoadMs });
+    this.#scheduleLoads();
+  }
+  #scheduleLoads(): void {
+    if (this.#loadTimer !== null) clearTimeout(this.#loadTimer);
+    this.#loadTimer = null;
+    if (!this.#loads.size) return;
+    const next = Math.min(...[...this.#loads.values()].map((load) => load.at));
+    this.#loadTimer = setTimeout(() => this.#finishLoads(), Math.max(0, next - Date.now()));
+  }
+  #finishLoads(): void {
+    this.#loadTimer = null;
+    const due = new Map<string, Set<string>>();
+    const now = Date.now();
+    for (const [key, load] of this.#loads) {
+      if (load.at > now) continue;
+      this.#loads.delete(key);
+      let ids = due.get(load.sessionId);
+      if (!ids) due.set(load.sessionId, (ids = new Set()));
+      ids.add(load.surfaceId);
+    }
+    const snapshot = this.#snapshot();
+    let changed = false;
+    const browserSessions = snapshot.browserSessions.map((session) => {
+      const ids = due.get(session.id);
+      if (!ids || session.state !== "ready" || !session.catalog) return session;
+      if (!session.catalog.tabs.some((tab) => ids.has(tab.id) && tab.loading)) return session;
+      changed = true;
+      return {
+        ...session,
+        surfaces: session.surfaces.map((tab) =>
+          ids.has(tab.id) ? { ...tab, loading: false } : tab,
+        ),
+        catalog: {
+          ...session.catalog,
+          revision: session.catalog.revision + 1,
+          tabs: session.catalog.tabs.map((tab) =>
+            ids.has(tab.id)
+              ? {
+                  ...tab,
+                  loading: false,
+                  iconRef: tab.iconRef ?? `${tab.id}-icon-${session.catalog!.revision + 1}`,
+                }
+              : tab,
+          ),
+        },
+      };
+    });
+    // Pages finishing together publish once, rather than one full view per timer.
+    if (changed) {
+      const updated = { ...snapshot, browserSessions };
+      this.#update(updated);
+      this.#retainHistoryIcons(updated);
+      this.#frames();
+    }
+    this.#scheduleLoads();
   }
   accept(sessionId: string, surfaceId: string, token: string): void {
     const watch = this.#watches.get(this.#key(sessionId, surfaceId));
@@ -1886,7 +1927,8 @@ export class MockPlaceWorld {
   dispose(): void {
     this.input.dispose();
     if (this.#timer !== null) clearInterval(this.#timer);
-    for (const load of this.#loads.values()) clearTimeout(load);
+    if (this.#loadTimer !== null) clearTimeout(this.#loadTimer);
+    this.#loadTimer = null;
     this.#loads.clear();
     this.activity.dispose();
     this.#nativeReferences.clear();

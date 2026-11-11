@@ -3,7 +3,13 @@ import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { placeList, placeStructure, placeByKey, samePlaceListSource } from "../host/places.js";
+import {
+  placeList,
+  placeStructure,
+  placeByKey,
+  samePlaceListSource,
+  type PlaceItem,
+} from "../host/places.js";
 import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 const selectSource = (snapshot: HostSnapshot) => snapshot;
@@ -11,9 +17,11 @@ function usePlaceSelection<T>(
   hostClient: HostClient,
   select: (source: HostSnapshot) => T,
   structural = false,
+  enabled = true,
 ) {
   const subscribe = useCallback(
     (listener: () => void) => {
+      if (!enabled) return () => {};
       const host = hostSnapshotStore(hostClient).subscribe(listener);
       const tabs = structural
         ? hostClient.browserTabs.subscribeStructure(listener)
@@ -23,58 +31,87 @@ function usePlaceSelection<T>(
         tabs();
       };
     },
-    [hostClient, structural],
+    [hostClient, structural, enabled],
   );
   const get = useCallback(() => select(hostClient.getSnapshot()), [hostClient, select]);
   return useSyncExternalStore(subscribe, get, get);
 }
-export function usePlaceList(hostClient: HostClient) {
-  return usePlaceSelection(hostClient, placeList);
+const noPlaces: readonly PlaceItem[] = [];
+export function usePlaceList(hostClient: HostClient, enabled = true) {
+  const select = useCallback(
+    (source: HostSnapshot) => (enabled ? placeList(source) : noPlaces),
+    [enabled],
+  );
+  return usePlaceSelection(hostClient, select, false, enabled);
 }
 export function usePlaceStructure(hostClient: HostClient) {
   return usePlaceSelection(hostClient, placeStructure, true);
 }
-export function usePlace(hostClient: HostClient, key: string) {
+function subscribePlace(hostClient: HostClient, key: string | null, listener: () => void) {
+  if (key === null) return () => {};
+  const store = hostClient.browserTabs;
+  let source = hostClient.getSnapshot();
+  const host = hostSnapshotStore(hostClient).subscribe(() => {
+    const next = hostClient.getSnapshot();
+    if (!samePlaceListSource(source, next) || source.browserSessions !== next.browserSessions) {
+      source = next;
+      listener();
+    }
+  });
+  const separator = key.startsWith("browser:") ? key.indexOf(":", "browser:".length) : -1;
+  const sessionId = separator < 0 ? undefined : key.slice("browser:".length, separator);
+  const tabId = separator < 0 ? undefined : key.slice(separator + 1);
+  let releaseRow = () => {};
+  const bind = () => {
+    releaseRow();
+    const groupId = sessionId === undefined ? undefined : store.groupForSession(sessionId);
+    if (groupId !== undefined && tabId !== undefined) {
+      const row = store.subscribeTab(groupId, tabId, listener);
+      const group = store.subscribeGroup(groupId, listener);
+      releaseRow = () => {
+        row();
+        group();
+      };
+    }
+    listener();
+  };
+  const session = sessionId === undefined ? () => {} : store.subscribeSessionGroup(sessionId, bind);
+  bind();
+  return () => {
+    host();
+    session();
+    releaseRow();
+  };
+}
+export function usePlace(hostClient: HostClient, key: string | null) {
   const subscribe = useCallback(
-    (listener: () => void) => {
-      const store = hostClient.browserTabs;
-      let source = hostClient.getSnapshot();
-      const host = hostSnapshotStore(hostClient).subscribe(() => {
-        const next = hostClient.getSnapshot();
-        if (!samePlaceListSource(source, next) || source.browserSessions !== next.browserSessions) {
-          source = next;
-          listener();
-        }
-      });
-      const separator = key.startsWith("browser:") ? key.indexOf(":", "browser:".length) : -1;
-      const sessionId = separator < 0 ? undefined : key.slice("browser:".length, separator);
-      const tabId = separator < 0 ? undefined : key.slice(separator + 1);
-      let releaseRow = () => {};
-      const bind = () => {
-        releaseRow();
-        const groupId = sessionId === undefined ? undefined : store.groupForSession(sessionId);
-        if (groupId !== undefined && tabId !== undefined) {
-          const row = store.subscribeTab(groupId, tabId, listener);
-          const group = store.subscribeGroup(groupId, listener);
-          releaseRow = () => {
-            row();
-            group();
-          };
-        }
-        listener();
-      };
-      const session =
-        sessionId === undefined ? () => {} : store.subscribeSessionGroup(sessionId, bind);
-      bind();
-      return () => {
-        host();
-        session();
-        releaseRow();
-      };
-    },
+    (listener: () => void) => subscribePlace(hostClient, key, listener),
     [hostClient, key],
   );
-  const get = useCallback(() => placeByKey(hostClient.getSnapshot(), key), [hostClient, key]);
+  const get = useCallback(
+    () => (key === null ? undefined : placeByKey(hostClient.getSnapshot(), key)),
+    [hostClient, key],
+  );
+  return useSyncExternalStore(subscribe, get, get);
+}
+export function usePlaces(hostClient: HostClient, keys: readonly string[]): readonly PlaceItem[] {
+  const held = useRef<readonly PlaceItem[]>(noPlaces);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const releases = keys.map((key) => subscribePlace(hostClient, key, listener));
+      return () => {
+        for (const release of releases) release();
+      };
+    },
+    [hostClient, keys],
+  );
+  const get = useCallback(() => {
+    const source = hostClient.getSnapshot();
+    const next = keys.flatMap((key) => placeByKey(source, key) ?? []);
+    if (next.length !== held.current.length || next.some((place, i) => place !== held.current[i]))
+      held.current = next;
+    return held.current;
+  }, [hostClient, keys]);
   return useSyncExternalStore(subscribe, get, get);
 }
 export function usePlaceActivity(hostClient: HostClient, placeKey: string) {

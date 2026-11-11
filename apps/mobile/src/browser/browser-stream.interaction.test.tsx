@@ -14,7 +14,7 @@ import type {
   BrowserFrameView,
   BrowserSessionSummary,
 } from "@opensteer/client/host";
-import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
+import { BrowserCursorStore, BrowserTabStore, browserTabPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
@@ -232,6 +232,7 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
   };
   const hostClient: BrowserStreamProps["hostClient"] = {
     acceptBrowserWatchFrame: vi.fn(),
+    browserTabs: new BrowserTabStore(),
     browserFrames: frames,
     browserWatchFrames: frames,
     retainBrowserViewer: vi.fn(() => {
