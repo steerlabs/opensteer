@@ -33,12 +33,15 @@ const roots: readonly string[] = [
 /** Every non-test source in `packages/client`, which is client-only by definition. */
 const clientPackageRoots = sourcesUnder("packages/client/src");
 
-/** The phone app's own runtime sources, which run nowhere but Hermes. */
+/**
+ * The phone app's own runtime sources, which run nowhere but Hermes. The
+ * phone browser's agent helper is bundled apart and runs in the page's WebView.
+ */
 const mobileSources = [
   "apps/mobile/index.ts",
   ...sourcesUnder("apps/mobile/src"),
-  ...sourcesUnder("apps/mobile/modules").filter((file) => !/\/(?:tests|journey)\//u.test(file)),
-];
+  ...sourcesUnder("apps/mobile/modules"),
+].filter((file) => !/\/(?:tests|journey)\/|\/phone-browser\/agent-helper\//u.test(file));
 
 /** Bare specifiers that only resolve inside a Node runtime. */
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
@@ -87,11 +90,18 @@ function subpathSearchStart(specifier: string): number {
 const missingInHermes =
   /\.toSorted\s*\(|\bObject\s*\.\s*groupBy\s*\(|\bIntl\s*\.\s*(?!(?:Collator|DateTimeFormat|NumberFormat)\b)\w+\s*[(.]/u;
 
-/** Everything the phone evaluates that this repository writes. */
-const hermesSources = () => [
-  ...reachableFiles([...roots, ...clientPackageRoots]),
-  ...mobileSources,
-];
+/**
+ * Everything the phone evaluates that this repository writes: its own sources
+ * and every workspace module they reach, some of which no package root does.
+ */
+function hermesSources(): string[] {
+  const phoneImports = mobileSources.flatMap((file) =>
+    specifiersOf(readFileSync(path.join(repositoryRoot, file), "utf8"))
+      .filter((specifier) => specifier.startsWith("@opensteer/"))
+      .flatMap((specifier) => resolve(specifier, file) ?? []),
+  );
+  return [...reachableFiles([...roots, ...clientPackageRoots, ...phoneImports]), ...mobileSources];
+}
 
 const workspaceManifests = readWorkspaceManifests();
 
@@ -132,6 +142,11 @@ describe("client import boundaries", () => {
     );
 
     expect(offenders).toEqual([]);
+  });
+
+  it("follows the phone's own imports into the workspace packages", () => {
+    // Only Markdown rendering on the phone reaches this module.
+    expect(hermesSources()).toContain("packages/shared/src/markdownParser.ts");
   });
 
   it("recognises each member Hermes is missing, and leaves its neighbours alone", () => {
