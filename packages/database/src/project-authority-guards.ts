@@ -102,6 +102,7 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
             and parent.membership_generation is not distinct from scoped
             and parent.initiator_generation is not distinct from global_generation
             and parent.origin_connection_id is not distinct from connection_id
+            and array_position(array['approval-required','auto-accept-edits','auto','full-access']::text[], coalesce(source #>> '{projectRuntime,accessMode}', t.access_mode)) <= array_position(array['approval-required','auto-accept-edits','auto','full-access']::text[], parent.access_mode)
             and parent.authority_source - 'projectRuntime' - 'parentRunId' = source - 'projectRuntime' - 'parentRunId'
         ))
         and (
@@ -115,6 +116,7 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
             select 1 from public.agent_connections c where c.id = connection_id and c.user_id = requester
               and c.workspace_id = w.id and c.revoked_at is null
               and c.member_generation = global_generation and c.membership_generation = scoped
+              and array_position(array['approval-required','auto-accept-edits','auto','full-access']::text[], coalesce(source #>> '{projectRuntime,accessMode}', t.access_mode)) <= array_position(array['approval-required','auto-accept-edits','auto','full-access']::text[], c.access_mode)
           )))
         )
         and (
@@ -161,6 +163,7 @@ declare stored_model integer; stored_kind text;
           if not public.opensteer_project_work_is_valid(new.thread_id, new.actor_principal_id, new.requested_by, new.membership_generation, new.initiator_generation, new.origin_connection_id, new.authority_source) or not exists (
             select 1 from public.threads t join public.thread_inputs i on i.message_id = new.seed_input_id
             where t.id = new.thread_id and t.environment_id = new.environment_id
+              and array_position(array['approval-required','auto-accept-edits','auto','full-access']::text[], new.access_mode) <= array_position(array['approval-required','auto-accept-edits','auto','full-access']::text[], coalesce(new.authority_source #>> '{projectRuntime,accessMode}', t.access_mode))
               and (not new.authority_source ? 'projectRuntime' or (
                 new.model_selection = new.authority_source #> '{projectRuntime,modelSelection}'
                 and new.access_mode = new.authority_source #>> '{projectRuntime,accessMode}'
