@@ -161,6 +161,8 @@ export function App({
   const recoveryRoute = window.location.pathname === "/recover";
   const autoOidcProvider =
     snapshot.session === "authentication-required" &&
+    // A team's owner acknowledges who it is for before any provider is opened.
+    !(isTeamPlace(snapshot) && snapshot.identityConfig?.setupState === "required") &&
     snapshot.identityConfig &&
     shouldAutoStartOidc(snapshot.identityConfig, {
       desktop: desktopBridge !== null,
@@ -232,7 +234,7 @@ export function App({
     }
   }
 
-  async function claimInitialOwner(input: InitialOwnerClaimInput) {
+  async function claimInitialOwner(input: InitialOwnerClaimInput, acknowledged: boolean) {
     setOnboardingError(null);
     setOnboardingPending(true);
     try {
@@ -241,6 +243,7 @@ export function App({
           email: input.email.trim(),
           kind: "password",
           password: input.password,
+          ...(acknowledged ? { trustedMembersAcknowledged: true as const } : {}),
         }),
       );
       await hostClient.refresh();
@@ -257,7 +260,7 @@ export function App({
     setSetupAdmission("admitted");
   }
 
-  async function startOidc(providerId: string, automatic = false) {
+  async function startOidc(providerId: string, automatic = false, acknowledged = false) {
     setOnboardingError(null);
     setOnboardingPending(true);
     try {
@@ -268,6 +271,7 @@ export function App({
         navigate: (url) => window.location.assign(url),
         oauthQuery: nativeOAuthQuery,
         providerId,
+        trustedMembersAcknowledged: acknowledged,
       });
       if (!navigated) setOnboardingPending(false);
     } catch (error) {
@@ -425,7 +429,10 @@ export function App({
         error={onboardingError}
         onAdmit={admitInitialOwner}
         onClaim={claimInitialOwner}
-        onOidc={startOidc}
+        onOidc={(providerId, acknowledged) => startOidc(providerId, false, acknowledged)}
+        team={
+          isTeamPlace(snapshot) ? (snapshot.identityConfig.deployment.name ?? "this team") : null
+        }
         onSignIn={signIn}
         pending={onboardingPending}
       />
@@ -660,6 +667,7 @@ export async function startHostOidcSignIn(input: {
   readonly navigate: (url: string) => void;
   readonly oauthQuery: string | null;
   readonly providerId: string;
+  readonly trustedMembersAcknowledged?: boolean;
 }): Promise<boolean> {
   if (input.desktopBridge) {
     if (input.deploymentId === null) {
@@ -674,6 +682,7 @@ export async function startHostOidcSignIn(input: {
         ...(input.oauthQuery ? { oauthQuery: input.oauthQuery } : {}),
         providerId: input.providerId,
         returnPath: "/",
+        ...(input.trustedMembersAcknowledged ? { trustedMembersAcknowledged: true as const } : {}),
       }),
     ).redirectUrl,
   );

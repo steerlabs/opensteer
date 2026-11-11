@@ -20,6 +20,7 @@ import { WorkspaceOrb } from "./workspace-orb.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { TaskState } from "./workspace/task-mark.js";
 import { OtherProjects } from "./team/other-projects.js";
+import { TeamSetupChecklist } from "./team/team-setup.js";
 import { TeamMark, useShellTeam } from "./team/team-ui.js";
 
 /** Past this many, the directory offers to narrow itself by name. */
@@ -94,6 +95,8 @@ export function ProjectsPage() {
             </div>
           ) : null}
         </div>
+
+        {team ? <TeamSetupChecklist /> : null}
 
         {folders.length >= filterFrom ? (
           <label className="projects-page__filter">

@@ -41,6 +41,7 @@ import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { NeedsYouTag, UnreadDot } from "../threads/task-row.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { OtherProjects } from "../team/other-projects.js";
+import { TeamSetupChecklist } from "../team/team-setup.js";
 import { useCanCreateProject } from "../team/team-parts.js";
 
 export type ProjectsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
@@ -229,7 +230,11 @@ function ProjectDirectory(props: {
           ) : undefined
         }
         ListHeaderComponent={
-          loadError === null && failure === null ? undefined : (
+          loadError === null && failure === null ? (
+            team ? (
+              <TeamSetupChecklist deploymentId={deploymentId} hostClient={props.hostClient} />
+            ) : undefined
+          ) : (
             <Notice
               action={{
                 label: "Try again",

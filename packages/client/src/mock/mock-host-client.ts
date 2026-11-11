@@ -2100,13 +2100,15 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       ),
     "auth.native.complete": async (input) =>
       rpcSuccess({ url: await client.completeNativeAuthorization(input.oauthQuery, input.accept) }),
-    "auth.oidc.begin": async (input) =>
-      rpcSuccess({
+    "auth.oidc.begin": async (input) => {
+      client.requireTeamOwnerAcknowledgement(input);
+      return rpcSuccess({
         redirectUrl: await client.beginOidcSignIn(input.providerId, {
           ...(input.oauthQuery ? { oauthQuery: input.oauthQuery } : {}),
           ...(input.returnPath ? { returnPath: input.returnPath } : {}),
         }),
-      }),
+      });
+    },
     "auth.password.recover": async (input) => {
       await client.resetPasswordWithRecovery(input.token, input.newPassword);
       return rpcSuccess({});
@@ -2131,7 +2133,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "auth.setup.claim": async (_input) => {
+    "auth.setup.claim": async (input) => {
+      if (input.kind === "password") client.requireTeamOwnerAcknowledgement(input);
       await client.claimInitialOwner();
       return rpcSuccess(
         hostApi["auth.setup.claim"].success.parse({
@@ -6731,6 +6734,18 @@ class MockHostState {
       }),
     );
     if (teamPlace) this.snapshot = withTeamFacts(this.snapshot, this.team);
+    // A fresh team server waits for its owner; its first screen is the claim.
+    if (this.team.scenario === "fresh" && this.snapshot.identityConfig)
+      this.snapshot = {
+        ...this.snapshot,
+        identityConfig: {
+          ...this.snapshot.identityConfig,
+          exposure: "networked",
+          localPasswordEnabled: true,
+          setupState: "required",
+        },
+        session: "authentication-required",
+      };
     // What `requests.list` and `tasks.list` would answer for what is seeded above.
     this.snapshot = {
       ...this.snapshot,
@@ -8354,6 +8369,29 @@ class MockHostState {
 
   async claimInitialOwner(): Promise<void> {
     await this.load();
+    const config = this.snapshot.identityConfig;
+    if (config?.setupState === "required")
+      this.update({
+        ...this.snapshot,
+        identityConfig: { ...config, setupState: "complete" },
+        session: "authenticated",
+      });
+  }
+
+  /** A fresh team server's owner sets it up only having acknowledged who it is for. */
+  requireTeamOwnerAcknowledgement(input: {
+    readonly trustedMembersAcknowledged?: true | undefined;
+  }): void {
+    if (
+      this.team.available &&
+      this.snapshot.identityConfig?.setupState === "required" &&
+      input.trustedMembersAcknowledged !== true
+    )
+      throw new HostClientRequestError({
+        code: "invalid_request",
+        message: "Acknowledge who this team server is for before setting it up.",
+        status: 400,
+      });
   }
 
   async beginOidcSignIn(

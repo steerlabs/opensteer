@@ -122,6 +122,26 @@ describe("the shared team mock", () => {
     host.dispose();
   });
 
+  it("sets up a fresh team server only once its owner acknowledges who it is for", async () => {
+    const host = client("fresh");
+    expect(host.getSnapshot()).toMatchObject({
+      session: "authentication-required",
+      identityConfig: { setupState: "required" },
+    });
+    const claim = { email: "alex@acme.example", kind: "password", password: "correct horse 42" };
+    const refused = await host.rpc["auth.setup.claim"](claim as never).catch(
+      (error: unknown) => error,
+    );
+    expect(refused instanceof Error || (refused as { ok?: boolean }).ok === false).toBe(true);
+    expect(host.getSnapshot().identityConfig?.setupState).toBe("required");
+    await host.rpc["auth.setup.claim"]({ ...claim, trustedMembersAcknowledged: true } as never);
+    expect(host.getSnapshot()).toMatchObject({
+      session: "authenticated",
+      identityConfig: { setupState: "complete" },
+    });
+    host.dispose();
+  });
+
   it("refuses a stale revision once, then applies against the fresh one", async () => {
     const host = client("admin-stale");
     const team = new TeamAccess(host);

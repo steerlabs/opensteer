@@ -42,6 +42,7 @@ export function CredentialForm({
   onSubmit,
   pendingLabel,
   providers = true,
+  submitDisabled = false,
   submitLabel,
 }: {
   readonly busy: boolean;
@@ -62,6 +63,8 @@ export function CredentialForm({
   readonly pendingLabel: string;
   /** Off while a prior step of the same form is still unanswered. */
   readonly providers?: boolean;
+  /** Something the form holds besides credentials still has to be given. */
+  readonly submitDisabled?: boolean;
   readonly submitLabel: string;
 }) {
   const withCredentials = credentials ?? config.localPasswordEnabled;
@@ -120,7 +123,7 @@ export function CredentialForm({
               </div>
             </>
           ) : null}
-          <button className="btn btn--primary" disabled={busy} type="submit">
+          <button className="btn btn--primary" disabled={busy || submitDisabled} type="submit">
             {busy ? pendingLabel : submitLabel}
             <Icon name="arrow-right" />
           </button>

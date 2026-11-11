@@ -533,16 +533,19 @@ function Person(props: {
       can: person.can.setAdministrator,
       next: { kind: "set-administrator", value: !person.administrator },
     },
-    {
-      title: memberKindLabel(person.kind),
-      detail:
-        person.kind === "guest"
-          ? "Sees only the projects they’re added to."
-          : "In Everyone, so they get every project shared with Everyone.",
-      label: person.kind === "guest" ? "Make member" : "Make guest",
-      can: person.can.setKind,
-      next: { kind: "set-kind", value: person.kind === "guest" ? "full" : "guest" },
-    },
+    // The trusted-members pilot admits no guests: someone the Host still
+    // reports as one can only be made a member.
+    ...(person.kind === "guest"
+      ? [
+          {
+            title: memberKindLabel(person.kind),
+            detail: "Sees only the projects they’re added to.",
+            label: "Make member",
+            can: person.can.setKind,
+            next: { kind: "set-kind", value: "full" } as const,
+          },
+        ]
+      : []),
     ...(person.state === "active"
       ? [
           {

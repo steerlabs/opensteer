@@ -638,3 +638,41 @@
   color: var(--muted);
   font-size: var(--text-sm);
 }
+
+.team-setup {
+  margin-bottom: var(--space-24);
+}
+
+.team-setup__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: var(--space-14) var(--space-14) var(--space-4);
+}
+
+.team-setup__title {
+  margin: 0;
+  font-size: var(--text-root);
+  font-weight: 600;
+}
+
+.team-setup__count {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.team-setup__steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team-setup__done {
+  color: var(--muted);
+}
+
+.team-trust strong {
+  display: block;
+  margin-bottom: var(--space-4);
+  color: var(--text);
+}

@@ -677,20 +677,18 @@ export function TeamPersonPage() {
                 teamName={teamName}
                 title={person.administrator ? "Admin" : "Not an admin"}
               />
-              <RoleRow
-                can={person.can.setKind}
-                detail={
-                  person.kind === "guest"
-                    ? "Sees only the projects they’re added to."
-                    : "In Everyone, so they get every project shared with Everyone."
-                }
-                label={person.kind === "guest" ? "Make member" : "Make guest"}
-                onSelect={() =>
-                  setChange({ kind: "set-kind", value: person.kind === "guest" ? "full" : "guest" })
-                }
-                teamName={teamName}
-                title={memberKindLabel(person.kind)}
-              />
+              {/* The trusted-members pilot admits no guests: someone the Host
+                  still reports as one can only be made a member. */}
+              {person.kind === "guest" ? (
+                <RoleRow
+                  can={person.can.setKind}
+                  detail="Sees only the projects they’re added to."
+                  label="Make member"
+                  onSelect={() => setChange({ kind: "set-kind", value: "full" })}
+                  teamName={teamName}
+                  title={memberKindLabel(person.kind)}
+                />
+              ) : null}
               {person.state === "active" ? (
                 <RoleRow
                   can={person.can.setState}
