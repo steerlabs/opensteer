@@ -7,6 +7,9 @@ export const projectAuthorityCutoverMigrationName = "0178_project_authority_cuto
 
 export const projectAuthorityCutoverMigration: Migration = {
   async up(database) {
+    await sql`alter table public.auth_admissions add column trusted_members_acknowledged_at timestamptz`.execute(
+      database,
+    );
     await sql`
       alter table public.principals add column workspace_id text;
       alter table public.principals

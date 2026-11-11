@@ -102,6 +102,9 @@ export function createIdentityRpcHandlers(
       authSuccess(
         context,
         await identity.beginOidcSignIn({
+          ...(input.trustedMembersAcknowledged
+            ? { trustedMembersAcknowledged: input.trustedMembersAcknowledged }
+            : {}),
           headers: contextHeaders(context),
           ...(input.oauthQuery ? { oauthQuery: input.oauthQuery } : {}),
           providerId: input.providerId,
