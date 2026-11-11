@@ -8052,7 +8052,9 @@ const assignmentResultWaitsMigration: Migration = {
 const nodeStopMigration: Migration = {
   async up(database) {
     await sql`
-      alter table public.execution_nodes add column stop_supported boolean not null default false;
+      alter table public.execution_nodes
+        add column stop_supported boolean not null default false,
+        add column stopping boolean not null default false;
 
       create or replace function public.opensteer_enforce_command_execution_authority()
       returns trigger

@@ -1,4 +1,3 @@
-import { nodeViewsForOwner } from "./node-control.js";
 import { type RunId } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -1107,9 +1106,7 @@ export async function nodeEventPageForOwner(
       return {
         threadId: input.threadId,
         nodeId: input.nodeId,
-        node: (
-          await nodeViewsForOwner(transaction, [executionNodeFromRow(node)], input.ownerId)
-        )[0]!,
+        node: executionNodeFromRow(node),
         events,
         window: {
           byteCount: window.byteCount,

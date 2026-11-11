@@ -23,14 +23,12 @@ import {
 } from "./store-primitives.js";
 import {
   OpensteerError,
-  type AgentEventView,
   type ExecutionNodeId,
-  type ExecutionNode,
   type RunId,
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely, type Transaction } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import {
   assertThreadCaller,
@@ -62,78 +60,6 @@ export async function reachableNode(database: Database, nodeId: ExecutionNodeId,
     .where("membership.userId", "=", ownerId)
     .where("membership.state", "=", "active")
     .executeTakeFirst();
-}
-
-export async function nodeControlsForOwner(
-  database: Database,
-  nodeIds: readonly ExecutionNodeId[],
-  ownerId: UserId,
-) {
-  if (!nodeIds.length) return new Map<ExecutionNodeId, { canStop: boolean; stopping: boolean }>();
-  const rows = await database
-    .selectFrom("executionNodes as node")
-    .innerJoin("runs", "runs.id", "node.runId")
-    .innerJoin("runAttempts as attempt", "attempt.id", "node.attemptId")
-    .innerJoin("threads", "threads.id", "runs.threadId")
-    .innerJoin("workspaceMemberships as member", "member.workspaceId", "threads.workspaceId")
-    .select([
-      "node.id",
-      sql<boolean>`node.status = 'running' and node.stop_supported
-      and runs.status in ('running','waiting') and attempt.status = 'current' and attempt.ended_at is null
-      and attempt.binding_generation = runs.binding_generation
-      and (runs.requested_by = ${ownerId} or member.role = 'owner')
-      and exists (select 1 from grants g where g.run_id = runs.id and g.status = 'active')
-      and opensteer_user_can_execute_thread(threads.id, ${ownerId})`.as("canStop"),
-      sql<boolean>`node.status = 'running' and exists (select 1 from commands c
-        where c.type = 'node.stop' and c.run_id = node.run_id and c.payload->>'nodeId' = node.id
-          and c.status in ('pending','dispatched','succeeded'))`.as("stopping"),
-    ])
-    .where("node.id", "in", nodeIds)
-    .where("member.userId", "=", ownerId)
-    .where("member.state", "=", "active")
-    .execute();
-  return new Map(
-    rows.map(({ id, canStop, stopping }) => [id, { canStop: canStop && !stopping, stopping }]),
-  );
-}
-
-export async function nodeControlEventsForOwner<T extends AgentEventView>(
-  database: Database,
-  events: readonly T[],
-  ownerId: UserId,
-): Promise<T[]> {
-  const ids = events.flatMap((e) =>
-    e.type === "node.started" || e.type === "node.updated" ? [e.data.nodeId] : [],
-  );
-  if (!ids.length) return [...events];
-  const controls = await nodeControlsForOwner(database, ids, ownerId);
-  return events.map((event) =>
-    event.type === "node.started" || event.type === "node.updated"
-      ? {
-          ...event,
-          data: {
-            ...event.data,
-            ...(controls.get(event.data.nodeId) ?? { canStop: false, stopping: false }),
-          },
-        }
-      : event,
-  );
-}
-
-export async function nodeViewsForOwner(
-  database: Database,
-  nodes: readonly ExecutionNode[],
-  ownerId: UserId,
-) {
-  const controls = await nodeControlsForOwner(
-    database,
-    nodes.map((node) => node.id),
-    ownerId,
-  );
-  return nodes.map((node) => ({
-    ...node,
-    ...(controls.get(node.id) ?? { canStop: false, stopping: false }),
-  }));
 }
 
 export const NodeStopAuthoritySchema = z.object({
@@ -270,9 +196,14 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    await tx
+      .updateTable("executionNodes")
+      .set({ stopping: true })
+      .where("id", "=", node.id)
+      .execute();
     const event = await appendHostWorkspaceEvent(tx, {
       type: "node.updated",
-      data: { nodeId: node.id },
+      data: { nodeId: node.id, stopping: true },
       runId: run.id,
       threadId: run.threadId,
       workspaceId: node.workspaceId,
@@ -311,9 +242,14 @@ export async function failNodeStop(
       .where("runs.id", "=", command.runId)
       .executeTakeFirstOrThrow();
     await lockWorkspaceRow(tx, node.workspaceId);
+    await tx
+      .updateTable("executionNodes")
+      .set({ stopping: false })
+      .where("id", "=", node.id)
+      .execute();
     const event = await appendHostWorkspaceEvent(tx, {
       type: "node.updated",
-      data: { nodeId: node.id },
+      data: { nodeId: node.id, stopping: false },
       runId: command.runId,
       environmentId: node.environmentId,
       threadId: node.threadId,

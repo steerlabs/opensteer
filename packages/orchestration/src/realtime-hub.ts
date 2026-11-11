@@ -123,9 +123,6 @@ interface SubscriberOptions {
   readonly gapFillDelayMs: number;
   readonly gapFillTimeoutMs: number;
   readonly liveFrames: () => readonly LiveFrame[];
-  readonly nodeControls: (
-    events: readonly import("@opensteer/core").AgentEventView[],
-  ) => Promise<import("@opensteer/core").AgentEventView[]>;
   readonly maxBufferedBytes: number;
   readonly maxBufferedEvents: number;
   readonly maxLiveBytes: number;
@@ -205,14 +202,10 @@ class Subscriber {
         if (last) this.#handedThrough = last.sequence;
         if (visible) this.#visibleThrough = visible.sequence;
         if (events.length === 0) return Promise.resolve();
-        const projected = this.#options.toolOutputs ? events.map(previewToolOutput) : events;
-        return projected.some(
-          (event) => event.type === "node.started" || event.type === "node.updated",
-        )
-          ? this.#options
-              .nodeControls(projected)
-              .then((events) => this.sink.send({ type: "host.events", events }))
-          : this.sink.send({ ...message, events: projected });
+        return this.sink.send({
+          ...message,
+          events: this.#options.toolOutputs ? events.map(previewToolOutput) : events,
+        });
       }
       case "host.live": {
         const items = message.progress.items.filter(
@@ -730,10 +723,6 @@ export class RealtimeHub {
       gapFillDelayMs: this.#gapFillDelayMs,
       gapFillTimeoutMs: this.#gapFillTimeoutMs,
       liveFrames: () => this.#liveRuns?.workspaceFrames(input.workspaceId) ?? [],
-      nodeControls: (events) =>
-        events.some((event) => event.type === "node.started" || event.type === "node.updated")
-          ? this.#store.nodeControlEventsForOwner(events, input.userId)
-          : Promise.resolve([...events]),
       maxBufferedBytes: this.#maxBufferedBytes,
       maxBufferedEvents: this.#maxBufferedEvents,
       maxLiveBytes: this.#maxLiveBytes,

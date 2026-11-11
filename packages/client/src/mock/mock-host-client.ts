@@ -2457,7 +2457,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
               if (node.kind !== "node") throw new Error("Node expected.");
               return {
                 id: node.nodeId,
-                canStop: node.canStop ?? false,
+                stopSupported: node.stopSupported ?? false,
                 stopping: node.stopping ?? false,
                 attemptId,
                 kind: node.nodeKind,
@@ -11876,7 +11876,7 @@ class MockHostState {
   async stopNode(threadId: string, nodeId: string): Promise<void> {
     const entries = this.snapshot.transcripts[threadId] ?? [];
     const node = entries.find((entry) => entry.kind === "node" && entry.nodeId === nodeId);
-    if (node?.kind !== "node" || node.status !== "running" || !node.canStop || node.stopping)
+    if (node?.kind !== "node" || node.status !== "running" || !node.stopSupported || node.stopping)
       throw new Error("This subagent cannot be stopped.");
     const stoppingIds = new Set([nodeId]);
     if (node.nodeKind === "workflow") {
@@ -11889,7 +11889,7 @@ class MockHostState {
     }
     const stopping = entries.map((entry) =>
       entry.kind === "node" && stoppingIds.has(entry.nodeId) && entry.status === "running"
-        ? { ...entry, canStop: false, stopping: true }
+        ? { ...entry, stopping: true }
         : entry,
     );
     this.update({

@@ -286,14 +286,14 @@ it("offers Stop only from live Host eligibility and says Stopping until it ends"
     result: null,
   } as const;
   expect(nodeSubagentCard(base, "thread")?.stop).toBeNull();
-  expect(nodeSubagentCard({ ...base, canStop: true }, "thread")?.stop).toEqual({
+  expect(nodeSubagentCard({ ...base, stopSupported: true }, "thread")?.stop).toEqual({
     threadId: "thread",
     nodeId: "node-stop",
   });
-  const stopping = nodeSubagentCard({ ...base, canStop: true, stopping: true }, "thread")!;
+  const stopping = nodeSubagentCard({ ...base, stopSupported: true, stopping: true }, "thread")!;
   expect(stopping.stop).toBeNull();
   expect(stopping.word).toBe("Stopping");
   expect(
-    nodeSubagentCard({ ...base, canStop: true, status: "completed" }, "thread")?.stop,
+    nodeSubagentCard({ ...base, stopSupported: true, status: "completed" }, "thread")?.stop,
   ).toBeNull();
 });

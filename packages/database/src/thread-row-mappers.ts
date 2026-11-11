@@ -229,6 +229,7 @@ export function executionNodeFromRow(row: Selectable<ExecutionNodeTable>): Execu
   return {
     attemptId: row.attemptId,
     stopSupported: row.stopSupported,
+    stopping: row.stopping,
     effort: row.effort,
     phaseIndex: row.phaseIndex,
     phases: row.phases,

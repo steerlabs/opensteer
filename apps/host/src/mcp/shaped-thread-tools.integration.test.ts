@@ -1060,7 +1060,8 @@ describeStore("shaped agent Thread tools", (it) => {
       model: "child-model",
       prompt: "Find the parser",
       status: "running",
-      canStop: true,
+      stopSupported: true,
+      stopping: false,
     });
     expect(page.items.map((item) => item.text)).toEqual([null, null]);
     expect(JSON.stringify(page)).not.toContain("NEVER_RETURN");
@@ -1121,7 +1122,7 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     expect(result).toEqual({ subagentId: nodeId, status: "stopping" });
     expect(ThreadReadOutputSchema.parse(await read()).subagent).toMatchObject({
-      canStop: false,
+      stopSupported: true,
       stopping: true,
     });
     const node = await storeFixture.database

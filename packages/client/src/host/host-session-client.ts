@@ -3558,7 +3558,7 @@ export class HttpHostClient {
     if (
       node?.kind !== "node" ||
       !node.runId ||
-      !node.canStop ||
+      !node.stopSupported ||
       node.stopping ||
       node.status !== "running"
     )

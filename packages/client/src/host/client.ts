@@ -584,7 +584,8 @@ export interface DeliveryEntry {
  * A helper's card in the conversation. Its own work is read only through a node watch.
  */
 export interface NodeEntry {
-  canStop?: boolean;
+  /** Its engine can stop it without stopping the Run. */
+  stopSupported?: boolean;
   stopping?: boolean;
   sequence?: import("@opensteer/core").Sequence;
   completedAt: string | null;

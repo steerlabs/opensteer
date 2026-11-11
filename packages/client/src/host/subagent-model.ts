@@ -196,7 +196,7 @@ export function nodeSubagentCard(
                 previewLine("prompt", node.prompt?.split("\n")[0]));
   return {
     stop:
-      live && node.status === "running" && node.canStop && !node.stopping
+      live && node.status === "running" && node.stopSupported && !node.stopping
         ? { threadId, nodeId: node.nodeId }
         : null,
     key: `node:${node.nodeId}`,
@@ -493,7 +493,7 @@ export function transcriptNodes(entries: readonly TranscriptEntry[]): readonly N
 
 export function executionNodeEntry(node: ExecutionNodeView): NodeEntry {
   return {
-    canStop: node.canStop ?? false,
+    stopSupported: node.stopSupported ?? false,
     stopping: node.stopping ?? false,
     id: `node:${node.id}`,
     kind: "node",

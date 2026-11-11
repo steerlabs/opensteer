@@ -58,6 +58,11 @@ export async function updateExecutionNode(
   update: EventData<"node.updated">,
 ): Promise<void> {
   await requireRunNode(transaction, runId, update.nodeId);
+  if (update.stopping !== undefined)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Runner event cannot say a subagent is stopping",
+    });
   if (update.parentNodeId !== undefined) {
     await requireRunNode(transaction, runId, update.parentNodeId);
     const node = await transaction

@@ -80,7 +80,10 @@ function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | n
       const node = snapshot.transcripts[action.threadId]?.find(
         (entry) => entry.kind === "node" && entry.nodeId === action.nodeId,
       );
-      return node?.kind === "node" && node.status === "running" && node.canStop && !node.stopping
+      return node?.kind === "node" &&
+        node.status === "running" &&
+        node.stopSupported &&
+        !node.stopping
         ? JSON.stringify([viewer, action, node.runId])
         : null;
     }
