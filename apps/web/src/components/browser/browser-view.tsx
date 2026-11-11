@@ -831,7 +831,6 @@ export function PlaceBrowserView({
                 pageFollowsView={pageFollowsView}
                 phoneLayout={compact}
                 sessionId={sessionId}
-                targeted
                 visible={visible}
               />
               <AgentCursors

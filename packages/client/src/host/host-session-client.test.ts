@@ -27,7 +27,6 @@ import {
   HostToClientMessageSchema,
   HostedBrowserBootstrapSchema,
   HostedBrowserSessionSchema,
-  browserViewerCloseCodes,
   createBrowserSessionId,
   hostApi,
   placeIdentityKey,
@@ -63,7 +62,6 @@ import {
   realtimeIdleProbeMs,
   socketProbeDeadlineMs,
 } from "./lifecycle.js";
-import { healthySocketMs } from "./realtime-frames.js";
 import type {
   ClientLifecycle,
   ClientLifecycleSnapshot,
@@ -176,7 +174,7 @@ it("opts control viewers into basic input and exposes only the returned negotiat
 });
 
 describe("browser carrier and derivation", () => {
-  async function fixture() {
+  async function fixture(prefix = false) {
     const workspaces = [makeWorkspace(), makeWorkspace(), makeWorkspace()];
     const sessions = workspaces.slice(0, 2).map((workspace, index) => ({
       id: createBrowserSessionId(),
@@ -212,6 +210,7 @@ describe("browser carrier and derivation", () => {
       profileGrants: [],
       sessions,
     });
+    if (prefix) body.browser.tabs![0]!.complete = false;
     const sockets: FakeSocket[] = [];
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -254,6 +253,141 @@ describe("browser carrier and derivation", () => {
       socket.receiveRaw({ type: "host.browser-tabs", groupId: group.groupId, stream: message });
     return group;
   }
+  it.each(["control", "watch"] as const)(
+    "keeps %s viewer metadata on its held target, including a known prefix row",
+    async (mode) => {
+      const f = await fixture(true);
+      try {
+        const sessionId = f.sessions[0]!.id;
+        const [own, sibling] = f.body.browser.tabs![0]!.rows;
+        const retain =
+          mode === "control" ? f.client.retainBrowserViewer : f.client.retainBrowserWatch;
+        let release = retain(sessionId, own!.id);
+        const socket = f.sockets[3]!;
+        expect(socket, "known prefix target must open a viewer").toBeDefined();
+        socket.open();
+        socket.receiveRaw({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "read-write",
+          dialog: null,
+          targetedStreamingVersion: 1,
+          surfaces: [],
+        });
+        const surface = {
+          id: own!.id,
+          title: "Own title",
+          url: "https://example.test/private",
+          state: "live",
+          documentId: "document",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          sizedByAgent: false,
+          favicon: "data:image/png;base64,AA==",
+        };
+        socket.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface });
+        const session = () =>
+          f.client.getSnapshot().browserSessions.find((s) => s.id === sessionId)!;
+        expect(session().tabs.find((t) => t.id === own!.id)).toMatchObject({
+          title: surface.title,
+          url: surface.url,
+          favicon: surface.favicon,
+        });
+        expect(session().tabs.find((t) => t.id === sibling!.id)).toMatchObject({
+          url: "",
+          favicon: undefined,
+        });
+        socket.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface: null });
+        expect(session().tabs.find((t) => t.id === own!.id)).toMatchObject({
+          url: "",
+          favicon: undefined,
+        });
+        expect(session().state).toBe("ready");
+        socket.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface });
+        release();
+        expect(session().tabs.find((t) => t.id === own!.id)).toMatchObject({
+          url: "",
+          favicon: undefined,
+        });
+        socket.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface });
+        expect(session().tabs.find((t) => t.id === own!.id)?.url).toBe("");
+        release = retain(sessionId, own!.id);
+        const next = f.sockets[4]!;
+        next.open();
+        next.receiveRaw({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "read-write",
+          dialog: null,
+          targetedStreamingVersion: 1,
+          surfaces: [],
+        });
+        next.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface });
+        next.serverClose(4003, "Browser access ended");
+        expect(session().tabs.find((t) => t.id === own!.id)?.url).toBe("");
+        next.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface });
+        expect(session().tabs.find((t) => t.id === own!.id)?.url).toBe("");
+        expect(session().state).toBe("ready");
+        release();
+      } finally {
+        f.client.dispose();
+      }
+    },
+  );
+
+  it.each(["envelope", "record"] as const)(
+    "refuses mismatched %s viewer metadata",
+    async (mismatch) => {
+      const f = await fixture();
+      try {
+        const sessionId = f.sessions[0]!.id;
+        const [own, sibling] = f.body.browser.tabs![0]!.rows;
+        const release = f.client.retainBrowserViewer(sessionId, own!.id);
+        const socket = f.sockets[3]!;
+        socket.open();
+        socket.receiveRaw({
+          type: "browser.snapshot",
+          sessionId,
+          state: "ready",
+          access: "read-write",
+          dialog: null,
+          targetedStreamingVersion: 1,
+          surfaces: [],
+        });
+        socket.receiveRaw({
+          type: "browser.surface",
+          surfaceId: mismatch === "envelope" ? sibling!.id : own!.id,
+          surface: {
+            id: sibling!.id,
+            title: "Secret",
+            url: "https://sibling.test/private",
+            state: "live",
+            documentId: "document",
+            geometryRevision: 1,
+            loading: false,
+            navigationFailed: false,
+            sizedByAgent: false,
+            favicon: null,
+          },
+        });
+        expect(socket.readyState).toBe(3);
+        expect(
+          f.client
+            .getSnapshot()
+            .browserSessions.flatMap((s) => s.tabs)
+            .every((t) => t.url === ""),
+        ).toBe(true);
+        expect(f.client.browserViewerState(sessionId, own!.id).error).toMatch(/match/);
+        release();
+      } finally {
+        f.client.dispose();
+      }
+    },
+  );
+
   it("elects one of three Workspace sockets, hands over once, and drops old carrier frames", async () => {
     const f = await fixture();
     try {
@@ -7727,8 +7861,8 @@ describe("HttpHostClient hosted browser", () => {
 
     await client.startBrowser(workspace.id, { kind: "profile", profileId });
     expect(sockets.some(({ url }) => url.includes("/browser-sessions/"))).toBe(false);
-    const releaseViewer = client.retainBrowserViewer(sessionId);
-    const releaseSecondViewer = client.retainBrowserViewer(sessionId);
+    const releaseViewer = client.retainBrowserViewer(sessionId, "page-1");
+    const releaseSecondViewer = client.retainBrowserViewer(sessionId, "page-1");
     const browserSocket = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
     expect(browserSocket).toBeDefined();
     expect(browserSocket?.binaryType).toBe("arraybuffer");
@@ -7751,29 +7885,39 @@ describe("HttpHostClient hosted browser", () => {
           url: "https://example.com/",
         },
       ],
+      targetedStreamingVersion: 1,
+      basicInput: 1,
       type: "browser.snapshot",
+    });
+    browserSocket!.receiveRaw({
+      type: "browser.surface",
+      surfaceId: "page-1",
+      surface: {
+        id: "page-1",
+        title: "Example",
+        url: "https://example.com/",
+        state: "live",
+        documentId: "document-page-1",
+        geometryRevision: 1,
+        loading: false,
+        navigationFailed: false,
+        sizedByAgent: false,
+        favicon: null,
+      },
     });
     const target = client.browserFrames.editing!.target(sessionId, "page-1");
     await target.send({ kind: "command", command: "selectAll" });
-    expect(parseSent(browserSocket!, browserSocket!.sent.length - 2)).toMatchObject({
-      type: "input.key",
-      action: "down",
-      key: "a",
-      modifiers: ["meta"],
-    });
-    const copy = target.send({ kind: "copy" });
-    browserSocket!.receiveRaw({
-      type: "clipboard.data",
+    expect(parseSent(browserSocket!, browserSocket!.sent.length - 1)).toMatchObject({
+      type: "input.command",
+      command: "selectAll",
       surfaceId: "page-1",
-      text: "personal copy",
     });
-    expect(await copy).toMatchObject({ outcome: "copied" });
     const snapshotBeforeFrame = client.getSnapshot();
     const snapshotListener = vi.fn();
     const frameListener = vi.fn();
     const unsubscribeSnapshot = client.subscribe(snapshotListener);
-    const unsubscribeFrame = client.browserFrames.subscribe(sessionId, frameListener);
-    browserSocket?.receiveBinary(browserFrame(9));
+    const unsubscribeFrame = client.browserFrames.subscribe(sessionId, frameListener, "page-1");
+    browserSocket?.receiveBinary(browserFrame(9, true));
 
     expect(client.getSnapshot()).toBe(snapshotBeforeFrame);
     expect(snapshotListener).not.toHaveBeenCalled();
@@ -7781,16 +7925,23 @@ describe("HttpHostClient hosted browser", () => {
     expect(client.getSnapshot().browserSessions[0]).toMatchObject({
       id: sessionId,
       state: "ready",
-      tabs: [{ active: true, title: "Example", url: "https://example.com/" }],
-      viewerState: "synchronized",
+      tabs: [{ title: "Example", url: "https://example.com/" }],
+      viewerState: "disconnected",
     });
-    expect(client.browserFrames.get(sessionId)?.header.frameId).toBe(9);
+    expect(client.browserFrames.get(sessionId, "page-1")?.header.frameId).toBe(9);
 
-    client.sendBrowserCommand(sessionId, { type: "navigation.reload" });
+    client.sendBrowserCommand(sessionId, {
+      type: "navigation.reload",
+      surfaceId: BrowserSurfaceIdSchema.parse("page-1"),
+    });
     expect(JSON.parse(browserSocket?.sent.at(-1) ?? "{}")).toEqual({
       type: "navigation.reload",
+      surfaceId: "page-1",
+      inputGeneration: 0,
+      inputSequence: expect.any(Number),
     });
     client.sendBrowserCommand(sessionId, {
+      surfaceId: BrowserSurfaceIdSchema.parse("page-1"),
       accept: true,
       dialogId: "00000000-0000-4000-8000-0000000000d1",
       type: "dialog.respond",
@@ -7800,6 +7951,7 @@ describe("HttpHostClient hosted browser", () => {
     });
     browserSocket?.receiveRaw({
       dialog: null,
+      surfaceId: "page-1",
       type: "browser.dialog.changed",
     });
     expect(client.getSnapshot().browserSessions[0]?.dialog).toBeNull();
@@ -7821,331 +7973,16 @@ describe("HttpHostClient hosted browser", () => {
     );
     expect(client.getSnapshot().browserSessions[0]).toMatchObject({
       state: "ready",
-      viewerState: "connecting",
+      viewerState: "disconnected",
     });
     releaseSecondViewer();
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
     expect(sockets.filter(({ url }) => url.includes("/browser-sessions/"))).toHaveLength(1);
     client.dispose();
-    expect(client.browserFrames.get(sessionId)).toBeNull();
-    expect(frameListener).toHaveBeenCalledTimes(2);
+    expect(client.browserFrames.get(sessionId, "page-1")).toBeNull();
     unsubscribeFrame();
     unsubscribeSnapshot();
   });
-
-  it("backs off until a viewer is synchronized and resets only after its snapshot", async () => {
-    vi.useFakeTimers();
-    const workspace = makeWorkspace();
-    const profileId = createId("browserProfile");
-    const sessionId = createBrowserSessionId();
-    const sockets: Array<{ socket: FakeSocket; url: string }> = [];
-    const client = createHttpHostClient({
-      fetch: async () =>
-        json(
-          bootstrap([workspace], {
-            available: true,
-            placements: [
-              {
-                available: true,
-                environmentIds: [],
-                kind: "runner",
-                label: "Main Host",
-                runnerId: runnerId,
-                runtimeId: "runtime-1",
-              },
-            ],
-            profileGrants: [],
-            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
-            sessions: [
-              {
-                access: "read-write",
-                createdAt: now,
-                id: sessionId,
-                origin: "workspace",
-                placement: { kind: "runner", runnerId: runnerId },
-                profileId,
-                runtimeId: "runtime-1",
-                state: "ready",
-                updatedAt: now,
-                workspaceId: workspace.id,
-              },
-            ],
-          }),
-        ),
-      random: () => 0,
-      reconnectBaseDelayMs: 10,
-      reconnectMaxDelayMs: 40,
-      refreshIntervalMs: 0,
-      webSocketFactory: (url) => {
-        const socket = new FakeSocket();
-        sockets.push({ socket, url });
-        return socket;
-      },
-    });
-    const browserSockets = () =>
-      sockets.filter(({ url }) => url.includes("/browser-sessions/")).map(({ socket }) => socket);
-    await client.load();
-    const release = client.retainBrowserViewer(sessionId);
-
-    browserSockets()[0]?.open();
-    browserSockets()[0]?.serverClose();
-    await vi.advanceTimersByTimeAsync(8);
-    expect(browserSockets()).toHaveLength(2);
-    browserSockets()[1]?.open();
-    browserSockets()[1]?.serverClose();
-    await vi.advanceTimersByTimeAsync(15);
-    expect(browserSockets()).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(browserSockets()).toHaveLength(3);
-
-    browserSockets()[2]?.open();
-    browserSockets()[2]?.receiveRaw({
-      access: "read-write",
-      dialog: null,
-      sessionId,
-      state: "ready",
-      surfaces: [
-        {
-          active: true,
-          id: "page-1",
-          title: "Example",
-          url: "https://example.com/",
-        },
-      ],
-      type: "browser.snapshot",
-    });
-    browserSockets()[2]?.serverClose();
-    await vi.advanceTimersByTimeAsync(8);
-    expect(browserSockets()).toHaveLength(4);
-    release();
-    client.dispose();
-  });
-
-  async function viewerClient(surfaceId?: string, mode: "control" | "watch" = "control") {
-    vi.useFakeTimers();
-    const workspace = makeWorkspace();
-    const profileId = createId("browserProfile");
-    const sessionId = createBrowserSessionId();
-    const sockets: Array<{ socket: FakeSocket; url: string }> = [];
-    const client = createHttpHostClient({
-      fetch: async () =>
-        json(
-          bootstrap([workspace], {
-            available: true,
-            placements: [
-              {
-                available: true,
-                environmentIds: [],
-                kind: "runner",
-                label: "Main Host",
-                runnerId: runnerId,
-                runtimeId: "runtime-1",
-              },
-            ],
-            profileGrants: [],
-            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
-            sessions: [
-              {
-                access: "read-write",
-                createdAt: now,
-                id: sessionId,
-                origin: "workspace",
-                placement: { kind: "runner", runnerId: runnerId },
-                profileId,
-                runtimeId: "runtime-1",
-                state: "ready",
-                ...(surfaceId
-                  ? {
-                      tabCatalog: {
-                        generation: 1,
-                        revision: 1,
-                        tabs: [
-                          {
-                            availability: "ready" as const,
-                            documentId: null,
-                            iconRef: null,
-                            id: BrowserSurfaceIdSchema.parse(surfaceId),
-                            occupants: [],
-                            openerId: null,
-                            order: 0,
-                            site: "https://example.com",
-                            title: "Page",
-                          },
-                        ],
-                      },
-                    }
-                  : {}),
-                updatedAt: now,
-                workspaceId: workspace.id,
-              },
-            ],
-          }),
-        ),
-      random: () => 1,
-      reconnectBaseDelayMs: 10,
-      refreshIntervalMs: 0,
-      webSocketFactory: (url) => {
-        const socket = new FakeSocket();
-        sockets.push({ socket, url });
-        return socket;
-      },
-    });
-    await client.load();
-    const release =
-      mode === "watch"
-        ? client.retainBrowserWatch(sessionId, surfaceId)
-        : client.retainBrowserViewer(sessionId, surfaceId);
-    const viewers = () =>
-      sockets.filter(({ url }) => url.includes("/browser-sessions/")).map(({ socket }) => socket);
-    const snapshot = {
-      type: "browser.snapshot",
-      sessionId,
-      state: "ready",
-      access: "read-write",
-      targetedStreamingVersion: 1,
-      dialog: null,
-      surfaces: [{ id: "page-1", active: true, title: "Page", url: "https://example.com" }],
-    };
-    /** The socket that opens exactly `delayMs` from now, already opened. */
-    const viewerAfter = async (delayMs: number) => {
-      const opened = viewers().length;
-      await vi.advanceTimersByTimeAsync(delayMs - 1);
-      expect(viewers()).toHaveLength(opened);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(viewers()).toHaveLength(opened + 1);
-      const socket = viewers().at(-1)!;
-      socket.open();
-      return socket;
-    };
-    return { client, release, snapshot, viewerAfter, viewers };
-  }
-
-  it("refuses an event before the authoritative snapshot, then reconnects for one", async () => {
-    const f = await viewerClient();
-    try {
-      const socket = f.viewers()[0]!;
-      socket.open();
-      socket.receiveBinary(browserFrame(1));
-      expect(socket.closeEvents).toEqual([
-        { code: 4002, reason: "Invalid browser protocol frame" },
-      ]);
-      expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
-        viewerError: null,
-        viewerState: "connecting",
-      });
-      const next = await f.viewerAfter(10);
-      next.receiveRaw(f.snapshot);
-      expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
-        state: "ready",
-        viewerError: null,
-        viewerState: "synchronized",
-      });
-    } finally {
-      f.release();
-      f.client.dispose();
-    }
-  });
-
-  it("backs off a viewer whose frames fail right after every snapshot, until one is read", async () => {
-    const f = await viewerClient();
-    try {
-      const unreadable = { type: "browser.surfaces.changed", surfaces: "unreadable" };
-      let socket = f.viewers()[0]!;
-      socket.open();
-      for (const delay of [10, 20, 40, 80]) {
-        socket.receiveRaw(f.snapshot);
-        socket.receiveRaw(unreadable);
-        socket = await f.viewerAfter(delay);
-      }
-      socket.receiveRaw(f.snapshot);
-      socket.receiveRaw(unreadable);
-      expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
-        viewerError: "The browser viewer protocol failed.",
-        viewerState: "disconnected",
-      });
-      socket = await f.viewerAfter(160);
-      socket.receiveRaw(f.snapshot);
-      socket.receiveBinary(browserFrame(1));
-      socket.receiveRaw(unreadable);
-      socket = await f.viewerAfter(320);
-      socket.receiveRaw(f.snapshot);
-      await vi.advanceTimersByTimeAsync(healthySocketMs);
-      socket.receiveBinary(browserFrame(2));
-      socket.receiveRaw(unreadable);
-      await f.viewerAfter(10);
-    } finally {
-      f.release();
-      f.client.dispose();
-    }
-  });
-
-  it("ignores a frame that arrives after it gave up on the socket", async () => {
-    const f = await viewerClient();
-    try {
-      const socket = f.viewers()[0]!;
-      socket.open();
-      socket.receiveRaw(f.snapshot);
-      await vi.advanceTimersByTimeAsync(healthySocketMs);
-      vi.spyOn(socket, "close").mockImplementation(() => {
-        socket.readyState = 2;
-      });
-      socket.receiveRaw({ type: "browser.surfaces.changed", surfaces: "unreadable" });
-      socket.receiveBinary(browserFrame(1));
-      vi.mocked(socket.close).mockRestore();
-      socket.serverClose(1006, "Abnormal closure");
-      const next = await f.viewerAfter(10);
-      next.receiveRaw(f.snapshot);
-      next.receiveRaw({ type: "browser.surfaces.changed", surfaces: "unreadable" });
-      await f.viewerAfter(20);
-    } finally {
-      f.release();
-      f.client.dispose();
-    }
-  });
-
-  it.each([
-    [browserViewerCloseCodes.accessEnded, "Browser access ended"],
-    [browserViewerCloseCodes.protocolViolation, "Invalid browser command"],
-  ])(
-    "still stops a viewer the Host closes with %i, which is the Host's to decide",
-    async (code, reason) => {
-      const f = await viewerClient();
-      try {
-        const socket = f.viewers()[0]!;
-        socket.open();
-        socket.receiveRaw(f.snapshot);
-        socket.serverClose(code, reason);
-        await vi.advanceTimersByTimeAsync(1_000);
-        expect(f.viewers()).toHaveLength(1);
-        expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
-          viewerError: reason,
-          viewerState: "disconnected",
-        });
-      } finally {
-        f.release();
-        f.client.dispose();
-      }
-    },
-  );
-
-  it.each(["control", "watch"] as const)(
-    "backs a targeted %s viewer off past each snapshot",
-    async (mode) => {
-      const f = await viewerClient("page-1", mode);
-      try {
-        let socket = f.viewers()[0]!;
-        socket.open();
-        for (const delay of [10, 20, 40]) {
-          socket.receiveRaw(f.snapshot);
-          socket.receiveRaw({ type: "browser.surfaces.changed", surfaces: "unreadable" });
-          socket = await f.viewerAfter(delay);
-        }
-      } finally {
-        f.release();
-        f.client.dispose();
-      }
-    },
-  );
 
   it("closes viewer transport when the durable Host session becomes terminal", async () => {
     const workspace = makeWorkspace();
@@ -8180,6 +8017,23 @@ describe("HttpHostClient hosted browser", () => {
                 placement: { kind: "runner", runnerId: runnerId },
                 profileId,
                 runtimeId: "runtime-1",
+                tabCatalog: {
+                  generation: 1,
+                  revision: 1,
+                  tabs: [
+                    {
+                      id: BrowserSurfaceIdSchema.parse("page-1"),
+                      title: "Example",
+                      site: "https://example.com",
+                      iconRef: null,
+                      order: 0,
+                      openerId: null,
+                      availability: "ready",
+                      documentId: "document",
+                      occupants: [],
+                    },
+                  ],
+                },
                 state: bootstrapReads === 1 ? "ready" : "failed",
                 updatedAt: bootstrapReads === 1 ? now : "2026-08-09T20:00:01.000Z",
                 workspaceId: workspace.id,
@@ -8196,7 +8050,7 @@ describe("HttpHostClient hosted browser", () => {
       },
     });
     await client.load();
-    const release = client.retainBrowserViewer(sessionId);
+    const release = client.retainBrowserViewer(sessionId, "page-1");
     const socket = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
     socket?.open();
     socket?.receiveRaw({
@@ -8217,11 +8071,11 @@ describe("HttpHostClient hosted browser", () => {
           url: "https://example.com/",
         },
       ],
+      targetedStreamingVersion: 1,
+      basicInput: 1,
       type: "browser.snapshot",
     });
-    expect(client.getSnapshot().browserSessions[0]).toMatchObject({
-      viewerState: "synchronized",
-    });
+    expect(client.browserViewerState(sessionId, "page-1")).toMatchObject({ admitted: true });
 
     await client.refresh();
     const realtime = sockets.find(({ url }) => url.includes("/v1/realtime"))!.socket;
@@ -8235,7 +8089,7 @@ describe("HttpHostClient hosted browser", () => {
         },
       ],
     });
-    expect(socket?.closeEvents).toContainEqual({ code: 1000, reason: "Client closed" });
+    expect(socket?.closeEvents).toContainEqual({ code: 1000, reason: "Target released" });
     expect(client.getSnapshot().browserSessions[0]).toMatchObject({
       dialog: null,
       state: "failed",
@@ -10359,7 +10213,7 @@ describe("HttpHostClient command projection", () => {
     });
     await client.load();
     await client.startBrowser(workspace.id, { kind: "profile", profileId });
-    const release = client.retainBrowserViewer(sessionId);
+    const release = client.retainBrowserViewer(sessionId, "page-1");
     const viewer = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
     expect(viewer).toBeDefined();
     viewer?.open();
@@ -10369,17 +10223,18 @@ describe("HttpHostClient command projection", () => {
       sessionId,
       state: "ready",
       surfaces: [{ active: true, id: "page-1", title: "Example", url: "https://example.com/" }],
+      targetedStreamingVersion: 1,
       type: "browser.snapshot",
     });
-    viewer?.receiveBinary(browserFrame(1));
-    expect(client.browserFrames.get(sessionId)).not.toBeNull();
+    viewer?.receiveBinary(browserFrame(1, true));
+    expect(client.browserFrames.get(sessionId, "page-1")).not.toBeNull();
 
     // Re-opening the same session must keep the viewer state only the client
     // holds; the Host record says nothing about tabs or socket health.
     await client.startBrowser(workspace.id, { kind: "profile", profileId });
     expect(client.getSnapshot().browserSessions[0]).toMatchObject({
       tabs: [expect.objectContaining({ title: "Example" })],
-      viewerState: "synchronized",
+      viewerState: "disconnected",
     });
 
     await client.dispatch({
@@ -10388,8 +10243,8 @@ describe("HttpHostClient command projection", () => {
       type: "browser.session.close",
     });
 
-    expect(viewer?.closeEvents).toEqual([{ code: 1000, reason: "Client closed" }]);
-    expect(client.browserFrames.get(sessionId)).toBeNull();
+    expect(viewer?.closeEvents).toEqual([{ code: 1000, reason: "Target released" }]);
+    expect(client.browserFrames.get(sessionId, "page-1")).toBeNull();
     expect(client.getSnapshot().browserSessions[0]?.state).toBe("closed");
     release();
     client.dispose();
@@ -11072,77 +10927,6 @@ describe("HttpHostClient lifecycle", () => {
       type: "client.subscribe",
       workspaceId: workspace.id,
     });
-    client.dispose();
-  });
-
-  it("keeps a briefly hidden browser viewer and replaces a long-hidden one", async () => {
-    vi.useFakeTimers();
-    const workspace = makeWorkspace();
-    const profileId = createId("browserProfile");
-    const sessionId = createBrowserSessionId();
-    const platform = fakeLifecycle();
-    const sockets: Array<{ socket: FakeSocket; url: string }> = [];
-    const client = createHttpHostClient({
-      fetch: async () =>
-        json(
-          bootstrap([workspace], {
-            available: true,
-            placements: [
-              {
-                available: true,
-                environmentIds: [],
-                kind: "runner",
-                label: "Main Host",
-                runnerId,
-                runtimeId: "runtime-1",
-              },
-            ],
-            profileGrants: [],
-            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
-            sessions: [
-              {
-                access: "read-write",
-                createdAt: now,
-                id: sessionId,
-                origin: "workspace",
-                placement: { kind: "runner", runnerId },
-                profileId,
-                runtimeId: "runtime-1",
-                state: "ready",
-                updatedAt: now,
-                workspaceId: workspace.id,
-              },
-            ],
-          }),
-        ),
-      lifecycle: platform.lifecycle,
-      refreshIntervalMs: 0,
-      webSocketFactory: (url) => {
-        const socket = new FakeSocket();
-        sockets.push({ socket, url });
-        return socket;
-      },
-    });
-    const browserSockets = () =>
-      sockets.filter(({ url }) => url.includes("/browser-sessions/")).map(({ socket }) => socket);
-    await client.load();
-    const release = client.retainBrowserViewer(sessionId);
-    browserSockets()[0]?.open();
-
-    platform.enterBackground();
-    await vi.advanceTimersByTimeAsync(5_000);
-    platform.enterForeground();
-    // The viewer protocol carries no probe, so a socket inside the trust
-    // window is kept rather than guessed at.
-    expect(browserSockets()).toHaveLength(1);
-    expect(browserSockets()[0]?.sent).toEqual([]);
-
-    platform.enterBackground();
-    await vi.advanceTimersByTimeAsync(10_000);
-    platform.enterForeground();
-    expect(browserSockets()[0]?.closeEvents).toEqual([{ code: 1000, reason: "Client closed" }]);
-    expect(browserSockets()).toHaveLength(2);
-    release();
     client.dispose();
   });
 

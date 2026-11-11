@@ -4040,23 +4040,10 @@ export class MockHostClient implements HostClient {
         const snapshot = this.#state.getSnapshot();
         return JSON.stringify([snapshot.deploymentId, snapshot.user?.id, snapshot.session]);
       },
-      accept: (sessionId, surfaceId, token) =>
-        this.#places.accept(
-          sessionId,
-          surfaceId ?? this.#places.activeSurface(sessionId) ?? "",
-          token,
-        ),
-      get: (sessionId, surfaceId) =>
-        this.#places.watchFrame(
-          sessionId,
-          surfaceId ?? this.#places.activeSurface(sessionId) ?? "",
-        ),
+      accept: (sessionId, surfaceId, token) => this.#places.accept(sessionId, surfaceId, token),
+      get: (sessionId, surfaceId) => this.#places.watchFrame(sessionId, surfaceId),
       subscribe: (sessionId, listener, surfaceId) =>
-        this.#places.subscribeWatch(
-          sessionId,
-          surfaceId ?? this.#places.activeSurface(sessionId) ?? "",
-          listener,
-        ),
+        this.#places.subscribeWatch(sessionId, surfaceId, listener),
     };
     this.browserFrames = {
       ...frames,
@@ -4333,8 +4320,8 @@ export class MockHostClient implements HostClient {
       ),
     });
   }
-  readonly retainBrowserViewer = (sessionId: string, surfaceId?: string): (() => void) =>
-    this.#places.retain(sessionId, surfaceId ?? this.#places.activeSurface(sessionId) ?? "");
+  readonly retainBrowserViewer = (sessionId: string, surfaceId: string): (() => void) =>
+    this.#places.retain(sessionId, surfaceId);
   readonly placeActivity = (placeKey: string) => this.#places.activity.get(placeKey);
   readonly subscribePlaceActivity = (placeKey: string, listener: () => void) =>
     this.#places.subscribeActivity(placeKey, listener);
@@ -4502,8 +4489,8 @@ export class MockHostClient implements HostClient {
     this.#places.subscribeWatch(sessionId, surfaceId, listener);
   readonly readBrowserTabIcon = (sessionId: string, iconRef: string) =>
     this.#places.icon(sessionId, iconRef);
-  readonly retainBrowserWatch = (sessionId: string, surfaceId?: string): (() => void) =>
-    this.#places.retain(sessionId, surfaceId ?? this.#places.activeSurface(sessionId) ?? "");
+  readonly retainBrowserWatch = (sessionId: string, surfaceId: string): (() => void) =>
+    this.#places.retain(sessionId, surfaceId);
   readonly subscribeLifecycle = (
     listener: (event: "background" | "foreground" | "network") => void,
   ): (() => void) => {
@@ -4548,13 +4535,8 @@ export class MockHostClient implements HostClient {
     return socket;
   }
 
-  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId?: string): void {
-    if (surfaceId) {
-      this.#places.accept(sessionId, surfaceId, token);
-      return;
-    }
-    const active = this.#places.activeSurface(sessionId);
-    if (active) this.#places.accept(sessionId, active, token);
+  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId: string): void {
+    this.#places.accept(sessionId, surfaceId, token);
   }
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#places.start();
