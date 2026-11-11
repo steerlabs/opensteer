@@ -252,15 +252,13 @@ describeStore("Project durable controls", (it) => {
     await expect(
       afterRestart.recordResult(peer, { ...uncertainReceipt, result: { status: "accepted" } }),
     ).rejects.toMatchObject({ code: "conflict" });
-    await database
-      .transaction()
-      .execute((tx) =>
-        store.enqueue(tx, {
-          binding,
-          idempotencyKey: "old-boot-control",
-          control: { kind: "run.interrupt" },
-        }),
-      );
+    await database.transaction().execute((tx) =>
+      store.enqueue(tx, {
+        binding,
+        idempotencyKey: "old-boot-control",
+        control: { kind: "run.interrupt" },
+      }),
+    );
     const oldBootRow = await database
       .selectFrom("commands")
       .select("id")

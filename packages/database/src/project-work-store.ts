@@ -1,3 +1,10 @@
+import {
+  reserveProjectWorkStop,
+  finalizeProjectRunTransaction,
+  finishTerminalProjectRunTransaction,
+} from "./run-finalization.js";
+import { readProjectThreadHistory, type ThreadHistoryQuery } from "./thread-history.js";
+import { boundedSerializedPrefix } from "./message-window.js";
 import { ProjectExecutionStore } from "./project-execution-store.js";
 import { HarnessInputSchema } from "@opensteer/protocol";
 import {
@@ -62,6 +69,9 @@ import {
   principalIdForUser,
   requireBoundedIdentity,
   lockCommandIdempotency,
+  encodeWindowCursor,
+  decodeWindowCursor,
+  escapeLikePattern,
 } from "./store-primitives.js";
 import {
   threadInputFromRow,
@@ -72,7 +82,10 @@ import {
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
 } from "./thread-row-mappers.js";
-import { projectAssignmentEventsInTransaction } from "./assignment-store.js";
+import {
+  projectAssignmentEventsInTransaction,
+  assignmentSummaryInTransaction,
+} from "./assignment-store.js";
 import { assertThreadInputCapacity } from "./thread-inbox.js";
 import { projectThreadState } from "./thread-status.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
@@ -529,6 +542,345 @@ export class ProjectWorkStore {
   constructor(database: Kysely<DatabaseSchema>, dependencies: ProjectWorkStore["dependencies"]) {
     this.database = database;
     this.dependencies = dependencies;
+  }
+
+  async projectThread(binding: ProjectRunBinding, threadId: ThreadId) {
+    await assertActiveProjectBinding(this.database, binding, this.dependencies);
+    const row = await this.database
+      .selectFrom("threads")
+      .selectAll()
+      .select([
+        threadPendingRequestsSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .where("id", "=", ThreadIdSchema.parse(threadId))
+      .where("workspaceId", "=", binding.workspaceId)
+      .executeTakeFirst();
+    if (!row)
+      throw new OpensteerError({ code: "forbidden", message: "Thread is outside this Project" });
+    return threadFromRow(row);
+  }
+
+  async projectHistory(binding: ProjectRunBinding, input: Omit<ThreadHistoryQuery, "ownerId">) {
+    await assertActiveProjectBinding(this.database, binding, this.dependencies);
+    return readProjectThreadHistory(
+      this.database,
+      { ...input, binding },
+      this.dependencies.runnerIsAttached,
+    );
+  }
+
+  async projectThreads(
+    binding: ProjectRunBinding,
+    input: {
+      readonly limit: number;
+      readonly before?: string;
+      readonly query?: string;
+      readonly parentThreadId?: ThreadId;
+    },
+  ) {
+    await assertActiveProjectBinding(this.database, binding, this.dependencies);
+    z.number().int().min(1).max(50).parse(input.limit);
+    if (input.parentThreadId) await this.projectThread(binding, input.parentThreadId);
+    const scopeId = canonicalJson([
+      binding.authority.principal,
+      binding.runId,
+      binding.bindingGeneration,
+    ]);
+    const anchor = input.before ? decodeWindowCursor(input.before, "agent-thread", scopeId) : null;
+    let query = this.database
+      .selectFrom("threads")
+      .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
+      .where("threads.workspaceId", "=", binding.workspaceId);
+    if (input.parentThreadId)
+      query = query.where((eb) =>
+        eb.or([
+          eb("threads.parentThreadId", "=", input.parentThreadId ?? null),
+          eb.exists(
+            eb
+              .selectFrom("delegations")
+              .select("id")
+              .whereRef("delegations.childThreadId", "=", "threads.id")
+              .where("delegations.parentThreadId", "=", input.parentThreadId ?? binding.threadId),
+          ),
+        ]),
+      );
+    if (input.query)
+      query = query.where(
+        sql<boolean>`threads.title ilike ${`%${escapeLikePattern(input.query)}%`} escape '\\'`,
+      );
+    if (anchor)
+      query = query.where((eb) =>
+        eb.or([
+          eb("threads.updatedAt", "<", anchor.timestamp),
+          eb.and([
+            eb("threads.updatedAt", "=", anchor.timestamp),
+            eb("threads.id", "<", ThreadIdSchema.parse(anchor.id)),
+          ]),
+        ]),
+      );
+    const rows = await query
+      .selectAll("threads")
+      .select([
+        "workspaces.name as workspaceName",
+        threadPendingRequestsSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .select((eb) => [
+        eb
+          .selectFrom("delegations")
+          .select("id")
+          .whereRef("childThreadId", "=", "threads.id")
+          .orderBy("createdAt", "desc")
+          .orderBy("id", "desc")
+          .limit(1)
+          .as("assignmentId"),
+        eb
+          .selectFrom("delegations")
+          .select("status")
+          .whereRef("childThreadId", "=", "threads.id")
+          .orderBy("createdAt", "desc")
+          .orderBy("id", "desc")
+          .limit(1)
+          .as("taskStatus"),
+      ])
+      .orderBy("threads.updatedAt", "desc")
+      .orderBy("threads.id", "desc")
+      .limit(input.limit + 1)
+      .execute();
+    const window = boundedSerializedPrefix(
+      rows.slice(0, input.limit).map((row) => ({
+        ...threadFromRow(row),
+        assignmentId: row.assignmentId,
+        taskStatus: row.taskStatus,
+        workspaceName: row.workspaceName,
+      })),
+      input.limit,
+      128 * 1024,
+    );
+    const last = window.items.at(-1);
+    return {
+      threads: window.items,
+      hasMore: rows.length > window.items.length,
+      nextBefore:
+        rows.length > window.items.length && last
+          ? encodeWindowCursor("agent-thread", scopeId, last.updatedAt, last.id)
+          : null,
+    };
+  }
+
+  async projectTask(binding: ProjectRunBinding, assignmentId: AssignmentId) {
+    await assertActiveProjectBinding(this.database, binding, this.dependencies);
+    const row = await this.database
+      .selectFrom("delegations")
+      .innerJoin("threads", "threads.id", "delegations.childThreadId")
+      .innerJoin("threads as parent", "parent.id", "delegations.parentThreadId")
+      .selectAll("delegations")
+      .where("delegations.id", "=", AssignmentIdSchema.parse(assignmentId))
+      .where("threads.workspaceId", "=", binding.workspaceId)
+      .where("parent.workspaceId", "=", binding.workspaceId)
+      .executeTakeFirst();
+    if (!row)
+      throw new OpensteerError({ code: "forbidden", message: "Task is outside this Project" });
+    return {
+      summary: await assignmentSummaryInTransaction(this.database, row),
+      result: row.resultText,
+      row,
+    };
+  }
+
+  async cancelProjectTask(bindingInput: ProjectRunBinding, assignmentIdInput: AssignmentId) {
+    const binding = ProjectRunBindingSchema.parse(bindingInput);
+    const assignmentId = AssignmentIdSchema.parse(assignmentIdInput);
+    await assertActiveProjectBinding(this.database, binding, this.dependencies);
+    return withDatabaseTransaction(
+      this.database,
+      async (transaction) => {
+        const task = await transaction
+          .selectFrom("delegations")
+          .innerJoin("threads", "threads.id", "delegations.childThreadId")
+          .selectAll("delegations")
+          .where("delegations.id", "=", assignmentId)
+          .where("delegations.parentRunId", "=", binding.runId)
+          .where("threads.workspaceId", "=", binding.workspaceId)
+          .executeTakeFirst();
+        if (!task) admissionUnavailable("task-not-assigned-by-this-run");
+        if (task.status !== "open") return { events: [] as AgentEvent[] };
+        const discover = async () => {
+          const branch = await sql<{ id: ThreadId }>`with recursive branch(id) as (
+          select child_thread_id from delegations where id = ${assignmentId}
+          union select d.child_thread_id from delegations d join branch b on d.parent_thread_id=b.id where d.status='open'
+        ) select t.id from branch b join threads t on t.id=b.id where t.workspace_id=${binding.workspaceId} order by t.id`.execute(
+            transaction,
+          );
+          const threadIds = branch.rows.map((row) => row.id);
+          const assignments = await transaction
+            .selectFrom("delegations")
+            .selectAll()
+            .where("childThreadId", "in", threadIds)
+            .where("status", "=", "open")
+            .orderBy("id")
+            .execute();
+          const runs = assignments.length
+            ? await transaction
+                .selectFrom("runs")
+                .selectAll()
+                .where(
+                  "assignmentId",
+                  "in",
+                  assignments.map((row) => row.id),
+                )
+                .where("status", "in", nonTerminalRunStatuses)
+                .orderBy("id")
+                .execute()
+            : [];
+          return { threadIds, assignments, runs };
+        };
+        const observed = await discover();
+        const runIds = [...new Set([binding.runId, ...observed.runs.map((row) => row.id)])].sort();
+        await transaction
+          .selectFrom("runs")
+          .select("id")
+          .where("id", "in", runIds)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
+        await lockWorkspaceRow(transaction, binding.workspaceId);
+        const reserved = await discover();
+        if (!reserved.assignments.length) return { events: [] as AgentEvent[] };
+        if (
+          reserved.runs.some((row) => !runIds.includes(row.id)) ||
+          reserved.threadIds.some((id) => !observed.threadIds.includes(id))
+        )
+          throw new TransactionScopeChanged();
+        const source = await transaction
+          .selectFrom("runs")
+          .selectAll()
+          .where("id", "=", binding.runId)
+          .executeTakeFirstOrThrow();
+        const sourceKey = projectExchangeKey({
+          ...projectExchangeFromRow(source, binding.workspaceId),
+          assignmentId: null,
+          replyTarget: null,
+        });
+        if (
+          reserved.runs.some(
+            (row) =>
+              row.causalChainId !== source.causalChainId ||
+              projectExchangeKey({
+                ...projectExchangeFromRow(row, binding.workspaceId),
+                threadId: binding.threadId,
+                assignmentId: null,
+                replyTarget: null,
+              }) !== sourceKey,
+          )
+        )
+          admissionUnavailable("task-origin-mismatch");
+        await reserveProjectWorkStop(transaction, {
+          runIds,
+          workspaceIds: [binding.workspaceId],
+          threadIds: reserved.threadIds,
+        });
+        await assertActiveProjectBinding(transaction, binding, this.dependencies);
+        const events: AgentEvent[] = [];
+        const now = new Date();
+        for (const assignment of reserved.assignments) {
+          const cancelled = await transaction
+            .updateTable("delegations")
+            .set((eb) => ({
+              status: "cancelled",
+              finishedAt: now,
+              resultStatus: "undeliverable",
+              completedAt: now,
+              resultReason: "assignment-cancelled",
+              resultAttemptedAt: now,
+              revision: eb("revision", "+", 1),
+              updatedAt: now,
+            }))
+            .where("id", "=", assignment.id)
+            .where("status", "=", "open")
+            .returningAll()
+            .executeTakeFirst();
+          if (cancelled)
+            events.push(
+              ...(await projectAssignmentEventsInTransaction(
+                transaction,
+                cancelled,
+                "assignment.updated",
+                cancelled.childRunId,
+              )),
+            );
+        }
+        const cancelledInputs = await transaction
+          .updateTable("threadInputs")
+          .set({ state: "cancelled", cancelReason: "assignment-closed", updatedAt: now })
+          .where(
+            "assignmentId",
+            "in",
+            reserved.assignments.map((row) => row.id),
+          )
+          .where("state", "in", ["pending", "claimed", "unknown"])
+          .returningAll()
+          .execute();
+        for (const receipt of cancelledInputs)
+          events.push(
+            await appendHostWorkspaceEvent(transaction, {
+              type: "thread-input.updated",
+              data: { input: threadInputFromRow(receipt) },
+              environmentId: source.environmentId,
+              workspaceId: binding.workspaceId,
+              threadId: receipt.threadId,
+              runId: receipt.runId,
+            }),
+          );
+        for (const run of reserved.runs)
+          events.push(
+            ...(await finalizeProjectRunTransaction(transaction, {
+              runId: run.id,
+              source: "host",
+              status: "interrupted",
+              completedAt: now,
+              deferAttemptCleanup: true,
+            })),
+          );
+        const stoppedIds = reserved.runs.map((row) => row.id);
+        if (stoppedIds.length) {
+          await transaction
+            .selectFrom("executionNodes")
+            .select("id")
+            .where("runId", "in", stoppedIds)
+            .where("status", "=", "running")
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+          await transaction
+            .selectFrom("runAttempts")
+            .select("id")
+            .where("runId", "in", stoppedIds)
+            .where("endedAt", "is", null)
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+          for (const id of stoppedIds) await finishTerminalProjectRunTransaction(transaction, id);
+        }
+        return { events };
+      },
+      "read committed",
+      (error) => error instanceof TransactionScopeChanged,
+    );
+  }
+
+  async resolveProjectCaller(binding: ProjectRunBinding) {
+    const thread = await this.projectThread(binding, binding.threadId);
+    const run = await this.database
+      .selectFrom("runs")
+      .select("authoritySource")
+      .where("id", "=", binding.runId)
+      .executeTakeFirstOrThrow();
+    const snapshot = ProjectRuntimeSnapshotSchema.parse(run.authoritySource.projectRuntime);
+    return { thread, accessMode: snapshot.accessMode };
   }
 
   async createProjectThread(input: z.input<typeof ProjectThreadCreationSchema>) {

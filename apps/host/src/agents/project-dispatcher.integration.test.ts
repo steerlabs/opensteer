@@ -1,3 +1,4 @@
+import { agentToolsPlanForProject } from "./agent-tools-plan.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createId } from "@opensteer/core";
@@ -130,14 +131,13 @@ describeStore("Project protocol dispatch", (it) => {
           },
         },
       }),
-      agentToolsPlan: ({ token }) => ({
-        url: "https://project.test.invalid/agent-tools",
-        token,
-        tools: [],
-        toolsRevision: "protocol-fixture",
-        instructions: "Work in this Project",
-        skills: [],
-      }),
+      agentToolsPlan: ({ token, role, accessMode }) =>
+        agentToolsPlanForProject({
+          url: "https://project.test.invalid/agent-tools",
+          token,
+          role,
+          accessMode,
+        }),
       egress: {
         relayUrl: "https://project.test.invalid/egress",
         maxRequestBytes: 1024,

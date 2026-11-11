@@ -10,7 +10,7 @@ import {
   administrationToolHandlers,
 } from "./handlers/administration.js";
 import type { AgentToolHandlers } from "./handlers/index.js";
-import type { AgentCaller } from "./agent-caller.js";
+import type { HumanAgentCaller as AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
 function fixture() {

@@ -45,7 +45,7 @@ import { BrowserService } from "../browser/browser-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
-import type { AgentCaller, RunCaller } from "./agent-caller.js";
+import type { HumanAgentCaller as AgentCaller, RunCaller } from "./agent-caller.js";
 
 type Fixture = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
 function setup(storeFixture: StoreFixture, f: Fixture) {

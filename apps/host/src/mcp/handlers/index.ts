@@ -1,7 +1,7 @@
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
 import type { AgentTool } from "@opensteer/agent-tools";
 import type { z } from "zod";
-import type { AgentCaller } from "../agent-caller.js";
+import type { HumanAgentCaller as AgentCaller } from "../agent-caller.js";
 import type { AppService } from "../../apps/app-service.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import { requireRun } from "../operations.js";

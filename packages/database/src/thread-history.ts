@@ -1,3 +1,6 @@
+import { assertActiveProjectBinding } from "./execution-authority.js";
+import type { ProjectRunBinding, RunnerId } from "@opensteer/core";
+import type { Transaction } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import {
@@ -42,9 +45,45 @@ export interface ThreadHistoryQuery {
 }
 
 /** Published reports are visible before consumption; waiting work is not conversation history. */
-export async function readThreadHistory(
+export function readThreadHistory(
   database: Kysely<DatabaseSchema>,
   input: ThreadHistoryQuery,
+): Promise<ThreadMessagePage | null> {
+  return readAuthorizedThreadHistory(database, input, async (transaction) => {
+    const thread = await transaction
+      .selectFrom("threads")
+      .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
+      .select("threads.id")
+      .where("threads.id", "=", input.threadId)
+      .where("workspaceMemberships.userId", "=", input.ownerId)
+      .where("workspaceMemberships.state", "=", "active")
+      .executeTakeFirst();
+    return thread;
+  });
+}
+
+export function readProjectThreadHistory(
+  database: Kysely<DatabaseSchema>,
+  input: Omit<ThreadHistoryQuery, "ownerId"> & { readonly binding: ProjectRunBinding },
+  runnerIsAttached: (id: RunnerId, boot: string) => boolean,
+): Promise<ThreadMessagePage | null> {
+  return readAuthorizedThreadHistory(database, input, async (transaction) => {
+    await assertActiveProjectBinding(transaction, input.binding, { runnerIsAttached });
+    return transaction
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", input.threadId)
+      .where("workspaceId", "=", input.binding.workspaceId)
+      .executeTakeFirst();
+  });
+}
+
+async function readAuthorizedThreadHistory(
+  database: Kysely<DatabaseSchema>,
+  input: Omit<ThreadHistoryQuery, "ownerId">,
+  authorize: (
+    transaction: Transaction<DatabaseSchema>,
+  ) => Promise<{ readonly id: ThreadId } | undefined>,
 ): Promise<ThreadMessagePage | null> {
   const limit = Math.min(100, Math.max(1, input.maxItems ?? 100));
   const maxBytes = Math.min(640 * 1024, Math.max(1, input.maxBytes ?? 640 * 1024));
@@ -78,18 +117,7 @@ export async function readThreadHistory(
   return withDatabaseTransaction(
     database,
     async (transaction) => {
-      const thread = await transaction
-        .selectFrom("threads")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
-        .select("threads.id")
-        .where("threads.id", "=", input.threadId)
-        .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
-        .executeTakeFirst();
+      const thread = await authorize(transaction);
       if (!thread) return null;
       let visible = transaction
         .selectFrom("messages")
