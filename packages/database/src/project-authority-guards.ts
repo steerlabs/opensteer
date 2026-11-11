@@ -52,6 +52,97 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
   end $$;
   create trigger project_principal_scope before insert or update of kind, workspace_id, user_id on public.principals
     for each row execute function public.opensteer_project_principal_scope();
+  create function public.opensteer_project_request_scope() returns trigger language plpgsql as $$
+  begin
+    if new.cancellation_reason = 'no-eligible-manager' and new.originating_grant_id is null then
+      raise exception 'A no-eligible-manager cancellation requires a Project Request' using errcode = '23514';
+    end if;
+    if tg_op = 'UPDATE' and old.originating_grant_id is not null then
+      if row(new.originating_grant_id, new.originating_run_id, new.originating_occurrence_id,
+             new.originating_workspace_id, new.originating_thread_id, new.target_workspace_id,
+             new.requested_by, new.required_actor, new.call_id, new.kind, new.mode, new.originating_node_id)
+         is distinct from
+         row(old.originating_grant_id, old.originating_run_id, old.originating_occurrence_id,
+             old.originating_workspace_id, old.originating_thread_id, old.target_workspace_id,
+             old.requested_by, old.required_actor, old.call_id, old.kind, old.mode, old.originating_node_id) then
+        raise exception 'Project Request origin and audience are immutable' using errcode = '23514';
+      end if;
+      if old.status <> 'pending' and row(new.status, new.response, new.resolved_by, new.resolved_at, new.cancellation_reason)
+         is distinct from row(old.status, old.response, old.resolved_by, old.resolved_at, old.cancellation_reason) then
+        raise exception 'A settled Project Request is immutable' using errcode = '23514';
+      end if;
+      if old.status = 'pending' and new.status in ('fulfilled', 'declined', 'withdrawn') and not exists (
+        select 1 from public.grants g join public.runs r on r.id = g.run_id
+        join public.workspace_memberships m on m.workspace_id = new.originating_workspace_id
+        join public.users u on u.id = m.user_id
+        where g.id = new.originating_grant_id and g.status = 'active'
+          and g.binding_generation = r.binding_generation and r.status in ('starting', 'running', 'waiting')
+          and u.id = new.resolved_by and u.disabled_at is null
+          and u.member_state = 'active' and u.admitted_at is not null and m.state = 'active'
+          and public.opensteer_project_work_is_valid(r.thread_id, r.actor_principal_id,
+            r.requested_by, r.membership_generation, r.initiator_generation, r.origin_connection_id, r.authority_source)
+          and ((r.requested_by is not null and u.id = r.requested_by)
+            or (r.requested_by is null and m.role = 'owner' and u.member_kind = 'full'))
+      ) then
+        raise exception 'Project Request resolver is outside its live audience' using errcode = '23514';
+      end if;
+      return new;
+    end if;
+    if new.originating_grant_id is null then
+      if new.requested_by is null then
+        raise exception 'An unattended Request requires a Project grant' using errcode = '23514';
+      end if;
+      return new;
+    end if;
+    if tg_op = 'UPDATE' then
+      raise exception 'A legacy Request cannot adopt a Project grant' using errcode = '23514';
+    end if;
+    if not exists (
+      select 1 from public.grants g
+      join public.runs r on r.id = g.run_id
+      join public.threads t on t.id = r.thread_id
+      join public.principals p on p.id = r.actor_principal_id
+      cross join public.opensteer_stored_execution_authority() d
+      where g.id = new.originating_grant_id and g.run_id = new.originating_run_id
+        and g.status = 'active' and g.binding_generation = r.binding_generation
+        and r.status in ('starting', 'running', 'waiting')
+        and public.opensteer_project_work_is_valid(r.thread_id, r.actor_principal_id,
+          r.requested_by, r.membership_generation, r.initiator_generation, r.origin_connection_id, r.authority_source)
+        and p.kind = 'project' and p.workspace_id = t.workspace_id
+        and d.model = 2 and d.kind = 'server'
+        and new.originating_workspace_id = t.workspace_id
+        and new.target_workspace_id = t.workspace_id and new.originating_thread_id = t.id
+        and new.originating_occurrence_id is null and new.mode = 'live'
+        and new.kind in ('harness.input', 'harness.approval')
+        and new.requested_by is not distinct from r.requested_by
+        and ((r.requested_by is null and new.required_actor = 'workspace-owner') or
+             (r.requested_by is not null and r.initiator_generation is not null
+              and new.required_actor = 'requester'))
+        and (new.originating_node_id is null or exists (
+          select 1 from public.execution_nodes n where n.id = new.originating_node_id
+            and n.run_id = r.id and n.attempt_id = g.attempt_id
+        ))
+    ) then
+      raise exception 'Project Request must bind its immutable Run origin and attempt' using errcode = '23514';
+    end if;
+    return new;
+  end $$;
+  create trigger project_request_scope before insert or update on public.requests
+    for each row execute function public.opensteer_project_request_scope();
+  create function public.opensteer_request_grant_identity() returns trigger language plpgsql as $$
+  begin
+    if row(new.id, new.run_id, new.attempt_id, new.binding_generation, new.runner_id, new.runner_boot_id)
+       is distinct from row(old.id, old.run_id, old.attempt_id, old.binding_generation, old.runner_id, old.runner_boot_id)
+       then
+      if exists (select 1 from public.requests q where q.originating_grant_id = old.id)
+         or exists (select 1 from public.commands c where c.originating_grant_id = old.id) then
+        raise exception 'A Request retains its original grant identity' using errcode = '23514';
+      end if;
+    end if;
+    return new;
+  end $$;
+  create trigger request_grant_identity before update on public.grants
+    for each row execute function public.opensteer_request_grant_identity();
 
   create function public.opensteer_user_can_execute_environment(p_environment_id text, p_user_id text, stored_kind text)
     returns boolean language sql stable set search_path = pg_catalog as $$

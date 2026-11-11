@@ -727,292 +727,292 @@ describeStore("plugin Settings authority", (test) => {
     expect(await platform.plugins.current(run.workspace.id)).toHaveLength(1);
   });
 
-  test("Personal Everywhere grants future Projects under explicit package consent; server refuses", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("settings-future", {
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
-      workspaceBacking: "local-directory",
-    });
-    const platform = new IntegrationPlatformStore(f.database);
-    await f.database
-      .updateTable("deployments")
-      .set({ deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" } })
-      .execute();
-    const pluginId = randomUUID();
-    await platform.plugins.install({
-      id: pluginId,
-      name: "future-plugin",
-      actorUserId: run.userId,
-      source: {},
-      digest: "future",
-      manifest: { name: "future-plugin" },
-    });
-    const target = { kind: "plugin" as const, pluginId };
-    const command = {
-      type: "settings.plugin.placement.set" as const,
-      target,
-      expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement.revision,
-      idempotencyKey: "everywhere",
-      mainIncluded: true,
-      projects: [],
-      personalEverywhere: { accounts: [] },
-    };
-    await platform.settings.setPlacement(run.userId, command, {});
-    const project = await createTestWorkspace(f.store, {
-      backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
-      createdBy: run.userId,
-      idempotencyKey: "future-project",
-      kind: "project",
-      name: "Future",
-      status: "ready",
-    });
-    expect(await platform.plugins.current(project.id, run.userId)).toHaveLength(1);
-    const barrier = pauseAfterLock(
-      f.database,
-      (node) => node.includes("pg_advisory_xact_lock") && node.includes("plugin-owner-consent:"),
-    );
-    const edit = new PluginSettingsStore(barrier.database).setPlacement(
-      run.userId,
-      {
-        ...command,
+  for (const kind of ["personal", "server"] as const)
+    test(`Personal Everywhere grants future Projects under explicit package consent (${kind})`, async ({
+      storeFixture: f,
+    }) => {
+      const run = await f.createRunFixture("settings-future", {
+        deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+        workspaceBacking: "local-directory",
+      });
+      const platform = new IntegrationPlatformStore(f.database);
+      const pluginId = randomUUID();
+      await platform.plugins.install({
+        id: pluginId,
+        name: "future-plugin",
+        actorUserId: run.userId,
+        source: {},
+        digest: "future",
+        manifest: { name: "future-plugin" },
+      });
+      const target = { kind: "plugin" as const, pluginId };
+      const command = {
+        type: "settings.plugin.placement.set" as const,
+        target,
         expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
           .revision,
-        idempotencyKey: "clear-future-consent",
-        projects: [{ workspaceId: project.id, accounts: [] }],
-        personalEverywhere: null,
-      },
-      {},
-    );
-    let creating: ReturnType<typeof createTestWorkspace> | undefined;
-    try {
-      await withTimeout(barrier.reached, 3000, {
-        timeoutError: () => new Error("Consent edit never locked its owner"),
-      });
-      creating = createTestWorkspace(f.store, {
+        idempotencyKey: "everywhere",
+        mainIncluded: true,
+        projects: [],
+        personalEverywhere: { accounts: [] },
+      };
+      if (kind === "server") {
+        await expect(platform.settings.setPlacement(run.userId, command, {})).rejects.toThrow(
+          "explicit consent",
+        );
+        return;
+      }
+      await platform.settings.setPlacement(run.userId, command, {});
+      const project = await createTestWorkspace(f.store, {
         backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
         createdBy: run.userId,
-        idempotencyKey: "concurrent-project",
+        idempotencyKey: "future-project",
         kind: "project",
-        name: "Concurrent",
+        name: "Future",
         status: "ready",
       });
-    } finally {
-      barrier.release();
-      await edit;
-    }
-    if (creating === undefined) throw new Error("Concurrent Project creation never started");
-    const concurrent = await withTimeout(creating, 5000, {
-      timeoutError: () => new Error("Project creation never observed committed consent"),
-    });
-    expect(await platform.plugins.current(concurrent.id, run.userId)).toEqual([]);
-    await f.database
-      .updateTable("deployments")
-      .set({ deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" } })
-      .execute();
-    await expect(
-      platform.settings.setPlacement(
+      expect(await platform.plugins.current(project.id, run.userId)).toHaveLength(1);
+      const barrier = pauseAfterLock(
+        f.database,
+        (node) => node.includes("pg_advisory_xact_lock") && node.includes("plugin-owner-consent:"),
+      );
+      const edit = new PluginSettingsStore(barrier.database).setPlacement(
         run.userId,
         {
           ...command,
           expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
             .revision,
-          idempotencyKey: "server-everywhere",
+          idempotencyKey: "clear-future-consent",
           projects: [{ workspaceId: project.id, accounts: [] }],
+          personalEverywhere: null,
         },
         {},
-      ),
-    ).rejects.toThrow("explicit consent");
-  });
-  test("future account consent grants only exact accounts and ceilings, atomically with Project creation", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("settings-future-accounts", {
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
-      workspaceBacking: "local-directory",
+      );
+      let creating: ReturnType<typeof createTestWorkspace> | undefined;
+      try {
+        await withTimeout(barrier.reached, 3000, {
+          timeoutError: () => new Error("Consent edit never locked its owner"),
+        });
+        creating = createTestWorkspace(f.store, {
+          backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+          createdBy: run.userId,
+          idempotencyKey: "concurrent-project",
+          kind: "project",
+          name: "Concurrent",
+          status: "ready",
+        });
+      } finally {
+        barrier.release();
+        await edit;
+      }
+      if (creating === undefined) throw new Error("Concurrent Project creation never started");
+      const concurrent = await withTimeout(creating, 5000, {
+        timeoutError: () => new Error("Project creation never observed committed consent"),
+      });
+      expect(await platform.plugins.current(concurrent.id, run.userId)).toEqual([]);
     });
-    const platform = new IntegrationPlatformStore(f.database);
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    await platform.install({
-      adapterSnapshot: null,
-      actorUserId: run.userId,
-      requestId: "install-account-fixture",
-      installation: {
-        id: installationId,
-        name: "records",
-        title: "Records",
-        description: "Records",
-        version: "1",
-        sourceKind: "built-in",
-        status: "active",
-        trust: "built-in",
-        manifest: { definition: { id: "records" } },
-        provenance: {},
-      },
-      servers: [
-        {
-          id: serverId,
-          name: "default",
+  for (const kind of ["personal", "server"] as const)
+    test(`future account consent grants only exact accounts and ceilings, atomically with Project creation (${kind})`, async ({
+      storeFixture: f,
+    }) => {
+      const run = await f.createRunFixture("settings-future-accounts", {
+        deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+        workspaceBacking: "local-directory",
+      });
+      const platform = new IntegrationPlatformStore(f.database);
+      const installationId = createIntegrationId("installation");
+      const serverId = createIntegrationId("server");
+      await platform.install({
+        adapterSnapshot: null,
+        actorUserId: run.userId,
+        requestId: "install-account-fixture",
+        installation: {
+          id: installationId,
+          name: "records",
+          title: "Records",
+          description: "Records",
+          version: "1",
+          sourceKind: "built-in",
           status: "active",
-          statusDetail: null,
-          connectionRequirement: {
-            kind: "provider",
-            provider: "records",
-            definitionId: "records",
-            providerApplicationRequired: false,
-          },
-          transport: { type: "streamable-http", url: "https://records.example/mcp", headers: {} },
-          catalog: { definitions: {}, tools: [] },
+          trust: "built-in",
+          manifest: { definition: { id: "records" } },
+          provenance: {},
         },
-      ],
-    });
-    const connections = [createIntegrationId("connection"), createIntegrationId("connection")];
-    for (const id of connections)
-      await f.database
-        .insertInto("integrationConnections")
-        .values({
-          id,
-          ownerUserId: run.userId,
-          provider: "records",
-          integrationDefinitionId: "records",
-          connectionKind: "provider-account",
-          connectionMethod: "api-key",
-          status: "connected",
-          displayName: id,
-          accountIdentifier: null,
-          applicationSource: jsonValue({ kind: "api-key" }),
-          authMethodId: "api-key",
-          authorizationDigest: "a".repeat(43),
-          credentialId: null,
-          computerAccess: null,
-          computerBlockedAt: null,
-          integrationServerId: null,
-          providerApplicationId: null,
-          externalIdentityId: id,
-          externalTenantId: null,
-          capabilities: jsonValue([]),
-          grantedScopes: jsonValue([]),
-          runnerId: null,
-          statusDetail: null,
-          transportKind: null,
-          updatedAt: new Date(),
-        })
-        .execute();
-    // Private accounts remain private even when an administrator shares the source Workspace.
-    await f.database
-      .updateTable("deployments")
-      .set({ deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" } })
-      .execute();
-    for (const role of ["administrator", "member"] as const) {
-      const viewer = await f.store.createUser(`private-account-${role}`);
-      if (role === "administrator")
+        servers: [
+          {
+            id: serverId,
+            name: "default",
+            status: "active",
+            statusDetail: null,
+            connectionRequirement: {
+              kind: "provider",
+              provider: "records",
+              definitionId: "records",
+              providerApplicationRequired: false,
+            },
+            transport: { type: "streamable-http", url: "https://records.example/mcp", headers: {} },
+            catalog: { definitions: {}, tools: [] },
+          },
+        ],
+      });
+      const connections = [createIntegrationId("connection"), createIntegrationId("connection")];
+      for (const id of connections)
         await f.database
-          .updateTable("users")
-          .set({ instanceRole: role })
-          .where("id", "=", viewer)
+          .insertInto("integrationConnections")
+          .values({
+            id,
+            ownerUserId: run.userId,
+            provider: "records",
+            integrationDefinitionId: "records",
+            connectionKind: "provider-account",
+            connectionMethod: "api-key",
+            status: "connected",
+            displayName: id,
+            accountIdentifier: null,
+            applicationSource: jsonValue({ kind: "api-key" }),
+            authMethodId: "api-key",
+            authorizationDigest: "a".repeat(43),
+            credentialId: null,
+            computerAccess: null,
+            computerBlockedAt: null,
+            integrationServerId: null,
+            providerApplicationId: null,
+            externalIdentityId: id,
+            externalTenantId: null,
+            capabilities: jsonValue([]),
+            grantedScopes: jsonValue([]),
+            runnerId: null,
+            statusDetail: null,
+            transportKind: null,
+            updatedAt: new Date(),
+          })
           .execute();
-      await f.database
-        .insertInto("workspaceMemberships")
-        .values({
-          id: createId("workspaceMembership"),
-          workspaceId: run.workspace.id,
-          userId: viewer,
-          role: "collaborator",
-          state: "active",
-          generation: 1,
-          invitedBy: run.userId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          updatedAt: new Date(),
-        })
-        .execute();
-      expect((await platform.settings.overview(viewer)).rows).toEqual([]);
-      await expect(
-        platform.settings.detail(viewer, { kind: "service", definitionId: "records" }),
-      ).rejects.toMatchObject({ code: "forbidden" });
-    }
-    await f.database
-      .updateTable("deployments")
-      .set({ deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" } })
-      .execute();
-    const target = { kind: "service" as const, definitionId: "records" };
-    await platform.settings.setPlacement(
-      run.userId,
-      {
-        type: "settings.plugin.placement.set",
-        target,
-        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
-          .revision,
-        idempotencyKey: "account-everywhere",
-        mainIncluded: true,
-        projects: [],
-        personalEverywhere: { accounts: [{ connectionId: connections[0]!, access: "read" }] },
-      },
-      {},
-    );
-    expect(
-      await f.database
-        .selectFrom("integrationGrants")
-        .select("id")
-        .where("workspaceId", "=", run.workspace.id)
-        .execute(),
-    ).toEqual([]);
-    const project = await createTestWorkspace(f.store, {
-      backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
-      createdBy: run.userId,
-      idempotencyKey: "future-account-project",
-      kind: "project",
-      name: "Future accounts",
-      status: "ready",
-    });
-    const grants = await f.database
-      .selectFrom("integrationGrants")
-      .selectAll()
-      .where("workspaceId", "=", project.id)
-      .execute();
-    expect(grants.map(({ connectionId, access }) => ({ connectionId, access }))).toEqual([
-      { connectionId: connections[0], access: "read" },
-    ]);
-    await f.database
-      .updateTable("integrationConnections")
-      .set({ status: "revoked" })
-      .where("id", "=", connections[0]!)
-      .execute();
-    await expect(
-      createTestWorkspace(f.store, {
+      // Private accounts remain private even when an administrator shares the source Workspace.
+      for (const role of ["administrator", "member"] as const) {
+        const viewer = await f.store.createUser(`private-account-${role}`);
+        if (role === "administrator")
+          await f.database
+            .updateTable("users")
+            .set({ instanceRole: role })
+            .where("id", "=", viewer)
+            .execute();
+        await f.database
+          .insertInto("workspaceMemberships")
+          .values({
+            id: createId("workspaceMembership"),
+            workspaceId: run.workspace.id,
+            userId: viewer,
+            role: "collaborator",
+            state: "active",
+            generation: 1,
+            invitedBy: run.userId,
+            joinedAt: new Date(),
+            revokedAt: null,
+            revokedBy: null,
+            updatedAt: new Date(),
+          })
+          .execute();
+        expect((await platform.settings.overview(viewer)).rows).toEqual([]);
+        await expect(
+          platform.settings.detail(viewer, { kind: "service", definitionId: "records" }),
+        ).rejects.toMatchObject({ code: "forbidden" });
+      }
+      const target = { kind: "service" as const, definitionId: "records" };
+      if (kind === "server") {
+        await expect(
+          platform.settings.setPlacement(
+            run.userId,
+            {
+              type: "settings.plugin.placement.set",
+              target,
+              expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+                .revision,
+              idempotencyKey: "account-everywhere",
+              mainIncluded: true,
+              projects: [],
+              personalEverywhere: { accounts: [{ connectionId: connections[0]!, access: "read" }] },
+            },
+            {},
+          ),
+        ).rejects.toThrow("explicit consent");
+        return;
+      }
+
+      await platform.settings.setPlacement(
+        run.userId,
+        {
+          type: "settings.plugin.placement.set",
+          target,
+          expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+            .revision,
+          idempotencyKey: "account-everywhere",
+          mainIncluded: true,
+          projects: [],
+          personalEverywhere: { accounts: [{ connectionId: connections[0]!, access: "read" }] },
+        },
+        {},
+      );
+      expect(
+        await f.database
+          .selectFrom("integrationGrants")
+          .select("id")
+          .where("workspaceId", "=", run.workspace.id)
+          .execute(),
+      ).toEqual([]);
+      const project = await createTestWorkspace(f.store, {
         backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
         createdBy: run.userId,
-        idempotencyKey: "revoked-account-project",
+        idempotencyKey: "future-account-project",
         kind: "project",
-        name: "Must roll back",
+        name: "Future accounts",
         status: "ready",
-      }),
-    ).rejects.toThrow("unavailable");
-    expect(
+      });
+      const grants = await f.database
+        .selectFrom("integrationGrants")
+        .selectAll()
+        .where("workspaceId", "=", project.id)
+        .execute();
+      expect(grants.map(({ connectionId, access }) => ({ connectionId, access }))).toEqual([
+        { connectionId: connections[0], access: "read" },
+      ]);
       await f.database
-        .selectFrom("workspaces")
-        .select("id")
-        .where("name", "=", "Must roll back")
-        .execute(),
-    ).toEqual([]);
-    expect(await platform.settings.detail(run.userId, target)).toMatchObject({
-      row: { issues: ["needs-sign-in"], permissions: { canPlace: true } },
+        .updateTable("integrationConnections")
+        .set({ status: "revoked" })
+        .where("id", "=", connections[0]!)
+        .execute();
+      await expect(
+        createTestWorkspace(f.store, {
+          backing: { ...run.workspace.backing, bindingId: createId("workspaceBinding") },
+          createdBy: run.userId,
+          idempotencyKey: "revoked-account-project",
+          kind: "project",
+          name: "Must roll back",
+          status: "ready",
+        }),
+      ).rejects.toThrow("unavailable");
+      expect(
+        await f.database
+          .selectFrom("workspaces")
+          .select("id")
+          .where("name", "=", "Must roll back")
+          .execute(),
+      ).toEqual([]);
+      expect(await platform.settings.detail(run.userId, target)).toMatchObject({
+        row: { issues: ["needs-sign-in"], permissions: { canPlace: true } },
+      });
+      await platform.settings.setPlacement(
+        run.userId,
+        {
+          type: "settings.plugin.placement.set",
+          target,
+          expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
+            .revision,
+          idempotencyKey: "clear-revoked-consent",
+          mainIncluded: true,
+          projects: [],
+          personalEverywhere: null,
+        },
+        {},
+      );
     });
-    await platform.settings.setPlacement(
-      run.userId,
-      {
-        type: "settings.plugin.placement.set",
-        target,
-        expectedRevision: (await platform.settings.detail(run.userId, target)).row.placement
-          .revision,
-        idempotencyKey: "clear-revoked-consent",
-        mainIncluded: true,
-        projects: [],
-        personalEverywhere: null,
-      },
-      {},
-    );
-  });
 });

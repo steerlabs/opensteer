@@ -81,6 +81,33 @@ export interface ProjectAgentToolPort {
   }): Promise<unknown>;
 }
 
+interface HumanMcpDependencies {
+  readonly handlers: AgentToolHandlers;
+  readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+    readonly requests: Pick<OpensteerStore["requests"], "get">;
+  };
+}
+
+type McpOptions = {
+  readonly callers: { authenticate(bearer: string): Promise<AgentCaller> };
+  readonly projectTools?: ProjectAgentToolPort | undefined;
+  readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
+  readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
+  readonly realtime?: Pick<RealtimeHub, "observe">;
+  readonly publicUrl: URL;
+  /** A failure the caller was told only that something went wrong. */
+  readonly onToolError?: (error: unknown, tool: string) => void;
+  /** Whether this caller may hold the knowledge trial's `sql` tool; absent, nobody may. */
+  readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
+} & (
+  | HumanMcpDependencies
+  | {
+      readonly projectTools: ProjectAgentToolPort;
+      readonly handlers?: never;
+      readonly store?: never;
+    }
+);
+
 export class OpensteerMcpService {
   readonly #runtimeOrigin: URL;
   readonly #sessions = new Map<string, McpSession>();
@@ -89,36 +116,8 @@ export class OpensteerMcpService {
   readonly #detachObserve: (() => void) | undefined;
   readonly #revalidations = new Set<Promise<void>>();
   #closing: Promise<void> | undefined;
-  readonly options: {
-    readonly callers: { authenticate(bearer: string): Promise<AgentCaller> };
-    readonly handlers: AgentToolHandlers;
-    readonly projectTools?: ProjectAgentToolPort | undefined;
-    readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
-    readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
-    readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
-      readonly requests: Pick<OpensteerStore["requests"], "get">;
-    };
-    readonly publicUrl: URL;
-    /** A failure the caller was told only that something went wrong. */
-    readonly onToolError?: (error: unknown, tool: string) => void;
-    /** Whether this caller may hold the knowledge trial's `sql` tool; absent, nobody may. */
-    readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
-  };
-  constructor(options: {
-    readonly callers: { authenticate(bearer: string): Promise<AgentCaller> };
-    readonly handlers: AgentToolHandlers;
-    readonly projectTools?: ProjectAgentToolPort | undefined;
-    readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
-    readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
-    readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
-      readonly requests: Pick<OpensteerStore["requests"], "get">;
-    };
-    readonly publicUrl: URL;
-    readonly onToolError?: (error: unknown, tool: string) => void;
-    readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
-  }) {
+  readonly options: McpOptions;
+  constructor(options: McpOptions) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
     this.#detachObserve = options.realtime?.observe((change) => {
@@ -472,7 +471,7 @@ export class OpensteerMcpService {
             typeof result.requestId === "string"
           ) {
             const id = RequestIdSchema.safeParse(result.requestId);
-            const request = id.success ? await this.options.store.requests.get(id.data) : null;
+            const request = id.success ? await this.#human().store.requests.get(id.data) : null;
             pendingRequest =
               request?.mode === "durable" &&
               request.status === "pending" &&
@@ -527,7 +526,7 @@ export class OpensteerMcpService {
           code: "forbidden",
           message: "This tool is unavailable to this caller",
         });
-      const authorize = this.options.handlers[tool.name].authorize as
+      const authorize = this.#human().handlers[tool.name].authorize as
         ((call: ToolCall<typeof tool.name>) => Promise<void>) | undefined;
       await authorize?.({
         caller,
@@ -552,7 +551,7 @@ export class OpensteerMcpService {
       };
       // A registry key fixes both schemas and the handler. Parsing above supplies
       // the corresponding member of the input union to the exhaustive map.
-      const handler = this.options.handlers[tool.name] as (
+      const handler = this.#human().handlers[tool.name] as (
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
       const output = tool.output.safeParse(await handler(call));
@@ -625,12 +624,23 @@ export class OpensteerMcpService {
     return output.data as Record<string, unknown> | string;
   }
 
+  #human(): HumanMcpDependencies {
+    const { handlers, store } = this.options;
+    if (!handlers || !store)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "project-tool-not-supported",
+        message: "A Project MCP service cannot invoke a human handler",
+      });
+    return { handlers, store };
+  }
+
   async #targets(caller: HumanAgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;
     const add = async (value: unknown) => {
       if (value === "home") {
-        const home = await this.options.store.findMainWorkspaceForOwner(caller.userId);
+        const home = await this.#human().store.findMainWorkspaceForOwner(caller.userId);
         if (!home?.homeThreadId)
           throw new OpensteerError({ code: "conflict", message: "Chat has not been started yet" });
         ids.push(home.homeThreadId);
@@ -640,14 +650,14 @@ export class OpensteerMcpService {
       }
     };
     for (const field of tool.targetFields ?? []) await add(record[field]);
-    const targets = this.options.handlers[tool.name].targets as
+    const targets = this.#human().handlers[tool.name].targets as
       ((call: ToolCall<typeof tool.name>) => Promise<readonly string[]>) | undefined;
     if (targets)
       for (const value of await targets({ caller, input } as ToolCall<typeof tool.name>))
         await add(value);
     return Promise.all(
       [...new Set(ids)].map(async (id) => {
-        const thread = await this.options.store.getThreadForOwner(id, caller.userId);
+        const thread = await this.#human().store.getThreadForOwner(id, caller.userId);
         if (!thread)
           throw new OpensteerError({ code: "forbidden", message: "Thread is unavailable" });
         return thread;

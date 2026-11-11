@@ -1,3 +1,4 @@
+import { projectRequestRecipients, projectRunRecipients } from "./project-request-store.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { isPlaceContentPart } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
@@ -159,7 +160,7 @@ export class NotificationStore {
     )
       return [];
     return withDatabaseTransaction(this.#database, async (transaction) =>
-      (await candidatesFor(transaction, event)).map((candidate) => {
+      (await this.candidates(transaction, event)).map((candidate) => {
         const subjectId =
           candidate.kind === "reply-published"
             ? candidate.messageId
@@ -191,6 +192,10 @@ export class NotificationStore {
         };
       }),
     );
+  }
+
+  protected candidates(transaction: Transaction<DatabaseSchema>, event: AgentEvent) {
+    return candidatesFor(transaction, event);
   }
 
   /**
@@ -649,4 +654,75 @@ async function personalLinkSubjectForOwner(
     .$if(issuer !== undefined, (query) => query.where("issuer", "=", issuer!))
     .executeTakeFirst();
   return link?.subject ?? null;
+}
+
+/** Constructed only by the stored model-2 runtime; viewer state remains human-owned. */
+export class ProjectNotificationStore extends NotificationStore {
+  readonly database: Kysely<DatabaseSchema>;
+  constructor(database: Kysely<DatabaseSchema>, options: NotificationStoreOptions = {}) {
+    super(database, options);
+    this.database = database;
+  }
+
+  protected override async candidates(
+    transaction: Transaction<DatabaseSchema>,
+    event: AgentEvent,
+  ): Promise<readonly NotificationCandidate[]> {
+    if (event.type !== "request.opened") {
+      if (!event.runId) return [];
+      const recipients = await projectRunRecipients(transaction, event.runId);
+      if (!recipients.length) return [];
+      return (await candidatesFor(transaction, event)).filter((candidate) =>
+        recipients.includes(candidate.userId),
+      );
+    }
+    const row = await transaction
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", event.data.request.id)
+      .where("status", "=", "pending")
+      .where("originatingWorkspaceId", "=", event.workspaceId)
+      .where("originatingThreadId", "=", event.threadId)
+      .executeTakeFirst();
+    if (!row) return [];
+    const title = await threadTitle(transaction, row.originatingThreadId);
+    if (!title) return [];
+    const body =
+      plainTextExcerpt(requestTitleText(row.presentation), notificationBodyMaxCharacters) ??
+      "Opensteer needs your answer";
+    return (await projectRequestRecipients(transaction, row.id)).map((userId) => ({
+      body,
+      title,
+      userId,
+      kind: "request-opened",
+      messageId: null,
+      requestId: row.id,
+      runId: null,
+    }));
+  }
+
+  override async publicationSkipReason(entry: NotificationPublication): Promise<string | null> {
+    const runId =
+      entry.runId ??
+      (entry.messageId
+        ? (
+            await this.database
+              .selectFrom("messages")
+              .select("runId")
+              .where("id", "=", entry.messageId)
+              .executeTakeFirst()
+          )?.runId
+        : null);
+    const recipients = await this.database
+      .transaction()
+      .execute((tx) =>
+        entry.kind === "request-opened" && entry.requestId
+          ? projectRequestRecipients(tx, entry.requestId)
+          : runId
+            ? projectRunRecipients(tx, runId)
+            : Promise.resolve([]),
+      );
+    if (!recipients.includes(entry.userId)) return "Project Request audience is no longer eligible";
+    return super.publicationSkipReason(entry);
+  }
 }

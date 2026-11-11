@@ -40,13 +40,13 @@ export async function enrollTestTeamComputer(
   });
 }
 
-/** A forged stored identity exercises refusal without enrolling a forbidden device. */
-export async function seedMemberComputer(
+/** Stored managed identities isolate authorization tests from enrollment rules. */
+export async function seedManagedComputer(
   store: OpensteerStore,
   source: {
     readonly runnerId: RunnerId;
     readonly environmentId: EnvironmentId;
-    readonly userId: UserId;
+    readonly userId: UserId | null;
   },
 ) {
   const database = store.database;
@@ -72,7 +72,7 @@ export async function seedMemberComputer(
       allowedModules: jsonValue(runner.allowedModules),
       moduleDescriptors: jsonValue(runner.moduleDescriptors),
       accessPolicy: jsonValue(runner.accessPolicy),
-      device: jsonValue(runner.device),
+      device: runner.device === null ? null : jsonValue(runner.device),
     })
     .execute();
   const environment = await database

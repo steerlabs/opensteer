@@ -3401,6 +3401,12 @@ async function createRequestInTransaction(
     // Replay stays canonical after a Run ends or authority is removed. It
     // still locks both authority scopes before the Request so a concurrent
     // revocation/deletion cannot leave the caller with stale pending state.
+    if (existing.requestedBy === null) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Project Requests require Project authority",
+      });
+    }
     await lockRequestWorkspaceAuthorities(transaction, {
       originatingWorkspaceId: existing.originatingWorkspaceId,
       requestedBy: existing.requestedBy,
@@ -4634,9 +4640,9 @@ async function lockRequestOrigin(
   if (!run) return undefined;
   if (run.requestedBy === null || run.membershipGeneration === null)
     throw new OpensteerError({
-      code: "conflict",
-      reason: "unattended-project-work-unsupported",
-      message: "This Request path does not support unattended Project work yet",
+      code: "forbidden",
+      reason: "project-request-proposal-required",
+      message: "Project engine Requests require the Host proposal path",
     });
   return {
     environmentId: run.environmentId,

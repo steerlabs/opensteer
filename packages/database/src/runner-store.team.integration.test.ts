@@ -1,5 +1,5 @@
 import { createProjectIdentityFixture } from "./project-work.test-support.js";
-import { seedMemberComputer } from "./team-computer.test-support.js";
+import { seedManagedComputer } from "./team-computer.test-support.js";
 import { createId } from "@opensteer/core";
 import { randomUUID, createHash } from "node:crypto";
 import { expect } from "vitest";
@@ -38,7 +38,7 @@ describeStore("team computer ownership", (it) => {
   });
   it("refuses an existing member-bound managed Runner on reconnect", async ({ storeFixture }) => {
     const run = await createProjectIdentityFixture(storeFixture, "managed-reconnect");
-    const { runnerId, environmentId } = await seedMemberComputer(storeFixture.store, run);
+    const { runnerId, environmentId } = await seedManagedComputer(storeFixture.store, run);
     await expect(
       storeFixture.store.authenticateRunnerConnection(
         testRunnerDescriptor({

@@ -530,7 +530,10 @@ describeStore("additive Project authority preparation", (it) => {
         drop trigger deployments_immutable_authority on deployments; drop function opensteer_prevent_deployment_authority_change();
         drop function opensteer_project_work_is_valid(text,text,text,bigint,bigint,text,jsonb);
         drop function opensteer_user_can_execute_thread(text,text,text); drop function opensteer_user_can_execute_environment(text,text,text);
-        drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
+        drop trigger request_grant_identity on grants; drop function opensteer_request_grant_identity();
+         drop trigger project_request_scope on requests; drop function opensteer_project_request_scope();
+         alter table requests drop column originating_grant_id, drop constraint requests_requester_audience;
+         drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
         alter table principals drop column workspace_id;
         alter table principals add constraint principals_kind_shape_check check ((kind = 'user' and user_id is not null) or (kind in ('channel-identity', 'system') and user_id is null));
         alter table runs drop column initiator_generation, drop column origin_connection_id;

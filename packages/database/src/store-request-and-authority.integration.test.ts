@@ -1,3 +1,5 @@
+import { seedManagedComputer } from "./team-computer.test-support.js";
+import { createTestDeploymentIdentity } from "./deployment-fixture.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
@@ -2603,74 +2605,99 @@ describeStore("PostgreSQL store", (it) => {
     ]);
   });
 
-  it("admits a work location only when kind, binding, Deployment mode and role all allow it", async ({
-    storeFixture,
-  }) => {
-    const { store, database, sqlCanExecute } = storeFixture;
-    const adminId = await store.createUser("Administrator");
-    const memberId = await store.createUser("Member");
-    await sql`update users set instance_role = 'administrator' where id = ${adminId}`.execute(
-      database,
-    );
-    await sql`update users set instance_role = 'user' where id = ${memberId}`.execute(database);
-    const mainEnvironmentId = createId("environment");
-    const boundEnvironmentId = createId("environment");
-    const unboundEnvironmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: adminId,
-      environmentId: mainEnvironmentId,
-      name: "Main runner",
-      runnerId: createId("runner"),
-      tokenSuffix: "truth-table-main",
-    });
-    await enrollTestRunner(store, {
-      createdBy: adminId,
-      environmentId: boundEnvironmentId,
-      name: "Admin's managed Runner",
-      ownerUserId: adminId,
-      runnerId: createId("runner"),
-      runnerKind: "managed",
-      tokenSuffix: "truth-table-bound",
-    });
-    await enrollTestRunner(store, {
-      createdBy: adminId,
-      environmentId: unboundEnvironmentId,
-      name: "Shared managed runner",
-      runnerId: createId("runner"),
-      runnerKind: "managed",
-      tokenSuffix: "truth-table-unbound",
-    });
-
-    const truthTable = [
-      // [environment, user, shared mode, personal mode]
-      [mainEnvironmentId, adminId, true, true],
-      [mainEnvironmentId, memberId, true, false],
-      [boundEnvironmentId, adminId, true, true],
-      [boundEnvironmentId, memberId, false, false],
-      [unboundEnvironmentId, adminId, true, true],
-      [unboundEnvironmentId, memberId, true, false],
-    ] as const;
-    for (const [environmentId, userId, shared] of truthTable) {
-      await expect(store.environmentIsAvailableToUser(environmentId, userId)).resolves.toBe(shared);
-      await expect(sqlCanExecute(environmentId, userId)).resolves.toBe(shared);
-    }
-    // Personal kind narrows deployment-administered work locations to the sole
-    // administrator; the binding narrows further and never widens.
-    await sql`
-      update deployments
-      set deployment_shape = ${JSON.stringify({
-        defaultWorkspaceBacking: "local-directory",
-        kind: "personal" as const,
-      })}::jsonb
-      where singleton_key = 'primary'
-    `.execute(database);
-    for (const [environmentId, userId, , personal] of truthTable) {
-      await expect(store.environmentIsAvailableToUser(environmentId, userId)).resolves.toBe(
-        personal,
+  for (const kind of ["server", "personal"] as const)
+    it(`admits a work location only when kind, binding, Deployment mode and role all allow it (${kind})`, async ({
+      storeFixture,
+    }) => {
+      const { store, database, sqlCanExecute } = storeFixture;
+      await createTestDeploymentIdentity(database, {
+        shape: { kind, defaultWorkspaceBacking: "local-directory" },
+        model: 1,
+      });
+      const adminId = await store.createUser("Administrator");
+      const memberId = await store.createUser("Member");
+      await sql`update users set instance_role = 'administrator' where id = ${adminId}`.execute(
+        database,
       );
-      await expect(sqlCanExecute(environmentId, userId)).resolves.toBe(personal);
-    }
-  });
+      await sql`update users set instance_role = 'user' where id = ${memberId}`.execute(database);
+      const mainEnvironmentId = createId("environment");
+      const mainRunnerId = createId("runner");
+      let boundEnvironmentId = createId("environment");
+      let unboundEnvironmentId = createId("environment");
+      await enrollTestRunner(store, {
+        createdBy: adminId,
+        environmentId: mainEnvironmentId,
+        name: "Main runner",
+        runnerId: mainRunnerId,
+        tokenSuffix: "truth-table-main",
+      });
+      if (kind === "personal") {
+        await expect(
+          enrollTestRunner(store, {
+            createdBy: adminId,
+            environmentId: boundEnvironmentId,
+            name: "Not newly enrollable",
+            ownerUserId: adminId,
+            runnerId: createId("runner"),
+            runnerKind: "managed",
+            tokenSuffix: "truth-table-personal-refused",
+          }),
+        ).rejects.toMatchObject({
+          code: "forbidden",
+          message: "Only reachable computers can join a Personal Deployment.",
+        });
+        // Authorization also reads historical managed identities; enrolling one today is refused above.
+        boundEnvironmentId = (
+          await seedManagedComputer(store, {
+            runnerId: mainRunnerId,
+            environmentId: mainEnvironmentId,
+            userId: adminId,
+          })
+        ).environmentId;
+        unboundEnvironmentId = (
+          await seedManagedComputer(store, {
+            runnerId: mainRunnerId,
+            environmentId: mainEnvironmentId,
+            userId: null,
+          })
+        ).environmentId;
+      } else {
+        await enrollTestRunner(store, {
+          createdBy: adminId,
+          environmentId: boundEnvironmentId,
+          name: "Admin's managed Runner",
+          ownerUserId: adminId,
+          runnerId: createId("runner"),
+          runnerKind: "managed",
+          tokenSuffix: "truth-table-bound",
+        });
+        await enrollTestRunner(store, {
+          createdBy: adminId,
+          environmentId: unboundEnvironmentId,
+          name: "Shared managed runner",
+          runnerId: createId("runner"),
+          runnerKind: "managed",
+          tokenSuffix: "truth-table-unbound",
+        });
+      }
+
+      const truthTable = [
+        // [environment, user, shared mode, personal mode]
+        [mainEnvironmentId, adminId, true, true],
+        [mainEnvironmentId, memberId, true, false],
+        [boundEnvironmentId, adminId, true, true],
+        [boundEnvironmentId, memberId, false, false],
+        [unboundEnvironmentId, adminId, true, true],
+        [unboundEnvironmentId, memberId, true, false],
+      ] as const;
+      for (const [environmentId, userId, shared, personal] of truthTable) {
+        const expected = kind === "server" ? shared : personal;
+        await expect(store.environmentIsAvailableToUser(environmentId, userId)).resolves.toBe(
+          expected,
+        );
+        await expect(sqlCanExecute(environmentId, userId)).resolves.toBe(expected);
+      }
+    });
 
   it("refuses an ownership binding the Runner ledger has no shape for", async ({
     storeFixture,

@@ -1180,16 +1180,18 @@ export interface RequestTable {
   originatingOccurrenceId: TriggerOccurrenceId | null;
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
+  originatingGrantId: Generated<GrantId | null>;
   callId: string;
   targetWorkspaceId: WorkspaceId;
-  requestedBy: UserId;
+  requestedBy: UserId | null;
   requiredActor: Request["requiredActor"];
   presentation: JsonColumn<Request["presentation"]>;
   payload: JsonColumn<Request["payload"]>;
   response: JsonColumn<Request["response"]> | null;
   /** A response is reserved for exactly one durable delivery command until ACK. */
   responseCommandId: Generated<CommandId | null>;
-  cancellationReason: Request["cancellationReason"];
+  cancellationReason:
+    Extract<AgentEvent, { readonly type: "request.cancelled" }>["data"]["reason"] | null;
   resolvedAt: NullableTimestamp;
   resolvedBy: UserId | null;
   settlementProvenance: Generated<NonNullable<Request["settlementProvenance"]> | null>;

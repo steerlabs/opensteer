@@ -1267,10 +1267,12 @@ integration("agent-to-agent messaging round trip", () => {
   it("keeps one tool inventory through Runner reconnects and returns a compact Thread summary", async () => {
     const f = await createMessagingFixture();
     const claims = claimsByToken.get(f.tokenA)!;
+    const humanHandlers = service.service.options.handlers;
+    if (!humanHandlers) throw new Error("Fixture has no human MCP handlers");
     const mcp = new OpensteerMcpService({
       publicUrl: new URL("http://localhost"),
       store: store,
-      handlers: service.service.options.handlers,
+      handlers: humanHandlers,
 
       callers: new AgentCallerResolver({
         store: store,

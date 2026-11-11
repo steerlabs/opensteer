@@ -2891,10 +2891,12 @@ integration("cross-environment delegation reaches the Runner", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("MCP server did not bind");
     const url = new URL(`http://127.0.0.1:${address.port}/internal/v1/mcp`);
+    const humanHandlers = controlService.service.options.handlers;
+    if (!humanHandlers) throw new Error("Fixture has no human MCP handlers");
     service = new OpensteerMcpService({
       publicUrl: url,
       store: store,
-      handlers: controlService.service.options.handlers,
+      handlers: humanHandlers,
 
       callers: new AgentCallerResolver({
         store: store,

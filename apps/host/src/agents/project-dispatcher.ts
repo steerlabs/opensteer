@@ -386,7 +386,10 @@ export class ProjectCommandDispatcher implements ProjectDispatchPort {
     const frame = ProjectHostToRunnerMessageSchema.parse({
       ...identity.fence,
       type: "host.project.run-control",
-      ...input,
+      binding: input.binding,
+      commandId: input.commandId,
+      correlationId: input.correlationId,
+      control: input.control,
     });
     const command = await this.options.database
       .selectFrom("commands")

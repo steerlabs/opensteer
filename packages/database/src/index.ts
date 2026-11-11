@@ -78,6 +78,7 @@ export { listEligibleBrowserRunners } from "./browser-home-store.js";
 export * from "./request-agent-response.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
 
+export * from "./project-request-store.js";
 export { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 
 export {
@@ -139,3 +140,5 @@ export {
 
 export { ProjectRunRecoveryStore } from "./project-run-recovery.js";
 export { type ProjectRunRequestCancellation } from "./run-finalization.js";
+
+export { plannedManagerlessProjects } from "./access-store.js";

@@ -101,6 +101,67 @@ export interface AccessWorkRevocationPort {
   ): Promise<void>;
 }
 
+const managerlessPlans = new WeakMap<AccessTransaction, readonly WorkspaceId[]>();
+
+/** Only the access writer establishes this final-state fact, before scope discovery. */
+export function plannedManagerlessProjects(transaction: AccessTransaction): readonly WorkspaceId[] {
+  return managerlessPlans.get(transaction) ?? [];
+}
+
+async function managerlessTransition(
+  transaction: AccessTransaction,
+  next: Graph,
+  pairs: readonly Pair[],
+): Promise<readonly WorkspaceId[]> {
+  const ids = [...new Set(pairs.map((pair) => pair.workspaceId))];
+  if (!ids.length) return [];
+  const managers = await transaction
+    .selectFrom("workspaceMemberships")
+    .innerJoin("users", "users.id", "workspaceMemberships.userId")
+    .select(["users.id", "workspaceMemberships.workspaceId"])
+    .where("workspaceMemberships.workspaceId", "in", ids)
+    .where("workspaceMemberships.state", "=", "active")
+    .where("workspaceMemberships.role", "=", "owner")
+    .where("users.memberKind", "=", "full")
+    .where("users.memberState", "=", "active")
+    .where("users.admittedAt", "is not", null)
+    .where("users.disabledAt", "is", null)
+    .execute();
+  const touched = new Set(pairs.map(pairKey));
+  const finalPairs = entriesByPair(next);
+  const users = new Map(next.users.map((user) => [user.id, user]));
+  const projects = new Set(next.projects.map((project) => project.id));
+  const eligible = (user: Graph["users"][number]) =>
+    user.memberKind === "full" &&
+    user.memberState === "active" &&
+    user.admittedAt !== null &&
+    user.disabledAt === null;
+  const before = new Set(managers.map((manager) => manager.workspaceId));
+  const after = new Set<WorkspaceId>();
+  for (const manager of managers) {
+    const user = users.get(manager.id);
+    const pair = { userId: manager.id, workspaceId: manager.workspaceId };
+    if (
+      projects.has(manager.workspaceId) &&
+      (!user || eligible(user)) &&
+      (!touched.has(pairKey(pair)) ||
+        effective(finalPairs.get(pairKey(pair))?.entries ?? []).level === "manage")
+    )
+      after.add(manager.workspaceId);
+  }
+  for (const { pair, entries } of finalPairs.values()) {
+    const user = users.get(pair.userId);
+    if (
+      before.has(pair.workspaceId) &&
+      user &&
+      eligible(user) &&
+      effective(entries).level === "manage"
+    )
+      after.add(pair.workspaceId);
+  }
+  return [...before].filter((id) => !after.has(id)).sort();
+}
+
 export interface AccessMutationResult {
   readonly revision: number;
   readonly transitions: readonly MembershipTransition[];
@@ -1071,7 +1132,8 @@ async function applySource(
   }
   if (addedEntries.length)
     await transaction.insertInto("accessEntries").values(addedEntries).execute();
-  if (work?.roots.length) await work.port.cancel(transaction, work.roots);
+  if (work && (work.roots.length || plannedManagerlessProjects(transaction).length))
+    await work.port.cancel(transaction, work.roots);
   const invitation = admission ? await consumeTeamAdmission(transaction, admission, now) : null;
   const userIds = new Set([input.actor.userId, ...changedUsers.map((user) => user.id)]);
   if (input.changes.some((change) => change.kind === "create-project"))
@@ -1687,7 +1749,25 @@ async function coordinateAccess(
     roots: readonly AccessWorkRevocationRoot[],
   ) => {
     const scope = await discoverLiveAccessScope(transaction, pairs, fencedUsers);
-    const execution = roots.length ? await work?.discover(transaction, roots) : undefined;
+    const managerless = plannedManagerlessProjects(transaction);
+    const execution =
+      roots.length || managerless.length ? await work?.discover(transaction, roots) : undefined;
+    if (!work && managerless.length) {
+      const pending = await transaction
+        .selectFrom("requests")
+        .select("id")
+        .where("originatingWorkspaceId", "in", [...managerless])
+        .where("requestedBy", "is", null)
+        .where("originatingGrantId", "is not", null)
+        .where("status", "=", "pending")
+        .executeTakeFirst();
+      if (pending)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "project-request-cancellation-unavailable",
+          message: "Planned managerless Request cancellation is unavailable",
+        });
+    }
     return {
       ...scope,
       runIds: [...new Set([...scope.runIds, ...(execution?.runIds ?? [])])],
@@ -1903,6 +1983,7 @@ async function coordinateAccess(
             })),
           );
         }
+        managerlessPlans.set(transaction, await managerlessTransition(transaction, next, pairs));
         const liveScope = await discover(transaction, pairs, fencedUsers, roots);
         if (!work && liveScope.runIds.length && roots.some((root) => root.kind === "member"))
           throw new OpensteerError({

@@ -495,7 +495,13 @@ export async function createHostRuntime(
       deploymentShape: config.workspace.shape,
     });
 
-    const { store } = await createExecutionRuntime(database, deployment, storeDependencies);
+    const executionRuntime = await createExecutionRuntime(database, deployment, storeDependencies);
+    if (executionRuntime.kind !== "person")
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Project Host startup is not activated",
+      });
+    const { store } = executionRuntime;
 
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.

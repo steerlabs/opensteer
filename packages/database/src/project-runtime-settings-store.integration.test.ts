@@ -1,4 +1,4 @@
-import { seedMemberComputer } from "./team-computer.test-support.js";
+import { seedManagedComputer } from "./team-computer.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { createProjectIdentityFixture } from "./project-work.test-support.js";
 import { createId, HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
@@ -111,7 +111,7 @@ describeStore("Project runtime settings", (it) => {
     storeFixture,
   }) => {
     const prepared = await setup(storeFixture);
-    const { environmentId } = await seedMemberComputer(storeFixture.store, prepared);
+    const { environmentId } = await seedManagedComputer(storeFixture.store, prepared);
     const project = await createTestWorkspace(storeFixture.store, {
       createdBy: prepared.userId,
       name: "Member placement",

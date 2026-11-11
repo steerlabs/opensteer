@@ -315,6 +315,9 @@ const sqlExceptions: Record<
       "baseline/public.opensteer_user_can_execute_environment": {
         "stored_kind = 'server' or (stored_kind = 'personal' and exists (": 1,
       },
+      "baseline/public.opensteer_project_request_scope": {
+        "d.kind = 'server'": 1,
+      },
     },
   },
   "packages/database/src/baseline-schema.ts": {

@@ -1,3 +1,4 @@
+import { ProjectRequestCancellationReasonSchema } from "./request-lifecycle.js";
 import { RequestCancelledForSchema } from "./team-display.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -199,7 +200,7 @@ const eventDataSchemas = {
   "assignment.created": z.strictObject({ assignment: AssignmentSummarySchema }),
   "assignment.updated": z.strictObject({ assignment: AssignmentSummarySchema }),
   "request.cancelled": z.strictObject({
-    reason: RequestCancellationReasonSchema,
+    reason: ProjectRequestCancellationReasonSchema,
     requestId: RequestIdSchema,
   }),
   "request.opened": z.strictObject({ request: PendingRequestSchema }),
@@ -443,6 +444,9 @@ const {
 } = eventDataSchemas;
 const runnerEventDataSchemas = {
   ...runnerWritableEventDataSchemas,
+  "request.cancelled": eventDataSchemas["request.cancelled"].extend({
+    reason: RequestCancellationReasonSchema,
+  }),
   "run.completed": eventDataSchemas["run.completed"].omit({
     replyMessageId: true,
     startedAt: true,

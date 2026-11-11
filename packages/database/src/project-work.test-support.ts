@@ -18,7 +18,7 @@ import {
   threadInputFromRow,
 } from "./thread-row-mappers.js";
 import { createId, HarnessIdSchema } from "@opensteer/core";
-import { ensureProjectPrincipal } from "./project-work-store.js";
+import { createChannelId } from "@opensteer/channel-core";
 import { type StoreFixture } from "./store.integration.test-support.js";
 import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 
@@ -65,7 +65,19 @@ export async function createProjectIdentityFixture(
             .where("id", "=", workspace.id)
             .forShare()
             .executeTakeFirstOrThrow();
-          return ensureProjectPrincipal(transaction, workspace.id);
+          return (
+            await transaction
+              .insertInto("principals")
+              .values({
+                id: createChannelId("principal"),
+                kind: "project",
+                workspaceId: workspace.id,
+                userId: null,
+                displayName: workspace.name,
+              })
+              .returning("id")
+              .executeTakeFirstOrThrow()
+          ).id;
         })
       : null;
   return { environmentId, runnerId, userId, workspace, principalId };

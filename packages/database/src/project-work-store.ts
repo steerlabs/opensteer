@@ -98,7 +98,7 @@ import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { OpensteerError, type WorkspaceId } from "@opensteer/core";
 import type { Transaction } from "kysely";
-import { createChannelId, type PrincipalId } from "@opensteer/channel-core";
+import type { PrincipalId } from "@opensteer/channel-core";
 import type { DatabaseSchema } from "./schema.js";
 
 /** The caller reserves the Project and its memberships before looking up its principal. */
@@ -125,31 +125,13 @@ export async function ensureProjectPrincipal(
     .where("workspaceId", "=", workspaceId)
     .where("kind", "=", "project")
     .executeTakeFirst();
-  if (existing) return existing.id;
-  const inserted = await transaction
-    .insertInto("principals")
-    .values({
-      id: createChannelId("principal"),
-      kind: "project",
-      workspaceId,
-      userId: null,
-      displayName: workspace.name,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .onConflict((conflict) =>
-      conflict.column("workspaceId").where("workspaceId", "is not", null).doNothing(),
-    )
-    .returning("id")
-    .executeTakeFirst();
-  if (inserted) return inserted.id;
-  const winner = await transaction
-    .selectFrom("principals")
-    .select("id")
-    .where("workspaceId", "=", workspaceId)
-    .where("kind", "=", "project")
-    .executeTakeFirstOrThrow();
-  return winner.id;
+  if (!existing)
+    throw new OpensteerError({
+      code: "workspace_unavailable",
+      reason: "project-principal-unavailable",
+      message: "Project creation has not established its execution principal",
+    });
+  return existing.id;
 }
 
 export type ProjectExchange = {

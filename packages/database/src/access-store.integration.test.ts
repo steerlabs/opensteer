@@ -474,6 +474,7 @@ describeStore("dormant Project access", (it) => {
         "trigger:threads:threads_membership_and_parent",
       ]);
       const nullable = new Set([
+        "constraint:requests:requests_requested_by_not_null",
         "constraint:commands:commands_requested_by_not_null",
         "constraint:runs:runs_requested_by_not_null",
         "constraint:runs:runs_membership_generation_not_null",
@@ -488,6 +489,15 @@ describeStore("dormant Project access", (it) => {
               .replace(/\s+NOT VALID$/u, "")
               .replace("'thread.read'::text", "'thread.read'::text, 'project.event'::text") +
               " NOT VALID",
+          );
+        else if (original.name === "constraint:requests:requests_cancellation_reason_check")
+          expect(definition).toBe(
+            original.definition
+              .replace(/\s+NOT VALID$/u, "")
+              .replace(
+                "'authority-revoked'::text]",
+                "'authority-revoked'::text, 'no-eligible-manager'::text]",
+              ) + " NOT VALID",
           );
         else if (nullable.has(original.name)) expect(definition, original.name).toBeUndefined();
         else if (replaced.has(original.name)) expect(definition, original.name).toBeDefined();
