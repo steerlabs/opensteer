@@ -1,3 +1,4 @@
+import { RunnerBootIdSchema } from "@opensteer/protocol";
 import {
   ProjectRunBindingSchema,
   createId,
@@ -36,7 +37,11 @@ describe("WorkspaceExecutionAccessService", () => {
       bindingGeneration: 1,
       grantId: createId("grant"),
     });
-    const planExecutionAccess = vi.fn(() => ({ ...workspace.backing, workspaceId: workspace.id }));
+    const planExecutionAccess = vi.fn(() => ({
+      ...workspace.backing,
+      workspaceId: workspace.id,
+      storageAuthorityId: createId("storageAuthority"),
+    }));
     const service = new WorkspaceExecutionAccessService({
       local: { planExecutionAccess },
       shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
@@ -48,7 +53,13 @@ describe("WorkspaceExecutionAccessService", () => {
     });
     for (const changed of [
       { ...input, workspace: { ...workspace, id: createId("workspace") } },
-      { ...input, runnerIdentity: { ...legacy.runnerIdentity, bootId: "different-boot" } },
+      {
+        ...input,
+        runnerIdentity: {
+          ...legacy.runnerIdentity,
+          bootId: RunnerBootIdSchema.parse("rbt_00000000-0000-4000-8000-000000000001"),
+        },
+      },
       { ...input, runnerIdentity: { ...legacy.runnerIdentity, runnerId: createId("runner") } },
     ])
       await expect(service.planProject(changed)).rejects.toMatchObject({ code: "forbidden" });

@@ -311,6 +311,100 @@ export class ProjectBindingStore {
     this.dependencies = dependencies;
   }
 
+  async renew(input: { readonly binding: ProjectRunBinding; readonly leaseExpiresAt: Date }) {
+    const binding = ProjectRunBindingSchema.parse(input.binding);
+    if (
+      !Number.isFinite(input.leaseExpiresAt.getTime()) ||
+      input.leaseExpiresAt.getTime() <= Date.now()
+    )
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Project renewal lease has already ended",
+      });
+    return this.withCurrentBinding(binding, async (transaction, run) => {
+      await transaction
+        .updateTable("providerSessions")
+        .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+        .where("id", "=", run.providerSessionId)
+        .where("bindingGeneration", "=", binding.bindingGeneration)
+        .execute();
+      return { nextOrdinal: run.nextRunnerOrdinal };
+    });
+  }
+
+  async sessionBound(input: {
+    readonly binding: ProjectRunBinding;
+    readonly providerSessionId: import("@opensteer/core").ProviderSessionId;
+    readonly harnessInstanceId: import("@opensteer/core").HarnessInstanceId;
+    readonly providerSessionReference: string;
+  }) {
+    const binding = ProjectRunBindingSchema.parse(input.binding);
+    z.string().min(1).max(2048).parse(input.providerSessionReference);
+    return this.withCurrentBinding(binding, async (transaction, run) => {
+      if (
+        run.providerSessionId !== input.providerSessionId ||
+        run.harnessInstanceId !== input.harnessInstanceId
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Project native session does not match its stored execution",
+        });
+      const session = await transaction
+        .selectFrom("providerSessions")
+        .select("providerSessionReference")
+        .where("id", "=", input.providerSessionId)
+        .executeTakeFirstOrThrow();
+      if (
+        session.providerSessionReference !== null &&
+        session.providerSessionReference !== input.providerSessionReference
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Project native session was already bound to another identity",
+        });
+      await transaction
+        .updateTable("providerSessions")
+        .set({ providerSessionReference: input.providerSessionReference, updatedAt: new Date() })
+        .where("id", "=", input.providerSessionId)
+        .execute();
+      return { nextOrdinal: run.nextRunnerOrdinal };
+    });
+  }
+
+  private async withCurrentBinding<Result>(
+    binding: ProjectRunBinding,
+    write: (transaction: Transaction<DatabaseSchema>, run: RunRow) => Promise<Result>,
+  ): Promise<Result> {
+    await assertProjectAuthority(this.database);
+    return withDatabaseTransaction(this.database, async (transaction) => {
+      const run = await transaction
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", binding.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!run)
+        throw new OpensteerError({ code: "forbidden", message: "Project binding has no Run" });
+      await lockWorkspaceRow(transaction, binding.workspaceId);
+      await transaction
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "=", binding.threadId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await transaction
+        .selectFrom("providerSessions")
+        .select("id")
+        .where("id", "=", run.providerSessionId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      await assertActiveProjectBinding(transaction, binding, this.dependencies);
+      const result = await write(transaction, run);
+      await assertActiveProjectBinding(transaction, binding, this.dependencies);
+      return result;
+    });
+  }
+
   async acquire(input: z.input<typeof ProjectBindingAcquisitionSchema>) {
     const request = ProjectBindingAcquisitionSchema.parse(input);
     if (request.leaseExpiresAt.getTime() <= Date.now())
