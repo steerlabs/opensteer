@@ -760,7 +760,7 @@ describe("Home conversation", () => {
     // Home's composer carries its real execution pill in place.
     expect(node.querySelector(".composer .exec-controls .exec-pill")).not.toBeNull();
     expect(node.querySelector('[aria-label="AI settings"]')).toBeNull();
-    const task = node.querySelector<HTMLAnchorElement>("a.agent-row__open");
+    const task = node.querySelector<HTMLAnchorElement>("a.agent-step__head");
     expect(task).not.toBeNull();
     const workerThreadId = task?.getAttribute("href")?.replace("/threads/", "");
     expect(workerThreadId).not.toBe(initialHome);
@@ -907,12 +907,11 @@ describe("Home conversation", () => {
         </ToastProvider>,
       ),
     );
-    // The card keeps its word and says on its line why it has not started.
-    expect(node.querySelector(".task-line__state")?.textContent).toBe("Waiting to start");
-    expect(node.querySelector(".agent-row__line")?.lastChild?.textContent).toBe(
-      "Codex 2 is getting ready.",
+    // The row says on its second line that it has not started, and why.
+    expect(node.querySelector(".agent-step__l2")?.textContent).toBe(
+      "Task·Waiting to start·Codex 2 is getting ready.",
     );
-    await act(async () => node.querySelector<HTMLAnchorElement>("a.agent-row__open")?.click());
+    await act(async () => node.querySelector<HTMLAnchorElement>("a.agent-step__head")?.click());
     // The task's head says why it has not started, under its name.
     expect(node.querySelector(".conv-header__cause")?.textContent).toBe(
       "Codex 2 is getting ready.",

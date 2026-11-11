@@ -131,6 +131,7 @@ const harness = vi.hoisted(() => ({
 
 const selectionCalls: { text: string | undefined; start: number; end: number }[] = [];
 let dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
+vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));

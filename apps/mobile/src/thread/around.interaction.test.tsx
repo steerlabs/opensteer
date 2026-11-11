@@ -4,7 +4,7 @@ import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { conversationSubagents, type HostClient, type HostSnapshot } from "@opensteer/client/host";
+import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { headerFontScaleLimit } from "../theme.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
@@ -210,10 +210,6 @@ vi.mock("./task-status.js", () => ({
   TaskStateIndicator: () => null,
   TaskStatus: ({ word }: { readonly word: string }) => <span>{word}</span>,
 }));
-vi.mock("./subagent-stop.js", () => ({
-  SubagentStop: ({ children }: { children: (onStop: () => void) => ReactNode }) =>
-    children(() => undefined),
-}));
 vi.mock("./thread-menu.js", () => ({
   ThreadMenu: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
 }));
@@ -405,9 +401,7 @@ describe("the conversation's bar", () => {
     expect(button.getAttribute("aria-label")).toBe(
       `${places.length} places open, ${working} working; 1 task running, one needs you; ${automations} schedules`,
     );
-    expect(button.title).toBe(
-      "Shows the places, tasks, agents and schedules around this conversation",
-    );
+    expect(button.title).toBe("Shows the places, tasks and schedules around this conversation");
     expect(
       [...button.querySelectorAll("span")]
         .filter((node) => /^\d+$/.test(node.textContent ?? ""))
@@ -736,49 +730,6 @@ describe("Around this thread", () => {
       type: "PUSH",
       name: "Thread",
       params: { deploymentId, threadId: w.titled("Book a table for Friday") },
-    });
-  });
-
-  // Failure: the pill's tap lands on another page, the Agents page lists a
-  // task the Tasks tile already holds, a settled helper sits among the live
-  // ones, or a row opens anything but that helper's own view.
-  it("opens on Agents when asked, live helpers first, each row opening its own view", async () => {
-    const w = await world();
-    const threadId = w.titled("Subagents everywhere");
-    const roster = conversationSubagents(w.snapshot(), threadId);
-    const live = roster.now.filter(({ origin }) => origin === "subagent");
-    const settled = roster.earlier.filter(({ origin }) => origin === "subagent");
-    harness.routes = [
-      { name: "Home", params: { deploymentId } },
-      { name: "ThreadAround", params: { deploymentId, threadId } },
-    ];
-    const container = render(
-      <AroundScreen route={{ params: { deploymentId, section: "agents", threadId } }} />,
-    );
-    expect(chosen(container)).toBe("Agents");
-    const page = container.querySelector<HTMLElement>('section[aria-label="Agents"]')!;
-    const titles = [...page.querySelectorAll("button[aria-label]")].map(
-      (node) => node.getAttribute("aria-label")!.split(",")[0]!,
-    );
-    const at = (title: string) => titles.indexOf(title);
-    for (const card of [...live, ...settled]) expect(at(card.title)).toBeGreaterThanOrEqual(0);
-    expect(Math.max(...live.map(({ title }) => at(title)))).toBeLessThan(
-      Math.min(...settled.map(({ title }) => at(title))),
-    );
-    for (const task of roster.now.filter(({ origin }) => origin === "task"))
-      expect(titles).not.toContain(task.title);
-    expect(page.textContent).toContain("Now");
-    const first = live.find(({ kind }) => kind === "subagent")!;
-    act(() => named(page, new RegExp(`^${first.title},`, "u")).click());
-    expect(harness.goBack).toHaveBeenCalledOnce();
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "PUSH",
-      name: "Subagent",
-      params: {
-        deploymentId,
-        nodeId: first.opens?.kind === "subagent" && first.opens.nodeId,
-        threadId,
-      },
     });
   });
 

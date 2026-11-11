@@ -1,6 +1,13 @@
 import { useNativeBrowserLayer } from "../native-browser-overlays.js";
 import { observeResize } from "@opensteer/shared/resizeObserver";
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  createContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import {
   PaneResizeHandle,
   usePersistedPaneSize,
@@ -9,6 +16,12 @@ import {
 import { useVisualViewportKeyboardInset } from "../visual-viewport-keyboard.js";
 import { useWorkspace } from "./workspace-context.js";
 import { ToastToolbarContext, useToastPlacement } from "../toast.js";
+
+/**
+ * Beside the conversation alone, on the ground: where a wide conversation
+ * opens one of its subagents without covering itself. Null while docked.
+ */
+export const BesideSlot = createContext<HTMLElement | null>(null);
 
 const dockWidthKey = "opensteer.dock-width";
 const dockWidthRange: PaneSizeRange = { defaultValue: 400, max: 560, min: 340, step: 20 };
@@ -37,6 +50,7 @@ export function WorkspaceLayout({
   const layoutRef = useRef<HTMLDivElement | null>(null);
   const conversationRef = useRef<HTMLElement | null>(null);
   const [toolbar, setToolbar] = useState<HTMLElement | null>(null);
+  const [beside, setBeside] = useState<HTMLElement | null>(null);
   const setToastPlacement = useToastPlacement();
   const [width, setWidth] = useState<number | null>(null);
   const [dockPreference, setDockPreference, commitDockPreference] = usePersistedPaneSize(
@@ -192,8 +206,9 @@ export function WorkspaceLayout({
         inert={conversationHidden}
         ref={conversationRef}
       >
-        {children}
+        <BesideSlot value={work ? null : beside}>{children}</BesideSlot>
       </section>
+      {work ? null : <div className="workspace__beside" ref={setBeside} />}
     </div>
   );
 }

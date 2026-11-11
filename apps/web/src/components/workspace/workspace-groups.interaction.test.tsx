@@ -664,7 +664,7 @@ describe("task marks", () => {
         return "/";
       });
       // The line draws only the task's own mark; who does it is in its name and tooltip.
-      const card = () => element(".agent-row__open");
+      const card = () => element("a.agent-step__head");
       expect(card().querySelector(".chat-orb, .workspace-orb")).toBeNull();
       if (owner === "unknown") {
         expect(card().textContent).not.toContain("Opensteer");
@@ -676,7 +676,7 @@ describe("task marks", () => {
         expect(card().getAttribute("title")).toContain(name);
         expect(card().getAttribute("aria-label")).toContain(name);
       }
-      const mark = element(".agent-row__mark .task-mark").outerHTML;
+      const mark = element(".agent-mark .task-mark").outerHTML;
       catalogResolved = true;
       await act(async () => {
         await client.dispatch({
@@ -687,7 +687,7 @@ describe("task marks", () => {
         });
       });
       await settle();
-      expect(element(".agent-row__mark .task-mark").outerHTML).toBe(mark);
+      expect(element(".agent-mark .task-mark").outerHTML).toBe(mark);
       expect(card().querySelector(".chat-orb, .workspace-orb")).toBeNull();
       if (owner !== "main") {
         expect(card().getAttribute("title")).toContain("Travel");

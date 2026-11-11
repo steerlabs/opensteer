@@ -11,8 +11,14 @@ const native = vi.hoisted(() => ({
   alert: vi.fn(),
   bodyHeight: 60 as number | null,
   navigate: vi.fn(),
+  pushSubagent: vi.fn(),
 }));
 
+vi.mock("./agent-mark.js", () => ({
+  AgentEngine: ({ children }: { readonly children: unknown }) => children,
+  AskerMark: () => null,
+  threadEngine: () => null,
+}));
 vi.mock("./password-approval-auth.js", () => ({
   authenticatePasswordApproval: vi.fn(async () => true),
 }));
@@ -59,6 +65,7 @@ vi.mock("../client/mobile-client.js", () => ({
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
 vi.mock("../navigation-ref.js", () => ({
   navigationRef: { isReady: () => true, navigate: native.navigate },
+  pushSubagent: native.pushSubagent,
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: (props: { children?: ReactNode }) => <span>{props.children}</span>,
@@ -141,6 +148,7 @@ async function render(
     readonly canRespond?: boolean;
     readonly dispatch?: ReturnType<typeof vi.fn>;
     readonly driverKind?: string;
+    readonly transcripts?: Record<string, readonly object[]>;
     readonly waiting?: readonly Request[];
   } = {},
 ): Promise<ReturnType<typeof vi.fn>> {
@@ -148,6 +156,7 @@ async function render(
   const snapshot = {
     harnesses: [{ driverKind: options.driverKind ?? "antigravity", id: "h1" }],
     threads: [{ harnessInstanceId: "h1", id: threadId }],
+    transcripts: options.transcripts ?? {},
     waitingRequests: (options.waiting ?? []).map((request) => ({ assignments: [], request })),
   };
   const container = document.createElement("div");
@@ -432,6 +441,41 @@ describe("RequestCard", () => {
       deploymentId: "dep",
       requestId: other.id,
       threadId: other.originatingThreadId,
+    });
+  });
+
+  // A question has one place: the card names the subagent that asked and the
+  // one it runs in, and opens the asker, whose own view holds it too.
+  it("names the subagent that asked, beside where it stands in the queue, and opens it", async () => {
+    const node = (nodeId: string, title: string, parentNodeId: string | null) => ({
+      kind: "node",
+      nodeId,
+      nodeKind: "subagent",
+      parentNodeId,
+      title,
+    });
+    const asked = approval({ originatingNodeId: "node_child" }, { title: "Run stripe listen?" });
+    const other = approval(
+      { id: "req_00000000-0000-4000-8000-000000000002" },
+      { title: "Change these files?" },
+    );
+    native.pushSubagent.mockClear();
+    await render(surfaceOf(asked), {
+      transcripts: {
+        [threadId]: [
+          node("node_parent", "Trace the payment flow", null),
+          node("node_child", "Check webhook retries", "node_parent"),
+        ],
+      },
+      waiting: [asked, other],
+    });
+    expect(text()).toContain("Check webhook retries · in Trace the payment flow");
+    expect(text()).toContain("1 of 2");
+    await press("Asked by subagent Check webhook retries, in Trace the payment flow. Open it");
+    expect(native.pushSubagent).toHaveBeenCalledExactlyOnceWith({
+      deploymentId: "dep",
+      nodeId: "node_child",
+      threadId,
     });
   });
 

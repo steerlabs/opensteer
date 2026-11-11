@@ -11,6 +11,7 @@ export const screenPresentations = {
   RequestSheet: "formSheet",
   ConversationActivity: "formSheet",
   ThreadAround: "formSheet",
+  RunningNow: "formSheet",
   Settings: "modal",
   Chrome: "modal",
   BrowserProfiles: "modal",

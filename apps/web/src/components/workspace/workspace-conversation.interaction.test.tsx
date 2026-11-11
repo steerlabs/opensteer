@@ -638,13 +638,15 @@ describe("task titles", () => {
 
   it("updates a delegated task line when its worker is renamed", async () => {
     await mount("/");
-    const card = element<HTMLAnchorElement>(".agent-row__open");
+    const card = element<HTMLAnchorElement>("a.agent-step__head");
     const worker = card.getAttribute("href")!.match(/threads\/([^?]+)/u)![1]!;
     await act(async () => {
       await client.renameThread(worker, "Renamed delegated task");
     });
     await settle();
-    expect(element(".agent-row__open").textContent).toBe("Renamed delegated task");
+    expect(element("a.agent-step__head .agent-step__title").textContent).toBe(
+      "Renamed delegated task",
+    );
   });
 
   it("refreshes a completed task line from a higher assignment revision without holding its worker", async () => {
@@ -689,7 +691,8 @@ describe("task titles", () => {
       await goTo!("/?unheld=1");
     });
     expect(client.getSnapshot().threads.some(({ id }) => id === worker)).toBe(false);
-    const cardTitle = () => element(`.agent-row__open[href*="${worker}"]`).textContent;
+    const cardTitle = () =>
+      element(`a.agent-step__head[href*="${worker}"] .agent-step__title`).textContent;
     expect(cardTitle()).toBe(assignment.workerThread.title);
     await act(async () => {
       await client.renameThread(worker, "Guest room mattress");

@@ -99,8 +99,9 @@ import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
 import { ComposerDockLayout } from "./composer-dock.js";
-import { AgentListNestedContext, AgentMemoryContext } from "./agent-cards.js";
-import { AgentsPill } from "./agents-pill.js";
+import { AgentEngine } from "./agent-mark.js";
+import { AgentListNestedContext, AgentMemoryContext } from "./subagent-rows.js";
+import { RunningNowCapsule } from "./running-now.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { QueuedMessages } from "./queued-messages.js";
@@ -905,8 +906,8 @@ function ThreadPaneForUser(
   // Which helper groups and phases the reader opened or closed, and which
   // cards stood outside a fold, for as long as this pane lives.
   const agentMemory = useRef(new Map<string, boolean>()).current;
-  const openAgents = useCallback(
-    () => navigation.navigate("ThreadAround", { deploymentId, section: "agents", threadId }),
+  const openRunningNow = useCallback(
+    () => navigation.navigate("RunningNow", { deploymentId, threadId }),
     [deploymentId, navigation, threadId],
   );
   // What the jump pill says while the reader is away from a turn at work on
@@ -1364,8 +1365,14 @@ function ThreadPaneForUser(
   );
   const dock = (
     <>
-      {snapshot.user === null || voiceThread ? null : (
-        <AgentsPill hostClient={hostClient} onOpen={openAgents} threadId={threadId} />
+      {/* An older window can't say what runs now; back at the latest, it returns. */}
+      {snapshot.user === null || voiceThread || historical ? null : (
+        <RunningNowCapsule
+          hostClient={hostClient}
+          onOpen={openRunningNow}
+          reachable={live}
+          threadId={threadId}
+        />
       )}
       {failure !== null ? (
         <Notice
@@ -1508,30 +1515,32 @@ function ThreadPaneForUser(
   );
   return (
     <TaskScopeContext.Provider value={taskScope}>
-      <AgentMemoryContext value={agentMemory}>
-        <AgentListNestedContext value>
-          <TranscriptComputersContext.Provider value={computers}>
-            <TranscriptSurfacesContext.Provider value={surfaces}>
-              <TranscriptAppTabsContext.Provider value={appTabs}>
-                {/* Beside a page, the screen already keeps the keyboard clear. */}
-                <ConversationLinksProvider
-                  deploymentId={deploymentId}
-                  hostClient={hostClient}
-                  threadId={threadId}
-                >
-                  <ComposerDockLayout
-                    avoidKeyboard={companion === null}
-                    dock={dock}
-                    keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
+      <AgentEngine value={placement?.driverKind ?? null}>
+        <AgentMemoryContext value={agentMemory}>
+          <AgentListNestedContext value>
+            <TranscriptComputersContext.Provider value={computers}>
+              <TranscriptSurfacesContext.Provider value={surfaces}>
+                <TranscriptAppTabsContext.Provider value={appTabs}>
+                  {/* Beside a page, the screen already keeps the keyboard clear. */}
+                  <ConversationLinksProvider
+                    deploymentId={deploymentId}
+                    hostClient={hostClient}
+                    threadId={threadId}
                   >
-                    {transcript}
-                  </ComposerDockLayout>
-                </ConversationLinksProvider>
-              </TranscriptAppTabsContext.Provider>
-            </TranscriptSurfacesContext.Provider>
-          </TranscriptComputersContext.Provider>
-        </AgentListNestedContext>
-      </AgentMemoryContext>
+                    <ComposerDockLayout
+                      avoidKeyboard={companion === null}
+                      dock={dock}
+                      keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
+                    >
+                      {transcript}
+                    </ComposerDockLayout>
+                  </ConversationLinksProvider>
+                </TranscriptAppTabsContext.Provider>
+              </TranscriptSurfacesContext.Provider>
+            </TranscriptComputersContext.Provider>
+          </AgentListNestedContext>
+        </AgentMemoryContext>
+      </AgentEngine>
     </TaskScopeContext.Provider>
   );
 }

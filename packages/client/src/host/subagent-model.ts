@@ -9,20 +9,41 @@ import {
   type AssignmentReader,
 } from "./assignment-presentation.js";
 import type { TaskMark } from "./task-marks.js";
-import type { FamilyTask } from "./task-family.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
 export type AgentTone = "working" | "needs-you" | "waiting" | "finished" | "failed" | "stopped";
+/**
+ * One phrase of a row's second line. `live` is reported progress that rolls
+ * in as it changes; `attention` and `failed` carry their meaning in words,
+ * which a screen may also colour.
+ */
+export interface AgentPhrase {
+  readonly text: string;
+  readonly tone: "live" | "attention" | "failed" | "quiet";
+}
 export interface AgentCard {
   readonly stop?: { readonly threadId: string; readonly nodeId: string } | null;
   readonly key: string;
   readonly origin: "subagent" | "task";
   readonly kind: "subagent" | "workflow";
+  /** The word a lone row's second line starts with. */
+  readonly noun: "Subagent" | "Task" | "Workflow";
+  readonly nodeId: string | null;
+  readonly parentNodeId: string | null;
   readonly title: string;
   readonly tone: AgentTone;
   readonly word: string;
   readonly moving: boolean;
+  /** Live by its status, but the Host is out of reach: what it last reported. */
+  readonly lastKnown: boolean;
+  /** Its engine can stop it on its own, and a stop was asked for. */
+  readonly stopSupported: boolean;
+  readonly stopping: boolean;
+  /** The one thing worth knowing, in words, for the row's second line. */
+  readonly detail: readonly AgentPhrase[];
+  /** The subagents it started itself, which hang one step in under it. */
+  readonly children: readonly AgentCard[];
   readonly line: {
     readonly kind: "progress" | "question" | "result" | "error" | "prompt";
     readonly text: string;
@@ -51,6 +72,8 @@ export interface WorkflowView {
     readonly total: number;
     readonly word: string;
     readonly tone: AgentTone | "pending";
+    /** "2 working · 1 finished", or "Not started". */
+    readonly detail: readonly AgentPhrase[];
     readonly members: readonly AgentCard[];
   }[];
   readonly openPhase: number | null;
@@ -61,6 +84,16 @@ export interface AgentGroup {
   readonly noun: "subagent" | "task";
   readonly cards: readonly AgentCard[];
   readonly summary: string;
+  /** "3 subagents". */
+  readonly label: string;
+  /** "1 needs you · 2 working · 1 finished". */
+  readonly detail: readonly AgentPhrase[];
+  /** The most urgent member, whose mark the group wears. */
+  readonly lead: AgentCard;
+  /** Thirty or more members list as one line each. */
+  readonly compact: boolean;
+  /** "3 subagents: 2 working, 1 finished". */
+  readonly name: string;
   readonly live: boolean;
   readonly startedAt: string;
   readonly endedAt: string | null;
@@ -105,6 +138,41 @@ export function subagentPreview(text: string | null | undefined): string | null 
 export function isActiveSubagent(card: Pick<AgentCard, "tone">): boolean {
   return card.tone === "working" || card.tone === "waiting" || card.tone === "needs-you";
 }
+/** The one status dot a row's mark wears; a finished one wears none. */
+export type AgentDot = "working" | "needs" | "waiting" | "failed" | "stopped" | "last-known";
+export function agentDot(
+  card: Pick<AgentCard, "lastKnown" | "stopping" | "tone">,
+): AgentDot | null {
+  if (card.lastKnown) return "last-known";
+  if (card.stopping) return "waiting";
+  switch (card.tone) {
+    case "working":
+      return "working";
+    case "needs-you":
+      return "needs";
+    case "waiting":
+      return "waiting";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    case "finished":
+      return null;
+  }
+}
+/** Thirty or more side by side list as one line each. */
+export function agentsCompact(count: number): boolean {
+  return count >= 30;
+}
+/** A compact row says only where it stands, unless it is working and has said what on. */
+export function compactAgentPhrases(card: AgentCard): readonly AgentPhrase[] {
+  const [first] = card.detail;
+  if (card.tone === "working" && first?.tone === "live") return [first];
+  if (card.tone === "finished") return card.detail;
+  if (card.tone === "needs-you") return [{ text: "Needs you", tone: "attention" }];
+  if (card.tone === "failed") return [{ text: "Couldn't finish", tone: "failed" }];
+  return [{ text: card.word, tone: "quiet" }];
+}
 function countLabel(count: number, noun: "subagent" | "task"): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -117,10 +185,41 @@ export function subagentGroup(cards: readonly AgentCard[]): AgentGroup {
   const counts = { working: 0, "needs-you": 0, finished: 0, failed: 0, stopped: 0 };
   for (const card of cards) counts[card.tone === "waiting" ? "working" : card.tone]++;
   const live = cards.some(isActiveSubagent);
+  const lastKnown = cards.filter((card) => card.lastKnown).length;
+  const detail: AgentPhrase[] = [
+    ...(counts["needs-you"]
+      ? [
+          {
+            text: `${counts["needs-you"]} ${counts["needs-you"] === 1 ? "needs" : "need"} you`,
+            tone: "attention" as const,
+          },
+        ]
+      : []),
+    ...(lastKnown
+      ? [{ text: `${lastKnown} last known`, tone: "quiet" as const }]
+      : counts.working
+        ? [{ text: `${counts.working} working`, tone: "quiet" as const }]
+        : []),
+    ...(counts.finished ? [{ text: `${counts.finished} finished`, tone: "quiet" as const }] : []),
+    ...(counts.failed
+      ? [{ text: `${counts.failed} couldn't finish`, tone: "failed" as const }]
+      : []),
+    ...(counts.stopped ? [{ text: `${counts.stopped} stopped`, tone: "quiet" as const }] : []),
+  ];
+  const label = countLabel(cards.length, noun);
   return {
     key: first.key,
     noun,
     cards,
+    label,
+    detail,
+    lead:
+      cards.find((card) => card.tone === "needs-you") ??
+      cards.find(isActiveSubagent) ??
+      cards.find((card) => card.tone === "failed") ??
+      first,
+    compact: agentsCompact(cards.length),
+    name: `${label}: ${detail.map((phrase) => phrase.text).join(", ")}`,
     live,
     startedAt: cards.map((card) => card.startedAt).sort()[0]!,
     endedAt: live
@@ -147,11 +246,46 @@ function previewLine(
   const text = subagentPreview(value);
   return text ? { kind, text } : null;
 }
+/**
+ * Keeps a model object's identity while its contents stay the same, so a
+ * screen that draws each row once per object redraws only what changed: one
+ * subagent's progress leaves every other row the same object.
+ */
+export class SubagentCache {
+  readonly #items = new Map<string, unknown>();
+  keep<T>(key: string, next: T): T {
+    const prior = this.#items.get(key) as T | undefined;
+    if (prior !== undefined && sameShape(prior, next)) return prior;
+    this.#items.set(key, next);
+    return next;
+  }
+}
+function sameShape(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null)
+    return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((key) =>
+    sameShape((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]),
+  );
+}
+/** Subagents this screen asked to stop, so a stopped one can say who stopped it. */
+const stoppedHere = new Set<string>();
+export function noteSubagentStop(nodeId: string): void {
+  stoppedHere.add(nodeId);
+}
+function firstLine(text: string | null | undefined): string | null {
+  return subagentPreview(text?.split("\n").find((line) => line.trim().length > 0));
+}
 export function nodeSubagentCard(
   node: NodeEntry,
   threadId: string,
   nodes: readonly NodeEntry[] = [],
   reader?: SubagentReader,
+  cache?: SubagentCache,
+  ancestors: ReadonlySet<string> = new Set(),
 ): AgentCard | null {
   if (node.nodeKind === "task") return null;
   const pending = Object.values(reader?.requests ?? {})
@@ -178,7 +312,16 @@ export function nodeSubagentCard(
   const model =
     node.model && reader ? catalogModelDisplayName(node.model, reader.environments) : null;
   const workflow =
-    node.nodeKind === "workflow" ? workflowView(node, threadId, nodes, reader) : null;
+    node.nodeKind === "workflow" ? workflowView(node, threadId, nodes, reader, cache) : null;
+  const lineage = new Set(ancestors).add(node.nodeId);
+  const children =
+    node.nodeKind === "workflow"
+      ? []
+      : nodes.flatMap((child) => {
+          if (child.parentNodeId !== node.nodeId || lineage.has(child.nodeId)) return [];
+          const card = nodeSubagentCard(child, threadId, nodes, reader, cache, lineage);
+          return card ? [card] : [];
+        });
   const line =
     tone === "needs-you" && request
       ? previewLine("question", requestTitleText(request.presentation))
@@ -194,18 +337,74 @@ export function nodeSubagentCard(
                 previewLine("prompt", node.prompt?.split("\n")[0]))
               : (previewLine("progress", node.progress) ??
                 previewLine("prompt", node.prompt?.split("\n")[0]));
-  return {
+  const stopping = node.status === "running" && node.stopping === true;
+  const lastKnown = !live && node.status === "running";
+  const progress = subagentPreview(node.progress);
+  const waitingOn =
+    tone === "working" && !progress
+      ? children.find((child) => child.tone === "working" || child.tone === "needs-you")
+      : undefined;
+  const quiet = (text: string): AgentPhrase => ({ text, tone: "quiet" });
+  const detail: AgentPhrase[] = workflow
+    ? [quiet(workflow.summary)]
+    : lastKnown
+      ? [quiet("Last known"), ...(progress ? [quiet(progress)] : [])]
+      : stopping
+        ? [quiet("Stopping…")]
+        : tone === "needs-you"
+          ? [{ text: "Waiting for your answer", tone: "attention" }]
+          : tone === "waiting"
+            ? [quiet("Waiting for an answer")]
+            : tone === "working"
+              ? waitingOn
+                ? [quiet(`Waiting for ${waitingOn.title}`)]
+                : [
+                    progress
+                      ? { text: progress, tone: "live" }
+                      : quiet(firstLine(node.prompt) ?? "Starting"),
+                  ]
+              : tone === "finished"
+                ? [quiet(subagentPreview(node.result) ?? "Finished")]
+                : tone === "failed"
+                  ? [
+                      { text: "Couldn't finish", tone: "failed" },
+                      ...(subagentPreview(node.result)
+                        ? [quiet(subagentPreview(node.result)!)]
+                        : []),
+                    ]
+                  : [
+                      quiet("Stopped"),
+                      ...(subagentPreview(node.result)
+                        ? [quiet(subagentPreview(node.result)!)]
+                        : stoppedHere.has(node.nodeId)
+                          ? [quiet("Stopped by you")]
+                          : []),
+                    ];
+  const card: AgentCard = {
+    // One waiting on the person is answered, not stopped: its question is the way out.
     stop:
-      live && node.status === "running" && node.stopSupported && !node.stopping
+      live &&
+      node.status === "running" &&
+      node.stopSupported &&
+      !node.stopping &&
+      tone !== "needs-you"
         ? { threadId, nodeId: node.nodeId }
         : null,
     key: `node:${node.nodeId}`,
     origin: "subagent",
     kind: node.nodeKind,
+    noun: node.nodeKind === "workflow" ? "Workflow" : "Subagent",
+    nodeId: node.nodeId,
+    parentNodeId: node.parentNodeId,
     title,
     tone,
-    word: `${!live && isActiveSubagent({ tone }) ? "Last known: " : ""}${node.status === "running" && node.stopping ? "Stopping" : words[tone]}`,
+    word: `${lastKnown ? "Last known: " : ""}${stopping ? "Stopping" : words[tone]}`,
     moving: live && tone === "working" && !node.stopping,
+    lastKnown,
+    stopSupported: node.stopSupported === true,
+    stopping,
+    detail,
+    children,
     line,
     modelLabel: model
       ? `${model}${node.effort ? ` · ${node.effort[0]!.toUpperCase()}${node.effort.slice(1)}` : ""}`
@@ -214,16 +413,18 @@ export function nodeSubagentCard(
     endedAt: node.completedAt,
     opens: { kind: "subagent", threadId, nodeId: node.nodeId },
     requestId: tone === "needs-you" ? (answerable?.id ?? null) : null,
-    announcement: `${title} ${node.status === "running" && node.stopping ? "is stopping" : tone === "working" ? "is working" : words[tone].toLowerCase()}`,
+    announcement: `${title} ${stopping ? "is stopping" : tone === "working" ? "is working" : words[tone].toLowerCase()}`,
     workflow,
     task: null,
   };
+  return cache ? cache.keep(card.key, card) : card;
 }
 function workflowView(
   node: NodeEntry,
   threadId: string,
   nodes: readonly NodeEntry[],
   reader?: SubagentReader,
+  cache?: SubagentCache,
 ): WorkflowView {
   const children = nodes.filter(
     (member) =>
@@ -239,11 +440,20 @@ function workflowView(
       const members = children
         .filter((child) => (child.phaseIndex ?? 0) === index)
         .flatMap((child) => {
-          const card = nodeSubagentCard(child, threadId, [], reader);
+          const card = nodeSubagentCard(
+            child,
+            threadId,
+            nodes,
+            reader,
+            cache,
+            new Set([node.nodeId]),
+          );
           return card ? [card] : [];
         });
       const settled = members.filter((card) => !isActiveSubagent(card)).length;
       const failed = members.filter((card) => card.tone === "failed").length;
+      const working = members.filter(isActiveSubagent).length;
+      const finished = members.filter((card) => card.tone === "finished").length;
       const tone = members.some((card) => card.tone === "needs-you")
         ? "needs-you"
         : failed
@@ -262,6 +472,16 @@ function workflowView(
         tone,
         word:
           tone === "pending" ? "Not started" : tone === "failed" ? `${failed} failed` : words[tone],
+        detail: members.length
+          ? [
+              ...(working ? [{ text: `${working} working`, tone: "quiet" as const }] : []),
+              ...(finished ? [{ text: `${finished} finished`, tone: "quiet" as const }] : []),
+              ...(failed ? [{ text: `${failed} couldn't finish`, tone: "failed" as const }] : []),
+              ...(settled - finished - failed
+                ? [{ text: `${settled - finished - failed} stopped`, tone: "quiet" as const }]
+                : []),
+            ]
+          : [{ text: "Not started", tone: "quiet" as const }],
       } as const;
     });
   const openPhase =
@@ -274,16 +494,17 @@ function workflowView(
     node.status !== "running" ||
     (phases.length > 0 &&
       phases.every((phase) => phase.total > 0 && phase.total === phase.settled));
-  const summary = settled
-    ? `${phases.length} phases · ${phases.reduce((n, phase) => n + phase.total, 0)} subagents`
-    : current
-      ? `Phase ${current.index + 1} of ${phases.length} · ${current.title} · ${current.settled} of ${current.total} finished`
-      : `${phases.length} phases · 0 subagents`;
+  const position = phases.findIndex((phase) => phase.index === current?.index);
+  const summary =
+    !settled && current
+      ? `${current.title}, phase ${position + 1} of ${phases.length}`
+      : `${phases.length} ${phases.length === 1 ? "phase" : "phases"}`;
   return { phases, openPhase, summary };
 }
 export function assignmentSubagentCard(
   assignment: AssignmentSummary,
   reader: AssignmentReader,
+  cache?: SubagentCache,
 ): AgentCard {
   const presentation = assignmentPresentation(assignment, reader);
   const tones = {
@@ -297,10 +518,31 @@ export function assignmentSubagentCard(
   } as const;
   const tone = tones[presentation.tone];
   const request = requestWaitingOnAssignment(reader.waitingRequests, assignment.id)?.request;
-  return {
+  const said = subagentPreview(presentation.detail?.text);
+  const result = subagentPreview(assignment.resultPreview);
+  const quiet = (text: string): AgentPhrase => ({ text, tone: "quiet" });
+  const detail: AgentPhrase[] =
+    tone === "needs-you"
+      ? [{ text: "Asked you a question", tone: "attention" }]
+      : tone === "working"
+        ? [said ? { text: said, tone: presentation.moving ? "live" : "quiet" } : quiet("Working")]
+        : tone === "finished"
+          ? [quiet(result ?? presentation.word)]
+          : tone === "failed"
+            ? [{ text: "Couldn't finish", tone: "failed" }, ...(result ? [quiet(result)] : [])]
+            : [quiet(presentation.word), ...(said ? [quiet(said)] : [])];
+  const card: AgentCard = {
     key: `task:${assignment.id}`,
     origin: "task",
     kind: "subagent",
+    noun: "Task",
+    nodeId: null,
+    parentNodeId: null,
+    lastKnown: false,
+    stopSupported: false,
+    stopping: false,
+    detail,
+    children: [],
     title: subagentTitle(
       reader.threads.find((thread) => thread.id === assignment.workerThread.id)?.title ??
         assignment.workerThread.title,
@@ -330,6 +572,7 @@ export function assignmentSubagentCard(
     workflow: null,
     task: { assignmentId: assignment.id, mark: assignmentMark(assignment, reader), menu: true },
   };
+  return cache ? cache.keep(card.key, card) : card;
 }
 /** `tasks: false` leaves delegated tasks to a surface that lists them on their own. */
 export function conversationSubagents(
@@ -377,23 +620,6 @@ export function conversationSubagents(
       : null,
   };
 }
-export type EarlierHelper =
-  | { readonly kind: "agent"; readonly card: AgentCard }
-  | { readonly kind: "task"; readonly task: FamilyTask };
-/** Settled subagents and settled tasks as one list, newest end first. */
-export function earlierHelpers(
-  cards: readonly AgentCard[],
-  tasks: readonly FamilyTask[],
-): readonly EarlierHelper[] {
-  return [
-    ...cards.map(
-      (card) => ({ at: card.endedAt ?? card.startedAt, item: { kind: "agent", card } }) as const,
-    ),
-    ...tasks.map((task) => ({ at: task.finishedAt ?? "", item: { kind: "task", task } }) as const),
-  ]
-    .sort((a, b) => b.at.localeCompare(a.at))
-    .map(({ item }) => item);
-}
 export type SubagentTurnRow =
   | { readonly kind: "work"; readonly entry: WorkEntry }
   | { readonly kind: "agents"; readonly group: AgentGroup }
@@ -414,13 +640,18 @@ export function subagentTurnModel(
     folded: false,
     keptKeys: [],
   },
+  cache?: SubagentCache,
 ): TurnAgents {
   const nodes = transcriptNodes(reader.transcripts[threadId] ?? []);
   const rows: SubagentTurnRow[] = [];
   let pending: AgentCard[] = [];
+  const group = (cards: readonly AgentCard[], key = "") => {
+    const made = subagentGroup(cards);
+    return cache ? cache.keep(`group${key}:${made.key}`, made) : made;
+  };
   const flush = () => {
     if (pending.length) {
-      rows.push({ kind: "agents", group: subagentGroup(pending) });
+      rows.push({ kind: "agents", group: group(pending) });
       pending = [];
     }
   };
@@ -429,9 +660,9 @@ export function subagentTurnModel(
     if (entry.kind === "node" && entry.nodeKind !== "task" && entry.parentNodeId) continue;
     const card =
       entry.kind === "node"
-        ? nodeSubagentCard(entry, threadId, nodes, reader)
+        ? nodeSubagentCard(entry, threadId, nodes, reader, cache)
         : entry.kind === "assignment"
-          ? assignmentSubagentCard(currentAssignment(entry, reader.assignments), reader)
+          ? assignmentSubagentCard(currentAssignment(entry, reader.assignments), reader, cache)
           : null;
     if (card?.kind === "workflow") {
       flush();
@@ -458,8 +689,8 @@ export function subagentTurnModel(
     rows,
     groups,
     keptKeys: [...keys],
-    keptOutside: fold.folded && nodeCards.length ? subagentGroup(nodeCards) : null,
-    keptTasks: fold.folded && tasks.length ? subagentGroup(tasks) : null,
+    keptOutside: fold.folded && nodeCards.length ? group(nodeCards, ":kept") : null,
+    keptTasks: fold.folded && tasks.length ? group(tasks, ":kept") : null,
     foldLabel: workSummary(turn)?.label ?? null,
   };
 }
@@ -530,26 +761,16 @@ function spokenDuration(milliseconds: number): string {
     .map(([count, unit]) => `${count} ${unit}${count === 1 ? "" : "s"}`);
   return spoken.length ? spoken.join(" ") : "0 seconds";
 }
-/** A card's accessible name; elapsed is read once, never as it ticks. */
+/**
+ * A row's accessible name, "Subagent Trace the payment flow, Working, 3
+ * minutes. Open"; elapsed is read once, never as it ticks.
+ */
 export function agentCardLabel(card: AgentCard, now: number, owner: string | null = null): string {
-  if (card.origin === "task")
-    return `${card.title}${owner ? `, ${owner}` : ""}, task, ${card.word}${card.line ? `. ${card.line.text}` : ""}. Open task`;
-  if (card.workflow) {
-    const phase = card.workflow.phases.findIndex(
-      (candidate) => candidate.index === card.workflow?.openPhase,
-    );
-    return [
-      `${card.title}, workflow, ${card.word}`,
-      ...(phase >= 0 ? [`phase ${phase + 1} of ${card.workflow.phases.length}`] : []),
-    ].join(", ");
-  }
   const end = card.endedAt ? Date.parse(card.endedAt) : now;
-  return `${card.title}, subagent, ${card.word}, ${spokenDuration(end - Date.parse(card.startedAt))}.${card.line ? ` ${card.line.text}` : ""}`;
+  const spoken = spokenDuration(end - Date.parse(card.startedAt));
+  if (card.workflow) return `Workflow ${card.title}, ${card.word}: ${card.workflow.summary}`;
+  return `${card.noun} ${card.title}${owner ? `, ${owner}` : ""}, ${card.word}, ${spoken}. ${card.origin === "task" ? "Open the task" : "Open"}`;
 }
-export function agentPhaseLabel(phase: WorkflowView["phases"][number]): string {
-  return `Phase ${phase.index + 1}, ${phase.title}, ${phase.word}, ${phase.settled} of ${phase.total} finished`;
-}
-/** The word in a workflow member's fixed-width status slot. */
-export function agentMemberWord(card: AgentCard): string {
-  return card.tone === "failed" ? card.word.replace(words.failed, "Failed") : card.word;
+export function agentPhaseLabel(phase: WorkflowView["phases"][number], position: number): string {
+  return `Phase ${position}, ${phase.title}: ${phase.detail.map((part) => part.text).join(", ")}`;
 }

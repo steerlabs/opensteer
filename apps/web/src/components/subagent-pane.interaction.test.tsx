@@ -6,7 +6,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { NodeEntry } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppShell } from "./app-shell.js";
-import { SubagentRoute } from "./subagent-view.js";
 import { ThreadRoute } from "./thread-view.js";
 import { ToastProvider } from "./toast.js";
 
@@ -21,8 +20,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// A phone viewing the parent must not keep receiving a subagent's own events:
-// the view holds one watch while it is open and gives it up when it closes.
+// A device viewing the parent must not keep receiving a subagent's own events:
+// the pane holds one watch while it is open and gives it up when it closes,
+// and the conversation under it stays where the reader left it.
 it("holds one node watch while a subagent is open and releases it on leaving", async () => {
   vi.stubGlobal(
     "ResizeObserver",
@@ -71,7 +71,7 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
   document.body.append(node);
   const root = createRoot(node);
   roots.push(root);
-  const path = (nodeId: string) => `/threads/${thread.id}/subagents/${nodeId}`;
+  const path = (nodeId: string) => `/threads/${thread.id}?subagent=${nodeId}`;
   await act(async () =>
     root.render(
       <ToastProvider>
@@ -80,18 +80,25 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
           <Routes>
             <Route element={<AppShell hostClient={client} loadError={null} />}>
               <Route path="threads/:threadId" element={<ThreadRoute />} />
-              <Route path="threads/:threadId/subagents/:nodeId" element={<SubagentRoute />} />
             </Route>
           </Routes>
         </MemoryRouter>
       </ToastProvider>,
     ),
   );
-  await vi.waitFor(() => expect(node.querySelector(".subagent-view__steps")).not.toBeNull(), {
-    timeout: 5_000,
-  });
-  expect(node.querySelector("h1")?.textContent).toBe("Research the reference");
-  expect(node.querySelector('[role="note"]')?.textContent).toContain("Runs on its own");
+  await vi.waitFor(
+    () =>
+      expect(
+        node.querySelector('.subagent-pane [aria-label="Steps"] .turn__content'),
+      ).not.toBeNull(),
+    { timeout: 5_000 },
+  );
+  expect(node.querySelector(".subagent-pane__title")?.textContent).toBe("Research the reference");
+  expect(node.querySelector('.subagent-pane [role="note"]')?.textContent).toContain(
+    "You can watch it, not message it.",
+  );
+  // Pushed over the conversation, which stays mounted with its scroll position.
+  expect(node.querySelector(".thread--pushed .transcript-scroll")).not.toBeNull();
   const live = () => watches.mock.calls.length - released.length;
   expect(live()).toBe(1);
 
@@ -103,4 +110,5 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
   await act(async () => navigate(`/threads/${thread.id}`));
   expect(released).toContain(second!.nodeId);
   expect(live()).toBe(0);
+  expect(node.querySelector(".subagent-pane")).toBeNull();
 });

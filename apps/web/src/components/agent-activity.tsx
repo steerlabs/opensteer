@@ -58,6 +58,7 @@ import {
   turnOpen,
   turnWords,
   subagentTurnModel,
+  SubagentCache,
   type AgentCard,
   type AgentGroup,
   type SubagentDetailEntry,
@@ -122,13 +123,7 @@ import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
-import {
-  AgentCardView,
-  AgentFolds,
-  AgentGroupView,
-  AgentsLive,
-  useReturnToAgentCard,
-} from "./agent-cards.js";
+import { AgentFolds, AgentGroupRow, AgentRow, AgentsLive, WorkflowRow } from "./subagent-rows.js";
 
 // Fetched with this module, not when a reply is first drawn: until it lands a
 // reply shows its raw Markdown, and on a weak link that wait is what people see.
@@ -207,6 +202,8 @@ const ReaderComputers = createContext<TranscriptComputers | null>(null);
 interface AgentSource {
   readonly reader: SubagentReader;
   readonly threadId: string;
+  /** Keeps each row's model the same object while it is unchanged, so only changed rows redraw. */
+  readonly cache: SubagentCache;
 }
 const AgentReader = createContext<AgentSource | null>(null);
 
@@ -233,10 +230,12 @@ function useAgentSource(
   threadId: string | null,
   live: boolean,
 ): AgentSource {
+  const cache = useMemo(() => new SubagentCache(), []);
   return useMemo(() => {
     const base = source ?? noReader;
     const id = threadId ?? "";
     return {
+      cache,
       threadId: id,
       reader: {
         ...base,
@@ -244,7 +243,7 @@ function useAgentSource(
         transcripts: { ...base.transcripts, [id]: [...entries] },
       },
     };
-  }, [entries, live, source, threadId]);
+  }, [cache, entries, live, source, threadId]);
 }
 
 const noWorkspaces: readonly WorkspaceSummary[] = [];
@@ -399,7 +398,6 @@ export function AgentTranscript({
       : null;
   const speakers = useMemo(() => ({ threadId, workspaces }), [threadId, workspaces]);
   const agents = useAgentSource(subagentReader, entries, threadId, live);
-  useReturnToAgentCard(threadId);
   const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
     [groups, renderPasswordsSuggestion],
@@ -899,13 +897,17 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : null}
       {composing && restartPending(turn.run) ? <RunRestart>{restartingLabel}</RunRestart> : null}
       {turn.source ? <TurnSource source={turn.source} /> : null}
-      {helpers?.map((row) =>
-        row.kind === "workflow" ? (
-          <AgentCardView card={row.card} key={row.card.key} />
-        ) : row.kind === "agents" ? (
-          <AgentGroupView group={row.group} key={row.group.key} />
-        ) : null,
-      )}
+      {helpers?.length ? (
+        <div className="turn__content">
+          {helpers.map((row) =>
+            row.kind === "workflow" ? (
+              <WorkflowRow card={row.card} key={row.card.key} />
+            ) : row.kind === "agents" ? (
+              <AgentGroupRow group={row.group} key={row.group.key} />
+            ) : null,
+          )}
+        </div>
+      ) : null}
       {view.reply ? (
         <ReplyBubble arrived={typed.current} message={view.reply} turnKey={turnKey} />
       ) : composing ? (
@@ -1445,7 +1447,7 @@ function TurnContent({
           {...(fold ? { onToggle: fold.onToggle, open: fold.open } : {})}
         />
       )}
-      {folded && agents?.keptOutside ? <AgentGroupView group={agents.keptOutside} /> : null}
+      {folded && agents?.keptOutside ? <AgentGroupRow group={agents.keptOutside} /> : null}
       {trace.hidden > 0 ? (
         <button className="trace__earlier" type="button" onClick={() => setShowAll(true)}>
           Show {trace.hidden} earlier {trace.hidden === 1 ? "step" : "steps"}
@@ -1458,9 +1460,9 @@ function TurnContent({
           if (!place || drawn.has(place.key)) return null;
           drawn.add(place.key);
           return place.kind === "group" ? (
-            <AgentGroupView group={place.group} key={place.key} />
+            <AgentGroupRow group={place.group} key={place.key} />
           ) : (
-            <AgentCardView card={place.card} key={place.key} />
+            <WorkflowRow card={place.card} key={place.key} />
           );
         }
         return (
@@ -1493,10 +1495,13 @@ function useTurnAgents(turn: Turn, folded: boolean) {
   const model = useMemo(
     () =>
       source
-        ? subagentTurnModel(turn, source.threadId, source.reader, {
-            folded,
-            keptKeys: kept.current,
-          })
+        ? subagentTurnModel(
+            turn,
+            source.threadId,
+            source.reader,
+            { folded, keptKeys: kept.current },
+            source.cache,
+          )
         : null,
     [folded, source, turn],
   );
@@ -1708,7 +1713,7 @@ export function SubagentSteps({
               ) : part.entry.kind === "reasoning" ? (
                 <Reasoning active={active} entry={part.entry} key={part.entry.id} />
               ) : (
-                <AgentCardView card={part.entry.card} key={part.entry.card.key} />
+                <AgentRow card={part.entry.card} key={part.entry.card.key} noun />
               ),
             )}
           </div>

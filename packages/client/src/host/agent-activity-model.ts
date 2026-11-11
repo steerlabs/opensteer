@@ -1058,8 +1058,10 @@ function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
       return toolPresentation(entry).activeLabel;
     }
     if (entry?.kind === "reasoning" && entry.state === "streaming") return "Thinking";
-    if (entry?.kind === "node" && entry.status === "running")
-      return entry.nodeKind === "task" ? entry.title : `Subagent: ${entry.title}`;
+    // A running subagent says what it is doing on its own row and in Running
+    // now; the turn's line says what the agent itself is doing.
+    if (entry?.kind === "node" && entry.status === "running" && entry.nodeKind === "task")
+      return entry.title;
   }
   for (let index = turn.work.length - 1; index >= 0; index -= 1) {
     const entry = turn.work[index];
