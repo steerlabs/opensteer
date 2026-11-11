@@ -40,7 +40,7 @@ test("a returning local screen holds its intent across Host activation and never
   let releasedAdmissions = 0;
   let activations = 0;
   const hostClient = {
-    activateWorkspaceTab: async () => {
+    activatePersonalTab: async () => {
       activations++;
       expect(intents).toBe(1);
       await activated.promise;

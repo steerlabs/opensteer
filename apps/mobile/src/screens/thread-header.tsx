@@ -144,14 +144,8 @@ export function useThreadHeader(props: {
                   deploymentId={deploymentId}
                   threadId={threadId}
                   hostClient={hostClient}
-                  // Chat is the root under every stack, so it is returned to,
-                  // never opened a second time over this task.
                   onOpenThread={(id) =>
-                    navigation.dispatch(
-                      id === hostClient.getSnapshot().homeThreadId
-                        ? StackActions.popTo("Home", { deploymentId })
-                        : StackActions.push("Thread", { deploymentId, threadId: id }),
-                    )
+                    navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
                   }
                 />
               ),

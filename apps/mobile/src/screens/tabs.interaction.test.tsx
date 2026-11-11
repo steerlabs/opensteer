@@ -962,8 +962,8 @@ async function world(
     viewers: [],
     watches: [],
   };
-  const activate = host.activateWorkspaceTab;
-  Object.defineProperty(host, "activateWorkspaceTab", {
+  const activate = host.activatePersonalTab;
+  Object.defineProperty(host, "activatePersonalTab", {
     configurable: true,
     value: (...args: Parameters<typeof activate>) => {
       const [tabId] = args;
@@ -1750,7 +1750,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
 
   it("closes an offline saved tab from its menu without starting its browser", async () => {
     const { saved, w } = await openSaved({ profileName: "Work", connected: false });
-    const close = vi.spyOn(w.host, "closeWorkspaceTabs");
+    const close = vi.spyOn(w.host, "closePersonalTabs");
     await press(control(front(w), "Close tab"));
     expect(close).toHaveBeenCalledExactlyOnceWith([saved.tabId]);
     expect(w.stack.top.name).toBe("Tabs");
@@ -1780,7 +1780,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
 
   it("retries a failed saved-tab close without restarting its browser", async () => {
     const { saved, w } = await openSaved({ profileName: "Work", connected: false });
-    const close = vi.spyOn(w.host, "closeWorkspaceTabs").mockResolvedValueOnce({
+    const close = vi.spyOn(w.host, "closePersonalTabs").mockResolvedValueOnce({
       closed: [],
       failed: [{ tabId: saved.tabId, message: "The close was interrupted." }],
     });
@@ -1839,7 +1839,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
     expect(front(w).textContent).toContain("This tab was closed");
     expect(JSON.stringify(w.stack.routes)).toBe(routes);
     expect(front(w).querySelector("[data-page]")).toBeNull();
-    expect(w.host.getSnapshot().activatingWorkspaceTabs ?? []).not.toContain(saved.tabId);
+    expect(w.host.getSnapshot().activatingPersonalTabs ?? []).not.toContain(saved.tabId);
     w.record("J3 closed while opening");
   });
 
@@ -2028,7 +2028,7 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
         (place) =>
           place.kind === "browser" &&
           place.availability === "ready" &&
-          place.workspaceTab?.state !== "suspended",
+          place.personalTab?.state !== "suspended",
       );
     if (roadmap === undefined || dinner === undefined) throw new Error("Too few live tabs.");
     const later = places.slice(5).find((place) => place.kind === "browser")!;

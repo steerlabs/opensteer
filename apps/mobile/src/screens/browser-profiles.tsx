@@ -1,9 +1,7 @@
 import {
-  browserProfileAccessSummary,
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
   browserProfileSettingsRows,
-  browserProfileProjects,
   canRespondToRequests,
   mutationIdempotencyKey,
   profileHomeChoice,
@@ -313,11 +311,9 @@ function ProfileRow({
 }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const stacked = useWindowDimensions().fontScale > accessibilityTextScale;
-  const [projectsShown, setProjectsShown] = useState(false);
   const [draft, setDraft] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const projects = browserProfileProjects(snapshot);
   const mutate = (command: Parameters<HostClient["dispatch"]>[0], done?: () => void) => {
     if (!online || busy) return;
     setBusy(true);
@@ -370,7 +366,6 @@ function ProfileRow({
             : row.unopened
               ? "not opened yet"
               : null,
-          browserProfileAccessSummary(row),
         ]
           .filter(Boolean)
           .join(", ")}
@@ -388,7 +383,11 @@ function ProfileRow({
         <View style={styles.rowText}>
           <AppText role="bodyMedium">{row.profile.name}</AppText>
           <AppText role="caption" tone="muted">
-            {browserProfileAccessSummary(row)}
+            {row.device
+              ? `On ${row.device.name}${row.device.online ? "" : " · offline"}`
+              : row.unopened
+                ? "Not opened yet"
+                : "Your agent's profile"}
           </AppText>
           {stacked ? <ProfileHome row={row} stacked /> : null}
         </View>
@@ -425,11 +424,6 @@ function ProfileRow({
                 />
               </>
             ) : null}
-            <SecondaryButton
-              label="Projects"
-              compact
-              onPress={() => setProjectsShown(!projectsShown)}
-            />
           </View>
           {draft === null || !snapshot.browserProfileManageAvailable ? null : (
             <>
@@ -460,42 +454,6 @@ function ProfileRow({
                 />
               </View>
             </>
-          )}
-          {!projectsShown ? null : projects.length === 0 ? (
-            <AppText role="secondary" tone="muted">
-              No projects yet.
-            </AppText>
-          ) : (
-            projects.map((workspace) => {
-              const grant = row.projects.find((entry) => entry.workspace.id === workspace.id);
-              return (
-                <SwitchRow
-                  key={workspace.id}
-                  label={workspace.name}
-                  value={grant !== undefined}
-                  disabled={!online || busy}
-                  onChange={(allowed) => {
-                    if (allowed)
-                      mutate({
-                        type: "browser.profile.grant",
-                        profileId: row.profile.id,
-                        workspaceId: workspace.id,
-                        idempotencyKey: mutationIdempotencyKey(
-                          `browser-profile-grant:${row.profile.id}:${workspace.id}`,
-                        ),
-                      });
-                    else if (grant)
-                      mutate({
-                        type: "browser.profileGrant.revoke",
-                        grantId: grant.grantId,
-                        idempotencyKey: mutationIdempotencyKey(
-                          `browser-profile-revoke:${grant.grantId}`,
-                        ),
-                      });
-                  }}
-                />
-              );
-            })
           )}
         </>
       )}

@@ -10,7 +10,7 @@ import {
   type PlaceItem,
   type StartPageGroup,
   type StartPageProfileChoice,
-  type SurfaceDestination,
+  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
@@ -184,7 +184,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   );
 
   const show = useCallback(
-    (destination: SurfaceDestination) => {
+    (destination: PersonalSurfaceDestination) => {
       // The sheet goes first, so the view opens over the screen it came from.
       navigation.goBack();
       navigation.dispatch(

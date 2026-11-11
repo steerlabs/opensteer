@@ -4,7 +4,6 @@ import {
   MockDesktopUpdates,
   MockHostClient,
   type MockSubagentScene,
-  type MockTeamScenario,
 } from "@opensteer/client/mock";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
@@ -23,8 +22,6 @@ export function createMockHostPort(
      * switching away and back. Absent, every attachment starts afresh.
      */
     readonly hosts?: Map<string, MockHostClient>;
-    readonly initialHome?: "seeded" | "absent";
-    readonly team?: MockTeamScenario | null;
     /** One subagent scene of the design, so each of its states can be looked at. */
     readonly subagents?: MockSubagentScene | null;
     /** Each command a kept Host accepted, as a real Host would push its effects. */
@@ -38,16 +35,12 @@ export function createMockHostPort(
     const hosts = options.hosts;
     if (hosts === undefined)
       return new MockHostClient({
-        initialHome: options.initialHome ?? "seeded",
-        ...(options.team ? { team: options.team } : {}),
         ...(options.subagents ? { subagents: options.subagents } : {}),
       });
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
       const created = new MockHostClient({
-        initialHome: options.initialHome ?? "seeded",
-        ...(options.team ? { team: options.team } : {}),
         ...(options.subagents ? { subagents: options.subagents } : {}),
       });
       const dispatch = created.dispatch.bind(created);

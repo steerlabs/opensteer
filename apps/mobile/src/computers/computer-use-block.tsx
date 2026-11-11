@@ -63,7 +63,7 @@ export function ComputerUseBlock(props: {
   const [apps, setApps] = useState<readonly ComputerUseInstalledApp[] | null>(null);
   const [query, setQuery] = useState("");
   const viewer = { here: false, machineName: machine.name };
-  const disabled = !props.canRespond || busy !== null || machine.ownership === "other";
+  const disabled = !props.canRespond || busy !== null;
   async function request(
     input:
       | {
@@ -278,7 +278,6 @@ export function PhoneUseBlock(props: {
   const { hostClient, machine, view } = props;
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
   const disabled = !props.canRespond || busy !== null;
-  const owned = machine.ownership !== "other";
 
   const setAccess = (access: "read" | "read-write" | null): void => {
     run("access", async () => {
@@ -333,8 +332,7 @@ export function PhoneUseBlock(props: {
           />
         </View>
       )}
-      {owned ? (
-        <View style={styles.section}>
+      <View style={styles.section}>
           <SectionLabel>Access</SectionLabel>
           <RowGroup>
             {([null, "read", "read-write"] as const).map((access) => (
@@ -349,7 +347,6 @@ export function PhoneUseBlock(props: {
           </RowGroup>
           <FailureText detail={failureFor("access")} />
         </View>
-      ) : null}
     </View>
   );
 }

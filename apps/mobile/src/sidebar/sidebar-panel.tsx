@@ -9,7 +9,7 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type SurfaceDestination,
+  type PersonalSurfaceDestination,
   type TaskList,
   type TaskRow,
 } from "@opensteer/client/host";
@@ -105,7 +105,7 @@ export interface SidebarActions {
   /** Every task, on one of All tasks' filters. */
   readonly onOpenAllTasks: (deploymentId: string, filter: AllTasksFilter) => void;
   /** Shows exactly this tab, app or phone, alone. */
-  readonly onOpenPlace: (destination: SurfaceDestination) => void;
+  readonly onOpenPlace: (destination: PersonalSurfaceDestination) => void;
   readonly onOpenTask: (deploymentId: string, threadId: string) => void;
   /** A team's own page: its channels, then its direct messages. */
   readonly onOpenTeam: (teamId: string) => void;
@@ -676,7 +676,7 @@ function TasksHead(props: { readonly needsYou: number; readonly onNeedsYou: () =
           onPress={props.onNeedsYou}
           style={({ pressed }) => [styles.amberPill, pressed && styles.pressed]}
         >
-          <Symbol name="exclamationmark" size={10} tint={color.inkOnAmber} weight="bold" />
+          <Symbol name="exclamationmark.circle" size={11} tint={color.inkOnAmber} weight="bold" />
           <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.amberCount]}>
             {String(props.needsYou)}
           </Text>
@@ -700,7 +700,7 @@ const sidebarTabLimit = 5;
  */
 const SidebarTabs = memo(function SidebarTabs(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
 }): ReactNode {
   // The panel arranges slots; each row reads its own place, so a title repaints one row.
   const places = usePlaceStructure(props.hostClient);
@@ -728,7 +728,7 @@ const SidebarTabs = memo(function SidebarTabs(props: {
 
 const KeyedPlaceRow = memo(function KeyedPlaceRow(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
   readonly placeKey: string;
 }): ReactNode {
   const place = usePlace(props.hostClient, props.placeKey);
@@ -750,7 +750,7 @@ const placeKind: Record<PlaceItem["kind"], string> = {
 };
 
 const PlaceRow = memo(function PlaceRow(props: {
-  readonly onOpen: (destination: SurfaceDestination) => void;
+  readonly onOpen: (destination: PersonalSurfaceDestination) => void;
   readonly place: PlaceItem;
 }): ReactNode {
   const { onOpen, place } = props;
@@ -780,11 +780,6 @@ const PlaceRow = memo(function PlaceRow(props: {
     />
   );
 });
-
-/**
- * Beside Chat, the one thing worth saying: a question waiting on the reader,
- * that it is replying, or that something arrived unread. Before the task list
- * has said anything about Chat, nothing is claimed.
 
 function GroupHead(props: { readonly count?: number; readonly title: string }): ReactNode {
   return (

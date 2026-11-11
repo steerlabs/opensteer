@@ -30,7 +30,6 @@ import {
 } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import { WorkspaceDot } from "../ui/workspace-mark.js";
 
 export type ChromeDestination = { readonly deploymentId: string };
 
@@ -116,7 +115,6 @@ function ChromeSettings(props: {
   const insets = useListContentInsets(space[32]);
   const focused = useIsFocused();
   const online = useHostSelector(hostClient, canRespondToRequests);
-  const workspaces = useHostSelector(hostClient, selectWorkspaces);
   const [state, setState] = useState<BrowserSourcesState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -151,7 +149,9 @@ function ChromeSettings(props: {
   };
 
   const sources = state?.sources ?? [];
-  const sites = groupBySite(state?.sites ?? []);
+  const sites = [...(state?.sites ?? [])].sort((left, right) =>
+    browserSiteLabel(left.site).localeCompare(browserSiteLabel(right.site)),
+  );
   return (
     <Screen edgeToEdge>
       <ScrollView
@@ -217,20 +217,20 @@ function ChromeSettings(props: {
                 None yet. When an agent needs a site, you’re asked once.
               </AppText>
             ) : (
-              sites.map(([site, grants]) => (
-                <SiteGroup
-                  grants={grants}
-                  hostClient={hostClient}
-                  key={site}
-                  onRemoved={(message) => {
-                    announce(message);
-                    void load();
-                  }}
-                  online={online}
-                  site={site}
-                  workspaces={workspaces}
-                />
-              ))
+              <RowGroup>
+                {sites.map((grant) => (
+                  <SiteRow
+                    grant={grant}
+                    hostClient={hostClient}
+                    key={grant.site}
+                    onRemoved={(message) => {
+                      announce(message);
+                      void load();
+                    }}
+                    online={online}
+                  />
+                ))}
+              </RowGroup>
             )}
             <AppText role="caption" tone="muted">
               Removing a site stops new sign-ins. Browsers already signed in stay signed in.
@@ -404,58 +404,24 @@ function SourceRow(props: {
   );
 }
 
-/** One site, and each Workspace whose agents may sign in to it. */
-function SiteGroup(props: {
-  readonly grants: readonly BrowserSiteGrant[];
-  readonly hostClient: HostClient;
-  readonly onRemoved: (message: string) => void;
-  readonly online: boolean;
-  readonly site: string;
-  readonly workspaces: HostSnapshot["workspaces"];
-}): ReactNode {
-  const domain = browserSiteLabel(props.site);
-  return (
-    <RowGroup>
-      {[
-        <View accessibilityRole="header" key="site" style={styles.siteHead}>
-          <Symbol name="globe" size={17} tint={color.textSoft} />
-          <AppText role="bodyMedium" selectable style={styles.rowText}>
-            {domain}
-          </AppText>
-        </View>,
-        ...props.grants.map((grant) => (
-          <SiteWorkspaceRow
-            domain={domain}
-            grant={grant}
-            hostClient={props.hostClient}
-            key={grant.workspaceId}
-            onRemoved={props.onRemoved}
-            online={props.online}
-            workspace={props.workspaces.find((candidate) => candidate.id === grant.workspaceId)}
-          />
-        )),
-      ]}
-    </RowGroup>
-  );
-}
-
-function SiteWorkspaceRow(props: {
-  readonly domain: string;
+/** One site your agent may sign in to, and when it last did. */
+function SiteRow(props: {
   readonly grant: BrowserSiteGrant;
   readonly hostClient: HostClient;
   readonly onRemoved: (message: string) => void;
   readonly online: boolean;
-  readonly workspace: HostSnapshot["workspaces"][number] | undefined;
 }): ReactNode {
-  const { domain, grant } = props;
+  const { grant } = props;
+  const domain = browserSiteLabel(grant.site);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const workspaceName = props.workspace?.name ?? "Another Workspace";
   return (
     <View style={styles.siteRow}>
-      {props.workspace === undefined ? null : <WorkspaceDot color={props.workspace.color} />}
+      <Symbol name="globe" size={17} tint={color.textSoft} />
       <View style={styles.rowText}>
-        <AppText role="body">{workspaceName}</AppText>
+        <AppText role="body" selectable>
+          {domain}
+        </AppText>
         <AppText role="caption" tone="muted">
           {grant.lastSignedInAt === null
             ? "Not used yet"
@@ -468,7 +434,7 @@ function SiteWorkspaceRow(props: {
         )}
       </View>
       <SecondaryButton
-        accessibilityLabel={`Remove ${domain} from ${workspaceName}`}
+        accessibilityLabel={`Remove ${domain}`}
         busy={busy}
         compact
         disabled={!props.online}
@@ -478,17 +444,12 @@ function SiteWorkspaceRow(props: {
           setFailure(null);
           void props.hostClient
             .dispatch({
-              idempotencyKey: mutationIdempotencyKey(
-                `browser-site-remove:${grant.workspaceId}:${grant.site}`,
-              ),
+              idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
               site: grant.site,
               type: "browser.site.remove",
-              workspaceId: grant.workspaceId,
             })
             .then(() =>
-              props.onRemoved(
-                `${domain} removed from ${workspaceName}. Agents there ask before using it again.`,
-              ),
+              props.onRemoved(`${domain} removed. Your agent asks before using it again.`),
             )
             .catch((error: unknown) =>
               setFailure(operationDetail(error, `${domain} is still allowed. Try again.`)),
@@ -501,19 +462,8 @@ function SiteWorkspaceRow(props: {
   );
 }
 
-function groupBySite(
-  grants: readonly BrowserSiteGrant[],
-): (readonly [string, readonly BrowserSiteGrant[]])[] {
-  const bySite = new Map<string, BrowserSiteGrant[]>();
-  for (const grant of grants) bySite.set(grant.site, [...(bySite.get(grant.site) ?? []), grant]);
-  return [...bySite.entries()].sort(([left], [right]) =>
-    browserSiteLabel(left).localeCompare(browserSiteLabel(right)),
-  );
-}
-
 const selectUserId = (snapshot: HostSnapshot) =>
   snapshot.session === "authenticated" ? (snapshot.user?.id ?? null) : null;
-const selectWorkspaces = (snapshot: HostSnapshot) => snapshot.workspaces;
 
 const styles = StyleSheet.create({
   actions: { flexDirection: "row", flexWrap: "wrap", gap: space[8] },

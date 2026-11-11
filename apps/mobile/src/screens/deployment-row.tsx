@@ -1,4 +1,4 @@
-import { workspaceMonogram } from "@opensteer/client/host";
+import { folderMonogram } from "@opensteer/client/host";
 import type { DeploymentTone } from "../theme.js";
 import type { DeploymentStatus } from "../client/deployment-rows.js";
 
@@ -21,7 +21,7 @@ export function deploymentTone(id: string): DeploymentTone {
 }
 
 export function deploymentInitial(name: string): string {
-  return workspaceMonogram(name)[0] ?? "•";
+  return folderMonogram(name)[0] ?? "•";
 }
 
 export function statusTone(status: DeploymentStatus): "green" | "amber" | "red" | "muted" {

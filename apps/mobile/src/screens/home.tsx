@@ -1,5 +1,5 @@
 import type { TaskFolder } from "@opensteer/core";
-import { useHostSelector } from "@opensteer/client/react";
+import { useHostValue } from "../ui/mobile-client-context.js";
 import { useHeaderHeight } from "@react-navigation/elements";
 import {
   StackActions,
@@ -38,7 +38,7 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const hostClient = useAttachedHost(deploymentId);
   useSidebarMenu(hostClient);
   useNotificationsIntro(hostClient);
-  const home = useHostSelector(hostClient, agentHome);
+  const home = useHostValue(hostClient, agentHome, null);
   const folder = chosen ?? home;
   const onStarted = useCallback(
     (threadId: string): boolean => {

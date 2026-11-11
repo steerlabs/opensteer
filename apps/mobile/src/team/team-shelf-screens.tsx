@@ -38,7 +38,7 @@ import {
   type FileKindFilter,
 } from "./channel-shelves.js";
 import { LinkRow } from "./settings-rows.js";
-import { useMobileTeams, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
+import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
 import type {
   FileRowView,
   MemberRowView,

@@ -716,7 +716,6 @@ export function iphoneApprovalTitle(approval: IphoneAppsApproval, name: string):
 export function iphoneApprovalLines(approval: IphoneAppsApproval): readonly string[] {
   const { caveat } = iphoneAppTraits[approval.definitionId];
   return [
-    ...(approval.workspaceName === null ? [] : [approval.workspaceName]),
     ...(approval.reason === null ? [] : [`Reason: ${approval.reason}`]),
     ...(caveat === null ? [] : [caveat]),
   ];

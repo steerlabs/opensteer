@@ -251,7 +251,6 @@ export function Composer(props: {
     draftKey: threadId,
     drafts,
     files: { deploymentId, threadId, userId },
-    workspaceId: props.workspaceId,
   });
   const attachmentsReady = staged.items.every((item) => draftAttachmentPart(item) !== null);
 

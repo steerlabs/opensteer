@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useSettingsLease } from "./use-settings-read.js";
 import { settingsSessionRows } from "@opensteer/client/settings";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
@@ -52,8 +51,7 @@ function AccountSettingsContent({
   const isCurrent = useSettingsLease(selection.hostClient);
   const remote = usePersonalRemoteAccess(
     page === "account" &&
-      hostDeploymentPolicy(snapshot)?.personalRemoteAccess === true &&
-      selection.hostClient?.getSnapshot().user?.instanceRole === "administrator"
+      snapshot !== null
       ? selection.hostClient
       : null,
   );

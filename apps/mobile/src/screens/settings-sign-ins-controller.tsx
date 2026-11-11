@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
@@ -21,8 +20,7 @@ export function SignInsSettingsController(): ReactNode {
       snapshot === null
         ? null
         : passwordsSettingsModel({
-            deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
-            deploymentName:
+                  deploymentName:
               selectedRow?.name ?? snapshot.identityConfig?.deployment.name ?? "your Mac",
             machines: snapshot.machines,
           }),

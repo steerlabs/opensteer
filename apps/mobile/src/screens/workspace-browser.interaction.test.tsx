@@ -2860,7 +2860,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
   }
   function catalogued(id: string): BrowserSessionSummary {
     return seedBrowserSession(
-      { ...session(id, child.id), placement, workspaceTabRestoreVersion: 1 },
+      { ...session(id, child.id), placement, tabRestoreVersion: 1 },
       {
         generation: 1,
         inventoryRevision: 1,
@@ -2888,12 +2888,12 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
       {
         ...snapshot([catalogued("new")]),
         browserPlacements: [{ available: true, label: "Mac mini", runnerId: "runner-a" }],
-        workspaceTabRestoreVersion: 1,
+        tabRestoreVersion: 1,
       } as HostSnapshot,
       [
         lineage("new", [
           { id: "page-1", sessionId: "new", state: "live" },
-        ]) as unknown as import("@opensteer/client/host").WorkspaceTabLineage,
+        ]) as unknown as import("@opensteer/client/host").PersonalTabLineage,
       ],
     ) as unknown as HostSnapshot;
     render();
@@ -2904,26 +2904,26 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
   });
 
   it("reads a lineage the bounded catalog leaves out once, and calls it closed without a sibling", async () => {
-    const readWorkspaceTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
+    const readPersonalTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
     state.hostClient = {
       browserFrames: { subscribe: () => () => undefined },
       browserViewerState: () => liveFeed,
-      readWorkspaceTabs,
+      readPersonalTabs,
     };
     const { container, render } = setup({ sessionId: "old" });
     state.snapshot = seedBrowserSnapshot(
-      { ...snapshot([catalogued("sibling")]), workspaceTabRestoreVersion: 1 } as HostSnapshot,
+      { ...snapshot([catalogued("sibling")]), tabRestoreVersion: 1 } as HostSnapshot,
       [],
     ) as unknown as HostSnapshot;
     render();
     await act(async () => undefined);
     await act(async () => undefined);
-    expect(readWorkspaceTabs).toHaveBeenCalledExactlyOnceWith("old");
+    expect(readPersonalTabs).toHaveBeenCalledExactlyOnceWith("old");
     expect(container.textContent).toContain("This tab was closed");
     expect(container.textContent).not.toContain("Viewing sibling");
     render();
     await act(async () => undefined);
-    expect(readWorkspaceTabs).toHaveBeenCalledOnce();
+    expect(readPersonalTabs).toHaveBeenCalledOnce();
     expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.setParams).not.toHaveBeenCalled();
   });
@@ -2931,35 +2931,35 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
   // A restarted effect must still observe its pending lookup; a failed lookup
   // must offer a real retry instead of claiming the tab is unavailable.
   it("finishes a bounded lookup when React restarts the mounted screen effects", async () => {
-    const readWorkspaceTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
-    state.hostClient = { readWorkspaceTabs };
+    const readPersonalTabs = vi.fn(async () => ({ ...lineage("old", []), tabs: [] }));
+    state.hostClient = { readPersonalTabs };
     const { container } = setup(
       { sessionId: "old" },
       {
         strict: true,
         snapshot: seedBrowserSnapshot(
-          { ...snapshot([]), workspaceTabRestoreVersion: 1 } as HostSnapshot,
+          { ...snapshot([]), tabRestoreVersion: 1 } as HostSnapshot,
           [],
         ),
       },
     );
     await act(async () => undefined);
-    expect(readWorkspaceTabs).toHaveBeenCalledExactlyOnceWith("old");
+    expect(readPersonalTabs).toHaveBeenCalledExactlyOnceWith("old");
     expect(container.textContent).toContain("This tab was closed");
     expect(container.textContent).not.toContain("Looking for this tab");
   });
 
   it("shows a failed bounded lookup and retries the same tab", async () => {
-    const readWorkspaceTabs = vi
+    const readPersonalTabs = vi
       .fn()
       .mockRejectedValueOnce(new Error("The tab lookup was interrupted."))
       .mockResolvedValueOnce({ ...lineage("old", []), tabs: [] });
-    state.hostClient = { readWorkspaceTabs };
+    state.hostClient = { readPersonalTabs };
     const { container } = setup(
       { sessionId: "old" },
       {
         snapshot: seedBrowserSnapshot(
-          { ...snapshot([]), workspaceTabRestoreVersion: 1 } as HostSnapshot,
+          { ...snapshot([]), tabRestoreVersion: 1 } as HostSnapshot,
           [],
         ),
       },
@@ -2967,7 +2967,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     await act(async () => undefined);
     expect(container.textContent).toContain("The tab lookup was interrupted.");
     await pressAsync(container, "Try again");
-    expect(readWorkspaceTabs.mock.calls).toEqual([["old"], ["old"]]);
+    expect(readPersonalTabs.mock.calls).toEqual([["old"], ["old"]]);
     expect(container.textContent).toContain("This tab was closed");
     expect(state.dispatch).not.toHaveBeenCalled();
   });

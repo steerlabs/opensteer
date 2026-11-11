@@ -33,11 +33,11 @@ export const AgentMarks = memo(function AgentMarks(props: {
             index > 0 && { marginStart: -size / 3 },
             agent.acting && {
               borderColor: color.green,
-              borderRadius: agent.home ? radius.full : radius.sm,
+              borderRadius: agent.mark === null ? radius.full : radius.sm,
             },
           ]}
         >
-          {agent.home || agent.mark === null ? (
+          {agent.mark === null ? (
             <AgentOrb size={size} />
           ) : (
             <TaskMark mark={agent.mark} size={size} />

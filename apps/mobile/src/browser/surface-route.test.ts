@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SurfaceDestination } from "@opensteer/client/host";
+import type { PersonalSurfaceDestination } from "@opensteer/client/host";
 import {
   pageSite,
   paramsDestination,
@@ -81,7 +81,7 @@ describe("native viewer routes", () => {
     expect(routeDestination(route)).toEqual(destination);
     expect(paramsDestination(route)).toEqual(destination);
   });
-  it.each<SurfaceDestination>([
+  it.each<PersonalSurfaceDestination>([
     { kind: "app", machineId: "mac", appKey: "notes", source },
     { kind: "app", machineId: "mac", appKey: "notes", computerSessionId: "task" },
     { kind: "phone", machineId: "phone" },

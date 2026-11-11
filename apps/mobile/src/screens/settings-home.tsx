@@ -1,7 +1,6 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useMobileState } from "../ui/mobile-client-context.js";
-import type { HostClient } from "@opensteer/client/host";
-import { useTeam } from "@opensteer/client/react";
+import { useTeamsSnapshot } from "../team/team-context.js";
 import { SettingsHomeForm } from "./settings-home-form.js";
 import type { SettingsHomeTeam } from "./settings-home-model.js";
 import { GeneralSettingsController } from "./settings-general-controller.js";
@@ -21,38 +20,20 @@ const pages = {
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
-  const { selection } = useMobileState();
-  const host = useAttachedHost(selection.deploymentId ?? "");
-  return host && selection.deploymentId ? (
-    <TeamSettingsHome deploymentId={selection.deploymentId} host={host} />
-  ) : (
-    <SettingsHome team={null} />
-  );
-}
-
-/** Adds the team's own rows only when its Host offers them to this person. */
-function TeamSettingsHome(props: { readonly deploymentId: string; readonly host: HostClient }) {
   const navigation = useNavigation();
-  const { summary } = useTeam(props.host);
-  const rows = [
-    ...(summary?.can.people.allowed ? [{ title: "People", route: "TeamPeople" as const }] : []),
-    ...(summary?.can.groups.allowed ? [{ title: "Groups", route: "TeamGroups" as const }] : []),
-  ];
-  return (
-    <SettingsHome
-      team={
-        summary && rows.length
-          ? {
-              name: summary.team.name,
-              rows: rows.map((row) => ({
-                title: row.title,
-                onPress: () => navigation.navigate(row.route, { deploymentId: props.deploymentId }),
-              })),
-            }
-          : null
-      }
-    />
-  );
+  const { teams } = useTeamsSnapshot();
+  // One row per team of the computer being shown, then a way into another.
+  const group: SettingsHomeTeam = {
+    name: "Teams",
+    rows: [
+      ...teams.map((team) => ({
+        title: team.name,
+        onPress: () => navigation.navigate("TeamSettings", { teamId: team.teamId }),
+      })),
+      { title: "Join a team", onPress: () => navigation.navigate("JoinTeam", undefined) },
+    ],
+  };
+  return <SettingsHome team={group} />;
 }
 
 function SettingsHome(props: { readonly team: SettingsHomeTeam | null }) {

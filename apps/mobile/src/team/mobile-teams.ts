@@ -160,8 +160,8 @@ export type LinkedTeam = z.infer<typeof LinkedTeamSchema>;
  */
 const TeamMemoSchema = z.strictObject({
   schemaVersion: z.literal(1),
-  users: z.record(DeploymentIdSchema, UserIdSchema),
-  computers: z.record(DeploymentIdSchema, z.array(LinkedTeamSchema).max(100)),
+  users: z.record(z.string(), UserIdSchema),
+  computers: z.record(z.string(), z.array(LinkedTeamSchema).max(100)),
 });
 
 /**

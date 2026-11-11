@@ -1,7 +1,12 @@
 import { PersonalTeamLinks, unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import { createId, TeamGroupIdSchema, TeamInviteIdSchema, UserIdSchema } from "@opensteer/core";
-import type { HostApiCommandInput, TeamGroup, TeamInvite } from "@opensteer/protocol";
+import type {
+  HostApiCommandInput,
+  TeamGroupSchema,
+  TeamInviteSchema,
+} from "@opensteer/protocol";
+import type { z } from "zod";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
@@ -27,6 +32,8 @@ import { useMobileTeams, useTeamMembers, useTeamSession } from "./team-context.j
 import { personView } from "./team-views.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
+type TeamGroup = z.infer<typeof TeamGroupSchema>;
+type TeamInvite = z.infer<typeof TeamInviteSchema>;
 type TeamParams = StaticScreenProps<{ readonly teamId: string }>;
 
 async function command(session: TeamSessionClient, input: HostApiCommandInput) {

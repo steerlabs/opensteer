@@ -1,5 +1,5 @@
 import { layoutRoute } from "../navigation-presentations.js";
-import type { SurfaceDestination } from "@opensteer/client/host";
+import type { PersonalSurfaceDestination } from "@opensteer/client/host";
 import { CommonActions, StackActions, type NavigationAction } from "@react-navigation/native";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
@@ -383,7 +383,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         leave();
         go("NewTask", { deploymentId: targetDeploymentId, draftId }, false);
       },
-      onOpenPlace: (destination: SurfaceDestination) => {
+      onOpenPlace: (destination: PersonalSurfaceDestination) => {
         leave();
         const deployment = homeDeployment();
         if (deployment === null) return;

@@ -11,6 +11,7 @@ import { color, radius, space, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
+import type { TeamTileView } from "./team-models.js";
 import { readTeamLinkIntent, teamFailure, type TeamLinkIntent } from "./mobile-teams.js";
 import { useMobileTeams, useTeam } from "./team-context.js";
 
@@ -91,7 +92,7 @@ function Invite(props: {
   const teams = useMobileTeams();
   const state = useMobileState();
   const host = new URL(intent.origin).host;
-  const joinAs = state.account.account.identity?.name ?? "your Opensteer Account";
+  const joinAs = state.account.account.identity?.email ?? "your Opensteer Account";
   const [invite, setInvite] = useState<InviteView>({ kind: "checking" });
   const [verified, setVerified] = useState<VerifiedHostEndpoint | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -178,11 +179,7 @@ function Invite(props: {
   );
 }
 
-function inviteFailure(
-  error: unknown,
-  host: string,
-  team: { readonly id: string; readonly name: string; readonly imageUri: null },
-): InviteView {
+function inviteFailure(error: unknown, host: string, team: TeamTileView): InviteView {
   if (error instanceof HostVersionMismatchError)
     return { kind: error.code === "client-too-old" ? "update-app" : "update-server", team };
   if (error instanceof HostClientRequestError) {

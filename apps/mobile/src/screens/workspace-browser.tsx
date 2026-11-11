@@ -16,7 +16,7 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type SurfaceDestination,
+  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import {
   useBrowserAgentFollow,
@@ -210,7 +210,7 @@ function SurfacesForUser(props: {
   // new destination on every snapshot.
   const destinationKey = JSON.stringify(routeDestination(route));
   const destination = useMemo(
-    () => JSON.parse(destinationKey) as SurfaceDestination | null,
+    () => JSON.parse(destinationKey) as PersonalSurfaceDestination | null,
     [destinationKey],
   );
   const notices = (
@@ -269,7 +269,7 @@ const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 function Focused(props: {
   readonly active: boolean;
   readonly connected: boolean;
-  readonly destination: SurfaceDestination;
+  readonly destination: PersonalSurfaceDestination;
   readonly hostClient: HostClient;
   readonly notices: ReactNode;
   readonly route: SurfacesRoute;
@@ -789,7 +789,7 @@ function Focused(props: {
 const companionPillWidth = 320;
 
 /** Whether a place is the one a route names: a tab by its own id, else exactly. */
-function samePlace(place: PlaceItem, destination: SurfaceDestination): boolean {
+function samePlace(place: PlaceItem, destination: PersonalSurfaceDestination): boolean {
   if (destination.kind === "browser")
     return place.destination.kind === "browser" && place.destination.tabId === destination.tabId;
   return sameDestination(place.destination, destination);
@@ -856,7 +856,7 @@ function BrowserTab(props: {
   usePhoneTabPresentation(phoneManager, tabId);
   const local = phoneManager?.localPresentation(props.deploymentId, tabId) ?? null;
   const navigation = useNavigation();
-  const saved = place?.workspaceTab;
+  const saved = place?.personalTab;
   const lineageSession =
     saved?.state === "live" && place?.destination.kind === "browser"
       ? place.destination.sessionId
@@ -913,7 +913,7 @@ function BrowserTab(props: {
     !live &&
     !restorable &&
     place === null &&
-    snapshot.workspaceTabRestoreVersion === 1 &&
+    snapshot.tabRestoreVersion === 1 &&
     !placeDestinationEnded(snapshot, { kind: "browser", sessionId, tabId });
   const lookup = useBoundedLineageRead(hostClient, unknown, sessionId, tabId);
   const onClosed = () => {
@@ -1051,11 +1051,11 @@ function useBoundedLineageRead(
     readonly key: string;
     readonly attempt: number;
     readonly hostClient: HostClient;
-    readonly promise: ReturnType<NonNullable<HostClient["readWorkspaceTabs"]>>;
+    readonly promise: ReturnType<NonNullable<HostClient["readPersonalTabs"]>>;
   } | null>(null);
   const key = `${sessionId}:${tabId}`;
   useEffect(() => {
-    if (!unknown || hostClient.readWorkspaceTabs === undefined) return;
+    if (!unknown || hostClient.readPersonalTabs === undefined) return;
     if (
       asked.current?.key !== key ||
       asked.current.attempt !== attempt ||
@@ -1065,7 +1065,7 @@ function useBoundedLineageRead(
         key,
         attempt,
         hostClient,
-        promise: hostClient.readWorkspaceTabs(sessionId),
+        promise: hostClient.readPersonalTabs(sessionId),
       };
     let cancelled = false;
     // A restarted effect observes the same request rather than abandoning it.
@@ -1091,7 +1091,7 @@ function useBoundedLineageRead(
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   const current = answer?.key === key && answer.attempt === attempt ? answer : null;
   return {
-    closed: hostClient.readWorkspaceTabs === undefined ? false : (current?.closed ?? null),
+    closed: hostClient.readPersonalTabs === undefined ? false : (current?.closed ?? null),
     error: current?.error ?? null,
     retry,
   };
@@ -1099,7 +1099,7 @@ function useBoundedLineageRead(
 
 /**
  * A saved tab, restored on its saved computer through the client's one
- * activation owner (`activateWorkspaceTab`), which waits for the connection
+ * activation owner (`activatePersonalTab`), which waits for the connection
  * and the computer and keeps one attempt per tab. Opening it asks once; a
  * lasting reason asks never. The answer moves the route to the restored
  * session; one that arrives after the person left changes nothing.
@@ -1119,7 +1119,7 @@ function SavedTab(props: {
   );
   const lasting = browserPlaceUnavailableReason(
     place.identity,
-    place.workspaceTab?.unavailableReason,
+    place.personalTab?.unavailableReason,
     placement?.unavailableReason,
   );
   const [failure, setFailure] = useState<string | null>(null);
@@ -1129,7 +1129,7 @@ function SavedTab(props: {
   const [attempt, setAttempt] = useState(0);
   const openingId = useId();
   const opening = `${openingId}:${attempt}`;
-  const activate = hostClient.activateWorkspaceTab;
+  const activate = hostClient.activatePersonalTab;
   useLayoutEffect(() => {
     if (activate === undefined || lasting !== null) return;
     let cancelled = false;
@@ -1154,7 +1154,7 @@ function SavedTab(props: {
     setClosing(true);
     setCloseFailure(null);
     void hostClient
-      .closeWorkspaceTabs([tabId])
+      .closePersonalTabs([tabId])
       .then((result) => {
         if (result.closed.includes(tabId)) props.onClosed();
         else

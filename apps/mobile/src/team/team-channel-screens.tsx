@@ -38,7 +38,7 @@ import { Symbol } from "../ui/symbol.js";
 import { ChannelScreenBody, ChannelTitle, ThreadScreenBody, ThreadTitle } from "./channel-screen.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
-import { dataUri, useMobileTeams, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
+import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
 import type {
   AgentReach,
   ConnectionBannerView,
@@ -59,14 +59,14 @@ import {
   type MemberDirectory,
 } from "./team-views.js";
 
-export interface TeamChannelRoute {
+export type TeamChannelRoute = {
   readonly teamId: string;
   readonly channelId: string;
   /** A message to open at, from a link, a notification or search. */
   readonly messageId?: string | undefined;
-}
+};
 
-export interface TeamThreadRoute {
+export type TeamThreadRoute = {
   readonly teamId: string;
   readonly channelId: string;
   readonly rootId: string;
@@ -74,7 +74,7 @@ export interface TeamThreadRoute {
   readonly replyId?: string | undefined;
   /** Opened from "Ask my agent" on a message: the composer starts "to my agent". */
   readonly toAgent?: boolean | undefined;
-}
+};
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 
@@ -286,7 +286,6 @@ function Place(props: {
 }): ReactNode {
   const { session, view, directory, teamId } = props;
   const navigation = useNavigation<Navigation>();
-  const teams = useMobileTeams();
   const mobile = useMobileClient();
   const personal = useSelectedHostClient();
   const snapshot = session.getSnapshot();

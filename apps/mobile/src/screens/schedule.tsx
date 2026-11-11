@@ -97,7 +97,6 @@ function ScheduleForHost(props: {
   return <ScheduleView key={`${reader}:${props.triggerId}`} {...props} />;
 }
 
-const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 const selectChangeBlocked = (snapshot: HostSnapshot): string | null =>
   canRespondToRequests(snapshot) ? null : "Connect to the Host to change schedules.";
 
@@ -117,7 +116,6 @@ function ScheduleView(props: {
   const state = useSchedule(hostClient, triggerId, focused && foreground);
   const detail = useShownSchedule(state);
   const blocked = useHostSelector(hostClient, selectChangeBlocked);
-  const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);
   const [pending, setPending] = useState<ScheduleAction | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -167,10 +165,6 @@ function ScheduleView(props: {
   const openThread = useCallback(
     (threadId: string, messageId?: string) => {
       const at = messageId === undefined ? {} : { messageId };
-      if (threadId === homeThreadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId, ...at }));
-        return;
-      }
       const stack = navigation.getState();
       const under = stack === undefined ? undefined : stack.routes[stack.index - 1];
       const params = { deploymentId, threadId, ...at };
@@ -482,7 +476,7 @@ function useReachableThreads(hostClient: HostClient, detail: ScheduleDetail): st
     useCallback(
       (snapshot: HostSnapshot) =>
         ids
-          .filter((id) => id === snapshot.homeThreadId || threadInDirectory(id, snapshot) !== null)
+          .filter((id) => threadInDirectory(id, snapshot) !== null)
           .join("\n"),
       [ids],
     ),

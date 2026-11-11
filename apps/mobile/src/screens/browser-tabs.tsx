@@ -1,5 +1,4 @@
 import { placeList } from "@opensteer/client/host";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
   browserTabPicture,
   browserThreadAgentTab,
@@ -158,19 +157,17 @@ function BrowserTabs(props: {
   const selectTask = useCallback(
     (snapshot: HostSnapshot): TaskView | null => {
       if (threadId === null) return null;
-      const home = snapshot.homeThreadId === threadId;
-      const thread = home ? null : threadInDirectory(threadId, snapshot);
+      const thread = threadInDirectory(threadId, snapshot);
       const at = browserThreadAgentTab(snapshot.browserSessions, threadId);
       const here = at?.sessionId === sessionId ? at : null;
       const occupant = here?.tab.occupants.find((value) => value.threadId === threadId);
       return {
         agent: {
           acting: occupant?.acting ?? false,
-          home,
           lastActiveAt: occupant?.lastActiveAt ?? "",
-          mark: home ? null : taskMark(thread ?? { icon: null, color: null }),
+          mark: taskMark(thread ?? { icon: null, color: null }),
           threadId,
-          title: home ? CHAT_THREAD_TITLE : thread?.title.trim() || "Task",
+          title: thread?.title.trim() || "Task",
         },
         agentTabId: here?.tabId ?? null,
       };

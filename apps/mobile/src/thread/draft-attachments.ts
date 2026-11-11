@@ -122,9 +122,8 @@ export function useDraftAttachments(options: {
   readonly draftKey: string;
   /** Where this phone's private copies of these files live. */
   readonly files: LocalAttachmentDraftScope;
-  readonly workspaceId: string | null;
 }): DraftAttachments {
-  const { client, draftKey, drafts, workspaceId } = options;
+  const { client, draftKey, drafts } = options;
   const { deploymentId, userId } = options.files;
   const draftVersion = useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   // The scope is held by its own parts so that a caller's fresh object each
@@ -198,14 +197,14 @@ export function useDraftAttachments(options: {
 
   const upload = useCallback(
     (item: ComposerAttachment) => {
-      if (workspaceId === null || !mounted.current) return;
+      if (!mounted.current) return;
       const key = attachmentKey(item);
       if (controllers.current.has(key)) return;
       const controller = new AbortController();
       if (!acquireUpload(drafts, ownerKey(key), controller)) return;
       controllers.current.set(key, controller);
       update(key, { error: null, status: "uploading" });
-      void stage(client, workspaceId, files, item, controller.signal, (attachmentId) =>
+      void stage(client, files, item, controller.signal, (attachmentId) =>
         update(key, { attachmentId }),
       ).then(
         (attachment) => {
@@ -228,7 +227,7 @@ export function useDraftAttachments(options: {
         },
       );
     },
-    [client, drafts, files, ownerKey, update, workspaceId],
+    [client, drafts, files, ownerKey, update],
   );
 
   const resume = useCallback(() => {
@@ -467,7 +466,6 @@ export async function discardNewTaskDraft(input: {
 
 async function stage(
   client: HostClient,
-  workspaceId: string,
   scope: LocalAttachmentDraftScope,
   item: DraftAttachment,
   signal: AbortSignal,
@@ -495,7 +493,6 @@ async function stage(
     signal,
     sizeBytes: item.sizeBytes,
     source: openChatDraftFile(scope, item.localUri),
-    workspaceId,
   });
 }
 
