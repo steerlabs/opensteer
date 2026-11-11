@@ -2096,6 +2096,10 @@ export class OpensteerStore {
     return snapshotStore.threadMessagePageForOwner(this.#database, input);
   }
 
+  toolOutputForOwner(input: Parameters<typeof snapshotStore.toolOutputForOwner>[1]) {
+    return snapshotStore.toolOutputForOwner(this.#database, input);
+  }
+
   nodeEventPageForOwner(input: Parameters<typeof snapshotStore.nodeEventPageForOwner>[1]) {
     return snapshotStore.nodeEventPageForOwner(this.#database, input);
   }
