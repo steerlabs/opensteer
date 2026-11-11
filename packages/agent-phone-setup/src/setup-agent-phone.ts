@@ -149,7 +149,7 @@ type AgentPhoneSetupIssueCode =
   | "phone-app-refused"
   | "phone-app-unresponsive"
   | "signature-mismatch"
-  /** Android refused a change over USB that a developer option on the phone must allow. */
+  /** Android refused a change over USB: an OEM developer option or device policy withholds it. */
   | "usb-restricted";
 
 export interface AgentPhoneSetupIssue {
@@ -543,7 +543,14 @@ class PhoneSetup {
 
   async #notificationsGranted(): Promise<boolean> {
     const listed = await this.#configureCommand(["dumpsys", "package", agentPhonePackageName]);
-    return /^\s*android\.permission\.POST_NOTIFICATIONS: granted=true\b/mu.test(listed);
+    // The dump lists each user's grants under its own "User N:" line; `pm grant` acts for user 0.
+    let user: string | undefined;
+    return listed.split("\n").some((line) => {
+      user = /^\s*User (\d+):/u.exec(line)?.[1] ?? user;
+      return (
+        user === "0" && /^\s*android\.permission\.POST_NOTIFICATIONS: granted=true\b/u.test(line)
+      );
+    });
   }
 
   async #exemptFromBatteryOptimization(): Promise<void> {

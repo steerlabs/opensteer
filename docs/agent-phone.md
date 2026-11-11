@@ -23,10 +23,11 @@ kills the person's ADB server. A setup session binds the selected transport and 
 cannot survive a replug, server replacement or withdrawn USB permission. Trusted ADB keys persist in
 the browser profile and may authenticate silently.
 
-OEM builds can withhold that authority: OnePlus, OPPO and realme refuse the shell's settings and
-app-op writes until Developer options → Disable permission monitoring is on, and Xiaomi needs
-Install via USB and USB debugging (Security settings). So setup writes only what does not already
-hold, which keeps a phone set up before an OEM update passing, and names the option when refused.
+OEM builds and device policy can withhold that authority: some OnePlus, OPPO and realme versions
+refuse the shell's settings and app-op writes until Developer options → Disable permission
+monitoring is on, and Xiaomi needs Install via USB and USB debugging (Security settings). So setup
+writes only what does not already hold, which keeps a phone set up before an OEM update passing,
+and names those options when Android refuses.
 
 [setup-agent-phone.ts](../packages/agent-phone-setup/src/setup-agent-phone.ts) owns the sequence.
 Verify the artifact's manifest, size and digest before touching the phone, and the installed signer

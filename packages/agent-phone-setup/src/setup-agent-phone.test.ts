@@ -594,8 +594,11 @@ class FakePhone implements AgentPhoneAdb {
       return ok();
     }
     if (command === `dumpsys package ${agentPhonePackageName}`) {
+      // A work profile's grant is listed too, and is not user 0's.
+      const grant = (granted: boolean) =>
+        `      runtime permissions:\n        android.permission.POST_NOTIFICATIONS: granted=${granted}, flags=[ USER_SENSITIVE_WHEN_GRANTED ]\n`;
       return ok(
-        `    runtime permissions:\n      android.permission.POST_NOTIFICATIONS: granted=${this.notificationsGranted}, flags=[ USER_SENSITIVE_WHEN_GRANTED ]\n`,
+        `    User 0: ceDataInode=7029619 installed=true\n${grant(this.notificationsGranted)}    User 10: ceDataInode=7031144 installed=true\n${grant(true)}`,
       );
     }
     if (command === `appops set ${agentPhonePackageName} PROJECT_MEDIA allow`) {

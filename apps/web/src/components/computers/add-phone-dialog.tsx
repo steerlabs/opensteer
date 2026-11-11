@@ -742,7 +742,7 @@ function issueText(
     case "configure-failed":
       return `The phone didn’t accept a setting setup needs.${detail}`;
     case "usb-restricted":
-      return "This phone doesn’t yet let a computer set it up over USB. On the phone, open Settings → Developer options and turn on Disable permission monitoring (OnePlus, OPPO, realme), or Install via USB and USB debugging (Security settings) (Xiaomi, Redmi, POCO). Then try again.";
+      return `This phone refused a change setup makes over USB.${detail} Some phones need a developer option on first: in Settings → Developer options, turn on Disable permission monitoring (OnePlus, OPPO, realme), or Install via USB and USB debugging (Security settings) (Xiaomi, Redmi, POCO), then try again. A phone an organization manages may not allow it.`;
     case "phone-app-refused":
       return `Opensteer Agent Phone on the phone turned down the pairing.${detail} Try again; if it keeps happening, remove the app from the phone and add it again.`;
     case "phone-app-unresponsive":
