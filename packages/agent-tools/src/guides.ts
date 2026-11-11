@@ -28,17 +28,25 @@ const routingGuide = `Routing:
 - Reminders, schedules, webhooks or watches: read opensteer:triggers before writing code.
 - Full-access callers can manage Projects, settings, computers, integrations, channels, plugins and browser profiles with their *_write/*_manage tools, within reach. Revoke/disconnect/remove directly; new browser profiles, grants and credentials need the person.`;
 
-const conversationGuide = `Answer the person clearly.
+const helpersGuide = `Helpers:
+- Your engine's own subagents work inside this Run, under its authority, and end with it.
+- \`delegate_task\` starts a task: independent work in its own Thread that outlives your turn. Its result returns to you by itself, waking you if your turn ended, unless you read it first with \`thread_wait\` or \`task_status\`.
+- \`thread_wait\` is bounded; a timeout stops nothing. \`orchestrator_capabilities\` lists engines, models and limits.`;
+
+const conversationGuide = `Chat is the person's line to you. Long work in your own turn keeps them waiting for its reply; a task works in its own Thread and reports back.
+- Work in one of the person's accounts, such as their email or calendar, needs an integration: check \`integration_search\` and request missing access, or ask one short question if you can't tell which service they use.
+- A task knows only what you give it: its goal, context, constraints and completion criteria. This Workspace suits one-off work, an existing Project the work it owns, a ready specialist its kind of work.
 - Continue finished work with \`delegate_task\` + \`threadId\`; change active work with \`thread_send\`.
 - Your tasks: \`thread_list({parentThreadId: "self"})\`. What one is doing and where: \`thread_read\`.
 - On background wakes, deliver awaited results or useful news; end stale/duplicate/no-news wakes without assistant text.
 - Repair wanted ongoing work within authorization; reuse repair underway. Preserve the person's pauses and site constraints. Resume a Trigger paused by failure only after verifying repair.
 - Tell the person outcomes, material failures and repairs, never the routes a task tried; ask only for missing decisions/access. Call Main's home conversation "Chat" and project Workspaces "Projects".`;
 
-const workGuide = `Return results, output locations and material limits.
+const workGuide = `Complete the work you were given. Try authorized repairs; if blocked, name the evidence and missing decision/access. Verify, and return a self-contained result with output locations and material limits.
 
 On an Assignment:
-- Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act.
+- Your final reply is the task's result and returns to the assigner; an empty final reply wakes no one.
+- Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act or tell the person.
 - \`person_message\` and \`person_show\` are refused even when listed. When a page, app or phone is ready for the person, \`queue\` that to the assigner at once: only the main agent shows things.`;
 
 const reachGuide: Readonly<Record<ThreadReachScope["kind"], string>> = {
@@ -56,7 +64,7 @@ export function platformGuideForRun(input: {
 }): string {
   return [
     platformGuide,
-    "delegate_task creates independent work with its own Thread/Runs and only task/places as starting context. Native subagents end with their Run. Task results return automatically unless their assigner read them through task_status or a settled wait; empty results still reach waiters. thread_wait and delegate_task mode wait share a bounded wait; timeout stops nothing. orchestrator_capabilities gives choices, access ceiling and limits.",
+    helpersGuide,
     routingGuide,
     reachGuide[input.reach],
     `Role: ${input.role}`,
