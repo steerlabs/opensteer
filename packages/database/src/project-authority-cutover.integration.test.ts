@@ -104,9 +104,10 @@ describeStore("additive Project authority preparation", (it) => {
     }>`select convalidated from pg_constraint where conname in (
       'principals_kind_check', 'principals_kind_shape_check', 'principals_workspace_id_fkey',
       'runs_initiator_generation_bounds', 'runs_origin_connection_id_fkey',
-      'auth_sessions_member_generation_bounds', 'agent_connections_member_generation_bounds', 'agent_connections_membership_generation_bounds'
+      'auth_sessions_member_generation_bounds', 'agent_connections_member_generation_bounds', 'agent_connections_membership_generation_bounds',
+      'agent_control_requests_action_check', 'agent_control_requests_action_class_check'
     )`.execute(storeFixture.database);
-    expect(constraints.rows).toHaveLength(8);
+    expect(constraints.rows).toHaveLength(10);
     expect(constraints.rows.every((constraint) => !constraint.convalidated)).toBe(true);
   });
 
