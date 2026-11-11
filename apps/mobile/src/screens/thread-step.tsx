@@ -1,3 +1,4 @@
+import { useToolOutput } from "@opensteer/client/react";
 import {
   activityStepHead,
   toolBody,
@@ -65,7 +66,8 @@ function SubagentStep(props: {
   const { entryId, hostClient, nodeId, threadId } = props;
   const { snapshot, unreachable } = useNodeWatch(hostClient, threadId, nodeId, true);
   const entry = snapshot?.entries.find(({ id }) => id === entryId);
-  if (entry?.kind === "tool") return <ToolDetail tool={entry} />;
+  if (entry?.kind === "tool")
+    return <ToolDetail tool={entry} hostClient={hostClient} threadId={threadId} />;
   if (entry?.kind === "reasoning") return <ThoughtDetail reasoning={entry} />;
   if (!unreachable && (snapshot === null || snapshot.status === "loading"))
     return (
@@ -87,13 +89,19 @@ function SubscribedStep(props: {
 }): ReactNode {
   const { snapshot } = useHostSnapshot(props.hostClient);
   const entry = snapshot.transcripts[props.threadId]?.find(({ id }) => id === props.entryId);
-  if (entry?.kind === "tool") return <ToolDetail tool={entry} />;
+  if (entry?.kind === "tool")
+    return <ToolDetail tool={entry} hostClient={props.hostClient} threadId={props.threadId} />;
   if (entry?.kind === "reasoning") return <ThoughtDetail reasoning={entry} />;
   return <Missing detail="This step is no longer loaded. Open the thread again to see it." />;
 }
 
-function ToolDetail(props: { readonly tool: ToolEntry }): ReactNode {
-  const { tool } = props;
+function ToolDetail(props: {
+  readonly tool: ToolEntry;
+  hostClient: HostClient;
+  threadId: string;
+}): ReactNode {
+  const detail = useToolOutput(props.hostClient, props.threadId, props.tool);
+  const tool = detail.tool;
   const head = activityStepHead(tool);
   const body = toolBody(tool);
   const status = [toolStatusLabel(tool), head.duration].filter(Boolean).join(" · ");
@@ -108,7 +116,16 @@ function ToolDetail(props: { readonly tool: ToolEntry }): ReactNode {
       {body.argumentsText ? (
         <Verbatim collapsed={body.collapsed} label="Input" text={body.argumentsText} />
       ) : null}
-      {body.output ? (
+      {detail.loading ? (
+        <ActivityIndicator accessibilityLabel="Loading output" color={color.muted} />
+      ) : detail.error ? (
+        <Notice
+          action={{ label: "Try again", onPress: detail.reload }}
+          detail="The rest of this step is still here."
+          title="Couldn't load this output"
+          tone="neutral"
+        />
+      ) : body.output ? (
         <Verbatim collapsed={body.collapsed} label={body.outputLabel} text={body.output} />
       ) : tool.state === "running" || body.summary ? null : (
         <AppText role="secondary" tone="muted">

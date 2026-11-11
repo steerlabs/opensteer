@@ -1,3 +1,4 @@
+import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, TeamCommandResultSchema, teamReadSchemas } from "./team-access.js";
 import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
@@ -2060,6 +2061,16 @@ export const hostApi = defineRpc({
     emptyInputSchema,
     z.object({ sessions: z.array(AuthSessionSummaryViewSchema).max(100) }),
   ),
+  "tool.output.get": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      runId: RunIdSchema,
+      callId: z.string().min(1),
+      nodeId: ExecutionNodeIdSchema.optional(),
+    }),
+    z.object({ output: ToolOutputViewSchema }),
+  ),
   "thread.events.list": declaration(
     "GET",
     z
@@ -2067,6 +2078,7 @@ export const hostApi = defineRpc({
         threadId: ThreadIdSchema,
         aroundMessageId: MessageIdSchema.optional(),
         placeEvents: z.literal("include").optional(),
+        toolOutputs: z.literal("preview").optional(),
         /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
         turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
       })
@@ -2091,6 +2103,7 @@ export const hostApi = defineRpc({
       .strictObject({
         nodeId: ExecutionNodeIdSchema,
         threadId: ThreadIdSchema,
+        toolOutputs: z.literal("preview").optional(),
         through: SequenceSchema.optional(),
       })
       .extend(durablePageInputSchema.shape),

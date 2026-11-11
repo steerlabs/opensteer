@@ -172,6 +172,7 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
     placeEvents: z.literal("include").optional(),
+    toolOutputs: z.literal("preview").optional(),
     /** Requires `person-show-v1`; old subscribers receive no navigation requests. */
     personShow: z.literal("accept").optional(),
     threadId: ThreadIdSchema.nullable(),

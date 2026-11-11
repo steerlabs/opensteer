@@ -1195,3 +1195,60 @@ function tabLineage(workspaceId: WorkspaceId): WorkspaceTabLineage {
     },
   };
 }
+
+it.each([false, true])("sends tool previews only to opted-in subscribers (%s)", async (opted) => {
+  const workspaceId = createId("workspace");
+  const userId = createId("user");
+  const hub = new RealtimeHub({
+    store: {
+      notificationState: viewerState(),
+      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+    } as unknown as OpensteerStore,
+  });
+  const sink = new MemorySink();
+  const release = await hub.subscribe({
+    afterSequence: sequence("0"),
+    sink,
+    userId,
+    workspaceId,
+    ...(opted ? { toolOutputs: "preview" as const } : {}),
+  });
+  try {
+    await vi.waitFor(
+      () =>
+        expect(
+          sink.messages.some((message) => message.type === "host.synchronized"),
+          "subscription never synchronized",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    const text = "tool output\n".repeat(2000);
+    hub.publish({
+      ...event(workspaceId, "1"),
+      type: "tool.completed",
+      data: { callId: "call", isError: false, output: { text } },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          sink.messages.some((message) => message.type === "host.events"),
+          "tool completion never arrived",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    const batch = sink.messages.find((message) => message.type === "host.events");
+    const completed =
+      batch?.type === "host.events"
+        ? batch.events.find((event) => event.type === "tool.completed")
+        : undefined;
+    expect(completed?.type).toBe("tool.completed");
+    if (completed?.type !== "tool.completed") throw new Error("Tool completion missing");
+    expect(completed.data.output.text === text).toBe(!opted);
+    expect(completed.data.outputPreview).toEqual(
+      opted ? { bytes: Buffer.byteLength(text), cut: true, digest: expect.any(String) } : undefined,
+    );
+  } finally {
+    release();
+  }
+});

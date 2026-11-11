@@ -1,3 +1,4 @@
+import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { AppCard } from "./apps/app-card.js";
@@ -102,6 +103,7 @@ import {
 import { CopyMark } from "./copy-mark.js";
 import { Dialog } from "./dialog.js";
 import { Icon, type IconName } from "./icon.js";
+import { LoadingRows } from "./loading-rows.js";
 import { Popover } from "./popover.js";
 import { SiteMark } from "./site-mark.js";
 import {
@@ -1818,7 +1820,11 @@ function Step({
   );
 }
 
-function ToolDetail({ tool }: { tool: ToolEntry }) {
+function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const detail = useToolOutput(client, threadId, preview);
+  const tool = detail.tool;
   const body = useMemo(() => toolBody(tool), [tool]);
   const Section = body.collapsed ? DisclosedSection : OpenSection;
   return (
@@ -1826,8 +1832,25 @@ function ToolDetail({ tool }: { tool: ToolEntry }) {
       {body.summary ? <p className="trace-step__summary">{body.summary}</p> : null}
       {body.command ? <pre className="trace-code trace-code--command">{body.command}</pre> : null}
       {body.argumentsText ? <Section label="Input" text={body.argumentsText} /> : null}
-      {body.output ? (
-        <Section label={body.outputLabel} text={body.output} />
+      {detail.loading ? (
+        <LoadingRows label="Loading output" rows={2} />
+      ) : detail.error ? (
+        <div className="run-note" role="alert">
+          <Icon name="alert-circle" />
+          <div>
+            <strong>Couldn't load this output.</strong>
+            <div>
+              <button className="btn" onClick={detail.reload} type="button">
+                Try again
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : body.output ? (
+        <>
+          <CopyMark label="Copy output" text={tool.output?.text ?? body.output} />
+          <Section label={body.outputLabel} text={body.output} />
+        </>
       ) : tool.state === "running" || body.summary ? null : (
         <span className="trace-step__empty">No output</span>
       )}

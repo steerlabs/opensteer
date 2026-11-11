@@ -1008,3 +1008,45 @@ it("draws nothing for a silent automatic turn, and its source and failure when i
   expect(container.textContent).toContain("Could not relay");
   expect(container.querySelector(".turn-source")).not.toBeNull();
 });
+
+it("loads output only on expansion, retries a failure, and reuses it when reopened", async () => {
+  const mock = new MockHostClient();
+  const read = vi
+    .fn()
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValue({ ok: true, data: { output: { text: "whole lazy output" } } });
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  Object.defineProperty(mock, "rpc", {
+    value: new Proxy(mock.rpc, {
+      get(target, key, receiver) {
+        return key === "tool.output.get" ? read : Reflect.get(target, key, receiver);
+      },
+    }),
+  });
+  const entry = tool({
+    output: { text: "whole" },
+    outputPreview: { bytes: 17, cut: true, digest: "unused" },
+  });
+  await act(async () =>
+    root.render(
+      <MemoryRouter>
+        <AgentTranscript entries={[entry]} attachmentReader={mock} threadId="thread-1" />
+      </MemoryRouter>,
+    ),
+  );
+  expect(read).not.toHaveBeenCalled();
+  click(status(container));
+  expect(read).not.toHaveBeenCalled();
+  await act(async () => click(container.querySelector(".trace-step__head")));
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain("Couldn't load this output.");
+  await act(async () => click(button(container, "Try again")));
+  expect(container.textContent).toContain("whole lazy output");
+  click(container.querySelector(".trace-step__head"));
+  await act(async () => click(container.querySelector(".trace-step__head")));
+  expect(container.textContent).toContain("whole lazy output");
+  expect(read).toHaveBeenCalledTimes(2);
+});

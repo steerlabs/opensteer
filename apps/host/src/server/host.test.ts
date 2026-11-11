@@ -390,6 +390,7 @@ describe("Host signing keys", () => {
           "snapshot-messages-omit-v1",
           "history-turns-v1",
           "node-detail-v1",
+          "tool-output-detail-v1",
           "place-events-v1",
           "person-show-v1",
           "shared-task-done-v1",
@@ -533,6 +534,7 @@ describe("Host signing keys", () => {
           "snapshot-messages-omit-v1",
           "history-turns-v1",
           "node-detail-v1",
+          "tool-output-detail-v1",
           "place-events-v1",
           "person-show-v1",
           "shared-task-done-v1",
@@ -2440,7 +2442,7 @@ describe("thread event history route", () => {
         totalItems: 1,
       },
     };
-    let result: typeof page | null = page;
+    let result: unknown = page;
     const threadEventPageForOwner = vi.fn(async () => result);
     const app = await createHostServer({
       requestResponseVault: {} as never,
@@ -2490,6 +2492,38 @@ describe("thread event history route", () => {
         threadId,
       });
 
+      const text = "large output 🙂\n".repeat(1000);
+      result = {
+        ...page,
+        events: [
+          {
+            ...page.events[0]!,
+            type: "tool.completed",
+            data: { callId: "call", isError: false, output: { text } },
+          },
+        ],
+      };
+      const whole = await injectRpcRequest(app, "thread.events.list", { threadId });
+      expect(rpcData(whole)).toMatchObject({ events: [{ data: { output: { text } } }] });
+      const preview = await injectRpcRequest(app, "thread.events.list", {
+        threadId,
+        toolOutputs: "preview",
+      });
+      expect(rpcData(preview)).toMatchObject({
+        events: [
+          {
+            data: {
+              outputPreview: {
+                bytes: Buffer.byteLength(text),
+                cut: true,
+                digest: expect.any(String),
+              },
+            },
+          },
+        ],
+      });
+      expect(JSON.stringify(rpcData(preview))).not.toContain(text);
+      result = page;
       const bare = await injectRpcRequest(app, "thread.events.list", { threadId });
       expect(bare.statusCode).toBe(200);
       expect(threadEventPageForOwner).toHaveBeenLastCalledWith({
