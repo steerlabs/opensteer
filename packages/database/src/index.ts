@@ -77,3 +77,65 @@ export { knowledgeExecutorRole } from "./knowledge-schema.js";
 export { listEligibleBrowserRunners } from "./browser-home-store.js";
 export * from "./request-agent-response.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
+
+export { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
+
+export {
+  ProjectWorkStore,
+  ProjectRuntimeSnapshotSchema,
+  projectExchangeKey,
+  projectExchangeFromRow,
+  projectOriginFromRow,
+  ensureProjectPrincipal,
+} from "./project-work-store.js";
+export type {
+  ProjectExchange,
+  ProjectWorkAdmission,
+  ProjectWorkSource,
+  ProjectRuntimeSnapshot,
+} from "./project-work-store.js";
+export {
+  ProjectControlDeliveryStore,
+  ProjectBindingStore,
+  ProjectExecutionStore,
+  StoredProjectControlSchema,
+} from "./project-execution-store.js";
+export type { ProjectRequestControlPort } from "./project-execution-store.js";
+export {
+  assertActiveProjectBinding,
+  readProjectRunBinding,
+  projectWorkIsCurrent,
+} from "./execution-authority.js";
+
+export { loadProjectRunDispatchContext } from "./execution-store.js";
+
+export { readProjectRunThreadState } from "./run-thread-state.js";
+
+export {
+  ProjectProposalAcceptanceStore,
+  ProjectRunEventAcceptanceStore,
+} from "./project-event-store.js";
+export type {
+  ProjectRequestProposalPort,
+  ProjectProposalAcceptance,
+} from "./project-event-store.js";
+
+export {
+  finalizeProjectRunTransaction,
+  finishTerminalProjectRunTransaction,
+  reserveProjectWorkStop,
+  ProjectWorkStopStore,
+  type ProjectRequestStopPort,
+  type ProjectRunFinalization,
+} from "./run-finalization.js";
+
+export {
+  ProjectWorkRevocationStore,
+  type ProjectWorkRevocationRoot,
+  type ProjectWorkRevocationScope,
+  type ProjectRequestRevocationHooks,
+  type PlannedManagerlessRequestHooks,
+} from "./project-work-revocation.js";
+
+export { ProjectRunRecoveryStore } from "./project-run-recovery.js";
+export { type ProjectRunRequestCancellation } from "./run-finalization.js";

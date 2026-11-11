@@ -1,19 +1,16 @@
+import { createProjectIdentityFixture } from "./project-work.test-support.js";
+import { seedMemberComputer } from "./team-computer.test-support.js";
 import { createId } from "@opensteer/core";
 import { randomUUID, createHash } from "node:crypto";
 import { expect } from "vitest";
-import {
-  describeStore,
-  enrollTestRunner,
-  testRunnerDescriptor,
-} from "./store.integration.test-support.js";
+import { describeStore, testRunnerDescriptor } from "./store.integration.test-support.js";
 
 describeStore("team computer ownership", (it) => {
   it("refuses member computers and member-bound managed computers before writing enrollments", async ({
     storeFixture,
   }) => {
-    const { userId } = await storeFixture.createRunFixture("fixed-team-computer", null, "project");
+    const { userId } = await createProjectIdentityFixture(storeFixture, "fixed-team-computer");
     const { database, store } = storeFixture;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     const input = {
       allowedModules: ["agents"] as const,
       createdBy: userId,
@@ -40,22 +37,8 @@ describeStore("team computer ownership", (it) => {
     expect(await store.effectiveMachineOwner(createId("runner"))).toBeNull();
   });
   it("refuses an existing member-bound managed Runner on reconnect", async ({ storeFixture }) => {
-    const run = await storeFixture.createRunFixture("managed-reconnect", null, "project");
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    await enrollTestRunner(storeFixture.store, {
-      createdBy: run.userId,
-      ownerUserId: run.userId,
-      runnerKind: "managed",
-      runnerId,
-      environmentId,
-      name: "Member managed",
-      tokenSuffix: "member-managed",
-    });
-    await storeFixture.database
-      .updateTable("deployments")
-      .set({ authorityModelVersion: 2 })
-      .execute();
+    const run = await createProjectIdentityFixture(storeFixture, "managed-reconnect");
+    const { runnerId, environmentId } = await seedMemberComputer(storeFixture.store, run);
     await expect(
       storeFixture.store.authenticateRunnerConnection(
         testRunnerDescriptor({

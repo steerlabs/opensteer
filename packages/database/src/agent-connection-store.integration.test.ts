@@ -1,3 +1,7 @@
+import {
+  createProjectIdentityFixture,
+  prepareProjectAdmission,
+} from "@opensteer/database/test-support/project";
 import { revokeTeamConnection } from "./team-connection-store.js";
 import type { AccessWorkRevocationRoot } from "./access-store.js";
 import { describeStore } from "@opensteer/database/test-support/store";
@@ -9,9 +13,13 @@ describeStore("connected-agent team incarnations", (it) => {
   it("requires admission and a Project and never revives obsolete credentials", async ({
     storeFixture,
   }) => {
-    const fixture = await storeFixture.createRunFixture("connection-incarnation", null, "project");
+    const fixture = await createProjectIdentityFixture(storeFixture, "connection-incarnation");
     const database = storeFixture.database;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    await database
+      .updateTable("users")
+      .set({ admittedAt: null })
+      .where("id", "=", fixture.userId)
+      .execute();
     const store = new AgentConnectionStore(database);
     const input = {
       userId: fixture.userId,
@@ -69,13 +77,9 @@ describeStore("connected-agent team incarnations", (it) => {
     it(`revokes two connections independently through the port (reverse=${reverse})`, async ({
       storeFixture,
     }) => {
-      const fixture = await storeFixture.createRunFixture(
-        "connection-revoke-root",
-        null,
-        "project",
-      );
+      const context = await prepareProjectAdmission(storeFixture);
+      const fixture = context.project;
       const database = storeFixture.database;
-      await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
       await database
         .updateTable("users")
         .set({ admittedAt: new Date() })
@@ -86,7 +90,7 @@ describeStore("connected-agent team incarnations", (it) => {
         userId: fixture.userId,
         label: "Agent",
         clientName: "test",
-        accessMode: "approval-required" as const,
+        accessMode: "full-access" as const,
         reach: { kind: "workspace" as const, workspaceId: fixture.workspace.id },
         resource: "https://team.test/mcp",
         expiresAt: new Date(Date.now() + 60_000),
@@ -105,17 +109,15 @@ describeStore("connected-agent team incarnations", (it) => {
         },
       };
       const command = { connectionId: first.id, expectedRevision: 1, idempotencyKey: "revoke-one" };
-      const pending = await storeFixture.enqueueHumanTrigger({
-        requestedBy: fixture.userId,
-        threadId: fixture.thread.id,
+      const pending = await context.store.admitProjectWork({
+        origin: { ...context.origin, originConnectionId: first.id },
+        source: { kind: "connection", connectionId: first.id },
+        threadId: context.prepared.thread.id,
+        policy: "queue",
         idempotencyKey: "live-connection-root",
         content: [{ type: "text", text: "Connection work" }],
       });
-      await database
-        .updateTable("runs")
-        .set({ originConnectionId: first.id })
-        .where("id", "=", pending.run.id)
-        .execute();
+      if (!pending.runId) throw new Error("Connection fixture did not admit a Run");
       await expect(
         revokeTeamConnection(database, { userId: fixture.userId }, command),
       ).rejects.toMatchObject({

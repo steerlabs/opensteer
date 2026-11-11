@@ -1,4 +1,5 @@
 import { failNodeStop } from "./node-control.js";
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
@@ -255,9 +256,9 @@ async function claimObservedCommand(
       !(await threadExecutionIsAvailableToUser(
         transaction,
         observed.threadId,
-        observed.requestedBy,
+        requireHumanRequester(observed.requestedBy),
         observed.type === "run.execute" && run
-          ? safeGeneration(run.membershipGeneration)
+          ? safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration))
           : undefined,
       )))
       ? "Execution authority for this Thread is no longer available."
@@ -334,8 +335,8 @@ async function claimObservedCommand(
       !(await threadExecutionIsAvailableToUser(
         transaction,
         run.threadId,
-        observed.requestedBy,
-        safeGeneration(run.membershipGeneration),
+        requireHumanRequester(observed.requestedBy),
+        safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
       ))
     ) {
       terminalFailure =
@@ -1338,7 +1339,7 @@ export async function dispatchRequestResponse(
       const membership = await requireActiveWorkspaceMembership(
         transaction,
         observed.originatingWorkspaceId,
-        observed.respondingUserId,
+        requireHumanRequester(observed.respondingUserId),
         true,
       );
       if (agentResponder)
@@ -1508,7 +1509,7 @@ export async function dispatchChannelCommand(
         !(await threadExecutionIsAvailableToUser(
           transaction,
           run.threadId,
-          run.requestedBy,
+          requireHumanRequester(run.requestedBy),
           Number(run.membershipGeneration),
         ))
       ) {

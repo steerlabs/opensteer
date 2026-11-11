@@ -1,3 +1,5 @@
+import type { PrincipalId } from "@opensteer/channel-core";
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import { createHash } from "node:crypto";
 import {
   createId,
@@ -15,7 +17,7 @@ import { endAttempt } from "./run-attempts.js";
 import { cleanupRunAttemptTransaction, finalizeRunTransaction } from "./run-finalization.js";
 import { runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import type { DatabaseSchema } from "./schema.js";
+import type { DatabaseSchema, RunRow } from "./schema.js";
 import {
   eventFromRow,
   jsonValue,
@@ -30,20 +32,85 @@ import { messageFromRow, runUsageFromRow, threadInputFromRow } from "./thread-ro
 import { projectThreadState } from "./thread-status.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
-/** The caller holds the Run and its Workspace, Thread and session fences. */
-export async function recoverLostRunTransaction(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly failure: RunFailure;
-    readonly links: ChannelLinks;
-    readonly now: Date;
-    readonly runId: RunId;
-  },
-): Promise<{
+export interface RunRecoveryInput {
+  readonly failure: RunFailure;
+  readonly links: ChannelLinks;
+  readonly now: Date;
+  readonly runId: RunId;
+}
+
+interface RunRecoveryResult {
   readonly status: "recovered" | "terminal" | "unchanged";
   readonly events: readonly AgentEvent[];
   readonly revokedGrants: readonly RevokedRunGrant[];
-}> {
+}
+
+export interface RunRecoveryEffects {
+  readonly authorityIsCurrent: (
+    transaction: Transaction<DatabaseSchema>,
+    run: RunRow,
+  ) => Promise<boolean>;
+  readonly finalize: typeof finalizeRunTransaction;
+  readonly cancelRequests?: (() => Promise<readonly AgentEvent[]>) | undefined;
+  readonly retireCommands?: (() => Promise<void>) | undefined;
+  readonly fenceAuthority?: (() => Promise<void>) | undefined;
+  readonly messageAuthority: (
+    run: RunRow,
+    author: {
+      readonly kind: "platform";
+      readonly cause: "run-recovery";
+      readonly referenceId: string;
+    },
+  ) => {
+    readonly actorPrincipalId: PrincipalId;
+    readonly membershipGeneration: number | string | null;
+    readonly requestedBy: RunRow["requestedBy"];
+    readonly initiatorGeneration?: string | null;
+    readonly originConnectionId?: string | null;
+    readonly authoritySource: Readonly<Record<string, unknown>>;
+  };
+  readonly commandAuthority: (run: RunRow) => {
+    readonly type: "run.execute" | "run.execute.project";
+    readonly membershipGeneration?: string | null;
+    readonly initiatorGeneration?: string | null;
+    readonly originConnectionId?: string | null;
+  };
+  readonly assignmentActivity: typeof assignmentActivityEventsForRun;
+}
+
+/** The caller holds the Run and its Workspace, Thread and session fences. */
+export async function recoverLostRunTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: RunRecoveryInput,
+): Promise<RunRecoveryResult> {
+  return recoverRunTransaction(transaction, input, {
+    authorityIsCurrent: (transaction, run) =>
+      threadExecutionIsAvailableToUser(
+        transaction,
+        run.threadId,
+        requireHumanRequester(run.requestedBy),
+        safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
+      ),
+    finalize: finalizeRunTransaction,
+    messageAuthority: (run, author) => ({
+      actorPrincipalId: systemPrincipalId,
+      membershipGeneration: safeGeneration(
+        requireHumanMembershipGeneration(run.membershipGeneration),
+      ),
+      requestedBy: run.requestedBy,
+      authoritySource: { ...author, userId: run.requestedBy },
+    }),
+    commandAuthority: () => ({ type: "run.execute" }),
+    assignmentActivity: assignmentActivityEventsForRun,
+  });
+}
+
+/** Shared incident summary, native-session continuation and durable attempt replacement. */
+export async function recoverRunTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: RunRecoveryInput,
+  effects: RunRecoveryEffects,
+): Promise<RunRecoveryResult> {
   const successorId = createId("runAttempt");
   const messageId = createId("message");
   const run = await transaction
@@ -84,7 +151,7 @@ export async function recoverLostRunTransaction(
   const lost = attempts.find((attempt) => attempt.bindingGeneration === run.bindingGeneration);
   const fail = async (status: "failed" | "interrupted", failure = input.failure) => ({
     status: "terminal" as const,
-    events: await finalizeRunTransaction(transaction, {
+    events: await effects.finalize(transaction, {
       completedAt: input.now,
       failure,
       links: input.links,
@@ -105,14 +172,7 @@ export async function recoverLostRunTransaction(
   ) {
     return fail("interrupted");
   }
-  if (
-    !(await threadExecutionIsAvailableToUser(
-      transaction,
-      run.threadId,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
-    ))
-  ) {
+  if (!(await effects.authorityIsCurrent(transaction, run))) {
     return fail("failed", {
       code: "workspace_access_revoked",
       message: "Workspace access was revoked before the Run reached a terminal event",
@@ -182,6 +242,8 @@ export async function recoverLostRunTransaction(
     failure: input.failure,
     requestCancellationReason: "process-lost",
     retireBinding: true,
+    cancelRequests: effects.cancelRequests,
+    retireCommands: effects.retireCommands,
     run,
     source: "host",
     status: "interrupted",
@@ -293,10 +355,11 @@ export async function recoverLostRunTransaction(
     }
     const parsedContent = MessageContentSchema.parse(content);
     const author = { kind: "platform", cause: "run-recovery", referenceId: lost.id } as const;
+    const authority = effects.messageAuthority(run, author);
     const message = await transaction
       .insertInto("messages")
       .values({
-        actorPrincipalId: systemPrincipalId,
+        actorPrincipalId: authority.actorPrincipalId,
         author: jsonValue(author),
         content: jsonValue(parsedContent),
         id: messageId,
@@ -310,19 +373,19 @@ export async function recoverLostRunTransaction(
     const receipt = await transaction
       .insertInto("threadInputs")
       .values({
-        actorPrincipalId: systemPrincipalId,
+        actorPrincipalId: authority.actorPrincipalId,
         assignmentId: run.assignmentId,
-        authoritySource: jsonValue({ ...author, userId: run.requestedBy }),
+        authoritySource: jsonValue(authority.authoritySource),
         cancelReason: null,
         causalChainId: run.causalChainId,
         deliveredAt: null,
         idempotencyKey: `run-recovery:${lost.id}`,
-        membershipGeneration: safeGeneration(run.membershipGeneration),
+        membershipGeneration: authority.membershipGeneration,
         messageId,
         policy: "queue",
         queueRank: thread.nextMessageSequence,
         replyTarget: run.replyTarget ? jsonValue(run.replyTarget) : null,
-        requestedBy: run.requestedBy,
+        requestedBy: authority.requestedBy,
         requestFingerprint: createHash("sha256")
           .update(JSON.stringify(parsedContent))
           .digest("base64url"),
@@ -331,6 +394,12 @@ export async function recoverLostRunTransaction(
         steerCommandId: null,
         threadId: thread.id,
         updatedAt: input.now,
+        ...(authority.initiatorGeneration !== undefined
+          ? {
+              initiatorGeneration: authority.initiatorGeneration,
+              originConnectionId: authority.originConnectionId ?? null,
+            }
+          : {}),
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -359,7 +428,7 @@ export async function recoverLostRunTransaction(
     .selectFrom("commands")
     .selectAll()
     .where("runId", "=", run.id)
-    .where("type", "=", "run.execute")
+    .where("type", "=", effects.commandAuthority(run).type)
     .orderBy("createdAt", "asc")
     .orderBy("id", "asc")
     .limit(1)
@@ -379,7 +448,7 @@ export async function recoverLostRunTransaction(
       runId: run.id,
       status: "pending",
       threadId: thread.id,
-      type: "run.execute",
+      ...effects.commandAuthority(run),
     })
     .execute();
   events.push(
@@ -392,8 +461,9 @@ export async function recoverLostRunTransaction(
       workspaceId: thread.workspaceId,
     }),
     ...(await projectThreadState(transaction, thread.id, input.now)),
-    ...(await assignmentActivityEventsForRun(transaction, run.id)),
+    ...(await effects.assignmentActivity(transaction, run.id)),
   );
+  await effects.fenceAuthority?.();
   const revokedGrants = await cleanup.finish(async () => {
     // Include both the executing attempt and an unsent steering replacement.
     await transaction

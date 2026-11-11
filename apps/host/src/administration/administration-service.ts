@@ -18,7 +18,7 @@ import {
   type HostApiCommandOutput,
 } from "@opensteer/protocol";
 import type { HostServerDependencies } from "../server.js";
-import type { AgentCaller } from "../mcp/agent-caller.js";
+import type { HumanAgentCaller as AgentCaller } from "../mcp/agent-caller.js";
 import { settings } from "../mcp/tool-access.js";
 import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 import {

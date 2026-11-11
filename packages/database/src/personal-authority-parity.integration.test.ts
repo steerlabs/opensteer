@@ -36,7 +36,7 @@ describeStore("Personal authority SQL parity", (it) => {
     );
     const traces: Record<"admission" | "answer", Statement[]> = { admission: [], answer: [] };
     let capturing: "admission" | "answer" | null = null;
-    const pool = new Pool({ connectionString: storeFixture.databaseUrl });
+    const pool = new Pool({ connectionString: storeFixture.databaseUrl, max: 1 });
     pool.on("connect", (client) => {
       client.query = new Proxy(client.query, {
         apply(target, receiver, args: unknown[]) {
@@ -58,6 +58,19 @@ describeStore("Personal authority SQL parity", (it) => {
       return { database, close: () => database.destroy() };
     });
     const store = new OpensteerStore(database);
+    await pool.query("set track_functions = 'all'");
+    const helperCalls = async () => {
+      await pool.query("select pg_stat_force_next_flush()");
+      const result = await pool.query<{ calls: string }>(
+        "select coalesce(sum(calls), 0)::text as calls from pg_stat_user_functions where funcid = 'public.opensteer_stored_execution_authority()'::regprocedure",
+      );
+      const row = result.rows[0];
+      if (!row) throw new Error("Authority helper statistics were not returned");
+      return Number(row.calls);
+    };
+    const beforeAdmission = await helperCalls();
+    let admissionHelperCalls = 0;
+    let answerHelperCalls = 0;
     try {
       capturing = "admission";
       const turn = await store.enqueueThreadInput({
@@ -69,6 +82,7 @@ describeStore("Personal authority SQL parity", (it) => {
         source: { kind: "human" },
       });
       capturing = null;
+      admissionHelperCalls = (await helperCalls()) - beforeAdmission;
       if (!turn.run || !turn.command) throw new Error("Run was not admitted");
       await store.claimCommand(turn.command.id, "parity-dispatcher");
       const binding = await store.acquireExecutionBinding({
@@ -118,16 +132,25 @@ describeStore("Personal authority SQL parity", (it) => {
           subject: { id: seed.workspace.id, kind: "workspace" },
         },
       });
+      const beforeAnswer = await helperCalls();
       capturing = "answer";
       const answer = await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
         resolvedBy: seed.userId,
         response: { kind: "external", value: { decision: "declined" } },
       });
+      capturing = null;
+      answerHelperCalls = (await helperCalls()) - beforeAnswer;
       expect(answer.request.status).toBe("declined");
     } finally {
       capturing = null;
     }
+    console.info("Personal execution authority helper calls", {
+      admission: admissionHelperCalls,
+      answer: answerHelperCalls,
+    });
+    expect(admissionHelperCalls).toBeLessThanOrEqual(5);
+    expect(answerHelperCalls).toBeLessThanOrEqual(5);
     const identifiers = new Map<string, string>();
     const normalized = JSON.stringify(traces)
       .replace(

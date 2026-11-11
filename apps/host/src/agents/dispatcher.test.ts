@@ -1140,6 +1140,7 @@ function steerCommand(): CommandRow {
   const runId = createId("run");
   const threadId = createId("thread");
   return {
+    originatingGrantId: null,
     initiatorGeneration: null,
     membershipGeneration: null,
     originConnectionId: null,
@@ -1197,6 +1198,7 @@ function requestCommand(input: {
 }): CommandRow {
   const now = new Date();
   return {
+    originatingGrantId: null,
     initiatorGeneration: null,
     membershipGeneration: null,
     originConnectionId: null,

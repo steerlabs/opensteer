@@ -1,3 +1,4 @@
+import { createTestDeploymentIdentity } from "@opensteer/database/test-support/deployment";
 import { sql } from "kysely";
 import { RunnerRegistry } from "@opensteer/orchestration";
 import { createId } from "@opensteer/core";
@@ -25,11 +26,10 @@ import {
 } from "@opensteer/runner-auth";
 
 async function setup(f: StoreFixture, kind: "personal" | "server", model: 1 | 2) {
-  await f.store.ensureDeployment({
+  await createTestDeploymentIdentity(f.database, {
+    shape: { kind, defaultWorkspaceBacking: "local-directory" },
+    model,
     canonicalOrigin: "https://team.test",
-    deploymentId: createId("deployment"),
-    hostInstanceId: createId("hostInstance"),
-    deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
   });
   const userId = await f.store.createUser("Operator");
   await f.database
@@ -37,7 +37,6 @@ async function setup(f: StoreFixture, kind: "personal" | "server", model: 1 | 2)
     .set({ admittedAt: new Date(), instanceRole: "administrator" })
     .where("id", "=", userId)
     .execute();
-  await f.database.updateTable("deployments").set({ authorityModelVersion: model }).execute();
   const counts: Record<string, number> = {};
   let phase = "setup";
   const database = f.database.withPlugin({

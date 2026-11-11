@@ -70,7 +70,7 @@ import {
 
 import { DescribeInputSchema, ProposeInputSchema } from "@opensteer/agent-tools/integrations";
 import type { ToolCall } from "./index.js";
-import { type AgentCaller } from "../agent-caller.js";
+import { type HumanAgentCaller as AgentCaller } from "../agent-caller.js";
 import { requireRun, operationId } from "../operations.js";
 
 export type IntegrationToolsRunScope = RunCapabilityClaims<string>;

@@ -1,3 +1,4 @@
+import { createProjectIdentityFixture } from "@opensteer/database/test-support/project";
 import { createId, zeroSequence } from "@opensteer/core";
 import { describeStore } from "@opensteer/database/test-support/store";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -22,9 +23,8 @@ describeStore("team realtime incarnations", (it) => {
   it("refuses removal between snapshot and replay and preserves a rejoined subscription during old cleanup", async ({
     storeFixture,
   }) => {
-    const run = await storeFixture.createRunFixture("realtime-incarnation", null, "project");
+    const run = await createProjectIdentityFixture(storeFixture, "realtime-incarnation");
     const { database, store } = storeFixture;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await database
       .updateTable("users")
       .set({ admittedAt: new Date() })
@@ -89,9 +89,8 @@ describeStore("team realtime incarnations", (it) => {
   it("fences host-level and command-result sinks by the captured session generation", async ({
     storeFixture,
   }) => {
-    const run = await storeFixture.createRunFixture("realtime-global", null, "project");
+    const run = await createProjectIdentityFixture(storeFixture, "realtime-global");
     const { database, store } = storeFixture;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await database
       .updateTable("users")
       .set({ admittedAt: new Date() })

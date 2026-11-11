@@ -1,3 +1,5 @@
+import { assertActiveProjectBinding } from "./execution-authority.js";
+import type { ProjectRunBinding, RunnerId } from "@opensteer/core";
 import {
   MessageIdSchema,
   OpensteerError,
@@ -152,15 +154,41 @@ export async function readAgentThreadRecent(
   );
 }
 
+type ThreadActivityQuery = {
+  readonly threadId: ThreadId;
+  readonly limit: number;
+  readonly before?: string;
+  readonly itemId?: string;
+};
+
 export async function readAgentThreadActivity(
   database: Kysely<DatabaseSchema>,
-  input: {
-    readonly threadId: ThreadId;
-    readonly ownerId: UserId;
-    readonly limit: number;
-    readonly before?: string;
-    readonly itemId?: string;
-  },
+  input: ThreadActivityQuery & { readonly ownerId: UserId },
+) {
+  return readThreadActivity(database, input, (tx) => canRead(tx, input.threadId, input.ownerId));
+}
+
+export async function readProjectThreadActivity(
+  database: Kysely<DatabaseSchema>,
+  input: ThreadActivityQuery & { readonly binding: ProjectRunBinding },
+  runnerIsAttached: (runnerId: RunnerId, bootId: string) => boolean,
+) {
+  await assertActiveProjectBinding(database, input.binding, { runnerIsAttached });
+  return readThreadActivity(database, input, async (tx) => {
+    await assertActiveProjectBinding(tx, input.binding, { runnerIsAttached });
+    return tx
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", input.threadId)
+      .where("workspaceId", "=", input.binding.workspaceId)
+      .executeTakeFirst();
+  });
+}
+
+async function readThreadActivity(
+  database: Kysely<DatabaseSchema>,
+  input: ThreadActivityQuery,
+  authorize: (tx: Transaction<DatabaseSchema>) => Promise<{ readonly id: ThreadId } | undefined>,
 ) {
   const before = input.before === undefined ? null : SequenceSchema.safeParse(input.before);
   if (before && (!before.success || BigInt(before.data) > maximumEventSequence))
@@ -168,7 +196,7 @@ export async function readAgentThreadActivity(
   return withDatabaseTransaction(
     database,
     async (tx) => {
-      if (!(await canRead(tx, input.threadId, input.ownerId))) return null;
+      if (!(await authorize(tx))) return null;
       const messageId = input.itemId ? MessageIdSchema.safeParse(input.itemId) : null;
       const sequence = input.itemId ? SequenceSchema.safeParse(input.itemId) : null;
       const markerId = sql<MessageId>`e.data->'message'->>'id'`;

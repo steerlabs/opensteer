@@ -246,11 +246,21 @@ integration("Host vertical slice", () => {
         expect(await store.getDeployment()).toMatchObject({ id: deployment.id });
         await runtime.close();
         runtime = undefined;
+        await database.deleteFrom("deployments").where("id", "=", deployment.id).execute();
         await database
-          .updateTable("deployments")
-          .set({ authorityModelVersion: 2 })
-          .where("id", "=", deployment.id)
-          .executeTakeFirstOrThrow();
+          .insertInto("deployments")
+          .values({
+            id: deployment.id,
+            singletonKey: "primary",
+            activeHostInstanceId: hostInstance.hostInstanceId,
+            authorityModelVersion: 2,
+            deploymentShape: config.workspace.shape,
+            canonicalOrigin: config.canonicalOrigin.origin,
+            lifecycle: "active",
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .execute();
         await expect(
           createHostRuntime(config).then((started) => {
             runtime = started;

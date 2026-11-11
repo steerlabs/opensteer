@@ -1,3 +1,6 @@
+import { isProjectRunCapabilityEnvelope } from "../agents/run-capability.js";
+import { assertProjectToolCall } from "./project-tool-access.js";
+import { isDeepStrictEqual } from "node:util";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -42,7 +45,12 @@ import type { RequestHold } from "./request-hold.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { agentToolFailure, internalToolFailureCode } from "./agent-tool-failure.js";
 import { mcpResourceMetadataPath } from "./connections/connection-oauth.js";
-import { AgentCallerResolver, type AgentCaller, type RunCaller } from "./agent-caller.js";
+import {
+  type AgentCaller,
+  type HumanAgentCaller,
+  type ProjectCaller,
+  type RunCaller,
+} from "./agent-caller.js";
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
@@ -62,6 +70,17 @@ interface McpSession {
   readonly streams: boolean;
   lastSeenAt: number;
 }
+export interface ProjectAgentToolPort {
+  call(input: {
+    readonly caller: ProjectCaller;
+    readonly name: AgentTool["name"];
+    readonly input: object;
+    readonly operationKey: string;
+    readonly checkLive: () => Promise<void>;
+    readonly signal?: AbortSignal;
+  }): Promise<unknown>;
+}
+
 export class OpensteerMcpService {
   readonly #runtimeOrigin: URL;
   readonly #sessions = new Map<string, McpSession>();
@@ -71,8 +90,9 @@ export class OpensteerMcpService {
   readonly #revalidations = new Set<Promise<void>>();
   #closing: Promise<void> | undefined;
   readonly options: {
-    readonly callers: Pick<AgentCallerResolver, "authenticate">;
+    readonly callers: { authenticate(bearer: string): Promise<AgentCaller> };
     readonly handlers: AgentToolHandlers;
+    readonly projectTools?: ProjectAgentToolPort | undefined;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
@@ -86,8 +106,9 @@ export class OpensteerMcpService {
     readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
   };
   constructor(options: {
-    readonly callers: Pick<AgentCallerResolver, "authenticate">;
+    readonly callers: { authenticate(bearer: string): Promise<AgentCaller> };
     readonly handlers: AgentToolHandlers;
+    readonly projectTools?: ProjectAgentToolPort | undefined;
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
@@ -179,7 +200,7 @@ export class OpensteerMcpService {
       ) {
         await this.#serveDetached(request, response, body, ended, {
           ...authorization,
-          origin,
+          requestOrigin: origin,
           token,
           sessionId,
         });
@@ -197,7 +218,7 @@ export class OpensteerMcpService {
         return;
       }
       try {
-        session = await this.#createSession({ ...authorization, origin, token });
+        session = await this.#createSession({ ...authorization, requestOrigin: origin, token });
         createdSession = true;
       } catch (error) {
         this.#release(authorization.key);
@@ -258,7 +279,7 @@ export class OpensteerMcpService {
     ended: Promise<void>,
     input: AgentCaller & {
       readonly token: string;
-      readonly origin: URL;
+      readonly requestOrigin: URL;
       readonly sessionId: string;
     },
   ): Promise<void> {
@@ -303,7 +324,7 @@ export class OpensteerMcpService {
   async #createSession(
     input: AgentCaller & {
       readonly token: string;
-      readonly origin: URL;
+      readonly requestOrigin: URL;
       readonly sessionId?: string;
     },
   ): Promise<McpSession> {
@@ -314,14 +335,14 @@ export class OpensteerMcpService {
     const transport = new StreamableHTTPServerTransport(
       input.sessionId
         ? {
-            allowedHosts: [input.origin.host],
-            allowedOrigins: [input.origin.origin],
+            allowedHosts: [input.requestOrigin.host],
+            allowedOrigins: [input.requestOrigin.origin],
             enableDnsRebindingProtection: true,
             enableJsonResponse,
           }
         : {
-            allowedHosts: [input.origin.host],
-            allowedOrigins: [input.origin.origin],
+            allowedHosts: [input.requestOrigin.host],
+            allowedOrigins: [input.requestOrigin.origin],
             enableDnsRebindingProtection: true,
             enableJsonResponse,
             onsessionclosed: (closedId) => {
@@ -345,7 +366,7 @@ export class OpensteerMcpService {
     session = {
       responses: new Set(),
       token: input.token,
-      origin: input.origin.origin,
+      origin: input.requestOrigin.origin,
       key: input.key,
       kind: input.kind,
       lastSeenAt: Date.now(),
@@ -486,11 +507,17 @@ export class OpensteerMcpService {
       readonly caller?: AgentCaller;
     },
   ): Promise<Record<string, unknown> | string> {
+    // An unverified family marker may only refuse; it never authenticates a caller.
+    if (identity.caller?.kind === "project" || isProjectRunCapabilityEnvelope(bearer))
+      assertProjectToolCall(name, typeof value === "object" && value !== null ? value : {});
     const found = agentTools.find((spec) => spec.name === name);
     if (!found) throw new OpensteerError({ code: "not_found", message: "Unknown Opensteer tool" });
     const tool = found;
     const input = tool.input.parse(value);
-    let caller = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    const resolved = identity.caller ?? (await this.options.callers.authenticate(bearer));
+    if (resolved.kind === "project")
+      return this.#callProjectTool(bearer, resolved, tool, input, identity);
+    let caller: HumanAgentCaller = resolved;
     const key = toolOperationKey(caller, input, identity.operationKey);
     const check = async () => {
       const access = "readsOnly" in tool && tool.readsOnly?.(input as never) ? "read" : tool.access;
@@ -512,7 +539,10 @@ export class OpensteerMcpService {
     const invoke = async () => {
       const call: ToolCall<typeof tool.name> = {
         checkLive: async () => {
-          caller = await this.options.callers.authenticate(bearer);
+          const current = await this.options.callers.authenticate(bearer);
+          if (current.kind === "project")
+            throw new OpensteerError({ code: "forbidden", message: "MCP caller family changed" });
+          caller = current;
           await check();
         },
         caller,
@@ -541,10 +571,61 @@ export class OpensteerMcpService {
   }
 
   async #toolsFor(caller: AgentCaller) {
+    if (caller.kind === "project") return toolsFor(caller);
     const knowledge = (await this.options.knowledgeFor?.(caller)) === true;
     return toolsFor({ ...caller, knowledge });
   }
-  async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
+  async #callProjectTool(
+    bearer: string,
+    original: ProjectCaller,
+    tool: AgentTool,
+    input: object,
+    identity: { readonly operationKey: string; readonly signal?: AbortSignal },
+  ): Promise<Record<string, unknown> | string> {
+    assertProjectToolCall(tool.name, input);
+    const checkLive = async () => {
+      const caller = await this.options.callers.authenticate(bearer);
+      if (caller.kind !== "project" || !isDeepStrictEqual(caller.claims, original.claims))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Project caller changed its captured binding",
+        });
+      if (!toolsFor(caller).some((spec) => spec.name === tool.name))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This tool is unavailable to a Project caller",
+        });
+      return caller;
+    };
+    // Reject unsupported tools before their handler can read a target-dependent record.
+    const caller = await checkLive();
+    const service = this.options.projectTools;
+    if (!service)
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "project-tools-unavailable",
+        message: "Project tool handlers are not connected",
+      });
+    const result = await service.call({
+      caller,
+      name: tool.name,
+      input,
+      operationKey: toolOperationKey(caller, input, identity.operationKey),
+      checkLive: async () => {
+        await checkLive();
+      },
+      ...(identity.signal ? { signal: identity.signal } : {}),
+    });
+    await checkLive();
+    const output = tool.output.safeParse(result);
+    if (!output.success)
+      throw new Error(
+        `Opensteer produced an invalid Project tool result at ${[...new Set(output.error.issues.map(({ path }) => path.join(".") || "(result)"))].join(", ")}`,
+      );
+    return output.data as Record<string, unknown> | string;
+  }
+
+  async #targets(caller: HumanAgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;
     const add = async (value: unknown) => {

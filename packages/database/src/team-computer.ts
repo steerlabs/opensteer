@@ -90,6 +90,16 @@ export function teamComputerHasExecutionGrant(input: {
   );
 }
 
+export function teamComputerExecutionSql(alias: "r"): string {
+  const modules = JSON.stringify(teamComputerModules);
+  return `(${alias}.owner_kind = 'deployment' and ${alias}.owner_user_id is null
+    and ${alias}.allowed_modules @> '${modules}'::jsonb
+    and jsonb_array_length(${alias}.allowed_modules) = ${teamComputerModules.length}
+    and ${alias}.device->>'platform' = 'linux'
+    and coalesce(${alias}.device->>'form', '') <> 'phone'
+    and ${alias}.device->>'app' is null)`;
+}
+
 export function teamComputerInventoryCondition(table: "runners" | "runnerEnrollments") {
   const kind = table === "runners" ? "kind" : "runnerKind";
   return sql<boolean>`(not ${storedProjectDeployment} or (

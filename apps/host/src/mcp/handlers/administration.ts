@@ -12,7 +12,7 @@ import {
   type AdministrationCommand,
 } from "../../administration/administration-service.js";
 import { isIntegrationAdministrationCommand } from "../../integrations/integration-administration.js";
-import type { AgentCaller } from "../agent-caller.js";
+import type { HumanAgentCaller as AgentCaller } from "../agent-caller.js";
 import { operationId } from "../operations.js";
 import { settings } from "../tool-access.js";
 import type { ToolCall, AgentToolHandlers } from "./index.js";

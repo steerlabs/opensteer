@@ -26,10 +26,51 @@ function walk(value: unknown, visit: (entry: SyntaxNode) => void): void {
       walk(entry[key], visit);
 }
 
-export function sqlKindComparisons(source: string): string[] {
-  return [...source.matchAll(sqlKindDecisionPattern)].map((match) =>
-    match[0].trim().replace(/\s+/gu, " "),
+function sqlKindMatches(source: string): { expression: string; index: number }[] {
+  const matches = [...source.matchAll(sqlKindDecisionPattern)].map((match) => ({
+    expression: match[0].trim().replace(/\s+/gu, " "),
+    index: match.index,
+  }));
+  const aliases = new Set([
+    ...[
+      ...source.matchAll(
+        /\b(?:from|join)\s+public\.opensteer_stored_execution_authority\s*\(\s*\)\s+(?:as\s+)?(\w+)/giu,
+      ),
+    ].map((match) => match[1]),
+    ...[
+      ...source.matchAll(
+        /\bselect\b[^;]*\binto\s+(\w+)\s+from\s+public\.opensteer_stored_execution_authority\s*\(/giu,
+      ),
+    ].map((match) => match[1]),
+  ]);
+  const columns = new Set(
+    [
+      ...source.matchAll(
+        /\bselect\s+model\s*,\s*kind\s+into\s+\w+\s*,\s*(\w+)\s+from\s+public\.opensteer_stored_execution_authority\s*\(/giu,
+      ),
+    ].map((match) => match[1]),
   );
+  const selectors = [
+    ...[...aliases]
+      .filter((alias): alias is string => Boolean(alias))
+      .map((alias) => `\\b${alias}\\.kind\\b`),
+    ...[...columns]
+      .filter((column): column is string => Boolean(column))
+      .map((column) => `\\b${column}\\b`),
+  ];
+  for (const selector of selectors) {
+    const pattern = new RegExp(
+      `${selector}\\s*(?:<>|!=|=|\\b(?:not\\s+)?in\\b)[^\\n;]*|'(?:personal|server)'\\s*(?:<>|!=|=)\\s*${selector}`,
+      "giu",
+    );
+    for (const match of source.matchAll(pattern))
+      matches.push({ expression: match[0].trim().replace(/\s+/gu, " "), index: match.index });
+  }
+  return matches.sort((left, right) => left.index - right.index);
+}
+
+export function sqlKindComparisons(source: string): string[] {
+  return sqlKindMatches(source).map(({ expression }) => expression);
 }
 
 export function kindComparisons(file: string, source: string): string[] {
@@ -168,12 +209,11 @@ export function sqlKindDecisionInventory(source: string): Record<string, Record<
   const sections = source.split(/(?=export const \w+Migration\s*:)/gu);
   const inventory: Record<string, Record<string, number>> = {};
   for (const section of sections) {
-    const expressions = sqlKindComparisons(section);
-    if (!expressions.length) continue;
+    const matches = sqlKindMatches(section);
+    if (!matches.length) continue;
     const scope = /^export const (\w+Migration)/u.exec(section)?.[1] ?? "baseline";
-    for (const match of section.matchAll(sqlKindDecisionPattern)) {
-      const expression = match[0].trim().replace(/\s+/gu, " ");
-      const prefix = section.slice(0, match.index);
+    for (const { expression, index } of matches) {
+      const prefix = section.slice(0, index);
       const declarations = [
         ...prefix.matchAll(
           /\b(?:function\s+([\w.]+)\s*\(|constraint\s+(\w+)\s+check\b|(update\s+(?:public\.)?deployments)\b)/giu,

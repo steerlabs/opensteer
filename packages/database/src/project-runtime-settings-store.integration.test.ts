@@ -1,4 +1,6 @@
+import { seedMemberComputer } from "./team-computer.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { createProjectIdentityFixture } from "./project-work.test-support.js";
 import { createId, HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
@@ -10,15 +12,15 @@ import {
   resolveProjectRuntime,
   setProjectRuntimeSettings,
 } from "./project-runtime-settings-store.js";
-import {
-  describeStore,
-  enrollTestRunner,
-  type StoreFixture,
-} from "./store.integration.test-support.js";
+import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 
-async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "codex") {
-  const run = await fixture.createRunFixture("project-settings", null, "project");
+async function setup(
+  fixture: StoreFixture,
+  driverKind: "codex" | "native" = "codex",
+  model: 1 | 2 = 2,
+) {
+  const run = await createProjectIdentityFixture(fixture, "project-settings", model);
   const instance = await fixture.store.createHarnessInstance({
     driverKind: HarnessIdSchema.parse(driverKind),
     config: {},
@@ -79,7 +81,6 @@ async function setup(fixture: StoreFixture, driverKind: "codex" | "native" = "co
   };
   const actor = { userId: run.userId, authorityGeneration: 1 };
   const activate = async () => {
-    await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await fixture.database
       .updateTable("runnerEnrollments")
       .set({
@@ -110,16 +111,7 @@ describeStore("Project runtime settings", (it) => {
     storeFixture,
   }) => {
     const prepared = await setup(storeFixture);
-    const environmentId = createId("environment");
-    await enrollTestRunner(storeFixture.store, {
-      runnerId: createId("runner"),
-      environmentId,
-      runnerKind: "managed",
-      ownerUserId: prepared.userId,
-      createdBy: prepared.userId,
-      name: "Member managed",
-      tokenSuffix: "member-settings",
-    });
+    const { environmentId } = await seedMemberComputer(storeFixture.store, prepared);
     const project = await createTestWorkspace(storeFixture.store, {
       createdBy: prepared.userId,
       name: "Member placement",
@@ -165,7 +157,7 @@ describeStore("Project runtime settings", (it) => {
   it("refuses every model-1 API and SQL write, including Project-shaped input without a user fallback", async ({
     storeFixture,
   }) => {
-    const prepared = await setup(storeFixture);
+    const prepared = await setup(storeFixture, "codex", 1);
     await expect(
       getProjectRuntimeSettings(storeFixture.database, prepared.workspace.id),
     ).rejects.toMatchObject({ code: "forbidden" });
@@ -375,6 +367,11 @@ describeStore("Project runtime settings", (it) => {
     const prepared = await setup(storeFixture);
     await prepared.activate();
     await setProjectRuntimeSettings(storeFixture.database, prepared.actor, prepared.input);
+    await storeFixture.database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue(["filesystem"]) })
+      .where("id", "=", prepared.runnerId)
+      .execute();
     expect(
       await resolveProjectRuntime(storeFixture.database, prepared.workspace.id, () => false),
     ).toEqual({ state: "unavailable", reason: "computer-offline" });

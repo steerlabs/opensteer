@@ -150,6 +150,8 @@ export async function enrollTestRunner(
   input: {
     /** What this computer may ever advertise; agents unless a caller says otherwise. */
     readonly allowedModules?: readonly RunnerModuleName[];
+    readonly device?: RunnerDescriptor["device"];
+    readonly capabilities?: RunnerDescriptor["capabilities"];
     /** Null when the Deployment authored this enrollment for its own Main Runner. */
     readonly createdBy: ReturnType<typeof createId<"user">> | null;
     readonly environmentId: ReturnType<typeof createId<"environment">>;
@@ -180,6 +182,8 @@ export async function enrollTestRunner(
     runnerId: input.runnerId,
     runnerKind: input.runnerKind ?? "main",
   });
+  if (input.device) descriptor.device = input.device;
+  if (input.capabilities) descriptor.capabilities = input.capabilities;
   const enrollmentTokenHash = `sha256:${createHash("sha256")
     .update(`test-enrollment-${input.tokenSuffix}`, "utf8")
     .digest("base64url")}`;
