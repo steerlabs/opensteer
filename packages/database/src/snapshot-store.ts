@@ -375,10 +375,19 @@ export async function workspaceSnapshot(
         maxMessages,
         Math.min(640 * 1_024, maxSerializedBytes),
       ).items;
+      const requestViewFacts =
+        projectAuthority && options.viewerId
+          ? await new ProjectRequestStore(transaction).viewFacts(transaction, {
+              userId: options.viewerId,
+              requestIds: pendingRows
+                .slice(0, workspaceSnapshotMaxPendingRequests)
+                .map((row) => row.id),
+            })
+          : new Map();
       let pendingRequestsDesc = boundedSerializedPrefix(
-        PendingRequestSchema.array().parse(
-          pendingRows.slice(0, workspaceSnapshotMaxPendingRequests).map(requestFromRow),
-        ),
+        PendingRequestSchema.array()
+          .parse(pendingRows.slice(0, workspaceSnapshotMaxPendingRequests).map(requestFromRow))
+          .map((request) => ({ ...request, ...requestViewFacts.get(request.id) })),
         workspaceSnapshotMaxPendingRequests,
         Math.min(600 * 1_024, maxSerializedBytes),
       ).items;
