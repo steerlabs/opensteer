@@ -24,6 +24,7 @@ import {
   type HostSnapshot,
   type ThreadPlacementOption,
   type WorkspaceSummary,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { actionErrorMessage, useMinuteClock } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
@@ -499,7 +500,7 @@ function WorkspaceHome({
               <div className="hero__workspace-copy">
                 <h1>{workspace.name}</h1>
                 {workspace.description ? <p>{workspace.description}</p> : null}
-                {snapshot.teamAdministrationAvailable ? (
+                {isTeamPlace(snapshot) ? (
                   <TeamProjectHomeMarker workspaceId={workspace.id} />
                 ) : null}
               </div>

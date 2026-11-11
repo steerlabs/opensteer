@@ -73,12 +73,12 @@ describe("deployment status wording", () => {
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "host-too-old" }),
       ),
-    ).toMatch(/Update the deployment\.$/u);
+    ).toMatch(/server needs to update it\.$/u);
     expect(
       deploymentStatusDetail(
         describeDeploymentRow(connection, { ...attached, verification: "client-too-old" }),
       ),
-    ).toMatch(/Update this app\.$/u);
+    ).toMatch(/runs a newer Opensteer than this app\. Update Opensteer to open .+\.$/u);
   });
 });
 

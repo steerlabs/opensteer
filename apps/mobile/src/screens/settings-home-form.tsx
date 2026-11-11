@@ -2,18 +2,27 @@ import { contactSupport } from "../report-mail.js";
 import { FlatList, Pressable, View } from "react-native";
 import { AppText } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
-import { settingsDestinations, type SettingsHomeTeam } from "./settings-home-model.js";
+import {
+  settingsDestinations,
+  settingsGroupTitle,
+  settingsHomeDestinations,
+  teamPlaceElsewhere,
+  type SettingsHomeTeam,
+} from "./settings-home-model.js";
 export function SettingsHomeForm({
   onOpen,
   team,
+  teamPlace,
 }: {
   readonly onOpen: (route: (typeof settingsDestinations)[number]["route"]) => void;
   readonly team: SettingsHomeTeam | null;
+  readonly teamPlace: boolean;
 }) {
+  const destinations = settingsHomeDestinations(teamPlace);
   return (
     <Screen>
       <FlatList
-        data={settingsDestinations}
+        data={destinations}
         ListFooterComponent={
           <>
             {team ? (
@@ -31,6 +40,13 @@ export function SettingsHomeForm({
                 ))}
               </View>
             ) : null}
+            {teamPlace ? (
+              <View style={{ padding: 16 }}>
+                <AppText role="caption" tone="muted">
+                  {teamPlaceElsewhere}
+                </AppText>
+              </View>
+            ) : null}
             <Pressable
               accessibilityRole="button"
               onPress={() => contactSupport()}
@@ -43,8 +59,8 @@ export function SettingsHomeForm({
         keyExtractor={(item) => item.route}
         renderItem={({ item, index }) => (
           <View>
-            {item.group !== settingsDestinations[index - 1]?.group && item.group !== "" ? (
-              <AppText>For your agents</AppText>
+            {item.group !== destinations[index - 1]?.group && item.group !== "" ? (
+              <AppText>{settingsGroupTitle(item.group, teamPlace)}</AppText>
             ) : null}
             <Pressable
               accessibilityRole="button"

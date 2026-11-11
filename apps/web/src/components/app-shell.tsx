@@ -1,4 +1,4 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
+import { hostDeploymentPolicy, isTeamPlace } from "@opensteer/client/host";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -621,7 +621,7 @@ export function AppShell({
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
   const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
   const team = useTeam(hostClient);
-  const teamProjects = snapshot.teamAdministrationAvailable === true;
+  const teamProjects = isTeamPlace(snapshot);
   const canCreateProject = !teamProjects || team.summary?.can.createProject.allowed === true;
   const openNewWorkspace = useCallback(() => {
     setNewWorkspaceError(null);

@@ -53,14 +53,23 @@ describe("team invitation material", () => {
       },
       rpc: {} as HostClient["rpc"],
     });
-    const input = { email: "nina@acme.example", kind: "full", validFor: "7d" } as const;
+    const input = {
+      email: "nina@acme.example",
+      validFor: "7d",
+      trustedComputerConfirmed: true,
+    } as const;
     await expect(team.createInvitation(7, draft, input)).rejects.toThrow("lost");
     await team.createInvitation(7, draft, input);
 
     expect(sent).toHaveLength(2);
     expect(sent[0]).toEqual(sent[1]);
     const command = TeamCommandSchema.parse(sent[0]);
-    expect(command).toMatchObject({ type: "team.invitation.create", tokenHash: draft.tokenHash });
+    expect(command).toMatchObject({
+      type: "team.invitation.create",
+      tokenHash: draft.tokenHash,
+      memberKind: "full",
+      trustedComputerConfirmed: true,
+    });
     expect(JSON.stringify(sent)).not.toContain(draft.verifier);
   });
 

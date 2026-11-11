@@ -3,6 +3,7 @@ import {
   sameStableHostSnapshot,
   unwrapRpcResult,
   type HostClient,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -221,7 +222,7 @@ function ProjectDetail(props: {
                 )}
                 {/* Named only when the Host names the computer: an unnamed one
                     is not the same thing as shared storage. */}
-                {workspace.machineName === null || snapshot.teamAdministrationAvailable ? null : (
+                {workspace.machineName === null || isTeamPlace(snapshot) ? null : (
                   <AppText role="caption" tone="muted">
                     {`Its folder is in Main on ${workspace.machineName}`}
                   </AppText>

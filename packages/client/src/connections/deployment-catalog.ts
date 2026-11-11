@@ -237,8 +237,8 @@ export class HostVersionMismatchError extends ClientOperationError {
   constructor(code: Exclude<HostApiCompatibility, "compatible">) {
     super(
       code === "host-too-old"
-        ? "This deployment speaks an older Opensteer protocol than this app."
-        : "This deployment speaks a newer Opensteer protocol than this app.",
+        ? "This app is newer than this Opensteer. Whoever runs it needs to update it."
+        : "This Opensteer runs a newer version than this app. Update Opensteer to open it.",
       "blocked",
     );
     this.name = "HostVersionMismatchError";

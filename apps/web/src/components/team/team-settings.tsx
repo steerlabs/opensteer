@@ -4,7 +4,7 @@ import { PageTopbar } from "../page-header.js";
 import { Navigate, NavLink } from "react-router";
 import { TeamGroupPage, TeamGroupsPage } from "./team-groups.js";
 import { TeamPeoplePage, TeamPersonPage } from "./team-people.js";
-import { teamReasonOf } from "@opensteer/client/host";
+import { teamReasonOf, isTeamPlace } from "@opensteer/client/host";
 import { TeamError, TeamMark, TeamStateNotice, useShellTeam } from "./team-ui.js";
 
 /** The team's own group in the Settings rail, drawn only from what the Host allows. */
@@ -47,7 +47,7 @@ export function TeamSettingsRoute({
 }) {
   const { openMobileNavigation, snapshot } = useShell();
   const { summary, error, identity, loading, refresh } = useShellTeam();
-  if (!snapshot.teamAdministrationAvailable) return <Navigate replace to="/settings" />;
+  if (!isTeamPlace(snapshot)) return <Navigate replace to="/settings" />;
   const people = page === "people" || page === "person";
   const title = people ? "People" : "Groups";
   // The Host's answer for this person decides; until it arrives, nothing team-shaped renders.
