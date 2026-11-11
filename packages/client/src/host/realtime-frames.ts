@@ -61,7 +61,7 @@ const realtimeFrameLosses = {
   "host.computer-presence": "bootstrap",
   "host.computer-view.changed": "bootstrap",
   "host.computer-view.removed": "bootstrap",
-  "host.notification-preferences": "bootstrap",
+
   "host.requests-changed": "bootstrap",
   "host.tasks-changed": "bootstrap",
 

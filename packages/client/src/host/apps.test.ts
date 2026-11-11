@@ -7,7 +7,7 @@ it("restores one app at its latest publication point, idempotently, including co
     type: "app.published",
     eventId: createId("event"),
     sequence: "1",
-    workspaceId: createId("workspace"),
+
     threadId: createId("thread"),
     environmentId: createId("environment"),
     runId: createId("run"),

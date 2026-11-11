@@ -253,11 +253,7 @@ export const externalAgentsLead =
   "Connect Opensteer to ChatGPT, Claude and other agents, so they can get things done for you. You approve each one.";
 
 /** How a connection reads in a list: its ceiling, its reach, and when it last acted. */
-export function connectionDetail(
-  connection: AgentConnection,
-  workspaces: readonly { id: string; name: string }[],
-  now = new Date(),
-): string {
+export function connectionDetail(connection: AgentConnection, now = new Date()): string {
   const when = connection.lastUsedAt ? formatRelativeTime(connection.lastUsedAt, now) : null;
   const used =
     when === null
@@ -265,7 +261,7 @@ export function connectionDetail(
       : when === "now"
         ? "Used just now."
         : `Used ${/^\d+[mhd]$/u.test(when) ? `${when} ago` : when}.`;
-  return `${connectionAccessLabel(connection.accessMode)}, in ${connectionReachLabel(connection, workspaces)}. ${used}`;
+  return `${connectionAccessLabel(connection.accessMode)}. ${used}`;
 }
 
 /**
@@ -306,16 +302,8 @@ export async function answerAgentConnection(
         readonly kind: "approve";
         readonly label: string;
         readonly accessMode: ThreadAccessMode;
-        /** One of the consent's Workspace ids, or "user" for everything the person can access. */
-        readonly reach: string;
       },
 ): Promise<string> {
-  const workspace =
-    decision.kind === "approve" && decision.reach !== "user"
-      ? consent.workspaces.find(({ id }) => id === decision.reach)
-      : undefined;
-  if (decision.kind === "approve" && decision.reach !== "user" && !workspace)
-    throw new Error("That Workspace is no longer offered.");
   const result = await client.dispatch({
     type: "connection.authorize",
     requestId: consent.requestId,
@@ -327,7 +315,6 @@ export async function answerAgentConnection(
             kind: "approve",
             label: decision.label.trim(),
             accessMode: decision.accessMode,
-            reach: workspace ? { kind: "workspace", workspaceId: workspace.id } : { kind: "user" },
           },
   });
   if (result.type !== "connection.authorize") throw new Error("Unexpected consent result.");
@@ -337,15 +324,4 @@ export async function answerAgentConnection(
 /** The same words every Thread uses for these modes. */
 export function connectionAccessLabel(mode: AgentConnection["accessMode"]): string {
   return accessModeOptions.find((option) => option.mode === mode)?.label ?? mode;
-}
-
-export function connectionReachLabel(
-  connection: AgentConnection,
-  workspaces: readonly { id: string; name: string }[],
-): string {
-  const reach = connection.reach;
-  return reach.kind === "user"
-    ? "Everything you can access"
-    : (workspaces.find((workspace) => workspace.id === reach.workspaceId)?.name ??
-        `Workspace ${reach.workspaceId}`);
 }

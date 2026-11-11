@@ -1,3 +1,4 @@
+import { apiNegotiation, apiVersionHeader } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import type { DeploymentCatalogStore } from "./deployment-catalog.js";
@@ -57,6 +58,7 @@ export interface HostNetworkRequest {
   readonly request: HostTransportRequest;
   readonly signal: AbortSignal;
   readonly url: string;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 export interface HostNetworkSocket {
@@ -94,6 +96,7 @@ export interface HostNetwork {
 export class HostTransport {
   readonly #fence: HostAttachmentFence;
   readonly #network: HostNetwork;
+  readonly #expectedKind: "personal" | "team" | undefined;
   readonly #sessions: HostSessionRecovery | null;
   readonly #requestControllers = new Set<AbortController>();
   readonly #sockets = new Set<HostNetworkSocket>();
@@ -108,6 +111,7 @@ export class HostTransport {
       localRuntime: options.localRuntime,
     });
     this.#network = options.network;
+    this.#expectedKind = options.expectedKind;
     this.#sessions = options.sessions ?? null;
     this.#fence.onInvalidated((reason) => {
       for (const controller of this.#requestControllers)
@@ -175,7 +179,38 @@ export class HostTransport {
     else this.#activeRequests += 1;
     try {
       const selected = await this.current();
-      const { resolved } = selected;
+      const { resolved, connection } = selected;
+      const deploymentKind = connection.authority.document.deploymentShape.kind;
+      const negotiatesVersion =
+        this.#expectedKind === "team" ||
+        request.headers.apiVersion !== undefined ||
+        Object.keys(request.headers.additional ?? {}).some((name) =>
+          ["x-opensteer-api-version", "x-opensteer-team-api-version"].includes(name.toLowerCase()),
+        );
+      if (negotiatesVersion) {
+        const additional = Object.fromEntries(
+          Object.entries(request.headers.additional ?? {}).filter(
+            ([name]) =>
+              !["x-opensteer-api-version", "x-opensteer-team-api-version"].includes(
+                name.toLowerCase(),
+              ),
+          ),
+        );
+        const { apiVersion: _version, ...headers } = request.headers;
+        request = {
+          ...request,
+          headers: {
+            ...headers,
+            ...(deploymentKind === "personal"
+              ? { apiVersion: String(apiNegotiation(deploymentKind).apiVersion) }
+              : {}),
+            additional: {
+              ...additional,
+              [apiVersionHeader(deploymentKind)]: String(apiNegotiation(deploymentKind).apiVersion),
+            },
+          },
+        };
+      }
       if (
         request.expectedDeploymentId !== undefined &&
         request.expectedDeploymentId !== resolved.deploymentId
@@ -252,7 +287,7 @@ export class HostTransport {
     if (this.#sockets.size >= maximumOpenSockets) {
       throw new Error("The Host WebSocket limit is full.");
     }
-    const { resolved } = await this.current();
+    const { connection, resolved } = await this.current();
     const selectionGeneration = this.#fence.generation;
     let network: HostNetworkSocket | null = null;
     let released = false;
@@ -287,6 +322,11 @@ export class HostTransport {
         requestOrigin: resolved.origin,
         deploymentId: resolved.deploymentId,
         url: target.toString(),
+        headers: {
+          [apiVersionHeader(connection.authority.document.deploymentShape.kind)]: String(
+            apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion,
+          ),
+        },
       },
       {
         close: (code, reason) => {
@@ -405,7 +445,13 @@ export class HostTransport {
    * requests, sockets, and the local Runner target exactly once.
    */
   async current(): Promise<SelectedAttachment> {
-    return this.#fence.current();
+    const selected = await this.#fence.current();
+    if (
+      this.#expectedKind &&
+      selected.connection.authority.document.deploymentShape.kind !== this.#expectedKind
+    )
+      throw new HostTransportError("deployment-changed");
+    return selected;
   }
 
   /**
@@ -424,6 +470,7 @@ export interface HostTransportOptions {
   readonly deploymentId?: DeploymentId;
   readonly localRuntime: LocalHostRuntimeSource;
   readonly network: HostNetwork;
+  readonly expectedKind?: "personal" | "team";
   readonly sessions?: HostSessionRecovery;
 }
 

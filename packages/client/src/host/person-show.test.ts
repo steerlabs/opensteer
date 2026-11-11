@@ -17,7 +17,7 @@ describe("person show navigation", () => {
       const client = new MockHostClient();
       try {
         const snapshot = client.getSnapshot();
-        const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+        const source = snapshot.threads[0]!;
         const machine = snapshot.machines.find((machine) =>
           machine.computerUse?.sessions.some((session) => session.display === (kind === "phone")),
         )!;
@@ -31,7 +31,7 @@ describe("person show navigation", () => {
             : { kind, machineId: machine.id, display: "main" };
         const message = PersonShowMessageSchema.parse({
           type: "host.show",
-          workspaceId: source.workspaceId,
+          deploymentId: snapshot.deploymentId,
           threadId: source.id,
           runId: session.runId,
           target: { place, runId: session.runId },
@@ -69,7 +69,7 @@ describe("person show navigation", () => {
         const call = {
           threadId: createId("thread"),
           runId: createId("run"),
-          workspaceId: source.workspaceId,
+          deploymentId: snapshot.deploymentId,
         };
         expect(
           handlePersonShow(
@@ -99,14 +99,14 @@ describe("person show navigation", () => {
     const client = new MockHostClient();
     try {
       const snapshot = client.getSnapshot();
-      const source = snapshot.homeThreadId!;
+      const source = snapshot.threads[0]!.id!;
       const target = snapshot.threads.find((thread) => thread.id !== source)!;
       expect(target).toBeDefined();
       const navigate = vi.fn();
       const message = PersonShowMessageSchema.parse({
         type: "host.show" as const,
         runId: createId("run"),
-        workspaceId: snapshot.threads.find((thread) => thread.id === source)!.workspaceId,
+        deploymentId: snapshot.deploymentId,
         threadId: source,
         target: { threadId: target.id },
       });
@@ -135,7 +135,7 @@ describe("person show navigation", () => {
       expect(
         handlePersonShow(
           snapshot,
-          { ...tabMessage, workspaceId: createId("workspace") },
+          { ...tabMessage, target: { tabId: BrowserSurfaceIdSchema.parse("closed-tab") } },
           { foreground: true, threadId: source },
           navigate,
         ),
@@ -177,13 +177,13 @@ describe("person show navigation", () => {
     const client = new MockHostClient();
     try {
       const snapshot = client.getSnapshot();
-      const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+      const home = snapshot.threads[0]!;
       const target = snapshot.threads.find((thread) => thread.id !== home.id)!;
       // The call's Thread is hidden: no loaded list or snapshot holds it.
       const call = {
         threadId: createId("thread"),
         runId: createId("run"),
-        workspaceId: home.workspaceId,
+        deploymentId: snapshot.deploymentId,
       };
       expect(snapshot.threads.some((thread) => thread.id === call.threadId)).toBe(false);
       const message = PersonShowMessageSchema.parse({
@@ -204,7 +204,7 @@ describe("person show navigation", () => {
         { foreground: false, threadId: null, call },
         { foreground: true, threadId: null, call: replaced },
         { foreground: true, threadId: null, call: { ...call, threadId: createId("thread") } },
-        { foreground: true, threadId: null, call: { ...call, workspaceId: createId("workspace") } },
+
         { foreground: true, threadId: null, call: null },
       ])
         expect(handlePersonShow(snapshot, message, view, navigate)).toBe(false);
@@ -220,7 +220,7 @@ describe("person show navigation", () => {
     const client = new MockHostClient();
     try {
       const snapshot = client.getSnapshot();
-      const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+      const source = snapshot.threads[0]!;
       const threadId = createId("thread");
       const navigate = vi.fn();
       expect(
@@ -229,7 +229,7 @@ describe("person show navigation", () => {
           PersonShowMessageSchema.parse({
             type: "host.show",
             runId: createId("run"),
-            workspaceId: source.workspaceId,
+            deploymentId: snapshot.deploymentId,
             threadId: source.id,
             target: { threadId },
           }),
@@ -247,7 +247,7 @@ describe("person show navigation", () => {
     const client = new MockHostClient();
     try {
       const snapshot = client.getSnapshot();
-      const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+      const source = snapshot.threads[0]!;
       const place = placeList(snapshot).find((place) => place.destination.kind === "browser")!;
       if (place.destination.kind !== "browser") throw new Error("Expected browser place");
       const { tabId, sessionId } = place.destination;
@@ -255,7 +255,7 @@ describe("person show navigation", () => {
       const message = PersonShowMessageSchema.parse({
         type: "host.show",
         runId: createId("run"),
-        workspaceId: source.workspaceId,
+        deploymentId: snapshot.deploymentId,
         threadId: source.id,
         target: { place: { kind: "browser", sessionId, surfaceId: tabId }, runId: createId("run") },
       });

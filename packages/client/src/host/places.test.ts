@@ -173,7 +173,6 @@ describe("place catalog", () => {
         appId,
         title: "Budget",
         threadId: snapshot.threads[0]!.id,
-        workspaceId: snapshot.workspaces[0]!.id,
         latestVersion: 3,
         openedAt: now().toISOString(),
       });
@@ -188,7 +187,7 @@ describe("place catalog", () => {
         availability: "ready",
         closable: true,
         icon: { kind: "opensteer-app" },
-        opensteerApp: { appId, threadId: tab.threadId, workspaceId: tab.workspaceId },
+        opensteerApp: { appId, threadId: tab.threadId },
       });
       expect(placeDestinationEnded(source, row.destination)).toBe(false);
       expect(placeDestinationEnded(snapshot, row.destination)).toBe(true);
@@ -207,7 +206,7 @@ describe("place catalog", () => {
       expect(new Set(places.map((place) => place.key)).size).toBe(places.length);
       const shared = snapshot.browserSessions.find(
         (session) =>
-          session.origin === "workspace" &&
+          session.origin === "person" &&
           ((session.browserTabs?.sessionTabs(session?.id) ?? []).length ?? 0) > 1,
       )!;
       expect(shared).toBeDefined();
@@ -220,7 +219,9 @@ describe("place catalog", () => {
       expect((shared.browserTabs?.sessionTabs(shared?.id) ?? []).some((tab) => tab.openerId)).toBe(
         true,
       );
-      expect(places.some((place) => place.occupants.some((occupant) => occupant.home))).toBe(true);
+      expect(places.some((place) => place.occupants.some((occupant) => occupant.acting))).toBe(
+        true,
+      );
       expect(
         new Set(
           places.filter((place) => place.kind === "app").map((place) => place.device?.machineId),
@@ -234,7 +235,7 @@ describe("place catalog", () => {
       for (const place of places) {
         if (place.site?.startsWith("http")) expect(new URL(place.site).origin).toBe(place.site);
       }
-      const occupied = places.find((place) => place.title === "Weekend ideas")!;
+      const occupied = places.find((place) => place.occupants.some(({ acting }) => acting))!;
       const runId = snapshot.runQueue.find(
         (run) => run.threadId === occupied.occupants[0]!.threadId,
       )!.id;
@@ -342,12 +343,12 @@ describe("place catalog", () => {
         ...client.getSnapshot(),
         browserSessions: client.getSnapshot().browserSessions.map((session) => ({
           ...session,
-          workspaceTabRestoreVersion: undefined,
+          tabRestoreVersion: undefined,
         })),
         lineages: undefined,
-        workspaceTabRestoreVersion: undefined,
+        tabRestoreVersion: undefined,
       };
-      const source = { ...snapshot, workspaceTabRestoreVersion: 1 as const };
+      const source = { ...snapshot, tabRestoreVersion: 1 as const };
       const expected = placeList(snapshot).filter((place) => place.kind === "browser");
       expect(expected.length).toBeGreaterThan(0);
       expect(placeList(source).filter((place) => place.kind === "browser")).toEqual(expected);
@@ -392,7 +393,7 @@ describe("place catalog", () => {
       store.applyTabs(group.id, { op: "end", revision: 0, count: rows.length, meta: {} });
       const states = new Map(
         placeList(snapshot).flatMap((place) =>
-          place.workspaceTab ? [[place.workspaceTab.id, place.workspaceTab.state] as const] : [],
+          place.personalTab ? [[place.personalTab.id, place.personalTab.state] as const] : [],
         ),
       );
       expect(states.get(asleep)).toBe("suspended");
@@ -410,7 +411,7 @@ describe("place catalog", () => {
       )!.destination;
       expect(
         placeDestinationEnded(
-          { ...snapshot, browserSessions: [], workspaceTabRestoreVersion: 1 },
+          { ...snapshot, browserSessions: [], tabRestoreVersion: 1 },
           destination,
         ),
       ).toBe(false);
@@ -429,7 +430,7 @@ describe("place catalog", () => {
         threads: [],
         tasks: {
           entries: [{ thread: task, lastReply: null, failure: null }],
-          window: snapshot.workspaceWindow,
+          window: snapshot.tasks!.window,
         },
       };
       expect(threadMark(task.id, directory)).toEqual(taskMark(task));

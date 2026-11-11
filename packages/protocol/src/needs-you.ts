@@ -15,6 +15,6 @@ export const NeedsYouPageSchema = z.strictObject({
       }),
     )
     .max(50),
-  window: DurableWindowSchema,
+  window: z.lazy(() => DurableWindowSchema),
 });
 export type NeedsYouPage = z.infer<typeof NeedsYouPageSchema>;

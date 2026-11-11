@@ -55,7 +55,6 @@ const started = {
   answer: "answer",
   threadId: createId("thread"),
   runId: createId("run"),
-  workspaceId: createId("workspace"),
 };
 
 function setup() {

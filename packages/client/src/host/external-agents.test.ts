@@ -1,4 +1,3 @@
-import { WorkspaceIdSchema } from "@opensteer/core";
 import type {
   AgentConnectionConsent,
   PersonalRemoteAdministrationStatus,
@@ -63,7 +62,6 @@ describe("where cloud agents reach this Deployment", () => {
 });
 
 describe("answering an agent's connection request", () => {
-  const workspaceId = WorkspaceIdSchema.parse("wsp_0192f4a1-0000-4000-8000-000000000001");
   const consent: AgentConnectionConsent = {
     requestId: "r".repeat(43),
     clientName: "ChatGPT",
@@ -71,10 +69,9 @@ describe("answering an agent's connection request", () => {
     // The origin the agent signed in through, not the phone's route to the Host.
     resource: "https://mac.connect.example/internal/v1/mcp",
     expiresAt: "2099-01-01T00:00:00.000Z",
-    workspaces: [{ id: workspaceId, name: "Home" }],
   };
 
-  it("approves with the chosen ceiling and Workspace, then finishes sign-in on the agent's origin", async () => {
+  it("approves with the chosen ceiling, then finishes sign-in on the agent's origin", async () => {
     const host = new MockHostClient({ latencyMs: 0, connectionConsent: consent });
     await host.load();
     try {
@@ -82,7 +79,6 @@ describe("answering an agent's connection request", () => {
         kind: "approve",
         label: "  My ChatGPT  ",
         accessMode: "auto",
-        reach: workspaceId,
       });
       expect(completion).toBe(
         `https://mac.connect.example/oauth/mcp/complete?request=${consent.requestId}`,
@@ -92,7 +88,6 @@ describe("answering an agent's connection request", () => {
         expect.objectContaining({
           label: "My ChatGPT",
           accessMode: "auto",
-          reach: { kind: "workspace", workspaceId },
         }),
       ]);
     } finally {

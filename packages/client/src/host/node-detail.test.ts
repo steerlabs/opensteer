@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { NodeDetailStore } from "./node-detail.js";
 import type { NodeEntry } from "./client.js";
 
-const workspaceId = createId("workspace");
+const deploymentId = createId("deployment");
 const threadId = createId("thread");
 const runId = createId("run");
 const nodeId = createId("executionNode");
@@ -39,7 +39,7 @@ function event<Type extends AgentEvent["type"]>(
     sequence: seq(sequence),
     threadId,
     runId,
-    workspaceId,
+    deploymentId,
     environmentId: createId("environment"),
     eventId: createId("event"),
     createdAt: now,
@@ -82,10 +82,10 @@ describe("node detail watch", () => {
         return true;
       },
     });
-    const detail = store.open(threadId, nodeId, workspaceId);
+    const detail = store.open(threadId, nodeId, deploymentId);
     expect(sends).toEqual([nodeId]);
     expect(read).not.toHaveBeenCalled();
-    store.watched(workspaceId, nodeId, seq(2));
+    store.watched(deploymentId, nodeId, seq(2));
     expect(read).toHaveBeenCalledWith({ nodeId, threadId, through: seq(2), limit: 100 });
     const message = event("node.message", 1, { nodeId, text: "Starting" });
     const tool = event("tool.started", 2, {
@@ -105,7 +105,6 @@ describe("node detail watch", () => {
     store.acceptLive({
       afterSequence: seq(3),
       progress: {
-        workspaceId,
         threadId,
         runId,
         items: [
@@ -152,8 +151,8 @@ describe("node detail watch", () => {
       readNodes,
       sendWatch: () => true,
     });
-    const detail = store.open(threadId, nodeId, workspaceId);
-    store.watched(workspaceId, nodeId, seq(1));
+    const detail = store.open(threadId, nodeId, deploymentId);
+    store.watched(deploymentId, nodeId, seq(1));
     await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
     expect(detail.getSnapshot().node).toMatchObject({ nodeId, title: "Check the parser" });
     expect(readNodes).toHaveBeenCalledWith(runId);
@@ -175,11 +174,11 @@ describe("node detail watch", () => {
         return true;
       },
     });
-    const screen = store.open(threadId, nodeId, workspaceId);
-    store.watched(workspaceId, nodeId, seq(2));
+    const screen = store.open(threadId, nodeId, deploymentId);
+    store.watched(deploymentId, nodeId, seq(2));
     await vi.waitFor(() => expect(screen.getSnapshot().status).toBe("ready"));
     await screen.loadOlder();
-    const step = store.open(threadId, nodeId, workspaceId);
+    const step = store.open(threadId, nodeId, deploymentId);
     expect(sends).toEqual([nodeId]);
     expect(
       step.getSnapshot().entries.flatMap((entry) => ("text" in entry ? [entry.text] : [])),
@@ -214,14 +213,14 @@ describe("node detail watch", () => {
         return page(events, eligible.length > events.length ? events[0]!.sequence : null);
       },
     });
-    const detail = store.open(threadId, nodeId, workspaceId);
-    store.watched(workspaceId, nodeId, seq(1));
+    const detail = store.open(threadId, nodeId, deploymentId);
+    store.watched(deploymentId, nodeId, seq(1));
     await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
-    store.disconnected(workspaceId);
+    store.disconnected(deploymentId);
     for (let index = 2; index <= 106; index += 1)
       all.push(event("node.message", index, { nodeId, text: `Message ${index}` }));
-    store.connected(workspaceId);
-    store.watched(workspaceId, nodeId, seq(106));
+    store.connected(deploymentId);
+    store.watched(deploymentId, nodeId, seq(106));
     const after = event("node.message", 107, { nodeId, text: "After watch" });
     store.accept(after);
     await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
@@ -280,10 +279,10 @@ describe("node detail watch", () => {
       sendWatch: () => true,
     });
     const replacedId = createId("executionNode");
-    const replaced = store.open(threadId, replacedId, workspaceId);
-    store.watched(workspaceId, replacedId, seq(2));
-    const current = store.open(threadId, nodeId, workspaceId);
-    store.watched(workspaceId, nodeId, seq(2));
+    const replaced = store.open(threadId, replacedId, deploymentId);
+    store.watched(deploymentId, replacedId, seq(2));
+    const current = store.open(threadId, nodeId, deploymentId);
+    store.watched(deploymentId, nodeId, seq(2));
     await vi.waitFor(() => expect(current.getSnapshot().status).toBe("ready"));
     expect(current.getSnapshot().hasMore).toBe(true);
     await current.loadOlder();
@@ -320,19 +319,19 @@ describe("node detail watch", () => {
       sendWatch,
       nodes: () => [],
     });
-    const detail = store.open(threadId, nodeId, workspaceId);
+    const detail = store.open(threadId, nodeId, deploymentId);
     expect(detail.getSnapshot().status).toBe("unavailable");
     expect(sendWatch).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalled();
     available = true;
     store.capabilitiesChanged();
-    store.watched(workspaceId, nodeId, seq(1));
+    store.watched(deploymentId, nodeId, seq(1));
     await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
     expect(detail.getSnapshot().entries).toHaveLength(1);
     available = false;
     store.capabilitiesChanged();
     expect(detail.getSnapshot()).toMatchObject({ status: "unavailable", entries: [], node: null });
-    expect(sendWatch).toHaveBeenLastCalledWith(workspaceId, null);
+    expect(sendWatch).toHaveBeenLastCalledWith(deploymentId, null);
     detail.release();
     expect(sendWatch).toHaveBeenCalledTimes(2);
   });
@@ -417,16 +416,16 @@ it("retries a failed watch and distinguishes missing authority from a load error
       return page([event("node.message", 1, { nodeId, text: "Recovered" })]);
     },
   });
-  const detail = store.open(threadId, nodeId, workspaceId);
-  store.watched(workspaceId, nodeId, seq(1));
+  const detail = store.open(threadId, nodeId, deploymentId);
+  store.watched(deploymentId, nodeId, seq(1));
   await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("missing"));
   failure = "internal";
   detail.retry();
-  store.watched(workspaceId, nodeId, seq(1));
+  store.watched(deploymentId, nodeId, seq(1));
   await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("error"));
   failure = null;
   detail.retry();
-  store.watched(workspaceId, nodeId, seq(1));
+  store.watched(deploymentId, nodeId, seq(1));
   await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
   expect(detail.getSnapshot().entries).toMatchObject([{ text: "Recovered" }]);
   detail.release();

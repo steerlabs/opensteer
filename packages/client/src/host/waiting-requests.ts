@@ -1,11 +1,5 @@
 import type { HeldAssignment, WaitingRequest } from "@opensteer/core";
 
-/**
- * The questions waiting on a Thread's reader: asked there, or by work it
- * handed out at any depth. Home shows what its tasks ask above its composer and
- * a task shows what its helpers ask, so a question is answered wherever its
- * reader is watching the work it holds up.
- */
 export function requestsWaitingOn(
   waiting: readonly WaitingRequest[],
   threadId: string,
@@ -41,7 +35,6 @@ export function waitingRequestSource(
   return waiting.assignments.find(({ parentThreadId }) => parentThreadId === threadId) ?? null;
 }
 
-/** A managed worker's question docks on Chat, while answers retain the worker's authority. */
 export function waitingRequestPresentationSource(waiting: WaitingRequest, threadId: string) {
   return waiting.presentation?.threadId === threadId ? waiting.presentation.workerThread : null;
 }

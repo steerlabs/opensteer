@@ -1,11 +1,11 @@
 import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
-import type { HostClient, HostSnapshot, WorkspaceTabActivationOptions } from "./client.js";
+import type { HostClient, HostSnapshot, PersonalTabActivationOptions } from "./client.js";
 import { browserPlaceUnavailableReason } from "./places.js";
 import { browserIdentity } from "./start-page-model.js";
 import { viewerScopeOf } from "./viewer-scope.js";
 
 type ActivationResult = NonNullable<
-  Awaited<ReturnType<NonNullable<HostClient["activateWorkspaceTab"]>>>
+  Awaited<ReturnType<NonNullable<HostClient["activatePersonalTab"]>>>
 >;
 interface Activation {
   opening: string | undefined;
@@ -23,7 +23,7 @@ interface ActivationPorts {
 }
 
 /** Client-owned restoration survives selection changes and observes readiness before dispatch. */
-export class WorkspaceTabActivations {
+export class PersonalTabActivations {
   readonly #pending = new Map<string, Activation>();
   readonly #failed = new Map<string, Activation>();
   #ids: readonly string[] = [];
@@ -52,7 +52,7 @@ export class WorkspaceTabActivations {
 
   activate(
     tabId: string,
-    options?: WorkspaceTabActivationOptions,
+    options?: PersonalTabActivationOptions,
   ): Promise<ActivationResult | null> {
     if (this.#disposed) return Promise.resolve(null);
     const failed = this.#failed.get(tabId);

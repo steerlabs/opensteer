@@ -1,21 +1,18 @@
+import { z } from "zod";
 import { toolOutputRecord, type Request } from "@opensteer/core";
-import {
-  PasswordSignInRequestResponseSchema,
-  UseCardResultSchema,
-  type CardChoice,
-} from "@opensteer/protocol";
+import { PasswordSignInRequestResponseSchema, type CardChoice } from "@opensteer/protocol";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { requestSettlementLabel } from "./request-settlement.js";
 
 export function cardUseTitle(site: string): string {
   return `Use a saved card on ${browserSiteLabel(site)}?`;
 }
-export function cardUseConsent(workspace: string, site: string, expiresAt: string): string {
+export function cardUseConsent(site: string, expiresAt: string): string {
   const deadline = new Date(expiresAt).toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
   });
-  return `Agents in ${workspace} can fill this card on ${browserSiteLabel(site)} until ${deadline}, including payment fields embedded by that site. The website and its payment provider can read filled details. This does not approve a particular charge.`;
+  return `Your agents can fill this card on ${browserSiteLabel(site)} until ${deadline}, including payment fields embedded by that site. The website and its payment provider can read filled details. This does not approve a particular charge.`;
 }
 export function cardChoiceLabel(card: CardChoice): string {
   return `${card.brand} ending ${card.lastFour}${card.label ? ` · ${card.label}` : ""} · ${String(card.expiryMonth).padStart(2, "0")}/${card.expiryYear}`;
@@ -52,6 +49,18 @@ export function cardUseOutcome(request: Request): { signedIn: boolean; text: str
   };
 }
 export function readCardUseResult(text: string) {
-  const result = UseCardResultSchema.safeParse(toolOutputRecord(text));
+  const result = z
+    .discriminatedUnion("status", [
+      z
+        .object({
+          status: z.enum(["ready", "pending", "resolved", "declined", "needs-approval"]),
+          site: z.url(),
+        })
+        .passthrough(),
+      z
+        .object({ status: z.literal("unavailable"), site: z.url(), reason: z.string() })
+        .passthrough(),
+    ])
+    .safeParse(toolOutputRecord(text));
   return result.success ? result.data : null;
 }

@@ -1,4 +1,4 @@
-export interface TeamPage<Item> {
+export interface KeysetPage<Item> {
   readonly items: readonly Item[];
   readonly nextCursor: string | null;
 }
@@ -24,7 +24,7 @@ export const pagedListBound = 1000;
  * then "Show more" appends the next by its cursor. A page answered for an
  * earlier load is dropped, so a reset never mixes two lists' rows.
  */
-export class PagedList<Item, First extends TeamPage<Item> = TeamPage<Item>> {
+export class PagedList<Item, First extends KeysetPage<Item> = KeysetPage<Item>> {
   readonly #read: (cursor: string | null) => Promise<First>;
   readonly #listeners = new Set<() => void>();
   readonly #bound: number;

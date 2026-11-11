@@ -1,4 +1,4 @@
-import type { ThreadSummary, WorkspaceSummary } from "./client.js";
+import type { ThreadSummary } from "./client.js";
 import { matchSearch, searchQuery, searchText, type SearchField } from "./search.js";
 import type { TaskAttention } from "./task-list.js";
 
@@ -13,23 +13,18 @@ import type { TaskAttention } from "./task-list.js";
 
 export function filterThreads(
   threads: readonly ThreadSummary[],
-  workspaces: readonly WorkspaceSummary[],
   query: string,
   attention: readonly Pick<TaskAttention, "threadId" | "title">[],
 ): ThreadSummary[] {
   const listed = threads.filter((thread) => thread.listed);
   const words = searchQuery(query);
   if (words.length === 0) return listed;
-  const workspaceNames = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
+
   const asks = new Map(attention.map((ask) => [ask.threadId, ask.title]));
   return listed.filter(
     (thread) =>
       matchSearch(
-        threadSearchFields(
-          thread,
-          workspaceNames.get(thread.workspaceId) ?? null,
-          asks.get(thread.id) ?? null,
-        ),
+        threadSearchFields(thread, thread.folder.path, asks.get(thread.id) ?? null),
         words,
       ) !== null,
   );
@@ -41,13 +36,13 @@ export function filterThreads(
  */
 export function threadSearchFields(
   thread: Pick<ThreadSummary, "title" | "harnessLabel" | "runnerLabel">,
-  workspaceName: string | null,
+  folderPath: string | null,
   ask: string | null = null,
 ): SearchField[] {
   return [
     { text: searchText(thread.title), weight: 1, inside: true, name: "title" },
     { text: searchText(ask ?? ""), weight: 0.7, name: "ask" },
-    { text: searchText(workspaceName ?? ""), weight: 0.5, name: "workspace" },
+    { text: searchText(folderPath ?? ""), weight: 0.5, name: "folder" },
     { text: searchText(thread.harnessLabel), weight: 0.4, name: "harness" },
     { text: searchText(thread.runnerLabel), weight: 0.4, name: "runner" },
   ];
@@ -77,8 +72,7 @@ export function formatClockTime(isoTimestamp: string): string {
   return `${hours}:${minutes}`;
 }
 
-/** A Workspace's initials, which is what its identity mark carries. */
-export function workspaceMonogram(name: string): string {
+export function folderMonogram(name: string): string {
   return (
     name
       .split(/\s+/)

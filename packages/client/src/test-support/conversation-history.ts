@@ -34,7 +34,6 @@ export function conversationHistoryHost(source: MockHostClient) {
         runId: null,
         sequence: String(index + 1),
         threadId: page.threadId,
-        workspaceId: page.thread.workspaceId,
         type: "message.created",
         data: {
           input: null,

@@ -72,8 +72,8 @@ describe("bounded Host rpc requests", () => {
       fetch,
       onAuthenticationRequired: vi.fn(),
     });
-    const workspaceId = createId("workspace");
-    await client["workspace.files.list"]({ parentKey: "a".repeat(5_462), workspaceId });
+    const folder = { computerId: createId("runner"), path: "/tmp/project" };
+    await client["folder.files.list"]({ parentKey: "a".repeat(5_462), folder });
     await client["thread.messages.list"]({ threadId: createId("thread"), query: "界".repeat(256) });
     expect(fetch).toHaveBeenCalledTimes(2);
     for (const [url, init] of fetch.mock.calls) {
@@ -91,9 +91,9 @@ describe("bounded Host rpc requests", () => {
       fetch,
       onAuthenticationRequired: vi.fn(),
     });
-    const result = await client["workspace.files.list"]({
+    const result = await client["folder.files.list"]({
       parentKey: "a".repeat(5_463),
-      workspaceId: createId("workspace"),
+      folder: { computerId: createId("runner"), path: "/tmp/project" },
     });
     expect(result).toMatchObject({
       ok: false,
@@ -274,12 +274,25 @@ it("keeps the preview byte limit on the decoded stream", async () => {
     baseUrl: new URL("https://host.example"),
     onAuthenticationRequired: vi.fn(),
     fetch: async () =>
-      new Response(new Uint8Array(512 * 1_024 + 1), {
-        headers: { "content-length": "1", "content-encoding": "gzip" },
+      Response.json({
+        ok: true,
+        data: {
+          content: "🌺".repeat(131_073),
+          metadata: {
+            contentType: "text/plain",
+            etag: "mock",
+            modifiedAt: null,
+            sizeBytes: 524_292,
+            truncated: false,
+          },
+        },
       }),
   });
   await expect(
-    client["workspace.files.preview"]({ workspaceId: createId("workspace"), fileKey: "file" }),
+    client["folder.files.preview"]({
+      folder: { computerId: createId("runner"), path: "/tmp/project" },
+      fileKey: "file",
+    }),
   ).resolves.toMatchObject({
     ok: false,
     error: { reason: "transport-response-too-large", retryable: false },
@@ -302,8 +315,8 @@ it("bounds an unavailable JS body stream with a size-scaled fallback", async () 
         } as Response;
       },
     });
-    const pending = client["workspace.files.preview"]({
-      workspaceId: createId("workspace"),
+    const pending = client["folder.files.preview"]({
+      folder: { computerId: createId("runner"), path: "/tmp/project" },
       fileKey: "file",
     });
     await vi.advanceTimersByTimeAsync(45_000);

@@ -10,13 +10,10 @@ import {
   type HarnessModelDescriptor,
 } from "@opensteer/protocol";
 import {
-  chatExecutionDecision,
-  chatExecutionSelection,
   composerExecutionSelection,
   executionEngines,
   findRoute,
   placementAccountDetail,
-  rankedChatExecutionSelection,
   resolveExecutionSelection,
   searchRoutes,
 } from "./model-catalog.js";
@@ -414,157 +411,6 @@ describe("composerExecutionSelection", () => {
   });
 });
 
-describe("Chat execution selection", () => {
-  const terraOnGateway = model({
-    displayName: "GPT-6.1-Terra",
-    isDefault: false,
-    modelId: "openai/gpt-6.1-terra",
-    providerId: "openrouter",
-    options: [effortSelect(["low", "medium", "high", "xhigh"], "medium")],
-  });
-  const sonnet = model({
-    displayName: "Claude Sonnet 5.5",
-    isDefault: true,
-    modelId: "claude-sonnet-5-5",
-    providerId: "anthropic",
-    options: [effortSelect(["low", "medium", "high"], "low")],
-  });
-  const gateway = placement({
-    accountName: "OpenRouter",
-    engineLabel: "OpenCode",
-    environmentId: "environment-main",
-    harnessInstanceId: "hin-gateway",
-    models: [terraOnGateway],
-    sourceId: "openrouter",
-    sourceKind: "gateway",
-  });
-  const claude = placement({
-    engineLabel: "Claude Code",
-    environmentId: "environment-main",
-    harnessInstanceId: "hin-claude-55",
-    models: [sonnet],
-  });
-
-  it("matches the best canonical model across engines and sources", () => {
-    const selected = rankedChatExecutionSelection([claude, gateway]);
-
-    expect(selected).toMatchObject({
-      harnessInstanceId: "hin-gateway",
-      modelSelection: {
-        modelId: "openai/gpt-6.1-terra",
-        options: { effort: "high" },
-        providerId: "openrouter",
-      },
-    });
-  });
-
-  it("keeps an account the Host ruled out of every empty-choice default", () => {
-    const refused = { ...gateway, automaticEligible: false };
-    expect(rankedChatExecutionSelection([claude, refused])?.harnessInstanceId).toBe(
-      "hin-claude-55",
-    );
-    const none = { chosen: null, existing: null };
-    expect(chatExecutionSelection({ ...none, placements: [refused] })).toBeNull();
-    const remembered = {
-      environmentId: refused.environmentId,
-      harnessInstanceId: refused.harnessInstanceId,
-      modelSelection: selectionForModel(terraOnGateway),
-    };
-    expect(
-      chatExecutionSelection({ ...none, placements: [refused], remembered })?.harnessInstanceId,
-    ).toBe("hin-gateway");
-  });
-
-  it("keeps placement order as the tie breaker", () => {
-    const other = { ...gateway, harnessInstanceId: "hin-gateway-2" };
-    expect(rankedChatExecutionSelection([other, gateway])?.harnessInstanceId).toBe("hin-gateway-2");
-  });
-
-  it("uses explicit then saved choices before the ranked new-Chat default", () => {
-    const explicit = {
-      environmentId: gateway.environmentId,
-      harnessInstanceId: gateway.harnessInstanceId,
-      modelSelection: selectionForModel(terraOnGateway),
-    };
-    const saved = {
-      environmentId: claude.environmentId,
-      harnessInstanceId: claude.harnessInstanceId,
-      modelSelection: selectionForModel(sonnet),
-    };
-
-    expect(
-      chatExecutionSelection({ chosen: explicit, existing: saved, placements: [claude, gateway] })
-        ?.harnessInstanceId,
-    ).toBe("hin-gateway");
-    expect(
-      chatExecutionSelection({ chosen: null, existing: saved, placements: [claude, gateway] })
-        ?.harnessInstanceId,
-    ).toBe("hin-claude-55");
-    expect(
-      chatExecutionSelection({ chosen: null, existing: null, placements: [claude, gateway] })
-        ?.harnessInstanceId,
-    ).toBe("hin-gateway");
-  });
-
-  it("takes the AI last picked after explicit and saved choices, and blocks it when it cannot run", () => {
-    const remembered = {
-      environmentId: claude.environmentId,
-      harnessInstanceId: claude.harnessInstanceId,
-      modelSelection: selectionForModel(sonnet),
-    };
-    const explicit = {
-      environmentId: gateway.environmentId,
-      harnessInstanceId: gateway.harnessInstanceId,
-      modelSelection: selectionForModel(terraOnGateway),
-    };
-    expect(
-      chatExecutionSelection({
-        chosen: null,
-        existing: null,
-        placements: [claude, gateway],
-        remembered,
-      })?.harnessInstanceId,
-    ).toBe("hin-claude-55");
-    expect(
-      chatExecutionSelection({
-        chosen: explicit,
-        existing: null,
-        placements: [claude, gateway],
-        remembered,
-      })?.harnessInstanceId,
-    ).toBe("hin-gateway");
-    expect(
-      chatExecutionSelection({ chosen: null, existing: null, placements: [gateway], remembered }),
-    ).toBeNull();
-    expect(chatExecutionDecision({ chosen: null, existing: null, remembered })).toBe(remembered);
-  });
-
-  it("leaves an unavailable saved Chat choice blocked", () => {
-    const saved = {
-      environmentId: claude.environmentId,
-      harnessInstanceId: claude.harnessInstanceId,
-      modelSelection: selectionForModel(sonnet),
-    };
-    expect(
-      chatExecutionSelection({ chosen: null, existing: saved, placements: [gateway] }),
-    ).toBeNull();
-  });
-
-  it("keeps the single-account fallback when no ranked model is offered", () => {
-    expect(
-      chatExecutionSelection({ chosen: null, existing: null, placements: [codexMain] })
-        ?.harnessInstanceId,
-    ).toBe(codexMain.harnessInstanceId);
-    expect(
-      chatExecutionSelection({
-        chosen: null,
-        existing: null,
-        placements: [codexMain, claudeMain],
-      }),
-    ).toBeNull();
-  });
-});
-
 describe("selectionForModelEffort", () => {
   it("uses offered effort and Pi thinking values, including the highest tier", () => {
     const effort = model({
@@ -752,10 +598,11 @@ function serverPlacements(
     stateKind: "isolated",
   }));
   const environment: EnvironmentSummary = {
+    can: { executeTasks: true },
     capabilities: ["filesystem"],
     connected: true,
     harnessAuthenticationAllowed: true,
-    workspaceBackings: ["local-directory"],
+
     harnessCatalogs: harnesses.map((harness, index) =>
       HarnessInstanceCatalogSchema.parse({
         continuationIdentity: {
@@ -804,10 +651,6 @@ it("uses the core catalog default for empty Chat and task previews", () => {
       defaultPlacement: codexMain,
       placements: [codexMain],
     })?.modelSelection,
-  ).toEqual(expected);
-  expect(
-    chatExecutionSelection({ chosen: null, existing: null, placements: [codexMain] })
-      ?.modelSelection,
   ).toEqual(expected);
   const withoutDefault = {
     ...codexMain,

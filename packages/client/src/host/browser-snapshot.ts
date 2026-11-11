@@ -1,5 +1,5 @@
 import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
-import type { BrowserSessionSummary, HostSnapshot, WorkspaceTabLineage } from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot, PersonalTabLineage } from "./client.js";
 import type { BrowserTabStore } from "./browser-tab-store.js";
 
 function shared<T>(previous: T[] | undefined, next: T[]): T[] {
@@ -25,13 +25,13 @@ export class BrowserSnapshotDerivation {
   derive(
     snapshot: Pick<HostSnapshot, "browserSessions">,
     store: BrowserTabStore,
-  ): Pick<HostSnapshot, "browserSessions" | "workspaceTabRestoreVersion" | "browserTabs"> {
+  ): Pick<HostSnapshot, "browserSessions" | "tabRestoreVersion" | "browserTabs"> {
     if (
       this.#store === store &&
       this.#revision === store.groupRevision &&
       (snapshot.browserSessions === this.#source || snapshot.browserSessions === this.#previous)
     )
-      return { browserTabs: store, workspaceTabRestoreVersion: 1, browserSessions: this.#previous };
+      return { browserTabs: store, tabRestoreVersion: 1, browserSessions: this.#previous };
     this.#store = store;
     this.#revision = store.groupRevision;
     this.#source = snapshot.browserSessions;
@@ -58,7 +58,7 @@ export class BrowserSnapshotDerivation {
       });
     });
     this.#previous = shared(this.#previous, sessions);
-    return { browserTabs: store, workspaceTabRestoreVersion: 1, browserSessions: this.#previous };
+    return { browserTabs: store, tabRestoreVersion: 1, browserSessions: this.#previous };
   }
 }
 
@@ -70,7 +70,7 @@ export function groupSession(group: BrowserGroupRow) {
     state: group.state,
     createdAt: group.sessionCreatedAt,
     updatedAt: group.updatedAt,
-    workspaceId: group.workspaceId,
+
     placement: group.placement,
     profileId: group.profileId,
     runtimeId: group.runtimeId,
@@ -80,20 +80,17 @@ export function groupSession(group: BrowserGroupRow) {
     attachedRunIds: group.attachedRunIds,
     threadIds: group.threadIds,
     ...(group.navigation ? { navigationVersion: 1 as const } : {}),
-    workspaceTabRestoreVersion: 1 as const,
+    tabRestoreVersion: 1 as const,
   };
 }
 
 const lineages = new WeakMap<
   BrowserTabStore,
-  WeakMap<BrowserGroupRow, { revision: number; value: WorkspaceTabLineage }>
+  WeakMap<BrowserGroupRow, { revision: number; value: PersonalTabLineage }>
 >();
 
 /** Materialize only for callers explicitly requesting a complete lineage. */
-export function workspaceTabLineage(
-  store: BrowserTabStore,
-  id: string,
-): WorkspaceTabLineage | null {
+export function personalTabLineage(store: BrowserTabStore, id: string): PersonalTabLineage | null {
   const group = store.group(id);
   if (!group) return null;
   let held = lineages.get(store);
@@ -101,7 +98,7 @@ export function workspaceTabLineage(
   const revision = store.tabRevision(id);
   const previous = held.get(group);
   if (previous?.revision === revision) return previous.value;
-  const value: WorkspaceTabLineage = {
+  const value: PersonalTabLineage = {
     id: group.id,
     revision: group.inventoryRevision,
     createdAt: group.createdAt,

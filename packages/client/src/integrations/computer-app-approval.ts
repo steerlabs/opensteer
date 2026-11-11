@@ -131,7 +131,7 @@ export function computerAppApprovalDetails(review: ComputerAppApprovalReview): s
       ? "This app can reach your files, signed-in accounts or system settings. Agents can use whatever its interface offers."
       : null,
     request.threadTitle,
-    request.workspaceName,
+    "your Opensteer",
     request.reason,
   ]
     .filter(Boolean)

@@ -9,7 +9,7 @@ import {
   type MessageAuthor,
   type IntegrationCallSubject,
 } from "@opensteer/core";
-import type { TriggerWriteInput } from "@opensteer/triggers";
+import type { TriggerWriteInput } from "@opensteer/triggers/models";
 import { readComputerUseResultHeadline, readComputerStepHeadline } from "@opensteer/protocol";
 import { isRecord } from "@opensteer/shared/isRecord";
 import type {
@@ -702,7 +702,6 @@ function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRow
   );
 }
 
-/** Only decisions and failures interrupt Chat for work nobody asked to follow. */
 export function conversationAssignmentNeedsReader(
   entry: AssignmentEntry,
   waiting: readonly WaitingRequest[] = [],
@@ -1661,7 +1660,7 @@ export interface ActivityStepHead {
   errors: number;
   icon: ActivityIcon;
   label: string;
-  /** The Workspace surface this step's work lives on, for a client that can show it. */
+
   surface?: ActivitySurface;
   tone: ActivityTone;
 }
@@ -2096,21 +2095,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
       "list",
     ),
   ],
-  [
-    "project_write",
-    saidByAction(
-      {
-        set_icon: ["Changing a project’s icon", "Changed a project’s icon"],
-        set_color: ["Changing a project’s color", "Changed a project’s color"],
-        set_notifications: ["Changing project notifications", "Changed project notifications"],
-        delete: ["Deleting a project", "Deleted a project"],
-        recover: ["Recovering a project", "Recovered a project"],
-        retry_storage: ["Retrying project storage", "Retried project storage"],
-      },
-      ["Changing a project", "Changed a project"],
-      "folder",
-    ),
-  ],
+
   ["settings_read", said(["Reading settings", "Read settings"], "list")],
   [
     "settings_write",
@@ -2316,19 +2301,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
       "name",
     ),
   ],
-  [
-    "project_create",
-    (_tool, args) =>
-      step({
-        activeLabel: "Creating a project",
-        hint: stringField(args, "name") ?? "",
-        hintKind: "prose",
-        icon: "folder",
-        kind: "tool",
-        label: "Created a project",
-      }),
-  ],
-  ["project_list", said(["Looking up projects", "Looked up projects"], "folder")],
+
   [
     "plugin_install",
     (_tool, args) =>
@@ -3099,8 +3072,6 @@ function clipText(value: string): string {
   const max = 20_000;
   return value.length <= max ? value : `…${value.slice(value.length - max)}`;
 }
-
-/* ---- The workspace activity feed ---- */
 
 interface ActivityFeedPresentation {
   detail: string;

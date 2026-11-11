@@ -58,12 +58,6 @@ export const socketProbeDeadlineMs = 3_000;
  */
 export const connectionInterruptionHoldMs = 5_000;
 
-/**
- * How long a Workspace channel may go without a frame of its own subscription
- * before the client asks whether it is still there. A route can stall, or a
- * proxy lose its peer, with the socket left open and no close ever reported;
- * nothing but asking finds that out.
- */
 export const realtimeIdleProbeMs = 25_000;
 
 /**

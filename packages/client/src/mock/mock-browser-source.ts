@@ -5,7 +5,7 @@ import type {
   BrowserInventory,
   BrowserTabSummary,
   HostSnapshot,
-  WorkspaceTabLineage,
+  PersonalTabLineage,
 } from "../host/client.js";
 
 /** Authored mock world data, independent of the client snapshot projections. */
@@ -32,7 +32,7 @@ export interface MockBrowserSession extends BrowserSessionSummary {
 }
 export interface MockBrowserSource extends HostSnapshot {
   browserSessions: MockBrowserSession[];
-  browserGroups?: WorkspaceTabLineage[] | undefined;
+  browserGroups?: PersonalTabLineage[] | undefined;
 }
 
 /**

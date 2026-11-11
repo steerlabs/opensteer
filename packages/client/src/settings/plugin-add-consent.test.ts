@@ -12,8 +12,7 @@ it("retains the exact account command across an uncertain commit", async () => {
     const account = detail.accounts[0]!;
     let consent: PluginAddConsent = {
       target,
-      everywhere: true,
-      places: [],
+
       access: "read",
       idempotencyKey: "returned-account",
       command: null,
@@ -36,9 +35,6 @@ it("retains the exact account command across an uncertain commit", async () => {
     ).rejects.toThrow("different connection");
     expect(spy).toHaveBeenCalledTimes(2);
     expect(spy.mock.calls[1]![0]).toEqual(spy.mock.calls[0]![0]);
-    expect(consent.command?.personalEverywhere?.accounts).toEqual([
-      { connectionId: account.connectionId, access: "read" },
-    ]);
   } finally {
     client.dispose();
   }

@@ -1432,7 +1432,14 @@ export const hostApi = defineRpc({
       content: z.string().max(512 * 1024),
     }),
   ),
-  "needsYou.get": declaration("POST", emptyInputSchema, NeedsYouPageSchema),
+  "needsYou.get": declaration(
+    "POST",
+    z.strictObject({
+      before: z.string().min(1).max(4096).optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    }),
+    NeedsYouPageSchema,
+  ),
   "team.bootstrap.get": declaration(
     "POST",
     teamReadSchemas["team.bootstrap.get"].input,

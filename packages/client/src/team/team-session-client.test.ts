@@ -1,0 +1,179 @@
+import { describe, expect, it } from "vitest";
+import { SequenceSchema, TeamMessageIdSchema, createId } from "@opensteer/core";
+import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
+import { MockTeamHost, mockTeamId, mockTeamUserId, mockTeamChannelId } from "./mock-team-host.js";
+import { TeamSessionClient } from "./team-session-client.js";
+import { createMemoryTeamPersistence } from "./persistence.js";
+import {
+  emptyTeamTimeline,
+  reduceTeamCut,
+  reduceTeamPage,
+  monotonicTeamSidebar,
+} from "./reducers.js";
+
+const scope = { teamDeploymentId: mockTeamId, userId: mockTeamUserId };
+const channelScope = { kind: "channel", channelId: mockTeamChannelId } as const;
+function fixture() {
+  const host = new MockTeamHost(),
+    persistence = createMemoryTeamPersistence();
+  const client = new TeamSessionClient({
+    scope,
+    persistence,
+    rpc: host.rpc,
+    connect: host.connect,
+  });
+  return { host, persistence, client };
+}
+describe("team synchronization", () => {
+  it("advances by the explicit cut even when overwritten rows skipped sequence numbers", () => {
+    const f = fixture();
+    let state = emptyTeamTimeline("channel", 1, channelScope);
+    const initial = f.host.cut(channelScope, "channel", 1, null);
+    state = reduceTeamCut(state, initial);
+    const { type: _type, ...base } = initial;
+    const resumed: TeamConsistentCut = {
+      subscriptionId: base.subscriptionId,
+      generation: base.generation,
+      scope: base.scope,
+      channel: base.channel,
+      linkPresence: base.linkPresence,
+      type: "resumed",
+      throughSeq: SequenceSchema.parse("78"),
+      changedRows: [],
+      deletedIds: [],
+      requests: [],
+    };
+    state = reduceTeamCut(state, resumed);
+    expect(state.throughSeq).toBe("78");
+    expect(state.messages).toEqual([]);
+    f.host.dispose();
+  });
+  it("refuses resumed rows without a snapshot and requires a snapshot beyond the row bound", () => {
+    const f = fixture();
+    const initial = f.host.cut(channelScope, "channel", 1, null);
+    const resumed = {
+      subscriptionId: initial.subscriptionId,
+      generation: initial.generation,
+      scope: initial.scope,
+      channel: initial.channel,
+      linkPresence: initial.linkPresence,
+      throughSeq: initial.throughSeq,
+      type: "resumed",
+      changedRows: [],
+      deletedIds: Array.from({ length: 201 }, (_, i) => TeamMessageIdSchema.parse(String(i + 1))),
+      requests: [],
+    };
+    expect(TeamConsistentCutSchema.safeParse(resumed).success).toBe(false);
+    expect(() =>
+      reduceTeamCut(emptyTeamTimeline("channel", 1, channelScope), {
+        ...resumed,
+        deletedIds: [],
+      } as TeamConsistentCut),
+    ).toThrow("cached snapshot");
+    f.host.dispose();
+  });
+  it("ignores a late selection generation and does not advance the stream cursor from a history page", () => {
+    const f = fixture();
+    const initial = f.host.cut(channelScope, "channel", 1, null);
+    const state = reduceTeamCut(emptyTeamTimeline("channel", 1, channelScope), initial);
+    expect(reduceTeamCut(state, { ...initial, generation: 2 })).toBe(state);
+    const page = {
+      channel: initial.channel,
+      messages: [],
+      hasMore: true,
+      throughSeq: SequenceSchema.parse("100"),
+    };
+    expect(reduceTeamPage(state, page, 2, "before")).toBe(state);
+    expect(reduceTeamPage(state, page, 1, "before").throughSeq).toBe(state.throughSeq);
+    f.host.dispose();
+  });
+  it("checks persisted send ids after a lost ack, without creating a second message", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      await Promise.resolve();
+      f.host.loseNextSendAck = true;
+      await expect(
+        f.client.send({
+          channelId: mockTeamChannelId,
+          threadRootId: null,
+          bodyMarkdown: "Hello",
+          mentions: [],
+          attachmentIds: [],
+        }),
+      ).rejects.toThrow("Acknowledgement lost");
+      expect(f.host.messages.size).toBe(1);
+      expect((await f.persistence.load(scope))?.pending).toHaveLength(1);
+      const callsAt = f.host.calls.length;
+      await f.client.reconcilePending();
+      expect(f.host.calls.slice(callsAt)).toEqual(["team.messages.check"]);
+      expect(f.client.getSnapshot().pending).toHaveLength(0);
+      expect(f.host.messages.size).toBe(1);
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
+  it("keeps read markers monotonic when an older device's sidebar arrives", () => {
+    const f = fixture();
+    const sidebar = f.host.sidebar(),
+      channel = sidebar.channels[0]!;
+    const newer = {
+      ...sidebar,
+      channels: [
+        {
+          ...channel,
+          lastReadMessageId: TeamMessageIdSchema.parse("20"),
+          unread: false,
+          mentionCount: 0,
+        },
+      ],
+    };
+    const older = {
+      ...sidebar,
+      channels: [
+        {
+          ...channel,
+          lastReadMessageId: TeamMessageIdSchema.parse("10"),
+          unread: true,
+          mentionCount: 2,
+        },
+      ],
+    };
+    expect(monotonicTeamSidebar(newer, older).channels[0]).toMatchObject({
+      lastReadMessageId: "20",
+      unread: false,
+      mentionCount: 0,
+    });
+    f.host.dispose();
+  });
+  it("purges only the removed team and viewer's drafts and pending sends", async () => {
+    const f = fixture(),
+      other = { ...scope, userId: createId("user") },
+      otherTeam = { ...scope, teamDeploymentId: createId("deployment") };
+    try {
+      await f.client.setDraft(channelScope, "Private draft");
+      await f.client.send({
+        channelId: mockTeamChannelId,
+        threadRootId: null,
+        bodyMarkdown: "Pending",
+        mentions: [],
+        attachmentIds: [],
+      });
+      expect((await f.persistence.load(scope))?.pending).toHaveLength(1);
+      await f.persistence.save(otherTeam, { drafts: { otherTeam: "Keep too" }, pending: [] });
+      await f.persistence.save(other, { drafts: { other: "Keep" }, pending: [] });
+      await f.client.remove();
+      expect(await f.persistence.load(scope)).toBeNull();
+      expect(await f.persistence.load(other)).toMatchObject({ drafts: { other: "Keep" } });
+      expect(await f.persistence.load(otherTeam)).toMatchObject({
+        drafts: { otherTeam: "Keep too" },
+      });
+      expect(f.client.getSnapshot().drafts).toEqual({});
+      expect(f.client.getSnapshot().pending).toEqual([]);
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
+});

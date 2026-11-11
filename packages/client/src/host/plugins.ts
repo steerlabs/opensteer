@@ -1,19 +1,14 @@
 import { z } from "zod";
 import { harnessDriverLabel, type SpecialistRegistration } from "@opensteer/core";
 
-/**
- * `plugin.list` returns stored rows for administrators and a safe projection for
- * Workspace members. This reads only what a person is shown, so rows with optional
- * fields than this client knows still lists.
- */
 const timestamp = z
   .union([z.string(), z.date()])
   .transform((value) => new Date(value).toISOString());
 const PluginRowSchema = z.object({
   id: z.string(),
   name: z.string(),
-  scope: z.enum(["deployment", "workspace"]).catch("deployment"),
-  workspaceId: z.string().nullable().catch(null),
+  scope: z.enum(["deployment", "folder"]),
+  enabled: z.boolean(),
   source: z.object({ directory: z.string().optional() }).catch({}).optional(),
   currentVersionId: z.string().nullable().catch(null),
   updatedAt: timestamp.optional().catch(undefined),
@@ -35,18 +30,16 @@ const PluginRowSchema = z.object({
       }),
     )
     .catch([]),
-  activations: z.array(z.object({ workspaceId: z.string() })).catch([]),
   servers: z.array(z.unknown()).optional().catch(undefined),
 });
 
-/** One installed plugin, as Settings and a Project's settings show it. */
 export interface PluginSummary {
   readonly id: string;
   readonly name: string;
-  /** Installed for the whole Deployment, or by an agent inside one Workspace. */
-  readonly scope: "deployment" | "workspace";
-  /** The Workspace a Workspace-scoped plugin belongs to. */
-  readonly workspaceId: string | null;
+
+  readonly scope: "deployment" | "folder";
+  readonly enabled: boolean;
+
   /** The Host folder it was installed from, which Update reads again. */
   readonly directory: string | null;
   /** The package's own version, when its manifest names one. */
@@ -58,8 +51,7 @@ export interface PluginSummary {
   readonly specialist: boolean;
   readonly skills: number;
   readonly servers: number;
-  /** The Workspaces it is turned on in. */
-  readonly activeIn: readonly string[];
+
   readonly updatedAt: string | null;
 }
 
@@ -75,7 +67,7 @@ export function pluginSummaries(rows: readonly unknown[]): PluginSummary[] {
         id: plugin.id,
         name: plugin.name,
         scope: plugin.scope,
-        workspaceId: plugin.workspaceId,
+        enabled: plugin.enabled,
         directory: plugin.source?.directory ?? null,
         version: current?.manifest?.version ?? null,
         digest: current?.digest ?? null,
@@ -83,22 +75,12 @@ export function pluginSummaries(rows: readonly unknown[]): PluginSummary[] {
         specialist: current?.specialistManifest != null,
         skills: current?.manifest?.skills?.length ?? 0,
         servers: plugin.servers?.length ?? 0,
-        activeIn: plugin.activations.map(({ workspaceId }) => workspaceId),
         updatedAt: plugin.updatedAt ?? null,
       },
     ];
   });
 }
 
-/** A plugin may be turned on in a Workspace it was installed for: any, or its own. */
-export function pluginAvailableIn(
-  plugin: Pick<PluginSummary, "scope" | "workspaceId">,
-  workspaceId: string,
-): boolean {
-  return plugin.scope === "deployment" || plugin.workspaceId === workspaceId;
-}
-
-/** "Version 1.2.0", or the start of the installed snapshot for an unversioned package. */
 export function pluginVersionLabel(plugin: Pick<PluginSummary, "digest" | "version">): string {
   if (plugin.version) return `Version ${plugin.version.replace(/^v/u, "")}`;
   return plugin.digest ? `Build ${plugin.digest.slice(0, 8)}` : "Unversioned";

@@ -3,7 +3,7 @@ import {
   HostedBrowserSessionSchema,
   type HostedBrowserBootstrap,
 } from "@opensteer/protocol";
-import type { HostSnapshot, WorkspaceTabLineage } from "../host/client.js";
+import type { HostSnapshot, PersonalTabLineage } from "../host/client.js";
 import { seedBrowserSession, seedBrowserSnapshot } from "./browser-snapshot.js";
 
 export type BrowserBootstrapFixture = Omit<
@@ -14,12 +14,11 @@ export type BrowserBootstrapFixture = Omit<
   tabs?: HostedBrowserBootstrap["tabs"];
   profiles: HostSnapshot["browserProfiles"];
   placements: HostSnapshot["browserPlacements"];
-  profileGrants: HostSnapshot["browserProfileGrants"];
   sessions?: (
     | import("@opensteer/protocol").HostedBrowserSession
     | import("../host/client.js").BrowserSessionSummary
   )[];
-  lineages?: WorkspaceTabLineage[];
+  lineages?: PersonalTabLineage[];
 };
 export function browserSessionFixture<T extends object>(input: T) {
   return {

@@ -22,12 +22,7 @@ export function personShowFromCall(
   message: PersonShowMessage,
   call: VoiceCallIdentity | null | undefined,
 ): boolean {
-  return (
-    !!call &&
-    message.runId === call.runId &&
-    message.threadId === call.threadId &&
-    message.workspaceId === call.workspaceId
-  );
+  return !!call && message.runId === call.runId && message.threadId === call.threadId;
 }
 
 /**
@@ -44,17 +39,11 @@ export function handlePersonShow(
   if (!personShowFromCall(message, view.call)) {
     if (view.threadId !== message.threadId) return false;
     const source = heldThread(snapshot, message.threadId);
-    if (!source || source.workspaceId !== message.workspaceId) return false;
+    if (!source) return false;
   }
   const target = message.target;
   if ("threadId" in target) {
-    return (
-      navigate(
-        target.threadId === snapshot.homeThreadId
-          ? { kind: "chat" }
-          : { kind: "thread", threadId: target.threadId },
-      ) !== false
-    );
+    return navigate({ kind: "thread", threadId: target.threadId }) !== false;
   }
   if ("place" in target) {
     const destination = runPlaceDestination({ runId: target.runId, data: target }, snapshot);

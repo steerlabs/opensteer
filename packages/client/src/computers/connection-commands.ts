@@ -30,16 +30,6 @@ interface ComputerConnectionInput {
   readonly runnerImage?: string;
 }
 
-/**
- * The persistent location one issued addition owns.
- *
- * A Runner keeps its identity and its local Workspace registry here, so two
- * computers on the same Docker host — or one computer lent to a second
- * Deployment — must never land on the same place: the second would find the
- * first's identity instead of enrolling as itself. The slug comes from the
- * enrollment id, so re-copying the same command reuses the same location while
- * a separate addition receives a separate one.
- */
 function enrollmentStorageSlug(enrollmentId: string): string {
   const compact = enrollmentId.replace(/^ren_/u, "").replaceAll("-", "").toLowerCase();
   if (
@@ -94,17 +84,12 @@ function distributionRevision(distribution: string): string {
   return revision;
 }
 
-/**
- * A lent computer holds its own Workspace directories, so the command it is
- * given advertises local-directory Workspaces.
- */
 export function computerConnectionCommands(
   input: ComputerConnectionInput,
 ): ComputerConnectionCommandPair {
   const slug = enrollmentStorageSlug(input.enrollmentId);
   const bareHostDataDirectory = `$HOME/.opensteer/computers/${slug}`;
   const common = {
-    OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
     OPENSTEER_DEPLOYMENT_KIND: input.deploymentShape.kind,
     OPENSTEER_HOST_URL: input.hostOrigin,
     OPENSTEER_MODE: "production",
@@ -114,17 +99,11 @@ export function computerConnectionCommands(
   } as const;
   const localBare = {
     ...common,
-    OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: `${bareHostDataDirectory}/workspace-bindings.v1.json`,
-    OPENSTEER_LOCAL_WORKSPACE_ROOT: `${bareHostDataDirectory}/workspaces`,
     OPENSTEER_RUNNER_DATA_DIR: bareHostDataDirectory,
-    OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
   } as const;
   const localContainer = {
     ...common,
-    OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/workspace-bindings.v1.json",
-    OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
     OPENSTEER_RUNNER_DATA_DIR: "/var/lib/opensteer",
-    OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
   } as const;
   const volume = `opensteer-computer-${slug}`;
   const install = installScript(input.runnerDistribution, bareHostDataDirectory);
@@ -189,10 +168,7 @@ function bareHostCommand(
 ): string | null {
   if (!install) return null;
   return `${Object.entries(environment)
-    .map(
-      ([name, value]) =>
-        `${name}=${shellValue(value, ["OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH", "OPENSTEER_LOCAL_WORKSPACE_ROOT", "OPENSTEER_RUNNER_DATA_DIR", "OPENSTEER_RUNNER_WORKSPACE_ROOT"].includes(name))}`,
-    )
+    .map(([name, value]) => `${name}=${shellValue(value, name === "OPENSTEER_RUNNER_DATA_DIR")}`)
     .join(" ")} sh -c ${shellValue(install)}`;
 }
 

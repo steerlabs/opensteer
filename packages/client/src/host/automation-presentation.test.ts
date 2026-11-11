@@ -1,4 +1,4 @@
-import type { TriggerSummary } from "@opensteer/triggers";
+import type { TriggerSummary } from "@opensteer/triggers/models";
 import { describe, expect, it } from "vitest";
 import { formatNextRun, placeAutomation, sectionAutomations } from "./automation-presentation.js";
 

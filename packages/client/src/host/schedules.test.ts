@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
 import { createId, defaultTaskSymbol, type AgentEventView } from "@opensteer/core";
-import type { TriggerSummary } from "@opensteer/triggers";
+import type { TriggerSummary } from "@opensteer/triggers/models";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { HostClientRequestError, type HostClient, type HostSnapshot } from "./client.js";
 import { unwrapRpcResult } from "./host-session-client.js";
@@ -50,7 +50,7 @@ async function ready<T>(get: () => { status: string; data: T | null }) {
 }
 
 describe("schedules", () => {
-  it("uses the existing realistic mock, orders schedules before events and paused, and resolves Chat", async () => {
+  it("uses the existing realistic mock, orders schedules before events and paused, and resolves task anchors", async () => {
     const f = fixture();
     const summaries = unwrapRpcResult(await f.mock.rpc["triggers.list"]({})).triggers;
     expect(scheduleList([], f.snapshot())).toEqual([]);
@@ -58,10 +58,6 @@ describe("schedules", () => {
     expect(items.length).toBeGreaterThan(5);
     expect(items[0]?.nextFireAt).not.toBeNull();
     expect(items.at(-1)?.status).toBe("paused");
-    expect(items.find((i) => i.anchor.home)?.anchor).toMatchObject({
-      title: "Chat",
-      visible: true,
-    });
     expect(items.find((i) => i.name === "Inbox watcher")).toMatchObject({
       kind: "watch",
       statusWord: "Paused by Opensteer",
@@ -72,7 +68,7 @@ describe("schedules", () => {
     ).toBeTruthy();
     const hidden = { ...summaries[0]!, anchorThreadId: createId("thread") };
     expect(scheduleList([hidden], f.snapshot())[0]?.anchor).toMatchObject({
-      title: "Unavailable thread",
+      title: "Unavailable task",
       visible: false,
       mark: { icon: defaultTaskSymbol, color: null },
     });
@@ -236,7 +232,9 @@ describe("schedules", () => {
     const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
     const detail = scheduleDetail(wire, f.snapshot());
     expect(detail.item.timing).toMatch(/8:00/);
-    expect(detail.occurrences[0]?.outcome).toBe("Opensteer replied in Chat");
+    expect(detail.occurrences[0]?.outcome).toBe(
+      `Opensteer replied in ${f.snapshot().threads.find((thread) => thread.id === wire.trigger.anchorThreadId)?.title}`,
+    );
     expect(detail.occurrences.find((o) => o.occurrence.status === "failed")?.error).toMatch(
       /Gmail/,
     );

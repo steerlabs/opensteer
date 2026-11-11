@@ -16,7 +16,7 @@ function connection(origin: string) {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       canonicalOrigin: "http://127.0.0.1:4310",
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      deploymentShape: { kind: "personal" },
       hostKey: { algorithm: "Ed25519" },
     },
     keys,

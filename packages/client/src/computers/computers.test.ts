@@ -1,21 +1,5 @@
 import type { MachineSummary } from "@opensteer/protocol";
-import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 
-it.each(["personal", "server"] as const)(
-  "keeps computer grouping for an older %s bootstrap",
-  (kind) => {
-    const bootstrap = { deploymentShape: { kind } };
-    const overview = computersOverview({
-      deploymentPolicy: hostDeploymentPolicy(bootstrap) ?? null,
-      deploymentName: "Computer",
-      hereId: null,
-      machines: [],
-      publicOrigin: null,
-    });
-    expect(overview.home.kind).toBe(kind === "personal" ? "mac" : "server");
-    expect(overview.addTo).toBe(kind === "personal" ? "others" : "yours");
-  },
-);
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   computerGlyph,
@@ -29,39 +13,13 @@ import {
   deviceElsewhere,
   deviceLendsApps,
   isServiceMachine,
-  hostsDeployment,
   orderDevices,
   phoneNoun,
   type ComputerAppsData,
 } from "./computers.js";
 
-it("uses Main-computer policy rather than ownership", () => {
-  const main = machine({ ownership: "deployment", allowedModules: ["agents"] });
-  expect(hostsDeployment(main, { ownership: "members", deploymentOwnsMainComputer: true })).toBe(
-    true,
-  );
-  expect(
-    hostsDeployment(main, { ownership: "single-user", deploymentOwnsMainComputer: false }),
-  ).toBe(false);
-});
-
 afterEach(() => {
   vi.useRealTimers();
-});
-
-it.each([true, false])("separates Main topology from ownership grouping: %s", (ownsMain) => {
-  const overview = computersOverview({
-    deploymentPolicy: {
-      ownership: ownsMain ? "members" : "single-user",
-      deploymentOwnsMainComputer: ownsMain,
-    },
-    deploymentName: "Home",
-    hereId: null,
-    publicOrigin: "https://home.example",
-    machines: [machine({ ownership: "deployment", allowedModules: ["agents"] })],
-  });
-  expect(overview.home.kind).toBe(ownsMain ? "mac" : "server");
-  expect(overview.addTo).toBe(ownsMain ? "yours" : "others");
 });
 
 const macId = "rnr_11111111-1111-4111-8111-111111111111";
@@ -81,16 +39,16 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
     fullDiskAccess: null,
     id: macId,
     lastSeenAt: null,
-    localWorkspaces: 0,
+
     modules: {},
     name: "Mac",
-    ownerName: null,
+
     ownership: "mine",
     pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,
-    unlinkedLocalFolders: 0,
+
     ...overrides,
   };
 }
@@ -123,7 +81,7 @@ describe("isServiceMachine", () => {
     // Every computer a person adds carries messaging, for the conversations its
     // own apps can carry; it is still that person's computer.
     expect(isServiceMachine(machine({ allowedModules: [...defaults] }))).toBe(false);
-    expect(isServiceMachine(machine({ allowedModules: [...defaults], ownership: "other" }))).toBe(
+    expect(isServiceMachine(machine({ allowedModules: [...defaults], ownership: "mine" }))).toBe(
       false,
     );
     // The Mac a Personal Opensteer runs on belongs to the Deployment and runs its agents.
@@ -150,20 +108,6 @@ describe("computersOverview", () => {
 
   it("puts the Mac a Personal Opensteer runs on at the top, never among the others", () => {
     const overview = computersOverview({
-      deploymentPolicy: {
-        ownership: "single-user",
-        personalRemoteAccess: true,
-        nativeWebLinks: true,
-        localOwnerClaim: true,
-        deploymentOwnsMainComputer: true,
-        nativePasswords: true,
-        deploymentComputerAccess: true,
-        sharing: false,
-        serviceManagement: false,
-        runnerEnrollmentMode: "reach-only",
-        projectConsent: "owner-wide",
-        localRunnerDefaultModules: ["shell"],
-      },
       deploymentName: "Mac mini",
       hereId: null,
       machines: [machine({ id: "rnr_laptop" }), home, service],
@@ -180,65 +124,12 @@ describe("computersOverview", () => {
   it("names a Personal Opensteer whose Mac has not connected by the Opensteer's name", () => {
     expect(
       computersOverview({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         deploymentName: "Studio",
         hereId: null,
         machines: [],
         publicOrigin: null,
       }).home,
     ).toEqual({ kind: "mac", machine: null, name: "Studio" });
-  });
-
-  it("groups a server's computers by whose they are, and says where it runs", () => {
-    const shared = machine({
-      allowedModules: ["agents", "shell"],
-      id: "rnr_shared",
-      ownership: "deployment",
-    });
-    const theirs = machine({ id: "rnr_theirs", ownerName: "Sam", ownership: "other" });
-    const overview = computersOverview({
-      deploymentPolicy: {
-        ownership: "members",
-        personalRemoteAccess: false,
-        nativeWebLinks: false,
-        localOwnerClaim: false,
-        deploymentOwnsMainComputer: false,
-        nativePasswords: false,
-        deploymentComputerAccess: false,
-        sharing: true,
-        serviceManagement: true,
-        runnerEnrollmentMode: "unrestricted",
-        projectConsent: "per-project",
-        localRunnerDefaultModules: ["agents", "browser", "shell"],
-      },
-      deploymentName: "Acme",
-      hereId: null,
-      machines: [theirs, machine({ id: "rnr_mine" }), shared, service],
-      publicOrigin: "https://acme.example.com",
-    });
-
-    expect(overview.home).toEqual({ address: "acme.example.com", kind: "server" });
-    expect(overview.addTo).toBe("yours");
-    expect(overview.groups.map(({ id, machines }) => [id, machines.map(({ id: m }) => m)])).toEqual(
-      [
-        ["shared", ["rnr_shared"]],
-        ["yours", ["rnr_mine"]],
-        ["teammates", ["rnr_theirs"]],
-      ],
-    );
   });
 });
 
@@ -330,7 +221,7 @@ describe("what agents can use on a computer", () => {
     // Its apps have not loaded: saying "nothing shared" would be a guess.
     expect(computerRole(machine(), [], false)).toBeNull();
     // A teammate's sharing is theirs, and nobody else is told it.
-    expect(computerRole(machine({ ownership: "other" }), [], true)).toBeNull();
+    expect(computerRole(machine({ ownership: "mine" }), [], true)).toBe("idle");
   });
 });
 

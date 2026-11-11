@@ -1,6 +1,5 @@
 import type { MachineSummary } from "@opensteer/protocol";
 import type { HostSnapshot } from "./client.js";
-import { hostDeploymentPolicy } from "./deployment-policy.js";
 import {
   computerGlyph,
   deviceElsewhere,
@@ -144,12 +143,11 @@ export function tabFilterEmptyWords(filter: TabFilter, deviceName: string | null
  * runs the Deployment, where most of its tabs live.
  */
 export function tabListHomeId(
-  snapshot: Pick<HostSnapshot, "deploymentPolicy" | "deploymentShape" | "machines">,
+  snapshot: Pick<HostSnapshot, "can" | "deploymentShape" | "machines">,
   hereId: string | null,
 ): string | null {
   if (hereId !== null) return hereId;
-  const policy = hostDeploymentPolicy(snapshot) ?? null;
-  return snapshot.machines.find((machine) => hostsDeployment(machine, policy))?.id ?? null;
+  return snapshot.machines.find((machine) => hostsDeployment(machine))?.id ?? null;
 }
 
 /**

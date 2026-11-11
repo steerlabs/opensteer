@@ -11,7 +11,7 @@ import {
 import { assignmentMark } from "./assignment-presentation.js";
 
 const snapshot = new MockHostClient({ latencyMs: 0 }).getSnapshot();
-const seed = Object.values(snapshot.assignments).find((a) => a.status === "open")!;
+const seed = Object.values(snapshot.assignments)[0]!;
 const parent = seed.parentThreadId;
 function assignment(
   day: number,

@@ -3,10 +3,10 @@ import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
   AttachmentContentMetadataSchema,
-  WorkspaceFilePreviewMetadataSchema,
+  FolderFilePreviewMetadataSchema,
   hostApi,
   hostApiVersionHeader,
-  workspaceFilePreviewMaxBytes,
+  folderFilePreviewMaxBytes,
   type HostApiClient,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -15,7 +15,11 @@ import {
   type RpcInput,
   type RpcOutput,
 } from "@opensteer/protocol";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import {
+  hostApiVersion,
+  teamApiVersion,
+  teamApiVersionHeader,
+} from "@opensteer/deployment-authority";
 import { attachmentMaxBytes } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -46,6 +50,7 @@ const responseEnvelopes = new Map(
 
 export interface HttpHostApiClientOptions {
   readonly baseUrl: URL;
+  readonly kind?: "personal" | "team";
   readonly fetch: Fetch;
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
@@ -169,13 +174,17 @@ async function request<Name extends keyof typeof hostApi>(
   const maximumBytes = declaration.stream
     ? name === "attachment.content"
       ? attachmentMaxBytes
-      : workspaceFilePreviewMaxBytes
-    : 16 * 1_024 * 1_024;
+      : folderFilePreviewMaxBytes
+    : name === "folder.files.preview"
+      ? folderFilePreviewMaxBytes * 6 + 16_384
+      : 16 * 1_024 * 1_024;
   const headersTimeoutMs =
     name === "commands.dispatch" && "type" in payload && payload.type === "browser.tab.open"
       ? 25_000
       : options.bufferedResponses
-        ? bufferedHostResponseTimeoutMs(maximumBytes)
+        ? bufferedHostResponseTimeoutMs(
+            name === "folder.files.preview" ? folderFilePreviewMaxBytes : maximumBytes,
+          )
         : "binaryRequest" in declaration
           ? bufferedHostResponseTimeoutMs(
               call?.body instanceof Uint8Array
@@ -205,7 +214,9 @@ async function request<Name extends keyof typeof hostApi>(
           accept: declaration.stream ? "*/*" : "application/json",
           // Every rpc request states the epoch this app speaks. It is sent from
           // here alone so no caller can reach a Host without having negotiated.
-          [hostApiVersionHeader]: String(hostApiVersion),
+          [options.kind === "team" ? teamApiVersionHeader : hostApiVersionHeader]: String(
+            options.kind === "team" ? teamApiVersion : hostApiVersion,
+          ),
           ...(declaration.method === "POST"
             ? {
                 "content-type":
@@ -221,7 +232,13 @@ async function request<Name extends keyof typeof hostApi>(
     // The refusal is known from its status; a body that then stalls must not
     // turn a sign-in prompt into a transport error.
     if (response.status === 401) options.onAuthenticationRequired();
-    deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
+    deadline.reset(
+      response.body
+        ? stallTimeoutMs
+        : bufferedHostResponseTimeoutMs(
+            name === "folder.files.preview" ? folderFilePreviewMaxBytes : maximumBytes,
+          ),
+    );
     const bytes = await deadline.wait(
       readBoundedResponse(response, {
         maximumBytes,
@@ -242,7 +259,7 @@ async function request<Name extends keyof typeof hostApi>(
               sizeBytes: Number(response.headers.get("x-opensteer-file-size") ?? bytes.byteLength),
               truncated: false,
             })
-          : WorkspaceFilePreviewMetadataSchema.parse({
+          : FolderFilePreviewMetadataSchema.parse({
               contentType: response.headers.get("content-type") ?? "application/octet-stream",
               etag: response.headers.get("etag") ?? "missing",
               modifiedAt: modified ? new Date(modified).toISOString() : null,
@@ -265,6 +282,14 @@ async function request<Name extends keyof typeof hostApi>(
       });
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) {
+      if (
+        name === "folder.files.preview" &&
+        parsed.data.ok &&
+        "content" in parsed.data.data &&
+        typeof parsed.data.data.content === "string" &&
+        new TextEncoder().encode(parsed.data.data.content).byteLength > folderFilePreviewMaxBytes
+      )
+        throw new HostTransportError("response-too-large");
       if (!parsed.data.ok && parsed.data.error.reason === "unsupported-version")
         options.onVersionMismatch?.();
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;

@@ -6,7 +6,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./models": "./src/models.ts"
+    "./models": "./src/models.ts",
+    "./schedule": "./src/schedule.ts",
+    "./limits": "./src/limits.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

@@ -11,7 +11,7 @@ export const mcpPresentationScenarios = [
   ],
   ["thread_queue", { action: "resume" }, "Resuming queued work", "Resumed queued work"],
   ["thread_interrupt", {}, "Stopping a task", "Stopped a task"],
-  ["project_write", { action: "recover" }, "Recovering a project", "Recovered a project"],
+
   ["settings_read", {}, "Reading settings", "Read settings"],
   [
     "settings_write",

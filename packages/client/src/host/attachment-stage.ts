@@ -10,7 +10,7 @@ export interface StageAttachmentInput {
   readonly signal: AbortSignal;
   readonly sizeBytes: number;
   readonly source: Blob;
-  readonly workspaceId: string;
+  readonly deploymentId: string;
 }
 
 /** Reserve, upload, and reconcile one replayable source. A lost upload answer
@@ -43,7 +43,6 @@ export async function stageAttachment(
       mediaType: input.mediaType,
       name: input.name,
       sizeBytes: input.sizeBytes,
-      workspaceId: input.workspaceId,
     });
     input.signal.throwIfAborted();
     assertReservation(reserved, input, reserved.id);
@@ -80,7 +79,6 @@ function assertReservation(
 ): void {
   if (
     attachment.id !== attachmentId ||
-    attachment.workspaceId !== input.workspaceId ||
     attachment.name !== input.name ||
     attachment.mediaType !== input.mediaType ||
     attachment.sizeBytes !== input.sizeBytes ||

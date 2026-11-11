@@ -12,7 +12,7 @@ function connectionFixture(): AgentConnection {
     label: "My agent",
     clientName: "Example",
     accessMode: "approval-required",
-    reach: { kind: "user" },
+
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 60_000).toISOString(),
     lastUsedAt: null,
@@ -42,7 +42,6 @@ describe("Settings connected agents", () => {
         redirectUri: "https://example.test/cb",
         resource: "https://host.test/internal/v1/mcp",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        workspaces: [],
       },
     });
     try {
@@ -57,7 +56,6 @@ describe("Settings connected agents", () => {
           kind: "approve" as const,
           label: "My agent",
           accessMode: "auto" as const,
-          reach: { kind: "user" as const },
         },
       };
       await host.dispatch(command);

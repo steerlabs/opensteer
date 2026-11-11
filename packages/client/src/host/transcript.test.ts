@@ -31,7 +31,6 @@ import {
 
 const now = "2026-08-09T20:00:00.000Z";
 const environmentId = createId("environment");
-const workspaceId = createId("workspace");
 const threadId = createId("thread");
 const runId = createId("run");
 
@@ -49,7 +48,6 @@ function event<Type extends AgentEvent["type"]>(
     sequence: "1",
     threadId,
     type,
-    workspaceId,
   } as Extract<AgentEvent, { type: Type }>;
 }
 
@@ -126,7 +124,7 @@ function play(steps: readonly (AgentEvent | LiveText)[]): TranscriptEntry[] {
     lengths.set(key, at + step.text.length);
     const { changed } = ledger.apply({
       afterSequence: after,
-      progress: { items: [{ ...step, at, op: "append" }], runId, threadId, workspaceId },
+      progress: { items: [{ ...step, at, op: "append" }], runId, threadId },
     });
     if (changed) entries = foldLiveRun(entries, changed, now);
   }
@@ -144,7 +142,7 @@ function request(): Extract<Request, { status: "pending" }> {
     originatingOccurrenceId: null,
     originatingRunId: runId,
     originatingThreadId: threadId,
-    originatingWorkspaceId: workspaceId,
+
     payload: { kind: "harness.approval" },
     presentation: {
       detail: "Publish the release",
@@ -162,7 +160,6 @@ function request(): Extract<Request, { status: "pending" }> {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: workspaceId,
   };
 }
 
@@ -534,7 +531,7 @@ describe("foldTranscriptEvent", () => {
         definitionId: "android-phone",
         runnerId: RunnerIdSchema.parse(createId("runner")),
         setupRequestId: "setup",
-        workspaceId: pending.targetWorkspaceId,
+
         reason: "Read the screen",
       },
       settlementProvenance: { deviceLabel: "iPhone" },
@@ -566,8 +563,6 @@ describe("foldTranscriptEvent", () => {
             kind: "agent",
             runId,
             threadId: createId("thread"),
-            workspaceId,
-            workspaceName: "Sales",
           },
           content: [{ text: 'Delegated Thread result\n{"outcome":"completed"}', type: "text" }],
           createdAt: now,
@@ -620,6 +615,8 @@ describe("foldTranscriptEvent", () => {
   it("marks refused and uncertain steers on their original message", () => {
     const messageId = createId("message");
     const input = {
+      teamRequestId: null,
+      teamSource: null,
       assignmentId: null,
       cancelReason: null,
       causalChainId: createId("causalChain"),
@@ -711,7 +708,7 @@ describe("foldTranscriptEvent", () => {
     const entries = fold([
       event("delegation.settled", {
         childRunId,
-        childThread: { id: childThreadId, title: "Sales Agent", workspaceId },
+        childThread: { id: childThreadId, title: "Sales Agent" },
         delegationId,
         delivery: { resultMessageId: createId("message"), status: "delivered" },
         failure: null,
@@ -909,7 +906,6 @@ describe("LiveStreamLedger completions", () => {
       items: [{ at: 0, op: "append" as const, stream: "assistant" as const, text }],
       runId: frameRunId,
       threadId,
-      workspaceId,
     },
   });
   const answered = (sequence: string, eventRunId = runId) => ({
@@ -972,6 +968,8 @@ describe("mergeTranscriptSegments", () => {
     const earlier = fold([
       event("message.created", {
         input: {
+          teamRequestId: null,
+          teamSource: null,
           assignmentId: null,
           cancelReason: null,
           causalChainId: createId("causalChain"),
@@ -1111,6 +1109,8 @@ describe("run usage", () => {
 describe("queued input outcomes", () => {
   const messageId = createId("message");
   const input = {
+    teamRequestId: null,
+    teamSource: null,
     assignmentId: null,
     cancelReason: null,
     causalChainId: createId("causalChain"),
@@ -1203,8 +1203,6 @@ describe("queued input outcomes", () => {
           kind: "agent" as const,
           runId,
           threadId,
-          workspaceId,
-          workspaceName: "Main",
         },
         content: [{ text: "Still working", type: "text" as const }],
         createdAt: now,
@@ -1289,6 +1287,8 @@ describe("visibleTranscript", () => {
       canMove: true,
       canSteer: true,
       input: {
+        teamRequestId: null,
+        teamSource: null,
         assignmentId: null,
         cancelReason: null,
         causalChainId: createId("causalChain"),
@@ -1346,6 +1346,8 @@ describe("a conversation's waiting messages", () => {
 
   function pendingInput(messageId: MessageId) {
     return {
+      teamRequestId: null,
+      teamSource: null,
       assignmentId: null,
       cancelReason: null,
       causalChainId: createId("causalChain"),
@@ -1592,6 +1594,8 @@ describe("a conversation's waiting messages", () => {
 describe("delivery outcomes across history pages", () => {
   const messageId = createId("message");
   const input = {
+    teamRequestId: null,
+    teamSource: null,
     assignmentId: null,
     cancelReason: null,
     causalChainId: createId("causalChain"),
@@ -1765,8 +1769,6 @@ it("keeps addressed publication separate from a live final reply across page mer
         displayName: "Opensteer",
         runId,
         threadId,
-        workspaceId,
-        workspaceName: "Main",
       },
       content: [{ type: "text", text: "Milestone." }],
       createdAt: now,
@@ -1876,7 +1878,7 @@ describe("subagent cards", () => {
         {
           runId,
           threadId,
-          workspaceId,
+
           streams: [{ key: { stream: "node", nodeId }, length: text.length, tail: text }],
         },
         now,

@@ -7,7 +7,6 @@ import {
   type ActivityIcon,
 } from "../host/agent-activity-model.js";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { heldThread } from "../host/task-list.js";
 import { requestsWaitingOn } from "../host/waiting-requests.js";
 import { createCodexVoiceProvider, type CodexVoiceProviderInput } from "./codex-provider.js";
 import {
@@ -60,12 +59,12 @@ function voiceAccounts(snapshot: HostSnapshot): readonly VoiceAccount[] {
 
 export function voiceAccount(snapshot: HostSnapshot): VoiceAccount | null {
   const eligible = voiceAccounts(snapshot);
-  const home = snapshot.homeThreadId ? heldThread(snapshot, snapshot.homeThreadId) : null;
+  const selection = snapshot.threads.find((thread) => thread.id === snapshot.voiceThreadId);
   return (
     eligible.find(
       (account) =>
-        account.environmentId === home?.environmentId &&
-        account.harnessInstanceId === home.harnessInstanceId,
+        account.environmentId === selection?.environmentId &&
+        account.harnessInstanceId === selection.harnessInstanceId,
     ) ??
     eligible[0] ??
     null
@@ -127,7 +126,7 @@ interface VoiceSession {
   readonly id: string;
   readonly abort: AbortController;
   readonly baseline: HostSnapshot;
-  /** The account the Host opened this call on, which outlives any later choice of Chat's. */
+
   account: VoiceAccount | null;
   call: VoiceCall | null;
   speaker: VoiceSpeaker | null;
@@ -275,7 +274,7 @@ export class VoiceController {
       session.call = call;
       call.setMuted(this.#snapshot.muted);
       media.keepAwake?.(true);
-      // The agent's steps reach this device on the Workspace channel only while its Thread is held.
+
       session.releaseThread = this.#input.hostClient.observeThread(call.identity.threadId);
       session.speaker = new VoiceSpeaker({
         ...this.#input,

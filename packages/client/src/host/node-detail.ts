@@ -60,7 +60,7 @@ export interface NodeDetailSubscription {
 
 export interface NodeDetailOptions {
   readonly available: () => boolean;
-  readonly sendWatch: (workspaceId: string, nodeId: string | null) => boolean;
+  readonly sendWatch: (deploymentId: string, nodeId: string | null) => boolean;
   readonly read: (input: {
     threadId: string;
     nodeId: string;
@@ -74,7 +74,7 @@ export interface NodeDetailOptions {
 }
 
 interface Watch {
-  readonly workspaceId: string;
+  readonly deploymentId: string;
   readonly listeners: Set<() => void>;
   readonly events: Map<string, AgentEvent>;
   readonly live: LiveStreamLedger;
@@ -94,17 +94,17 @@ interface Watch {
 export class NodeDetailStore {
   readonly #options: NodeDetailOptions;
   #current: Watch | null = null;
-  #pending: { workspaceId: string; nodeId: string | null; watch: Watch; epoch: number }[] = [];
+  #pending: { deploymentId: string; nodeId: string | null; watch: Watch; epoch: number }[] = [];
 
   constructor(options: NodeDetailOptions) {
     this.#options = options;
   }
 
-  open(threadId: string, nodeId: string, workspaceId: string): NodeDetailSubscription {
+  open(threadId: string, nodeId: string, deploymentId: string): NodeDetailSubscription {
     const held = this.#current;
     if (
       held &&
-      held.workspaceId === workspaceId &&
+      held.deploymentId === deploymentId &&
       held.snapshot.threadId === threadId &&
       held.snapshot.nodeId === nodeId
     ) {
@@ -113,7 +113,7 @@ export class NodeDetailStore {
     }
     this.clear();
     const watch: Watch = {
-      workspaceId,
+      deploymentId,
       listeners: new Set(),
       events: new Map(),
       live: new LiveStreamLedger(),
@@ -174,9 +174,9 @@ export class NodeDetailStore {
     if (!watch) return;
     this.#current = null;
     watch.epoch += 1;
-    if (watch.sent && this.#options.sendWatch(watch.workspaceId, null))
+    if (watch.sent && this.#options.sendWatch(watch.deploymentId, null))
       this.#pending.push({
-        workspaceId: watch.workspaceId,
+        deploymentId: watch.deploymentId,
         nodeId: null,
         watch,
         epoch: watch.epoch,
@@ -196,15 +196,15 @@ export class NodeDetailStore {
     watch.bufferedLive.length = 0;
   }
 
-  forgetWorkspace(workspaceId: string): void {
-    if (this.#current?.workspaceId === workspaceId) this.clear();
-    this.#pending = this.#pending.filter((item) => item.workspaceId !== workspaceId);
+  forgetDeployment(deploymentId: string): void {
+    if (this.#current?.deploymentId === deploymentId) this.clear();
+    this.#pending = this.#pending.filter((item) => item.deploymentId !== deploymentId);
   }
 
-  disconnected(workspaceId: string): void {
-    this.#pending = this.#pending.filter((item) => item.workspaceId !== workspaceId);
+  disconnected(deploymentId: string): void {
+    this.#pending = this.#pending.filter((item) => item.deploymentId !== deploymentId);
     const watch = this.#current;
-    if (!watch || watch.workspaceId !== workspaceId) return;
+    if (!watch || watch.deploymentId !== deploymentId) return;
     watch.epoch += 1;
     watch.sent = false;
     watch.through = null;
@@ -215,17 +215,17 @@ export class NodeDetailStore {
     this.#set(watch, { ...watch.snapshot, status: "loading", loadingOlder: false, error: null });
   }
 
-  connected(workspaceId: string): void {
-    if (this.#current?.workspaceId === workspaceId) this.#send(this.#current);
+  connected(deploymentId: string): void {
+    if (this.#current?.deploymentId === deploymentId) this.#send(this.#current);
   }
 
   capabilitiesChanged(): void {
     const watch = this.#current;
     if (!watch) return;
     if (!this.#options.available()) {
-      if (watch.sent && this.#options.sendWatch(watch.workspaceId, null))
+      if (watch.sent && this.#options.sendWatch(watch.deploymentId, null))
         this.#pending.push({
-          workspaceId: watch.workspaceId,
+          deploymentId: watch.deploymentId,
           nodeId: null,
           watch,
           epoch: watch.epoch,
@@ -251,20 +251,20 @@ export class NodeDetailStore {
 
   #send(watch: Watch): void {
     if (watch.sent || !this.#options.available()) return;
-    if (!this.#options.sendWatch(watch.workspaceId, watch.snapshot.nodeId)) return;
+    if (!this.#options.sendWatch(watch.deploymentId, watch.snapshot.nodeId)) return;
     watch.sent = true;
     this.#set(watch, { ...watch.snapshot, status: "loading", error: null });
     this.#pending.push({
-      workspaceId: watch.workspaceId,
+      deploymentId: watch.deploymentId,
       nodeId: watch.snapshot.nodeId,
       watch,
       epoch: watch.epoch,
     });
   }
 
-  watched(workspaceId: string, nodeId: string | null, sequence: Sequence): void {
+  watched(deploymentId: string, nodeId: string | null, sequence: Sequence): void {
     const index = this.#pending.findIndex(
-      (item) => item.workspaceId === workspaceId && item.nodeId === nodeId,
+      (item) => item.deploymentId === deploymentId && item.nodeId === nodeId,
     );
     if (index < 0) return;
     const pending = this.#pending.splice(index, 1)[0]!;
@@ -279,8 +279,7 @@ export class NodeDetailStore {
     if (
       !watch ||
       watch.snapshot.status === "unavailable" ||
-      event.threadId !== watch.snapshot.threadId ||
-      event.workspaceId !== watch.workspaceId
+      event.threadId !== watch.snapshot.threadId
     )
       return;
     if (nodeDetailEventNodeId(event) === watch.snapshot.nodeId) {
@@ -314,8 +313,7 @@ export class NodeDetailStore {
     if (
       !watch ||
       watch.snapshot.status === "unavailable" ||
-      input.progress.threadId !== watch.snapshot.threadId ||
-      input.progress.workspaceId !== watch.workspaceId
+      input.progress.threadId !== watch.snapshot.threadId
     )
       return;
     const items = input.progress.items.filter(

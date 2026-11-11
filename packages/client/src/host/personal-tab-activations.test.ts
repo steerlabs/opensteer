@@ -5,9 +5,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type { HostClient, HostSnapshot } from "./client.js";
-import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
+import { PersonalTabActivations } from "./personal-tab-activations.js";
 
-type Result = NonNullable<Awaited<ReturnType<NonNullable<HostClient["activateWorkspaceTab"]>>>>;
+type Result = NonNullable<Awaited<ReturnType<NonNullable<HostClient["activatePersonalTab"]>>>>;
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 
@@ -38,7 +38,7 @@ function fixture() {
     browserTabs: browserStoreFixture([group], [{ groupId: group.id, rows }]),
   };
   const result: Result = {
-    type: "workspace.tab.activate",
+    type: "tab.activate",
     tabId,
     groupId: group.id,
     sessionId: group.sessionId,
@@ -50,7 +50,7 @@ function fixture() {
   const dispatch = vi.fn(async (_tabId: string): Promise<Result> => {
     throw error;
   });
-  const activations = new WorkspaceTabActivations({
+  const activations = new PersonalTabActivations({
     snapshot: () => snapshot,
     subscribe: (listener) => {
       listeners.add(listener);
