@@ -703,7 +703,7 @@ export class ProjectControlDeliveryStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly dependencies: {
     readonly currentPeerIsProjectCapable: (peer: RunnerConnectionFence) => boolean;
-    readonly runnerIsAttached: (runnerId: RunnerId, runnerBootId: string) => boolean;
+    readonly currentRunnerBootId: (runnerId: RunnerId) => string | null;
     readonly canContinue: (
       transaction: Transaction<DatabaseSchema>,
       requestId: import("@opensteer/core").RequestId,
@@ -789,13 +789,22 @@ export class ProjectControlDeliveryStore {
         ["completed", "failed", "interrupted"].includes(run.status)
       )
         return dispose("The Project Run ended before this control could be delivered");
-      if (!this.dependencies.runnerIsAttached(stored.binding.runnerId, stored.binding.runnerBootId))
-        return { state: "offline" as const, binding: stored.binding };
+      if (
+        durable.row.bindingGeneration !== stored.binding.bindingGeneration ||
+        durable.row.sessionGeneration !== stored.binding.bindingGeneration
+      )
+        return dispose("The original Project binding was replaced before delivery");
+      const attachedBoot = this.dependencies.currentRunnerBootId(stored.binding.runnerId);
+      if (attachedBoot === null) return { state: "offline" as const, binding: stored.binding };
+      if (attachedBoot !== stored.binding.runnerBootId)
+        return dispose("A different Runner boot replaced the Project control's original address");
       const stopping =
         stored.control.kind === "run.interrupt" || stored.control.kind === "request.refuse";
       if (!stopping) {
         try {
-          await assertActiveProjectBinding(transaction, stored.binding, this.dependencies);
+          await assertActiveProjectBinding(transaction, stored.binding, {
+            runnerIsAttached: (id, boot) => this.dependencies.currentRunnerBootId(id) === boot,
+          });
         } catch (error) {
           if (!(error instanceof OpensteerError)) throw error;
           return dispose(error.message);

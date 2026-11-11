@@ -119,7 +119,7 @@ describeStore("Project durable controls", (it) => {
     let attached = false;
     const delivery = new ProjectControlDeliveryStore(database, {
       currentPeerIsProjectCapable: () => true,
-      runnerIsAttached: () => attached,
+      currentRunnerBootId: () => (attached ? binding.runnerBootId : null),
       async canContinue() {
         return false;
       },
@@ -147,7 +147,7 @@ describeStore("Project durable controls", (it) => {
     });
     const afterRestart = new ProjectControlDeliveryStore(database, {
       currentPeerIsProjectCapable: () => true,
-      runnerIsAttached: () => true,
+      currentRunnerBootId: () => binding.runnerBootId,
       async canContinue() {
         return false;
       },
@@ -215,15 +215,13 @@ describeStore("Project durable controls", (it) => {
         { id: refused.id, status: "failed" },
       ].sort((left, right) => left.id.localeCompare(right.id)),
     );
-    await database
-      .transaction()
-      .execute((tx) =>
-        store.enqueue(tx, {
-          binding,
-          idempotencyKey: "uncertain-control",
-          control: { kind: "run.interrupt" },
-        }),
-      );
+    await database.transaction().execute((tx) =>
+      store.enqueue(tx, {
+        binding,
+        idempotencyKey: "uncertain-control",
+        control: { kind: "run.interrupt" },
+      }),
+    );
     const uncertainRow = await database
       .selectFrom("commands")
       .select("id")
@@ -254,6 +252,38 @@ describeStore("Project durable controls", (it) => {
     await expect(
       afterRestart.recordResult(peer, { ...uncertainReceipt, result: { status: "accepted" } }),
     ).rejects.toMatchObject({ code: "conflict" });
+    await database
+      .transaction()
+      .execute((tx) =>
+        store.enqueue(tx, {
+          binding,
+          idempotencyKey: "old-boot-control",
+          control: { kind: "run.interrupt" },
+        }),
+      );
+    const oldBootRow = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("type", "=", "run.control.project")
+      .where("id", "not in", [pendingInterrupt.id, refused.id, uncertainRow.id])
+      .executeTakeFirstOrThrow();
+    const newBoot = new ProjectControlDeliveryStore(database, {
+      currentRunnerBootId: () => `rbt_${randomUUID()}`,
+      currentPeerIsProjectCapable: () => true,
+      async canContinue() {
+        return false;
+      },
+    });
+    expect(await newBoot.claim(oldBootRow.id, "host-with-new-boot")).toMatchObject({
+      state: "disposed",
+    });
+    expect(
+      await database
+        .selectFrom("commands")
+        .select("status")
+        .where("id", "=", oldBootRow.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "failed" });
     await expect(
       database
         .updateTable("commands")
