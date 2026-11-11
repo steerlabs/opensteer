@@ -2485,20 +2485,24 @@ describeStore("PostgreSQL store", (it) => {
         )
       `.execute(database),
     ).rejects.toThrow(/run requester cannot execute the thread environment/u);
-    await expect(
-      sql`
-        insert into commands (
-          id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
-          idempotency_key, type, payload
-        ) values (
-          ${createId("command")}, ${fixture.aliceEnvironmentId}, ${thread.id}, ${fixture.bobId},
-          ${bobPrincipalId},
-          ${JSON.stringify({ kind: "user-session", userId: fixture.bobId })}::jsonb,
-          'cloud-binding-bob-command', 'run.interrupt',
-          ${JSON.stringify({ runId: createId("run"), threadId: thread.id, type: "run.interrupt" })}::jsonb
-        )
-      `.execute(database),
-    ).rejects.toThrow(/command requester cannot execute the thread environment/u);
+    // Every command that acts on a Run is held to the rule, whichever migration last rewrote it.
+    for (const type of ["run.interrupt", "run.restart", "run.steer", "node.stop"]) {
+      await expect(
+        sql`
+          insert into commands (
+            id, environment_id, thread_id, requested_by, actor_principal_id, authority_source,
+            idempotency_key, type, payload
+          ) values (
+            ${createId("command")}, ${fixture.aliceEnvironmentId}, ${thread.id}, ${fixture.bobId},
+            ${bobPrincipalId},
+            ${JSON.stringify({ kind: "user-session", userId: fixture.bobId })}::jsonb,
+            ${`cloud-binding-bob-${type}`}, ${type},
+            ${JSON.stringify({ runId: createId("run"), threadId: thread.id, type })}::jsonb
+          )
+        `.execute(database),
+        type,
+      ).rejects.toThrow(/command requester cannot execute the thread environment/u);
+    }
     await expect(
       triggers.create({
         actorThreadId: null,
