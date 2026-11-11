@@ -2556,8 +2556,9 @@ export async function createHostRuntime(
           enrollComputer: (revision, actor, key) =>
             runnerAuthenticator.createEnrollment({
               expectedTeamAccessRevision: revision,
+              expectedTeamActor: actor,
               allowedModules: ["agents", "shell"],
-              createdBy: actor,
+              createdBy: actor.userId,
               idempotencyKey: key,
               lifetimeSeconds: 600,
               name: "Team computer",

@@ -1,3 +1,4 @@
+import { lockTeamHuman } from "./team-administration-authority.js";
 import {
   deploymentAuthorityFromStoredRow,
   isProjectDeploymentAuthority,
@@ -1551,6 +1552,7 @@ export async function createRunnerEnrollment(
      * Issuance chooses the grant; installing newer software cannot widen it.
      */
     readonly expectedTeamAccessRevision?: number;
+    readonly expectedTeamActor?: import("@opensteer/core").AuthenticatedHuman;
     readonly allowedModules: readonly RunnerModuleName[];
     readonly issuanceModules?: readonly RunnerModuleName[];
     /** Null when the deployment authored this enrollment for its own Main Runner. */
@@ -1575,6 +1577,11 @@ export async function createRunnerEnrollment(
 ): Promise<RunnerEnrollmentIssuanceRecord> {
   return withDatabaseTransaction(database, async (transaction) => {
     if (input.expectedTeamAccessRevision !== undefined) {
+      if (!input.expectedTeamActor || input.expectedTeamActor.userId !== input.createdBy)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Team enrollment requires the authenticated administrator",
+        });
       const authority = await transaction
         .selectFrom("accessState")
         .select("revision")
@@ -1712,6 +1719,7 @@ export async function createRunnerEnrollment(
           message: "Idempotency key is already bound to a different Runner enrollment request",
         });
       }
+      if (input.expectedTeamActor) await lockTeamHuman(transaction, input.expectedTeamActor, true);
       return {
         deviceProfile: existing.deviceProfile,
         allowedModules: existing.allowedModules,
@@ -1802,6 +1810,7 @@ export async function createRunnerEnrollment(
         tokenHash: input.tokenHash,
       })
       .executeTakeFirstOrThrow(databaseOperationOptions());
+    if (input.expectedTeamActor) await lockTeamHuman(transaction, input.expectedTeamActor, true);
     return {
       deviceProfile: input.deviceProfile ?? null,
       allowedModules,

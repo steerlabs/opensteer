@@ -136,6 +136,7 @@ export class RunnerAuthenticator {
 
   async createEnrollment(input: {
     readonly expectedTeamAccessRevision?: number;
+    readonly expectedTeamActor?: import("@opensteer/core").AuthenticatedHuman;
     readonly allowedModules: readonly RunnerModuleName[];
     readonly createdBy: UserId;
     readonly idempotencyKey: string;
@@ -249,6 +250,7 @@ export class RunnerAuthenticator {
 
   async #createEnrollment(input: {
     readonly expectedTeamAccessRevision?: number;
+    readonly expectedTeamActor?: import("@opensteer/core").AuthenticatedHuman;
     readonly allowedModules: readonly RunnerModuleName[];
     readonly createdBy: UserId | null;
     readonly idempotencyKey: string;
@@ -314,6 +316,7 @@ export class RunnerAuthenticator {
       ...(input.expectedTeamAccessRevision !== undefined
         ? { expectedTeamAccessRevision: input.expectedTeamAccessRevision }
         : {}),
+      ...(input.expectedTeamActor ? { expectedTeamActor: input.expectedTeamActor } : {}),
       issuanceModules:
         input.purpose === "phone" || input.purpose === "iphone"
           ? ["integrations"]
