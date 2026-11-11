@@ -59,6 +59,7 @@ export * from "./tab-list.js";
 export * from "./browser-preferences.js";
 
 export * from "./autofill.js";
+export * from "./password-save.js";
 export * from "./browser-editing.js";
 export * from "./saved-host-view.js";
 

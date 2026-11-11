@@ -628,7 +628,8 @@ export class HttpHostClient {
     if (mode === "control") {
       url.searchParams.set("popups", "1");
       url.searchParams.set("basicInput", "1");
-      url.searchParams.set("autofill", "1");
+      // Person fill 2 adds offers to save a login the person typed.
+      url.searchParams.set("autofill", "2");
     }
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));

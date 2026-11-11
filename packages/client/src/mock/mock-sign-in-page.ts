@@ -23,6 +23,7 @@ const logins: readonly Omit<PersonFillAccountView, "ready">[] = [
 /**
  * Remote editing on the mock sign-in page: a tap anywhere on it focuses a
  * password field and offers the saved logins, and a fill lands a moment later.
+ * Return signs in by hand, after which the page offers to save that login.
  * Every other mock page stays without editing, as a page from an older
  * runtime is.
  */
@@ -50,6 +51,43 @@ export class MockSignInPage {
         this.editing.receive(sessionId, { type: "browser.autofill.withdrawn", ...offer });
       }, 1_200);
       return true;
+    }
+    if (command.type === "passwordSave.answer") {
+      const ended = {
+        surfaceId: command.surfaceId,
+        consumerToken,
+        offerId: command.offerId,
+        status: command.save ? ("saved" as const) : ("dismissed" as const),
+      };
+      setTimeout(
+        () => this.editing.receive(sessionId, { type: "browser.passwordSave.ended", ...ended }),
+        600,
+      );
+      return true;
+    }
+    if (
+      command.type === "input.key" &&
+      command.action === "down" &&
+      command.key === "Enter" &&
+      title === mockSignInPageTitle
+    ) {
+      const { surfaceId } = command;
+      setTimeout(
+        () =>
+          this.editing.receive(sessionId, {
+            type: "browser.passwordSave.offer",
+            surfaceId,
+            consumerToken,
+            offerId: crypto.randomUUID(),
+            offer: {
+              kind: "save",
+              origin: "https://accounts.example.com",
+              username: "alex@hey.example",
+            },
+          }),
+        1_500,
+      );
+      return false;
     }
     if (command.type !== "input.pointer" || command.action !== "down") return false;
     if (title !== mockSignInPageTitle) return false;

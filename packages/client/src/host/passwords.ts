@@ -548,6 +548,8 @@ export type PasswordsSettingsState =
       readonly agentSignIns: "off" | "on";
       /** Null when this Mac's Passwords predates filling for people. */
       readonly personFill: "off" | "on" | null;
+      /** Null when this Mac's Passwords predates saving for people. */
+      readonly personSave: "off" | "on" | null;
       readonly development: boolean;
       readonly kind: "ready";
     };
@@ -568,6 +570,7 @@ export function passwordsSettingsState(status: DesktopPasswordsStatus): Password
           return {
             agentSignIns: broker.agentSignIns,
             personFill: broker.personFill ?? null,
+            personSave: broker.personSave ?? null,
             development,
             kind: "ready",
           };

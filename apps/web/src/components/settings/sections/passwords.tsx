@@ -11,6 +11,7 @@ import {
   passwordsNeedsReset,
   passwordsOpenAction,
   passwordsPersonFillLabel,
+  passwordsPersonSaveLabel,
   passwordsSavedDetail,
   passwordsSavedLabel,
   passwordsSettingsState,
@@ -257,6 +258,18 @@ function StateBody({
                 detail={passwordsAgentSignInsDetail}
                 icon="user"
                 title={passwordsPersonFillLabel}
+              />
+            ) : null}
+            {state.personSave !== null ? (
+              <SettingsRow
+                action={
+                  <span className={state.personSave === "on" ? "chip chip--ok" : "chip"}>
+                    {state.personSave === "on" ? "On" : "Off"}
+                  </span>
+                }
+                detail={passwordsAgentSignInsDetail}
+                icon="key"
+                title={passwordsPersonSaveLabel}
               />
             ) : null}
             {waiting > 0 ? (
