@@ -1,3 +1,5 @@
+import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
+import { browserBootstrapWithRows } from "../test-support/browser-fixtures.js";
 import { schedulesClient } from "./schedules.js";
 import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import {
@@ -24,6 +26,7 @@ import {
   ComputerViewSchema,
   HostToClientMessageSchema,
   HostedBrowserBootstrapSchema,
+  HostedBrowserSessionSchema,
   browserViewerCloseCodes,
   createBrowserSessionId,
   hostApi,
@@ -172,6 +175,316 @@ it("opts control viewers into basic input and exposes only the returned negotiat
   }
 });
 
+describe("browser carrier and derivation", () => {
+  async function fixture() {
+    const workspaces = [makeWorkspace(), makeWorkspace(), makeWorkspace()];
+    const sessions = workspaces.slice(0, 2).map((workspace, index) => ({
+      id: createBrowserSessionId(),
+      access: "read-write" as const,
+      origin: "workspace" as const,
+      state: "ready" as const,
+      createdAt: now,
+      updatedAt: now,
+      workspaceId: workspace.id,
+      profileId: null,
+      runtimeId: "runtime",
+      placement: { kind: "runner" as const, runnerId },
+      tabCatalog: {
+        generation: 1,
+        revision: 1,
+        tabs: [0, 1].map((order) => ({
+          id: BrowserSurfaceIdSchema.parse(`carrier-${index}-${order}`),
+          title: `Tab ${order}`,
+          site: "https://example.test",
+          iconRef: null,
+          order,
+          openerId: null,
+          availability: "ready" as const,
+          documentId: "document",
+          occupants: [],
+        })),
+      },
+    }));
+    const body = bootstrap(workspaces, {
+      available: true,
+      placements: [],
+      profiles: [],
+      profileGrants: [],
+      sessions,
+    });
+    const sockets: FakeSocket[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const payload = rpcPayload(url, init);
+      if (url.pathname.endsWith("/commands.dispatch") && payload.type === "browser.tab.close")
+        return json({
+          sessionId: payload.sessionId,
+          outcome: "tab-closed",
+          catalog: { generation: 0, revision: 2, tabs: [] },
+        });
+      return json(body);
+    });
+    const client = createHttpHostClient({
+      fetch,
+      prefetchHome: false,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    await client.load();
+    for (const workspace of workspaces) client.activateWorkspace(workspace.id);
+    for (const socket of sockets) socket.open();
+    return { client, sockets, fetch, body, sessions };
+  }
+  function resyncs(socket: FakeSocket) {
+    return socket.sent
+      .map((value) => JSON.parse(value) as { type: string; groupId?: string })
+      .filter((value) => value.type === "client.browser.resync");
+  }
+  function replace(f: Awaited<ReturnType<typeof fixture>>, socket: FakeSocket, generation: string) {
+    const group = f.body.browser.tabs![0]!;
+    for (const message of [
+      { op: "begin", generation },
+      { op: "rows", rows: group.rows },
+      { op: "end", revision: 0, count: group.rows.length, meta: {} },
+    ])
+      socket.receiveRaw({ type: "host.browser-tabs", groupId: group.groupId, stream: message });
+    return group;
+  }
+  it("elects one of three Workspace sockets, hands over once, and drops old carrier frames", async () => {
+    const f = await fixture();
+    try {
+      expect(f.sockets).toHaveLength(3);
+      expect(f.sockets.map(resyncs)).toEqual([[{ type: "client.browser.resync" }], [], []]);
+      const [old, next, sibling] = f.sockets as [FakeSocket, FakeSocket, FakeSocket];
+      const before = f.client.getSnapshot();
+      sibling.receiveRaw({
+        type: "host.browser-groups",
+        stream: { op: "begin", generation: "wrong" },
+      });
+      sibling.receiveRaw({
+        type: "host.browser-groups",
+        stream: { op: "end", revision: 0, count: 0, meta: {} },
+      });
+      expect(f.client.getSnapshot()).toBe(before);
+      old.serverClose();
+      expect(resyncs(next)).toEqual([{ type: "client.browser.resync" }]);
+      const held = f.client.getSnapshot();
+      replace(f, old, "old");
+      expect(f.client.getSnapshot()).toBe(held);
+      replace(f, next, "new");
+      expect(f.client.getSnapshot().browserSessions[0]!.tabCatalog?.tabs).toHaveLength(2);
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("derives changed rows while sharing every other row and group", async () => {
+    const f = await fixture();
+    try {
+      const group = replace(f, f.sockets[0]!, "tabs");
+      const before = f.client.getSnapshot();
+      const first = before.browserSessions.find((session) => session.id === group.groupId)!;
+      const other = before.browserSessions.find((session) => session.id !== group.groupId)!;
+      f.sockets[0]!.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: {
+          op: "change",
+          generation: "tabs",
+          base: 0,
+          revision: 1,
+          update: [{ id: group.rows[0]!.id, title: "Changed" }],
+        },
+      });
+      const after = f.client.getSnapshot();
+      const changed = after.browserSessions.find((session) => session.id === first.id)!;
+      expect(changed.tabCatalog?.tabs[0]?.title).toBe("Changed");
+      expect(changed.tabCatalog?.tabs[1]).toBe(first.tabCatalog?.tabs[1]);
+      expect(after.browserSessions.find((session) => session.id === other.id)).toBe(other);
+      expect(after.workspaceTabs?.find((value) => value.id === other.id)).toBe(
+        before.workspaceTabs?.find((value) => value.id === other.id),
+      );
+      expect(after.workspaceTabs?.find((value) => value.id === first.id)?.tabs?.[1]).toBe(
+        before.workspaceTabs?.find((value) => value.id === first.id)?.tabs?.[1],
+      );
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("keeps an interrupted snapshot and fences revocation before its late end", async () => {
+    const f = await fixture();
+    try {
+      const carrier = f.sockets[0]!;
+      const group = replace(f, carrier, "committed");
+      const held = f.client.getSnapshot().workspaceTabs![0]!.tabs;
+      carrier.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "begin", generation: "interrupted" },
+      });
+      carrier.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "rows", rows: [{ ...group.rows[0]!, title: "Uncommitted" }] },
+      });
+      carrier.serverClose();
+      const next = f.sockets[1]!;
+      expect(f.client.getSnapshot().workspaceTabs![0]!.tabs).toBe(held);
+      next.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "end", count: 1, revision: 0, meta: {} },
+      });
+      expect(f.client.getSnapshot().workspaceTabs![0]!.tabs).toBe(held);
+      publishBrowser(next, { sessions: f.sessions });
+      next.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "begin", generation: "revoked" },
+      });
+      next.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "rows", rows: group.rows },
+      });
+      publishBrowser(next, { sessions: [f.sessions[1]!] });
+      next.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "end", count: group.rows.length, revision: 0, meta: {} },
+      });
+      expect(
+        f.client.getSnapshot().browserSessions.some((session) => session.id === group.groupId),
+      ).toBe(false);
+      expect(f.client.getSnapshot().workspaceTabs?.some((row) => row.id === group.groupId)).toBe(
+        false,
+      );
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("keeps an incomplete prefix visible until its first complete stream", async () => {
+    const f = await fixture();
+    try {
+      // A new viewer's incomplete seed is independent of the first client's carrier.
+      const body = f.body;
+      body.browser.groups = { ...body.browser.groups!, complete: false };
+      body.browser.tabs = body.browser.tabs!.map((group) => ({
+        ...group,
+        rows: group.rows.slice(0, 1),
+        complete: false,
+      }));
+      const socket = new FakeSocket();
+      const client = createHttpHostClient({
+        fetch: async () => json(body),
+        refreshIntervalMs: 0,
+        webSocketFactory: () => socket,
+      });
+      try {
+        await client.load();
+        expect(
+          client.getSnapshot().browserSessions.every((session) => session.tabCatalog === undefined),
+        ).toBe(true);
+        expect(
+          client
+            .getSnapshot()
+            .workspaceTabs!.every((group) => group.whole === false && group.tabs?.length === 1),
+        ).toBe(true);
+        const reading = client.readWorkspaceTabs(f.sessions[0]!.id);
+        let settled = false;
+        void reading
+          .then(() => {
+            settled = true;
+          })
+          .catch(() => undefined);
+        socket.open();
+        expect(settled).toBe(false);
+        expect(
+          placeDestinationEnded(client.getSnapshot(), {
+            kind: "browser",
+            sessionId: f.sessions[0]!.id,
+            tabId: f.sessions[0]!.tabCatalog.tabs[1]!.id,
+          }),
+        ).toBe(false);
+        expect(resyncs(socket)).toHaveLength(1);
+        expect(f.sockets.map(resyncs)).toEqual([[{ type: "client.browser.resync" }], [], []]);
+        publishBrowser(socket, { sessions: f.sessions });
+        expect((await reading)?.tabs).toHaveLength(2);
+        expect(
+          client
+            .getSnapshot()
+            .workspaceTabs!.every((group) => group.whole === true && group.tabs?.length === 2),
+        ).toBe(true);
+        expect(
+          client
+            .getSnapshot()
+            .browserSessions.every((session) => session.tabCatalog?.tabs.length === 2),
+        ).toBe(true);
+      } finally {
+        client.dispose();
+      }
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("closes live rows with the displayed inventory fence after a newer inventory arrives", async () => {
+    const f = await fixture();
+    try {
+      const session = f.client
+        .getSnapshot()
+        .browserSessions.find((session) => session.id === f.sessions[0]!.id)!;
+      const expected = session.tabCatalog!;
+      publishBrowser(f.sockets[0]!, {
+        sessions: f.sessions.map((session) => ({
+          ...session,
+          tabCatalog: { ...session.tabCatalog, revision: 2 },
+        })),
+      });
+      await f.client.closeBrowserTab(session.id, expected.tabs[0]!.id, expected);
+      const command = f.fetch.mock.calls
+        .map(([input, init]) => rpcPayload(new URL(input.toString()), init))
+        .find((payload) => payload.type === "browser.tab.close");
+      expect(command).toMatchObject({
+        type: "browser.tab.close",
+        sessionId: session.id,
+        surfaceId: expected.tabs[0]!.id,
+        inventoryRevision: 1,
+      });
+    } finally {
+      f.client.dispose();
+    }
+  });
+  it("repairs gaps and unreadable browser frames on the carrier without rereading bootstrap", async () => {
+    const f = await fixture();
+    try {
+      const group = replace(f, f.sockets[0]!, "tabs");
+      const before = f.client.getSnapshot().browserSessions;
+      const reads = f.fetch.mock.calls.length;
+      f.sockets[0]!.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: { op: "change", generation: "tabs", base: 1, revision: 2 },
+      });
+      expect(resyncs(f.sockets[0]!)).toEqual([
+        { type: "client.browser.resync" },
+        { type: "client.browser.resync", groupId: group.groupId },
+      ]);
+      expect(f.client.getSnapshot().browserSessions).toBe(before);
+      f.sockets[1]!.receiveRaw({ type: "host.browser-tabs", stream: {} });
+      expect(resyncs(f.sockets[0]!)).toHaveLength(2);
+      f.sockets[0]!.receiveRaw({ type: "host.browser-tabs", stream: {} });
+      expect(resyncs(f.sockets[0]!).at(-1)).toEqual({ type: "client.browser.resync" });
+      expect(resyncs(f.sockets[0]!)).toHaveLength(3);
+      expect(f.fetch).toHaveBeenCalledTimes(reads);
+    } finally {
+      f.client.dispose();
+    }
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -195,9 +508,15 @@ function createHttpHostClient({
   browserCatalogReads = "answered",
   ...options
 }: TestHostClientOptions = {}): HttpHostClient {
+  const realtime: FakeSocket[] = [];
   return new HttpHostClient({
     baseUrl: "http://127.0.0.1",
     ...options,
+    webSocketFactory: (url) => {
+      const socket = options.webSocketFactory?.(url) ?? new FakeSocket();
+      if (url.includes("/v1/realtime") && socket instanceof FakeSocket) realtime.push(socket);
+      return socket;
+    },
     ...(options.fetch
       ? {
           fetch: rpcContractFetch(
@@ -206,6 +525,7 @@ function createHttpHostClient({
             browserUsageReads,
             taskReads,
             browserCatalogReads,
+            realtime,
           ),
         }
       : {}),
@@ -218,7 +538,12 @@ function rpcContractFetch(
   browserUsageReads: "answered" | "observed",
   taskReads: "answered" | "observed",
   browserCatalogReads: "answered" | "observed",
+  realtime: FakeSocket[],
 ): typeof globalThis.fetch {
+  const startedSessions = new WeakMap<
+    FakeSocket,
+    ReturnType<typeof HostedBrowserSessionSchema.parse>
+  >();
   return async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     const prefix = "/v1/rpc/";
@@ -292,6 +617,46 @@ function rpcContractFetch(
           : name === "workspace.catalog.list"
             ? { ...body, notificationPreferences: preferencesForWorkspaces(body.workspaces) }
             : responseBody;
+    if (name === "commands.dispatch" && payload.type === "browser.session.close") {
+      const socket = realtime[0]!;
+      const current = startedSessions.get(socket);
+      if (current)
+        publishBrowser(socket, {
+          sessions: [
+            { ...current, state: "closed", tabCatalog: { generation: 1, revision: 2, tabs: [] } },
+          ],
+        });
+    }
+    if (name === "commands.dispatch" && payload.type === "browser.session.start") {
+      const session = HostedBrowserSessionSchema.parse(body.session);
+      const socket = realtime[0]!;
+      startedSessions.set(socket, session);
+      if (socket.readyState !== 1) socket.open();
+      publishBrowser(socket, {
+        sessions: [
+          {
+            ...session,
+            tabCatalog: session.tabCatalog ?? {
+              generation: 1,
+              revision: 1,
+              tabs: [
+                {
+                  id: BrowserSurfaceIdSchema.parse("page-1"),
+                  title: "Example",
+                  site: "https://example.com",
+                  iconRef: null,
+                  order: 0,
+                  openerId: null,
+                  availability: "ready",
+                  documentId: "document",
+                  occupants: [],
+                },
+              ],
+            },
+          },
+        ],
+      });
+    }
     return json({ data, ok: true }, response.status);
   };
 }
@@ -878,71 +1243,27 @@ describe("HttpHostClient authentication and onboarding", () => {
     client.dispose();
   });
 
-  it("recovers a selected group outside bootstrap and retains it across bounded rereads", async () => {
+  it("resolves a selected group outside the prefix from the carrier and keeps it through stale bootstrap", async () => {
     const workspace = makeWorkspace();
-    const groupId = createBrowserSessionId();
-    const sessionId = createBrowserSessionId();
-    const tabId = BrowserSurfaceIdSchema.parse("surface_old-selected");
-    const group: WorkspaceTabLineage = {
-      id: groupId,
-      revision: 1,
-      createdAt: now,
-      session: {
-        id: sessionId,
-        access: "read-write",
-        createdAt: now,
-        updatedAt: now,
-        origin: "workspace",
-        placement: { kind: "runner", runnerId },
-        profileId: null,
-        runtimeId: "test",
-        state: "failed",
-        workspaceId: workspace.id,
-      },
-      tabs: [
-        {
-          kind: "browser",
-          id: tabId,
-          sessionId,
-          title: "Old selected tab",
-          site: "https://example.test",
-          order: 0,
-          openerId: null,
-          state: "suspended",
-        },
-      ],
-    };
-    const browser: HostedBrowserBootstrap = {
-      available: true,
-      workspaceTabRestoreVersion: 1,
-      workspaceTabs: [],
-      profiles: [],
-      placements: [],
-      profileGrants: [],
-      sessions: [],
-    };
-    const reads: string[] = [];
+    const seed = new MockHostClient({ latencyMs: 0 });
+    const group = seed.getSnapshot().workspaceTabs!.find((group) => group.tabs?.length)!;
+    seed.dispose();
+    const socket = new FakeSocket();
+    const fetch = vi.fn(async () => json(bootstrap([workspace])));
     const client = createHttpHostClient({
+      fetch,
       refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-      fetch: async (input, init) => {
-        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-        if (path === "/v1/rpc/workspace.tabs.get") {
-          reads.push(String(rpcPayload(new URL(input.toString()), init).groupId));
-          return json(group);
-        }
-        return json(bootstrap([workspace], browser));
-      },
+      webSocketFactory: () => socket,
     });
     try {
       await client.load();
-      expect(client.getSnapshot().workspaceTabs).toEqual([]);
-      expect(typeof client.readWorkspaceTabs).toBe("function");
-      expect(await client.readWorkspaceTabs(sessionId)).toEqual(group);
-      expect(client.getSnapshot().workspaceTabs).toEqual([group]);
+      socket.open();
+      expect(await client.readWorkspaceTabs(group.session.id)).toBeNull();
+      publishBrowser(socket, { workspaceTabs: [group] });
+      const received = await client.readWorkspaceTabs(group.session.id);
+      expect(received?.tabs?.map((tab) => tab.id)).toEqual(group.tabs!.map((tab) => tab.id));
       await client.refresh();
-      expect(client.getSnapshot().workspaceTabs).toEqual([group]);
-      expect(reads).toContain(sessionId);
+      expect(await client.readWorkspaceTabs(group.session.id)).toBe(received);
     } finally {
       client.dispose();
     }
@@ -1012,17 +1333,20 @@ describe("HttpHostClient authentication and onboarding", () => {
         },
       ],
     };
+    let commandStarted = false;
     let acknowledge: (response: Response) => void = () => {
       throw new Error("No pending command");
     };
+    const socket = new FakeSocket();
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
+      webSocketFactory: () => socket,
       fetch: async (input) => {
         const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
         if (path === "/v1/rpc/commands.dispatch")
           return new Promise<Response>((resolve) => {
             acknowledge = resolve;
+            commandStarted = true;
           });
         if (path === "/v1/rpc/workspace.tabs.get") return json(newer);
         return json(bootstrap([workspace], browser));
@@ -1035,7 +1359,9 @@ describe("HttpHostClient authentication and onboarding", () => {
         item: { tabIds: [c!] },
         to: { groupId: null, before: { tabId: a! } },
       });
-      await client.readWorkspaceTabs(sessionId);
+      await vi.waitFor(() => expect(commandStarted).toBe(true));
+      socket.open();
+      publishBrowser(socket, { workspaceTabs: [newer] });
       const snapshot = client.getSnapshot();
       expect(
         browserTabStrip(placeList(snapshot), snapshot.browserTabGroups)
@@ -1155,9 +1481,10 @@ describe("HttpHostClient authentication and onboarding", () => {
       sessions: [],
     };
     const calls: string[] = [];
+    const socket = new FakeSocket();
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
+      webSocketFactory: () => socket,
       fetch: async (input) => {
         const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
         calls.push(path);
@@ -1174,7 +1501,10 @@ describe("HttpHostClient authentication and onboarding", () => {
         failed: [],
       });
       expect(client.getSnapshot().browserSessions).toBe(before.browserSessions);
-      expect(client.getSnapshot().workspaceTabs?.[0]).toMatchObject({ revision: 1, tabs: [] });
+      expect(client.getSnapshot().workspaceTabs).toBe(before.workspaceTabs);
+      socket.open();
+      publishBrowser(socket, { workspaceTabs: [{ ...lineage, tabs: [] }] });
+      expect(client.getSnapshot().workspaceTabs?.[0]?.tabs).toEqual([]);
       expect(calls.filter((path) => path === "/v1/rpc/bootstrap.get")).toHaveLength(1);
     } finally {
       client.dispose();
@@ -2399,210 +2729,46 @@ describe("HttpHostClient durable realtime", () => {
       return { body, client, fetch, group, socket, workspace };
     }
 
-    it("applies a newer lineage notice without a bootstrap read", async () => {
-      const f = await fixture(false);
-      try {
-        const reads = f.fetch.mock.calls.length;
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: f.group,
-        });
-        expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Store");
-        expect(f.client.getSnapshot().workspaceTabs).toEqual([f.group]);
-        expect(f.fetch).toHaveBeenCalledTimes(reads);
-        const newer = {
-          ...f.group,
-          revision: 2,
-          tabs: [{ ...f.group.tabs![0]!, title: "Checkout" }],
-        };
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: newer,
-        });
-        expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Checkout");
-        expect(f.fetch).toHaveBeenCalledTimes(reads);
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it.each([1, 0])("ignores a duplicate or older lineage at revision %s", async (revision) => {
+    it("keeps stream state through stale bootstrap and ignores legacy catalog notices", async () => {
       const f = await fixture();
       try {
-        const before = f.client.getSnapshot();
-        const listener = vi.fn();
-        f.client.subscribe(listener);
-        const reads = f.fetch.mock.calls.length;
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: { ...f.group, revision },
-        });
-        expect(f.fetch).toHaveBeenCalledTimes(reads);
-        expect(f.client.getSnapshot()).toBe(before);
-        expect(listener).not.toHaveBeenCalled();
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it.each(["omitted", "older"] as const)(
-      "keeps a notice lineage through an already-started bootstrap with an %s lineage",
-      async (payload) => {
-        const f = await fixture(false);
-        let release = () => {};
-        try {
-          if (payload === "older") f.body.browser.workspaceTabs = [{ ...f.group, revision: 0 }];
-          f.fetch.mockImplementationOnce(
-            () =>
-              new Promise<Response>((resolve) => {
-                release = () => resolve(json(f.body));
-              }),
-          );
-          const reading = f.client.load();
-          expect(f.fetch).toHaveBeenCalledTimes(2);
-          f.socket.receive({
-            type: "host.browser-sessions-changed",
-            workspaceId: f.workspace.id,
-            group: f.group,
-          });
-          release();
-          await reading;
-          expect(f.client.getSnapshot().workspaceTabs).toEqual([f.group]);
-          expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Store");
-        } finally {
-          release();
-          f.client.dispose();
-        }
-      },
-    );
-
-    it("keeps a closed lineage revision so delayed notices cannot resurrect rows", async () => {
-      const f = await fixture();
-      try {
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: { ...f.group, revision: 2, tabs: [] },
-        });
-        expect(
-          placeList(f.client.getSnapshot()).filter((place) => place.kind === "browser"),
-        ).toEqual([]);
-        f.body.browser.workspaceTabs = [];
-        await f.client.load();
-        const before = f.client.getSnapshot();
-        const listener = vi.fn();
-        f.client.subscribe(listener);
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: f.group,
-        });
-        expect(f.client.getSnapshot()).toBe(before);
-        expect(listener).not.toHaveBeenCalled();
-        expect(
-          placeList(f.client.getSnapshot()).filter((place) => place.kind === "browser"),
-        ).toEqual([]);
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it("takes a tab its lineage closed out of the cached tab group", async () => {
-      const f = await fixture();
-      try {
-        const closed = f.group.tabs![0]!;
-        const kept = { ...closed, id: BrowserSurfaceIdSchema.parse("surface_kept"), order: 1 };
-        const open = { ...f.group, tabs: [closed, kept] };
-        f.body.browser.workspaceTabs = [open];
+        const tabId = f.group.tabs![0]!.id;
         f.body.browser.tabGroups = {
           revision: 2,
-          order: [closed.id, kept.id],
+          order: [tabId],
           groups: [
             {
               id: createId("browserTabGroup"),
-              title: "Tacos",
+              title: "Reading",
               color: "blue",
               collapsed: false,
-              tabIds: [closed.id, kept.id],
+              tabIds: [tabId],
             },
           ],
         };
-        await f.client.load();
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: { ...open, revision: 2, tabs: [kept] },
-        });
-        const layout = f.client.getSnapshot().browserTabGroups;
-        expect(layout?.groups.map((group) => group.tabIds)).toEqual([[kept.id]]);
-        expect(layout?.order).toEqual([kept.id]);
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it("rereads a lineage notice whose tabs were omitted", async () => {
-      const f = await fixture();
-      try {
-        const reads = f.fetch.mock.calls.length;
-        f.body.browser.workspaceTabs = [{ ...f.group, revision: 2, tabs: [] }];
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: { ...f.group, tabs: undefined },
-        });
-        await vi.waitFor(() => expect(f.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2));
-        expect(f.fetch).toHaveBeenCalledTimes(reads + 1);
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it("does not publish identical or older live catalogs", async () => {
-      const f = await fixture();
-      try {
-        const catalog = { generation: 2, revision: 2, tabs: [] };
-        f.socket.receive({
-          type: "host.browser-tabs-changed",
-          sessionId: f.group.session.id,
-          catalog,
-        });
+        await f.client.refresh();
+        const current = { ...f.group, tabs: [{ ...f.group.tabs![0]!, title: "Checkout" }] };
+        publishBrowser(f.socket, { workspaceTabs: [current] });
         const before = f.client.getSnapshot();
-        const listener = vi.fn();
-        f.client.subscribe(listener);
         f.socket.receive({
           type: "host.browser-tabs-changed",
           sessionId: f.group.session.id,
-          catalog,
+          catalog: { generation: 9, revision: 9, tabs: [] },
         });
         f.socket.receive({
-          type: "host.browser-tabs-changed",
-          sessionId: f.group.session.id,
-          catalog: { ...catalog, revision: 1 },
+          type: "host.browser-sessions-changed",
+          workspaceId: f.workspace.id,
+          group: f.group,
         });
-        expect(listener).not.toHaveBeenCalled();
         expect(f.client.getSnapshot()).toBe(before);
-      } finally {
-        f.client.dispose();
-      }
-    });
-
-    it("keeps Thread and Workspace arrays during a browser-only publication", async () => {
-      const f = await fixture();
-      try {
-        const before = f.client.getSnapshot();
-        f.socket.receive({
-          type: "host.browser-tabs-changed",
-          sessionId: f.group.session.id,
-          catalog: { generation: 2, revision: 2, tabs: [] },
-        });
-        const after = f.client.getSnapshot();
-        expect(after.browserSessions).not.toBe(before.browserSessions);
-        expect(after.threads).toBe(before.threads);
-        expect(after.workspaces).toBe(before.workspaces);
+        await f.client.refresh();
+        expect(f.client.getSnapshot().workspaceTabs).toBe(before.workspaceTabs);
+        expect(placeList(f.client.getSnapshot()).map((place) => place.title)).toContain("Checkout");
+        publishBrowser(f.socket, { workspaceTabs: [{ ...current, tabs: [] }] });
+        expect(f.client.getSnapshot().browserTabGroups?.groups).toEqual([]);
+        expect(f.client.getSnapshot().browserTabGroups?.order).toEqual([]);
+        await f.client.refresh();
+        expect(f.client.getSnapshot().workspaceTabs?.[0]?.tabs).toEqual([]);
       } finally {
         f.client.dispose();
       }
@@ -2653,23 +2819,7 @@ describe("HttpHostClient durable realtime", () => {
     "refreshes thread-visible bootstrap state on %s without a mounted Computers page",
     async (noticeType) => {
       const workspace = makeWorkspace();
-      const sessionId = createBrowserSessionId();
-      const now = new Date().toISOString();
       const sockets: FakeSocket[] = [];
-      const sessions = [
-        {
-          access: "read-write" as const,
-          createdAt: now,
-          id: sessionId,
-          origin: "agent" as const,
-          placement: { kind: "runner" as const, runnerId },
-          profileId: null,
-          runtimeId: "runtime-1",
-          state: "ready" as const,
-          updatedAt: now,
-          workspaceId: workspace.id,
-        },
-      ];
       // The agent's browser is only on the second read: the announcement is what
       // brings it forward, not the poll.
       let opened = false;
@@ -2679,8 +2829,10 @@ describe("HttpHostClient durable realtime", () => {
             profileGrants: [],
             available: true,
             placements: [],
-            profiles: [],
-            sessions: opened ? sessions : [],
+            profiles: opened
+              ? [{ id: createId("browserProfile"), name: "Available profile", homeRunnerId: null }]
+              : [],
+            sessions: [],
           }),
         ),
       ) as unknown as typeof globalThis.fetch;
@@ -2705,12 +2857,9 @@ describe("HttpHostClient durable realtime", () => {
         workspaceId:
           noticeType === "host.browser-sessions-changed" ? createId("workspace") : workspace.id,
       });
-      await vi.waitUntil(() => client.getSnapshot().browserSessions.length === 1);
+      await vi.waitUntil(() => client.getSnapshot().browserProfiles.length === 1);
 
-      expect(client.getSnapshot().browserSessions[0]).toMatchObject({
-        id: sessionId,
-        state: "ready",
-      });
+      expect(client.getSnapshot().browserProfiles[0]?.name).toBe("Available profile");
       client.dispose();
     },
   );
@@ -2758,21 +2907,7 @@ describe("HttpHostClient durable realtime", () => {
 
   it("answers a notice that lands mid-read with exactly one more read", async () => {
     const workspace = makeWorkspace();
-    const sessionId = createBrowserSessionId();
-    const now = new Date().toISOString();
     const sockets: FakeSocket[] = [];
-    const session = (state: "ready" | "starting") => ({
-      access: "read-write" as const,
-      createdAt: now,
-      id: sessionId,
-      origin: "agent" as const,
-      placement: { kind: "runner" as const, runnerId },
-      profileId: null,
-      runtimeId: "runtime-1",
-      state,
-      updatedAt: now,
-      workspaceId: workspace.id,
-    });
     // Every read waits until the test releases it, so a notice can arrive
     // while one is still in flight. The Host's truth advances per read:
     // nothing, then starting, then ready.
@@ -2790,9 +2925,17 @@ describe("HttpHostClient durable realtime", () => {
                   profileGrants: [],
                   available: true,
                   placements: [],
-                  profiles: [],
-                  sessions:
-                    read >= 3 ? [session("ready")] : read === 2 ? [session("starting")] : [],
+                  profiles:
+                    read >= 2
+                      ? [
+                          {
+                            id: createId("browserProfile"),
+                            name: read >= 3 ? "ready" : "starting",
+                            homeRunnerId: null,
+                          },
+                        ]
+                      : [],
+                  sessions: [],
                 }),
               ),
             ),
@@ -2826,14 +2969,14 @@ describe("HttpHostClient durable realtime", () => {
     expect(reads).toBe(2);
 
     releases.shift()!();
-    await vi.waitUntil(() => client.getSnapshot().browserSessions[0]?.state === "starting");
+    await vi.waitUntil(() => client.getSnapshot().browserProfiles[0]?.name === "starting");
     // The two notices that arrived mid-read collapse into one follow-up read.
     await vi.waitUntil(() => releases.length === 1);
     expect(reads).toBe(3);
     releases.shift()!();
-    await vi.waitUntil(() => client.getSnapshot().browserSessions[0]?.state === "ready");
+    await vi.waitUntil(() => client.getSnapshot().browserProfiles[0]?.name === "ready");
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await vi.waitFor(() => expect(reads).toBe(3));
     expect(reads).toBe(3);
     expect(triggers.mock.calls.map(([reason]) => reason)).toEqual([
       "host.browser-sessions-changed",
@@ -7257,204 +7400,6 @@ describe("HttpHostClient Home prefetch", () => {
   });
 });
 
-describe("HttpHostClient catalog startup", () => {
-  function startup(options: { readonly failSession?: number } = {}) {
-    const workspace = makeWorkspace();
-    const seed = new MockHostClient();
-    const saved = seed.getSnapshot().workspaceTabs!.find((group) => group.tabs?.length)!;
-    seed.dispose();
-    const group = {
-      ...saved,
-      revision: 2,
-      session: { ...saved.session, workspaceId: workspace.id },
-    };
-    const sessions = Array.from({ length: 4 }, () => ({
-      ...group.session,
-      id: createBrowserSessionId(),
-      tabCatalog: undefined,
-      state: "ready" as const,
-    }));
-    const body = bootstrap([workspace], {
-      available: true,
-      profiles: [],
-      profileGrants: [],
-      placements: [],
-      workspaceTabRestoreVersion: 1,
-      workspaceTabs: [{ ...group, tabs: undefined }],
-      sessions,
-    });
-    const socket = new FakeSocket();
-    const sockets: FakeSocket[] = [];
-    const pending: { answer: () => void }[] = [];
-    const readSessions: string[] = [];
-    let hold = true;
-    let refuse = false;
-    let concurrent = 0;
-    let maximum = 0;
-    let taskReads = 0;
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      browserCatalogReads: "observed",
-      taskReads: "observed",
-      webSocketFactory: () => {
-        sockets.push(socket);
-        return socket;
-      },
-      fetch: async (input, init) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        if (url.pathname.endsWith("/auth.config") && refuse)
-          return json(
-            { error: { code: "unauthorized", message: "Sign in", retryable: false } },
-            401,
-          );
-        if (url.pathname.endsWith("/tasks.list")) {
-          taskReads++;
-          return json({
-            tasks: [],
-            readStates: [],
-            window: { byteCount: 0, itemCount: 0, hasMore: false, nextBefore: null, totalItems: 0 },
-          });
-        }
-        const isGroup = url.pathname.endsWith("/workspace.tabs.get");
-        if (isGroup || url.pathname.endsWith("/browser.tabs.get")) {
-          const sessionId = isGroup ? null : requiredString(rpcPayload(url, init), "sessionId");
-          if (sessionId) readSessions.push(sessionId);
-          if (options.failSession !== undefined && sessionId === sessions[options.failSession]!.id)
-            return json(
-              { error: { code: "internal", message: "Catalog unavailable", retryable: true } },
-              500,
-            );
-          if (!hold) return json(isGroup ? { ...group } : { generation: 1, revision: 1, tabs: [] });
-          concurrent++;
-          maximum = Math.max(maximum, concurrent);
-          try {
-            await new Promise<void>((answer) => pending.push({ answer }));
-            return json(isGroup ? { ...group } : { generation: 1, revision: 1, tabs: [] });
-          } finally {
-            concurrent--;
-          }
-        }
-        return json(body);
-      },
-    });
-    const loaded = client.load();
-    return {
-      body,
-      client,
-      group,
-      loaded,
-      pending,
-      readSessions,
-      sessions,
-      socket,
-      sockets,
-      maximum: () => maximum,
-      taskReads: () => taskReads,
-      release: () => {
-        hold = false;
-        for (const request of pending) request.answer();
-      },
-      unhold: () => {
-        hold = false;
-      },
-      refuse: () => {
-        refuse = true;
-      },
-    };
-  }
-
-  it("starts realtime and tasks before bounded catalog recovery and keeps newer catalogs", async () => {
-    const run = startup();
-    try {
-      await vi.waitFor(() => expect(run.pending.length).toBeGreaterThan(0));
-      expect(run.sockets).toHaveLength(1);
-      run.socket.open();
-      expect(parseSent(run.socket, 0)).toMatchObject({ type: "client.subscribe" });
-      expect(run.taskReads()).toBeGreaterThan(0);
-      expect(run.pending).toHaveLength(3);
-      // A newer lineage read and realtime catalog can win while recovery waits.
-      run.unhold();
-      await run.client.readWorkspaceTabs(run.group.id);
-      run.socket.receive({
-        type: "host.browser-tabs-changed",
-        sessionId: run.sessions[0]!.id,
-        catalog: { generation: 2, revision: 2, tabs: [] },
-      });
-      run.release();
-      await run.loaded;
-      expect(run.maximum()).toBe(3);
-      expect(new Set(run.readSessions)).toEqual(new Set(run.sessions.map(({ id }) => id)));
-      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2);
-      expect(run.client.getSnapshot().browserSessions[0]?.tabCatalog).toMatchObject({
-        generation: 2,
-        revision: 2,
-      });
-      expect(
-        run.client
-          .getSnapshot()
-          .browserSessions.slice(1)
-          .every((session) => session.tabCatalog?.revision === 1),
-      ).toBe(true);
-    } finally {
-      run.release();
-      await run.loaded.catch(() => undefined);
-      run.client.dispose();
-    }
-  });
-
-  it("recovers every other catalog when one read fails, then reports that failure", async () => {
-    const run = startup({ failSession: 0 });
-    try {
-      run.release();
-      const outcome = await run.loaded.then(
-        () => null,
-        (error: unknown) => error,
-      );
-      // Five reads in batches of three: the failure is in the first batch.
-      expect(new Set(run.readSessions)).toEqual(new Set(run.sessions.map(({ id }) => id)));
-      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(2);
-      const catalogs = run.client.getSnapshot().browserSessions.map(({ tabCatalog }) => tabCatalog);
-      expect(catalogs[0]).toBeUndefined();
-      expect(catalogs.slice(1).every((catalog) => catalog?.revision === 1)).toBe(true);
-      expect(outcome).toBeInstanceOf(Error);
-      expect((outcome as Error).message).toContain("Catalog unavailable");
-    } finally {
-      run.release();
-      await run.loaded.catch(() => undefined);
-      run.client.dispose();
-    }
-  });
-
-  it("discards recovery from before sign-out even when the same viewer signs in again", async () => {
-    const run = startup();
-    try {
-      await vi.waitFor(() => expect(run.pending.length).toBeGreaterThan(0));
-      run.refuse();
-      await run.client.rpc["auth.config"]({});
-      expect(run.client.getSnapshot().session).toBe("authentication-required");
-      run.body.browser.workspaceTabs = [{ ...run.group, revision: 0, tabs: [] }];
-      run.body.browser.sessions = run.sessions.map((session) => ({
-        ...session,
-        tabCatalog: { generation: 0, revision: 0, tabs: [] },
-      }));
-      run.unhold();
-      await run.client.reauthenticate();
-      run.release();
-      await run.loaded;
-      expect(run.client.getSnapshot().workspaceTabs?.[0]?.revision).toBe(0);
-      expect(
-        run.client
-          .getSnapshot()
-          .browserSessions.every((session) => session.tabCatalog?.revision === 0),
-      ).toBe(true);
-    } finally {
-      run.release();
-      await run.loaded.catch(() => undefined);
-      run.client.dispose();
-    }
-  });
-});
-
 describe("HttpHostClient hosted browser", () => {
   it.each(["profile", "workspace"] as const)(
     "revokes %s pixels from the catalog before authorization close, even after transport release",
@@ -7541,7 +7486,14 @@ describe("HttpHostClient hosted browser", () => {
         // The presenter remains subscribed while its offscreen card releases transport.
         release();
         notify.mockClear();
-        if (reason === "profile") browser.profiles = [];
+        if (reason === "profile") {
+          browser.profiles = [];
+          const workspaceSocket = sockets.find(
+            ({ url }) => !url.includes("/browser-sessions/"),
+          )!.socket;
+          workspaceSocket.open();
+          publishBrowser(workspaceSocket, { sessions: [] });
+        }
         if (reason === "workspace") {
           const workspaceSocket = sockets.find(
             ({ url }) => !url.includes("/browser-sessions/"),
@@ -7559,6 +7511,9 @@ describe("HttpHostClient hosted browser", () => {
         } else await client.refresh();
         expect(client.browserWatchFrames.invalidationKey!(sessionId, "page-1")).not.toBe(before);
         expect(notify).toHaveBeenCalled();
+        expect(
+          client.getSnapshot().workspaceTabs?.some((group) => group.session.id === sessionId),
+        ).toBe(false);
         unsubscribe();
       } finally {
         client.dispose();
@@ -7659,7 +7614,7 @@ describe("HttpHostClient hosted browser", () => {
       client.dispose();
     }
   });
-  it("reconciles browser Watch targets learned over HTTP while realtime is disconnected", async () => {
+  it("reconciles retained Watch targets when the carrier learns a tab", async () => {
     const workspace = makeWorkspace();
     const sessionId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("surface_http-outage");
@@ -7671,12 +7626,13 @@ describe("HttpHostClient hosted browser", () => {
       sessions: [],
     };
     const connections: string[] = [];
+    const realtime = new FakeSocket();
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace], browser)),
       refreshIntervalMs: 0,
       webSocketFactory: (url) => {
         connections.push(url);
-        return new FakeSocket();
+        return url.includes("/v1/realtime") ? realtime : new FakeSocket();
       },
     });
     try {
@@ -7715,7 +7671,8 @@ describe("HttpHostClient hosted browser", () => {
           },
         },
       ];
-      await client.refresh();
+      realtime.open();
+      publishBrowser(realtime, browser);
       expect(client.getSnapshot().connection).not.toBe("connected");
       expect(connections.filter((url) => url.includes("/browser-sessions/"))).toHaveLength(1);
       release();
@@ -8285,6 +8242,17 @@ describe("HttpHostClient hosted browser", () => {
     });
 
     await client.refresh();
+    const realtime = sockets.find(({ url }) => url.includes("/v1/realtime"))!.socket;
+    realtime.open();
+    publishBrowser(realtime, {
+      sessions: [
+        {
+          ...client.getSnapshot().workspaceTabs![0]!.session,
+          state: "failed",
+          updatedAt: "2026-08-09T20:00:01.000Z",
+        },
+      ],
+    });
     expect(socket?.closeEvents).toContainEqual({ code: 1000, reason: "Client closed" });
     expect(client.getSnapshot().browserSessions[0]).toMatchObject({
       dialog: null,
@@ -12917,6 +12885,8 @@ describe("HttpHostClient owner views", () => {
     const sockets: FakeSocket[] = [];
     const commands: Readonly<Record<string, unknown>>[] = [];
     const host = {
+      commandRows: true,
+      commandReplies: 0,
       bootstrap: async (): Promise<Response> =>
         json({ ...bootstrap([workspace]), machines: machines() }),
     };
@@ -12933,7 +12903,30 @@ describe("HttpHostClient owner views", () => {
             /^(computer\.view|browser\.tab)\./u.test(payload.type)
           ) {
             commands.push(payload);
-            return answer(payload);
+            const socket = sockets[0];
+            if (payload.type === "browser.tab.open" && socket?.readyState === 0) socket.open();
+            const response = await answer(payload);
+            host.commandReplies++;
+            if (
+              host.commandRows &&
+              payload.type === "browser.tab.open" &&
+              response.ok &&
+              socket?.readyState === 1
+            ) {
+              const result = asObject(await response.clone().json());
+              if (result.session) {
+                const session = HostedBrowserSessionSchema.parse(result.session);
+                publishBrowser(socket, {
+                  sessions: [
+                    {
+                      ...session,
+                      tabCatalog: result.catalog as NonNullable<typeof session.tabCatalog>,
+                    },
+                  ],
+                });
+              }
+            }
+            return response;
           }
         }
         return host.bootstrap();
@@ -13118,7 +13111,7 @@ describe("HttpHostClient owner views", () => {
         },
       );
       try {
-        const bootstrapAnswer = host.host.bootstrap;
+        host.host.commandRows = false;
         await host.client.load();
         const socket = host.connect();
         const handle = host.client.beginBrowserTabOpen(
@@ -13126,30 +13119,28 @@ describe("HttpHostClient owner views", () => {
           { idempotencyKey: "merge" },
         );
         const inventory = async () => {
-          host.host.bootstrap = async () => {
-            const body = await (await bootstrapAnswer()).json();
-            return json({
-              ...body,
-              browser: {
-                available: true,
-                sessions: [opened.session],
-                profiles: [],
-                placements: [],
-                profileGrants: [],
+          publishBrowser(socket, {
+            sessions: [
+              {
+                ...opened.session,
+                tabCatalog: {
+                  ...opened.catalog,
+                  revision: opened.catalog.revision + 1,
+                  inventoryRevision:
+                    (opened.catalog.inventoryRevision ?? opened.catalog.revision) + 1,
+                },
               },
-            });
-          };
-          await host.client.refresh();
-          socket.receive({
-            type: "host.browser-tabs-changed",
-            sessionId: opened.sessionId,
-            catalog: { ...opened.catalog, revision: opened.catalog.revision + 1 },
+            ],
           });
         };
         if (order === "inventory-first") await inventory();
         gate.resolve();
+        if (order === "response-first") {
+          await vi.waitFor(() => expect(host.host.commandReplies).toBe(1));
+          expect(host.client.getSnapshot().pendingBrowserTabs).toHaveLength(1);
+          await inventory();
+        }
         await handle.result;
-        if (order === "response-first") await inventory();
         expect(
           host.client
             .getSnapshot()
@@ -13206,7 +13197,11 @@ describe("HttpHostClient owner views", () => {
       await withTimeout(closed.promise, 2_000, {
         timeoutError: () => new Error("The exact late tab was never closed."),
       });
-      expect(close).toHaveBeenCalledExactlyOnceWith(opened.sessionId, opened.tabId, opened.catalog);
+      expect(close).toHaveBeenCalledExactlyOnceWith(
+        opened.sessionId,
+        opened.tabId,
+        expect.objectContaining({ inventoryRevision: opened.catalog.inventoryRevision }),
+      );
     } finally {
       gate.resolve();
       host.client.dispose();
@@ -13619,12 +13614,30 @@ describe("HttpHostClient owner views", () => {
     const host = ownerViewHost(
       () => [machine],
       async (command) => {
-        await gate.promise;
+        await withTimeout(gate.promise, 2_000, {
+          timeoutError: () => new Error("The domain command was not released."),
+        });
         if (command.type === "computer.view.open") return json({ view });
         return json({
           sessionId,
           tabId: "page-1",
-          catalog: { generation: 1, revision: 1, tabs: [] },
+          catalog: {
+            generation: 1,
+            revision: 1,
+            tabs: [
+              {
+                id: "page-1",
+                title: "Example",
+                site: "https://example.com",
+                iconRef: null,
+                order: 0,
+                openerId: null,
+                availability: "ready",
+                documentId: "document",
+                occupants: [],
+              },
+            ],
+          },
           browserStarted: true,
           session: {
             access: "read-write",
@@ -13756,7 +13769,12 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     const workspace = makeWorkspace();
     const group: WorkspaceTabLineage = {
       ...saved,
-      session: { ...saved.session, workspaceId: workspace.id },
+      session: {
+        ...saved.session,
+        workspaceId: workspace.id,
+        state: "closed",
+        tabCatalog: undefined,
+      },
       tabs: saved.tabs!.map((tab) => ({ ...tab, state: "suspended" })),
     };
     const tabId = group.tabs![0]!.id;
@@ -13841,8 +13859,18 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
         stop();
       };
     });
-    const success = (title?: string) =>
-      json({
+    const success = (title?: string) => {
+      if (title === undefined && client.getSnapshot().session === "authenticated")
+        publishBrowser(sockets.at(-1)!, {
+          workspaceTabs: [
+            {
+              ...group,
+              session: { ...group.session, state: "ready", tabCatalog: session.tabCatalog },
+              tabs: group.tabs!.map((tab) => ({ ...tab, state: "live" })),
+            },
+          ],
+        });
+      return json({
         type: "workspace.tab.activate",
         tabId,
         catalog: title
@@ -13859,6 +13887,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
           tabs: group.tabs!.map((tab) => ({ ...tab, state: "live" })),
         },
       });
+    };
     const waiting = () =>
       json(
         {
@@ -14041,7 +14070,9 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       expect(await pending).toBeNull();
       if (phase === "dispatching") f.requests[0]!.reply(f.success());
       await Promise.resolve();
-      expect(f.client.getSnapshot().browserSessions).toEqual([]);
+      expect(
+        f.client.getSnapshot().browserSessions.every((session) => session.state !== "ready"),
+      ).toBe(true);
       expect(await f.client.activateWorkspaceTab(f.tabId)).toBeNull();
     },
   );
@@ -14054,6 +14085,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
         const pending = f.client.activateWorkspaceTab(f.tabId);
         if (dispatching) await vi.waitFor(() => expect(f.requests).toHaveLength(1));
         f.body.browser.workspaceTabs = [{ ...f.group, revision: f.group.revision + 2, tabs: [] }];
+        publishBrowser(f.sockets.at(-1)!, f.body.browser);
         await f.client.refresh();
         expect(await pending).toBeNull();
         if (dispatching) f.requests[0]!.reply(f.success("Closed tab late reply"));
@@ -14061,7 +14093,9 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
         expect(
           f.effects.some((snapshot) => snapshot.titles.includes("Closed tab late reply")),
         ).toBe(false);
-        expect(f.client.getSnapshot().browserSessions).toEqual([]);
+        expect(
+          f.client.getSnapshot().browserSessions.every((session) => session.state !== "ready"),
+        ).toBe(true);
         expect(f.client.getSnapshot().workspaceTabs![0]!.tabs).toEqual([]);
         expect(f.record("closed")).toMatchObject({ subscriptions: 0, pending: [] });
       } finally {
@@ -14125,6 +14159,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
             },
           },
         ];
+        publishBrowser(f.sockets.at(-1)!, f.body.browser);
         await f.client.refresh();
         expect(await pending).toBeNull();
         expect(
@@ -14180,14 +14215,11 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       });
       const { tabs: _tabs, ...bounded } = f.group;
       f.body.browser.workspaceTabs = [bounded];
-      const release = f.holdRead();
-      const refresh = f.client.refresh();
-      await vi.waitFor(() =>
-        expect(f.client.getSnapshot().workspaceTabs![0]!.tabs).toBeUndefined(),
-      );
+      await f.client.refresh();
+      expect(
+        f.client.getSnapshot().workspaceTabs![0]!.tabs?.some((tab) => tab.id === f.tabId),
+      ).toBe(true);
       expect(f.record("tabs omitted").pending).toEqual([f.tabId]);
-      release();
-      await refresh;
       await f.ready(true);
       await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       f.requests[0]!.reply(f.success());
@@ -14841,34 +14873,18 @@ describe("realtime protocol recovery journey", () => {
     }
   });
 
-  it("drops an unreadable tab catalog with the socket up, and rereads once however many follow", async () => {
+  it("ignores unreadable legacy catalogs without rereading bootstrap", async () => {
     const f = await synchronizedClient();
     try {
-      const socket = f.sockets[0]!;
-      const frame = {
-        type: "host.browser-tabs-changed",
-        sessionId: "bsn_00000000-0000-4000-8000-000000000001",
-        catalog: { generation: -1, revision: 1, tabs: [] },
-      };
       const reads = f.bootstrapReads();
-      socket.receiveRaw(frame);
-      socket.receiveRaw(frame);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(f.bootstrapReads()).toBe(reads + 1);
-      expect(f.records()[0]).toMatchObject({
-        event: "host.realtime.frame-ignored",
-        envelopeType: "host.browser-tabs-changed",
-        issuePaths: ["catalog.generation"],
+      f.sockets[0]!.receiveRaw({
+        type: "host.browser-tabs-changed",
+        catalog: { generation: -1 },
+        sessionId: createBrowserSessionId(),
       });
-      await vi.advanceTimersByTimeAsync(15_000);
-      socket.receiveRaw(frame);
       await vi.advanceTimersByTimeAsync(0);
-      expect(f.bootstrapReads()).toBe(reads + 2);
-      socket.receiveRaw({ type: "host.events", events: [stateEvent(f, "11", "running")] });
-      expect(f.acknowledged().at(-1)).toBe("11");
-      expect(socket.closeEvents).toEqual([]);
-      expect(f.sockets).toHaveLength(1);
-      expect(f.client.getSnapshot().connection).toBe("connected");
+      expect(f.bootstrapReads()).toBe(reads);
+      expect(f.sockets[0]!.closeEvents).toEqual([]);
     } finally {
       f.client.dispose();
     }
@@ -15175,12 +15191,9 @@ describe("realtime protocol recovery journey", () => {
         ],
       });
       const lost = {
-        type: "host.browser-tabs-changed",
-        catalog: { generation: -1, revision: 1, tabs: [] },
-        sessionId,
+        type: "host.computer-presence",
+        sessions: "unreadable",
       };
-      const catalogRevision = (f: Synchronized) =>
-        f.client.getSnapshot().browserSessions[0]?.tabCatalog?.revision;
 
       async function losing(reads: Parameters<typeof synchronizedClient>[0] = {}) {
         let revision = 1;
@@ -15201,13 +15214,11 @@ describe("realtime protocol recovery journey", () => {
       it("owes one read at the end of the window for all of them, with no poll to fall back on", async () => {
         const f = await losing();
         try {
-          expect(catalogRevision(f)).toBe(1);
           const reads = f.bootstrapReads();
           await vi.advanceTimersByTimeAsync(14_999);
           expect(f.bootstrapReads()).toBe(reads);
           await vi.advanceTimersByTimeAsync(1);
           expect(f.bootstrapReads()).toBe(reads + 1);
-          expect(catalogRevision(f)).toBe(2);
           await vi.advanceTimersByTimeAsync(60_000);
           expect(f.bootstrapReads()).toBe(reads + 1);
         } finally {
@@ -15408,45 +15419,6 @@ describe("realtime protocol recovery journey", () => {
       }
     });
 
-    it("brings back the tab catalog and presence a dropped frame carried", async () => {
-      const tab = {
-        availability: "ready",
-        documentId: null,
-        iconRef: null,
-        id: "page-1",
-        occupants: [],
-        openerId: null,
-        order: 0,
-        site: "https://example.com",
-        title: "Example",
-      };
-      const catalog = (revision: number) => ({ generation: 1, revision, tabs: [tab] });
-      let fields: Record<string, unknown> = { tabCatalog: catalog(1) };
-      const f = await synchronizedClient({
-        hostBrowser: (workspace) => browserWith([session(workspace, fields)]),
-      });
-      try {
-        fields = {
-          acting: true,
-          page: { title: "Example", url: "https://example.com" },
-          tabCatalog: catalog(2),
-        };
-        f.sockets[0]!.receiveRaw({
-          type: "host.browser-tabs-changed",
-          catalog: { ...catalog(2), generation: -1 },
-          sessionId,
-        });
-        await vi.advanceTimersByTimeAsync(0);
-        expect(f.client.getSnapshot().browserSessions[0]).toMatchObject({
-          acting: true,
-          page: { url: "https://example.com" },
-          tabCatalog: { revision: 2 },
-        });
-      } finally {
-        f.client.dispose();
-      }
-    });
-
     it.each([
       [
         "host.machine.access.session.started",
@@ -15586,6 +15558,38 @@ class FakeSocket implements WebSocketClient {
   }
 }
 
+function publishBrowser(socket: FakeSocket, input: Partial<HostedBrowserBootstrap>) {
+  const { groups: _groups, tabs: _tabs, ...browser } = input;
+  const prefix = browserBootstrapWithRows({
+    available: true,
+    profileGrants: [],
+    profiles: [],
+    placements: [],
+    sessions: [],
+    ...browser,
+  });
+  const send = <Row extends { id: string }>(
+    rows: Row[],
+    envelope: (stream: unknown) => unknown,
+  ) => {
+    const records = new Map(rows.map((row) => [row.id, row]));
+    const publisher = new KeyedStreamPublisher({
+      ids: () => records.keys(),
+      read: (id) => records.get(id),
+      meta: () => ({}),
+      targetBytes: 16 * 1024,
+      envelopeBytes: 200,
+    });
+    for (let frame = publisher.next(); frame; frame = publisher.next()) {
+      socket.receiveRaw(envelope(frame));
+      publisher.settled(frame, true);
+    }
+  };
+  send(prefix.groups!.rows, (stream) => ({ type: "host.browser-groups", stream }));
+  for (const group of prefix.tabs!)
+    send(group.rows, (stream) => ({ type: "host.browser-tabs", groupId: group.groupId, stream }));
+}
+
 function bootstrap(
   workspaces: WorkspaceView[],
   browser: HostedBrowserBootstrap = {
@@ -15598,7 +15602,7 @@ function bootstrap(
 ) {
   return {
     notificationPreferences: preferencesForWorkspaces(workspaces),
-    browser,
+    browser: browserBootstrapWithRows(browser),
     deploymentId: "dep_00000000-0000-4000-8000-000000000001",
     deploymentShape: {
       defaultWorkspaceBacking: "local-directory" as const,
@@ -17402,125 +17406,6 @@ describe("a Run's current place", () => {
       client.dispose();
     }
   });
-});
-
-it("orders bootstrap session state by read freshness and Host update time, including shutdown and restart", async () => {
-  const workspace = makeWorkspace(),
-    id = createBrowserSessionId();
-  const tab = BrowserSurfaceIdSchema.parse("state-freshness-tab");
-  const session = HostedBrowserBootstrapSchema.parse({
-    available: true,
-    placements: [],
-    profiles: [],
-    profileGrants: [],
-    sessions: [
-      {
-        id,
-        workspaceId: workspace.id,
-        runtimeId: "runtime",
-        profileId: null,
-        placement: { kind: "runner", runnerId },
-        origin: "workspace",
-        access: "read-write",
-        state: "starting",
-        createdAt: now,
-        updatedAt: now,
-        attachedRunIds: [],
-        tabCatalog: {
-          generation: 1,
-          revision: 1,
-          tabs: [
-            {
-              id: tab,
-              title: "Page",
-              site: "https://example.com",
-              iconRef: null,
-              order: 0,
-              openerId: null,
-              availability: "ready",
-              occupants: [],
-            },
-          ],
-        },
-      },
-    ],
-  }).sessions[0]!;
-  let body = bootstrap([workspace], {
-    available: true,
-    placements: [],
-    profiles: [],
-    profileGrants: [],
-    sessions: [session],
-  });
-  let held: ReturnType<typeof Promise.withResolvers<Response>> | null = null;
-  const asked = Promise.withResolvers<void>();
-  const sockets: FakeSocket[] = [];
-  const client = createHttpHostClient({
-    refreshIntervalMs: 0,
-    prefetchHome: false,
-    capabilities: [],
-    webSocketFactory: () => {
-      const socket = new FakeSocket();
-      sockets.push(socket);
-      return socket;
-    },
-    fetch: async () => {
-      if (held) {
-        asked.resolve();
-        return held.promise;
-      }
-      return json(body);
-    },
-  });
-  let release: (() => void) | undefined;
-  try {
-    await client.load();
-    release = client.retainBrowserViewer(id);
-    const viewer = sockets.at(-1)!;
-    body = {
-      ...body,
-      browser: {
-        ...body.browser,
-        sessions: [{ ...session, updatedAt: "2026-08-09T20:00:01.000Z" }],
-      },
-    };
-    held = Promise.withResolvers<Response>();
-    const refresh = client.refresh();
-    await withTimeout(asked.promise, 1000, {
-      timeoutError: () => new Error("Bootstrap read never began"),
-    });
-    viewer.receiveRaw({
-      type: "browser.snapshot",
-      sessionId: id,
-      state: "ready",
-      access: "read-write",
-      targetedStreamingVersion: 1,
-      dialog: null,
-      surfaces: [{ id: tab, active: true, title: "Page", url: "https://example.com" }],
-    });
-    expect(client.getSnapshot().browserSessions[0]?.state).toBe("ready");
-    held.resolve(json(body));
-    await refresh;
-    held = null;
-    expect(client.getSnapshot().browserSessions[0]?.state).toBe("ready");
-    await client.refresh();
-    expect(client.getSnapshot().browserSessions[0]?.state).toBe("ready");
-    for (const [index, state] of (["closing", "closed", "starting", "ready"] as const).entries()) {
-      body = {
-        ...body,
-        browser: {
-          ...body.browser,
-          sessions: [{ ...session, state, updatedAt: `2026-08-09T20:00:0${index + 2}.000Z` }],
-        },
-      };
-      await client.refresh();
-      expect(client.getSnapshot().browserSessions[0]?.state).toBe(state);
-    }
-  } finally {
-    held?.resolve(json(body));
-    release?.();
-    client.dispose();
-  }
 });
 
 describe("app tab bootstrap races", () => {

@@ -28,11 +28,8 @@ starts a second browser. Tickets, native creation and navigation are never blind
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
 
-An agent often works several tabs at once, and its activity arrives once per page command. A tab
-change therefore reaches each connected viewer as that viewer's lineage, which a client applies
-without rereading its bootstrap, and a closed lineage keeps its revision so a slower earlier one
-cannot reopen it. A Run's place history moves at most once a second and always lands where the Run
-settles; its usage is written once per new tab or page, not on every switch between them.
+A Run's place history moves at most once a second and always lands where the Run settles; its usage
+is written once per new tab or page, not on every switch between them.
 
 ## Agent access and input
 

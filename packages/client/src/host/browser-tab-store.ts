@@ -19,6 +19,7 @@ class Rows<Row extends { id: string }> {
   readonly #removed: ((id: string) => void) | undefined;
   #changes: KeyedStreamChanges | null = null;
   #whole = false;
+  revision = 0;
   constructor(
     order: (a: Row, b: Row) => number,
     changed: Listener,
@@ -56,8 +57,10 @@ class Rows<Row extends { id: string }> {
     if (
       listChanged ||
       (change && (change.added.length || change.updated.length || change.removed.length))
-    )
+    ) {
+      this.revision++;
       this.#changed();
+    }
   }
   apply(message: KeyedStreamMessage<Row, Meta>) {
     const result = this.receiver.apply(message);
@@ -147,6 +150,7 @@ export class BrowserTabStore {
   groups = (): List => this.#groups.list;
   group = (id: string) => this.#groups.receiver.rows.get(id);
   tabs = (groupId: string): List => this.#tabs.get(groupId)?.list ?? empty;
+  tabRevision = (groupId: string) => this.#tabs.get(groupId)?.revision ?? 0;
   tab = (groupId: string, tabId: string) => this.#tabs.get(groupId)?.receiver.rows.get(tabId);
   subscribe = (listener: Listener) => subscribe(this.#listeners, listener);
   subscribeGroups = (listener: Listener) => subscribe(this.#groups.listeners, listener);

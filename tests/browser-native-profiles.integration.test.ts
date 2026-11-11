@@ -283,8 +283,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
       type: "browser.tab.close",
       sessionId: opened.sessionId,
       surfaceId: opened.tabId,
-      expectedGeneration: catalog.data.generation,
-      expectedRevision: catalog.data.inventoryRevision ?? catalog.data.revision,
+      inventoryRevision: catalog.data.inventoryRevision ?? catalog.data.revision,
       idempotencyKey: randomUUID(),
     });
     expect(reply.ok, `Last tab failed to close: ${JSON.stringify(reply)}`).toBe(true);
@@ -456,7 +455,7 @@ it("advertises exact prepared storage through the standalone browser-only Runner
   const bridge = new LocalBrowserRuntimeBridge(browser);
   const capabilities = await bridge.capabilities();
   expect(capabilities).toEqual({
-    wireVersion: 1,
+    wireVersion: 2,
     localProfileStorage: { storageInstanceId: expect.any(String), engine: "chromium" },
   });
   await vi.waitFor(

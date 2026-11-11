@@ -1407,7 +1407,7 @@ function WorkspaceKeys({
             session.state !== "closed" &&
             session.state !== "failed",
         );
-        if (!group?.tabs && !legacy && hostClient.readWorkspaceTabs)
+        if ((!group?.tabs || group.whole === false) && !legacy && hostClient.readWorkspaceTabs)
           group = (await hostClient.readWorkspaceTabs(remembered.sessionId)) ?? undefined;
         if (cancelled) return;
         const params = new URLSearchParams(search);

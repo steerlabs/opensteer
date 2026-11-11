@@ -1,4 +1,4 @@
-import type { WorkspaceTabLineage } from "@opensteer/protocol";
+import type { WorkspaceTabLineage } from "./client.js";
 import type { HostClient, HostSnapshot, WorkspaceTabActivationOptions } from "./client.js";
 import { browserPlaceUnavailableReason } from "./places.js";
 import { browserIdentity } from "./start-page-model.js";
@@ -17,7 +17,8 @@ interface ActivationPorts {
   readonly snapshot: () => HostSnapshot;
   readonly subscribe: (listener: () => void) => () => void;
   readonly dispatch: (tabId: string) => Promise<ActivationResult>;
-  readonly apply: (result: ActivationResult) => void;
+  readonly apply?: (result: ActivationResult) => void;
+  readonly resolved?: (result: ActivationResult) => boolean;
   readonly changed: (ids: readonly string[]) => void;
 }
 
@@ -76,7 +77,10 @@ export class WorkspaceTabActivations {
         (value) => value.runnerId === lineage?.session.placement.runnerId,
       );
       // Omitted lineages and byte-bounded tab arrays cannot prove a close.
-      const closed = !!current?.tabs && !current.tabs.some((tab) => tab.id === tabId);
+      const closed =
+        current?.whole !== false &&
+        !!current?.tabs &&
+        !current.tabs.some((tab) => tab.id === tabId);
       const reason = lineage
         ? browserPlaceUnavailableReason(
             browserIdentity(lineage.session.profileId, snapshot.browserProfiles),
@@ -150,7 +154,7 @@ export class WorkspaceTabActivations {
       if (changed) revision++;
       state = next;
       if (state.ended) finish(null);
-      else if (changed) wake?.();
+      else wake?.();
     };
     unsubscribe = this.#ports.subscribe(observe);
     this.#ports.changed(this.#ids);
@@ -190,7 +194,13 @@ export class WorkspaceTabActivations {
         }
         observe();
         if (settled) return;
-        this.#ports.apply(result);
+        this.#ports.apply?.(result);
+        while (!settled && this.#ports.resolved?.(result) === false) {
+          await new Promise<void>((resume) => {
+            wake = resume;
+          });
+          wake = null;
+        }
         finish(result);
       }
     };

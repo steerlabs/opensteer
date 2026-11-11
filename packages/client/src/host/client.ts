@@ -75,7 +75,7 @@ import type {
   ThreadMessageWindow,
   WorkspaceFilePreviewMetadata,
   WorkspaceTabActivateResultSchema,
-  WorkspaceTabLineage,
+  WorkspaceTabLineage as ProtocolWorkspaceTabLineage,
   WorkspaceTabReopenResultSchema,
   WorkspaceView,
 } from "@opensteer/protocol";
@@ -109,7 +109,7 @@ import type { NativeViewerSource } from "./surfaces.js";
 
 import type {
   BrowserContextCandidate,
-  BrowserTabCatalog,
+  BrowserTabSummary as BrowserCatalogTab,
   BrowserTabCloseResult,
   BrowserTabOpenResult,
   PlaceIdentity,
@@ -736,6 +736,15 @@ export interface BrowserSessionUseSummary {
   /** The page's origin, never its path or query. */
   readonly pageSite?: string | null | undefined;
 }
+
+export interface BrowserTabCatalog {
+  readonly generation: number;
+  readonly revision: number;
+  readonly inventoryRevision?: number | undefined;
+  readonly tabs: BrowserCatalogTab[];
+}
+
+export type WorkspaceTabLineage = ProtocolWorkspaceTabLineage & { readonly whole?: boolean };
 
 export interface BrowserSessionSummary {
   /** Host freshness for bootstrap lifecycle reconciliation. */

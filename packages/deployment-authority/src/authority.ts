@@ -239,7 +239,8 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 // epoch-49 client would offer only decline or wait for an approval on that Mac.
 // Epoch 51 gives each person a permanent Voice Thread. An epoch-50 client refuses
 // `voice.heard` on its Workspace channel, and an epoch-50 Host has no `voice.open`.
-export const hostApiVersion = 51;
+// Epoch 52 adopts browser row streams and fences tab close by inventory revision.
+export const hostApiVersion = 52;
 
 /**
  * Optional features a Host may or may not serve. A capability is never a

@@ -524,7 +524,12 @@ export function placeDestinationEnded(
           group.session.id === destination.sessionId ||
           group.tabs?.some((tab) => tab.id === destination.tabId),
       );
-      if (group) return !!group.tabs && !group.tabs.some((tab) => tab.id === destination.tabId);
+      if (group)
+        return (
+          group.whole !== false &&
+          !!group.tabs &&
+          !group.tabs.some((tab) => tab.id === destination.tabId)
+        );
       // A bounded catalog cannot prove that an unlisted durable group ended.
       if (
         !session ||

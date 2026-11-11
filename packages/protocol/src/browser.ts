@@ -2043,8 +2043,7 @@ export const BrowserTabCloseCommandSchema = z.strictObject({
   type: z.literal("browser.tab.close"),
   sessionId: BrowserSessionIdSchema,
   surfaceId: BrowserSurfaceIdSchema,
-  expectedGeneration: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   idempotencyKey: z.string().min(1).max(255),
 });
 export const BrowserTabCloseResultSchema = z.object({

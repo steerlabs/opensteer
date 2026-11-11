@@ -2210,10 +2210,7 @@ export class BrowserService {
           code: "conflict",
           message: "The browser computer is unavailable or needs an update.",
         });
-      if (
-        catalog.generation !== command.expectedGeneration ||
-        (catalog.inventoryRevision ?? catalog.revision) !== command.expectedRevision
-      )
+      if ((catalog.inventoryRevision ?? catalog.revision) !== command.inventoryRevision)
         throw new OpensteerError({
           code: "conflict",
           reason: staleBrowserTabInventoryReason,

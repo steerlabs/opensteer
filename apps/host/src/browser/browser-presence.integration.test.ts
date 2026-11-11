@@ -1068,7 +1068,7 @@ integration("Browser presence and conversation usage", () => {
     ).toBe(false);
   }, 60_000);
 
-  it("cold-loads all 100 × 64 tab identities and 64 × 16 occupants after missing deferred notices", async () => {
+  it("cold-loads all 100 × 64 tab identities and 64 × 16 occupants through the carrier", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
@@ -1188,18 +1188,13 @@ integration("Browser presence and conversation usage", () => {
     const omitted = await host.runtime.browser.bootstrap(host.ownerId);
     expect(omitted.sessions).toHaveLength(100);
     expect(omitted.sessions.every((session) => session.tabCatalog === undefined)).toBe(true);
-    // Let all coalesced notices go by before the cold client's realtime socket exists.
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const deliverComplete = Promise.withResolvers<void>();
-    let holdComplete = false;
-    const client = await reader(host, 350, async (request) => {
-      if (
-        holdComplete &&
-        (request.url.includes("bootstrap.get") || request.url.includes("browser.tabs.get"))
-      )
-        await deliverComplete.promise;
-    });
+    const client = await reader(host, 350);
     cleanups.push(async () => client.dispose());
+    await client.waitForSnapshot(
+      (snapshot) =>
+        snapshot.browserSessions.length === 100 &&
+        snapshot.browserSessions.every((session) => session.tabCatalog?.tabs.length === 64),
+    );
     const loaded = client.getSnapshot().browserSessions;
     expect(loaded).toHaveLength(100);
     expect(loaded.every((session) => session.tabCatalog?.tabs.length === 64)).toBe(true);
@@ -1212,82 +1207,20 @@ integration("Browser presence and conversation usage", () => {
     const bytes = Buffer.byteLength(JSON.stringify(occupied));
     expect(bytes).toBeGreaterThan(128 * 1024);
     expect(client.requests.filter((request) => request.includes("browser.tabs.get"))).toHaveLength(
-      100,
+      0,
     );
-    for (const socket of client.sockets) {
-      if (socket.readyState !== WebSocket.OPEN)
-        await new Promise<void>((resolve) => socket.once("open", resolve));
-      await new Promise<void>((resolve) => {
-        socket.once("pong", () => resolve());
-        socket.ping();
-      });
-    }
-    // Capture both projections before publishing the older one. The first load
-    // has finished before the second query starts, so FIFO restoration cannot
-    // deadlock this delivery gate.
-    const partialCaptured = Promise.withResolvers<void>();
-    const publishPartial = Promise.withResolvers<void>();
-    const queryHoldings = host.store.listBrowserPlaceHoldings.bind(host.store);
-    const project = host.runtime.browser.catalogsForViewers.bind(host.runtime.browser);
-    const holdingsSpy = vi.spyOn(host.store, "listBrowserPlaceHoldings");
-    const projectionSpy = vi.spyOn(host.runtime.browser, "catalogsForViewers");
-    let partialRevision = -1;
-    let capture = true;
-    holdingsSpy.mockImplementation(async (id) => {
-      const rows = await queryHoldings(id);
-      return id === sessionId && capture ? rows.slice(0, 512) : rows;
-    });
-    projectionSpy.mockImplementation(async (id) => {
-      const catalogs = await project(id);
-      if (id === sessionId && capture) {
-        capture = false;
-        const partial = catalogs.get(host.ownerId)!;
-        expect(partial.tabs.every((tab) => tab.occupants.length === 8)).toBe(true);
-        partialRevision = partial.revision;
-        partialCaptured.resolve();
-        await publishPartial.promise;
-      } else if (id === sessionId) {
-        await deliverComplete.promise;
-      }
-      return catalogs;
-    });
-    try {
-      holdComplete = true;
-      runtime.publishTabs(
-        {
-          surfaces: surfaces.map((surface) => ({ ...surface, title: "Revised" })),
-        },
-        sessionId,
-      );
-      await withTimeout(partialCaptured.promise, 5_000, {
-        timeoutError: () => new Error("Partial projection was not captured"),
-      });
-      const complete = await host.runtime.browser.readTabCatalog(host.ownerId, sessionId);
-      expect(complete.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
-      publishPartial.resolve();
-      await client.waitForSnapshot(
-        (snapshot) =>
-          snapshot.browserSessions
-            .find((session) => session.id === sessionId)
-            ?.tabCatalog?.tabs.every((tab) => tab.occupants.length === 8) === true,
-      );
-      holdComplete = false;
-      deliverComplete.resolve();
-      await client.refresh();
-      const converged = client
-        .getSnapshot()
-        .browserSessions.find((session) => session.id === sessionId)!.tabCatalog!;
-      expect(converged.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
-      expect(complete.revision).toBeGreaterThan(partialRevision);
-      expect((await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).revision).toBe(
-        complete.revision,
-      );
-    } finally {
-      publishPartial.resolve();
-      deliverComplete.resolve();
-      projectionSpy.mockRestore();
-      holdingsSpy.mockRestore();
-    }
+    runtime.publishTabs(
+      { surfaces: surfaces.map((surface) => ({ ...surface, title: "Revised" })) },
+      sessionId,
+    );
+    await client.waitForSnapshot(
+      (snapshot) =>
+        snapshot.browserSessions
+          .find((session) => session.id === sessionId)
+          ?.tabCatalog?.tabs.every(
+            (tab) => tab.title === "Revised" && tab.occupants.length === 16,
+          ) === true,
+    );
     const outsider = await signUpUser(host, {
       email: "maximum-stranger@example.com",
       password: "maximum-stranger-password",
@@ -1525,80 +1458,20 @@ integration("Browser presence and conversation usage", () => {
     cleanups.push(async () => liveClient.dispose());
     liveClient.activateWorkspace(run.workspaceId);
     await until(() => (liveClient.getSnapshot().connection === "connected" ? true : undefined));
-    const projected = Promise.withResolvers<NonNullable<typeof initial>>();
-    const releaseProjection = Promise.withResolvers<void>();
-    const projectionJoined = Promise.withResolvers<void>();
-    const project = host.runtime.browser.catalogsForViewers.bind(host.runtime.browser);
-    let holdProjection = true;
-    const projection = vi
-      .spyOn(host.runtime.browser, "catalogsForViewers")
-      .mockImplementation(async (id) => {
-        const catalogs = await project(id);
-        if (id === sessionId && holdProjection) {
-          holdProjection = false;
-          projected.resolve(catalogs.get(host.ownerId)!);
-          try {
-            await releaseProjection.promise;
-          } finally {
-            projectionJoined.resolve();
-          }
-        }
-        return catalogs;
-      });
-    try {
-      runtime.publishTabs({
-        surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
-      });
-      const older = await withTimeout(projected.promise, 5_000, {
-        timeoutError: () => new Error("Host did not project the deferred catalog"),
-      });
-      runtime.publishTabs({ surfaces });
-      await liveClient.waitForSnapshot((snapshot) =>
-        snapshot.browserSessions.some(
-          (session) =>
-            session.id === sessionId &&
-            session.tabCatalog !== undefined &&
-            session.tabCatalog.generation === older.generation &&
-            session.tabCatalog.revision > older.revision,
-        ),
-      );
-      const newer = liveClient
-        .getSnapshot()
-        .browserSessions.find((session) => session.id === sessionId)!.tabCatalog;
-      const realtime = liveClient.sockets.find((socket) => socket.url.includes("/v1/realtime"))!;
-      const received = Promise.withResolvers<void>();
-      const observe = (raw: WebSocket.RawData) => {
-        const message = JSON.parse(raw.toString()) as {
-          type: string;
-          catalog?: { revision: number };
-        };
-        if (
-          message.type === "host.browser-tabs-changed" &&
-          message.catalog?.revision === older.revision
-        )
-          received.resolve();
-      };
-      realtime.on("message", observe);
-      try {
-        releaseProjection.resolve();
-        await withTimeout(received.promise, 5_000, {
-          timeoutError: () => new Error("Host did not deliver the older catalog"),
-        });
-        expect(
-          liveClient.getSnapshot().browserSessions.find((session) => session.id === sessionId)
-            ?.tabCatalog,
-        ).toEqual(newer);
-      } finally {
-        realtime.off("message", observe);
-      }
-    } finally {
-      releaseProjection.resolve();
-      if (!holdProjection)
-        await withTimeout(projectionJoined.promise, 5_000, {
-          timeoutError: () => new Error("Deferred catalog projection did not join"),
-        });
-      projection.mockRestore();
-    }
+    runtime.publishTabs({
+      surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
+    });
+    await liveClient.waitForSnapshot(
+      (snapshot) =>
+        snapshot.browserSessions.find((session) => session.id === sessionId)?.tabCatalog?.tabs[0]
+          ?.title === "X deferred",
+    );
+    runtime.publishTabs({ surfaces });
+    await liveClient.waitForSnapshot(
+      (snapshot) =>
+        snapshot.browserSessions.find((session) => session.id === sessionId)?.tabCatalog?.tabs[0]
+          ?.title === "X",
+    );
     const releaseWatch = liveClient.retainBrowserWatch(sessionId, "page-y");
     cleanups.push(async () => releaseWatch());
     await until(() =>
@@ -1757,9 +1630,12 @@ integration("Browser presence and conversation usage", () => {
       snapshot.browserSessions.some(
         (session) =>
           session.id === sessionId &&
-          session.tabCatalog !== undefined &&
-          session.tabCatalog.generation === occupied?.generation &&
-          session.tabCatalog.revision === occupied?.revision,
+          session.tabCatalog?.tabs
+            .find((tab) => tab.id === "page-y")
+            ?.occupants.some(
+              (occupant) =>
+                occupant.threadId === run.threadId && occupant.holding && occupant.acting,
+            ) === true,
       ),
     );
     const latestBeforeExpiry = await host.runtime.browser.latestPlaces(host.ownerId);
@@ -2774,8 +2650,7 @@ integration("Browser presence and conversation usage", () => {
     );
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed", beforeClose)[0]);
     await until(() =>
-      device.getSnapshot().browserSessions.find((session) => session.id === sessionId)?.state ===
-      "closed"
+      !device.getSnapshot().browserSessions.some((session) => session.id === sessionId)
         ? true
         : undefined,
     );

@@ -3554,9 +3554,11 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       if (!client.places) return unsupportedMockRpc();
       return rpcSuccess(
         await client.places.close(command.sessionId, command.surfaceId, {
-          generation: command.expectedGeneration,
-          revision: command.expectedRevision,
-          inventoryRevision: command.expectedRevision,
+          generation:
+            client.getSnapshot().browserSessions.find((session) => session.id === command.sessionId)
+              ?.tabCatalog?.generation ?? 0,
+          revision: command.inventoryRevision,
+          inventoryRevision: command.inventoryRevision,
         }),
       );
     }

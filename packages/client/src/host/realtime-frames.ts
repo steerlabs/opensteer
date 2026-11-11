@@ -26,6 +26,7 @@ export const healthySocketMs = 30_000;
  */
 export type RealtimeFrameLoss =
   | "bootstrap"
+  | "browser-stream"
   | "browser-history"
   | "browser-usage"
   | "machines"
@@ -53,13 +54,12 @@ const realtimeFrameLosses = {
   "host.connections-changed": "snapshot",
   "host.plugins-changed": "snapshot",
 
-  // The current client never attaches these streams; adoption installs their resync handler.
-  "host.browser-groups": "none",
-  "host.browser-tabs": "none",
-  "host.browser-presence": "bootstrap",
+  "host.browser-groups": "browser-stream",
+  "host.browser-tabs": "browser-stream",
+  "host.browser-presence": "none",
   "host.app-tabs-changed": "bootstrap",
   "host.browser-sessions-changed": "bootstrap",
-  "host.browser-tabs-changed": "bootstrap",
+  "host.browser-tabs-changed": "none",
   "host.computer-presence": "bootstrap",
   "host.computer-view.changed": "bootstrap",
   "host.computer-view.removed": "bootstrap",

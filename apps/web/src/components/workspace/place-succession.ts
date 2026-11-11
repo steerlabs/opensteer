@@ -113,7 +113,7 @@ export function usePlaceSuccession(hostClient: HostClient): void {
       !known ||
       !selectedSessionId ||
       source.workspaceTabRestoreVersion !== 1 ||
-      group?.tabs ||
+      (group?.tabs && group.whole !== false) ||
       (!group && legacy) ||
       !hostClient.readWorkspaceTabs
     )

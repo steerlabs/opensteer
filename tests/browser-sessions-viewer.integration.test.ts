@@ -96,8 +96,7 @@ run("Browser Sessions through a whole deployment", () => {
       type: "browser.tab.close",
       sessionId,
       surfaceId: first.data.tabId,
-      expectedGeneration: first.data.catalog.generation,
-      expectedRevision: first.data.catalog.inventoryRevision!,
+      inventoryRevision: first.data.catalog.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
     if (!closed.ok || closed.data.type !== "browser.tab.close")
@@ -139,8 +138,7 @@ run("Browser Sessions through a whole deployment", () => {
         type: "browser.tab.close",
         sessionId,
         surfaceId: last.id,
-        expectedGeneration: closed.data.catalog.generation,
-        expectedRevision: closed.data.catalog.inventoryRevision!,
+        inventoryRevision: closed.data.catalog.inventoryRevision!,
         idempotencyKey: randomUUID(),
       }),
       stack.api["commands.dispatch"]({ ...command, idempotencyKey: randomUUID() }),
@@ -291,8 +289,7 @@ run("Browser Sessions through a whole deployment", () => {
       type: "browser.tab.close",
       sessionId,
       surfaceId: tabId,
-      expectedGeneration: current.generation,
-      expectedRevision: current.inventoryRevision!,
+      inventoryRevision: current.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
     expect(closed.ok).toBe(true);
@@ -427,8 +424,7 @@ run("Browser Sessions through a whole deployment", () => {
         type: "browser.tab.close",
         sessionId,
         surfaceId,
-        expectedGeneration: current.generation,
-        expectedRevision: current.inventoryRevision!,
+        inventoryRevision: current.inventoryRevision!,
         idempotencyKey: randomUUID(),
       });
       if (!closed.ok || closed.data.type !== "browser.tab.close")
@@ -441,16 +437,14 @@ run("Browser Sessions through a whole deployment", () => {
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[1]!,
-      expectedGeneration: displayed.generation,
-      expectedRevision: displayed.inventoryRevision!,
+      inventoryRevision: displayed.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
     const firstDecision = await stack.api["commands.dispatch"]({
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[0]!,
-      expectedGeneration: displayed.generation,
-      expectedRevision: displayed.inventoryRevision!,
+      inventoryRevision: displayed.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
     expect(firstDecision).toMatchObject({ ok: false, error: { reason: "stale-tab-inventory" } });
@@ -464,8 +458,7 @@ run("Browser Sessions through a whole deployment", () => {
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[0]!,
-      expectedGeneration: surviving.data.generation,
-      expectedRevision: surviving.data.inventoryRevision!,
+      inventoryRevision: surviving.data.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
     expect(secondDecision).toMatchObject({ ok: true, data: { outcome: "session-closed" } });
@@ -1466,7 +1459,7 @@ run("Browser Sessions through a whole deployment", () => {
     };
     const current = await journey();
     expect(current.browserModule).toEqual({
-      wireVersion: 1,
+      wireVersion: 2,
       localProfileStorage: {
         storageInstanceId: "20000000-0000-4000-8000-000000000001",
         engine: "chromium",
