@@ -138,7 +138,7 @@ export const support: Scene = {
       api.ask({
         title: "Refund $480 to Northwind?",
         body: "Duplicate charge on Nov 3, Visa ••4242. Then send your reply to Dana.",
-        allowed: "Allowed with Face ID",
+        allowed: "Allowed",
         denied: "Not allowed. Nothing was refunded.",
         spark: "st-go",
         onAllow: () => refunded(api),
