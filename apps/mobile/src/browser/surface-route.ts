@@ -6,7 +6,7 @@ import {
   nativeViewerSource,
   type BrowserSessionSummary,
   type TaskSurfaceDestination,
-  type WorkspaceSurfaceDestination,
+  type SurfaceDestination,
 } from "@opensteer/client/host";
 import { AppIdSchema, type BrowserPageContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -21,7 +21,7 @@ import { isRecord } from "@opensteer/shared/isRecord";
  */
 type SurfacesScope =
   | { readonly scope?: undefined; readonly threadId: string }
-  | { readonly scope: "workspace"; readonly threadId?: undefined };
+  | { readonly scope: "tabs"; readonly threadId?: undefined };
 
 /** Exactly one tab, app or phone. Nothing but the route chooses it. */
 type SurfacesTarget =
@@ -86,7 +86,7 @@ export type SurfacesRoute = {
   SurfacesTarget;
 
 export type OpensteerAppDestination = Extract<
-  WorkspaceSurfaceDestination,
+  SurfaceDestination,
   { kind: "opensteer-app" }
 >;
 
@@ -100,14 +100,14 @@ export function surfaceRoute(
 }
 
 /** A tab, app or phone opened from Tabs or the sidebar, alone. */
-export function workspaceRoute(
+export function tabsRoute(
   deploymentId: string,
-  destination: WorkspaceSurfaceDestination,
+  destination: SurfaceDestination,
 ): SurfacesRoute {
-  return { deploymentId, scope: "workspace", ...targetParams(destination) };
+  return { deploymentId, scope: "tabs", ...targetParams(destination) };
 }
 
-function targetParams(destination: WorkspaceSurfaceDestination): SurfacesTarget {
+function targetParams(destination: SurfaceDestination): SurfacesTarget {
   if (destination.kind === "opensteer-app") return { appId: destination.appId };
   if (destination.kind === "browser")
     return { sessionId: destination.sessionId, tabId: destination.tabId };
@@ -140,7 +140,7 @@ interface TargetFields {
 }
 
 /** What a route names, or null for one that names nothing (a previous release's grid). */
-export function routeDestination(route: TargetFields): WorkspaceSurfaceDestination | null {
+export function routeDestination(route: TargetFields): SurfaceDestination | null {
   if (route.appId !== undefined)
     return AppIdSchema.safeParse(route.appId).success
       ? { appId: route.appId, kind: "opensteer-app" }
@@ -164,7 +164,7 @@ export function routeDestination(route: TargetFields): WorkspaceSurfaceDestinati
 }
 
 /** What a tabs route held in the stack names, read from its untyped params. */
-export function paramsDestination(params: unknown): WorkspaceSurfaceDestination | null {
+export function paramsDestination(params: unknown): SurfaceDestination | null {
   if (!isRecord(params)) return null;
   const text = (key: string) => {
     const value = params[key];
@@ -188,8 +188,8 @@ export function paramsDestination(params: unknown): WorkspaceSurfaceDestination 
 
 /** Whether two destinations name the same tab, the same task session or the same view. */
 export function sameDestination(
-  left: WorkspaceSurfaceDestination | null,
-  right: WorkspaceSurfaceDestination | null,
+  left: SurfaceDestination | null,
+  right: SurfaceDestination | null,
 ): boolean {
   if (left === null || right === null) return left === right;
   if (left.kind === "browser" || right.kind === "browser")
@@ -203,7 +203,7 @@ export function sameDestination(
 }
 
 function routeDestinationKey(
-  destination: Exclude<WorkspaceSurfaceDestination, { kind: "browser" }>,
+  destination: Exclude<SurfaceDestination, { kind: "browser" }>,
 ) {
   if (destination.kind === "opensteer-app") return [destination.kind, destination.appId];
   if (destination.kind === "phone") return [destination.kind, destination.machineId];

@@ -1,7 +1,7 @@
 import type {
   HostClient,
   NativeViewerSource,
-  WorkspaceSurfaceDestination,
+  SurfaceDestination,
 } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import {
@@ -19,7 +19,7 @@ import {
  */
 export function MacAppView(props: {
   readonly active: boolean;
-  readonly destination: Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>;
+  readonly destination: Extract<SurfaceDestination, { kind: "app" | "phone" }>;
   readonly hostClient: HostClient;
   /** The tab closed here: the page goes back. */
   readonly onClosed: () => void;

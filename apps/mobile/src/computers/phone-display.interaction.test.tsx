@@ -1234,7 +1234,7 @@ it("reopens an ended Mac view by app name and the same window, replacing its rou
     name: "WorkspaceBrowser",
     params: {
       deploymentId: "deployment",
-      scope: "workspace",
+      scope: "tabs",
       appKey: "com.apple.notes",
       machineId: "machine",
       viewId: "new-owner",

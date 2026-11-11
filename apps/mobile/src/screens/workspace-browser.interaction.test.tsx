@@ -423,7 +423,10 @@ vi.mock("../voice/controls.js", () => ({ VoiceDock: () => null }));
 vi.mock("../voice/use-voice-value.js", () => ({ useVoiceValue: () => false }));
 vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => state.hereId }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => null }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => null,
+}));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
 interface MenuOption {
   readonly disabled?: boolean;
@@ -1418,7 +1421,7 @@ describe("mobile pages", () => {
       { name: "Tabs" },
       {
         name: "WorkspaceBrowser",
-        params: { scope: "workspace", sessionId: "other", tabId: "page-1" },
+        params: { scope: "tabs", sessionId: "other", tabId: "page-1" },
       },
       { name: "WorkspaceBrowser", params: { sessionId: "chosen", tabId: "page-1" } },
     ];
@@ -1860,7 +1863,7 @@ describe("the page's bar", () => {
     const occupants = [{ acting: true, threadId: "thread-trip" }];
     const fromTask = openPage(occupants, { threadId: "thread-agent" });
     const fromTabs = openPage(occupants, {
-      scope: "workspace",
+      scope: "tabs",
       // A previous release's route from Tabs still named a conversation.
       threadId: "thread-agent",
     } as unknown as Partial<SurfacesRoute>);
@@ -1942,7 +1945,7 @@ describe("an app open as a tab", () => {
     const { render, route } = openApp();
     route.params = {
       deploymentId: "deployment-a",
-      scope: "workspace",
+      scope: "tabs",
       sessionId: "browser-child",
       tabId: "page-1",
     };
@@ -2052,7 +2055,7 @@ describe("an app open as a tab", () => {
       ...state.snapshot!,
       appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
     };
-    route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+    route.params = { deploymentId: "deployment-a", scope: "tabs", appId: nextId };
     render();
     expect(container.textContent).not.toContain("A refused.");
     expect(element(container, "Try again")).toBeNull();
@@ -2076,7 +2079,7 @@ describe("an app open as a tab", () => {
         ...state.snapshot!,
         appTabs: [{ ...openTab, appId: nextId }] as unknown as NonNullable<HostSnapshot["appTabs"]>,
       };
-      route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+      route.params = { deploymentId: "deployment-a", scope: "tabs", appId: nextId };
       render();
       expect(container.textContent).not.toContain("Closing…");
       expect(webView()?.getAttribute("data-uri")).toContain(nextId);
@@ -2102,9 +2105,9 @@ describe("an app open as a tab", () => {
         HostSnapshot["appTabs"]
       >,
     };
-    route.params = { deploymentId: "deployment-a", scope: "workspace", appId: nextId };
+    route.params = { deploymentId: "deployment-a", scope: "tabs", appId: nextId };
     render();
-    route.params = { deploymentId: "deployment-a", scope: "workspace", appId };
+    route.params = { deploymentId: "deployment-a", scope: "tabs", appId };
     render();
     press(appMenu(), "Close tab");
     expect(closeAppTab).toHaveBeenCalledTimes(2);
@@ -2719,7 +2722,7 @@ describe("the status row", () => {
   });
 
   it("says nothing on a page opened from Tabs, or while its conversation has nothing to say", () => {
-    const fromTabs = openWatched(["thread-agent"], { scope: "workspace" });
+    const fromTabs = openWatched(["thread-agent"], { scope: "tabs" });
     expect(row(fromTabs.container)).toBeNull();
     for (const root of roots.splice(0)) act(() => root.unmount());
     // Another agent at work in the tab is not this conversation at work.

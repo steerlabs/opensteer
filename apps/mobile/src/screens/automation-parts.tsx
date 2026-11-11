@@ -2,7 +2,7 @@ import type { ScheduleAnchor } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, space } from "../theme.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 
@@ -48,7 +48,7 @@ export function AnchorMark(props: {
   readonly size: 16 | 20 | 22;
 }): ReactNode {
   return props.anchor.home ? (
-    <ChatOrb size={props.size} />
+    <AgentOrb size={props.size} />
   ) : (
     <TaskMark mark={props.anchor.mark} quiet={!props.anchor.visible} size={props.size} />
   );

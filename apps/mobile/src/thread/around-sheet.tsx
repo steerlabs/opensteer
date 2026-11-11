@@ -44,7 +44,7 @@ import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, type } from "../theme.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { useContentInsets } from "../ui/pane.js";
 import { AppText, Notice, StatusDot, Toggle } from "../ui/primitives.js";
@@ -240,7 +240,7 @@ function Around(props: {
             style={({ pressed }) => [styles.from, pressed && styles.pressed]}
           >
             <Symbol name="arrow.up" size={12} tint={color.muted} />
-            {fromMark === null ? <ChatOrb size={16} /> : <TaskMark mark={fromMark} size={16} />}
+            {fromMark === null ? <AgentOrb size={16} /> : <TaskMark mark={fromMark} size={16} />}
             <AppText numberOfLines={1} role="caption" style={styles.fromWords} tone="soft">
               From {from.title}
             </AppText>

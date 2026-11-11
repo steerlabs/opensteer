@@ -556,7 +556,10 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
+}));
 vi.mock("../ui/workspace-mark.js", () => ({
   WorkspaceDot: () => null,
   WorkspaceIconGlyph: () => null,
@@ -1213,7 +1216,7 @@ function aloneRoute(place: { readonly destination: { readonly kind: string } }) 
   const { destination } = place;
   if (destination.kind !== "browser") throw new Error("Not a browser tab.");
   const { sessionId, tabId } = destination as unknown as { sessionId: string; tabId: string };
-  return { deploymentId, scope: "workspace", sessionId, tabId };
+  return { deploymentId, scope: "tabs", sessionId, tabId };
 }
 
 function threadTitled(snapshot: HostSnapshot, title: string): string {
@@ -1294,7 +1297,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     }
     await press(control(front(w), "https://pending.example/"));
     expect(w.stack.top.params).toMatchObject({
-      scope: "workspace",
+      scope: "tabs",
       pendingBrowserTab: "mobile-list",
     });
     expect(front(w).textContent).toContain("Opening");
@@ -1703,7 +1706,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
       ],
     });
     await press(row(front(w), "Q4 roadmap – Linear"));
-    expect(w.stack.top.params).toMatchObject({ scope: "workspace" });
+    expect(w.stack.top.params).toMatchObject({ scope: "tabs" });
     expectAlone(front(w));
     expect(w.calls.creates).toEqual([]);
     w.record("J2 tab with no conversation");
@@ -1888,7 +1891,7 @@ describe("J6: native views keep their own authority", () => {
     expect(w.stack.top.params).toMatchObject({
       appKey: "com.apple.notes",
       generation,
-      scope: "workspace",
+      scope: "tabs",
       viewId,
     });
     expect(w.stack.top.params?.["computerSessionId"]).toBeUndefined();
@@ -1939,7 +1942,7 @@ describe("J6: native views keep their own authority", () => {
       computerSessionId: session,
       deploymentId,
       machineId: slack.destination.machineId,
-      scope: "workspace",
+      scope: "tabs",
     });
     expect(w.calls.displays.map((source) => JSON.parse(source))).toContainEqual({
       appKey: "com.tinyspeck.slackmacgap",

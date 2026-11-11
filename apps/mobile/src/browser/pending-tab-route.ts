@@ -18,7 +18,7 @@ export function showPendingBrowserTab(
   over?: { readonly fallback?: () => void },
 ): void {
   const scope =
-    route.scope === "workspace" ? { scope: "workspace" as const } : { threadId: route.threadId };
+    route.scope === "tabs" ? { scope: "tabs" as const } : { threadId: route.threadId };
   const show = over ? StackActions.push : StackActions.replace;
   const fallback = over?.fallback;
   navigation.dispatch(
@@ -45,8 +45,8 @@ export function showPendingBrowserTab(
       navigation.dispatch({
         ...StackActions.replace("WorkspaceBrowser", {
           deploymentId: route.deploymentId,
-          ...(current.params["scope"] === "workspace"
-            ? { scope: "workspace" }
+          ...(current.params["scope"] === "tabs"
+            ? { scope: "tabs" }
             : { threadId: current.params["threadId"] }),
           sessionId: opened.sessionId,
           tabId: opened.tabId,

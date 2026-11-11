@@ -200,7 +200,10 @@ vi.mock("../ui/primitives.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { readonly name: string }) => <i data-symbol={name} />,
 }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
+}));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: ({ mark }: { readonly mark: { icon: string | null } }) => (
     <i data-task-icon={mark.icon} />
@@ -708,7 +711,7 @@ describe("Around this thread", () => {
       { name: "Home", params: { deploymentId } },
       {
         name: "WorkspaceBrowser",
-        params: { deploymentId, scope: "workspace", sessionId: "page", tabId: "beside" },
+        params: { deploymentId, scope: "tabs", sessionId: "page", tabId: "beside" },
       },
       { name: "ThreadAround", params: { deploymentId, threadId: home } },
     ];

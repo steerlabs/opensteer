@@ -16,7 +16,7 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type WorkspaceSurfaceDestination,
+  type SurfaceDestination,
 } from "@opensteer/client/host";
 import {
   useBrowserAgentFollow,
@@ -210,7 +210,7 @@ function SurfacesForUser(props: {
   // new destination on every snapshot.
   const destinationKey = JSON.stringify(routeDestination(route));
   const destination = useMemo(
-    () => JSON.parse(destinationKey) as WorkspaceSurfaceDestination | null,
+    () => JSON.parse(destinationKey) as SurfaceDestination | null,
     [destinationKey],
   );
   const notices = (
@@ -269,7 +269,7 @@ const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 function Focused(props: {
   readonly active: boolean;
   readonly connected: boolean;
-  readonly destination: WorkspaceSurfaceDestination;
+  readonly destination: SurfaceDestination;
   readonly hostClient: HostClient;
   readonly notices: ReactNode;
   readonly route: SurfacesRoute;
@@ -789,7 +789,7 @@ function Focused(props: {
 const companionPillWidth = 320;
 
 /** Whether a place is the one a route names: a tab by its own id, else exactly. */
-function samePlace(place: PlaceItem, destination: WorkspaceSurfaceDestination): boolean {
+function samePlace(place: PlaceItem, destination: SurfaceDestination): boolean {
   if (destination.kind === "browser")
     return place.destination.kind === "browser" && place.destination.tabId === destination.tabId;
   return sameDestination(place.destination, destination);

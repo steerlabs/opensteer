@@ -18,7 +18,7 @@ import { scheduleOnRN } from "react-native-worklets";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import type { ComputerSymbol } from "../screens/settings-model.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { appear, exit } from "../ui/motion.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -91,7 +91,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   const fade = reduceMotion ? {} : { entering: appear, exiting: exit };
   const glyph = following ? (
     following.mark === null ? (
-      <ChatOrb size={16} />
+      <AgentOrb size={16} />
     ) : (
       <TaskMark mark={following.mark} size={16} />
     )

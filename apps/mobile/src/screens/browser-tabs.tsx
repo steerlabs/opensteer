@@ -39,7 +39,7 @@ import { AgentMarks } from "../browser/agent-marks.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { pageSite } from "../browser/surface-route.js";
 import { color, radius, space, touchTarget } from "../theme.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { enter, exit } from "../ui/motion.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -285,7 +285,7 @@ function BrowserTabs(props: {
           ) : (
             <View style={styles.taskName}>
               {agent.mark === null ? (
-                <ChatOrb size={20} />
+                <AgentOrb size={20} />
               ) : (
                 <TaskMark mark={agent.mark} size={20} />
               )}

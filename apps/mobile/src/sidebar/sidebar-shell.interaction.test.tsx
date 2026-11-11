@@ -184,7 +184,7 @@ const tabB = { kind: "browser", sessionId: "session-b", tabId: "tab-b" } as cons
 /** Tab B as a route names it. */
 const tabBRoute = {
   deploymentId: "deployment-a",
-  scope: "workspace",
+  scope: "tabs",
   sessionId: tabB.sessionId,
   tabId: tabB.tabId,
 };

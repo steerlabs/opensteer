@@ -36,7 +36,7 @@ import { AccessibilityInfo, Alert, Pressable, StyleSheet, View } from "react-nat
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionReviewSheet } from "../ui/action-review.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
@@ -233,7 +233,7 @@ function HeldThreadMark(props: {
     (snapshot) => (snapshot.homeThreadId === threadId ? null : threadMark(threadId, snapshot)),
     sameMark,
   );
-  return mark === null ? <ChatOrb size={16} /> : <TaskMark mark={mark} size={16} />;
+  return mark === null ? <AgentOrb size={16} /> : <TaskMark mark={mark} size={16} />;
 }
 
 function sameMark(left: ResolvedTaskMark | null, right: ResolvedTaskMark | null): boolean {

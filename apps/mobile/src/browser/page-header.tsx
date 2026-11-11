@@ -11,7 +11,7 @@ import {
   type NativeMenuSection,
 } from "../thread/composer-menu.js";
 import { barItemWidth, useBarTitleWidth } from "../ui/bar-title.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -120,7 +120,7 @@ export function usePageHeader(props: {
         onPress={() => ask("thread")}
         style={styles.ask}
       >
-        <ChatOrb size={22} />
+        <AgentOrb size={22} />
       </Pressable>
     ) : (
       <NativeMenu
@@ -132,7 +132,7 @@ export function usePageHeader(props: {
         style={styles.ask}
         title="Ask about this page"
       >
-        <ChatOrb size={22} />
+        <AgentOrb size={22} />
       </NativeMenu>
     );
     navigation.setOptions({
@@ -415,7 +415,7 @@ export const PageAsk = memo(function PageAsk(props: {
         ) : agents.unnamedActing ? (
           <ActingDot grouped size={8} />
         ) : (
-          <ChatOrb size={22} />
+          <AgentOrb size={22} />
         )
       }
       label={words === null ? "Ask" : `${words.label}. Ask`}

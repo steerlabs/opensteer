@@ -4,7 +4,7 @@ import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { barNameFloor } from "../ui/bar-title.js";
 import { AppText } from "../ui/primitives.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { TaskStatus, type TaskHeading } from "./task-status.js";
@@ -22,7 +22,7 @@ export function ThreadName(props: {
   readonly isVoice?: boolean;
 }) {
   const mark = props.isHome ? (
-    <ChatOrb size={22} />
+    <AgentOrb size={22} />
   ) : props.isVoice === true ? (
     <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
   ) : (

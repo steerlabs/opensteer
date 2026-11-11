@@ -1,5 +1,5 @@
 import { memo, type ReactNode } from "react";
-import { Platform, Pressable, StyleSheet, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -14,30 +14,19 @@ import {
 } from "./team-marks.js";
 import type { ChannelRowView, DmRowView, TeamDrawerSectionView } from "./team-models.js";
 
-export interface TeamDrawerActions {
-  readonly onFold: (teamId: string, folded: boolean) => void;
-  /** The team's + menu: New channel, New message, Browse channels, Invite people. */
-  readonly onTeamMenu: (teamId: string) => void;
-  readonly onOpenChannel: (teamId: string, channelId: string) => void;
-  readonly onMoreDms: (teamId: string) => void;
-  /** A team the reader left or was removed from: take its row out of the drawer. */
-  readonly onRemoveTeam: (teamId: string) => void;
-}
-
 /**
- * One team in the drawer: its header, its channels (alphabetical), then its
- * direct messages (newest first). Unread is bold; mentions of the reader are
- * an ember count; a DM never shows an unread total. A folded team keeps its
- * mention total on its header, so nothing for the reader hides.
+ * A team's own page: its channels (alphabetical), then its direct messages
+ * (newest first). Unread is bold; mentions of the reader are an ember count;
+ * a DM never shows an unread total. The team's menu is the page's title menu.
  */
-export const TeamDrawerSection = memo(function TeamDrawerSection(props: {
-  readonly actions: TeamDrawerActions;
-  /** The channel or DM on screen. */
-  readonly currentId: string | null;
+export function TeamPageList(props: {
   readonly section: TeamDrawerSectionView;
+  readonly onOpenChannel: (channelId: string) => void;
+  /** A team the reader left or was removed from: take it off this phone. */
+  readonly onRemoveTeam: () => void;
+  readonly paddingBottom: number;
 }): ReactNode {
-  const { actions, section } = props;
-  const teamId = section.team.id;
+  const { section } = props;
   if (section.state === "removed") {
     return (
       <View style={styles.removed}>
@@ -51,10 +40,10 @@ export const TeamDrawerSection = memo(function TeamDrawerSection(props: {
           </AppText>
         </View>
         <Pressable
-          accessibilityLabel={`Remove ${section.team.name} from the sidebar`}
+          accessibilityLabel={`Remove ${section.team.name} from this phone`}
           accessibilityRole="button"
           hitSlop={8}
-          onPress={() => actions.onRemoveTeam(teamId)}
+          onPress={props.onRemoveTeam}
           style={styles.iconButton}
         >
           <Symbol name="xmark" size={14} tint={color.muted} weight="semibold" />
@@ -62,115 +51,30 @@ export const TeamDrawerSection = memo(function TeamDrawerSection(props: {
       </View>
     );
   }
-  const dim = section.state !== "live";
   return (
-    <View style={styles.section}>
-      <View style={styles.head}>
-        <Pressable
-          accessibilityHint={section.folded ? "Shows its channels" : "Hides its channels"}
-          accessibilityLabel={headLabel(section)}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: !section.folded }}
-          onPress={() => actions.onFold(teamId, !section.folded)}
-          style={({ pressed }) => [styles.headMain, pressed && styles.pressed]}
-        >
-          <View style={styles.mark}>
-            <TeamTile size={20} team={section.team} />
-          </View>
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={1}
-            role="secondaryMedium"
-            style={styles.teamName}
-          >
-            {section.team.name}
+    <ScrollView contentContainerStyle={[styles.section, { paddingBottom: props.paddingBottom }]}>
+      <View style={section.state === "live" ? null : styles.dim}>
+        <AppText role="caption" style={styles.subhead} tone="muted">
+          Channels
+        </AppText>
+        {section.channels.map((channel) => (
+          <ChannelRow
+            channel={channel}
+            current={false}
+            key={channel.id}
+            onOpen={() => props.onOpenChannel(channel.id)}
+          />
+        ))}
+        {section.dms.length === 0 ? null : (
+          <AppText role="caption" style={styles.subhead} tone="muted">
+            Direct messages
           </AppText>
-          <StateTag state={section.state} />
-          {section.folded ? (
-            <>
-              {section.mentionTotal > 0 ? (
-                <MentionCount count={section.mentionTotal} />
-              ) : section.unread ? (
-                <UnreadDot />
-              ) : null}
-              <Symbol name="chevron.right" size={12} tint={color.muted} weight="semibold" />
-            </>
-          ) : null}
-        </Pressable>
-        {section.folded ? null : (
-          <Pressable
-            accessibilityLabel={`New in ${section.team.name}`}
-            accessibilityRole="button"
-            onPress={() => actions.onTeamMenu(teamId)}
-            style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-          >
-            <Symbol name="plus" size={16} tint={color.muted} weight="medium" />
-          </Pressable>
         )}
+        {section.dms.map((dm) => (
+          <DmRow current={false} dm={dm} key={dm.id} onOpen={() => props.onOpenChannel(dm.id)} />
+        ))}
       </View>
-      {section.folded ? null : (
-        <View style={dim && styles.dim}>
-          {section.channels.map((channel) => (
-            <ChannelRow
-              channel={channel}
-              current={props.currentId === channel.id}
-              key={channel.id}
-              onOpen={() => actions.onOpenChannel(teamId, channel.id)}
-            />
-          ))}
-          {section.dms.length === 0 ? null : (
-            <AppText role="caption" style={styles.subhead} tone="muted">
-              Direct messages
-            </AppText>
-          )}
-          {section.dms.map((dm) => (
-            <DmRow
-              current={props.currentId === dm.id}
-              dm={dm}
-              key={dm.id}
-              onOpen={() => actions.onOpenChannel(teamId, dm.id)}
-            />
-          ))}
-          {section.moreDms > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => actions.onMoreDms(teamId)}
-              style={({ pressed }) => [styles.more, pressed && styles.pressed]}
-            >
-              <AppText role="caption" tone="muted">
-                {section.moreDms} more
-              </AppText>
-            </Pressable>
-          ) : null}
-        </View>
-      )}
-    </View>
-  );
-});
-
-function headLabel(section: TeamDrawerSectionView): string {
-  const parts = [section.team.name];
-  if (section.mentionTotal > 0) parts.push(`${section.mentionTotal} mentions`);
-  else if (section.unread) parts.push("unread");
-  if (section.state === "offline") parts.push("can't be reached");
-  if (section.state === "update-app") parts.push("update Opensteer to use it");
-  if (section.state === "update-server") parts.push("its server needs an update");
-  return parts.join(", ");
-}
-
-function StateTag(props: { readonly state: TeamDrawerSectionView["state"] }): ReactNode {
-  if (props.state === "live" || props.state === "removed") return null;
-  const update = props.state === "update-app";
-  return (
-    <View style={[styles.tag, update && styles.tagUpdate]}>
-      <AppText
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        role="caption"
-        style={update ? styles.tagUpdateText : styles.tagText}
-      >
-        {props.state === "offline" ? "Offline" : "Update"}
-      </AppText>
-    </View>
+    </ScrollView>
   );
 }
 

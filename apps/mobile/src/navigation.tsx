@@ -2,7 +2,6 @@ import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
 import { SettingsAiSharingScreen } from "./screens/settings-ai-sharing.js";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
   createStaticNavigation,
@@ -16,7 +15,6 @@ import {
 } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
 import type { SurfacesRoute } from "./browser/surface-route.js";
-import type { ThreadDraftQuote } from "./client/thread-drafts.js";
 import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
 import { headerActions, stackScreenOptions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
@@ -32,15 +30,10 @@ import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ComputerScreen } from "./screens/computer.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
-import { DoneTasksScreen } from "./screens/done-tasks.js";
 import { HomeScreen } from "./screens/home.js";
-import { NewProjectScreen } from "./screens/new-project.js";
 import { NewTaskScreen } from "./screens/new-task.js";
 import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
-import { ProjectSettingsScreen } from "./screens/project-settings.js";
-import { ProjectScreen } from "./screens/project.js";
-import { ProjectsScreen } from "./screens/projects.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
 import {
@@ -68,52 +61,61 @@ import { ThreadStepScreen } from "./screens/thread-step.js";
 import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
+import { AllTasksScreen } from "./screens/all-tasks.js";
+import { TeamHomeScreen } from "./team/team-home-screen.js";
 import {
-  TeamAddScreen,
+  TeamChannelScreen,
+  TeamThreadScreen,
+  type TeamChannelRoute,
+  type TeamThreadRoute,
+} from "./team/team-channel-screens.js";
+import {
+  TeamDetailsScreen,
+  TeamFilesScreen,
+  TeamInstructionsScreen,
+  TeamKnowledgeScreen,
+  TeamMembersScreen,
+  TeamNoticesScreen,
+  TeamPinnedScreen,
+  TeamSearchScreen,
+} from "./team/team-shelf-screens.js";
+import {
+  TeamAuditScreen,
+  TeamChannelsScreen,
   TeamGroupScreen,
   TeamGroupsScreen,
-  TeamInviteScreen,
+  TeamInvitesScreen,
   TeamPeopleScreen,
-  TeamPersonScreen,
-  TeamProjectRuntimeScreen,
-} from "./team/team-screens.js";
+  TeamSettingsScreen,
+} from "./team/team-admin-screens.js";
+import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
+import { FolderPickerScreen } from "./home/folder-picker-screen.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
-import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
 import { Pane } from "./ui/pane.js";
 import { thisPhoneNoun } from "./computers/phone-noun.js";
 
 /**
  * The whole route table, written out.
  *
- * These routes do not justify filesystem routing, and writing them here keeps
- * the thing that matters visible: `Thread` takes the ids a push notification
- * carries, so a notification and a tap arrive at the same screen by the same
- * path. The header uses the platform face and stays native chrome.
+ * `Thread` takes the ids a push notification carries, so a notification and a
+ * tap arrive at the same screen by the same path. The header uses the platform
+ * face and stays native chrome.
  *
- * Chat (`Home`) is the root of every Deployment's stack and stays mounted
- * under everything pushed over it. Projects, Tabs and Schedules are the
- * sidebar's other destinations: each is pushed over Chat with the Menu in place of
- * Back, and choosing Chat from the sidebar returns to it, so the stack never
- * grows by moving around the sidebar. Everything else — a task, search, a project, a
- * watcher — is an ordinary push with the native Back, which returns to the
- * screen it was opened from.
+ * Home — the reader's agent and their tasks — is the root of every
+ * Deployment's stack and stays mounted under everything pushed over it. Needs
+ * you, Tabs and Automations are the drawer's other places: each is pushed over
+ * Home with the Menu in place of Back, and choosing Tasks returns to Home, so
+ * the stack never grows by moving around the drawer. A team's channels, DMs and
+ * threads are ordinary pushes with the native Back, like a task: they return to
+ * the screen they were opened from, and Home is always underneath.
  *
- * The sidebar is the stack's own `layout` (`SidebarShell`): one navigator,
- * one history, with the drawer or docked column around it. It is also the
- * task list and the list of tabs, so there is no Tasks screen to go to, and
- * the route in front is the only selection either list marks.
+ * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
+ * history, with the drawer or docked column around it.
  *
- * The back control shows its chevron and no word. iOS 26 draws every header
- * control on a glass capsule, and a capsule wide enough to hold the previous
- * screen's name is heavier than anything under it — while the chevron alone
- * says the same thing and leaves the title its width.
- *
- * The list roots carry the platform's large title: it is the one heading a
- * list screen gets, it collapses into the bar as the list scrolls, and it is
- * what makes the screen read as the system's own rather than a page drawn
- * inside it. A thread's title is the person's words and can be any length, so
- * that screen keeps the bar-height title that truncates gracefully.
+ * The back control shows its chevron and no word, and list roots carry the
+ * platform's large title; a thread's title is the person's words and keeps the
+ * bar-height title that truncates gracefully.
  */
 function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
   const focused = useIsFocused();
@@ -160,15 +162,18 @@ const RootStack = createNativeStackNavigator({
         title: "Computers",
       }),
     },
-    // Chat: the one conversation a Deployment opens into, and the root every
-    // other screen of it is pushed over. It renders Home itself — or the first
-    // message before Home exists — and never hands over to another route.
-    Home: { screen: HomeScreen, options: { title: CHAT_THREAD_TITLE } },
-    Projects: {
-      screen: ProjectsScreen,
-      options: { ...destinationOptions(), title: "Projects" },
+    // Home: the new-task composer over Needs you, tasks by folder and Done.
+    // The root every other screen of a Deployment is pushed over.
+    Home: { screen: HomeScreen, options: { title: "Tasks" } },
+    // Every task on one filter (All, Needs you, Running, Unread, Read, Done),
+    // from the drawer's All tasks row or its amber Needs you pill.
+    AllTasks: {
+      screen: AllTasksScreen,
+      options: { ...destinationOptions(), title: "All tasks" },
     },
-    // Every tab this person may see, from the sidebar like Projects. A tab
+    // A team's page from its drawer row: channels, then DMs; its menu is the title.
+    TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
+    // Every tab this person may see, from the drawer like Needs you. A tab
     // opened from here is shown alone.
     Tabs: { screen: TabsScreen, options: { ...destinationOptions(), title: "Tabs" } },
     // Everything set to run on its own, from the sidebar like Tabs.
@@ -179,12 +184,6 @@ const RootStack = createNativeStackNavigator({
     // One schedule, from Schedules or a thread's Around sheet. Its name is
     // the large title, set once it loads.
     Schedule: { screen: ScheduleScreen, options: { headerLargeTitle: true, title: "" } },
-    // One project, over the directory. Its name is the large title, set
-    // once it loads, so it folds into the bar as its work scrolls under it.
-    Project: { screen: ProjectScreen, options: { headerLargeTitle: true, title: "" } },
-    // A project's people, access, plugins, specialists, mute and deletion,
-    // from the gear in its bar. Back returns to the project.
-    ProjectSettings: { screen: ProjectSettingsScreen, options: { title: "Project settings" } },
     Thread: {
       screen: ThreadScreen,
       // A task just started takes the place of its New task screen: it fades
@@ -206,19 +205,6 @@ const RootStack = createNativeStackNavigator({
     // Every task on the Deployment, narrowed by the search field in its bar,
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
-    // Every task put in Done outside Projects, from the last line of Tasks.
-    DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
-    // The tasks just moved to Done for the reader, from "+N" on that line.
-    QuietlyMoved: {
-      screen: QuietlyMovedScreen,
-      options: {
-        headerShown: false,
-        presentation: "formSheet",
-        sheetAllowedDetents: [0.6, 0.95],
-        sheetGrabberVisible: true,
-        title: "Moved to Done for you",
-      },
-    },
     // A conversation's tabs and Mac apps, pushed over it: the grid, or one
     // tab or app, which a tile pushes over the grid; or one tab, app or phone
     // alone, from Tabs or the sidebar. The native
@@ -282,18 +268,6 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Choose AI",
-      },
-    },
-    // A new project is a name, an icon and where its files live; like the
-    // model picker it draws its own bar, for the same Android reason.
-    NewProject: {
-      screen: NewProjectScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.NewProject,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: "New project",
       },
     },
     // What a Request asks, when it's too much for its card. It opens part-way so
@@ -374,13 +348,63 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
+    // A team's channel or DM, and a thread under one of its messages. Each is
+    // keyed by the team it belongs to, never by the personal Deployment.
+    TeamChannel: { screen: TeamChannelScreen, options: { title: "" } },
+    TeamThread: { screen: TeamThreadScreen, options: { title: "Thread" } },
+    // On a phone a channel's tabs are rows in its Details.
+    TeamDetails: { screen: TeamDetailsScreen, options: { title: "Details" } },
+    TeamMembers: { screen: TeamMembersScreen, options: { title: "Members" } },
+    TeamInstructions: {
+      screen: TeamInstructionsScreen,
+      options: { title: "Instructions for agents" },
+    },
+    TeamFiles: { screen: TeamFilesScreen, options: { title: "Files" } },
+    TeamPinned: { screen: TeamPinnedScreen, options: { title: "Pinned" } },
+    TeamKnowledge: { screen: TeamKnowledgeScreen, options: { title: "Knowledge" } },
+    TeamSearch: { screen: TeamSearchScreen, options: { title: "Search" } },
+    TeamNotices: { screen: TeamNoticesScreen, options: { title: "Notices" } },
+    // A team's own settings group, from its section's menu or Settings.
+    TeamSettings: { screen: TeamSettingsScreen, options: { title: "Team" } },
     TeamPeople: { screen: TeamPeopleScreen, options: { title: "People" } },
-    TeamPerson: { screen: TeamPersonScreen, options: { title: "Person" } },
-    TeamInvite: { screen: TeamInviteScreen, options: { title: "Invite" } },
     TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
-    TeamAdd: { screen: TeamAddScreen, options: { title: "Add" } },
-    TeamProjectRuntime: { screen: TeamProjectRuntimeScreen, options: { title: "How it runs" } },
+    TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invites" } },
+    TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
+    TeamAudit: { screen: TeamAuditScreen, options: { title: "Audit log" } },
+    // Joining from a link, a pasted link or a notification: a sheet over Home.
+    JoinTeam: {
+      screen: JoinTeamScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.JoinTeam,
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Join a team",
+      },
+    },
+    // What Ask my agent opens when no Opensteer of the reader's is linked.
+    ConnectOpensteer: {
+      screen: ConnectOpensteerScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.ConnectOpensteer,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Connect your Opensteer",
+      },
+    },
+    // Where a new task works: from the folder chip on Home's composer.
+    FolderPicker: {
+      screen: FolderPickerScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.FolderPicker,
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Folder",
+      },
+    },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
     SettingsRemoteAccess: {
       screen: SettingsRemoteAccessScreen,
@@ -564,10 +588,10 @@ const RootStack = createNativeStackNavigator({
 });
 
 /**
- * A sidebar destination other than Chat. It has the Menu where Back would be,
- * so the edge swipe belongs to the sidebar rather than to a pop, and it fades
- * in rather than sliding: it is a place beside Chat, not a step deeper into it.
- * Android's Back still returns to Chat.
+ * A drawer place other than Home. It has the Menu where Back would be, so the
+ * edge swipe belongs to the drawer rather than to a pop, and it fades in rather
+ * than sliding: it is a place beside Home, not a step deeper into it. Android's
+ * Back still returns to Home.
  */
 function destinationOptions(): NativeStackNavigationOptions {
   return {
@@ -579,18 +603,42 @@ function destinationOptions(): NativeStackNavigationOptions {
 }
 
 type OpensteerRootParamList = {
-  readonly TeamPeople: { readonly deploymentId: string };
-  readonly TeamPerson: { readonly deploymentId: string; readonly userId: string };
-  readonly TeamInvite: { readonly deploymentId: string };
-  readonly TeamGroups: { readonly deploymentId: string };
-  readonly TeamGroup: { readonly deploymentId: string; readonly groupId: string };
-  readonly TeamAdd: {
-    readonly deploymentId: string;
-    readonly target: "project" | "group";
-    readonly id: string;
-    readonly level: "use" | "manage";
+  readonly TeamChannel: TeamChannelRoute;
+  readonly TeamThread: TeamThreadRoute;
+  readonly TeamDetails: { readonly teamId: string; readonly channelId: string };
+  readonly TeamMembers: { readonly teamId: string; readonly channelId: string };
+  readonly TeamInstructions: { readonly teamId: string; readonly channelId: string };
+  readonly TeamFiles: { readonly teamId: string; readonly channelId: string };
+  readonly TeamPinned: { readonly teamId: string; readonly channelId: string };
+  /** A channel's topics, or the team's when no channel is named; one topic when named. */
+  readonly TeamKnowledge: {
+    readonly teamId: string;
+    readonly channelId?: string | undefined;
+    readonly topicId?: string | undefined;
   };
-  readonly TeamProjectRuntime: { readonly deploymentId: string; readonly workspaceId: string };
+  readonly TeamSearch: { readonly teamId: string; readonly channelId?: string | undefined };
+  readonly TeamNotices: { readonly teamId: string };
+  readonly TeamSettings: { readonly teamId: string };
+  readonly TeamPeople: { readonly teamId: string };
+  readonly TeamGroups: { readonly teamId: string };
+  readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
+  readonly TeamInvites: { readonly teamId: string };
+  readonly TeamChannels: { readonly teamId: string };
+  readonly TeamAudit: { readonly teamId: string };
+  /** A team page link the person opened or pasted, or none for the paste field. */
+  readonly JoinTeam: { readonly link?: string | undefined } | undefined;
+  readonly ConnectOpensteer: { readonly teamId: string };
+  /** A new task's folder, or with a team channel named, the folder runs from it use. */
+  readonly FolderPicker: {
+    readonly deploymentId: string;
+    readonly teamId?: string | undefined;
+    readonly channelId?: string | undefined;
+  };
+  readonly AllTasks: {
+    readonly deploymentId: string;
+    readonly filter?: import("./sidebar/live-tasks.js").AllTasksFilter | undefined;
+  };
+  readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly AddIphone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
@@ -615,28 +663,14 @@ type OpensteerRootParamList = {
   };
   readonly Deployments: undefined;
   readonly DeploymentSwitcher: undefined;
-  readonly Home: {
-    readonly deploymentId: string;
-    /** An exact update in Chat to open at, from a link, a notification or Find. */
-    readonly messageId?: string | undefined;
-    /**
-     * An update from a task to answer in Chat. It is already in Chat's saved
-     * draft; this hands it to the composer that is on screen, then clears.
-     */
-    readonly quote?: ThreadDraftQuote | undefined;
-    readonly requestId?: string | undefined;
-  };
-  readonly NewProject: { readonly deploymentId: string };
+  readonly Home: { readonly deploymentId: string };
   readonly NotificationsIntro: undefined;
   readonly NewTask: {
     readonly deploymentId: string;
     readonly draftId: string;
-    readonly workspaceId: string;
   };
   readonly NewThread: {
     readonly deploymentId: string;
-    /** Set when the choice is for Chat's first message rather than a new task's. */
-    readonly home?: boolean;
     /** The first-message Send that opened this picker, if any. */
     readonly pickerAttemptId?: string;
   };
@@ -661,13 +695,8 @@ type OpensteerRootParamList = {
   readonly SettingsSignIns: { readonly deploymentId: string };
   readonly Settings: undefined;
   readonly Plugins: { readonly deploymentId: string };
-  readonly Project: { readonly deploymentId: string; readonly workspaceId: string };
-  readonly ProjectSettings: { readonly deploymentId: string; readonly workspaceId: string };
-  readonly Projects: { readonly deploymentId: string };
   readonly Tabs: { readonly deploymentId: string };
   readonly TaskSearch: { readonly deploymentId: string };
-  readonly DoneTasks: { readonly deploymentId: string };
-  readonly QuietlyMoved: { readonly deploymentId: string };
   readonly Thread: {
     readonly deploymentId: string;
     /**

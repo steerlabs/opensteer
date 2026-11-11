@@ -134,6 +134,66 @@ export function createMaintenanceNetwork(options: {
   };
 }
 
+/**
+ * The shared transport's network on a phone: the transport resolves the route
+ * and the credential for each request and socket, and this only carries them.
+ * Used for team Hosts, which are pinned beside the selected Deployment.
+ */
+export function createTransportNetwork(options: {
+  readonly fetch: HostFetch;
+  readonly openWebSocket: (
+    url: string,
+    headers: Readonly<Record<string, string>>,
+  ) => WebSocketClient;
+}): ClientHostNetwork {
+  return {
+    request: async ({ authorization, request, requestOrigin, signal, url }) => {
+      const headers: Record<string, string> = {
+        ...request.headers.additional,
+        accept: request.headers.accept ?? request.headers.additional?.["accept"] ?? "application/json",
+      };
+      if (request.headers.contentType) headers["content-type"] = request.headers.contentType;
+      if (request.headers.idempotencyKey) headers["idempotency-key"] = request.headers.idempotencyKey;
+      return createHostNetwork({
+        authorization: { cached: () => authorization, current: async () => authorization },
+        fetch: options.fetch,
+        openWebSocket: options.openWebSocket,
+        origin: requestOrigin,
+      }).fetch(url, {
+        headers,
+        method: request.method,
+        signal,
+        ...(request.body === undefined ? {} : { body: request.body }),
+      });
+    },
+    openWebSocket: ({ authorization, headers, requestOrigin, url }, events) => {
+      const socket = createHostNetwork({
+        authorization: { cached: () => authorization, current: async () => authorization },
+        fetch: options.fetch,
+        // The version header the transport chose for this Host's kind travels on
+        // the upgrade; the credential is added by the fenced factory itself.
+        openWebSocket: (target, credential) =>
+          options.openWebSocket(target, { ...headers, ...credential }),
+        origin: requestOrigin,
+      }).webSocketFactory(url);
+      socket.binaryType = "arraybuffer";
+      socket.addEventListener("open", () => events.open());
+      socket.addEventListener("message", (event) => {
+        const data: unknown = event.data;
+        if (typeof data === "string") events.message(data);
+        else if (data instanceof ArrayBuffer) events.message(new Uint8Array(data));
+        else events.error("The Host sent an unsupported WebSocket frame.");
+      });
+      socket.addEventListener("error", () => events.error("The Host WebSocket failed."));
+      socket.addEventListener("close", (event) => events.close(event.code, event.reason));
+      return {
+        close: (code, reason) => socket.close(code, reason),
+        send: (data) => socket.send(data),
+      };
+    },
+  };
+}
+
 /** The URL a `fetch` argument names, whichever of its three forms it takes. */
 function destinationOf(input: URL | RequestInfo): string {
   if (typeof input === "string") return input;

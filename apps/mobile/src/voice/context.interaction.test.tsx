@@ -121,7 +121,7 @@ it.each(["app", "phone"] as const)(
         name: "WorkspaceBrowser",
         params: {
           deploymentId: f.snapshot.deploymentId,
-          scope: "workspace",
+          scope: "tabs",
           machineId: machine.id,
           ...(kind === "app"
             ? {
@@ -177,7 +177,7 @@ it.each(["Home", "Thread"])(
         name: "WorkspaceBrowser",
         params: {
           deploymentId: f.snapshot.deploymentId,
-          scope: "workspace",
+          scope: "tabs",
           sessionId,
           tabId,
         },

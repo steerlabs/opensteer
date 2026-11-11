@@ -3,7 +3,6 @@ import { useVoiceAvailable } from "../voice/use-voice-value.js";
 import {
   accountGettingReady,
   accessModeConflict,
-  chatExecutionSelection,
   placementForSelection,
   composerExecutionSelection,
   defaultThreadPlacement,
@@ -14,9 +13,8 @@ import {
   type ExecutionSelection,
   type HostSnapshot,
   type ThreadPlacementOption,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
-import type { BrowserPageContentPart, ThreadAccessMode } from "@opensteer/core";
+import type { BrowserPageContentPart, TaskFolder, ThreadAccessMode } from "@opensteer/core";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -64,20 +62,15 @@ import {
 } from "./first-message-picker-attempt.js";
 
 /**
- * A first message: words written before the Thread they start exists.
+ * A first message: words written before the task they start exists.
  *
- * Chat's first message creates the one Home; a new task's creates that task.
- * Both are real drafts and a real choice of AI, kept on this phone under a
- * reserved key until the Host has made the Thread, and then handed to that
- * Thread's own composer, which sends them exactly as written under the key
- * they were claimed with. Nothing about either is invented: no conversation
- * exists until the first message does.
+ * Home's composer is a new task's first message: a real draft and a real
+ * choice of AI, kept on this phone under a reserved key until the Host has
+ * made the task, and then handed to that task's own composer, which sends it
+ * exactly as written under the key it was claimed with.
  */
 
-/** Chat's one Home, or a new task. */
-export type FirstMessageTarget = "home" | "task";
-
-/** Which AI a first message would start its Thread on. */
+/** Which AI a first message would start its task on. */
 export interface FirstMessageExecution {
   readonly accessMode: ThreadAccessMode;
   readonly accessReason: string | null;
@@ -95,55 +88,21 @@ export interface FirstMessageExecution {
   readonly blockedPlacement: ThreadPlacementOption | null;
 }
 
-/**
- * What a first message starts on when nothing has been chosen.
- *
- * A task takes the deployment's default. Chat takes the first runnable model
- * in its product ranking, preserving placement and default-account order on ties.
- */
-export function startingPlacement(
-  target: FirstMessageTarget,
-  snapshot: Pick<HostSnapshot, "environments" | "harnesses">,
-  runnable: readonly ThreadPlacementOption[],
-): ThreadPlacementOption | null {
-  if (target === "task") {
-    return defaultThreadPlacement(snapshot.environments, snapshot.harnesses) ?? null;
-  }
-  const selection = chatExecutionSelection({ chosen: null, existing: null, placements: runnable });
-  return selection === null ? null : placementForSelection(runnable, selection);
-}
-
 export function firstMessageExecution(
-  target: FirstMessageTarget,
-  snapshot: Pick<
-    HostSnapshot,
-    "environments" | "executionPreferences" | "harnesses" | "homeThreadId" | "threads"
-  >,
+  snapshot: Pick<HostSnapshot, "environments" | "executionPreferences" | "harnesses">,
   chosen: ExecutionSelection | null = null,
 ): FirstMessageExecution {
   const placements = threadPlacementOptions(snapshot.environments, snapshot.harnesses);
   const runnable = placements.filter((placement) => placement.available);
-  // A task and a new Chat both start from the AI the person last picked.
+  // A task starts from the AI the person last picked.
   const remembered = lastExecutionSelection(snapshot.executionPreferences);
-  const home =
-    target === "home" ? snapshot.threads.find(({ id }) => id === snapshot.homeThreadId) : undefined;
-  const existing = home
-    ? {
-        environmentId: home.environmentId,
-        harnessInstanceId: home.harnessInstanceId,
-        modelSelection: home.modelSelection,
-      }
-    : null;
-  const selection =
-    target === "home"
-      ? chatExecutionSelection({ chosen, existing, placements, remembered })
-      : composerExecutionSelection({
-          chosen,
-          defaultPlacement: startingPlacement(target, snapshot, runnable),
-          placements,
-          remembered,
-        });
-  const blocked = selection === null ? (chosen ?? existing ?? remembered) : null;
+  const selection = composerExecutionSelection({
+    chosen,
+    defaultPlacement: defaultThreadPlacement(snapshot.environments, snapshot.harnesses) ?? null,
+    placements,
+    remembered,
+  });
+  const blocked = selection === null ? (chosen ?? remembered) : null;
   const placement = selection === null ? null : placementForSelection(placements, selection);
   return {
     accessMode: snapshot.executionPreferences.accessMode,
@@ -198,18 +157,13 @@ export function firstMessageBlocker(input: {
   readonly attachmentsReady: boolean;
   /** Whether the Host is attached and has confirmed this reader. */
   readonly connected: boolean;
-  /** A reason only Chat has: Home already runs on an AI nobody chose here. */
-  readonly conflict: string | null;
   readonly execution: FirstMessageExecution;
-  readonly target: FirstMessageTarget;
-  readonly workspace: WorkspaceSummary | null;
+  /** Where the task would work; null until the Host has said where Agent home is. */
+  readonly folder: TaskFolder | null;
 }): FirstMessageBlocker | null {
   const wait = (reason: string): FirstMessageBlocker => ({ choose: false, reason });
   const { blocked, blockedPlacement, placements, runnable, selection } = input.execution;
-  if (input.workspace === null) return wait("This workspace is no longer here.");
-  if (input.workspace.status !== "ready") {
-    return wait("Your workspace storage is still being prepared.");
-  }
+  if (input.folder === null) return wait("Your agent's folder isn't ready yet.");
   if (!input.connected) return wait("Reconnect to send. What you write here is kept.");
   if (runnable.length === 0) {
     // An account getting ready, as one does after its computer starts, is
@@ -236,7 +190,6 @@ export function firstMessageBlocker(input: {
       "Connect an AI account in Opensteer on your computer or the web to start. What you write here is kept.",
     );
   }
-  if (input.conflict !== null) return wait(input.conflict);
   if (blockedPlacement !== null) {
     return {
       choose: true,
@@ -251,10 +204,7 @@ export function firstMessageBlocker(input: {
   if (selection === null) {
     return {
       choose: true,
-      reason:
-        input.target === "home"
-          ? "Choose which AI runs Chat to start."
-          : "Choose which AI runs this task to start.",
+      reason: "Choose which AI runs this task to start.",
     };
   }
   if (input.execution.accessReason !== null) return wait(input.execution.accessReason);
@@ -420,8 +370,10 @@ export function FirstMessageComposer(props: {
    * clear of the keyboard.
    */
   readonly underHeader: boolean;
-  /** Chat's first message: voice can say it, and it creates Chat. */
+  /** Home's composer: with nothing written, its circle starts Voice. */
   readonly voice?: boolean;
+  /** Where the task will work: Home's folder chip, before the model pill. */
+  readonly folder?: ReactNode;
   /** Whose dismissals of a usage-limit line apply here. */
   readonly usageScope: { readonly deploymentId: string; readonly userId: string };
 }): ReactNode {
@@ -651,6 +603,8 @@ export function FirstMessageComposer(props: {
           <VoiceDock />
           <ComposerBar
             accessory={
+              <View style={styles.accessory}>
+                {props.folder ?? null}
               <ComposerPills
                 accessMode={props.execution.accessMode}
                 accessModes={placement?.accessModes ?? null}
@@ -670,6 +624,7 @@ export function FirstMessageComposer(props: {
                 onOpenModel={chooseManually}
                 onPresent={noop}
               />
+              </View>
             }
             action={
               // With nothing typed the circle is voice where it exists, as in a
@@ -842,6 +797,7 @@ export function FirstMessageHeld(props: {
 }
 
 const styles = StyleSheet.create({
+  accessory: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[8] },
   content: { flexGrow: 1, gap: space[16] },
   example: {
     alignItems: "center",

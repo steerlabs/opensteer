@@ -49,6 +49,10 @@ export const taskTextInset = space[12] + markColumn + space[12];
 export type TaskShelf = "open" | "done";
 
 export interface TaskRowProps {
+  /** A live row's one second line: the amber ask of a task that needs the reader. */
+  readonly ask?: string | null;
+  /** All tasks' second line: where it came from (`#support · Dana's thread`) or its folder, and what it is doing. */
+  readonly detail?: string | null;
   /** The reader has an unsent reply here. */
   readonly drafted?: boolean;
   readonly onOpen: (threadId: string) => void;
@@ -105,14 +109,35 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       ]}
     >
       <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
-      <AppText
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        numberOfLines={1}
-        role="secondary"
-        style={[styles.grow, titleStyle(row, props.shelf)]}
-      >
-        {row.title}
-      </AppText>
+      {props.ask == null && props.detail == null ? (
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          role="secondary"
+          style={[styles.grow, titleStyle(row, props.shelf)]}
+        >
+          {row.title}
+        </AppText>
+      ) : (
+        <View style={styles.grow}>
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={1}
+            role="secondary"
+            style={titleStyle(row, props.shelf)}
+          >
+            {row.title}
+          </AppText>
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={1}
+            role="caption"
+            {...(props.ask == null ? { tone: "muted" as const } : { style: styles.ask })}
+          >
+            {props.ask ?? props.detail}
+          </AppText>
+        </View>
+      )}
       <TaskRowState drafted={props.drafted === true} row={row} shelf={props.shelf} time={time} />
     </Pressable>
   );
@@ -279,6 +304,7 @@ export function setTaskDone(hostClient: HostClient, threadId: string, done: bool
 
 const styles = StyleSheet.create({
   bright: { color: color.text },
+  ask: { color: color.amber },
   grow: { flex: 1, minWidth: 0 },
   state: { alignItems: "center", flexDirection: "row", gap: space[8], flexShrink: 0 },
   needsYou: {

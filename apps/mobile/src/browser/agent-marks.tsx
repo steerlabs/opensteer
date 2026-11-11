@@ -2,7 +2,7 @@ import type { PlaceAgent } from "@opensteer/client/host";
 import { memo, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, radius } from "../theme.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { TaskMark } from "../ui/task-mark.js";
 
 /** Marks drawn side by side before the rest are only counted in words. */
@@ -38,7 +38,7 @@ export const AgentMarks = memo(function AgentMarks(props: {
           ]}
         >
           {agent.home || agent.mark === null ? (
-            <ChatOrb size={size} />
+            <AgentOrb size={size} />
           ) : (
             <TaskMark mark={agent.mark} size={size} />
           )}

@@ -212,7 +212,10 @@ vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
+}));
 vi.mock("../ui/workspace-mark.js", () => ({
   WorkspaceMark: (props: {
     readonly name: string;

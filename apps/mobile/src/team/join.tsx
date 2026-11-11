@@ -12,9 +12,9 @@ export type InviteView =
   | {
       readonly kind: "ready";
       readonly team: TeamTileView;
-      /** "Maya Chen". */
-      readonly inviter: string;
-      readonly memberCount: number;
+      /** "Maya Chen", once the team has said; an invite read before sign-in names nobody. */
+      readonly inviter: string | null;
+      readonly memberCount: number | null;
       /** The Opensteer Account the reader joins as: "Tim Jang". */
       readonly joinAs: string;
       readonly joining: boolean;
@@ -63,8 +63,9 @@ export function JoinSheetBody(props: {
               Join {invite.team.name}?
             </AppText>
             <AppText role="secondary" style={styles.centerText} tone="muted">
-              {invite.inviter} invited you. {peopleHere(invite.memberCount)} You'll join as{" "}
-              {invite.joinAs}.
+              {invite.inviter === null ? "" : `${invite.inviter} invited you. `}
+              {invite.memberCount === null ? "" : `${peopleHere(invite.memberCount)} `}You'll join
+              as {invite.joinAs}.
             </AppText>
             <AppText role="caption" style={styles.fine} tone="muted">
               Your agent stays on your computers. {invite.team.name} sees only what you, or your

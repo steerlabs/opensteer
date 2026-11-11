@@ -1,45 +1,30 @@
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
-  doneTaskList,
-  folderSignalWords,
-  groupTasksByProject,
   listedRowThreadId,
-  mainWorkspace,
-  projectStatusLabel,
-  quietlyMoved,
-  quietSeenScope,
   sameTaskListSource,
   taskList,
-  taskRowLabel,
   taskTime,
-  type DoneTaskList,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type ProjectFolder,
-  type ProjectGrouping,
+  type SurfaceDestination,
   type TaskList,
   type TaskRow,
-  type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
 import {
   useBrowserGroups,
   usePlace,
   usePlaceStructure,
   useSyncingPlaceholder,
-  VoiceContext,
 } from "@opensteer/client/react";
 import {
   memo,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
-  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
@@ -86,12 +71,9 @@ import { discardNewTaskDraft } from "../thread/draft-attachments.js";
 import {
   DraftPen,
   draftPenLabel,
-  NeedsYouTag,
   setTaskDone,
   taskTextInset,
   TaskRowView,
-  UnreadDot,
-  type TaskShelf,
 } from "../threads/task-row.js";
 import {
   useHostUserId,
@@ -99,105 +81,64 @@ import {
   useMobileState,
   useSavedSurface,
 } from "../ui/mobile-client-context.js";
-import { ChatOrb } from "../ui/chat-orb.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import { WorkspaceMark } from "../ui/workspace-mark.js";
-import { CallTimer } from "../voice/call-timer.js";
-import { useVoiceAvailable, useVoiceOn } from "../voice/use-voice-value.js";
 import { DraftRow } from "./draft-row.js";
-import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
-import { voiceRowMark, type VoiceRowMark } from "./voice-row.js";
-import { CreateProjectGate } from "../team/team-parts.js";
+import type { TeamSessionClient } from "@opensteer/client/team";
+import type { MobileTeam } from "../team/mobile-teams.js";
+import { useTeamsSnapshot } from "../team/team-context.js";
+import { MentionCount, TeamTile } from "../team/team-marks.js";
+import { liveTasks, type AllTasksFilter } from "./live-tasks.js";
 
-/** The root destinations the sidebar switches between. */
-export type SidebarDestination = "Home" | "Schedules" | "Projects" | "Tabs";
+/** The root places the drawer switches between. */
+export type SidebarDestination = "Home" | "AllTasks" | "Schedules" | "Tabs";
 
 export interface SidebarActions {
-  /** Closes the sidebar and hands focus back to whatever opened it. */
+  /** Closes the drawer and hands focus back to whatever opened it. */
   readonly close: () => void;
-  readonly onChat: () => void;
-  readonly onNewProject: (deploymentId: string) => void;
-  readonly onNewTask: (deploymentId: string, workspaceId: string) => void;
+  /** Home: a new task's composer. */
+  readonly onHome: () => void;
   /** Exactly this unfinished new task, with everything it held. */
-  readonly onOpenDraft: (deploymentId: string, workspaceId: string, draftId: string) => void;
-  /** The Done page: every task put in Done outside Projects. */
-  readonly onOpenDone: (deploymentId: string) => void;
-  /** The sheet naming the tasks just moved to Done for the reader. */
-  readonly onOpenQuietlyMoved: (deploymentId: string) => void;
-  /** A Project's own page: its chat, tasks and settings. */
-  readonly onOpenProject: (deploymentId: string, workspaceId: string) => void;
+  readonly onOpenDraft: (deploymentId: string, draftId: string) => void;
+  /** Every task, on one of All tasks' filters. */
+  readonly onOpenAllTasks: (deploymentId: string, filter: AllTasksFilter) => void;
   /** Shows exactly this tab, app or phone, alone. */
-  readonly onOpenPlace: (destination: WorkspaceSurfaceDestination) => void;
+  readonly onOpenPlace: (destination: SurfaceDestination) => void;
   readonly onOpenTask: (deploymentId: string, threadId: string) => void;
+  /** A team's own page: its channels, then its direct messages. */
+  readonly onOpenTeam: (teamId: string) => void;
   readonly onSchedules: () => void;
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
-  readonly onProjects: () => void;
   readonly onTabs: () => void;
 }
 
 /**
- * What the sidebar shows of one Deployment's work: the shared task list, and
- * where a task started here would run.
+ * What the drawer shows of one Deployment's work: the shared task list, read
+ * into the live handful (needs you, new results, running) and how many tasks
+ * All tasks holds.
  */
 interface SidebarModel {
-  /** Main's Done list newest Done first, once read from a Host that keeps one. */
-  readonly done: DoneTaskList | null;
-  /** Main's tasks, then one folder per Project, from the grouping web shares. */
-  readonly grouping: ProjectGrouping;
   readonly list: TaskList;
   /** The Host has sent its first page of tasks. */
   readonly loaded: boolean;
-  readonly quietScope: string | null;
-  /** Main, while it can hold a new task; a task started here runs there. */
-  readonly taskWorkspaceId: string | null;
-  readonly voice: VoiceRowMark;
-  readonly voiceThreadId: string | null;
-}
-
-function sidebarModel(
-  snapshot: HostSnapshot,
-  openThreadId: string | null,
-  previous: Pick<TaskList, "ready"> | null,
-): SidebarModel {
-  const main = mainWorkspace(snapshot);
-  const list = taskList(snapshot, {
-    openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
-    previous,
-  });
-  return {
-    done: doneTaskList(snapshot),
-    grouping: groupTasksByProject(snapshot, list),
-    list,
-    loaded: snapshot.tasks !== null,
-    quietScope: quietSeenScope(snapshot),
-    taskWorkspaceId: main?.status === "ready" ? main.id : null,
-    voice: voiceRowMark(snapshot),
-    voiceThreadId: snapshot.voiceThreadId,
-  };
 }
 
 /**
- * The shelves the sidebar last drew, kept by the shell: the drawer and the
+ * The shelves the drawer last drew, kept by the shell: the drawer and the
  * docked column are separate panels, and a closed one reads nothing, yet a task
- * opened from one must keep its shelf in whichever shows next.
+ * opened from one must keep its place in whichever shows next.
  */
 export interface ShelfMemory {
-  /** Projects the reader folded; open is the default, so a new Project's first task shows. */
-  closedProjects: ReadonlySet<string>;
   list: Pick<TaskList, "ready"> | null;
 }
 
 /**
- * The selected Deployment's work as the sidebar needs it, or null while no
- * Host of that Deployment is attached. It reads without loading: the Host
- * client keeps the task list current, and the screen underneath owns the
- * Host's first read. It is rebuilt only when what the list or Main reads
- * changes, so a streamed token leaves the sidebar alone; each opening starts
- * afresh, including shared Done changes and this reader’s unread state.
+ * The selected Deployment's work as the drawer needs it, or null while no
+ * Host of that Deployment is attached. It is rebuilt only when what the list
+ * reads changes, so a streamed token leaves the drawer alone.
  */
 function useSidebarModel(
   hostClient: HostClient | null,
@@ -224,13 +165,15 @@ function useSidebarModel(
       current !== null &&
       current.openThreadId === openThreadId &&
       sameTaskListSource(current.snapshot, snapshot) &&
-      current.snapshot.workspaces === snapshot.workspaces &&
-      current.snapshot.homeWorkspaceId === snapshot.homeWorkspaceId &&
       current.snapshot.user === snapshot.user
     ) {
       return current.model;
     }
-    const model = sidebarModel(snapshot, openThreadId, shelves.list);
+    const list = taskList(snapshot, {
+      openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
+      previous: shelves.list,
+    });
+    const model = { list, loaded: snapshot.tasks !== null };
     cached.current = { model, snapshot, openThreadId };
     shelves.list = model.list;
     return model;
@@ -240,8 +183,7 @@ function useSidebarModel(
 
 /**
  * This reader's drafts, held until the list would change: the store publishes
- * every write, and a keystroke leaves this list as it was. The draft in front
- * keeps the title it had; one written here joins the list on leaving.
+ * every write, and a keystroke leaves this list as it was.
  */
 function useDraftSummary(
   deploymentId: string | null,
@@ -283,40 +225,18 @@ function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity 
   return useSyncExternalStore(client.subscribe, read, read);
 }
 
-/**
- * Reads Main's Done list once a Host that keeps one is signed in; the Host
- * client keeps it current from then on.
- */
-function useDoneList(hostClient: HostClient | null): void {
-  useEffect(() => {
-    if (hostClient === null) return;
-    let asked = false;
-    const ask = (): void => {
-      const snapshot = hostClient.getSnapshot();
-      if (asked || snapshot.quietTasksAvailable !== true || snapshot.session !== "authenticated")
-        return;
-      asked = true;
-      void hostClient.loadDoneTasks().catch(() => undefined);
-    };
-    ask();
-    return hostClient.subscribe(ask);
-  }, [hostClient]);
-}
+/** How many live tasks the drawer lists before All tasks takes over. */
+const liveTaskLimit = 5;
 
 /**
- * The sidebar is the one place to move between everything: Chat, New task,
- * Projects and Schedules; the new tasks not yet sent; Main's tasks grouped by
- * what each asks of the reader —
- * Working, with anything waiting on them first; Ready; Done — then each
- * Project as a folder of its chat and work under way; then the Deployment's tabs,
- * apps and phones, and All tabs; and below them Settings and which
- * Deployment this is. Each row comes from the shared task and place lists, so
- * a task or tab reads the same here as on the web.
+ * The drawer: the reader's live tasks — what needs them, new results, what is
+ * running — in that order, then All tasks for everything else; Automations;
+ * one row per team this computer is in, each opening its own page; then the
+ * Deployment's tabs, and below them Settings and which computer this is.
  *
  * Only an attached Host of the Deployment underneath is read. While the
  * selection is moving to another one, or that Host has refused this phone,
- * the tasks are simply absent rather than showing the previous Host's tasks
- * under the new name.
+ * the tasks are simply absent rather than showing the previous Host's tasks.
  */
 export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly actions: SidebarActions;
@@ -338,10 +258,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   readonly openDraftId: string | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
-  /** The task whose conversation is on screen; opening it never moves its row. */
-  readonly openThreadId: string | null;
-  /** The Project whose page or settings are in front. */
-  readonly openProjectId: string | null;
+  /** The team whose page or channel is in front. */
+  readonly openTeamId: string | null;
   readonly visible: boolean;
 }): ReactNode {
   const insets = useContentInsets();
@@ -352,44 +270,24 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     deploymentId !== null && selection.deploymentId === deploymentId && row?.signIn === null
       ? selection.hostClient
       : null;
-  // Read only while the sidebar is on screen: closed, it would otherwise
+  // Read only while the drawer is on screen: closed, it would otherwise
   // rebuild every row on every streamed update for a list nobody can see.
-  // Opening reads the current snapshot in the same render that shows it.
   const savedTasks = useSavedSurface(visible ? deploymentId : null, "tasks");
   const model = useSidebarModel(
     visible && savedTasks.source !== "saved" ? hostClient : null,
-    props.openThreadId,
+    selectedThreadId,
     props.shelves,
   );
   const identity = useDeploymentIdentity(deploymentId);
   const client = useMobileClient();
   const userId = useHostUserId(hostClient);
   const drafts = useDraftSummary(visible ? deploymentId : null, userId, props.openDraftId);
-  const seen = useSyncExternalStore(
-    client.quietSeen.subscribe,
-    client.quietSeen.getSnapshot,
-    client.quietSeen.getSnapshot,
-  );
-  useDoneList(hostClient);
-  const [closedProjects, setClosedProjects] = useState(props.shelves.closedProjects);
-  const shelves = props.shelves;
-  const toggleProject = useCallback(
-    (workspaceId: string) => {
-      const next = new Set(shelves.closedProjects);
-      if (!next.delete(workspaceId)) next.add(workspaceId);
-      shelves.closedProjects = next;
-      setClosedProjects(next);
-    },
-    [shelves],
-  );
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
   const heading = useRef<TextInstance>(null);
   const retained = useRetainedScroll(props.scroll);
 
-  // A screen reader lands on the sidebar's own heading as the drawer opens;
-  // the drawer isolates it from what it covers while it is there. Docked, it
-  // appears with the window and takes nobody's focus.
+  // A screen reader lands on the drawer's own heading as it opens; the drawer
+  // isolates it from what it covers while it is there. Docked, it appears with
+  // the window and takes nobody's focus.
   useEffect(() => {
     if (visible && !docked && heading.current !== null) {
       AccessibilityInfo.sendAccessibilityEvent(heading.current, "focus");
@@ -404,9 +302,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   );
   const openDraft = useCallback(
     (draft: NewTaskDraftSummary) => {
-      if (deploymentId !== null) {
-        actions.onOpenDraft(deploymentId, draft.workspaceId, draft.draftId);
-      }
+      if (deploymentId !== null) actions.onOpenDraft(deploymentId, draft.draftId);
     },
     [actions, deploymentId],
   );
@@ -438,64 +334,21 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     },
     [hostClient],
   );
-  const loadEarlier = useCallback(() => {
-    if (hostClient === null || loadingEarlier) return;
-    setLoadingEarlier(true);
-    setEarlierFailure(null);
-    void hostClient
-      .loadEarlierTasks()
-      .catch((error: unknown) =>
-        setEarlierFailure(operationDetail(error, "Earlier tasks could not be loaded.")),
-      )
-      .finally(() => setLoadingEarlier(false));
-  }, [hostClient, loadingEarlier]);
 
-  const list = model?.list ?? null;
-  const taskWorkspaceId = model?.taskWorkspaceId ?? null;
-  // A helper has no row, so the task it works for, or Chat, is the one marked open.
-  const selectedRow = useMemo(() => {
-    if (hostClient === null || model === null || selectedThreadId === null)
-      return { chat: false, threadId: selectedThreadId, voice: false };
-    const snapshot = hostClient.getSnapshot();
-    const threadId = listedRowThreadId(snapshot, selectedThreadId);
-    return {
-      chat: threadId === snapshot.homeThreadId,
-      threadId,
-      voice: threadId === snapshot.voiceThreadId,
-    };
-  }, [hostClient, model, selectedThreadId]);
-  const main = model?.grouping.main ?? null;
-  const folders = useMemo(
-    () =>
-      model === null
-        ? []
-        : sidebarFolders(model.grouping.folders, closedProjects, selectedRow.threadId),
-    [closedProjects, model, selectedRow.threadId],
+  const selectedRowId = useMemo(() => {
+    if (hostClient === null || selectedThreadId === null) return selectedThreadId;
+    return listedRowThreadId(hostClient.getSnapshot(), selectedThreadId);
+  }, [hostClient, selectedThreadId]);
+  const live = useMemo(
+    () => (model === null ? null : liveTasks(model.list, selectedRowId)),
+    [model, selectedRowId],
   );
   // The Thread in front has its draft in front of the reader already.
-  const unsentReply = (threadId: string | null | undefined): boolean =>
-    threadId != null && threadId !== selectedRow.threadId && drafts.threadIds.has(threadId);
+  const unsentReply = (threadId: string): boolean =>
+    threadId !== selectedRowId && drafts.threadIds.has(threadId);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
-  const doneCount = model?.done?.total ?? main?.done.length ?? 0;
-  const moved =
-    model === null || seen === null || model.quietScope === null
-      ? []
-      : quietlyMoved(model.done, seen[model.quietScope] ?? null, now);
-  const taskRows = (tasks: readonly TaskRow[], shelf: TaskShelf, nested = false) =>
-    tasks.map((task) => (
-      <Animated.View key={task.threadId} layout={move} style={nested && styles.nested}>
-        <TaskRowView
-          drafted={unsentReply(task.threadId)}
-          onOpen={openTask}
-          onSetDone={moveTask}
-          row={task}
-          selected={task.threadId === selectedRow.threadId}
-          shelf={shelf}
-          time={taskTime(task, now)}
-        />
-      </Animated.View>
-    ));
+  const shown = live?.rows.slice(0, liveTaskLimit) ?? [];
 
   return (
     <View
@@ -522,11 +375,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           Opensteer
         </Text>
         {deploymentId === null ? null : (
-          <IconButton
-            icon="magnifyingglass"
-            label="Search tasks"
-            onPress={() => actions.onSearch(deploymentId)}
-          />
+          <>
+            <IconButton
+              icon="magnifyingglass"
+              label="Search tasks"
+              onPress={() => actions.onSearch(deploymentId)}
+            />
+            <IconButton icon="square.and.pencil" label="New task" onPress={actions.onHome} />
+          </>
         )}
       </View>
 
@@ -540,57 +396,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         showsVerticalScrollIndicator={false}
         style={styles.scroll}
       >
-        <View style={styles.nav}>
-          <DestinationRow
-            accessibilityLabel={
-              list === null || list.chat === null
-                ? CHAT_THREAD_TITLE
-                : taskRowLabel(list.chat, { chat: true })
-            }
-            accessory={list === null ? null : <ChatAccessory row={list.chat} />}
-            current={destination === "Home" || selectedRow.chat}
-            drafted={destination !== "Home" && unsentReply(list?.chat?.threadId)}
-            icon="bubble.left"
-            mark={<ChatOrb size={20} />}
-            label={CHAT_THREAD_TITLE}
-            onPress={actions.onChat}
-          />
-          <VoiceRow
-            current={selectedRow.voice}
-            drafted={unsentReply(model?.voiceThreadId)}
-            mark={model?.voice ?? null}
-            onOpen={openTask}
-            threadId={model?.voiceThreadId ?? null}
-            visible={visible}
-          />
-          {deploymentId === null ? null : (
-            <DestinationRow
-              accessibilityLabel={
-                taskWorkspaceId === null ? "New task, unavailable until Main is ready" : "New task"
-              }
-              current={false}
-              disabled={taskWorkspaceId === null}
-              icon="plus"
-              label="New task"
-              onPress={() => {
-                if (taskWorkspaceId !== null) actions.onNewTask(deploymentId, taskWorkspaceId);
-              }}
-            />
-          )}
-          <DestinationRow
-            current={destination === "Projects"}
-            icon="folder"
-            label="Projects"
-            onPress={actions.onProjects}
-          />
-          <DestinationRow
-            current={destination === "Schedules"}
-            icon="clock"
-            label="Automations"
-            onPress={actions.onSchedules}
-          />
-        </View>
-
         {drafts.newTasks.length === 0 ? null : (
           <>
             <GroupHead title="Drafts" />
@@ -613,148 +418,72 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             capturedAt={savedTasks.capturedAt}
           />
         ) : null}
-        {model === null || main === null ? null : !model.loaded ? (
+        {model === null || live === null || deploymentId === null ? null : !model.loaded ? (
           <View style={styles.loading}>
             <ActivityIndicator color={color.muted} />
           </View>
-        ) : main.working.length === 0 &&
-          main.ready.length === 0 &&
-          doneCount === 0 &&
-          !model.list.hasMore &&
-          folders.length === 0 ? (
-          <View style={styles.welcome}>
-            <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondaryMedium">
-              Your tasks will show up here
-            </AppText>
-            <AppText role="caption" tone="muted">
-              Ask for something bigger in Chat and it runs here on its own while you keep talking.
-              You’ll see what’s working and anything that needs you.
-            </AppText>
-          </View>
         ) : (
-          // One keyed run of rows across every shelf and folder, so a task
-          // changing shelves keeps its view and slides to its new place
-          // instead of reappearing.
-          [
-            ...[
-              { rows: main.working, title: "Working" },
-              { rows: main.ready, title: "Ready" },
-            ].flatMap((group) =>
-              group.rows.length === 0
-                ? []
-                : [
-                    <GroupHead
-                      key={`group:${group.title}`}
-                      title={group.title}
-                      {...(group.title === "Working" ? { count: group.rows.length } : {})}
-                    />,
-                    ...taskRows(group.rows, "open"),
-                  ],
-            ),
-            main.working.length === 0 &&
-            main.ready.length === 0 &&
-            (doneCount > 0 || model.list.hasMore) ? (
-              <AppText key="caught-up" role="caption" style={styles.empty} tone="muted">
-                You’re all caught up.
+          <>
+            <TasksHead
+              needsYou={live.needsYou}
+              onNeedsYou={() => actions.onOpenAllTasks(deploymentId, "needs-you")}
+            />
+            {shown.length === 0 ? (
+              <AppText role="caption" style={styles.empty} tone="muted">
+                {live.total === 0
+                  ? "Ask your agent for something and it shows up here while it works."
+                  : "You’re all caught up."}
               </AppText>
-            ) : null,
-            doneCount === 0 ? null : (
-              <DoneLine
-                count={doneCount}
-                key="done-shelf"
-                moved={moved.length}
-                onOpen={() => {
-                  if (deploymentId !== null) actions.onOpenDone(deploymentId);
-                }}
-                onOpenMoved={() => {
-                  if (deploymentId !== null) actions.onOpenQuietlyMoved(deploymentId);
-                }}
-              />
-            ),
-            !model.list.hasMore ? null : (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ busy: loadingEarlier }}
-                disabled={loadingEarlier}
-                key="show-more"
-                onPress={loadEarlier}
-                style={({ pressed }) => [styles.more, pressed && styles.pressed]}
-              >
-                {loadingEarlier ? (
-                  <ActivityIndicator color={color.muted} size="small" />
-                ) : (
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    role="caption"
-                    tone="muted"
-                  >
-                    Show more
-                  </AppText>
-                )}
-              </Pressable>
-            ),
-            earlierFailure === null ? null : (
-              <AppText key="earlier-failure" role="caption" style={styles.empty} tone="danger">
-                {earlierFailure}
-              </AppText>
-            ),
-            ...(folders.length === 0 || deploymentId === null
-              ? []
-              : [
-                  <ProjectsHead
-                    hostClient={hostClient}
-                    key="projects-head"
-                    onNewProject={() => actions.onNewProject(deploymentId)}
-                    onProjects={actions.onProjects}
-                  />,
-                  ...folders.flatMap((entry) => [
-                    <Animated.View key={`folder:${entry.folder.workspace.id}`} layout={move}>
-                      <ProjectFolderRow
-                        current={props.openProjectId === entry.folder.workspace.id}
-                        entry={entry}
-                        onNewTask={(workspaceId) => actions.onNewTask(deploymentId, workspaceId)}
-                        onOpen={(workspaceId) => actions.onOpenProject(deploymentId, workspaceId)}
-                        onToggle={toggleProject}
-                      />
-                    </Animated.View>,
-                    entry.chat === null ? null : (
-                      <Animated.View key={entry.chat.threadId} layout={move} style={styles.nested}>
-                        <FolderChatRow
-                          drafted={unsentReply(entry.chat.threadId)}
-                          onOpen={openTask}
-                          row={entry.chat}
-                          selected={entry.chat.threadId === selectedRow.threadId}
-                        />
-                      </Animated.View>
-                    ),
-                    ...taskRows(entry.shown, "open", true),
-                    entry.more === 0 ? null : (
-                      <Pressable
-                        accessibilityHint={`Opens ${entry.folder.workspace.name}`}
-                        accessibilityRole="button"
-                        key={`more:${entry.folder.workspace.id}`}
-                        onPress={() =>
-                          actions.onOpenProject(deploymentId, entry.folder.workspace.id)
-                        }
-                        style={({ pressed }) => [
-                          styles.more,
-                          styles.nested,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <AppText
-                          maxFontSizeMultiplier={controlFontScaleLimit}
-                          role="caption"
-                          tone="muted"
-                        >
-                          {`${entry.more} more`}
-                        </AppText>
-                      </Pressable>
-                    ),
-                  ]),
-                ]),
-          ]
+            ) : (
+              shown.map((task) => (
+                <Animated.View key={task.threadId} layout={move}>
+                  <TaskRowView
+                    ask={task.tone === "needs-you" ? task.line : null}
+                    drafted={unsentReply(task.threadId)}
+                    onOpen={openTask}
+                    onSetDone={moveTask}
+                    row={task}
+                    selected={task.threadId === selectedRowId}
+                    shelf="open"
+                    time={taskTime(task, now)}
+                  />
+                </Animated.View>
+              ))
+            )}
+            <DestinationRow
+              accessibilityLabel={`All tasks, ${live.total}`}
+              accessory={
+                <Text
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  style={[type.caption, styles.count]}
+                >
+                  {live.rows.length > shown.length
+                    ? `+${live.rows.length - shown.length}`
+                    : String(live.total)}
+                </Text>
+              }
+              current={destination === "AllTasks"}
+              icon="list.bullet"
+              label="All tasks"
+              onPress={() => actions.onOpenAllTasks(deploymentId, "all")}
+            />
+          </>
         )}
+
+        <View style={styles.nav}>
+          <DestinationRow
+            current={destination === "Schedules"}
+            icon="clock"
+            label="Automations"
+            onPress={actions.onSchedules}
+          />
+        </View>
+
+        <TeamRows
+          onOpen={actions.onOpenTeam}
+          openTeamId={props.openTeamId}
+          visible={visible}
+        />
 
         <View style={styles.tabs}>
           {hostClient === null || model === null ? (
@@ -791,7 +520,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             onPress={actions.onSettings}
           />
         ) : (
-          // Which Deployment this is, and the way into Settings, where it is
+          // Which computer this is, and the way into Settings, where it is
           // switched on a screen that shows each one's state.
           <Pressable
             accessibilityHint="Opens Settings"
@@ -835,68 +564,128 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
 });
 
 /**
- * Done, as one quiet line at the end of Tasks: it opens the Done page. Tasks
- * the Host just moved there for the reader add a "+N" that names them.
+ * One row per team the computer being shown is in: the team's name and the
+ * mentions of the reader waiting there. It opens the team's own page. Each row
+ * reads its own team's count, so a badge changing redraws only that row.
  */
-function DoneLine(props: {
-  readonly count: number;
-  readonly moved: number;
-  readonly onOpen: () => void;
-  readonly onOpenMoved: () => void;
+function TeamRows(props: {
+  readonly onOpen: (teamId: string) => void;
+  readonly openTeamId: string | null;
+  readonly visible: boolean;
 }): ReactNode {
-  const [pressed, setPressed] = useState(false);
-  const press = {
-    onPress: props.onOpen,
-    onPressIn: () => setPressed(true),
-    onPressOut: () => setPressed(false),
-  };
+  const { teams } = useTeamsSnapshot();
+  if (teams.length === 0) return null;
   return (
-    <View style={[styles.shelf, pressed && styles.pressed]}>
-      <Pressable
-        accessibilityLabel={`Done, ${props.count} ${props.count === 1 ? "task" : "tasks"}`}
-        accessibilityRole="button"
-        style={styles.shelfOpen}
-        {...press}
-      >
-        <View style={styles.shelfMark}>
-          <Symbol name="checkmark.circle" size={15} tint={color.muted} />
-        </View>
-        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondary" tone="muted">
-          Done
-        </AppText>
-      </Pressable>
-      {props.moved === 0 ? null : (
-        <Pressable
-          accessibilityLabel={`${props.moved} ${
-            props.moved === 1 ? "task" : "tasks"
-          } moved to Done for you`}
-          accessibilityRole="button"
-          hitSlop={{ bottom: space[12], left: space[8], right: space[4], top: space[12] }}
-          onPress={props.onOpenMoved}
-          style={({ pressed: chipPressed }) => [styles.moved, chipPressed && styles.movedPressed]}
-        >
-          <AppText
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            role="caption"
-            style={styles.movedText}
-          >
-            {`+${props.moved}`}
-          </AppText>
-        </Pressable>
-      )}
-      <Pressable
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={styles.shelfCount}
-        {...press}
-      >
-        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" style={styles.count}>
-          {String(props.count)}
-        </AppText>
-      </Pressable>
+    <View style={styles.nav}>
+      {teams.map((team) => (
+        <TeamRow
+          current={props.openTeamId === team.teamId}
+          key={team.teamId}
+          onOpen={props.onOpen}
+          team={team}
+          visible={props.visible}
+        />
+      ))}
     </View>
   );
 }
+
+const TeamRow = memo(function TeamRow(props: {
+  readonly current: boolean;
+  readonly onOpen: (teamId: string) => void;
+  readonly team: MobileTeam;
+  readonly visible: boolean;
+}): ReactNode {
+  const { team } = props;
+  const mentions = useTeamMentions(props.visible ? team.session : null);
+  const state =
+    team.state === "update-app" || team.state === "update-server"
+      ? "Update"
+      : team.state === "offline"
+        ? "Offline"
+        : team.state === "removed"
+          ? "Removed"
+          : team.state === "signed-out"
+            ? "Sign in"
+            : null;
+  return (
+    <DestinationRow
+      accessibilityLabel={[
+        team.name,
+        mentions > 0 ? `${mentions} ${mentions === 1 ? "mention" : "mentions"}` : null,
+        state,
+      ]
+        .filter(Boolean)
+        .join(", ")}
+      accessory={
+        state !== null ? (
+          <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.count]}>
+            {state}
+          </Text>
+        ) : (
+          <MentionCount count={mentions} />
+        )
+      }
+      current={props.current}
+      icon="person.3"
+      label={team.name}
+      mark={<TeamTile size={20} team={{ id: team.teamId, name: team.name, imageUri: null }} />}
+      onPress={() => props.onOpen(team.teamId)}
+    />
+  );
+});
+
+/** Mentions of the reader across a team, read from that team's own session only. */
+function useTeamMentions(session: TeamSessionClient | null): number {
+  const read = useCallback(
+    () =>
+      session?.getSnapshot().sidebar?.channels.reduce((total, row) => total + row.mentionCount, 0) ??
+      0,
+    [session],
+  );
+  const subscribe = useCallback(
+    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+    [session],
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+/**
+ * "Tasks", with the amber pill when something needs the reader: the pill
+ * opens All tasks on its Needs you filter.
+ */
+function TasksHead(props: { readonly needsYou: number; readonly onNeedsYou: () => void }): ReactNode {
+  return (
+    <View accessibilityRole="header" style={styles.groupHead}>
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        role="caption"
+        style={[styles.groupTitle, styles.grow]}
+        tone="muted"
+      >
+        Tasks
+      </AppText>
+      {props.needsYou === 0 ? null : (
+        <Pressable
+          accessibilityHint="Opens All tasks on Needs you"
+          accessibilityLabel={
+            props.needsYou === 1 ? "1 task needs you" : `${props.needsYou} tasks need you`
+          }
+          accessibilityRole="button"
+          hitSlop={space[8]}
+          onPress={props.onNeedsYou}
+          style={({ pressed }) => [styles.amberPill, pressed && styles.pressed]}
+        >
+          <Symbol name="exclamationmark" size={10} tint={color.inkOnAmber} weight="bold" />
+          <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.amberCount]}>
+            {String(props.needsYou)}
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 
 /**
  * The tabs listed before All tabs: enough to switch between the ones in use
@@ -911,7 +700,7 @@ const sidebarTabLimit = 5;
  */
 const SidebarTabs = memo(function SidebarTabs(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
+  readonly onOpen: (destination: SurfaceDestination) => void;
 }): ReactNode {
   // The panel arranges slots; each row reads its own place, so a title repaints one row.
   const places = usePlaceStructure(props.hostClient);
@@ -939,7 +728,7 @@ const SidebarTabs = memo(function SidebarTabs(props: {
 
 const KeyedPlaceRow = memo(function KeyedPlaceRow(props: {
   readonly hostClient: HostClient;
-  readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
+  readonly onOpen: (destination: SurfaceDestination) => void;
   readonly placeKey: string;
 }): ReactNode {
   const place = usePlace(props.hostClient, props.placeKey);
@@ -961,7 +750,7 @@ const placeKind: Record<PlaceItem["kind"], string> = {
 };
 
 const PlaceRow = memo(function PlaceRow(props: {
-  readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
+  readonly onOpen: (destination: SurfaceDestination) => void;
   readonly place: PlaceItem;
 }): ReactNode {
   const { onOpen, place } = props;
@@ -996,247 +785,7 @@ const PlaceRow = memo(function PlaceRow(props: {
  * Beside Chat, the one thing worth saying: a question waiting on the reader,
  * that it is replying, or that something arrived unread. Before the task list
  * has said anything about Chat, nothing is claimed.
- */
-function ChatAccessory(props: { readonly row: TaskRow | null }): ReactNode {
-  const { row } = props;
-  if (row === null) return null;
-  if (row.tone === "needs-you") return <NeedsYouTag />;
-  if (row.tone === "working") return <ActivityIndicator color={color.ember} size="small" />;
-  return row.unread ? <UnreadDot /> : null;
-}
 
-/**
- * The person's Voice Thread, under Chat. It exists only once someone needs it,
- * so opening it asks for it first; after that it holds history and Requests
- * whether or not a call can start.
- */
-function VoiceRow(props: {
-  readonly current: boolean;
-  readonly drafted: boolean;
-  readonly mark: VoiceRowMark;
-  readonly onOpen: (threadId: string) => void;
-  readonly threadId: string | null;
-  /** A closed drawer keeps its rows, and nobody reads a clock there. */
-  readonly visible: boolean;
-}): ReactNode {
-  const controller = useContext(VoiceContext);
-  const offered = useVoiceAvailable();
-  const onCall = useVoiceOn();
-  const [opening, setOpening] = useState(false);
-  const claimed = useRef(false);
-  const { mark, onOpen, threadId } = props;
-  if (threadId === null && (controller === null || !offered)) return null;
-  const open = (): void => {
-    if (threadId !== null) {
-      onOpen(threadId);
-      return;
-    }
-    if (claimed.current || controller === null) return;
-    claimed.current = true;
-    setOpening(true);
-    void controller
-      .openThread()
-      .then((threadId) => {
-        if (threadId === null) throw new Error("No Voice Thread");
-        onOpen(threadId);
-      })
-      .catch(() => Alert.alert("Voice didn’t open", "Check your connection and try again."))
-      .finally(() => {
-        claimed.current = false;
-        setOpening(false);
-      });
-  };
-  const state =
-    mark === "needs-you"
-      ? "needs you"
-      : onCall
-        ? "on a call"
-        : mark === "working"
-          ? "replying"
-          : mark === "unread"
-            ? "unread"
-            : null;
-  return (
-    <DestinationRow
-      accessibilityLabel={state === null ? "Voice" : `Voice, ${state}`}
-      accessory={
-        opening || (mark === "working" && !onCall) ? (
-          <ActivityIndicator color={color.ember} size="small" />
-        ) : mark === "needs-you" ? (
-          <NeedsYouTag />
-        ) : onCall ? (
-          props.visible ? (
-            <CallTimer />
-          ) : null
-        ) : mark === "unread" ? (
-          <UnreadDot />
-        ) : null
-      }
-      current={props.current}
-      drafted={props.drafted}
-      icon="waveform"
-      label="Voice"
-      onPress={open}
-    />
-  );
-}
-
-/**
- * The Projects group's head: its name opens the directory, and + starts a
- * new Project, so neither needs a trip through the list above.
- */
-function ProjectsHead(props: {
-  readonly hostClient: HostClient | null;
-  readonly onNewProject: () => void;
-  readonly onProjects: () => void;
-}): ReactNode {
-  return (
-    <View style={styles.projectsHead}>
-      <Pressable
-        accessibilityHint="Opens all projects"
-        accessibilityLabel="Projects"
-        accessibilityRole="button"
-        onPress={props.onProjects}
-        style={({ pressed }) => [styles.projectsTitle, pressed && styles.pressed]}
-      >
-        <AppText
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          role="caption"
-          style={styles.groupTitle}
-          tone="muted"
-        >
-          Projects
-        </AppText>
-      </Pressable>
-      <CreateProjectGate hostClient={props.hostClient}>
-        <IconButton icon="plus" label="New project" onPress={props.onNewProject} small />
-      </CreateProjectGate>
-    </View>
-  );
-}
-
-/**
- * A Project as a folder: its mark and name open its page, + starts a task in
- * it, and the chevron folds its rows away. Folded, it still says the one
- * thing worth knowing about what it hides, so closing a folder never hides a
- * question waiting on the reader.
- */
-function ProjectFolderRow(props: {
-  readonly current: boolean;
-  readonly entry: SidebarFolder;
-  readonly onNewTask: (workspaceId: string) => void;
-  readonly onOpen: (workspaceId: string) => void;
-  readonly onToggle: (workspaceId: string) => void;
-}): ReactNode {
-  const { entry } = props;
-  const { workspace, signal, needsYou } = entry.folder;
-  const words = folderSignalWords(signal, needsYou);
-  const problem = projectStatusLabel(workspace);
-  const ready = workspace.status === "ready";
-  const hidden = (entry.folder.chat === null ? 0 : 1) + entry.folder.rows.length;
-  return (
-    <View style={[styles.folder, (props.current || entry.holdsOpenRow) && styles.current]}>
-      <Pressable
-        accessibilityHint="Opens this project"
-        accessibilityLabel={[workspace.name, words, problem].filter(Boolean).join(", ")}
-        accessibilityRole="button"
-        accessibilityState={{ selected: props.current }}
-        onPress={() => props.onOpen(workspace.id)}
-        style={({ pressed }) => [styles.folderMain, pressed && styles.pressed]}
-      >
-        <View style={styles.destinationMark}>
-          <WorkspaceMark
-            color={workspace.color}
-            icon={workspace.icon}
-            name={workspace.name}
-            size="mini"
-          />
-        </View>
-        <Text
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
-          style={[
-            type.secondary,
-            problem !== null
-              ? styles.disabledLabel
-              : props.current
-                ? styles.currentLabel
-                : styles.destinationLabel,
-          ]}
-        >
-          {workspace.name}
-        </Text>
-        {problem === null ? null : (
-          <Symbol name="exclamationmark.circle" size={14} tint={color.amber} />
-        )}
-        {/* Open, its rows say it themselves; folded, the folder says it for them. */}
-        {entry.open && entry.foldable ? null : <FolderSignal folder={entry.folder} />}
-      </Pressable>
-      <IconButton
-        disabled={!ready}
-        icon="plus"
-        label={
-          ready ? `New task in ${workspace.name}` : `New task in ${workspace.name}, unavailable`
-        }
-        onPress={() => props.onNewTask(workspace.id)}
-        small
-      />
-      {entry.foldable ? (
-        <IconButton
-          expanded={entry.open}
-          icon={entry.open ? "chevron.down" : "chevron.right"}
-          label={`${entry.open ? "Fold" : "Unfold"} ${workspace.name}${
-            !entry.open && hidden > 0 ? `, ${hidden} hidden` : ""
-          }`}
-          onPress={() => props.onToggle(workspace.id)}
-          small
-        />
-      ) : (
-        <View style={styles.iconSpacer} />
-      )}
-    </View>
-  );
-}
-
-/** What a folded folder says for the work it hides, loudest first. */
-function FolderSignal(props: { readonly folder: ProjectFolder }): ReactNode {
-  switch (props.folder.signal) {
-    case "needs-you":
-      return <NeedsYouTag />;
-    case "working":
-      return <ActivityIndicator color={color.ember} size="small" />;
-    case "failed":
-      return <Symbol name="exclamationmark.circle" size={14} tint={color.red} />;
-    case "unread":
-      return <UnreadDot />;
-    case null:
-      return null;
-  }
-}
-
-/** A Project's own chat, first in its folder. */
-function FolderChatRow(props: {
-  readonly drafted: boolean;
-  readonly onOpen: (threadId: string) => void;
-  readonly row: TaskRow;
-  readonly selected: boolean;
-}): ReactNode {
-  const { row } = props;
-  return (
-    <DestinationRow
-      accessibilityLabel={taskRowLabel(row, { chat: true })}
-      accessory={<ChatAccessory row={row} />}
-      current={props.selected}
-      drafted={props.drafted}
-      icon="bubble.left"
-      label={CHAT_THREAD_TITLE}
-      mark={<ChatOrb size={16} />}
-      onPress={() => props.onOpen(row.threadId)}
-    />
-  );
-}
-
-/** A group's label over its rows: Working with its count, Ready. */
 function GroupHead(props: { readonly count?: number; readonly title: string }): ReactNode {
   return (
     <View
@@ -1374,6 +923,17 @@ function DestinationRow(props: {
 }
 
 const styles = StyleSheet.create({
+  amberCount: { color: color.inkOnAmber, fontVariant: ["tabular-nums"], fontWeight: "700" },
+  amberPill: {
+    alignItems: "center",
+    backgroundColor: color.amber,
+    borderRadius: radius.full,
+    flexDirection: "row",
+    gap: space[2],
+    paddingHorizontal: space[6],
+    paddingVertical: 1,
+  },
+  grow: { flex: 1 },
   brand: { color: color.text, flex: 1 },
   content: { paddingBottom: space[16], paddingHorizontal: space[8] },
   count: { color: color.mutedDim, fontVariant: ["tabular-nums"] },
@@ -1568,3 +1128,4 @@ const styles = StyleSheet.create({
     padding: space[16],
   },
 });
+

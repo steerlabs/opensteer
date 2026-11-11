@@ -61,7 +61,7 @@ import { ActingDot } from "../browser/acting-dot.js";
 import { AgentMarks } from "../browser/agent-marks.js";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { tabsRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { useSidebarMenu } from "../navigation-header.js";
@@ -250,7 +250,7 @@ function TabsForReader(props: {
   const open = useCallback(
     (place: PlaceItem) =>
       navigation.dispatch(
-        StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, place.destination)),
+        StackActions.push("WorkspaceBrowser", tabsRoute(deploymentId, place.destination)),
       ),
     [deploymentId, navigation],
   );

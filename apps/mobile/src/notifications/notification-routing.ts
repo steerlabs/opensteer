@@ -1,10 +1,13 @@
 import {
+  mobileDeepLinkScheme,
   parseMobileThreadDeepLink,
+  parseTeamPageAppLink,
   type DeploymentId,
   type RequestId,
   type ThreadId,
 } from "@opensteer/core";
 import { z } from "zod";
+import { parseTeamNoticeLink } from "../links.js";
 
 /**
  * The only field of a push payload this app reads. Everything else the Account
@@ -25,13 +28,20 @@ const NotificationPayloadSchema = z.looseObject({ deepLink: z.string().min(1).ma
  * to the Deployment, authenticates, and reads current state before it shows
  * anything, and nothing here approves, denies or answers a Request.
  */
-export interface NotificationDestination {
-  readonly deepLink: string;
-  readonly deploymentId: DeploymentId;
-  readonly requestId: RequestId | null;
-  readonly messageId?: string;
-  readonly threadId: ThreadId;
-}
+export type NotificationDestination =
+  | {
+      readonly kind: "thread";
+      readonly deepLink: string;
+      readonly deploymentId: DeploymentId;
+      readonly requestId: RequestId | null;
+      readonly messageId?: string;
+      readonly threadId: ThreadId;
+    }
+  /**
+   * A team's message or notice. Its link names the team's page, never a
+   * personal Thread id; the app asks the team before showing anything.
+   */
+  | { readonly kind: "team"; readonly deepLink: string; readonly origin: string };
 
 /** The notification payload, as much of it as this app will look at. */
 export interface NotificationData {
@@ -42,9 +52,12 @@ export function notificationDestination(payload: NotificationData): Notification
   const parsed = NotificationPayloadSchema.safeParse(payload.data);
   if (!parsed.success) return null;
   const { deepLink } = parsed.data;
+  const team = parseTeamPageAppLink(deepLink, mobileDeepLinkScheme) ?? parseTeamNoticeLink(deepLink);
+  if (team !== null) return { kind: "team", deepLink, origin: team.origin };
   const link = parseMobileThreadDeepLink(deepLink);
   if (link === null) return null;
   return {
+    kind: "thread",
     deepLink,
     deploymentId: link.deploymentId,
     requestId: link.requestId,
@@ -76,7 +89,7 @@ export function shouldPresentNotification(
 ): boolean {
   if (visible === null || !atLatest) return true;
   const destination = notificationDestination(payload);
-  if (destination === null) return true;
+  if (destination === null || destination.kind === "team") return true;
   return !(
     destination.deploymentId === visible.deploymentId && destination.threadId === visible.threadId
   );
@@ -102,7 +115,7 @@ export async function dismissThreadNotifications(input: {
 }): Promise<void> {
   for (const notification of await input.presented()) {
     const destination = notificationDestination(notification.payload);
-    if (destination === null) continue;
+    if (destination === null || destination.kind === "team") continue;
     if (
       destination.deploymentId !== input.visible.deploymentId ||
       destination.threadId !== input.visible.threadId

@@ -255,7 +255,7 @@ it("opens a single window, dismissing the sheet before pushing the exact window 
       name: "WorkspaceBrowser",
       params: {
         deploymentId: "deployment",
-        scope: "workspace",
+        scope: "tabs",
         machineId: w.app.machineId,
         appKey: "com.apple.notes",
         viewId: "opened",
