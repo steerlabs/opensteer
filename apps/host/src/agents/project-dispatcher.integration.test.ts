@@ -1,10 +1,15 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProjectAttachmentReader } from "./project-attachments.js";
 import { agentToolsPlanForProject } from "./agent-tools-plan.js";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { createId } from "@opensteer/core";
 import { describeStore, testRunnerDescriptor } from "@opensteer/database/test-support/store";
 import { prepareProjectAdmission } from "@opensteer/database/test-support/project";
 import {
+  AttachmentStore,
   assertActiveProjectBinding,
   ProjectControlDeliveryStore,
   ProjectRunEventAcceptanceStore,
@@ -17,7 +22,7 @@ import {
   type ProjectExecutableCommand,
   type ProjectHostToRunnerMessage,
 } from "@opensteer/protocol";
-import { expect } from "vitest";
+import { expect, onTestFinished } from "vitest";
 import { SignedTokenService } from "../identity/host-keys.js";
 import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import { ProjectCapabilityTokenService } from "./run-capability.js";
@@ -34,11 +39,41 @@ describeStore("Project protocol dispatch", (it) => {
   }) => {
     const { database, store, prepared, project, origin } =
       await prepareProjectAdmission(storeFixture);
+    const directory = await mkdtemp(join(tmpdir(), "f5-project-attachments-"));
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
+    const attachments = new AttachmentStore(database);
+    const bytes = Buffer.from("Project uploaded bytes");
+    const upload = await attachments.reserve({
+      workspaceId: project.workspace.id,
+      uploaderId: origin.userId,
+      name: "project.txt",
+      mediaType: "text/plain",
+      sizeBytes: bytes.byteLength,
+      idempotencyKey: "project-upload",
+    });
+    await attachments.complete({
+      attachmentId: upload.id,
+      uploaderId: origin.userId,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      install: async () => {
+        await mkdir(join(directory, "attachments", "originals"), { recursive: true });
+        await writeFile(join(directory, "attachments", "originals", upload.id), bytes);
+      },
+    });
     const admitted = await store.admitProjectWork({
       threadId: prepared.thread.id,
       origin,
       source: { kind: "human" },
-      content: [{ type: "text", text: "Do Project work" }],
+      content: [
+        { type: "text", text: "Do Project work" },
+        {
+          type: "artifact",
+          artifactId: upload.id,
+          name: upload.name,
+          mediaType: upload.mediaType,
+          sizeBytes: upload.sizeBytes,
+        },
+      ],
       policy: "queue",
       idempotencyKey: "protocol-flow",
     });
@@ -102,6 +137,11 @@ describeStore("Project protocol dispatch", (it) => {
               projectPeerIsCurrentAndCapable(transport, identity.fence),
           }).then(() => undefined),
       },
+    });
+    const attachmentReader = new ProjectAttachmentReader({
+      dataDirectory: directory,
+      store: attachments,
+      capabilities,
     });
     const controls = new ProjectControlDeliveryStore(database, {
       currentRunnerBootId: () => identity.bootId,
@@ -255,6 +295,54 @@ describeStore("Project protocol dispatch", (it) => {
       harnessInstanceId: command.context.harnessInstanceId,
       providerSessionReference: "native-project-session",
     });
+    await service.handle(fence, {
+      ...fence,
+      type: "runner.project.grants.refresh",
+      requestId: "refresh-active",
+      binding: { ...binding, kind: "run" },
+    });
+    expect(frames.at(-1)).toMatchObject({
+      type: "host.project.grants.credentials",
+      requestId: "refresh-active",
+      result: { status: "issued", credentials: { kind: "run" } },
+    });
+    const attachmentToken = command.context.attachments?.token;
+    if (!attachmentToken) throw new Error("Project attachment audience was not issued");
+    expect(
+      (await attachmentReader.listForRun(attachmentToken, null)).attachments.map((row) => row.id),
+    ).toEqual([upload.id]);
+    expect(
+      Buffer.from((await attachmentReader.contentForRun(attachmentToken, upload.id)).bytes),
+    ).toEqual(bytes);
+    const beforePublication = await database
+      .selectFrom("messages")
+      .select("id")
+      .where("threadId", "=", binding.threadId)
+      .execute();
+    await expect(
+      store.admitProjectWork({
+        threadId: binding.threadId,
+        origin,
+        source: { kind: "agent", runId: binding.runId },
+        content: [
+          {
+            type: "artifact",
+            artifactId: upload.id,
+            name: upload.name,
+            mediaType: upload.mediaType,
+          },
+        ],
+        policy: "report",
+        idempotencyKey: "project-publication",
+      }),
+    ).rejects.toMatchObject({ reason: "input-publication-not-supported" });
+    expect(
+      await database
+        .selectFrom("messages")
+        .select("id")
+        .where("threadId", "=", binding.threadId)
+        .execute(),
+    ).toEqual(beforePublication);
     const started = {
       ...fence,
       type: "runner.project.event",
@@ -295,6 +383,20 @@ describeStore("Project protocol dispatch", (it) => {
     await expect(
       service.handle({ ...fence, connectionGeneration: 2 }, started),
     ).rejects.toMatchObject({ code: "forbidden" });
+    await service.handle(fence, {
+      ...fence,
+      type: "runner.project.grants.refresh",
+      requestId: "refresh-ended",
+      binding: { ...binding, kind: "run" },
+    });
+    expect(frames.at(-1)).toMatchObject({
+      type: "host.project.grants.credentials",
+      requestId: "refresh-ended",
+      result: { status: "refused" },
+    });
+    await expect(attachmentReader.contentForRun(attachmentToken, upload.id)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     expect(commands.every((value) => value.type === "run.execute.project")).toBe(true);
     expect(frames.some((value) => value.type === "host.project.executions.renewed")).toBe(true);
   });

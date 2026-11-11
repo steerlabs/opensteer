@@ -1,3 +1,6 @@
+import { readProjectThreadActivity } from "./agent-thread-history.js";
+import { appendDoneState } from "./task-done.js";
+import { claimMessageAttachments } from "./attachment-store.js";
 import {
   reserveProjectWorkStop,
   finalizeProjectRunTransaction,
@@ -19,6 +22,7 @@ import { sql, type Selectable, type Kysely } from "kysely";
 import { z } from "zod";
 import {
   createId,
+  provisionalThreadTitle,
   HumanRootSchema,
   ProjectRunBindingSchema,
   RunIdSchema,
@@ -514,6 +518,7 @@ const ProjectThreadCreationSchema = z.strictObject({
   origin: HumanRootSchema,
   title: ThreadTitleSchema,
   role: ThreadRoleSchema,
+  titleSource: z.enum(["chosen", "provisional"]).default("chosen"),
   home: z.boolean(),
   idempotencyKey: z.string().min(1).max(4096),
 });
@@ -574,6 +579,49 @@ export class ProjectWorkStore {
       { ...input, binding },
       this.dependencies.runnerIsAttached,
     );
+  }
+
+  async projectActivity(
+    binding: ProjectRunBinding,
+    input: {
+      readonly threadId: ThreadId;
+      readonly limit: number;
+      readonly before?: string;
+      readonly itemId?: string;
+    },
+  ) {
+    const page = await readProjectThreadActivity(
+      this.database,
+      { ...input, binding },
+      this.dependencies.runnerIsAttached,
+    );
+    if (!page)
+      throw new OpensteerError({ code: "forbidden", message: "Thread is outside this Project" });
+    if (
+      page.items.some(
+        (item) =>
+          item.type === "request.opened" ||
+          item.type === "request.resolved" ||
+          item.type === "request.cancelled",
+      )
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        reason: "project-request-activity-unavailable",
+        message: "Project Request activity requires Q's audience-aware reader",
+      });
+    const ids = [...page.requesters.keys()];
+    const runs = ids.length
+      ? await this.database
+          .selectFrom("runs")
+          .innerJoin("threads", "threads.id", "runs.threadId")
+          .select(["runs.id", "runs.actorPrincipalId"])
+          .where("runs.id", "in", ids)
+          .where("threads.workspaceId", "=", binding.workspaceId)
+          .execute()
+      : [];
+    await assertActiveProjectBinding(this.database, binding, this.dependencies);
+    return { ...page, runPrincipals: new Map(runs.map((run) => [run.id, run.actorPrincipalId])) };
   }
 
   async projectThreads(
@@ -880,6 +928,169 @@ export class ProjectWorkStore {
     );
   }
 
+  async nameProjectThread(threadId: ThreadId): Promise<readonly AgentEvent[]> {
+    ThreadIdSchema.parse(threadId);
+    await assertProjectAuthority(this.database);
+    return withDatabaseTransaction(
+      this.database,
+      async (transaction) => {
+        const selected = await transaction
+          .selectFrom("threads")
+          .innerJoin("principals", "principals.id", "threads.createdByPrincipalId")
+          .select(["threads.workspaceId", "threads.titleSource"])
+          .where("threads.id", "=", threadId)
+          .where("principals.kind", "=", "project")
+          .whereRef("principals.workspaceId", "=", "threads.workspaceId")
+          .executeTakeFirst();
+        if (!selected || selected.titleSource !== "provisional") return [];
+        const discover = async () => {
+          const assignments = await transaction
+            .selectFrom("delegations")
+            .selectAll()
+            .where("childThreadId", "=", threadId)
+            .orderBy("id")
+            .execute();
+          const input = await transaction
+            .selectFrom("threadInputs")
+            .innerJoin("messages", "messages.id", "threadInputs.messageId")
+            .selectAll("threadInputs")
+            .select("messages.content")
+            .where("threadInputs.threadId", "=", threadId)
+            .where("threadInputs.state", "in", ["pending", "claimed", "delivered", "unknown"])
+            .orderBy("messages.sequence")
+            .limit(1)
+            .executeTakeFirst();
+          return {
+            assignments,
+            input,
+            runIds: [
+              ...new Set([
+                ...assignments.flatMap((row) => [
+                  row.childRunId,
+                  ...(row.parentRunId ? [row.parentRunId] : []),
+                ]),
+                ...(input?.runId ? [input.runId] : []),
+              ]),
+            ].sort(),
+          };
+        };
+        const before = await discover();
+        if (before.runIds.length)
+          await transaction
+            .selectFrom("runs")
+            .select("id")
+            .where("id", "in", before.runIds)
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+        await lockWorkspaceRow(transaction, selected.workspaceId);
+        const current = await discover();
+        if (current.runIds.some((id) => !before.runIds.includes(id)))
+          throw new TransactionScopeChanged();
+        if (!current.input || !(await projectWorkIsCurrent(transaction, current.input))) return [];
+        const threadIds = [
+          ...new Set([threadId, ...current.assignments.map((row) => row.parentThreadId)]),
+        ].sort();
+        const threads = await transaction
+          .selectFrom("threads")
+          .selectAll()
+          .where("id", "in", threadIds)
+          .where("workspaceId", "=", selected.workspaceId)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
+        const thread = threads.find((row) => row.id === threadId);
+        if (
+          threads.length !== threadIds.length ||
+          !thread ||
+          thread.status === "archived" ||
+          thread.titleSource !== "provisional"
+        )
+          return [];
+        const title = provisionalThreadTitle(
+          MessageContentSchema.parse(current.input.content)
+            .flatMap((part) => (part.type === "text" ? [part.text] : []))
+            .join("\n"),
+        );
+        if (current.assignments.length)
+          await transaction
+            .selectFrom("delegations")
+            .select("id")
+            .where(
+              "id",
+              "in",
+              current.assignments.map((row) => row.id),
+            )
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+        await transaction
+          .updateTable("threads")
+          .set({ title, titleSource: "generated", updatedAt: new Date() })
+          .where("id", "=", threadId)
+          .execute();
+        const events: AgentEvent[] = [
+          await appendHostWorkspaceEvent(transaction, {
+            type: "thread.state-changed",
+            data: {
+              status: thread.status,
+              title,
+              icon: thread.icon,
+              inputQueuePaused: thread.inputQueuePaused,
+              pendingRequests: thread.pendingRequestCount,
+            },
+            environmentId: thread.environmentId,
+            workspaceId: thread.workspaceId,
+            threadId,
+            runId: null,
+          }),
+        ];
+        for (const assignment of current.assignments) {
+          const row = await transaction
+            .updateTable("delegations")
+            .set((eb) => ({ revision: eb("revision", "+", 1), updatedAt: new Date() }))
+            .where("id", "=", assignment.id)
+            .returningAll()
+            .executeTakeFirstOrThrow();
+          events.push(
+            ...(await projectAssignmentEventsInTransaction(transaction, row, "assignment.updated")),
+          );
+        }
+        const origin = projectOriginFromRow(current.input);
+        if (origin) await fenceProjectHumanRoot(transaction, origin);
+        return events;
+      },
+      undefined,
+      (error) => error instanceof TransactionScopeChanged,
+    );
+  }
+
+  async projectNamingCandidates(limit: number, after?: ThreadId) {
+    await assertProjectAuthority(this.database);
+    z.number().int().min(1).max(100).parse(limit);
+    return this.database
+      .selectFrom("threads")
+      .innerJoin("principals", "principals.id", "threads.createdByPrincipalId")
+      .select("threads.id")
+      .where("principals.kind", "=", "project")
+      .whereRef("principals.workspaceId", "=", "threads.workspaceId")
+      .where("threads.titleSource", "=", "provisional")
+      .where("threads.status", "!=", "archived")
+      .$call((query) => (after === undefined ? query : query.where("threads.id", ">", after)))
+      .where((eb) =>
+        eb.exists(
+          eb
+            .selectFrom("threadInputs")
+            .select("messageId")
+            .whereRef("threadInputs.threadId", "=", "threads.id")
+            .where("state", "in", ["pending", "claimed", "delivered", "unknown"]),
+        ),
+      )
+      .orderBy("threads.id")
+      .limit(limit)
+      .execute();
+  }
+
   async resolveProjectCaller(binding: ProjectRunBinding) {
     const thread = await this.projectThread(binding, binding.threadId);
     const run = await this.database
@@ -994,7 +1205,7 @@ export class ProjectWorkStore {
           accessMode: snapshot.accessMode,
           role: request.role,
           title: request.title,
-          titleSource: "chosen",
+          titleSource: request.home ? "chosen" : request.titleSource,
           status: "idle",
           listed: true,
           inheritsMain: false,
@@ -1437,7 +1648,9 @@ export class ProjectWorkStore {
 
   async delegateProjectWork(input: {
     readonly binding: ProjectRunBinding;
+    readonly threadId?: ThreadId;
     readonly title: string;
+    readonly titleSource?: "chosen" | "provisional";
     readonly content: readonly ContentPart[];
     readonly idempotencyKey: string;
   }) {
@@ -1448,22 +1661,57 @@ export class ProjectWorkStore {
         reason: "creatorless-tasks-not-supported",
         message: "Creatorless tasks are not supported yet",
       });
+    if (input.threadId) ThreadIdSchema.parse(input.threadId);
+    const titleSource = z.enum(["chosen", "provisional"]).parse(input.titleSource ?? "chosen");
     const title = z.string().trim().min(1).max(240).parse(input.title);
     const content = MessageContentSchema.parse(input.content);
     z.uuid().parse(input.idempotencyKey);
     const fingerprint = createHash("sha256")
-      .update(canonicalJson(["project-delegation-v1", binding.authority.principal, title, content]))
+      .update(
+        canonicalJson([
+          "project-delegation-v1",
+          binding.authority.principal,
+          title,
+          content,
+          input.threadId ?? null,
+          titleSource,
+        ]),
+      )
       .digest("hex");
     await assertProjectAuthority(this.database);
     return withDatabaseTransaction(
       this.database,
       async (transaction) => {
-        const parent = await transaction
+        await assertActiveProjectBinding(transaction, binding, this.dependencies);
+        const target = input.threadId
+          ? await transaction
+              .selectFrom("threads")
+              .select("id")
+              .where("id", "=", input.threadId)
+              .where("workspaceId", "=", binding.workspaceId)
+              .executeTakeFirst()
+          : null;
+        if (input.threadId && !target) admissionUnavailable("task-reuse-unavailable");
+        const reservedRuns = await transaction
           .selectFrom("runs")
           .selectAll()
-          .where("id", "=", binding.runId)
+          .where((eb) =>
+            eb.or([
+              eb("id", "=", binding.runId),
+              ...(target
+                ? [
+                    eb.and([
+                      eb("threadId", "=", target.id),
+                      eb("status", "in", nonTerminalRunStatuses),
+                    ]),
+                  ]
+                : []),
+            ]),
+          )
+          .orderBy("id")
           .forNoKeyUpdate()
-          .executeTakeFirst();
+          .execute();
+        const parent = reservedRuns.find((row) => row.id === binding.runId);
         if (!parent) admissionUnavailable("source-unavailable");
         await assertActiveProjectBinding(transaction, binding, this.dependencies);
         const origin = projectOriginFromRow(parent);
@@ -1501,6 +1749,17 @@ export class ProjectWorkStore {
           };
         }
         await lockWorkspaceRow(transaction, binding.workspaceId);
+        if (target) {
+          const current = await transaction
+            .selectFrom("runs")
+            .select("id")
+            .where("threadId", "=", target.id)
+            .where("status", "in", nonTerminalRunStatuses)
+            .execute();
+          if (current.some((row) => !reservedRuns.some((held) => held.id === row.id)))
+            throw new TransactionScopeChanged();
+          if (current.length) admissionUnavailable("task-reuse-busy");
+        }
         const { environmentId, snapshot, principalId } = await reserveProjectRuntime(
           transaction,
           binding.workspaceId,
@@ -1510,12 +1769,41 @@ export class ProjectWorkStore {
           [parent.harnessInstanceId],
         );
         await assertActiveProjectBinding(transaction, binding, this.dependencies);
-        const parentThread = await transaction
+        const threads = await transaction
           .selectFrom("threads")
           .selectAll()
-          .where("id", "=", binding.threadId)
+          .where("id", "in", [...new Set([binding.threadId, ...(target ? [target.id] : [])])])
+          .orderBy("id")
           .forNoKeyUpdate()
-          .executeTakeFirstOrThrow();
+          .execute();
+        const parentThread = threads.find((row) => row.id === binding.threadId);
+        if (!parentThread) admissionUnavailable("source-unavailable");
+        const reused = target ? threads.find((row) => row.id === target.id) : null;
+        if (
+          target &&
+          (!reused ||
+            reused.role !== "work" ||
+            reused.status === "archived" ||
+            reused.createdByPrincipalId !== principalId)
+        )
+          admissionUnavailable("task-reuse-unavailable");
+        if (reused) {
+          const ancestors = await sql<{ id: string }>`with recursive lineage as (
+            select id,parent_thread_id from threads where id=${parentThread.id}
+            union all select t.id,t.parent_thread_id from threads t join lineage l on t.id=l.parent_thread_id
+          ) select id from lineage`.execute(transaction);
+          if (ancestors.rows.some((row) => row.id === reused.id))
+            admissionUnavailable("task-reuse-cycle");
+          if (
+            await transaction
+              .selectFrom("delegations")
+              .select("id")
+              .where("childThreadId", "=", reused.id)
+              .where("status", "=", "open")
+              .executeTakeFirst()
+          )
+            admissionUnavailable("task-reuse-busy");
+        }
         const depth = await sql<{ depth: string }>`with recursive lineage as (
         select id,parent_thread_id,1 as depth from threads where id = ${parentThread.id}
         union all select t.id,t.parent_thread_id,l.depth+1 from threads t join lineage l on l.parent_thread_id=t.id where l.depth <= ${agentDelegationMaxDepth}
@@ -1530,50 +1818,70 @@ export class ProjectWorkStore {
           .returning("id")
           .executeTakeFirst();
         if (!budget) admissionUnavailable("delegation-budget-exhausted");
-        const threadId = createId("thread");
+        const threadId = reused?.id ?? createId("thread");
         const now = new Date();
-        const childRow = await transaction
-          .insertInto("threads")
-          .values({
-            id: threadId,
-            lineageRootThreadId: parentThread.lineageRootThreadId,
-            workspaceId: binding.workspaceId,
-            parentThreadId: parentThread.id,
-            createdBy: origin.userId,
-            createdByPrincipalId: principalId,
-            environmentId: environmentId,
-            harnessInstanceId: snapshot.harnessInstanceId,
-            modelSelection: jsonValue(snapshot.modelSelection),
-            accessMode: snapshot.accessMode,
-            status: "idle",
-            title,
-            listed: true,
-            inheritsMain: false,
-            role: "work",
-            icon: null,
-            iconSource: "provisional",
-            color: parentThread.color,
-            askedAt: now,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const createdEvent = await appendHostWorkspaceEvent(transaction, {
-          type: "thread.created",
-          data: {
-            thread: threadFromRow({
-              ...childRow,
-              providerSessionId: null,
-              continuationIdentity: null,
-              pendingRequests: 0,
+        const childRow =
+          reused ??
+          (await transaction
+            .insertInto("threads")
+            .values({
+              id: threadId,
+              lineageRootThreadId: parentThread.lineageRootThreadId,
+              workspaceId: binding.workspaceId,
+              parentThreadId: parentThread.id,
+              createdBy: origin.userId,
+              createdByPrincipalId: principalId,
+              environmentId: environmentId,
+              harnessInstanceId: snapshot.harnessInstanceId,
+              modelSelection: jsonValue(snapshot.modelSelection),
+              accessMode: snapshot.accessMode,
+              status: "idle",
+              title,
+              titleSource,
+              listed: true,
+              inheritsMain: false,
+              role: "work",
+              icon: null,
+              iconSource: "provisional",
+              color: parentThread.color,
+              askedAt: now,
+              createdAt: now,
+              updatedAt: now,
+            })
+            .returningAll()
+            .executeTakeFirstOrThrow());
+        const createdEvents: AgentEvent[] = [];
+        if (!reused)
+          createdEvents.push(
+            await appendHostWorkspaceEvent(transaction, {
+              type: "thread.created",
+              data: {
+                thread: threadFromRow({
+                  ...childRow,
+                  providerSessionId: null,
+                  continuationIdentity: null,
+                  pendingRequests: 0,
+                }),
+              },
+              environmentId: childRow.environmentId,
+              workspaceId: childRow.workspaceId,
+              threadId: childRow.id,
+              runId: null,
             }),
-          },
-          environmentId: childRow.environmentId,
-          workspaceId: childRow.workspaceId,
-          threadId: childRow.id,
-          runId: null,
-        });
+          );
+        if (reused?.doneAt) {
+          await transaction
+            .updateTable("threads")
+            .set({
+              doneAt: null,
+              doneReason: null,
+              inputQueuePaused: false,
+              inputQueuePausedBy: null,
+            })
+            .where("id", "=", reused.id)
+            .execute();
+          createdEvents.push(await appendDoneState(transaction, reused.id));
+        }
         const assignmentId = createId("delegation");
         const admitted = await this.admitInTransaction(
           transaction,
@@ -1638,7 +1946,7 @@ export class ProjectWorkStore {
           assignmentId,
           runId: admitted.runId,
           events: [
-            createdEvent,
+            ...createdEvents,
             ...admitted.events,
             ...(await projectAssignmentEventsInTransaction(
               transaction,
@@ -1672,7 +1980,10 @@ export class ProjectWorkStore {
     const content = MessageContentSchema.parse(input.content);
     const policy = ThreadInputPolicySchema.parse(input.policy);
     requireBoundedIdentity(input.idempotencyKey, "Project input identity", 4096);
-    if (content.some((part) => part.type !== "text"))
+    if (
+      content.some((part) => part.type !== "text" && part.type !== "artifact") ||
+      (content.some((part) => part.type === "artifact") && (source.kind !== "human" || !origin))
+    )
       admissionUnavailable("input-publication-not-supported");
     if ((source.kind === "human" || source.kind === "connection") && !origin)
       admissionUnavailable("captured-root-unavailable");
@@ -2104,6 +2415,17 @@ export class ProjectWorkStore {
           createdAt: new Date(),
         })
         .execute();
+    const artifactIds = content.flatMap((part) =>
+      part.type === "artifact" ? [part.artifactId] : [],
+    );
+    if (artifactIds.length)
+      await transaction
+        .selectFrom("attachments")
+        .select("id")
+        .where("id", "in", artifactIds)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
     await transaction
       .selectFrom("delegations")
       .select("id")
@@ -2128,6 +2450,15 @@ export class ProjectWorkStore {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    if (artifactIds.length && origin)
+      await claimMessageAttachments(transaction, {
+        content,
+        messageId,
+        requestedBy: origin.userId,
+        sourceKind: source.kind,
+        threadId: thread.id,
+        workspaceId: thread.workspaceId,
+      });
     const steer = steerBinding
       ? await new ProjectExecutionStore().enqueueCommand(transaction, {
           binding: steerBinding,

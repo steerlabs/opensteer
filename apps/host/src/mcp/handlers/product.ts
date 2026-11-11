@@ -1802,7 +1802,6 @@ export class ProjectProductToolHandlers implements ProjectAgentToolPort {
         if (input.workspaceId && input.workspaceId !== binding.workspaceId)
           throw forbidden("Project tasks cannot cross Projects");
         if (
-          input.threadId ||
           input.specialist ||
           input.places?.length ||
           input.environmentId ||
@@ -1813,11 +1812,13 @@ export class ProjectProductToolHandlers implements ProjectAgentToolPort {
             code: "conflict",
             reason: "project-task-selection-not-supported",
             message:
-              "Project child tasks currently use their Project runtime; reuse and personal selections are not supported yet",
+              "Project child tasks use their Project runtime; personal runtime selections are not supported",
           });
         const child = await this.options.work.delegateProjectWork({
           binding,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
           title: input.title ?? provisionalThreadTitle(input.task),
+          titleSource: input.title ? "chosen" : "provisional",
           content: [{ type: "text", text: input.task }],
           idempotencyKey: operationId(caller, operationKey, "thread_delegate"),
         });
@@ -1889,30 +1890,8 @@ export class ProjectProductToolHandlers implements ProjectAgentToolPort {
       }
       case "thread_read": {
         const input = specs.thread_read.input.parse(call.input);
-        if (
-          input.view !== "messages" ||
-          (input.itemId && !MessageIdSchema.safeParse(input.itemId).success)
-        )
-          throw new OpensteerError({
-            code: "conflict",
-            reason: "project-activity-reader-unavailable",
-            message: "Project tool activity reads are not supported yet",
-          });
         const destination = await threadId(input.threadId);
         const target = await this.options.work.projectThread(binding, destination);
-        const page = await this.options.work.projectHistory(binding, {
-          threadId: destination,
-          maxItems: input.itemId ? 1 : input.limit,
-          maxBytes: 256 * 1024,
-          ...(input.before ? { before: input.before } : {}),
-          ...(input.query ? { query: input.query } : {}),
-          ...(input.itemId
-            ? { aroundMessageId: MessageIdSchema.parse(input.itemId) }
-            : input.aroundMessageId
-              ? { aroundMessageId: input.aroundMessageId }
-              : {}),
-        });
-        if (!page) throw forbidden("Thread is outside this Project");
         const recentRuns = await this.options.work.database
           .selectFrom("runs")
           .select([
@@ -1928,6 +1907,89 @@ export class ProjectProductToolHandlers implements ProjectAgentToolPort {
           .orderBy("runOrdinal", "desc")
           .limit(input.runLimit)
           .execute();
+        const context = {
+          thread: ThreadDetailSchema.parse(target),
+          recentPlaces: [],
+          recentRuns: recentRuns.map((run) => ({
+            runId: run.id,
+            status: run.status,
+            assignmentId: run.assignmentId,
+            modelId: run.modelSelection.modelId,
+            createdAt: run.createdAt.toISOString(),
+            startedAt: run.startedAt?.toISOString() ?? null,
+            completedAt: run.completedAt?.toISOString() ?? null,
+          })),
+        };
+        if (
+          input.view === "activity" ||
+          (input.itemId && !MessageIdSchema.safeParse(input.itemId).success)
+        ) {
+          const page = await this.options.work.projectActivity(binding, {
+            threadId: destination,
+            limit: input.itemId ? 1 : input.limit,
+            ...(input.before ? { before: input.before } : {}),
+            ...(input.itemId ? { itemId: input.itemId } : {}),
+          });
+          const starts = new Map(page.starts.map((item) => [item.completionSequence, item.start]));
+          const mapped = page.items.map((item) => ({
+            sequence: item.sequence,
+            item:
+              item.type === "message"
+                ? messageItem(
+                    {
+                      ...item.message,
+                      content: item.message.content.map((part) =>
+                        isPlaceContentPart(part)
+                          ? { type: "text", text: "[Place unavailable]" }
+                          : part,
+                      ),
+                    },
+                    input.maxCharsPerItem,
+                    input.textOffset,
+                  )
+                : activityItem(item, {
+                    start:
+                      item.type === "tool.started"
+                        ? item
+                        : item.type === "tool.completed"
+                          ? starts.get(item.sequence)
+                          : undefined,
+                    nodeTitle:
+                      item.type === "node.completed"
+                        ? page.nodeTitles.get(item.data.nodeId)
+                        : undefined,
+                    ownRun:
+                      !!item.runId &&
+                      page.runPrincipals.get(item.runId) ===
+                        binding.authority.principal.principalId,
+                    named: !!input.itemId,
+                    maxChars: input.maxCharsPerItem,
+                    offset: input.textOffset,
+                  }),
+          }));
+          const items = boundedThreadItems(mapped.map((item) => item.item));
+          if (input.itemId && !items.length) throw forbidden("Item is unavailable in this Thread");
+          const trimmed = items.length < mapped.length;
+          return {
+            ...context,
+            items,
+            hasMore: trimmed || page.hasMore,
+            nextBefore: trimmed ? (mapped[items.length - 1]?.sequence ?? null) : page.nextBefore,
+          };
+        }
+        const page = await this.options.work.projectHistory(binding, {
+          threadId: destination,
+          maxItems: input.itemId ? 1 : input.limit,
+          maxBytes: 256 * 1024,
+          ...(input.before ? { before: input.before } : {}),
+          ...(input.query ? { query: input.query } : {}),
+          ...(input.itemId
+            ? { aroundMessageId: MessageIdSchema.parse(input.itemId) }
+            : input.aroundMessageId
+              ? { aroundMessageId: input.aroundMessageId }
+              : {}),
+        });
+        if (!page) throw forbidden("Thread is outside this Project");
         const messages = [...page.messages].sort((a, b) => compareSequence(b.sequence, a.sequence));
         const items = boundedThreadItems(
           messages.map((message) =>
@@ -1944,17 +2006,7 @@ export class ProjectProductToolHandlers implements ProjectAgentToolPort {
           ),
         );
         return {
-          thread: ThreadDetailSchema.parse(target),
-          recentPlaces: [],
-          recentRuns: recentRuns.map((run) => ({
-            runId: run.id,
-            status: run.status,
-            assignmentId: run.assignmentId,
-            modelId: run.modelSelection.modelId,
-            createdAt: run.createdAt.toISOString(),
-            startedAt: run.startedAt?.toISOString() ?? null,
-            completedAt: run.completedAt?.toISOString() ?? null,
-          })),
+          ...context,
           items,
           hasMore: items.length < messages.length || page.window.hasMore,
           nextBefore:

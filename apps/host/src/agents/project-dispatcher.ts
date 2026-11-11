@@ -557,20 +557,31 @@ export class ProjectRunnerFrameService {
             message: "Project program credentials belong to the Trigger slice",
           });
         const { kind: _kind, ...binding } = frame.binding;
-        const [agentTools, attachments, egress] = await Promise.all([
-          this.options.capabilities.issue(binding, "opensteer-project-run-tools"),
-          this.options.capabilities.issue(binding, "opensteer-project-run-attachments"),
-          this.options.capabilities.issue(binding, "opensteer-project-egress"),
-        ]);
+        let result: Extract<
+          ProjectHostToRunnerMessage,
+          { type: "host.project.grants.credentials" }
+        >["result"];
+        try {
+          const [agentTools, attachments, egress] = await Promise.all([
+            this.options.capabilities.issue(binding, "opensteer-project-run-tools"),
+            this.options.capabilities.issue(binding, "opensteer-project-run-attachments"),
+            this.options.capabilities.issue(binding, "opensteer-project-egress"),
+          ]);
+          await this.options.capabilities.assertProjectBinding(binding);
+          result = {
+            status: "issued",
+            credentials: { kind: "run", agentTools, attachments, egress },
+          };
+        } catch (error) {
+          if (!(error instanceof OpensteerError)) throw error;
+          result = { status: error.code === "forbidden" ? "refused" : "unavailable" };
+        }
         await send({
           ...peer,
           type: "host.project.grants.credentials",
           requestId: frame.requestId,
           binding: frame.binding,
-          result: {
-            status: "issued",
-            credentials: { kind: "run", agentTools, attachments, egress },
-          },
+          result,
         });
         return;
       }

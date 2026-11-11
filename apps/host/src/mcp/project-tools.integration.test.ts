@@ -151,6 +151,12 @@ describeStore("Project MCP tools", (it) => {
         before: read.nextBefore,
       });
       expect(JSON.stringify(earlier)).toContain("First published report");
+      const activity = await call("thread_read", {
+        threadId: first.threadId,
+        view: "activity",
+        limit: 1,
+      });
+      expect(JSON.stringify(activity)).toContain("Second published report");
       expect(await call("task_cancel", { assignmentId: first.assignmentId })).toMatchObject({
         status: "cancelled",
       });
