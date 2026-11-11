@@ -130,8 +130,8 @@ export async function delegationPlacement(
   if (candidates.length === 0) {
     throw badRequest(
       request.harnessInstanceId
-        ? `${request.harnessInstanceId} is not an enabled AI engine on ${environment.name}. orchestrator_capabilities names the engines each environment can run.`
-        : `${environment.name} has no enabled ${parentHarness.driverKind} AI engine on ${parentHarness.sourceId}. Name another engine with harnessInstanceId; orchestrator_capabilities names the engines each environment can run.`,
+        ? `${request.harnessInstanceId} is not an enabled AI engine on ${environment.name}. orchestrator_capabilities lists the engines a task there can run.`
+        : `${environment.name} has no enabled ${parentHarness.driverKind} AI engine on ${parentHarness.sourceId}. Name another engine with harnessInstanceId; orchestrator_capabilities lists the engines a task there can run.`,
     );
   }
   const inspected = await Promise.all(
