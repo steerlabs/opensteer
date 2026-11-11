@@ -17,7 +17,7 @@ import type {
  * this person may drop.
  */
 export interface DeploymentAccessCatalogDeployment extends DesktopDeploymentSummary {
-  readonly policy?: Pick<DeploymentClientPolicy, "ownership">;
+  readonly policy?: Pick<DeploymentClientPolicy, "ownership"> | undefined;
   readonly capabilities?: readonly HostCapability[] | null;
   readonly accountAccess: "owner" | "member" | null;
   readonly accountLivenessExpiresAt: string | null;
