@@ -366,7 +366,16 @@ describeStore("Project Requests", (it) => {
         expect((await store.cancel(tx, [older])).runIds).toEqual([]);
         const hooks = projectRequestRevocationHooks(store, {
           stop: async (transaction, input) => {
-            expect(input).toEqual({ runIds: [fixture.run.id], reason: "authority-revoked" });
+            expect(input).toEqual({
+              runIds: [fixture.run.id],
+              reason: "authority-revoked",
+              requestEvents: expect.arrayContaining([
+                expect.objectContaining({
+                  type: "request.cancelled",
+                  data: { requestId: event.data.request.id, reason: "authority-revoked" },
+                }),
+              ]),
+            });
             await transaction
               .updateTable("runs")
               .set({ status: "interrupted", completedAt: new Date() })
@@ -671,7 +680,16 @@ describeStore("Unattended Project Requests", (it) => {
     // E's Project terminalizer is not in e1c2306bf; this transaction double proves the handover/rollback boundary.
     const stopped = await cancel({
       stop: async (tx, input) => {
-        expect(input).toEqual({ runIds: [fixture.run.id], reason: "no-eligible-manager" });
+        expect(input).toEqual({
+          runIds: [fixture.run.id],
+          reason: "no-eligible-manager",
+          requestEvents: expect.arrayContaining([
+            expect.objectContaining({
+              type: "request.cancelled",
+              data: { requestId: event.data.request.id, reason: "no-eligible-manager" },
+            }),
+          ]),
+        });
         await tx
           .updateTable("runs")
           .set({ status: "interrupted", completedAt: new Date() })

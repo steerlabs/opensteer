@@ -68,6 +68,7 @@ export interface ProjectRequestStopPort {
     input: {
       readonly runIds: readonly RunId[];
       readonly reason: "authority-revoked" | "no-eligible-manager";
+      readonly requestEvents: readonly AgentEvent[];
     },
   ): Promise<void>;
 }
@@ -686,7 +687,12 @@ export class ProjectRequestStore {
     const runIds = [
       ...new Set(rows.flatMap((row) => (row.originatingRunId ? [row.originatingRunId] : []))),
     ];
-    if (runIds.length) await work.stop(transaction, { runIds, reason: "no-eligible-manager" });
+    if (runIds.length)
+      await work.stop(transaction, {
+        runIds,
+        reason: "no-eligible-manager",
+        requestEvents: events,
+      });
     return { runIds, events };
   }
 }
@@ -881,7 +887,11 @@ export function projectRequestRevocationHooks(
     ): Promise<void> => {
       const cancelled = await requests.cancel(transaction, roots);
       if (cancelled.runIds.length)
-        await work.stop(transaction, { runIds: cancelled.runIds, reason: "authority-revoked" });
+        await work.stop(transaction, {
+          runIds: cancelled.runIds,
+          reason: "authority-revoked",
+          requestEvents: cancelled.events,
+        });
     },
   };
 }
