@@ -10,7 +10,11 @@
     "./test-support/database": "./src/test-database.test-support.ts",
     "./test-support/store": "./src/store.integration.test-support.ts",
     "./test-support/team": "./src/team-fixture.test-support.ts",
-    "./test-support/personal": "./src/personal-fixture.test-support.ts"
+    "./test-support/personal": "./src/personal-fixture.test-support.ts",
+    "./personal-team-links-store": "./src/personal-team-links-store.ts",
+    "./personal-team-channel-folders-store": "./src/personal-team-channel-folders-store.ts",
+    "./personal-team-requests-store": "./src/personal-team-requests-store.ts",
+    "./team-requests-port": "./src/team-requests-port.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

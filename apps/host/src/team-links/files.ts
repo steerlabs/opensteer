@@ -1,0 +1,196 @@
+import {
+  type ArtifactContentPart,
+  type RunId,
+  type TeamBlobId,
+  type TeamSource,
+} from "@opensteer/core";
+import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
+import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import {
+  TeamFileResultSchema,
+  TeamBinaryUploadMetadataSchema,
+  teamBinaryRoutes,
+  type TeamFileSchema,
+} from "@opensteer/protocol";
+import { Readable } from "node:stream";
+import { createHash, randomUUID } from "node:crypto";
+import { basename, win32 } from "node:path";
+import type { z } from "zod";
+import { boundedTeamStream } from "../team-link-endpoint/binary.js";
+import { linkError } from "../team-link-endpoint/contracts.js";
+import { PersonalTeamVault } from "./vault.js";
+import { TeamLinkNetwork } from "./network.js";
+
+export interface PersonalTeamAttachmentPort {
+  admitPath(runId: RunId, path: string, signal: AbortSignal): Promise<ArtifactContentPart>;
+  /** Uses the existing private attachment store/cache, bound to this Run. No network credentials enter it. */
+  import(input: {
+    readonly runId: RunId;
+    readonly file: z.infer<typeof TeamFileSchema>;
+    readonly source: TeamSource;
+    readonly bytes: Readable;
+    readonly signal: AbortSignal;
+  }): Promise<{ readonly path: string; readonly attachment: ArtifactContentPart }>;
+  export(
+    runId: RunId,
+    attachment: ArtifactContentPart,
+  ): Promise<{ readonly bytes: Readable; readonly sha256: string }>;
+}
+export class TeamRunFileTransfers {
+  readonly #requests: PersonalTeamRequestsStore;
+  readonly #links: PersonalTeamLinksStore;
+  readonly #vault: PersonalTeamVault;
+  readonly #network: TeamLinkNetwork;
+  readonly #attachments: PersonalTeamAttachmentPort;
+  constructor(options: {
+    readonly requests: PersonalTeamRequestsStore;
+    readonly links: PersonalTeamLinksStore;
+    readonly vault: PersonalTeamVault;
+    readonly network: TeamLinkNetwork;
+    readonly attachments: PersonalTeamAttachmentPort;
+  }) {
+    this.#requests = options.requests;
+    this.#links = options.links;
+    this.#vault = options.vault;
+    this.#network = options.network;
+    this.#attachments = options.attachments;
+  }
+
+  async #authority(runId: RunId) {
+    const request = await this.#requests.forRun(runId);
+    if (!request) throw new Error("no team request in this turn");
+    const link = await this.#links.get(request.teamId);
+    if (link?.state === "needs_update" || link?.state === "joining")
+      throw linkError("runner_offline");
+    if (!link?.credentialReference || !["active", "unreachable"].includes(link.state))
+      throw linkError();
+    const { secret } = await this.#vault.open(link.credentialReference, request.teamId);
+    return {
+      request,
+      link,
+      headers: {
+        authorization: `Bearer ${secret}`,
+        [teamApiVersionHeader]: String(teamApiVersion),
+        "x-opensteer-team-request-id": request.requestId,
+      },
+    };
+  }
+
+  async fetch(runId: RunId, blobId: TeamBlobId, signal: AbortSignal = AbortSignal.timeout(60_000)) {
+    const { request, link, headers } = await this.#authority(runId);
+    const response = await this.#network.request(link.approvedOrigin, teamBinaryRoutes.download, {
+      signal,
+      headers: {
+        ...headers,
+        "x-opensteer-team-blob-id": blobId,
+        "x-opensteer-team-file-part": "original",
+      },
+    });
+    try {
+      const encoded = response.headers["x-opensteer-team-file"];
+      if (typeof encoded !== "string" || encoded.length > 8192) throw linkError("bad_request");
+      const metadata = TeamFileResultSchema.parse(
+        JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")),
+      );
+      if (
+        metadata.file.id !== blobId ||
+        metadata.file.channelId !== metadata.source.channelId ||
+        metadata.source.teamId !== request.teamId
+      )
+        throw linkError();
+      const bytes = boundedTeamStream(response, metadata.file.sizeBytes, signal, {
+        size: metadata.file.sizeBytes,
+        sha256: metadata.file.sha256,
+      });
+      const local = await this.#attachments.import({ runId, ...metadata, bytes, signal });
+      return { ...metadata, ...local };
+    } finally {
+      response.destroy();
+    }
+  }
+
+  async upload(
+    runId: RunId,
+    attachment: ArtifactContentPart,
+    signal: AbortSignal = AbortSignal.timeout(60_000),
+  ) {
+    const { request, link, headers } = await this.#authority(runId);
+    const exported = await this.#attachments.export(runId, attachment);
+    let body: Readable | undefined;
+    try {
+      const identity = createHash("sha256")
+        .update(
+          JSON.stringify([
+            request.teamId,
+            request.requestId,
+            basename(win32.basename(attachment.name)),
+            attachment.mediaType,
+            attachment.sizeBytes,
+            exported.sha256,
+          ]),
+        )
+        .digest();
+      identity[6] = (identity[6]! & 0x0f) | 0x50;
+      identity[8] = (identity[8]! & 0x3f) | 0x80;
+      const hex = identity.subarray(0, 16).toString("hex");
+      const metadata = TeamBinaryUploadMetadataSchema.parse({
+        clientUploadId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+        filename: basename(win32.basename(attachment.name)),
+        mediaType: attachment.mediaType,
+        sizeBytes: attachment.sizeBytes,
+        sha256: exported.sha256,
+        previewSizeBytes: 0,
+      });
+      const boundary = `opensteer-${randomUUID()}`;
+      const contentType = `multipart/form-data; boundary=${boundary}`;
+      body = Readable.from(
+        (async function* () {
+          yield Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="original"; filename="original"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+          );
+          for await (const chunk of boundedTeamStream(exported.bytes, metadata.sizeBytes, signal, {
+            size: metadata.sizeBytes,
+            sha256: metadata.sha256,
+          }))
+            yield chunk;
+          yield Buffer.from(`\r\n--${boundary}--\r\n`);
+        })(),
+      );
+      const response = await this.#network.request(link.approvedOrigin, teamBinaryRoutes.upload, {
+        method: "POST",
+        body,
+        signal,
+        headers: {
+          ...headers,
+          "content-type": contentType,
+          "x-opensteer-team-upload": JSON.stringify(metadata).replace(
+            /[^\x20-\x7e]/g,
+            (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+          ),
+        },
+      });
+      const chunks: Buffer[] = [];
+      for await (const chunk of boundedTeamStream(response, 8192, signal))
+        chunks.push(Buffer.from(chunk));
+      const result = TeamFileResultSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      if (
+        result.source.teamId !== request.teamId ||
+        result.file.channelId !== request.source.channelId ||
+        result.source.threadRootId !== request.source.threadRootId
+      )
+        throw linkError();
+      return result;
+    } finally {
+      exported.bytes.destroy();
+      body?.destroy();
+    }
+  }
+
+  async uploadPath(runId: RunId, path: string, signal: AbortSignal = AbortSignal.timeout(60_000)) {
+    await this.#authority(runId);
+    signal.throwIfAborted();
+    const attachment = await this.#attachments.admitPath(runId, path, signal);
+    return this.upload(runId, attachment, signal);
+  }
+}
