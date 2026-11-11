@@ -153,8 +153,9 @@ broker holds them from then; desktop main keeps only the transaction ID.
 The offer goes only to the viewer that typed, as fill's does, and only that viewer can answer it,
 once. Whether the sign-in worked decides only when to ask, never authority: the form left the page
 or the frame moved on, and no password field came back. Any agent command before the offer shows
-ends it. The site is the submitting frame's committed origin; loopback and the Deployment's own
-sites are refused like any sign-in.
+ends it, and so does that viewer leaving. The site is the submitting document's own origin, read as
+it submits, so a navigation landing first cannot lend the login another site; loopback and the
+Deployment's own sites are refused like any sign-in.
 
 The broker adds the login it holds, built inside the broker, with no grant, after checking in the
 same commit that no login for that site has the username. It never edits or deletes anything, and
