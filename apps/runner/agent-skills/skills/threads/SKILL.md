@@ -5,14 +5,14 @@ description: Find, read, delegate, continue, configure, queue, interrupt or canc
 
 # Threads and tasks
 
-A Thread holds durable history; a Run is one execution; a task is work one Thread assigned to another. Use native workers for Run-local work, `thread_delegate` for independent work or durable continuation.
+A Thread holds durable history; a Run is one execution; a task is work one Thread assigned to another. Use native workers for Run-local work, `delegate_task` for independent work or durable continuation.
 
-- New work: `thread_delegate`; omit `workspaceId` for this Workspace, or pass a ready `specialist`. Finished task: `thread_delegate` with `threadId`. Active task: `thread_message`.
+- New work: `delegate_task`; omit `workspaceId` for this Workspace, or pass a ready `specialist`. Finished task: `delegate_task` with `threadId`. Active task: `thread_send`.
 - Your tasks: `thread_list({parentThreadId: "self"})`. What one did and where: `thread_read`, with `view: "activity"` for its tools. One task's state: `task_status`.
 - Pause work: `thread_interrupt`, resumable with `thread_queue`. Stop it for good: `task_cancel`.
 - Engine or model: `thread_configure`. Waiting inputs: `thread_queue`. Rename, done or reopen: `thread_update`.
 
-Runs and programs get a task's final result automatically: do other work or end your turn, and do not poll. Connections get no Assignment: keep `threadId` and observe with `thread_wait` and `thread_read`. Programs may also `thread_wait`; a timeout or disconnect stops nothing.
+Runs and programs get a task's final result automatically unless the assigner read it through `task_status` or a settled wait first. `thread_wait` accepts an `assignmentId` or conversation `threadId` for a bounded wait of up to 100 seconds. `delegate_task` mode `wait` uses the same waiter. An empty result still settles the task. Connections get no Assignment: wait on `threadId`. Timeout or disconnect stops nothing. `orchestrator_capabilities` reports execution choices, the access ceiling and enforced budgets.
 
 Delegation inherits its root's reach; resource grants and access ceilings still apply. On an Assignment, `person_message` and `person_show` are refused even when listed: send what the person should hear or see to your assigner.
 

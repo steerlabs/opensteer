@@ -675,7 +675,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await denied(
         `A5 ${kind} report home stays within reach`,
         f.isolatedChild.id,
-        "thread_message report home",
+        "thread_send report home",
         "forbidden",
         () =>
           control.handle(token, {
@@ -689,7 +689,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       await check(
         `A5 ${kind} delegates locally`,
         f.isolatedChild.id,
-        "thread_delegate",
+        "delegate_task",
         "same Workspace and current access mode",
         async () => {
           const response = await control.handle(token, {
@@ -876,7 +876,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     await check(
       "A6 Chat Watch queues outside lineage",
       f.chat.id,
-      "thread_message queue",
+      "thread_send queue",
       "run queued",
       async () => {
         const response = await watches.handle(watchToken, {

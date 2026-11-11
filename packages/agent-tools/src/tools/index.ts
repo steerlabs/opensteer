@@ -1,15 +1,15 @@
 import { administrationTools } from "./administration.js";
 import { app_publish, app_list, app_fetch } from "./apps.js";
-import { request_list, request_withdraw } from "./requests.js";
-import { environment_list } from "./environment.js";
+import { pending_request, request_withdraw } from "./requests.js";
+import { environment_list, orchestrator_capabilities } from "./environment.js";
 import { project_list, project_create, plugin_install } from "./projects.js";
 import {
   thread_read,
   thread_list,
-  thread_delegate,
+  delegate_task,
   task_status,
   task_cancel,
-  thread_message,
+  thread_send,
   thread_interrupt,
   thread_update,
   thread_wait,
@@ -37,20 +37,21 @@ export const agentTools = [
   app_publish,
   app_list,
   app_fetch,
-  request_list,
+  pending_request,
   request_withdraw,
   environment_list,
+  orchestrator_capabilities,
   project_list,
   project_create,
   plugin_install,
   thread_read,
   thread_list,
-  thread_delegate,
+  delegate_task,
   task_status,
   task_cancel,
   person_message,
   person_show,
-  thread_message,
+  thread_send,
   thread_interrupt,
   thread_update,
   thread_wait,

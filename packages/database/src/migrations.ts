@@ -4845,6 +4845,8 @@ export function migrationProvider() {
         "0171_project_execution_preparation": projectExecutionPreparationMigration,
         "0172_team_administration": teamAdministrationMigration,
         "0173_node_detail": nodeDetailMigration,
+        "0174_assignment_result_reads": assignmentResultReadsMigration,
+        "0175_program_tool_names": programToolNamesMigration,
       };
     },
   };
@@ -7958,6 +7960,40 @@ const nodeDetailMigration: Migration = {
         on public.workspace_events (node_detail_id, sequence desc) where node_detail_id is not null;
       create index workspace_events_thread_own_history
         on public.workspace_events (thread_id, sequence) include (type) where node_detail_id is null;
+    `.execute(database);
+  },
+};
+
+const assignmentResultReadsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.delegations drop constraint delegations_result_check,
+        add constraint delegations_result_check check (
+          (result_status = 'pending' and completed_at is null and result_message_id is null and result_reason is null)
+          or (result_status = 'delivered' and completed_at is not null and (
+            ((result_message_id is not null or result_text is not distinct from '') and result_reason is null)
+            or result_reason is not distinct from 'read-by-assigner'))
+          or (result_status = 'undeliverable' and completed_at is not null
+            and result_message_id is null and result_reason is not null));
+    `.execute(database);
+  },
+};
+
+/**
+ * A saved Trigger program runs unchanged for as long as it exists, so the
+ * tools it names are renamed where it is stored. Whole names only: a longer
+ * name that merely contains one is someone else's.
+ */
+export const programToolNamesMigration: Migration = {
+  async up(database) {
+    await sql`
+      update public.trigger_revisions
+      set program = jsonb_set(program, '{source}', to_jsonb(
+        regexp_replace(regexp_replace(regexp_replace(program->>'source',
+          '\\mthread_delegate\\M', 'delegate_task', 'g'),
+          '\\mthread_message\\M', 'thread_send', 'g'),
+          '\\mrequest_list\\M', 'pending_request', 'g')))
+      where program->>'source' ~ '\\m(thread_delegate|thread_message|request_list)\\M';
     `.execute(database);
   },
 };

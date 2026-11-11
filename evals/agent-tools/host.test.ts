@@ -181,7 +181,7 @@ it("validates the new surface cases with each caller's production inventory", as
         }) as unknown as Transport,
       );
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names.includes("thread_wait")).toBe(c.caller === "connection");
+      expect(names).toContain("thread_wait");
       expect(!!client.getInstructions()).toBe(c.caller === "connection");
       for (const required of c.expect.calls) {
         expect(names, c.id).toContain(required.tool);
@@ -192,7 +192,7 @@ it("validates the new surface cases with each caller's production inventory", as
             ...(["integration_request", "sign_in"].includes(required.tool)
               ? { reason: "Complete the account check" }
               : {}),
-            ...(required.tool === "thread_delegate" ? { task: "Compare vendors" } : {}),
+            ...(required.tool === "delegate_task" ? { task: "Compare vendors" } : {}),
           },
         });
         expect(host.calls.at(-1)?.valid, `${c.id}: ${required.tool}`).toBe(true);
@@ -243,7 +243,7 @@ it("preserves production action validation before consuming mocks", async () => 
       ],
       ["trigger_read", { action: "get" }],
       [
-        "thread_delegate",
+        "delegate_task",
         {
           task: "Two destinations",
           threadId: "thr_00000000-0000-4000-8000-000000000001",

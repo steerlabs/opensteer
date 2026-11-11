@@ -181,6 +181,8 @@ const releasedMigrationNames = [
   "0171_project_execution_preparation",
   "0172_team_administration",
   "0173_node_detail",
+  "0174_assignment_result_reads",
+  "0175_program_tool_names",
 ];
 
 describe("migration names", () => {

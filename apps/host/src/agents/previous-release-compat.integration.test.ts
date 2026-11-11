@@ -40,7 +40,7 @@ import {
 } from "./previous-release-reader.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
-import { thread_delegate } from "@opensteer/agent-tools/tools";
+import { delegate_task } from "@opensteer/agent-tools/tools";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -761,7 +761,7 @@ integration.sequential("previous public release client journeys", () => {
         const delegatedResponse = await callMcpTool(
           active.hostOrigin,
           execution.command.context.agentTools.token,
-          "thread_delegate",
+          "delegate_task",
           {
             operationKey: randomUUID(),
             task: "[[hold]]",
@@ -770,7 +770,7 @@ integration.sequential("previous public release client journeys", () => {
           },
         );
         expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
-        const delegated = thread_delegate.output.parse(delegatedResponse.structuredContent);
+        const delegated = delegate_task.output.parse(delegatedResponse.structuredContent);
         const delegatedThreadId = delegated.threadId;
         transcript.push({ delegated });
 

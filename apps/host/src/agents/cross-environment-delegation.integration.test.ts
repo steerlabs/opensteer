@@ -1,5 +1,5 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
-import { EnvironmentDiscoverySchema } from "@opensteer/agent-tools/outputs";
+import { OrchestratorCapabilitiesSchema } from "@opensteer/agent-tools/outputs";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
@@ -31,6 +31,7 @@ import {
   migrateToLatest,
   migrationProvider,
   OpensteerStore,
+  readThreadWaitSnapshot,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
 import { CommandService, KeyedAdmissionQueue } from "@opensteer/orchestration";
@@ -209,7 +210,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     const fixture = await createFixture();
 
     const response = await service.handle(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       requestId: randomUUID(),
       task: "Build the release on the lent Mac",
       title: "Lent build",
@@ -286,7 +286,6 @@ integration("cross-environment delegation reaches the Runner", () => {
         throw new Error("Target is now blocked");
       });
     const request = {
-      environmentId: fixture.lentEnvironmentId,
       type: "thread.delegate",
       requestId: randomUUID(),
       workspaceId: fixture.workspaceId,
@@ -459,12 +458,12 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("reports an unavailable catalog separately from a ready no-match result", async () => {
     const fixture = await createFixture();
     await store.recordHarnessCatalogs({
-      environmentId: fixture.mainEnvironmentId,
-      expectedRevisions: new Map([[fixture.mainHarnessInstanceId, 1]]),
+      environmentId: fixture.lentEnvironmentId,
+      expectedRevisions: new Map([[fixture.lentHarnessInstanceId, 1]]),
       catalogs: [
         HarnessInstanceCatalogSchema.parse({
           driverKind: nativeDriver,
-          harnessInstanceId: fixture.mainHarnessInstanceId,
+          harnessInstanceId: fixture.lentHarnessInstanceId,
           status: "authentication-required",
           models: [],
           detail: "Reconnect this account",
@@ -474,11 +473,11 @@ integration("cross-environment delegation reaches the Runner", () => {
     const mcp = await startDiscoveryMcp(fixture.token);
     try {
       const result = await mcp.client.callTool({
-        name: "environment_list",
-        arguments: { harnessInstanceId: fixture.mainHarnessInstanceId, query: "sol" },
+        name: "orchestrator_capabilities",
+        arguments: { harnessInstanceId: fixture.lentHarnessInstanceId, query: "sol" },
       });
       expect(result.isError).not.toBe(true);
-      const page = EnvironmentDiscoverySchema.parse(result.structuredContent);
+      const page = OrchestratorCapabilitiesSchema.parse(result.structuredContent);
       expect(page.harnesses[0]).toMatchObject({
         status: "authentication-required",
         detail: "Reconnect this account",
@@ -495,7 +494,7 @@ integration("cross-environment delegation reaches the Runner", () => {
 
   it("bounds option payloads while retaining every allowed value across focused pages", async () => {
     const fixture = await createFixture();
-    const base = readyCatalog(fixture.mainHarnessInstanceId, nativeDriver);
+    const base = readyCatalog(fixture.lentHarnessInstanceId, nativeDriver);
     if (base.status !== "ready") throw new Error("Expected ready catalog");
     const options = Array.from({ length: 16 }, (_, index) => ({
       id: `option-${index}`,
@@ -507,8 +506,8 @@ integration("cross-environment delegation reaches the Runner", () => {
       })),
     }));
     await store.recordHarnessCatalogs({
-      environmentId: fixture.mainEnvironmentId,
-      expectedRevisions: new Map([[fixture.mainHarnessInstanceId, 1]]),
+      environmentId: fixture.lentEnvironmentId,
+      expectedRevisions: new Map([[fixture.lentHarnessInstanceId, 1]]),
       catalogs: [
         HarnessInstanceCatalogSchema.parse({
           ...base,
@@ -527,14 +526,14 @@ integration("cross-environment delegation reaches the Runner", () => {
       const bytes: number[] = [];
       do {
         const result = await mcp.client.callTool({
-          name: "environment_list",
+          name: "orchestrator_capabilities",
           arguments: {
-            harnessInstanceId: fixture.mainHarnessInstanceId,
+            harnessInstanceId: fixture.lentHarnessInstanceId,
             ...(cursor ? { cursor } : {}),
           },
         });
         expect(result.isError).not.toBe(true);
-        const page = EnvironmentDiscoverySchema.parse(result.structuredContent);
+        const page = OrchestratorCapabilitiesSchema.parse(result.structuredContent);
         const size = Buffer.byteLength(JSON.stringify(page));
         expect(size).toBeLessThan(432 * 1_024);
         bytes.push(size);
@@ -605,10 +604,10 @@ integration("cross-environment delegation reaches the Runner", () => {
         const listed = await mcp.client.listTools();
         expect(listed.tools.map(({ name }) => name)).toContain("environment_list");
         expect(listed.tools.map(({ name }) => name)).not.toContain("workspace_list");
-        const accounts = EnvironmentDiscoverySchema.parse(
+        const accounts = OrchestratorCapabilitiesSchema.parse(
           (
             await mcp.client.callTool({
-              name: "environment_list",
+              name: "orchestrator_capabilities",
               arguments: { query: "sol OPENAI" },
             })
           ).structuredContent,
@@ -620,13 +619,13 @@ integration("cross-environment delegation reaches the Runner", () => {
             )
             .map(({ id }) => id)
             .sort(),
-        ).toEqual([fixture.mainHarnessInstanceId, fixture.lentHarnessInstanceId].sort());
+        ).toEqual([fixture.lentHarnessInstanceId]);
         const workspacePages = vi.spyOn(store, "workspacePageForOwner");
         const threadPages = vi.spyOn(store, "ownerThreadPageForOwner");
         let discovery: Awaited<ReturnType<typeof mcp.client.callTool>>;
         try {
           discovery = await mcp.client.callTool({
-            name: "environment_list",
+            name: "orchestrator_capabilities",
             arguments: { query: "sol OPENAI", harnessInstanceId: fixture.lentHarnessInstanceId },
           });
           expect(workspacePages).not.toHaveBeenCalled();
@@ -636,7 +635,7 @@ integration("cross-environment delegation reaches the Runner", () => {
           threadPages.mockRestore();
         }
         expect(discovery.isError).not.toBe(true);
-        const page = EnvironmentDiscoverySchema.parse(discovery.structuredContent);
+        const page = OrchestratorCapabilitiesSchema.parse(discovery.structuredContent);
         const engine = page.harnesses[0]!;
         const model = engine.models[0]!;
         expect(model.modelId).toBe(testModelSelection.modelId);
@@ -650,11 +649,11 @@ integration("cross-environment delegation reaches the Runner", () => {
           options: { effort: "max", thinking: false },
         };
         const delegated = await mcp.client.callTool({
-          name: "thread_delegate",
+          name: "delegate_task",
           arguments: {
             workspaceId: fixture.workspaceId,
             task: "Have Sol review this",
-            environmentId: fixture.lentEnvironmentId,
+
             harnessInstanceId: engine.id,
             model: choice,
           },
@@ -720,7 +719,7 @@ integration("cross-environment delegation reaches the Runner", () => {
           config: {},
           driverKind: nativeDriver,
           enabled: true,
-          environmentId: extraEnvironments[index]!,
+          environmentId: fixture.lentEnvironmentId,
           id,
           isDefault: false,
           name: `Extra engine ${index}`,
@@ -731,7 +730,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       )
       .execute();
     const targetId = extraHarnesses[69]!;
-    const targetEnvironmentId = extraEnvironments[69]!;
+    const targetEnvironmentId = fixture.lentEnvironmentId;
     const base = readyCatalog(targetId, nativeDriver);
     if (base.status !== "ready") throw new Error("Expected a ready catalog");
     const catalog = {
@@ -775,7 +774,7 @@ integration("cross-environment delegation reaches the Runner", () => {
             })),
           }),
         ],
-        environmentId: extraEnvironments[index]!,
+        environmentId: fixture.lentEnvironmentId,
         expectedRevisions: new Map([[id, 1]]),
       });
     }
@@ -833,7 +832,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       callTool: (call: { arguments: Record<string, unknown>; name: string }) => {
         const { modelPage, ...rest } = call.arguments;
         return mcp.client.callTool({
-          name: "environment_list",
+          name: "orchestrator_capabilities",
           arguments: { ...rest, ...(modelPage as Record<string, unknown> | undefined) },
         });
       },
@@ -847,7 +846,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       for (;;) {
         const result = await discoveryClient.callTool({
           arguments: harnessCursor ? { harnessCursor } : {},
-          name: "environment_list",
+          name: "orchestrator_capabilities",
         });
         if (result.isError) throw new Error(JSON.stringify(result.content));
         const page = result.structuredContent as {
@@ -882,7 +881,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         harnessCursor = page.harnessesNextCursor;
         if (!harnessCursor) break;
       }
-      expect(seen.size).toBe(72);
+      expect(seen.size).toBe(71);
       expect(seen.get(targetId)?.environmentId).toBe(targetEnvironmentId);
       expect(seen.has(disabledId)).toBe(true);
       expect(seen.has(privateHarness.id)).toBe(false);
@@ -891,7 +890,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         const environmentIds = new Set<string>();
         let environmentCursor: string | undefined;
         do {
-          const result = await discoveryClient.callTool({
+          const result = await mcp.client.callTool({
             name: "environment_list",
             arguments: environmentCursor ? { environmentCursor } : {},
           });
@@ -901,13 +900,13 @@ integration("cross-environment delegation reaches the Runner", () => {
             environmentsNextCursor?: string;
           };
           if (!environmentCursor)
-            expect(page.environments.map(({ id }) => id)).not.toContain(targetEnvironmentId);
+            expect(page.environments.map(({ id }) => id)).not.toContain(extraEnvironments[69]);
           page.environments.forEach(({ id }) => environmentIds.add(id));
           environmentCursor = page.environmentsNextCursor;
         } while (environmentCursor);
         expect(environmentIds.size).toBe(72);
         const found = await discoveryClient.callTool({
-          name: "environment_list",
+          name: "orchestrator_capabilities",
           arguments: { harnessInstanceId: targetId, query: "OPENAI catalog 110" },
         });
         expect(found.isError).not.toBe(true);
@@ -919,7 +918,6 @@ integration("cross-environment delegation reaches the Runner", () => {
             modelsOmitted: number;
           }[];
         };
-        expect(foundPage.environments.map(({ id }) => id)).toEqual([targetEnvironmentId]);
         expect(foundPage.harnesses[0]).toMatchObject({
           status: "ready",
           modelsOmitted: 0,
@@ -934,21 +932,22 @@ integration("cross-environment delegation reaches the Runner", () => {
           ],
         });
         const none = await discoveryClient.callTool({
-          name: "environment_list",
+          name: "orchestrator_capabilities",
           arguments: { harnessInstanceId: targetId, query: "nothing matches this" },
         });
         expect(none.structuredContent).toMatchObject({
           harnesses: [{ status: "ready", models: [], modelsOmitted: 0 }],
         });
         const first = await discoveryClient.callTool({
-          name: "environment_list",
+          name: "orchestrator_capabilities",
           arguments: { harnessInstanceId: targetId },
         });
         const cursor = (first.structuredContent as { harnesses: { modelsNextCursor: string }[] })
           .harnesses[0]!.modelsNextCursor;
         for (const args of [{ cursor }, { harnessInstanceId: targetId, cursor, query: "110" }]) {
           expect(
-            (await discoveryClient.callTool({ name: "environment_list", arguments: args })).isError,
+            (await discoveryClient.callTool({ name: "orchestrator_capabilities", arguments: args }))
+              .isError,
           ).toBe(true);
         }
         const workspaces = await mcp.client.callTool({ name: "project_list", arguments: {} });
@@ -981,7 +980,7 @@ integration("cross-environment delegation reaches the Runner", () => {
               ...(recoveredCursor ? { cursor: recoveredCursor } : {}),
             },
           },
-          name: "environment_list",
+          name: "orchestrator_capabilities",
         });
         if (focused.isError) throw new Error(JSON.stringify(focused.content));
         const page = focused.structuredContent as {
@@ -1004,7 +1003,7 @@ integration("cross-environment delegation reaches the Runner", () => {
               ...(modelCursor ? { cursor: modelCursor } : {}),
             },
           },
-          name: "environment_list",
+          name: "orchestrator_capabilities",
         });
         if (result.isError) throw new Error(JSON.stringify(result.content));
         const page = result.structuredContent as {
@@ -1030,7 +1029,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         (
           await discoveryClient.callTool({
             arguments: { modelPage: { harnessInstanceId: privateHarness.id } },
-            name: "environment_list",
+            name: "orchestrator_capabilities",
           })
         ).isError,
       ).toBe(true);
@@ -1038,7 +1037,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         (
           await discoveryClient.callTool({
             arguments: { modelPage: { harnessInstanceId: revokedHarness.id } },
-            name: "environment_list",
+            name: "orchestrator_capabilities",
           })
         ).isError,
       ).toBe(true);
@@ -1046,7 +1045,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         (
           await discoveryClient.callTool({
             arguments: { modelPage: { harnessInstanceId: disabledId } },
-            name: "environment_list",
+            name: "orchestrator_capabilities",
           })
         ).isError,
       ).toBe(undefined);
@@ -1059,7 +1058,7 @@ integration("cross-environment delegation reaches the Runner", () => {
                 cursor: staleCursor,
               },
             },
-            name: "environment_list",
+            name: "orchestrator_capabilities",
           })
         ).isError,
       ).toBe(true);
@@ -1067,7 +1066,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         (
           await discoveryClient.callTool({
             arguments: { modelPage: { harnessInstanceId: targetId, cursor: "garbage" } },
-            name: "environment_list",
+            name: "orchestrator_capabilities",
           })
         ).isError,
       ).toBe(true);
@@ -1085,7 +1084,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         (
           await discoveryClient.callTool({
             arguments: { modelPage: { harnessInstanceId: targetId, cursor: staleCursor } },
-            name: "environment_list",
+            name: "orchestrator_capabilities",
           })
         ).isError,
       ).toBe(true);
@@ -1107,7 +1106,6 @@ integration("cross-environment delegation reaches the Runner", () => {
 
     await expect(
       service.handle(fixture.token, {
-        environmentId: fixture.lentEnvironmentId,
         requestId: randomUUID(),
         task: "Build the release on the lent Mac",
         type: "thread.delegate",
@@ -1128,7 +1126,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("creates one durable assignment when a delegate request is retried", async () => {
     const fixture = await createFixture();
     const request = {
-      environmentId: fixture.lentEnvironmentId,
       requestId: randomUUID(),
       task: "Research the mattress choices and report with sources",
       title: "Mattress research",
@@ -1163,7 +1160,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("completes with the finishing Run's own final reply and returns it exactly once", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Compare mattresses using cited sources",
       title: "Mattress comparison",
       workspaceId: fixture.workspaceId,
@@ -1243,7 +1239,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("silently completes an empty top-level task and bounds long replies", async () => {
     const fixture = await createFixture();
     const silent = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Tidy the notes quietly",
       workspaceId: fixture.workspaceId,
     });
@@ -1316,7 +1311,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect(after).toEqual(before);
 
     const verbose = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Write everything down",
       workspaceId: fixture.workspaceId,
     });
@@ -1343,7 +1337,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("returns the existing nonempty fallback for a substantive reply without text", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Return the report file",
       workspaceId: fixture.workspaceId,
     });
@@ -1381,7 +1374,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("stays open across durable Requests and completes with the continuation Run's reply", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Verify the retailer's return policy",
       workspaceId: fixture.workspaceId,
     });
@@ -1466,7 +1458,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("waits for its own children's results and never takes a child's reply as its own", async () => {
     const fixture = await createFixture();
     const parent = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Coordinate a mattress comparison with helpers",
       title: "Coordinated comparison",
       workspaceId: fixture.workspaceId,
@@ -1543,7 +1534,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("lets reports ride along without blocking completion or reuse, and reuse starts fresh", async () => {
     const fixture = await createFixture();
     const first = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "First comparison",
       workspaceId: fixture.workspaceId,
     });
@@ -1638,7 +1628,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("reports provider failures once and recovers a lost delegated execution before returning its result", async () => {
     const fixture = await createFixture();
     const runnerFailure = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Investigate mattress trial terms",
       title: "Trial terms",
       workspaceId: fixture.workspaceId,
@@ -1657,7 +1646,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
 
     const hostRecovery = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Compare delivery windows",
       title: "Delivery windows",
       workspaceId: fixture.workspaceId,
@@ -1724,7 +1712,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("stays open when a person stops its Run and finishes after the person's next message", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Summarize the reviews",
       workspaceId: fixture.workspaceId,
     });
@@ -1767,7 +1754,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("stops a queued task so nothing starts, and tells the parent without starting its turn", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Do research when the lent computer becomes available",
       title: "Deferred research",
       workspaceId: fixture.workspaceId,
@@ -1828,7 +1814,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("stops a running task tree with its Requests, fences late work and never restarts it", async () => {
     const fixture = await createFixture();
     const parent = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Coordinate a mattress shortlist",
       title: "Shortlist",
       workspaceId: fixture.workspaceId,
@@ -1917,7 +1902,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("stops a task that is waiting on a durable Request", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Check the account settings",
       workspaceId: fixture.workspaceId,
     });
@@ -1950,7 +1934,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("refuses new work for a Thread whose task is still open and names that task", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Long mattress research",
       workspaceId: fixture.workspaceId,
     });
@@ -1959,7 +1942,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         task: "A different objective",
         threadId: (await readToolRecords(store, task)).thread.id,
       }),
-    ).rejects.toThrow(new RegExp(`task ${task.assignmentId}.*thread_message.*task_cancel`, "u"));
+    ).rejects.toThrow(new RegExp(`task ${task.assignmentId}.*thread_send.*task_cancel`, "u"));
     await expect(
       database
         .selectFrom("delegations")
@@ -2073,12 +2056,10 @@ integration("cross-environment delegation reaches the Runner", () => {
   it("applies one stop rule to people and agents", async () => {
     const fixture = await createFixture();
     const parent = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Coordinate research",
       workspaceId: fixture.workspaceId,
     });
     const sibling = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Unrelated research",
       workspaceId: fixture.workspaceId,
     });
@@ -2098,7 +2079,6 @@ integration("cross-environment delegation reaches the Runner", () => {
       status: "cancelled",
     });
     const unrelated = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Unrelated follow-up",
       workspaceId: fixture.workspaceId,
     });
@@ -2138,7 +2118,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     const fixture = await createFixture();
     const workerWorkspace = await createWorkspace(fixture.userId, "Worker workspace");
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       task: "Research mattress options in the worker workspace",
       workspaceId: workerWorkspace.id,
     });
@@ -2193,7 +2172,6 @@ integration("cross-environment delegation reaches the Runner", () => {
       providerId: "openai",
     });
     const task = await delegate(fixture.token, {
-      environmentId: fixture.lentEnvironmentId,
       model: alternateModel,
       task: "Research across workspaces",
       workspaceId: workerWorkspace.id,
@@ -2244,6 +2222,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       task: "Check return shipping",
       threadId: (await readToolRecords(store, task)).thread.id,
     });
+    const original = await readThreadWaitSnapshot(database, {
+      threadId: task.threadId,
+      assignmentId: task.assignmentId,
+      userId: fixture.userId,
+    });
+    expect(original.run).toEqual({ id: task.runId, status: "completed" });
     const parentRun = await database
       .selectFrom("runs")
       .select("providerSessionId")
@@ -3126,7 +3110,6 @@ integration("cross-environment delegation reaches the Runner", () => {
   async function delegate(
     token: string,
     input: {
-      readonly environmentId?: EnvironmentId;
       readonly model?: ReturnType<typeof ModelSelectionSchema.parse>;
       readonly task: string;
       readonly threadId?: ThreadId;
@@ -3134,12 +3117,9 @@ integration("cross-environment delegation reaches the Runner", () => {
       readonly workspaceId?: WorkspaceId;
     },
   ) {
-    const workspace = input.workspaceId ? await store.getWorkspace(input.workspaceId) : null;
-    const environmentId = input.environmentId ?? workspace?.backing.ownerEnvironmentId;
     const response = await service.handle(token, {
       requestId: randomUUID(),
       type: "thread.delegate",
-      ...(environmentId ? { environmentId } : {}),
       ...input,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected a delegate result");

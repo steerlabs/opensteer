@@ -158,7 +158,7 @@ export class ContinuationService {
         } catch (error) {
           this.#onError(error);
           messages.push(
-            `Request ${request.id} settled as ${request.status}. request_list shows status, not the answer.`,
+            `Request ${request.id} settled as ${request.status}. pending_request shows status, not the answer.`,
           );
         }
       }
@@ -284,7 +284,7 @@ export async function continuationMessage(
   loginRef?: string,
 ): Promise<string> {
   if (request.mode === "durable" && request.status === "cancelled") {
-    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; request_list shows status, not the answer.`;
+    return `Request ${request.id} was cancelled (${request.cancellationReason}). The requested resource or authority is no longer available. Continue without it; pending_request shows status, not the answer.`;
   }
   if (
     request.mode !== "durable" ||

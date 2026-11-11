@@ -111,6 +111,24 @@ describe("bounded Thread waits", () => {
     f.change({ messages: [{ id: createId("message") } as never] });
     expect(await pending).toMatchObject({ status: "running", messages: [expect.anything()] });
   });
+  it("rechecks an event received during a terminal read before returning its result", async () => {
+    const f = fixture();
+    let finish!: (snapshot: ThreadWaitSnapshot) => void;
+    f.read.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = f.wait();
+    const rejected = expect(pending).rejects.toThrow("Revoked");
+    f.read.mockRejectedValueOnce(new Error("Revoked"));
+    f.change({});
+    finish({ connected: true, run: { id: runId, status: "completed" }, messages: [] });
+    await rejected;
+    expect(f.read).toHaveBeenCalledTimes(2);
+    expect(f.listeners.size).toBe(0);
+  });
   it("keeps a real 30-day connection alive for the bounded wait", async () => {
     vi.useFakeTimers();
     const f = fixture();

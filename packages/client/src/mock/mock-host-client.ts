@@ -1611,7 +1611,7 @@ function mockDelegateCall(
     runId,
     state: "done",
     streamText: "",
-    tool: { name: "thread_delegate", namespace: "opensteer" },
+    tool: { name: "delegate_task", namespace: "opensteer" },
   };
 }
 

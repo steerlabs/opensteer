@@ -14,7 +14,7 @@ export default async function ({ event, opensteer }) {
   for await (const change of folder) {
     if (!change.filename) continue;
     const nextCursor = cursor + 1;
-    await opensteer.callTool("thread_message", {
+    await opensteer.callTool("thread_send", {
       delivery: "queue",
       message: `Changed: ${change.filename}`,
       observationId: `folder:${nextCursor}`,

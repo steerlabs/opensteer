@@ -43,8 +43,8 @@ export function assertTarget(caller: AgentCaller, target: Thread) {
   assertCallerReach(caller, target);
 }
 const actions = {
-  thread_delegate: "thread.delegate",
-  thread_message: "thread.message",
+  delegate_task: "thread.delegate",
+  thread_send: "thread.message",
   person_message: "person.message",
   person_show: "person.show",
   thread_update: "thread.write",
@@ -78,7 +78,7 @@ export function runAdmission(
 }
 export function mutationAdmission(
   caller: AgentCaller,
-  tool: "thread_delegate" | "thread_message",
+  tool: "delegate_task" | "thread_send",
   input: { readonly observationId?: string | undefined },
   requestId: string,
   targetThreadIds: readonly Thread["id"][] = [],

@@ -26,6 +26,7 @@ import {
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
   ThreadSchema,
+  ThreadAccessModeSchema,
   WorkspaceBackingKindSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
@@ -61,7 +62,7 @@ const HarnessSummarySchema = z.object({
 export type AgentHarnessSummary = z.infer<typeof HarnessSummarySchema>;
 
 const EnvironmentSummarySchema = z.object({
-  compatibleHarnessInstanceIds: z.array(HarnessInstanceIdSchema).max(64),
+  capabilities: z.array(z.string()),
   connected: z.boolean(),
   id: EnvironmentIdSchema,
   kind: ExecutionEnvironmentKindSchema,
@@ -114,17 +115,33 @@ const DelegationDefaultSchema = z.object({
     providerId: ModelProviderIdSchema,
   }),
 });
-export const EnvironmentDiscoverySchema = z.object({
+export const EngineDiscoverySchema = z.object({
   delegationDefault: DelegationDefaultSchema.optional(),
-  environments: z.array(EnvironmentSummarySchema).max(64),
-  environmentsNextCursor: EnvironmentIdSchema.optional(),
   harnesses: z
     .array(EnvironmentHarnessSummarySchema)
     .max(64)
     .refine((rows) => rows.reduce((count, row) => count + row.models.length, 0) <= 40),
   harnessesNextCursor: HarnessInstanceIdSchema.optional(),
 });
+export type EngineDiscovery = z.infer<typeof EngineDiscoverySchema>;
+export const EnvironmentDiscoverySchema = z.object({
+  environments: z.array(EnvironmentSummarySchema).max(64),
+  environmentsNextCursor: EnvironmentIdSchema.optional(),
+});
 export type EnvironmentDiscovery = z.infer<typeof EnvironmentDiscoverySchema>;
+export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
+  accessCeiling: ThreadAccessModeSchema,
+  limits: z.object({
+    maxDepth: z.number().int().nullable(),
+    remainingDepth: z.number().int().nonnegative().nullable(),
+    maxTasks: z.number().int().nullable(),
+    remainingTasks: z.number().int().nonnegative().nullable(),
+    maxAutonomousRuns: z.number().int(),
+    remainingAutonomousRuns: z.number().int().nonnegative().nullable(),
+    maxWaitMs: z.number().int(),
+    taskDeadlineAt: z.string().nullable(),
+  }),
+});
 
 export const WindowSchema = z.object({
   byteCount: z.number(),
@@ -173,7 +190,7 @@ export const ThreadListOutputSchema = z.object({
   threads: z.array(ThreadSummarySchema).max(50),
   ...PageSchema,
 });
-/** One shape for `thread_delegate`, `task_status` and `task_cancel`. */
+/** One shape for `delegate_task`, `task_status` and `task_cancel`. */
 export const TaskSchema = z.object({
   /** Null only for a connection's work, which has no Assignment. */
   assignmentId: AssignmentIdSchema.nullable(),
@@ -435,6 +452,7 @@ export const ThreadWaitOutputSchema = z.object({
   run: z.object({ id: RunSchema.shape.id, status: RunSchema.shape.status }).optional(),
   items: z.array(ThreadItemSchema).max(100),
   hasMore: z.boolean(),
+  task: TaskSchema.optional(),
 });
 export const ThreadConfigureOutputSchema = z.object({
   threadId: ThreadIdSchema,

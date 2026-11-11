@@ -77,7 +77,7 @@ own automatic model choices in AI settings. Prefer a role unless the work needs 
 model. A list never names an account; it runs on the person's eligible accounts. Use
 `fallback: "caller"` only when that cost is intended (the default is `"none"`). A specialist can
 use what this Workspace gives its caller, so it declares no access. Test representative inputs and
-check the outputs before `plugin_install`. Then call `thread_delegate` with
+check the outputs before `plugin_install`. Then call `delegate_task` with
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
 

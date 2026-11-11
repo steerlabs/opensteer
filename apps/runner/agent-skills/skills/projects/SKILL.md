@@ -18,7 +18,7 @@ delegate in the current Workspace instead. Reuse a suitable existing Project.
    success criteria. Read existing instructions first; preserve authorization. Add useful
    skills or scripts following `opensteer:skills` when repeated work warrants them.
 4. Read back the instructions and check linked files. Delegate the first concrete task with
-   `thread_delegate` using the Project id as `workspaceId`, with context and completion criteria.
+   `delegate_task` using the Project id as `workspaceId`, with context and completion criteria.
 5. Verify the task's returned work before calling setup complete. For requested recurring work,
    establish and verify its Trigger with `opensteer:triggers`. Report the useful result and
    remaining blockers; a created Project or queued task alone is not completion.

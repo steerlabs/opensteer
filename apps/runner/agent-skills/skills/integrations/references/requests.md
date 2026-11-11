@@ -23,5 +23,5 @@ call with the same pending access ask also returns that Request with `replayed: 
 installation requests still deduplicate by the proposed manifest for Trigger occurrences. Requests
 have no expiry and no separate inbox.
 
-In a run, `request_list` inspects visible Requests and `request_withdraw` retires one this Thread
-originated and no longer needs. Programs can inspect with request_list but cannot withdraw. A program receives no automatic approval continuation; a later occurrence can inspect readiness.
+In a run, `pending_request` inspects visible Requests and `request_withdraw` retires one this Thread
+originated and no longer needs. Programs can inspect with pending_request but cannot withdraw. A program receives no automatic approval continuation; a later occurrence can inspect readiness.

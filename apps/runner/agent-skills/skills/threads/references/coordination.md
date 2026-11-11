@@ -10,13 +10,13 @@ Every delivered message has Host-authored identity separate from its content, ev
 
 ## Send a message
 
-`thread_message` is asynchronous:
+`thread_send` is asynchronous:
 
 - `report`: passive context for the next turn. Starts nothing and never alerts the person.
 - `queue`: asks the Thread to act; starts it if idle, else waits for a new turn.
 - `steer`: directs a Run now. Fails when no Run can be steered; use `queue` if it can wait.
 
-A `queue` or `steer` to a task in progress joins it, so its final reply reflects the change, and `assignmentId` names that task. When it is null no task was in progress and nothing returns on its own; use `thread_delegate` with `threadId` to give a finished task more work.
+A `queue` or `steer` to a task in progress joins it, so its final reply reflects the change, and `assignmentId` names that task. When it is null no task was in progress and nothing returns on its own; use `delegate_task` with `threadId` to give a finished task more work.
 
 `disposition` `steering`, `run-queued` and `pending` mean accepted, not read. `cancelled` means recorded but never run: the Thread is archived, its Workspace unavailable, or execution authority gone. Report that block instead of resending. Do not send receipts, status pings or acknowledgements.
 
@@ -24,7 +24,7 @@ Make each message stand alone, since the recipient may have moved on: what it an
 
 ## Delegate an outcome
 
-Use `thread_delegate` for independent work needing durable history, another Workspace or execution environment, or continuation across Runs or restarts.
+Use `delegate_task` for independent work needing durable history, another Workspace or execution environment, or continuation across Runs or restarts.
 
 - A Thread works on one task at a time. Reuse a suitable Project when its context helps.
 - Title a new task in two to five plain words naming the outcome, as the person would find it in their list, such as "Hyatt Seoul booking".
@@ -36,9 +36,9 @@ Use `thread_delegate` for independent work needing durable history, another Work
 
 ## Execution selection
 
-Omit selectors to inherit this Thread's environment, engine and model. Reusing a Thread keeps its selection. If only `environmentId` changes, the target needs a ready engine of the same kind and source offering this Thread's exact model. Opensteer refuses an unavailable or incompatible choice and never substitutes; if it refuses an ambiguous one, choose a `harnessInstanceId` from the refusal.
+Omit engine/model selectors to inherit this Thread's choices. The Host places the task on its Workspace's computer. Reusing a Thread keeps its selection. Opensteer refuses unavailable or incompatible choices and never substitutes.
 
-For another engine or model, search `environment_list`, then use its `harnessInstanceId`, `model.providerId`, `model.modelId` and offered `model.options` exactly; boolean options stay booleans. Focus `harnessInstanceId` for more models, passing `modelsNextCursor` as `cursor` with the same query, and restart if the catalog changes. Follow environment and engine directory cursors to see every authorized target.
+For another engine or model, search `orchestrator_capabilities`, then use its `harnessInstanceId`, `model.providerId`, `model.modelId` and offered `model.options` exactly; boolean options stay booleans. Focus `harnessInstanceId` for more models, passing `modelsNextCursor` as `cursor` with the same query, and restart if the catalog changes. Follow engine directory cursors to see every authorized target.
 
 `thread_configure` changes an existing Thread with the same IDs, and with neither selector reads its setup. A known native-session switch may need `continuation`; never invent its ID. `settings_read`/`settings_write` manage defaults and remembered choices, not existing Threads.
 
