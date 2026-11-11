@@ -9,6 +9,7 @@ import {
   passwordsBrokerRequests,
   passwordsBrokerResults,
   type PasswordsBrokerMethod,
+  type PasswordsBrokerProtocolVersion,
   type PasswordsBrokerStatus,
 } from "@opensteer/protocol/passwords-broker";
 import { delay } from "@opensteer/shared/delay";
@@ -58,7 +59,7 @@ export type PasswordsBrokerParams<Method extends PasswordsBrokerMethod> = z.inpu
 export type PasswordsBrokerResult<Method extends PasswordsBrokerMethod> = z.infer<Results[Method]>;
 
 export interface PasswordsBrokerConnection {
-  readonly protocolVersion: 4 | 5 | 6 | 7 | 8;
+  readonly protocolVersion: PasswordsBrokerProtocolVersion;
   readonly brokerVersion: string;
   readonly development: boolean;
   /** Distinct for every connection this client makes; what a transaction is bound to. */
@@ -85,7 +86,7 @@ export interface PasswordsBrokerPeerVerifier {
 
 export interface PasswordsBrokerClientOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5 | 6 | 7 | 8;
+  readonly protocolVersion?: PasswordsBrokerProtocolVersion;
   /** The installed broker, which is what LaunchServices starts. */
   readonly brokerAppPath: string;
   readonly connectTimeoutMs?: number;
@@ -150,7 +151,7 @@ export class PasswordsBrokerClient {
   #nextId = 1;
   #closed = false;
   #launchFresh: boolean;
-  #protocolVersion: 4 | 5 | 6 | 7 | 8;
+  #protocolVersion: PasswordsBrokerProtocolVersion;
 
   constructor(options: PasswordsBrokerClientOptions) {
     this.#options = options;
@@ -213,8 +214,7 @@ export class PasswordsBrokerClient {
   ): Promise<PasswordsBrokerResult<Method>> {
     if (this.#closed) throw stopped();
     if (
-      (method.startsWith("card.") && this.#protocolVersion < 7) ||
-      (method.startsWith("fill.") && this.#protocolVersion < 8)
+      !brokerMethodNegotiated(method, this.#protocolVersion)
     ) {
       throw new PasswordsBrokerFailure(
         "invalid",
@@ -240,8 +240,7 @@ export class PasswordsBrokerClient {
     }
     if (!live || live.socket.destroyed) throw connectionLost();
     if (
-      (method.startsWith("card.") && live.protocolVersion < 7) ||
-      (method.startsWith("fill.") && live.protocolVersion < 8)
+      !brokerMethodNegotiated(method, live.protocolVersion)
     ) {
       throw new PasswordsBrokerFailure(
         "invalid",
@@ -415,7 +414,7 @@ export class PasswordsBrokerClient {
     if (
       typeof announced === "number" &&
       announced !== this.#protocolVersion &&
-      !(this.#protocolVersion === 8 && announced >= 4 && announced <= 7)
+      olderBrokerProtocol(this.#protocolVersion, announced) === null
     ) {
       socket.destroy();
       throw new PasswordsBrokerFailure(
@@ -445,7 +444,8 @@ export class PasswordsBrokerClient {
     }
     if (parsed.data.protocolVersion !== this.#protocolVersion) {
       socket.destroy();
-      this.#protocolVersion = 7;
+      this.#protocolVersion =
+        olderBrokerProtocol(this.#protocolVersion, parsed.data.protocolVersion) ?? 7;
       return await this.#establish(retried);
     }
     this.#requireCurrent(generation, socket);
@@ -510,7 +510,9 @@ export class PasswordsBrokerClient {
       pending.reject(
         new PasswordsBrokerFailure(
           data.error.code,
-          (pending.method.startsWith("card.") || pending.method.startsWith("signin.")) &&
+          (pending.method.startsWith("card.") ||
+            pending.method.startsWith("signin.") ||
+            pending.method.startsWith("save.")) &&
             data.error.message !== "Unlock this Mac to use Opensteer Passwords."
             ? "Opensteer Passwords refused the request."
             : data.error.message.trim() || "Opensteer Passwords refused the request.",
@@ -556,7 +558,8 @@ export class PasswordsBrokerClient {
         if (!this.#pending.delete(id)) return;
         settle();
         if (method.startsWith("signin.") || method.startsWith("card.") || method === "fill.begin")
-          this.#cancelAbandoned(socket, params);
+          this.#cancelAbandoned(socket, "signin.cancel", params);
+        else if (method === "save.begin") this.#cancelAbandoned(socket, "save.cancel", params);
         rejectPromise(aborted());
       };
       if (timeoutMs !== null) {
@@ -600,12 +603,16 @@ export class PasswordsBrokerClient {
    * Withdraws the transaction on its owning connection when its caller gives up.
    * The v2 invalid error for an abandoned call is dropped with the late reply.
    */
-  #cancelAbandoned(socket: Socket, params: unknown): void {
+  #cancelAbandoned(
+    socket: Socket,
+    method: "signin.cancel" | "save.cancel",
+    params: unknown,
+  ): void {
     const transaction = (params as { readonly transactionId?: unknown }).transactionId;
     if (typeof transaction !== "string" || socket.destroyed) return;
     void this.#send(
       socket,
-      "signin.cancel",
+      method,
       { transactionId: transaction },
       { timeoutMs: this.#options.requestTimeoutMs ?? defaultRequestTimeoutMs },
     ).catch((error: unknown) => {
@@ -767,4 +774,27 @@ function connectionLost(cause?: unknown): PasswordsBrokerFailure {
     "Opensteer lost its connection to Opensteer Passwords on this Mac.",
     cause === undefined ? undefined : { cause },
   );
+}
+
+/** The first protocol that serves each family of methods. */
+function brokerMethodNegotiated(
+  method: PasswordsBrokerMethod,
+  version: PasswordsBrokerProtocolVersion,
+): boolean {
+  if (method.startsWith("card.")) return version >= 7;
+  if (method.startsWith("fill.")) return version >= 8;
+  if (method.startsWith("save.")) return version >= 9;
+  return true;
+}
+
+/**
+ * The version to ask again with when an older broker answers a current
+ * client: what it announced for 8, otherwise 7, the oldest current authority.
+ */
+function olderBrokerProtocol(
+  offered: PasswordsBrokerProtocolVersion,
+  announced: number,
+): 7 | 8 | null {
+  if (offered < 8 || announced < 4 || announced >= offered) return null;
+  return announced >= 8 ? 8 : 7;
 }

@@ -42,6 +42,7 @@ export const PasswordsBrokerProtocolVersionSchema = z.union([
   z.literal(8),
   z.literal(9),
 ]);
+export type PasswordsBrokerProtocolVersion = z.infer<typeof PasswordsBrokerProtocolVersionSchema>;
 export const PasswordsPermissionVersionSchema = z.union([z.literal(4), z.literal(5)]);
 export const passwordsBrokerMaxFrameBytes = 256 * 1_024;
 

@@ -1,5 +1,9 @@
 import { release } from "node:os";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
+import {
+  passwordsBrokerLatestProtocolVersion,
+  type PasswordsBrokerProtocolVersion,
+} from "@opensteer/protocol/passwords-broker";
 import type {
   PasswordsBrokerSignInRequestParams,
   PasswordsBrokerSignInRequestV6Params,
@@ -20,6 +24,7 @@ import {
   type PasswordsBrokerSession,
   type PasswordsBrokerCardSession,
   type PasswordsBrokerPersonFillSession,
+  type PasswordsBrokerPersonSaveSession,
   type PasswordsBrokerSignInGrant,
 } from "./broker-session.js";
 import { ensurePasswordsBrokerInstalled } from "./install.js";
@@ -40,7 +45,7 @@ const notRunningSentence =
 
 export interface PasswordsServiceOptions {
   readonly appVersion: string;
-  readonly protocolVersion?: 4 | 5 | 6 | 7 | 8;
+  readonly protocolVersion?: PasswordsBrokerProtocolVersion;
   /** The broker this build ships, already resolved for packaged/development. */
   readonly bundledBrokerPath: () => string;
   /** Test seams for the broker connection; production uses the defaults. */
@@ -64,7 +69,7 @@ export interface PasswordsServiceOptions {
 }
 
 interface Transaction {
-  readonly credential: "login" | "card" | "person";
+  readonly credential: "login" | "card" | "person" | "save";
   /** The client and connection the broker bound this transaction to. */
   readonly client: PasswordsBrokerClient;
   readonly generation: number;
@@ -87,7 +92,7 @@ export class PasswordsService {
   readonly #now: () => number;
   readonly #listeners = new Set<(status: DesktopPasswordsStatus) => void>();
   readonly #transactions = new Map<string, Transaction>();
-  readonly #compatibilityServices = new Map<4 | 5 | 6 | 7 | 8, PasswordsService>();
+  readonly #compatibilityServices = new Map<PasswordsBrokerProtocolVersion, PasswordsService>();
   #client: PasswordsBrokerClient | null = null;
   #clientPromise: Promise<PasswordsBrokerClient> | null = null;
   #last: string | null = null;
@@ -129,12 +134,12 @@ export class PasswordsService {
 
   /** The narrow surface the login authority uses. */
   broker(
-    protocolVersion: 4 | 5 | 6 | 7 | 8 = this.#options.protocolVersion ?? 8,
+    protocolVersion: PasswordsBrokerProtocolVersion = this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion,
   ): PasswordsBrokerSession &
     PasswordsBrokerCardSession &
-    Partial<PasswordsBrokerPersonFillSession> {
+    Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> {
     // Browser-only consent from a previous-release Host must stay on protocol4.
-    if (protocolVersion !== (this.#options.protocolVersion ?? 8)) {
+    if (protocolVersion !== (this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion)) {
       let compatibility = this.#compatibilityServices.get(protocolVersion);
       if (!compatibility) {
         compatibility = new PasswordsService({ ...this.#options, protocolVersion });
@@ -145,7 +150,7 @@ export class PasswordsService {
     }
     const session: PasswordsBrokerSession &
       PasswordsBrokerCardSession &
-      Partial<PasswordsBrokerPersonFillSession> = {
+      Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> = {
       cardProbe: async () => {
         try {
           return await this.#call("card.probe", {});
@@ -218,6 +223,24 @@ export class PasswordsService {
         },
       });
     }
+    if (protocolVersion >= 9) {
+      const saveBegin: PasswordsBrokerPersonSaveSession["saveBegin"] = async (params, signal) =>
+        await this.#startTransaction("save.begin", params, signal);
+      const saveCommit: PasswordsBrokerPersonSaveSession["saveCommit"] = async (transactionId) => {
+        try {
+          return await this.#bound(transactionId, "save.commit", (client, connection) =>
+            client.call("save.commit", { transactionId }, { connection }),
+          );
+        } finally {
+          this.#transactions.delete(transactionId);
+        }
+      };
+      const saving = () => (this.#client?.connection?.protocolVersion ?? protocolVersion) >= 9;
+      Object.defineProperties(session, {
+        saveBegin: { get: () => (saving() ? saveBegin : undefined) },
+        saveCommit: { get: () => (saving() ? saveCommit : undefined) },
+      });
+    }
     return session;
   }
 
@@ -253,7 +276,9 @@ export class PasswordsService {
     return await this.#startTransaction("signin.request", params, signal);
   }
 
-  async #startTransaction<Method extends "signin.request" | "card.request" | "fill.begin">(
+  async #startTransaction<
+    Method extends "signin.request" | "card.request" | "fill.begin" | "save.begin",
+  >(
     method: Method,
     params: PasswordsBrokerParams<Method>,
     signal: AbortSignal,
@@ -265,7 +290,14 @@ export class PasswordsService {
       throw new PasswordsBrokerFailure("invalid", "That sign-in was already requested.");
     }
     const transaction: Transaction = {
-      credential: method === "card.request" ? "card" : method === "fill.begin" ? "person" : "login",
+      credential:
+        method === "card.request"
+          ? "card"
+          : method === "fill.begin"
+            ? "person"
+            : method === "save.begin"
+              ? "save"
+              : "login",
       aborted: false,
       client,
       generation: connection.generation,
@@ -282,7 +314,8 @@ export class PasswordsService {
       if (
         decision.decision === "unavailable" ||
         decision.decision === "cancelled" ||
-        decision.decision === "changed"
+        decision.decision === "changed" ||
+        decision.decision === "skip"
       ) {
         transaction.lifetime.abort();
         this.#transactions.delete(params.transactionId);
@@ -305,7 +338,11 @@ export class PasswordsService {
     // connection open, so the broker still holds it until it is cancelled.
     if (!this.#connected(transaction) || !client) return;
     await this.#guard(
-      client.call("signin.cancel", { transactionId }, { connection: transaction.generation }),
+      client.call(
+        transaction.credential === "save" ? "save.cancel" : "signin.cancel",
+        { transactionId },
+        { connection: transaction.generation },
+      ),
     ).catch((error: unknown) => {
       // The broker no longer knows it: it already ended, by expiry.
       if (error instanceof PasswordsBrokerFailure && error.code === "invalid") return;
@@ -330,7 +367,8 @@ export class PasswordsService {
       (method.startsWith("card.") && transaction.credential !== "card") ||
       (method === "signin.approve" && transaction.credential !== "login") ||
       (method === "signin.commit" && transaction.credential === "person") ||
-      (method === "signin.release" && transaction.credential === "card")
+      (method === "signin.release" && transaction.credential === "card") ||
+      (transaction.credential === "save") !== (method === "save.commit")
     ) {
       throw new PasswordsBrokerFailure("invalid", "This credential cannot be used on that path.");
     }
@@ -454,7 +492,7 @@ export class PasswordsService {
     const client = new PasswordsBrokerClient({
       ...this.#options.client,
       appVersion: this.#options.appVersion,
-      protocolVersion: this.#options.protocolVersion ?? 8,
+      protocolVersion: this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion,
       brokerAppPath: installed.path,
       development,
       launchFreshInstance: installed.launchFreshInstance,

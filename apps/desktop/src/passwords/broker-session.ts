@@ -1,4 +1,8 @@
 import type {
+  PasswordsBrokerProtocolVersion,
+  PasswordsBrokerSaveBeginParamsSchema,
+  PasswordsBrokerSaveBeginResultSchema,
+  PasswordsBrokerSaveCommitResultSchema,
   PasswordsBrokerFillAccountsParamsSchema,
   PasswordsBrokerFillAccountsResultSchema,
   PasswordsBrokerFillBeginParamsSchema,
@@ -61,7 +65,7 @@ export interface PasswordsBrokerSignInGrant {
 
 /** Every transaction call stays on the connection that carried request; it never reconnects. */
 export interface PasswordsBrokerSession {
-  readonly protocolVersion?: 4 | 5 | 6 | 7 | 8;
+  readonly protocolVersion?: PasswordsBrokerProtocolVersion;
   probe(params: PasswordsBrokerSignInProbeParams): Promise<PasswordsBrokerSignInProbeResult>;
   request(
     params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
@@ -115,4 +119,20 @@ export interface PasswordsBrokerPersonFillSession {
     decision: z.infer<typeof PasswordsBrokerFillBeginResultSchema>;
     lifetime: AbortSignal;
   }>;
+}
+
+/**
+ * Saving a login a person typed, on a protocol 9 connection. The broker holds
+ * the login until `saveCommit`, `cancel` or its deadline, and only for the
+ * connection that began it.
+ */
+export interface PasswordsBrokerPersonSaveSession {
+  saveBegin(
+    params: z.infer<typeof PasswordsBrokerSaveBeginParamsSchema>,
+    signal: AbortSignal,
+  ): Promise<{
+    decision: z.infer<typeof PasswordsBrokerSaveBeginResultSchema>;
+    lifetime: AbortSignal;
+  }>;
+  saveCommit(transactionId: string): Promise<z.infer<typeof PasswordsBrokerSaveCommitResultSchema>>;
 }

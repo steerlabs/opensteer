@@ -7,7 +7,10 @@ import { createId } from "@opensteer/core";
 import { ComputerUseSessionIdSchema, type PasswordSignInAuthorityEvent } from "@opensteer/protocol";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { PasswordsBrokerSignInRequestParamsSchema } from "@opensteer/protocol/passwords-broker";
-import type { PasswordsBrokerStatus } from "@opensteer/protocol/passwords-broker";
+import type {
+  PasswordsBrokerProtocolVersion,
+  PasswordsBrokerStatus,
+} from "@opensteer/protocol/passwords-broker";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { SignedHelperProcess } from "../signed-helpers/signed-helper.js";
 import { passwordsBrokerAppName, passwordsBrokerSocketPath } from "./paths.js";
@@ -824,7 +827,7 @@ async function serviceHarness(
     readonly bundled?: boolean;
     readonly development?: boolean;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5 | 6 | 7 | 8;
+    readonly clientProtocolVersion?: PasswordsBrokerProtocolVersion;
     readonly status?: PasswordsBrokerStatus;
   } = {},
 ) {

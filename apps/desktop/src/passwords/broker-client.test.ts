@@ -1,7 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import path from "node:path";
-import { passwordsBrokerMaxFrameBytes } from "@opensteer/protocol/passwords-broker";
+import {
+  passwordsBrokerMaxFrameBytes,
+  type PasswordsBrokerProtocolVersion,
+} from "@opensteer/protocol/passwords-broker";
 import { encodeLengthPrefixedJson } from "@opensteer/shared/lengthPrefixedJson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -91,6 +94,34 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     expect(harness.broker.received("fill.accounts")).toEqual([]);
     const requests = harness.broker.transcript.filter((entry) => entry.direction === "in");
     expect(requests.map((entry) => entry.connection)).toEqual([1, 2, 2]);
+  });
+
+  it("reconnects at v8 after an older broker answers a v9 hello, and never sends save there", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 9, protocolVersion: 8 });
+    expect((await harness.client.connect()).protocolVersion).toBe(8);
+    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual([
+      { client: { version: "9.9.9" }, protocolVersion: 9 },
+      { client: { version: "9.9.9" }, protocolVersion: 8 },
+    ]);
+    await expect(
+      harness.client.call("save.cancel", { transactionId }),
+    ).rejects.toMatchObject({ code: "invalid" });
+    expect(harness.broker.received("save.cancel")).toEqual([]);
+  });
+
+  it("never repeats a broker's words about a save, which could carry the login", async () => {
+    const harness = await clientHarness({ clientProtocolVersion: 9 });
+    harness.broker.fail("save.begin", { code: "invalid", message: "hunter2 for person@example.com" });
+    const failure = await harness.client
+      .call("save.begin", {
+        transactionId,
+        origin: "https://example.com",
+        username: "person@example.com",
+        password: "hunter2",
+      })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "invalid" });
+    expect(String((failure as Error).message)).toBe("Opensteer Passwords refused the request.");
   });
 
   it("withdraws a v8 presence check on abort on its original connection", async () => {
@@ -646,7 +677,7 @@ async function clientHarness(
     readonly peerUid?: number;
     readonly peerVerificationTimeoutMs?: number;
     readonly protocolVersion?: number;
-    readonly clientProtocolVersion?: 4 | 5 | 6 | 7 | 8;
+    readonly clientProtocolVersion?: PasswordsBrokerProtocolVersion;
     readonly requestTimeoutMs?: number;
     readonly signedIdentifier?: string;
     readonly startListening?: boolean;
