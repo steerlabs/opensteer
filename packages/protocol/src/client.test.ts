@@ -8,6 +8,7 @@ import {
   isBrowserPageSite,
 } from "./browser.js";
 import {
+  ClientToHostMessageSchema,
   HostToClientMessageSchema,
   ThreadEventPageSchema,
   workspaceViewFromWorkspace,
@@ -182,4 +183,18 @@ it("accepts app tab invalidation and bounds the bootstrap app catalog", () => {
   };
   expect(HostBootstrapSchema.shape.appTabs.parse([tab])).toEqual([tab]);
   expect(HostBootstrapSchema.shape.appTabs.safeParse(Array(501).fill(tab)).success).toBe(false);
+});
+
+it("admits opt-in browser streams and per-socket repair", () => {
+  const groupId = "bsn_00000000-0000-4000-8000-000000000001";
+  for (const frame of [
+    { type: "client.browser.resync" },
+    { type: "client.browser.resync", groupId },
+  ])
+    expect(ClientToHostMessageSchema.parse(frame)).toEqual(frame);
+  for (const frame of [
+    { type: "host.browser-groups", stream: { op: "begin", generation: "g" } },
+    { type: "host.browser-tabs", groupId, stream: { op: "begin", generation: "g" } },
+  ])
+    expect(HostToClientMessageSchema.parse(frame)).toEqual(frame);
 });

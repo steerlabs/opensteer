@@ -5305,6 +5305,7 @@ export class HttpHostClient {
       this.#reread(message.type);
       return;
     }
+    if (message.type === "host.browser-groups" || message.type === "host.browser-tabs") return;
     channel.cursor = maxSequence(channel.cursor, message.sequence);
     // A resubscription sends every open stream whole right after this, so what
     // the old connection streamed is forgotten rather than continued, and any

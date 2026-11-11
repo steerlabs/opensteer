@@ -53,6 +53,9 @@ const realtimeFrameLosses = {
   "host.connections-changed": "snapshot",
   "host.plugins-changed": "snapshot",
 
+  // The current client never attaches these streams; adoption installs their resync handler.
+  "host.browser-groups": "none",
+  "host.browser-tabs": "none",
   "host.browser-presence": "bootstrap",
   "host.app-tabs-changed": "bootstrap",
   "host.browser-sessions-changed": "bootstrap",

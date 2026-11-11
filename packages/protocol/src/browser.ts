@@ -12,6 +12,8 @@ import {
   BrowserTabStreamSchema,
   BrowserSavedTabStreamSchema,
   BrowserIconKeySchema,
+  BrowserGroupRowSchema,
+  BrowserTabRowSchema,
 } from "./browser-tabs.js";
 export * from "./browser-tabs.js";
 export const browserRuntimeWireVersion = 2;
@@ -1534,6 +1536,8 @@ export const WorkspaceTabActivateCommandSchema = z.strictObject({
 });
 export const WorkspaceTabActivateResultSchema = z.object({
   type: z.literal("workspace.tab.activate"),
+  groupId: BrowserSessionIdSchema.optional(),
+  sessionId: BrowserSessionIdSchema.optional(),
   group: WorkspaceTabLineageSchema,
   session: HostedBrowserSessionSchema,
   tabId: BrowserSurfaceIdSchema,
@@ -1546,6 +1550,8 @@ export const WorkspaceTabCloseCommandSchema = z.strictObject({
 });
 export const WorkspaceTabCloseResultSchema = z.object({
   type: z.literal("workspace.tab.close"),
+  groupId: BrowserSessionIdSchema.optional(),
+  sessionId: BrowserSessionIdSchema.optional(),
   group: WorkspaceTabLineageSchema,
 });
 
@@ -1585,6 +1591,8 @@ export const BrowserTabLayoutSchema = z.object({
 export type BrowserTabLayout = z.infer<typeof BrowserTabLayoutSchema>;
 export const WorkspaceTabReopenResultSchema = z.object({
   type: z.literal("workspace.tab.reopen"),
+  groupId: BrowserSessionIdSchema.optional(),
+  sessionId: BrowserSessionIdSchema.optional(),
   group: WorkspaceTabLineageSchema,
   tabId: BrowserSurfaceIdSchema,
   layout: BrowserTabLayoutSchema,
@@ -1706,6 +1714,18 @@ export const BrowserTabWriteResultSchema = z.object({
 export type BrowserTabWriteResult = z.infer<typeof BrowserTabWriteResultSchema>;
 
 export const HostedBrowserBootstrapSchema = z.object({
+  groups: z
+    .strictObject({ rows: z.array(BrowserGroupRowSchema), complete: z.boolean() })
+    .optional(),
+  tabs: z
+    .array(
+      z.strictObject({
+        groupId: BrowserSessionIdSchema,
+        rows: z.array(BrowserTabRowSchema),
+        complete: z.boolean(),
+      }),
+    )
+    .optional(),
   profileDeletions: z
     .array(z.unknown())
     .max(128)
@@ -1962,6 +1982,7 @@ export type BrowserTabOpenTarget =
 export const BrowserTabOpenResultSchema = z
   .object({
     type: z.literal("browser.tab.open"),
+    groupId: BrowserSessionIdSchema.optional(),
     sessionId: BrowserSessionIdSchema,
     tabId: BrowserSurfaceIdSchema,
     catalog: BrowserTabCatalogViewSchema,
@@ -2018,6 +2039,7 @@ export const BrowserTabCloseCommandSchema = z.strictObject({
 });
 export const BrowserTabCloseResultSchema = z.object({
   type: z.literal("browser.tab.close"),
+  groupId: BrowserSessionIdSchema.optional(),
   sessionId: BrowserSessionIdSchema,
   outcome: z.enum(["tab-closed", "session-closed"]),
   catalog: BrowserTabCatalogViewSchema,

@@ -1,3 +1,4 @@
+import { BrowserGroupStreamSchema, BrowserClientTabStreamSchema } from "./browser-tabs.js";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
@@ -20,7 +21,7 @@ import {
   WorkspaceKindSchema,
   type Workspace,
 } from "@opensteer/core";
-import { BrowserProfileIdSchema, RunnerIdSchema } from "@opensteer/core";
+import { BrowserSessionIdSchema, BrowserProfileIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   PersonShowMessageSchema,
@@ -156,6 +157,10 @@ export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView 
 export const unsupportedVersionCloseCode = 4011;
 
 export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("client.browser.resync"),
+    groupId: BrowserSessionIdSchema.optional(),
+  }),
   z.strictObject({
     ...clientMessageBase,
     type: z.literal("client.subscribe"),
@@ -350,6 +355,17 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ ...clientMessageBase, type: z.literal("host.app-tabs-changed") }),
   ThreadPlaceChangedSchema,
   BrowserTabsChangedSchema,
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.browser-groups"),
+    stream: BrowserGroupStreamSchema,
+  }),
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.browser-tabs"),
+    groupId: BrowserSessionIdSchema,
+    stream: BrowserClientTabStreamSchema,
+  }),
   ...PlaceActivityNoticeViewSchema.options,
   // A Workspace's browser sessions changed — one opened, or one moved between
   // starting, ready, closing and its terminal state — and a client rereads the

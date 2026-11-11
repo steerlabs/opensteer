@@ -3968,6 +3968,7 @@ function attachRealtimeSocket(
         continue;
       }
       if (message.type === "client.ack") continue;
+      if (message.type !== "client.subscribe") throw badMessage("Unsupported client message");
       if (unsubscribe) throw badMessage("Client is already subscribed");
       // Nothing is streamed to a client on another epoch: the events it would
       // receive are exactly what the epoch governs, so the refusal comes
