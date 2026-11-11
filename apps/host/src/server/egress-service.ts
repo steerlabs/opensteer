@@ -1,5 +1,6 @@
 import { HostEgressGateway } from "@opensteer/access/host";
 import {
+  OpensteerError,
   EnvironmentIdSchema,
   GrantIdSchema,
   RunIdSchema,
@@ -8,11 +9,13 @@ import {
   UserIdSchema,
   WorkspaceIdSchema,
 } from "@opensteer/core";
-import type { RunEgressPlan } from "@opensteer/protocol";
+import type { ProjectCapabilityScope, RunEgressPlan } from "@opensteer/protocol";
 import { z } from "zod";
 import { SignedTokenClaimsSchema, SignedTokenService } from "../identity/host-keys.js";
 import {
   runCapabilityLifetimeSeconds,
+  isProjectRunCapabilityEnvelope,
+  type ProjectCapabilityTokenService,
   type RunCapabilityBindingAuthorizer,
 } from "../agents/run-capability.js";
 
@@ -64,8 +67,44 @@ export class EgressService {
   }
 
   async forward(token: string, request: unknown) {
+    if (isProjectRunCapabilityEnvelope(token))
+      throw new OpensteerError({
+        code: "unauthorized",
+        message: "Project egress requires its Project consumer",
+      });
     const claims = this.#tokens.verify(token, EgressClaimsSchema);
     await this.#authorizer.assertActiveGrant(claims);
+    return this.#gateway.forward(request);
+  }
+}
+
+export class ProjectEgressService {
+  readonly #gateway = new HostEgressGateway({
+    maxRequestBytes: 8 * 1_024 * 1_024,
+    maxResponseBytes: 16 * 1_024 * 1_024,
+  });
+  readonly #capabilities: ProjectCapabilityTokenService;
+  readonly #publicUrl: URL;
+
+  constructor(input: {
+    readonly capabilities: ProjectCapabilityTokenService;
+    readonly publicUrl: URL;
+  }) {
+    this.#capabilities = input.capabilities;
+    this.#publicUrl = input.publicUrl;
+  }
+
+  async issue(binding: ProjectCapabilityScope): Promise<RunEgressPlan> {
+    return {
+      maxRequestBytes: 8 * 1_024 * 1_024,
+      maxResponseBytes: 16 * 1_024 * 1_024,
+      relayToken: await this.#capabilities.issue(binding, "opensteer-project-egress"),
+      relayUrl: new URL("/internal/v1/egress", this.#publicUrl).toString(),
+    };
+  }
+
+  async forward(token: string, request: unknown) {
+    await this.#capabilities.verify(token, "opensteer-project-egress");
     return this.#gateway.forward(request);
   }
 }
