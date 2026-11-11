@@ -45,6 +45,146 @@ function proposal(binding: ProjectEngineRequestEvent["binding"]): ProjectEngineR
 }
 
 describeStore("Project Requests", (it) => {
+  it("projects bounded payload-free facts for members using stored causes and current attribution", async ({
+    storeFixture,
+  }) => {
+    const { database, store: legacy } = storeFixture;
+    const fixture = await projectRequestFixture(storeFixture, "facts");
+    const requests = new ProjectRequestStore(database);
+    const member = await legacy.createUser("Member");
+    const outsider = await legacy.createUser("Outsider");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date() })
+      .where("id", "in", [member, outsider])
+      .execute();
+    await database
+      .insertInto("workspaceMemberships")
+      .values({
+        id: createId("workspaceMembership"),
+        workspaceId: fixture.workspace.id,
+        userId: member,
+        role: "collaborator",
+        state: "active",
+        generation: 1,
+        invitedBy: fixture.userId,
+        joinedAt: new Date(),
+        revokedAt: null,
+        revokedBy: null,
+        updatedAt: new Date(),
+      })
+      .execute();
+    const event = proposal(fixture.binding);
+    await database.transaction().execute((tx) => requests.propose(tx, event));
+    const read = (userId = member) =>
+      requests.threadFacts({ threadIds: [fixture.thread.id], userId });
+    const facts = (await read()).get(fixture.thread.id)!;
+    expect(facts.requestWaits).toMatchObject({
+      total: 1,
+      items: [
+        {
+          requestId: event.data.request.id,
+          class: "approval",
+          waitingOn: { kind: "person", name: "Alex" },
+        },
+      ],
+    });
+    expect(await read(fixture.userId)).toEqual(await read());
+    expect(await read(outsider)).toEqual(new Map());
+    await expect(
+      database.transaction().execute((tx) =>
+        requests.detail(tx, {
+          requestId: event.data.request.id,
+          userId: member,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await database.transaction().execute((tx) =>
+      requests.answer(tx, {
+        requestId: event.data.request.id,
+        userId: fixture.userId,
+        sessionId: fixture.sessionId,
+        response: { kind: "choice", optionId: "yes" },
+      }),
+    );
+    await database
+      .updateTable("users")
+      .set({ displayName: "Renamed" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    const ended = (await read()).get(fixture.thread.id)!;
+    expect(ended.requestWaits).toEqual({ total: 0, items: [] });
+    expect(ended.requestOutcomes).toEqual([
+      {
+        requestId: event.data.request.id,
+        class: "approval",
+        status: "fulfilled",
+        at: expect.any(String),
+        resolvedByName: "Renamed",
+      },
+    ]);
+    await expect(
+      database.deleteFrom("users").where("id", "=", fixture.userId).execute(),
+    ).rejects.toMatchObject({ code: "23001" });
+    const second = proposal(fixture.binding);
+    second.data.request.callId = "second";
+    await database.transaction().execute((tx) => requests.propose(tx, second));
+    const row = await database
+      .selectFrom("requests")
+      .selectAll()
+      .where("id", "=", second.data.request.id)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("requests")
+      .values(
+        Array.from({ length: 35 }, (_, i) => ({
+          ...row,
+          id: createId("request"),
+          callId: `bulk-${i}`,
+          createdAt: new Date(row.createdAt.getTime() + i + 1),
+        })),
+      )
+      .execute();
+    const bounded = (await read()).get(fixture.thread.id)!;
+    expect(bounded.requestWaits.total).toBe(36);
+    expect(bounded.requestWaits.items).toHaveLength(32);
+    expect(bounded.requestWaits.items[0]!.requestId).toBe(second.data.request.id);
+    expect(JSON.stringify(bounded)).not.toContain("Run command?");
+    await database.transaction().execute(async (tx) => {
+      await reserveProjectWorkStop(tx, { runIds: [fixture.run.id] });
+      await requests.cancelRun(tx, {
+        runId: fixture.run.id,
+        reason: "authority-revoked",
+        resolvedAt: new Date(),
+      });
+    });
+    const cancelled = (await read()).get(fixture.thread.id)!;
+    expect(cancelled.requestWaits).toEqual({ total: 0, items: [] });
+    expect(cancelled.requestOutcomes).toHaveLength(32);
+    expect(
+      cancelled.requestOutcomes.every(
+        (item) => item.status === "cancelled" && item.cancelledFor?.name === "Renamed",
+      ),
+    ).toBe(true);
+    let queries = 0;
+    const observed = database.withPlugin({
+      transformQuery(args) {
+        queries++;
+        return args.node;
+      },
+      async transformResult(args) {
+        return args.result;
+      },
+    });
+    await new ProjectRequestStore(observed).threadFacts({
+      threadIds: [fixture.thread.id],
+      userId: member,
+    });
+    expect(queries).toBe(1);
+    await new ProjectRequestStore(observed).threadFacts({ threadIds: [], userId: member });
+    expect(queries).toBe(1);
+  });
+
   for (const kind of ["personal", "server"] as const) {
     it(`refuses the no-manager producer before any write on model-1 ${kind}`, async ({
       storeFixture,
@@ -565,6 +705,40 @@ describeStore("Unattended Project Requests", (it) => {
         requests.detail(tx, { requestId: event.data.request.id, userId: outsider }),
       ),
     ).rejects.toMatchObject({ code: "forbidden" });
+    const manager = await storeFixture.store.createUser("Other manager");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date() })
+      .where("id", "=", manager)
+      .execute();
+    await database
+      .insertInto("workspaceMemberships")
+      .values([
+        {
+          id: createId("workspaceMembership"),
+          workspaceId: fixture.workspace.id,
+          userId: manager,
+          role: "owner",
+          state: "active",
+          generation: 1,
+        },
+        {
+          id: createId("workspaceMembership"),
+          workspaceId: fixture.workspace.id,
+          userId: outsider,
+          role: "collaborator",
+          state: "active",
+          generation: 1,
+        },
+      ])
+      .execute();
+    for (const userId of [fixture.userId, manager, outsider]) {
+      expect(
+        (await requests.threadFacts({ threadIds: [fixture.thread.id], userId })).get(
+          fixture.thread.id,
+        )?.requestWaits,
+      ).toMatchObject({ total: 1, items: [{ waitingOn: { kind: "managers" } }] });
+    }
     const answer = {
       requestId: event.data.request.id,
       userId: fixture.userId,
@@ -580,6 +754,15 @@ describeStore("Unattended Project Requests", (it) => {
     expect(await controls.transact(database, (tx) => requests.answer(tx, answer))).toMatchObject({
       replayed: true,
     });
+    for (const userId of [manager, outsider]) {
+      const facts = (await requests.threadFacts({ threadIds: [fixture.thread.id], userId })).get(
+        fixture.thread.id,
+      )!;
+      expect(facts.requestWaits).toEqual({ total: 0, items: [] });
+      expect(facts.requestOutcomes).toMatchObject([
+        { status: "fulfilled", class: "approval", resolvedByName: "Alex" },
+      ]);
+    }
     const commands = await database
       .selectFrom("commands")
       .selectAll()

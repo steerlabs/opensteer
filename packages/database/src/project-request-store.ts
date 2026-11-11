@@ -20,6 +20,12 @@ import {
   type RunId,
   type UserId,
   type WorkspaceId,
+  type ThreadId,
+  type ThreadRequestWaits,
+  type ThreadRequestOutcome,
+  ThreadRequestWaitsSchema,
+  ThreadRequestOutcomesSchema,
+  threadRequestFactLimit,
 } from "@opensteer/core";
 import type { ProjectRunControl, PendingAgentEvent } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
@@ -28,7 +34,10 @@ import { requestFromRow, requestOriginEnvironment } from "./request-persistence.
 import { assertRequestResponse } from "./command-store.js";
 import { projectWorkIsCurrent } from "./execution-authority.js";
 import { checkAccess } from "./access-store.js";
-import { assertProjectAuthority } from "./deployment-execution-authority.js";
+import {
+  storedProjectDeployment,
+  assertProjectAuthority,
+} from "./deployment-execution-authority.js";
 import { lockRequestWorkspaces } from "./request-workspace-locks.js";
 import { requestSettlementActor } from "./request-settlement.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
@@ -268,6 +277,80 @@ export class ProjectRequestStore {
   ) {
     this.database = database;
     this.controls = controls;
+  }
+
+  async threadFacts(input: {
+    readonly threadIds: readonly ThreadId[];
+    readonly userId: UserId;
+  }): Promise<
+    ReadonlyMap<
+      ThreadId,
+      {
+        readonly requestWaits: ThreadRequestWaits;
+        readonly requestOutcomes: readonly ThreadRequestOutcome[];
+      }
+    >
+  > {
+    if (!input.threadIds.length) return new Map();
+    const result = await sql<{
+      threadId: ThreadId;
+      requestWaits: unknown;
+      requestOutcomes: unknown;
+    }>`with visible as materialized (
+      select t.id from threads t
+      join workspaces w on w.id = t.workspace_id
+      join workspace_memberships m on m.workspace_id = w.id and m.user_id = ${input.userId}
+      join users u on u.id = m.user_id
+      where t.id in (${sql.join(input.threadIds)}) and ${storedProjectDeployment}
+        and w.kind = 'project' and w.deleted_at is null
+        and w.status not in ('deleting', 'deleted') and m.state = 'active'
+        and u.member_state = 'active' and u.admitted_at is not null and u.disabled_at is null
+    ), ranked as (
+      select r.id, r.originating_thread_id as thread_id, r.kind, r.status,
+        r.created_at, r.resolved_at, r.resolved_by, r.requested_by, r.cancellation_reason,
+        count(*) over (partition by r.originating_thread_id, (r.status = 'pending')) as total,
+        row_number() over (partition by r.originating_thread_id, (r.status = 'pending')
+          order by case when r.status = 'pending' then r.created_at end asc,
+            case when r.status <> 'pending' then r.resolved_at end desc,
+            case when r.status = 'pending' then r.id end asc, r.id desc) as position
+      from requests r join visible v on v.id = r.originating_thread_id
+      where r.originating_grant_id is not null
+    ), facts as (
+      select r.*, case when r.kind = 'harness.input' then 'question' else 'approval' end as class,
+        requester.display_name as requester_name, resolver.display_name as resolver_name
+      from ranked r
+      left join users requester on requester.id = r.requested_by
+      left join users resolver on resolver.id = r.resolved_by
+      where r.position <= ${threadRequestFactLimit}
+    )
+    select v.id as thread_id,
+      jsonb_build_object('total', coalesce(max(f.total) filter (where f.status = 'pending'), 0),
+        'items', coalesce(jsonb_agg(jsonb_build_object(
+          'requestId', f.id, 'class', f.class, 'since', f.created_at,
+          'waitingOn', case when f.requested_by is null then jsonb_build_object('kind', 'managers')
+            else jsonb_build_object('kind', 'person', 'name', f.requester_name) end)
+          order by f.position) filter (where f.status = 'pending'), '[]'::jsonb)) as request_waits,
+      coalesce(jsonb_agg(case when f.status = 'cancelled' then
+        jsonb_build_object('requestId', f.id, 'class', f.class, 'status', f.status,
+          'at', f.resolved_at, 'reason', f.cancellation_reason) ||
+          case when f.requested_by is not null and
+            f.cancellation_reason in ('authority-revoked', 'membership-revoked')
+            then jsonb_build_object('cancelledFor', jsonb_build_object('name', f.requester_name))
+            else '{}'::jsonb end
+        else jsonb_build_object('requestId', f.id, 'class', f.class, 'status', f.status,
+          'at', f.resolved_at, 'resolvedByName', f.resolver_name) end order by f.position)
+        filter (where f.status <> 'pending'), '[]'::jsonb) as request_outcomes
+      from visible v left join facts f on f.thread_id = v.id group by v.id
+    `.execute(this.database);
+    return new Map(
+      result.rows.map((row) => [
+        row.threadId,
+        {
+          requestWaits: ThreadRequestWaitsSchema.parse(row.requestWaits),
+          requestOutcomes: ThreadRequestOutcomesSchema.parse(row.requestOutcomes),
+        },
+      ]),
+    );
   }
 
   /** E calls after authenticating the Runner fence; commit precedes event acknowledgement. */
