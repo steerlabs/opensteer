@@ -1,3 +1,4 @@
+import { ProjectRequestStore, projectRequestAudienceSql } from "./project-request-store.js";
 import { storedProjectDeployment } from "./deployment-execution-authority.js";
 import { teamProjectAudiences } from "./team-project-store.js";
 import { type RunId } from "@opensteer/core";
@@ -279,10 +280,18 @@ export async function workspaceSnapshot(
           .$if(options.listedOnly === true, (query) => query.where("listed", "=", true))
           .executeTakeFirstOrThrow(),
       ]);
+      const requestFacts =
+        projectAuthority && options.viewerId
+          ? await new ProjectRequestStore(transaction).threadFacts({
+              threadIds: threadRows.slice(0, maxThreads).map((thread) => thread.id),
+              userId: options.viewerId,
+            })
+          : new Map();
       const threads = boundedSerializedPrefix(
         threadsFromRows(threadRows.slice(0, maxThreads)).map((thread) => ({
           ...thread,
           ...(audience ? { audience } : {}),
+          ...requestFacts.get(thread.id),
         })),
         maxThreads,
         Math.min(192 * 1_024, maxSerializedBytes),
@@ -319,6 +328,13 @@ export async function workspaceSnapshot(
                 .selectFrom("requests")
                 .selectAll()
                 .where("originatingThreadId", "in", threadIds)
+                .$if(projectAuthority, (query) =>
+                  query.where(
+                    options.viewerId
+                      ? projectRequestAudienceSql(options.viewerId)
+                      : sql<boolean>`false`,
+                  ),
+                )
                 .where("status", "=", "pending")
                 .orderBy("createdAt", "desc")
                 .orderBy("id", "desc")
@@ -328,6 +344,13 @@ export async function workspaceSnapshot(
                 .selectFrom("requests")
                 .select(({ fn }) => fn.countAll<string>().as("count"))
                 .where("originatingThreadId", "in", threadIds)
+                .$if(projectAuthority, (query) =>
+                  query.where(
+                    options.viewerId
+                      ? projectRequestAudienceSql(options.viewerId)
+                      : sql<boolean>`false`,
+                  ),
+                )
                 .where("status", "=", "pending")
                 .executeTakeFirstOrThrow(),
               transaction
@@ -574,10 +597,17 @@ export async function taskPageForUser(
             rows.map((row) => row.workspaceId),
           )
         : new Map();
+      const requestFacts = rows.some((row) => row.projectAuthority)
+        ? await new ProjectRequestStore(transaction).threadFacts({
+            threadIds: rows.slice(0, maxItems).map((row) => row.id),
+            userId: input.userId,
+          })
+        : new Map();
       const threads = threadsFromRows(
         rows.slice(0, maxItems).map(({ projectAuthority: _projectAuthority, ...row }) => row),
       ).map((thread) => ({
         ...thread,
+        ...requestFacts.get(thread.id),
         ...(audiences.has(thread.workspaceId)
           ? { audience: audiences.get(thread.workspaceId) }
           : {}),
