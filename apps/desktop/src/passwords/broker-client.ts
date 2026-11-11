@@ -213,9 +213,7 @@ export class PasswordsBrokerClient {
     options: PasswordsBrokerCallOptions = {},
   ): Promise<PasswordsBrokerResult<Method>> {
     if (this.#closed) throw stopped();
-    if (
-      !brokerMethodNegotiated(method, this.#protocolVersion)
-    ) {
+    if (!brokerMethodNegotiated(method, this.#protocolVersion)) {
       throw new PasswordsBrokerFailure(
         "invalid",
         "This feature requires an updated Opensteer Passwords connection.",
@@ -239,9 +237,7 @@ export class PasswordsBrokerClient {
       live = this.#live?.generation === options.connection ? this.#live : null;
     }
     if (!live || live.socket.destroyed) throw connectionLost();
-    if (
-      !brokerMethodNegotiated(method, live.protocolVersion)
-    ) {
+    if (!brokerMethodNegotiated(method, live.protocolVersion)) {
       throw new PasswordsBrokerFailure(
         "invalid",
         "This feature requires an updated Opensteer Passwords connection.",
@@ -603,11 +599,7 @@ export class PasswordsBrokerClient {
    * Withdraws the transaction on its owning connection when its caller gives up.
    * The v2 invalid error for an abandoned call is dropped with the late reply.
    */
-  #cancelAbandoned(
-    socket: Socket,
-    method: "signin.cancel" | "save.cancel",
-    params: unknown,
-  ): void {
+  #cancelAbandoned(socket: Socket, method: "signin.cancel" | "save.cancel", params: unknown): void {
     const transaction = (params as { readonly transactionId?: unknown }).transactionId;
     if (typeof transaction !== "string" || socket.destroyed) return;
     void this.#send(

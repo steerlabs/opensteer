@@ -134,12 +134,15 @@ export class PasswordsService {
 
   /** The narrow surface the login authority uses. */
   broker(
-    protocolVersion: PasswordsBrokerProtocolVersion = this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion,
+    protocolVersion: PasswordsBrokerProtocolVersion = this.#options.protocolVersion ??
+      passwordsBrokerLatestProtocolVersion,
   ): PasswordsBrokerSession &
     PasswordsBrokerCardSession &
     Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> {
     // Browser-only consent from a previous-release Host must stay on protocol4.
-    if (protocolVersion !== (this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion)) {
+    if (
+      protocolVersion !== (this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion)
+    ) {
       let compatibility = this.#compatibilityServices.get(protocolVersion);
       if (!compatibility) {
         compatibility = new PasswordsService({ ...this.#options, protocolVersion });

@@ -10,6 +10,8 @@ export type PersonFillVersion = z.infer<typeof PersonFillVersionSchema>;
 
 /** The longest one confirmed person fill may be reused, decided by the broker. */
 export const personFillTransactionMaxMs = 5 * 60_000;
+/** The longest a submitted login waits for its sign-in to look done before it is dropped. */
+export const personSaveVerdictMaxMs = 30_000;
 /** The most accounts one offer lists. */
 export const personFillMaxAccounts = 20;
 

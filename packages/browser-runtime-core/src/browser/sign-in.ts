@@ -11,6 +11,7 @@ import type {
   PersonFillRole,
   PersonFillSlot,
   PersonFillStatus,
+  PersonSaveStatus,
 } from "@opensteer/protocol";
 
 /** Who a person fill is for and where it lands; `origin` is the bound frame's committed origin. */
@@ -39,6 +40,29 @@ export interface PersonFillInput extends PersonFillScope {
   readonly write: (slot: PersonFillSlot, value: string) => Promise<boolean>;
   readonly signal: AbortSignal;
 }
+
+/**
+ * A login a person typed and submitted on a page, attributed to one viewer.
+ * `origin` is the submitting frame's committed origin. The password goes only
+ * to the authority, which hands it to the vault's broker and keeps no copy.
+ */
+export interface PersonSaveCandidate {
+  readonly targetId: string;
+  readonly origin: string;
+  readonly username: string;
+  readonly password: string;
+  readonly presence: PersonFillPresence;
+}
+
+/**
+ * `offer`: the broker holds the login until `personSaveCommit`,
+ * `personSaveCancel` or `expiresAt`. `setup`: Passwords is not set up on this
+ * Mac and the person typed here. `skip`: nothing to ask.
+ */
+export type PersonSaveBegin =
+  | { readonly kind: "offer"; readonly transactionId: string; readonly expiresAt: number }
+  | { readonly kind: "setup" }
+  | { readonly kind: "skip" };
 
 export interface BrowserLoginAuthorizeInput {
   readonly expiresAt: Date;
@@ -89,4 +113,9 @@ export interface BrowserLoginAuthority {
   personFillAccounts?(input: PersonFillScope): Promise<PersonFillAccountView[]>;
   /** Confirms (or reuses) the person's choice, then releases and writes each field. */
   personFill?(input: PersonFillInput): Promise<PersonFillStatus>;
+  /** Never prompts and saves nothing; see `PersonSaveBegin`. */
+  personSaveBegin?(input: PersonSaveCandidate): Promise<PersonSaveBegin>;
+  /** Adds exactly the held login, once. */
+  personSaveCommit?(transactionId: string): Promise<PersonSaveStatus>;
+  personSaveCancel?(transactionId: string): void;
 }

@@ -80,6 +80,39 @@ function committedOrigin(tree: unknown, frameId: string): string | null {
   return null;
 }
 
+const saveSnapshotReport = z.object({
+  kind: z.literal("person-save"),
+  snapshotId: z.uuid(),
+  fieldIds: z.array(z.uuid()).min(1).max(2),
+  username: z.string().min(1).max(1_024),
+  password: z.string().min(1).max(4_096),
+});
+const saveEditReport = z.object({ kind: z.literal("person-save-edit"), fieldId: z.uuid() });
+const saveGoneReport = z.object({ kind: z.literal("person-save-gone"), snapshotId: z.uuid() });
+/** How long a page must stay without a password field before a sign-in looks done. */
+export const personSaveSettleMs = 2_000;
+
+/**
+ * A login a person submitted, read once in the private world. Its values
+ * never enter an event, a log or the wire; see docs/passwords.md#saving-for-people.
+ */
+export interface PersonSaveSnapshot {
+  /** The password fields it came from, as their edits were reported. */
+  readonly fieldIds: readonly string[];
+  readonly username: string;
+  readonly password: string;
+  /** The submitting frame's committed HTTPS origin, or null. */
+  origin(): Promise<string | null>;
+  /**
+   * Whether the sign-in looks done: its form left the page, or the frame
+   * moved on, and no password field is shown there `personSaveSettleMs`
+   * later. A page can fake this; it decides only when to ask.
+   */
+  verdict(signal: AbortSignal): Promise<boolean>;
+}
+export type PersonSaveObservation =
+  { type: "edit"; fieldId: string } | { type: "snapshot"; snapshot: PersonSaveSnapshot };
+
 export interface PersonFillBinding {
   readonly bindingId: string;
   readonly frame: string;
@@ -117,6 +150,11 @@ export class PageEditingObserver {
   readonly #menu: MenuPublisher;
   readonly #person: ((event: PersonFillObservation) => void) | undefined;
   readonly #personBindings = new Map<string, { binding: PersonFillBinding; context: number }>();
+  readonly #save: ((event: PersonSaveObservation) => void) | undefined;
+  readonly #saveWatchers = new Map<
+    string,
+    { frame: string; left: () => void; end: (done: boolean) => void }
+  >();
   readonly #contexts = new Map<number, string>();
   readonly #inventory = new ExecutionContextInventory();
   #focused: { context: number; frame: string; fieldId: string; selectionRevision: number } | null =
@@ -138,10 +176,12 @@ export class PageEditingObserver {
       caret: z.infer<typeof contextReport>["caret"],
     ) => Promise<EditingContext["caret"]>,
     person?: (event: PersonFillObservation) => void,
+    save?: (event: PersonSaveObservation) => void,
   ) {
     this.#cdp = cdp;
     this.#mapGeometry = geometry;
     this.#person = person;
+    this.#save = save;
     this.#frames = new FrameCdpSessions(
       cdp,
       (session) => {
@@ -160,6 +200,7 @@ export class PageEditingObserver {
           (menu, coordinates) => this.#menu(menu, coordinates),
           (frame, caret) => this.#geometry(frame, caret),
           this.#person,
+          this.#save,
         );
         this.#children.set(session, child);
         void session
@@ -224,7 +265,11 @@ export class PageEditingObserver {
     const result = await this.#cdp.send<{ identifier: string }>(
       "Page.addScriptToEvaluateOnNewDocument",
       {
-        source: editingObserverSource(this.#binding, this.#person !== undefined),
+        source: editingObserverSource(
+          this.#binding,
+          this.#person !== undefined,
+          this.#save !== undefined,
+        ),
         worldName: this.#world,
         runImmediately: true,
       },
@@ -372,6 +417,8 @@ export class PageEditingObserver {
   #navigated = (value: unknown): void => {
     const frame = z.object({ frame: z.object({ id: z.string() }) }).safeParse(value);
     if (frame.success) {
+      for (const watcher of this.#saveWatchers.values())
+        if (watcher.frame === frame.data.frame.id) watcher.left();
       this.#withdrawBindings((entry) => entry.binding.frame === frame.data.frame.id);
       if (this.#focused?.frame === frame.data.frame.id) this.#clear();
     }
@@ -410,6 +457,7 @@ export class PageEditingObserver {
     } catch {
       return;
     }
+    if (this.#saveReport(payload, frame)) return;
     if (this.#personReport(payload, parsed.data.executionContextId, frame)) return;
     const menu = z
       .object({
@@ -469,6 +517,83 @@ export class PageEditingObserver {
       entry.binding.release();
       this.#person?.({ type: "withdrawn", bindingId: id });
     }
+  }
+
+  /** Consumes every save report, even a malformed one, so a value is never handled twice. */
+  #saveReport(payload: unknown, frame: string): boolean {
+    if (!this.#save || !payload || typeof payload !== "object" || !("kind" in payload))
+      return false;
+    const kind = (payload as { kind: unknown }).kind;
+    if (kind === "person-save-edit") {
+      const edit = saveEditReport.safeParse(payload);
+      if (edit.success) this.#save({ type: "edit", fieldId: edit.data.fieldId });
+      return true;
+    }
+    if (kind === "person-save-gone") {
+      const gone = saveGoneReport.safeParse(payload);
+      if (gone.success) this.#saveWatchers.get(gone.data.snapshotId)?.left();
+      return true;
+    }
+    if (kind !== "person-save") return false;
+    const report = saveSnapshotReport.safeParse(payload);
+    if (!report.success) return true;
+    const { snapshotId, fieldIds, username, password } = report.data;
+    this.#save({
+      type: "snapshot",
+      snapshot: {
+        fieldIds,
+        username,
+        password,
+        origin: async () => {
+          const tree = await this.#cdp
+            .send<{ frameTree?: unknown }>("Page.getFrameTree")
+            .catch(() => null);
+          return committedOrigin(tree?.frameTree, frame);
+        },
+        verdict: (signal) => this.#saveVerdict(snapshotId, frame, signal),
+      },
+    });
+    return true;
+  }
+
+  #saveVerdict(snapshotId: string, frame: string, signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settling: ReturnType<typeof setTimeout> | undefined;
+      const end = (done: boolean) => {
+        if (this.#saveWatchers.get(snapshotId)?.end !== end) return;
+        this.#saveWatchers.delete(snapshotId);
+        clearTimeout(settling);
+        signal.removeEventListener("abort", aborted);
+        resolve(done);
+      };
+      const aborted = () => end(false);
+      const left = () => {
+        if (settling !== undefined || this.#closed) return;
+        settling = setTimeout(
+          () => void this.#passwordShown(frame).then((shown) => end(shown === false)),
+          personSaveSettleMs,
+        );
+      };
+      this.#saveWatchers.set(snapshotId, { frame, left, end });
+      if (signal.aborted) aborted();
+      else signal.addEventListener("abort", aborted, { once: true });
+    });
+  }
+
+  /** Null when the frame has no private world to ask, such as one that left this renderer. */
+  async #passwordShown(frame: string): Promise<boolean | null> {
+    const context = [...this.#contexts].findLast(([, owner]) => owner === frame)?.[0];
+    if (context === undefined) return null;
+    const response = await this.#cdp
+      .send<{ result?: { value?: unknown } }>("Runtime.evaluate", {
+        contextId: context,
+        expression: "globalThis.editingOwner?.passwordShown()",
+        returnByValue: true,
+        silent: true,
+      })
+      .catch(() => null);
+    const value = response?.result?.value;
+    return typeof value === "boolean" ? value : null;
   }
 
   #personReport(payload: unknown, context: number, frame: string): boolean {
@@ -584,6 +709,7 @@ export class PageEditingObserver {
   async close(): Promise<void> {
     this.#closed = true;
     this.#withdrawBindings(() => true);
+    for (const watcher of [...this.#saveWatchers.values()]) watcher.end(false);
     await Promise.all([...this.#children.values()].map((child) => child.close()));
     await this.#frames.close();
     this.#children.clear();
@@ -613,7 +739,7 @@ export class PageEditingObserver {
   }
 }
 
-function editingObserverSource(binding: string, personFill: boolean): string {
+function editingObserverSource(binding: string, personFill: boolean, personSave: boolean): string {
   return `(() => {
   if (globalThis.editingOwner) return;
   const listeners = [],
@@ -832,6 +958,102 @@ function editingObserverSource(binding: string, personFill: boolean): string {
         if (personBinding) release(personBinding);
         globalThis[${JSON.stringify(binding)}](JSON.stringify({kind:"person-focus",bindingId:null}));
       }
+    });
+  }
+  const passwordShown = () =>
+    Array.from(document.querySelectorAll('input[type="password"]')).some(writable);
+  const saveFields = new Map(), pendingSaves = new Map();
+  let lastSave = null, saveWatch = null;
+  if (${personSave}) {
+    const report = (message) => globalThis[${JSON.stringify(binding)}](JSON.stringify(message));
+    const eventTarget = (event) => event.composedPath()[0];
+    // Never offered: codes, cards and PINs, whatever the page calls the field.
+    const saveExcluded = (element) => {
+      const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+      return autocomplete.includes("one-time-code") || autocomplete.some(token => token.startsWith("cc-")) ||
+        !!codeGroup(element) ||
+        /otp|totp|2fa|mfa|one.?time|verification|security.?code|auth.?code|passcode|\bpin\b|pin.?code|cvv|cvc|csc|card/i.test(
+          [element.name, element.id, element.getAttribute("aria-label"), element.placeholder].join(" "));
+    };
+    // A field counts only from a trusted edit into it while empty; a script's
+    // edit taints it, and a later value the person did not type never matches.
+    on(document, "beforeinput", event => {
+      const element = eventTarget(event);
+      if (!(element instanceof HTMLInputElement)) return;
+      const field = saveFields.get(element);
+      if (!event.isTrusted) {
+        if (field) field.tainted = true;
+        return;
+      }
+      if (!field && element.type === "password" && element.value === "" && !saveExcluded(element))
+        saveFields.set(element, { id: crypto.randomUUID(), value: "", tainted: false });
+    });
+    on(document, "input", event => {
+      const element = eventTarget(event);
+      const field = element instanceof HTMLInputElement ? saveFields.get(element) : undefined;
+      if (!field) return;
+      if (!event.isTrusted) {
+        field.tainted = true;
+        return;
+      }
+      field.value = element.value;
+      report({ kind: "person-save-edit", fieldId: field.id });
+    });
+    const watchSaves = () => {
+      if (saveWatch) return;
+      saveWatch = new MutationObserver(() => {
+        for (const [snapshotId, fields] of pendingSaves) {
+          if (fields.some(field => writable(field.deref()))) continue;
+          pendingSaves.delete(snapshotId);
+          report({ kind: "person-save-gone", snapshotId });
+        }
+        if (!pendingSaves.size) {
+          saveWatch?.disconnect();
+          saveWatch = null;
+        }
+      });
+      saveWatch.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class", "hidden"] });
+    };
+    const takeSave = (node) => {
+      if (!(node instanceof Node)) return;
+      const scope = node.form ?? (node instanceof Element ? node.closest("form") : null) ?? node.getRootNode();
+      if (!scope?.querySelectorAll) return;
+      const inputs = Array.from(scope.querySelectorAll("input"));
+      // One password, or a new one and its confirmation; a change of password is not offered.
+      const filled = inputs.filter(input => (input.type === "password" || saveFields.has(input)) && writable(input) && input.value !== "");
+      if (!filled.length || filled.length > 2 || (filled.length === 2 && filled[0].value !== filled[1].value)) return;
+      if (!filled.every(input => {
+        const field = saveFields.get(input);
+        return field && !field.tainted && field.value === input.value && !saveExcluded(input);
+      })) return;
+      const usable = (input) => /^(text|email|tel|hidden)$/.test(input.type) && input.value !== "" && !saveFields.has(input) && !saveExcluded(input);
+      const hinted = inputs.find(input => usable(input) && /(^|\s)(username|email)(\s|$)/i.test(input.getAttribute("autocomplete") || ""));
+      const typed = inputs.filter(input => usable(input) && input.type !== "hidden" && writable(input) &&
+        input.compareDocumentPosition(filled[0]) & Node.DOCUMENT_POSITION_FOLLOWING).pop();
+      const username = (hinted ?? typed)?.value;
+      const password = filled[0].value;
+      if (!username) return;
+      const fieldIds = filled.map(input => saveFields.get(input).id);
+      const key = JSON.stringify([fieldIds, username, password]);
+      if (lastSave === key) return;
+      lastSave = key;
+      const snapshotId = crypto.randomUUID();
+      report({ kind: "person-save", snapshotId, fieldIds, username, password });
+      pendingSaves.set(snapshotId, filled.map(input => new WeakRef(input)));
+      setTimeout(() => pendingSaves.delete(snapshotId), 30000);
+      watchSaves();
+    };
+    on(document, "submit", event => takeSave(eventTarget(event)));
+    on(document, "keydown", event => {
+      if (event.isTrusted && event.key === "Enter") takeSave(eventTarget(event));
+    });
+    on(document, "click", event => {
+      if (!event.isTrusted) return;
+      const button = event.composedPath().find(node => node instanceof Element &&
+        (node.closest("form")
+          ? node.matches('button:not([type="button"]):not([type="reset"]), input[type="submit"], input[type="image"]')
+          : node.matches('button:not([type="reset"]), input[type="submit"], input[type="image"], [role="button"]')));
+      if (button) takeSave(button);
     });
   }
   const publish = () => {
@@ -1068,6 +1290,7 @@ function editingObserverSource(binding: string, personFill: boolean): string {
     sensitive,
     release,
     write,
+    passwordShown,
     beginInput,
     finishInput,
     publish: () => {
@@ -1077,6 +1300,9 @@ function editingObserverSource(binding: string, personFill: boolean): string {
     prepare,
     stop: () => {
       personBindings.clear();
+      saveFields.clear();
+      pendingSaves.clear();
+      saveWatch?.disconnect();
       listeners.forEach((fn) => fn());
       stopEditContext();
       resize.disconnect();

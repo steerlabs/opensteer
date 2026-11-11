@@ -103,15 +103,18 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
       { client: { version: "9.9.9" }, protocolVersion: 9 },
       { client: { version: "9.9.9" }, protocolVersion: 8 },
     ]);
-    await expect(
-      harness.client.call("save.cancel", { transactionId }),
-    ).rejects.toMatchObject({ code: "invalid" });
+    await expect(harness.client.call("save.cancel", { transactionId })).rejects.toMatchObject({
+      code: "invalid",
+    });
     expect(harness.broker.received("save.cancel")).toEqual([]);
   });
 
   it("never repeats a broker's words about a save, which could carry the login", async () => {
     const harness = await clientHarness({ clientProtocolVersion: 9 });
-    harness.broker.fail("save.begin", { code: "invalid", message: "hunter2 for person@example.com" });
+    harness.broker.fail("save.begin", {
+      code: "invalid",
+      message: "hunter2 for person@example.com",
+    });
     const failure = await harness.client
       .call("save.begin", {
         transactionId,
