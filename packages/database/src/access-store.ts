@@ -74,6 +74,7 @@ export interface MembershipTransition extends Pair {
 }
 
 export type AccessWorkRevocationRoot =
+  | { readonly kind: "project"; readonly workspaceId: WorkspaceId }
   | { readonly kind: "member"; readonly userId: UserId; readonly memberGenerationCutoff: number }
   | {
       readonly kind: "membership";
@@ -1699,10 +1700,51 @@ async function coordinateAccess(
   ) => {
     const scope = await discoverLiveAccessScope(transaction, pairs, fencedUsers);
     const execution = roots.length ? await work?.discover(transaction, roots) : undefined;
+    const deletedProjects = roots.flatMap((root) =>
+      root.kind === "project" ? [root.workspaceId] : [],
+    );
+    const projectRuns = deletedProjects.length
+      ? await transaction
+          .selectFrom("runs")
+          .innerJoin("threads", "threads.id", "runs.threadId")
+          .select(["runs.id", "threads.workspaceId"])
+          .where("threads.workspaceId", "in", deletedProjects)
+          .where("runs.status", "in", nonTerminalRunStatuses)
+          .execute()
+      : [];
+    if (!work && deletedProjects.length) {
+      const pending = await transaction
+        .selectFrom("requests")
+        .select("id")
+        .where("status", "=", "pending")
+        .where((eb) =>
+          eb.or([
+            eb("originatingWorkspaceId", "in", deletedProjects),
+            eb("targetWorkspaceId", "in", deletedProjects),
+          ]),
+        )
+        .limit(1)
+        .executeTakeFirst();
+      if (projectRuns.length || pending)
+        throw new OpensteerError({
+          code: "workspace_unavailable",
+          reason: "team-not-implemented",
+          message:
+            "Project work cancellation must be connected before deleting a Project with live work",
+        });
+    }
     return {
       ...scope,
-      runIds: [...new Set([...scope.runIds, ...(execution?.runIds ?? [])])],
-      workspaceIds: [...new Set([...scope.workspaceIds, ...(execution?.workspaceIds ?? [])])],
+      runIds: [
+        ...new Set([
+          ...scope.runIds,
+          ...(execution?.runIds ?? []),
+          ...projectRuns.map((run) => run.id),
+        ]),
+      ],
+      workspaceIds: [
+        ...new Set([...scope.workspaceIds, ...(execution?.workspaceIds ?? []), ...deletedProjects]),
+      ],
     };
   };
   const fingerprint = createHash("sha256")
@@ -1891,6 +1933,13 @@ async function coordinateAccess(
               ]
             : [];
         });
+        roots.push(
+          ...input.changes.flatMap((change) =>
+            change.kind === "delete-project"
+              ? [{ kind: "project" as const, workspaceId: change.workspaceId }]
+              : [],
+          ),
+        );
         const changed = pairs.filter(
           (pair) =>
             effective(beforePairs.get(pairKey(pair))?.entries ?? []).level !== null &&
