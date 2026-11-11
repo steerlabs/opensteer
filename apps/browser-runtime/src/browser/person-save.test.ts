@@ -15,7 +15,7 @@ import { asRecord, rootCdpNavigate, startFollowSession } from "./chromium.test-s
 
 const viewer = randomUUID();
 /** A verdict waits two seconds for a password field to come back; this leaves room inside the test timeout. */
-const step = { timeout: 8_000 };
+const stepWait = { timeout: 8_000 };
 
 /**
  * A sign-in inside a shadow root that, like an app's, answers without a
@@ -137,7 +137,7 @@ async function signInPage() {
         await session.read(id, "({ ready: document.readyState, path: location.pathname })"),
       );
       expect(state, `${path} loaded`).toMatchObject({ ready: "complete", path });
-    }, step);
+    }, stepWait);
   const open = async (path: string) => {
     await rootCdpNavigate(session.ledger, id, `${origin}${path}`);
     await landed(path);
@@ -172,24 +172,63 @@ async function signInPage() {
 }
 
 describe("saving a login a person typed", () => {
-  it("offers it to the typing viewer once the sign-in moves on, and saves on that viewer's answer", async () => {
+  // One browser for every case with no agent in it: each step asks only about
+  // what happened since it began, and ends whatever offer it made.
+  it("offers only a person's finished sign-in, under its own site, to the viewer that typed it", async () => {
     const page = await signInPage();
+    const offers = () => page.saveMessages("browser.passwordSave.offer");
+    const ended = () => page.saveMessages("browser.passwordSave.ended");
+    const since = () => {
+      const at = [
+        offers(),
+        ended(),
+        page.begun,
+        page.transactions,
+        page.cancelled,
+        page.committed,
+      ].map((list) => list.length);
+      return {
+        offers: () => offers().slice(at[0]),
+        ended: () => ended().slice(at[1]),
+        begun: () => page.begun.slice(at[2]),
+        transactions: () => page.transactions.slice(at[3]),
+        cancelled: () => page.cancelled.slice(at[4]),
+        committed: () => page.committed.slice(at[5]),
+      };
+    };
+    const answer = (offerId: string, save: boolean, producerId = viewer) =>
+      page.controller.handle({
+        type: "passwordSave.answer",
+        surfaceId: page.id as BrowserSurfaceId,
+        offerId,
+        save,
+        producerId,
+      });
+    const offered = async (step: ReturnType<typeof since>) => {
+      await vi.waitFor(() => expect(step.offers(), "the offer").toHaveLength(1), stepWait);
+      return step.offers()[0]!;
+    };
+    const dropped = (step: ReturnType<typeof since>) =>
+      vi.waitFor(() => {
+        expect(step.transactions(), "the login was held").toHaveLength(1);
+        expect(step.cancelled(), "the held login was dropped").toEqual(step.transactions());
+      }, stepWait);
+
+    // A sign-in that moves on, here to another host of the site, keeps the site
+    // it was typed on; only the typing viewer's answer saves it.
+    let step = since();
     await page.open("/login");
     await page.type("u", "maya@example.test");
     await page.type("p", "synthetic-pw");
     await page.key("Enter");
-    await vi.waitFor(
-      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
-      step,
-    );
-    const [offer] = page.saveMessages("browser.passwordSave.offer");
+    const offer = await offered(step);
     expect(offer).toMatchObject({
       surfaceId: page.id,
       consumerToken: viewer,
       offer: { kind: "save", origin: page.origin, username: "maya@example.test" },
     });
     expect(JSON.stringify(page.sink.messages)).not.toContain("synthetic-pw");
-    expect(page.begun).toEqual([
+    expect(step.begun()).toEqual([
       {
         targetId: page.rootTargetId,
         origin: page.origin,
@@ -198,131 +237,96 @@ describe("saving a login a person typed", () => {
         presence: "elsewhere",
       },
     ]);
-    const answer = (producerId: string) =>
-      page.controller.handle({
-        type: "passwordSave.answer",
-        surfaceId: page.id as BrowserSurfaceId,
-        offerId: offer!.offerId,
-        save: true,
-        producerId,
-      });
-    await answer(randomUUID());
-    expect(page.committed, "another viewer cannot answer").toEqual([]);
-    await answer(viewer);
-    await vi.waitFor(
-      () => expect(page.saveMessages("browser.passwordSave.ended"), "the result").toHaveLength(1),
-      step,
-    );
-    expect(page.committed).toEqual(page.transactions);
-    expect(page.saveMessages("browser.passwordSave.ended")[0]).toMatchObject({
-      consumerToken: viewer,
-      offerId: offer!.offerId,
-      status: "saved",
-    });
-  });
+    await answer(offer.offerId, true, randomUUID());
+    expect(step.committed(), "another viewer cannot answer").toEqual([]);
+    await answer(offer.offerId, true);
+    await vi.waitFor(() => expect(step.ended(), "the result").toHaveLength(1), stepWait);
+    expect(step.committed()).toEqual(step.transactions());
+    expect(step.ended()[0]).toMatchObject({ offerId: offer.offerId, status: "saved" });
 
-  it("drops a login whose form comes back, as a failed sign-in's does", async () => {
-    const page = await signInPage();
+    // A form that comes back, as a failed sign-in's does, is dropped.
+    step = since();
     await page.open("/retry");
     await page.type("u", "maya@example.test");
     await page.type("p", "wrong-pw");
     await page.key("Enter");
-    await vi.waitFor(() => {
-      expect(page.transactions, "the login was held").toHaveLength(1);
-      expect(page.cancelled, "the held login was dropped").toEqual(page.transactions);
-    }, step);
-    expect(page.saveMessages("browser.passwordSave.offer")).toEqual([]);
-  });
+    await dropped(step);
+    expect(step.offers()).toEqual([]);
 
-  it("ends a save when its viewer leaves before the sign-in settles", async () => {
-    const page = await signInPage();
+    // A viewer that leaves before the sign-in settles takes its save with it.
+    step = since();
     await page.open("/login");
     await page.type("u", "maya@example.test");
     await page.type("p", "synthetic-pw");
     await page.key("Enter");
-    await vi.waitFor(() => expect(page.transactions, "the login was held").toHaveLength(1), step);
+    await vi.waitFor(
+      () => expect(step.transactions(), "the login was held").toHaveLength(1),
+      stepWait,
+    );
     await page.controller.handle({ type: "input.cancel", producerId: viewer, ended: true });
-    expect(page.cancelled, "the held login was dropped").toEqual(page.transactions);
+    expect(step.cancelled(), "the held login was dropped").toEqual(step.transactions());
     await page.landed("/home");
-    expect(page.saveMessages("browser.passwordSave.offer")).toEqual([]);
-  });
+    expect(step.offers()).toEqual([]);
 
-  it("offers a sign-in made in a shadow root once its form leaves the page", async () => {
-    const page = await signInPage();
+    // In a shadow root, a form that leaves is a sign-in, and one drawn again is not.
+    step = since();
     await page.open("/shadow");
     await page.type("u", "maya@example.test");
     await page.type("p", "synthetic-pw");
     await page.key("Enter");
-    await vi.waitFor(
-      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
-      step,
-    );
-    expect(page.begun.map(({ username }) => username)).toEqual(["maya@example.test"]);
-  });
-
-  it("drops a shadow-root sign-in whose form comes back", async () => {
-    const page = await signInPage();
+    await answer((await offered(step)).offerId, false);
+    expect(step.begun().map(({ username }) => username)).toEqual(["maya@example.test"]);
+    step = since();
     await page.open("/shadow-retry");
     await page.type("u", "maya@example.test");
     await page.type("p", "wrong-pw");
     await page.key("Enter");
-    await vi.waitFor(() => {
-      expect(page.transactions, "the login was held").toHaveLength(1);
-      expect(page.cancelled, "the held login was dropped").toEqual(page.transactions);
-    }, step);
-    expect(page.saveMessages("browser.passwordSave.offer")).toEqual([]);
-  });
+    await dropped(step);
+    expect(step.offers()).toEqual([]);
 
-  it("offers the corrected login when an app refuses one username and accepts the next", async () => {
-    const page = await signInPage();
+    // An app that refuses one username and lets the corrected one in offers the corrected one.
+    step = since();
     await page.open("/app-retry");
     await page.type("u", "wrong@example.test");
     await page.type("p", "synthetic-pw");
     await page.key("Enter");
     await vi.waitFor(
-      () => expect(page.transactions, "the first try was held").toHaveLength(1),
-      step,
+      () => expect(step.transactions(), "the first try was held").toHaveLength(1),
+      stepWait,
     );
     await page.read(page.id, `document.querySelector("#u").value = ""`);
     await page.type("u", "maya@example.test");
     await page.key("Enter");
-    await vi.waitFor(
-      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
-      step,
+    const corrected = await offered(step);
+    expect(corrected.offer).toMatchObject({ username: "maya@example.test" });
+    expect(step.cancelled(), "the refused try was dropped").toEqual(
+      step.transactions().slice(0, 1),
     );
-    expect(page.saveMessages("browser.passwordSave.offer")[0]?.offer).toMatchObject({
-      username: "maya@example.test",
-    });
-    expect(page.cancelled, "the refused try was dropped").toEqual(page.transactions.slice(0, 1));
-  });
+    await answer(corrected.offerId, false);
 
-  it("saves from a frame under its own origin, and never from a sandboxed one", async () => {
-    const page = await signInPage();
+    // A frame saves under its own origin; a sandboxed frame's is opaque, so it saves nothing.
     const framedSubmit = async (path: string) => {
       await page.open(path);
       await vi.waitFor(async () => {
         expect(await page.read(page.id, "window.framePath"), "the frame loaded").toBe(
           "/frame-login",
         );
-      }, step);
+      }, stepWait);
       for (const character of "synthetic-pw") await page.key(character);
       await page.key("Enter");
       await vi.waitFor(async () => {
         expect(await page.read(page.id, "window.framePath"), "the frame signed in").toBe(
           "/frame-home",
         );
-      }, step);
+      }, stepWait);
     };
-    // A sandboxed frame's origin is opaque, so nothing it holds has a site to be saved under.
+    step = since();
     await framedSubmit("/sandboxed");
     await page.read(page.id, "1");
-    expect(page.begun).toEqual([]);
+    expect(step.begun()).toEqual([]);
     await framedSubmit("/framed");
-    await vi.waitFor(
-      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
-      step,
-    );
-    expect(page.begun).toMatchObject([{ origin: page.origin, username: "framed@example.test" }]);
+    await offered(step);
+    expect(step.begun()).toMatchObject([{ origin: page.origin, username: "framed@example.test" }]);
   });
 
   it("never offers a PIN, or a password an agent typed or touched before the submit", async () => {

@@ -27,6 +27,8 @@ import { PageScriptTargets, type ScriptTarget } from "./script-targets.js";
 
 /** How long Chromium lets one person input open a popup. */
 const userActivationLifespanMs = 5_000;
+/** Inputs one page's timeline keeps, far more than a person can make in its window. */
+const inputTimelineLimit = 1_024;
 
 export type SurfaceLedgerEvent =
   | BrowserNavigationCommitted
@@ -751,9 +753,15 @@ export class SurfaceLedger {
   }
 
   #recordInput(record: SurfaceRecord, entry: SurfaceRecord["inputTimeline"][number]): void {
-    record.inputTimeline.push(entry);
-    if (record.inputTimeline.length > 64)
-      record.inputTimelineFloor = record.inputTimeline.shift()!.at;
+    const timeline = record.inputTimeline;
+    timeline.push(entry);
+    // Input older than any edit still being judged can go; past the cap, the
+    // dropped input's time is kept so its window is refused, not trusted.
+    while (
+      timeline.length > inputTimelineLimit ||
+      (timeline[0] && timeline[0].at < entry.at - 2 * userActivationLifespanMs)
+    )
+      record.inputTimelineFloor = timeline.shift()!.at;
   }
 
   recordAgentCommand(targetId: string): void {
