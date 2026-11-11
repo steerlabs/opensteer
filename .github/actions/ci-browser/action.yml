@@ -1,5 +1,5 @@
 name: CI Chromium
-description: Cache exact resolved Playwright browsers; always install system dependencies
+description: Cache exact resolved Playwright browsers and verify runner compatibility
 runs:
   using: composite
   steps:
@@ -10,18 +10,23 @@ runs:
       with:
         path: ~/.cache/ms-playwright
         key: chromium-${{ runner.os }}-${{ runner.arch }}-${{ steps.revision.outputs.key }}
-    - name: Use Ubuntu's primary package mirror
-      if: runner.os == 'Linux' && runner.arch == 'X64'
+    # Hosted runners already include Chromium's system libraries. Installing them
+    # again makes every test shard depend on live Ubuntu package mirrors.
+    - shell: bash
+      run: pnpm exec playwright-core install chromium
+    - name: Verify pinned Chromium starts on this runner
       shell: bash
       run: |
-        # The Azure mirror can spend most of a shard's budget downloading fonts.
-        if [[ -f /etc/apt/apt-mirrors.txt ]]; then
-          sudo sed -E -i 's|https?://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-        fi
-    - shell: bash
-      run: pnpm exec playwright-core install --with-deps chromium
-    # Otherwise tests fall back to the runner image's Chrome or Chromium. Nothing has
-    # read those binaries yet, and paging one in from disk can outlast the Browser
-    # Runtime's 30 s attach bound. This is the pinned Chromium its container ships.
+        node --input-type=module <<'JS'
+        import { chromium } from 'playwright-core';
+        const browser = await chromium.launch({
+          executablePath: chromium.executablePath(),
+          headless: true,
+          timeout: 15_000,
+        });
+        await browser.close();
+        JS
+    # Suites must use the same pinned browser we verified, rather than falling
+    # back to the runner image's Chrome or Chromium.
     - shell: bash
       run: echo "OPENSTEER_CHROMIUM_EXECUTABLE=$(node -p 'require("playwright-core").chromium.executablePath()')" >> "$GITHUB_ENV"
