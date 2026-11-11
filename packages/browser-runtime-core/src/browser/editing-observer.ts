@@ -980,7 +980,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
   // Held weakly, so a field the page drops takes the typed value with it.
   let saveFields = new WeakMap();
   const pendingSaves = new Map();
-  let saveWatch = null;
+  let saveWatch = null, lastAttempt = null;
   if (${personSave}) {
     const report = (message) => globalThis[${JSON.stringify(binding)}](JSON.stringify(message));
     const eventTarget = (event) => event.composedPath()[0];
@@ -1003,7 +1003,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
         return;
       }
       if (!field && element.type === "password" && element.value === "" && !saveExcluded(element))
-        saveFields.set(element, { id: crypto.randomUUID(), value: "", tainted: false });
+        saveFields.set(element, { id: crypto.randomUUID(), value: "", edits: 0, tainted: false });
     });
     on(document, "input", event => {
       const element = eventTarget(event);
@@ -1014,6 +1014,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
         return;
       }
       field.value = element.value;
+      field.edits++;
       report({ kind: "person-save-edit", fieldId: field.id, at: Date.now() });
     });
     const watchSaves = (roots) => {
@@ -1051,12 +1052,15 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       const password = filled[0].value;
       if (!username) return;
       const fieldIds = filled.map(input => saveFields.get(input).id);
-      // Read once: the copy is dropped, so the same attempt's next submit signal
-      // finds nothing new until the person types again.
-      for (const input of filled) saveFields.get(input).value = null;
+      // One attempt sends once, however many submit signals it raises; a new
+      // edit or a corrected username is a new attempt. Nothing secret is kept.
+      const attempt = JSON.stringify([...filled.map(input => [saveFields.get(input).id, saveFields.get(input).edits]), username]);
+      if (attempt === lastAttempt) return;
+      lastAttempt = attempt;
       const snapshotId = crypto.randomUUID();
-      // The origin is the submitting document's own, read before it can navigate.
-      report({ kind: "person-save", snapshotId, fieldIds, username, password, origin: location.origin });
+      // The document's effective origin, read before it can navigate: "null" for
+      // a sandboxed frame, the creator's for about:blank and srcdoc.
+      report({ kind: "person-save", snapshotId, fieldIds, username, password, origin: globalThis.origin });
       pendingSaves.set(snapshotId, filled.map(input => new WeakRef(input)));
       setTimeout(() => pendingSaves.delete(snapshotId), 30000);
       watchSaves(new Set([document, ...filled.map(input => input.getRootNode())]));

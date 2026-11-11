@@ -2440,6 +2440,7 @@ export class BrowserController {
    * it (`viewerInputAt`).
    */
   private observePersonSave(surfaceId: BrowserSurfaceId, event: PersonSaveObservation): void {
+    if (this.saveRefused.has(surfaceId)) return;
     let authors = this.saveAuthors.get(surfaceId);
     if (event.type === "edit") {
       if (!authors) {
@@ -2459,11 +2460,14 @@ export class BrowserController {
       if (authors.size > personSaveFieldLimit) {
         const attributed = [...authors].find(([, author]) => author !== null)?.[0];
         if (attributed) authors.delete(attributed);
-        else this.saveRefused.add(surfaceId);
+        else {
+          // Taints alone fill the tab: nothing there is offered again, so none is kept.
+          this.saveRefused.add(surfaceId);
+          this.saveAuthors.delete(surfaceId);
+        }
       }
       return;
     }
-    if (this.saveRefused.has(surfaceId)) return;
     const [first, ...others] = event.snapshot.fieldIds.map((fieldId) => authors?.get(fieldId));
     if (!first || others.some((author) => author?.consumerToken !== first.consumerToken)) return;
     void this.beginPersonSave(surfaceId, event.snapshot, first);

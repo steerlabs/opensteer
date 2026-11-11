@@ -33,9 +33,22 @@ root.querySelector("form").addEventListener("submit", (event) => {
 });
 </script>`;
 
+/** An app's sign-in that refuses one username and, without a navigation, lets the next one in. */
+const appRetry = `<!doctype html><title>App sign in</title><form id="f"><input id="u" autocomplete="username"><input id="p" type="password"><button>Sign in</button></form><script>
+f.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (u.value !== "wrong@example.test") setTimeout(() => f.remove(), 50);
+});
+</script>`;
+/** A sign-in in a frame, its username already known, telling its parent where it is. */
+const frameSignIn = `<!doctype html><form method="post" action="/frame-home"><input type="hidden" autocomplete="username" value="framed@example.test"><input id="p" type="password"><button>Sign in</button></form><script>document.querySelector("#p").focus();parent.postMessage(location.pathname, "*")</script>`;
+const framed = (sandbox: boolean) =>
+  `<!doctype html><title>Framed</title><script>window.framePath = null; addEventListener("message", (event) => { window.framePath = event.data; });</script><iframe ${sandbox ? 'sandbox="allow-forms allow-scripts"' : ""} src="/frame-login"></iframe>`;
+
 /**
  * A sign-in that goes home on another host of the site, one whose form comes
- * back as a failed sign-in does, and one in a shadow root.
+ * back as a failed sign-in does, one in a shadow root, one in an app that
+ * answers in place and ones in frames.
  */
 async function signInSite() {
   const form = (action: string, password = "password") =>
@@ -51,13 +64,21 @@ async function signInSite() {
           ? form(`https://app.example.test:${host.split(":")[1]}/home`)
           : path === "/shadow" || path === "/shadow-retry"
             ? shadowForm(path === "/shadow")
-            : path === "/plain"
-              ? form("/home")
-              : path === "/pin"
-                ? form("/home", "card-pin")
-                : path === "/retry"
-                  ? form("/retry")
-                  : "<!doctype html><title>Home</title><p>Signed in</p>",
+            : path === "/app-retry"
+              ? appRetry
+              : path === "/framed" || path === "/sandboxed"
+                ? framed(path === "/sandboxed")
+                : path === "/frame-login"
+                  ? frameSignIn
+                  : path === "/frame-home"
+                    ? `<script>parent.postMessage("/frame-home", "*")</script>`
+                    : path === "/plain"
+                      ? form("/home")
+                      : path === "/pin"
+                        ? form("/home", "card-pin")
+                        : path === "/retry"
+                          ? form("/retry")
+                          : "<!doctype html><title>Home</title><p>Signed in</p>",
       );
     },
   );
@@ -141,10 +162,11 @@ async function signInPage() {
     );
     for (const character of text) await key(character);
   };
-  const saveMessages = (type: "browser.passwordSave.offer" | "browser.passwordSave.ended") =>
+  const saveMessages = <Type extends "browser.passwordSave.offer" | "browser.passwordSave.ended">(
+    type: Type,
+  ) =>
     session.sink.messages.filter(
-      (message): message is Extract<BrowserServerMessage, { type: typeof type }> =>
-        message.type === type,
+      (message): message is Extract<BrowserServerMessage, { type: Type }> => message.type === type,
     );
   return { ...session, ...recorded, id, origin, open, landed, key, type, saveMessages };
 }
@@ -249,6 +271,58 @@ describe("saving a login a person typed", () => {
       expect(page.cancelled, "the held login was dropped").toEqual(page.transactions);
     }, step);
     expect(page.saveMessages("browser.passwordSave.offer")).toEqual([]);
+  });
+
+  it("offers the corrected login when an app refuses one username and accepts the next", async () => {
+    const page = await signInPage();
+    await page.open("/app-retry");
+    await page.type("u", "wrong@example.test");
+    await page.type("p", "synthetic-pw");
+    await page.key("Enter");
+    await vi.waitFor(
+      () => expect(page.transactions, "the first try was held").toHaveLength(1),
+      step,
+    );
+    await page.read(page.id, `document.querySelector("#u").value = ""`);
+    await page.type("u", "maya@example.test");
+    await page.key("Enter");
+    await vi.waitFor(
+      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
+      step,
+    );
+    expect(page.saveMessages("browser.passwordSave.offer")[0]?.offer).toMatchObject({
+      username: "maya@example.test",
+    });
+    expect(page.cancelled, "the refused try was dropped").toEqual(page.transactions.slice(0, 1));
+  });
+
+  it("saves from a frame under its own origin, and never from a sandboxed one", async () => {
+    const page = await signInPage();
+    const framedSubmit = async (path: string) => {
+      await page.open(path);
+      await vi.waitFor(async () => {
+        expect(await page.read(page.id, "window.framePath"), "the frame loaded").toBe(
+          "/frame-login",
+        );
+      }, step);
+      for (const character of "synthetic-pw") await page.key(character);
+      await page.key("Enter");
+      await vi.waitFor(async () => {
+        expect(await page.read(page.id, "window.framePath"), "the frame signed in").toBe(
+          "/frame-home",
+        );
+      }, step);
+    };
+    // A sandboxed frame's origin is opaque, so nothing it holds has a site to be saved under.
+    await framedSubmit("/sandboxed");
+    await page.read(page.id, "1");
+    expect(page.begun).toEqual([]);
+    await framedSubmit("/framed");
+    await vi.waitFor(
+      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
+      step,
+    );
+    expect(page.begun).toMatchObject([{ origin: page.origin, username: "framed@example.test" }]);
   });
 
   it("never offers a PIN, or a password an agent typed or touched before the submit", async () => {
