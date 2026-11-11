@@ -174,6 +174,8 @@ export async function readProjectThreadActivity(
   input: ThreadActivityQuery & { readonly binding: ProjectRunBinding },
   runnerIsAttached: (runnerId: RunnerId, bootId: string) => boolean,
 ) {
+  if (input.binding.workspaceId !== input.binding.authority.principal.workspaceId)
+    throw new OpensteerError({ code: "forbidden", message: "Thread is outside this Project" });
   await assertActiveProjectBinding(database, input.binding, { runnerIsAttached });
   return readThreadActivity(
     database,
