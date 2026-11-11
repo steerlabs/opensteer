@@ -26,8 +26,6 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   onEdit,
   onOpenMark,
   places: slots,
-  groupPlaces = slots,
-  rowKey = group.id,
   sort,
 }: {
   readonly active: boolean;
@@ -37,12 +35,7 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   readonly hostClient: HostClient;
   readonly onEdit: (id: string | null) => void;
   readonly onOpenMark: (place: PlaceItem, threadId: string) => void;
-  /** The members listed under this header: under a device, only those that run there. */
   readonly places: readonly PlaceDescriptor[];
-  /** Every member, wherever it runs: closing closes the whole group. */
-  readonly groupPlaces?: readonly PlaceDescriptor[];
-  /** The header's key in the list, apart from the group's own where it stands under two devices. */
-  readonly rowKey?: string;
   /** Drag-and-drop and ⌘↑/⌘↓ for the whole group. */
   readonly sort: TabSortHandle;
 }) {
@@ -67,21 +60,21 @@ export const TabGroupHeader = memo(function TabGroupHeader({
   }, [places]);
   const edit = (point?: { x: number; y: number }) => {
     setAt(point);
-    onEdit(rowKey);
+    onEdit(group.id);
   };
   const name = group.title || "Untitled group";
   return (
     <li
       className={`side-tab side-tab-group${active && group.collapsed ? " is-active" : ""}`}
-      data-motion-key={rowKey}
+      data-motion-key={group.id}
       data-tab-group-id={group.id}
       style={tabGroupStyle(group.color)}
       onContextMenu={(event) => {
         event.preventDefault();
         edit({ x: event.clientX, y: event.clientY });
       }}
-      onKeyDown={(event) => sort.keyMove(event, rowKey)}
-      onPointerDown={(event) => sort.press(event, rowKey)}
+      onKeyDown={(event) => sort.keyMove(event, group.id)}
+      onPointerDown={(event) => sort.press(event, group.id)}
     >
       <button
         aria-current={active && group.collapsed ? "true" : undefined}
@@ -147,7 +140,7 @@ export const TabGroupHeader = memo(function TabGroupHeader({
           group={group}
           hostClient={hostClient}
           onClose={() => onEdit(null)}
-          tabIds={groupPlaces.flatMap((place) =>
+          tabIds={slots.flatMap((place) =>
             place.destination.kind === "browser" && place.destination.tabId
               ? [place.destination.tabId]
               : [],

@@ -12,6 +12,18 @@ import { taskMark, type TaskMark } from "./task-marks.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
 /**
+ * Who does a task, when it says something: the reader's own Opensteer or a
+ * project. Null while the Workspace is not loaded, rather than a guess.
+ */
+export function taskOwner(
+  assignment: Pick<AssignmentSummary, "workerThread">,
+  reader: Pick<HostSnapshot, "workspaces">,
+): string | null {
+  const workspace = reader.workspaces.find(({ id }) => id === assignment.workerThread.workspaceId);
+  return workspace ? (workspace.kind === "main" ? "Opensteer" : workspace.name) : null;
+}
+
+/**
  * How a task reads on its row, its own title, its return row and its detail, so
  * web and mobile say the same thing about the same Host facts.
  *

@@ -204,7 +204,10 @@ rather than running under it, and a call's bar docks over the place's bar for th
 ## The page above a conversation
 
 While a conversation's own Run works in a place, the page stands under the bar and folds into a
-small picture beside Around ([rule](../packages/client/src/host/run-page.ts)). Open or folded is
+small picture beside Around ([rule](../packages/client/src/host/run-page.ts)). A bar degrades as the
+web's does: the name keeps itself whole, or its first 64 points when longer, and past that Around
+gives up its schedules, then its places ([order](../apps/mobile/src/thread/around-model.ts)), so a
+short name like Chat never truncates beside the picture. Open or folded is
 presentation, held in memory per conversation and never in a route, so Back and links stay one
 navigation model. It takes the page's own shape and never resizes the page, for the reason Fit never
 happens by itself, and takes at most half the room between the bar and the dock, so a docked

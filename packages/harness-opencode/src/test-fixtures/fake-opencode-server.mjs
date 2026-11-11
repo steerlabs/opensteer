@@ -40,6 +40,19 @@ if (process.argv.includes("run")) {
 const sessionId = "ses_fake000000000000000000001";
 const assistantMessageId = "msg_fake00000000000000000001";
 const knownSessions = new Set([sessionId]);
+const sessionPermissions = new Map();
+if (scenario === "stale-child-policy") {
+  knownSessions.add("ses_stalechild");
+  const previous = [
+    { permission: "*", pattern: "*", action: "deny" },
+    { permission: "*", pattern: "*", action: "allow" },
+  ];
+  sessionPermissions.set(sessionId, previous);
+  sessionPermissions.set("ses_stalechild", [
+    ...previous,
+    { permission: "task", pattern: "*", action: "deny" },
+  ]);
+}
 /** Sessions this fixture pretends already exist, for the resume scenarios. */
 if (process.env.FAKE_OPENCODE_EXISTING_SESSION) {
   knownSessions.add(process.env.FAKE_OPENCODE_EXISTING_SESSION);
@@ -197,7 +210,34 @@ function route(url, request, response, payload) {
       return;
     }
     if (suffix === "") {
-      json(response, { id, directory: url.searchParams.get("directory") });
+      if (request.method === "PATCH") sessionPermissions.set(id, payload.permission);
+      json(response, {
+        id,
+        directory: url.searchParams.get("directory"),
+        permission:
+          sessionPermissions.get(id) ??
+          (id === sessionId
+            ? []
+            : [
+                { permission: "*", pattern: "*", action: "deny" },
+                { permission: "task", pattern: "*", action: "deny" },
+              ]),
+      });
+      return;
+    }
+    if (suffix === "/children") {
+      json(
+        response,
+        scenario === "stale-child-policy" && id === sessionId
+          ? [
+              {
+                id: "ses_stalechild",
+                parentID: sessionId,
+                permission: sessionPermissions.get("ses_stalechild"),
+              },
+            ]
+          : [],
+      );
       return;
     }
     if (suffix === "/prompt_async") {
@@ -260,7 +300,31 @@ function route(url, request, response, payload) {
         requestID: id,
         reply: payload.reply,
       });
-      setTimeout(finishSubagents, 5);
+      if (scenario.startsWith("subagents-detail")) {
+        if (scenario.endsWith("nested-ask"))
+          emit("message.part.updated", {
+            sessionID: childSessionId,
+            part: {
+              id: "nested_task",
+              callID: "nested_call",
+              messageID: "msg_child1",
+              sessionID: childSessionId,
+              type: "tool",
+              tool: "task",
+              state: {
+                status: "completed",
+                metadata: { sessionId: "ses_grandchild" },
+                output: "Grandchild result",
+              },
+            },
+          });
+        childToolPart("completed", { output: "child tool result" });
+        childAnswer("msg_child1", "Child result");
+        if (!scenario.includes("background")) {
+          rootTaskPart("call_task_1", "completed", { output: "Child result" });
+          emit("session.idle", { sessionID: sessionId });
+        }
+      } else setTimeout(finishSubagents, 5);
       json(response, true);
       return;
     }
@@ -307,6 +371,87 @@ function runScenario(id, payload) {
   capture({ kind: "prompt", pid: process.pid, sessionID: id, payload });
   assistantMessage();
   switch (scenario) {
+    case "subagents-detail-background-hold":
+    case "subagents-detail-nested-ask":
+    case "subagents-detail-before":
+    case "subagents-detail-after":
+    case "subagents-detail-background": {
+      knownSessions.add(childSessionId);
+      const grandchild = "ses_grandchild";
+      knownSessions.add(grandchild);
+      const announce = () =>
+        emit("session.created", { info: { id: childSessionId, parentID: id } });
+      if (scenario.endsWith("before")) announce();
+      rootTaskPart("call_task_1", "running", {
+        metadata: {
+          sessionId: childSessionId,
+          background: scenario.includes("background"),
+        },
+      });
+      if (!scenario.endsWith("before")) announce();
+      emit("message.updated", {
+        info: { id: "msg_child1", role: "assistant", sessionID: childSessionId },
+      });
+      emit("session.created", { info: { id: grandchild, parentID: childSessionId } });
+      emit("message.updated", {
+        info: { id: "msg_grand", role: "assistant", sessionID: grandchild },
+      });
+      for (const [type, text] of [
+        ["text", "Grandchild result"],
+        ["reasoning", "Grandchild thought"],
+      ]) {
+        emit("message.part.updated", {
+          sessionID: grandchild,
+          part: {
+            id: `grand_${type}`,
+            type,
+            text,
+            messageID: "msg_grand",
+            sessionID: grandchild,
+            time: { end: 2 },
+          },
+        });
+      }
+      if (!scenario.endsWith("nested-ask"))
+        emit("message.part.updated", {
+          sessionID: childSessionId,
+          part: {
+            id: "nested_task",
+            callID: "nested_call",
+            messageID: "msg_child1",
+            sessionID: childSessionId,
+            type: "tool",
+            tool: "task",
+            state: {
+              status: "completed",
+              metadata: { sessionId: grandchild },
+              output: "Grandchild result",
+            },
+          },
+        });
+      emit("message.part.updated", {
+        sessionID: childSessionId,
+        part: {
+          id: "child_reasoning",
+          type: "reasoning",
+          text: "Child thought",
+          messageID: "msg_child1",
+          sessionID: childSessionId,
+          time: { end: 2 },
+        },
+      });
+      childToolPart("running", {});
+      if (!scenario.endsWith("hold"))
+        childAsk(scenario.endsWith("nested-ask") ? grandchild : childSessionId);
+      if (scenario.includes("background")) {
+        rootTaskPart("call_task_1", "completed", {
+          metadata: { sessionId: childSessionId, background: true },
+          output: "Background task started",
+        });
+        emit("session.idle", { sessionID: id });
+      }
+      return;
+    }
     case "subagents":
     case "subagents-early-ask":
     case "subagents-hold":
@@ -999,14 +1144,14 @@ function childToolPart(status, extra) {
   });
 }
 
-function childAsk() {
+function childAsk(askingSession = childSessionId) {
   emit("permission.asked", {
     always: [],
     id: "per_child1",
     metadata: { command: "cat NOTES.md" },
     patterns: ["cat NOTES.md"],
     permission: "bash",
-    sessionID: childSessionId,
+    sessionID: askingSession,
     tool: { callID: "call_child_bash", messageID: "msg_child1" },
   });
 }

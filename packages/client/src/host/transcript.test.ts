@@ -414,6 +414,21 @@ describe("foldTranscriptEvent", () => {
     expect(fold([event("request.resolved", { request: fulfilled })])).toEqual([
       expect.objectContaining({ outcome: "Fulfilled · Publish", requestId: pending.id }),
     ]);
+    const agentAnswer: Request = {
+      ...fulfilled,
+      kind: "harness.input",
+      payload: { kind: "harness.input" },
+      resolvedBy: null,
+      settlementProvenance: {
+        kind: "agent",
+        runId: createId("run"),
+        threadId: createId("thread"),
+        title: "Research lead",
+      },
+    };
+    expect(fold([event("request.resolved", { request: agentAnswer })])).toEqual([
+      expect.objectContaining({ outcome: "Answered by Research lead", requestId: pending.id }),
+    ]);
 
     const withdrawn: Request = {
       ...pending,
@@ -1818,5 +1833,99 @@ describe("a Chrome sign-in's receipt", () => {
     expect(
       ended({ outcome: "applied", profileName: null, sourceName: "Work" }).passwordsOffer,
     ).toBeUndefined();
+  });
+});
+
+describe("subagent cards", () => {
+  const nodeId = createId("executionNode");
+  const parentNodeId = createId("executionNode");
+  const start = () =>
+    event("node.started", {
+      kind: "subagent",
+      model: "gpt-6",
+      nativeRef: "child",
+      nodeId,
+      originCallId: "launch",
+      parentNodeId: null,
+      prompt: "Review",
+      sessionRef: null,
+      title: "Reviewer",
+      effort: "high",
+      phaseIndex: 1,
+    });
+  it("keeps a node's own messages, reasoning and tools out of the conversation", () => {
+    const entries = fold([start()]);
+    for (const detail of [
+      event("node.message", { nodeId, text: "Found the issue" }),
+      event("reasoning.completed", { nodeId, blockId: "thought", text: "Checking" }),
+      event("tool.started", {
+        nodeId,
+        callId: "read",
+        tool: { name: "read", namespace: "functions" },
+        arguments: {},
+      }),
+      event("tool.completed", { nodeId, callId: "read", output: { text: "file" }, isError: false }),
+    ])
+      expect(foldTranscriptEvent(entries, detail)).toEqual(entries);
+  });
+  it("replaces progress, accepts a late parent and clears progress at completion or Run end", () => {
+    let entries = fold([start()]);
+    const progress = (text: string) =>
+      foldLiveRun(
+        entries,
+        {
+          runId,
+          threadId,
+          workspaceId,
+          streams: [{ key: { stream: "node", nodeId }, length: text.length, tail: text }],
+        },
+        now,
+      );
+    entries = progress("Reading");
+    expect(entries[0]).toMatchObject({
+      progress: "Reading",
+      effort: "high",
+      phaseIndex: 1,
+      nodeKind: "subagent",
+    });
+    entries = progress("Writing review");
+    entries = foldTranscriptEvent(entries, event("node.updated", { nodeId, parentNodeId }));
+    expect(entries[0]).toMatchObject({ progress: "Writing review", parentNodeId });
+    expect(
+      foldTranscriptEvent(
+        entries,
+        event("node.completed", { nodeId, result: "Done", status: "completed", usage: null }),
+      )[0],
+    ).toMatchObject({ progress: null, status: "completed" });
+    expect(finishRunEntries(entries, runId, now)[0]).toMatchObject({
+      progress: null,
+      status: "interrupted",
+    });
+  });
+});
+
+it("projects history without changing stored output and keeps whole live output on completion", async () => {
+  const { previewToolOutput } = await import("@opensteer/core");
+  const text = `Looked at Notes\nObservation a of Notes — 10 elements. Screenshot a\n${"🙂".repeat(4000)}`;
+  const completed = event("tool.completed", { callId: "lazy", isError: false, output: { text } });
+  const projected = previewToolOutput(completed);
+  expect(completed.data.output.text).toBe(text);
+  expect(projected.type === "tool.completed" && projected.data.outputPreview).toEqual({
+    bytes: new TextEncoder().encode(text).byteLength,
+    cut: true,
+    digest: expect.any(String),
+  });
+  const historical = fold([projected]);
+  expect(historical[0]).toMatchObject({ outputPreview: { cut: true } });
+  const live = historical.map((entry) =>
+    entry.kind === "tool" ? { ...entry, streamText: text } : entry,
+  );
+  const settled = foldTranscriptEvent(live, projected);
+  expect(settled[0]).toMatchObject({ output: { text }, outputPreview: { cut: false } });
+  const changed = historical.map((entry) =>
+    entry.kind === "tool" ? { ...entry, streamText: `${text.slice(0, -2)}😎` } : entry,
+  );
+  expect(foldTranscriptEvent(changed, projected)[0]).toMatchObject({
+    outputPreview: { cut: true },
   });
 });

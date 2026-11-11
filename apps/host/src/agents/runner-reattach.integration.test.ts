@@ -594,7 +594,7 @@ integration("Runs that outlive their connection", () => {
           }) as Transport,
         );
         const result = await client.callTool({
-          name: "thread_delegate",
+          name: "delegate_task",
           arguments: {
             task: "Keep the delegated task running until its Runner restarts.",
             title: "Restart task",

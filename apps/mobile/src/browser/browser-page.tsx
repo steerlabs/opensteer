@@ -1511,8 +1511,10 @@ export function PageTyping(props: {
         {...(props.abilities ? { abilities: props.abilities } : {})}
       />
     );
+  // Fabric reparenting resigns the native responder even when the proxy stays mounted.
   return (
     <View
+      collapsable={false}
       accessibilityElementsHidden={props.softKeyboard === false}
       importantForAccessibility={props.softKeyboard === false ? "no-hide-descendants" : "auto"}
       pointerEvents={props.softKeyboard === false ? "none" : "auto"}

@@ -188,6 +188,7 @@ export const databaseLockOrder = [
   "advisory:personal-remote-access",
   "mcp_oauth_credentials",
   "automation_failure_notices",
+  "task_question_notices",
   "owner_enrollments",
   "personal_remote_access",
   "personal_account_link_keys",

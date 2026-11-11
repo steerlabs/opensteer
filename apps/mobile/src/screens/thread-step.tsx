@@ -1,3 +1,4 @@
+import { useToolOutput } from "@opensteer/client/react";
 import {
   activityStepHead,
   toolBody,
@@ -9,8 +10,9 @@ import {
 import { useHostSnapshot } from "@opensteer/client/react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Markdown } from "../markdown/markdown.js";
+import { useNodeWatch } from "../thread/node-watch.js";
 import { color, radius, space, touchTarget, type } from "../theme.js";
 import { useCopy } from "../ui/copy-mark.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -22,6 +24,7 @@ import { useGutter } from "../ui/screen.js";
 export type ThreadStepScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly entryId: string;
+  readonly nodeId?: string;
   readonly threadId: string;
 }>;
 
@@ -33,12 +36,50 @@ export type ThreadStepScreenProps = StaticScreenProps<{
  * finishes while the sheet is open says so.
  */
 export function ThreadStepScreen(props: ThreadStepScreenProps): ReactNode {
-  const { deploymentId, entryId, threadId } = props.route.params;
+  const { deploymentId, entryId, nodeId, threadId } = props.route.params;
   const { selection } = useMobileState();
   if (selection.deploymentId !== deploymentId || selection.hostClient === null) {
     return <Missing detail="This deployment is no longer open." />;
   }
+  if (nodeId !== undefined)
+    return (
+      <SubagentStep
+        entryId={entryId}
+        hostClient={selection.hostClient}
+        nodeId={nodeId}
+        threadId={threadId}
+      />
+    );
   return <SubscribedStep entryId={entryId} hostClient={selection.hostClient} threadId={threadId} />;
+}
+
+/**
+ * A subagent's step is never in its conversation's transcript, so the sheet
+ * watches that subagent itself while it is open, and its output keeps streaming.
+ */
+function SubagentStep(props: {
+  readonly entryId: string;
+  readonly hostClient: HostClient;
+  readonly nodeId: string;
+  readonly threadId: string;
+}): ReactNode {
+  const { entryId, hostClient, nodeId, threadId } = props;
+  const { snapshot, unreachable } = useNodeWatch(hostClient, threadId, nodeId, true);
+  const entry = snapshot?.entries.find(({ id }) => id === entryId);
+  if (entry?.kind === "tool")
+    return <ToolDetail tool={entry} hostClient={hostClient} threadId={threadId} />;
+  if (entry?.kind === "reasoning") return <ThoughtDetail reasoning={entry} />;
+  if (!unreachable && (snapshot === null || snapshot.status === "loading"))
+    return (
+      <View
+        accessibilityLabel="Loading this step"
+        accessible
+        style={[styles.sheet, styles.missing]}
+      >
+        <ActivityIndicator color={color.muted} />
+      </View>
+    );
+  return <Missing detail="This step is no longer loaded. Open the subagent again to see it." />;
 }
 
 function SubscribedStep(props: {
@@ -48,13 +89,19 @@ function SubscribedStep(props: {
 }): ReactNode {
   const { snapshot } = useHostSnapshot(props.hostClient);
   const entry = snapshot.transcripts[props.threadId]?.find(({ id }) => id === props.entryId);
-  if (entry?.kind === "tool") return <ToolDetail tool={entry} />;
+  if (entry?.kind === "tool")
+    return <ToolDetail tool={entry} hostClient={props.hostClient} threadId={props.threadId} />;
   if (entry?.kind === "reasoning") return <ThoughtDetail reasoning={entry} />;
   return <Missing detail="This step is no longer loaded. Open the thread again to see it." />;
 }
 
-function ToolDetail(props: { readonly tool: ToolEntry }): ReactNode {
-  const { tool } = props;
+function ToolDetail(props: {
+  readonly tool: ToolEntry;
+  hostClient: HostClient;
+  threadId: string;
+}): ReactNode {
+  const detail = useToolOutput(props.hostClient, props.threadId, props.tool);
+  const tool = detail.tool;
   const head = activityStepHead(tool);
   const body = toolBody(tool);
   const status = [toolStatusLabel(tool), head.duration].filter(Boolean).join(" · ");
@@ -69,7 +116,16 @@ function ToolDetail(props: { readonly tool: ToolEntry }): ReactNode {
       {body.argumentsText ? (
         <Verbatim collapsed={body.collapsed} label="Input" text={body.argumentsText} />
       ) : null}
-      {body.output ? (
+      {detail.loading ? (
+        <ActivityIndicator accessibilityLabel="Loading output" color={color.muted} />
+      ) : detail.error ? (
+        <Notice
+          action={{ label: "Try again", onPress: detail.reload }}
+          detail="The rest of this step is still here."
+          title="Couldn't load this output"
+          tone="neutral"
+        />
+      ) : body.output ? (
         <Verbatim collapsed={body.collapsed} label={body.outputLabel} text={body.output} />
       ) : tool.state === "running" || body.summary ? null : (
         <AppText role="secondary" tone="muted">

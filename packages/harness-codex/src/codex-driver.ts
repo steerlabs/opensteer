@@ -30,6 +30,7 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   OpensteerError,
+  type ExecutionNodeId,
   RequestFormAnswersSchema,
   canonicalModelReference,
   createId,
@@ -41,7 +42,6 @@ import {
   type PendingRequest,
   type RequestFormAnswers,
   type RequestFormField,
-  type ExecutionNodeId,
   type RequestId,
   type RequestOption,
   type RequestResponse,
@@ -183,6 +183,22 @@ const agentToolsTokenEnvironmentVariable = "OPENSTEER_AGENT_TOOLS_TOKEN";
 // turn that cannot accept injected input.
 const codexInvalidRequestCode = -32_600;
 
+/** Frames of a child held while nothing has yet said which agent started it. */
+const childFramesHeldMax = 64;
+
+interface CodexChildContext {
+  selection?: Promise<void>;
+  finishing?: boolean;
+  parentKey?: string | null;
+  model: string | null;
+  effort: string | null;
+  title: string | null;
+  originCallId?: string;
+  readonly pending: { method: string; params: JsonObject }[];
+  readonly seen: Set<string>;
+  readonly completedTurns: Set<string>;
+}
+
 interface ActiveTurn {
   /**
    * The root gave what Codex marks as its final answer in this turn. When the
@@ -206,6 +222,7 @@ interface ActiveTurn {
   readonly idReady: Deferred<void>;
   /** This turn's subagents, keyed by child thread id. */
   readonly nodes: SubagentNodes;
+  readonly children: Map<string, CodexChildContext>;
   readonly toolLifetime: AbortController;
   interruptPromise?: Promise<void>;
   interruptRequested: boolean;
@@ -266,6 +283,7 @@ const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  subagentStop: true,
   longRequestHold: true,
   // Codex renders an MCP image content block to the model.
   mcpImageContent: true,
@@ -1050,6 +1068,7 @@ class CodexHarnessSession implements HarnessSession {
   readonly #tokenLedger = new CodexTokenLedger();
   /** Subagent threads used since the last release, which can hold background terminals too. */
   readonly #childThreads = new Set<string>();
+  readonly #childParents = new Map<string, { parentKey: string | null; title: string | null }>();
   readonly #processLifetime = new AbortController();
   readonly #abortListener: () => void;
   #activeTurn: ActiveTurn | undefined;
@@ -1158,6 +1177,7 @@ class CodexHarnessSession implements HarnessSession {
     const active: ActiveTurn = {
       answered: false,
       childTurns: new Map(),
+      children: new Map(),
       root: "executing",
       rootStart: undefined,
       completion: new Deferred<void>(),
@@ -1316,6 +1336,18 @@ class CodexHarnessSession implements HarnessSession {
       call.end();
       await this.stop();
     }
+  }
+
+  async stopNode(nodeId: ExecutionNodeId): Promise<void> {
+    const active = this.#activeTurn;
+    const threadId = active?.nodes.keyForNode(nodeId);
+    const turnId = threadId ? active?.childTurns.get(threadId) : undefined;
+    if (!active || active.terminal || active.interruptRequested || !threadId || !turnId)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Codex has no running child turn for this subagent",
+      });
+    await this.#requireClient().request("turn/interrupt", { threadId, turnId });
   }
 
   async interrupt(): Promise<void> {
@@ -1763,6 +1795,14 @@ class CodexHarnessSession implements HarnessSession {
       return;
     }
     if (message.method === "thread/tokenUsage/updated") {
+      const child =
+        typeof params.threadId === "string"
+          ? this.#activeTurn?.children.get(params.threadId)
+          : undefined;
+      if (child && (child.finishing || child.parentKey === undefined)) {
+        child.pending.push({ method: message.method, params });
+        return;
+      }
       this.#countTokens(parseCodexTokenUsageUpdate(params));
       return;
     }
@@ -1832,14 +1872,14 @@ class CodexHarnessSession implements HarnessSession {
       case "item/started":
         if (this.#isActiveTurn(params)) {
           this.#continueAnsweredTurn();
-          this.#noteSubagentActivity(params.item);
+          this.#noteSubagentActivity(params.item, this.#requireCodexThreadId());
           this.#publishToolStarted(params.item);
         }
         break;
       case "item/completed":
         if (this.#isActiveTurn(params)) {
           this.#continueAnsweredTurn();
-          this.#noteSubagentActivity(params.item);
+          this.#noteSubagentActivity(params.item, this.#requireCodexThreadId());
           this.#publishItemCompleted(params.item);
         }
         break;
@@ -1855,32 +1895,102 @@ class CodexHarnessSession implements HarnessSession {
     }
   }
 
-  /**
-   * A spawn or follow-up the root agent reported. Children run on their own
-   * threads; `subAgentActivity` on the root names the thread, and a follow-up
-   * to a child that finished is a new invocation of it.
-   */
-  #noteSubagentActivity(value: unknown): void {
+  #childContext(threadId: string): CodexChildContext {
+    const active = this.#activeTurn!;
+    let context = active.children.get(threadId);
+    if (!context) {
+      context = {
+        model: null,
+        effort: null,
+        title: null,
+        pending: [],
+        seen: new Set(),
+        completedTurns: new Set(),
+        ...this.#childParents.get(threadId),
+      };
+      active.children.set(threadId, context);
+    }
+    return context;
+  }
+
+  #ensureChild(threadId: string, nativeRef?: string): ExecutionNodeId {
+    const active = this.#activeTurn!;
+    const context = this.#childContext(threadId);
+    const nodeId = active.nodes.ensure(threadId, {
+      ...context,
+      stopSupported: active.childTurns.has(threadId),
+      ...(nativeRef ? { nativeRef } : {}),
+      sessionRef: threadId,
+    });
+    active.nodes.update(threadId, context);
+    for (const [key, child] of active.children) {
+      if (child.parentKey === threadId) active.nodes.update(key, { parentKey: threadId });
+    }
+    return nodeId;
+  }
+
+  // Child selection lookup follows T3 Code's CodexAdapterV2 (MIT).
+  #readChildSelection(threadId: string): void {
+    const active = this.#activeTurn!;
+    const context = this.#childContext(threadId);
+    if (context.selection) return;
+    const previousModel = context.model;
+    const previousEffort = context.effort;
+    context.selection = this.#requireClient()
+      .request("thread/read", { threadId, includeTurns: false }, 5_000)
+      .then((value) => {
+        if (this.#activeTurn !== active || active.terminal) return;
+        const result = requireObject(value, "child thread/read");
+        const thread = requireObject(result.thread, "child thread/read thread");
+        if (thread.id !== threadId) return;
+        if (context.model === previousModel) context.model = optionalString(thread.model) ?? null;
+        if (context.effort === previousEffort)
+          context.effort = optionalString(thread.reasoningEffort) ?? null;
+        active.nodes.update(threadId, context);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        delete context.selection;
+      });
+  }
+
+  #noteSubagentActivity(value: unknown, spawningThreadId: string): void {
     const active = this.#activeTurn;
     const item = requireObject(value, "item params.item");
-    if (!active || active.terminal || optionalString(item.type) !== "subAgentActivity") return;
+    if (!active || active.terminal || item.type !== "subAgentActivity") return;
     const childThreadId = optionalString(item.agentThreadId);
     const activityId = optionalString(item.id);
-    const kind = optionalString(item.kind);
     if (!childThreadId || !activityId) return;
-    this.#childThreads.add(childThreadId);
-    const title = codexAgentTitle(item.agentPath);
-    if (kind === "started" || kind === "interacted") {
-      if (active.nodes.nodeId(childThreadId)) {
-        active.nodes.update(childThreadId, { title });
-        return;
-      }
-      active.nodes.open(childThreadId, {
-        nativeRef: activityId,
-        sessionRef: childThreadId,
-        title,
-      });
+    const context = this.#childContext(childThreadId);
+    if (item.kind !== "started") {
+      // A follow-up to a child whose spawn this process never saw, such as one
+      // resumed after a restart: it proves the child, not who started it.
+      if (context.parentKey === undefined) this.#adoptChild(context);
+      return;
     }
+    const first = context.originCallId === undefined;
+    if (context.parentKey === undefined)
+      context.parentKey = spawningThreadId === this.#codexThreadId ? null : spawningThreadId;
+    context.title = codexAgentTitle(item.agentPath);
+    this.#childParents.set(childThreadId, { parentKey: context.parentKey, title: context.title });
+    context.originCallId ??= activityId;
+    this.#childThreads.add(childThreadId);
+    if (first) {
+      this.#ensureChild(childThreadId, activityId);
+      this.#readChildSelection(childThreadId);
+    } else active.nodes.update(childThreadId, context);
+    this.#replayChild(context);
+  }
+
+  #replayChild(context: CodexChildContext): void {
+    for (const frame of context.pending.splice(0))
+      this.#handleChildNotification(frame.method, frame.params);
+  }
+
+  /** A child nothing named the spawner of belongs to the Run, never to a guessed parent. */
+  #adoptChild(context: CodexChildContext): void {
+    context.parentKey = null;
+    this.#replayChild(context);
   }
 
   /**
@@ -1889,35 +1999,106 @@ class CodexHarnessSession implements HarnessSession {
    */
   #handleChildNotification(method: string, params: JsonObject): void {
     const active = this.#activeTurn;
-    const childThreadId = optionalString(params.threadId);
-    if (!active || active.terminal || !childThreadId) return;
-    // Unnamed until a turn id names the invocation; the node's own id stands in.
-    const ensure = (nativeRef: string | undefined) =>
-      active.nodes.ensure(childThreadId, {
-        ...(nativeRef ? { nativeRef } : {}),
-        sessionRef: childThreadId,
+    const thread = params.thread ? requireObject(params.thread, "thread") : undefined;
+    const childThreadId = optionalString(params.threadId) ?? optionalString(thread?.id);
+    if (!active || active.terminal || !childThreadId || childThreadId === this.#codexThreadId)
+      return;
+    const context = this.#childContext(childThreadId);
+    if (context.finishing) {
+      context.pending.push({ method, params });
+      return;
+    }
+    if (
+      method === "thread/started" ||
+      method === "thread/settings/updated" ||
+      method === "model/rerouted"
+    ) {
+      const settings = params.threadSettings
+        ? requireObject(params.threadSettings, "threadSettings")
+        : thread;
+      const model = optionalString(params.toModel) ?? optionalString(settings?.model);
+      const effort = optionalString(settings?.effort) ?? optionalString(settings?.reasoningEffort);
+      if (model) context.model = model;
+      if (effort) context.effort = effort;
+      active.nodes.update(childThreadId, context);
+      return;
+    }
+    const nativeTurn = params.turn
+      ? optionalString(requireObject(params.turn, "turn").id)
+      : undefined;
+    const turnId = optionalString(params.turnId) ?? nativeTurn;
+    if (turnId && context.completedTurns.has(turnId)) return;
+    if (method === "turn/started" && turnId) {
+      active.childTurns.set(childThreadId, turnId);
+      active.nodes.update(childThreadId, { stopSupported: true });
+      this.#childThreads.add(childThreadId);
+      this.#ownTurn(active, childThreadId, turnId);
+    }
+    if (context.parentKey === undefined) {
+      if (
+        method === "turn/started" ||
+        method === "turn/completed" ||
+        method === "item/started" ||
+        method === "item/completed"
+      )
+        context.pending.push({ method, params });
+      if (method === "turn/completed" || context.pending.length >= childFramesHeldMax)
+        this.#adoptChild(context);
+      return;
+    }
+    if (method === "turn/completed" && context.selection) {
+      context.finishing = true;
+      void context.selection.then(() => {
+        delete context.finishing;
+        if (this.#activeTurn !== active || active.terminal) return;
+        const pending = context.pending;
+        this.#handleChildNotification(method, params);
+        for (const frame of pending.splice(0))
+          this.#handleChildNotification(frame.method, frame.params);
+        this.#settleIfDone(active);
       });
+      return;
+    }
+    const itemId = params.item ? optionalString(requireObject(params.item, "item").id) : undefined;
+    if (nativeTurn || itemId) {
+      const key = JSON.stringify([method, turnId, itemId]);
+      if (context.seen.has(key)) return;
+      context.seen.add(key);
+      if (
+        method === "item/started" &&
+        context.seen.has(JSON.stringify(["item/completed", turnId, itemId]))
+      )
+        return;
+    }
+    const ensure = (nativeRef: string | undefined) => this.#ensureChild(childThreadId, nativeRef);
     switch (method) {
+      case "thread/tokenUsage/updated":
+        this.#countTokens(parseCodexTokenUsageUpdate(params));
+        break;
       case "turn/started": {
         const turn = requireObject(params.turn, "turn/started params.turn");
         const turnId = requireString(turn.id, "turn/started params.turn.id");
         // A new turn on a child whose last invocation ended is a resumption.
         active.childTurns.set(childThreadId, turnId);
+        active.nodes.update(childThreadId, { stopSupported: true });
         this.#childThreads.add(childThreadId);
         this.#ownTurn(active, childThreadId, turnId);
         ensure(`${childThreadId}:${turnId}`);
+        this.#readChildSelection(childThreadId);
         break;
       }
       case "turn/completed": {
         const turn = requireObject(params.turn, "turn/completed params.turn");
         const status = optionalString(turn.status);
+        if (nativeTurn) context.completedTurns.add(nativeTurn);
+        if (active.childTurns.get(childThreadId) !== nativeTurn) return;
         active.childTurns.delete(childThreadId);
         active.nodes.complete(
           childThreadId,
           status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "completed",
           { usage: this.#takeNodeUsage(active, childThreadId) },
         );
-        this.#settleIfDone(active);
+        if (context.pending.length === 0) this.#settleIfDone(active);
         break;
       }
       case "item/started":
@@ -1934,14 +2115,37 @@ class CodexHarnessSession implements HarnessSession {
         if (type === "agentMessage") {
           if (method === "item/completed" && typeof item.text === "string") {
             ensure(invocation);
-            active.nodes.noteResult(childThreadId, item.text);
+            active.nodes.message(childThreadId, item.text);
           }
+          return;
+        }
+        if (type === "reasoning") {
+          if (method === "item/completed" && itemId) {
+            ensure(invocation);
+            const content = stringArray(item.content);
+            active.nodes.reasoning(
+              childThreadId,
+              itemId,
+              (content.length ? content : stringArray(item.summary)).join("\n\n"),
+            );
+          }
+          return;
+        }
+        if (type === "subAgentActivity") {
+          ensure(invocation);
+          this.#noteSubagentActivity(item, childThreadId);
           return;
         }
         const descriptor = toolDescriptor(item);
         if (!descriptor) return;
         const nodeId = ensure(invocation);
         if (method === "item/started") {
+          active.nodes.progress(
+            childThreadId,
+            typeof item.command === "string"
+              ? `Running ${item.command}`
+              : `Using ${descriptor.tool.name}`,
+          );
           this.#publish({
             data: {
               arguments: descriptor.arguments,
@@ -1980,10 +2184,7 @@ class CodexHarnessSession implements HarnessSession {
     if (!active || !threadId || threadId === this.#codexThreadId) return undefined;
     this.#childThreads.add(threadId);
     const turnId = optionalString(params.turnId);
-    return active.nodes.ensure(threadId, {
-      ...(turnId ? { nativeRef: `${threadId}:${turnId}` } : {}),
-      sessionRef: threadId,
-    });
+    return this.#ensureChild(threadId, turnId ? `${threadId}:${turnId}` : undefined);
   }
 
   #handleServerRequest(message: CodexMethodMessage & { readonly id: JsonRpcId }): void {
@@ -3688,7 +3889,7 @@ async function codexSkillRules(
 }
 
 function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
-  const requestTools = new Set<string>(requestToolNames);
+  const requestTools = new Set<string>([...requestToolNames, "thread_wait"]);
   const directTools = tools.filter((tool) => requestTools.has(tool));
   return new Map([
     ["opensteer", tools.filter((tool) => !requestTools.has(tool))],

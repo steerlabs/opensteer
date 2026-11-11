@@ -520,11 +520,11 @@ export interface TurnApp {
  * themselves. An app opens while the reply's Run still holds it.
  */
 export function turnApps(
-  turn: Pick<Turn, "runId" | "subagentWork" | "work">,
+  turn: Pick<Turn, "runId" | "work">,
   machines: readonly MachineSummary[],
 ): TurnApp[] {
   const apps = new Map<string, TurnApp>();
-  for (const entry of [...turn.work, ...Object.values(turn.subagentWork).flat()]) {
+  for (const entry of turn.work) {
     if (entry.kind !== "tool" || entry.tool?.name === "computer") continue;
     const place = entry.integration?.computerApp;
     if (!place) continue;
@@ -580,11 +580,11 @@ export interface TurnPhone {
 
 /** Phones named by the reply's own and delegated steps, one per computer. */
 export function turnPhones(
-  turn: Pick<Turn, "runId" | "subagentWork" | "work">,
+  turn: Pick<Turn, "runId" | "work">,
   machines: readonly MachineSummary[],
 ): TurnPhone[] {
   const phones = new Map<string, TurnPhone>();
-  for (const entry of [...turn.work, ...Object.values(turn.subagentWork).flat()]) {
+  for (const entry of turn.work) {
     if (entry.kind !== "tool" || entry.tool?.name === "computer" || !entry.integration?.phone)
       continue;
     const place = entry.integration.phone;
@@ -674,7 +674,7 @@ export function placeReply(
  * used them: a place used later always comes after, so none ever moves.
  */
 export function replyPlaces(
-  turn: Pick<Turn, "runId" | "subagentWork" | "work">,
+  turn: Pick<Turn, "runId" | "work">,
   uses: readonly BrowserSessionUseSummary[],
   sessions: readonly BrowserSessionSummary[],
   machines: readonly MachineSummary[],
@@ -695,7 +695,7 @@ export function replyPlaces(
       place: { kind: "app" as const, app },
     })),
   ];
-  for (const entry of [...turn.work, ...Object.values(turn.subagentWork).flat()])
+  for (const entry of turn.work)
     if (entry.kind === "place")
       used.push({ at: entry.createdAt, place: placeReply(entry, sessions, machines, null) });
   const unique = new Map<string, ReplyPlace>();

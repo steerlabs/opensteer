@@ -17756,3 +17756,161 @@ it("uses a real app entry URL when supplied and resolves legacy paths for previo
     client.dispose();
   }
 });
+
+it("hydrates older running helper cards and routes a watched node's work only to its detail", async () => {
+  const workspace = makeWorkspace();
+  const thread = makeThread(workspace.id);
+  const runId = createId("run");
+  const nodeId = createId("executionNode");
+  const socket = new FakeSocket();
+  const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
+  const nodeReads: Readonly<Record<string, unknown>>[] = [];
+  const client = createHttpHostClient({
+    capabilities: ["node-detail-v1"],
+    refreshIntervalMs: 0,
+    webSocketFactory: () => socket,
+    fetch: async (input, init) => {
+      const url = new URL(String(input));
+      const payload = rpcPayload(url, init);
+      if (url.pathname === "/v1/rpc/thread.events.list")
+        return json({
+          thread,
+          threadId: thread.id,
+          events: [],
+          window: { ...window, threadId: thread.id },
+          readState: { ...defaultReadState(thread.id), asOfSequence: "10" },
+        });
+      const node = {
+        id: nodeId,
+        attemptId: createId("runAttempt"),
+        runId,
+        kind: "subagent",
+        title: "Older reviewer",
+        status: "running",
+        model: "gpt-6.1-sol",
+        effort: "high",
+        parentNodeId: null,
+        phaseIndex: null,
+        phases: [],
+        prompt: "Review",
+        result: null,
+        startedAt: "2026-08-09T19:00:00.000Z",
+        endedAt: null,
+        usage: null,
+      };
+      if (url.pathname === "/v1/rpc/run.attempts.list")
+        return json({ runId, attempts: [], nodes: [node] });
+      if (url.pathname === "/v1/rpc/node.events.list") {
+        nodeReads.push(payload);
+        return json({ nodeId, threadId: thread.id, node, events: [], window });
+      }
+      if (url.pathname === "/v1/rpc/thread.requests.list")
+        return json({ threadId: thread.id, requests: [], window });
+      if (url.pathname === "/v1/rpc/thread.assignments.list")
+        return json({ threadId: thread.id, assignments: [], window });
+      return json(bootstrap([workspace]));
+    },
+  });
+  try {
+    await client.load();
+    socket.open();
+    socket.receive({
+      type: "host.snapshot",
+      snapshot: {
+        ...workspaceSnapshot(workspace, "10"),
+        threads: [thread],
+        runQueue: [
+          { id: runId, threadId: thread.id, runOrdinal: 1, status: "running", createdAt: now },
+        ],
+      },
+    });
+    socket.receive({
+      type: "host.synchronized",
+      workspaceId: workspace.id,
+      sequence: sequence("10"),
+    });
+    await client.loadLatestTranscript(thread.id);
+    expect(client.getSnapshot().transcripts[thread.id]).toMatchObject([
+      { kind: "node", nodeId, effort: "high" },
+    ]);
+    const detail = client.watchNode(thread.id, nodeId);
+    expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual({
+      type: "client.watch-node",
+      nodeId,
+      workspaceId: workspace.id,
+    });
+    socket.receive({
+      type: "host.node-watched",
+      nodeId,
+      workspaceId: workspace.id,
+      sequence: sequence("10"),
+    });
+    await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
+    expect(nodeReads).toEqual([{ threadId: thread.id, nodeId, through: "10", limit: 100 }]);
+    socket.receive({
+      type: "host.events",
+      events: [
+        agentEvent(workspace.id, thread.id, runId, "11", "tool.started", {
+          nodeId,
+          callId: "child-read",
+          tool: { namespace: "functions", name: "read" },
+          arguments: {},
+        }),
+      ],
+    });
+    socket.receive({
+      type: "host.live",
+      workspaceId: workspace.id,
+      afterSequence: sequence("11"),
+      progress: {
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        runId,
+        items: [
+          {
+            stream: "tool",
+            nodeId,
+            callId: "child-read",
+            op: "replace",
+            length: 7,
+            text: "partial",
+          },
+          { stream: "node", nodeId, op: "replace", length: 7, text: "Reading" },
+        ],
+      },
+    });
+    expect(detail.getSnapshot().entries).toMatchObject([{ kind: "tool", streamText: "partial" }]);
+    expect(client.getSnapshot().transcripts[thread.id]).toMatchObject([
+      { kind: "node", nodeId, progress: "Reading" },
+    ]);
+    detail.release();
+    expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual({
+      type: "client.watch-node",
+      nodeId: null,
+      workspaceId: workspace.id,
+    });
+    const reopened = client.watchNode(thread.id, nodeId);
+    socket.receive({
+      type: "host.node-watched",
+      nodeId,
+      workspaceId: workspace.id,
+      sequence: sequence("11"),
+    });
+    await vi.waitFor(() => expect(reopened.getSnapshot().status).toBe("ready"));
+    socket.receiveRaw({
+      type: "host.error",
+      error: {
+        code: "forbidden",
+        message: "Access ended",
+        reason: "workspace-forbidden",
+        retryable: false,
+      },
+    });
+    expect(reopened.getSnapshot()).toMatchObject({ status: "closed", entries: [], node: null });
+    await Promise.resolve();
+    expect(client.getSnapshot().threads.some((entry) => entry.id === thread.id)).toBe(false);
+    reopened.release();
+  } finally {
+    client.dispose();
+  }
+});

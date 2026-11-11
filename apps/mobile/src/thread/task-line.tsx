@@ -1,14 +1,15 @@
 import {
-  assignmentTitle,
-  assignmentMark,
   assignmentPresentation,
+  taskOwner,
   assignmentRequester,
-  assignmentStatusLine,
+  assignmentSubagentCard,
   currentAssignment,
   delegationPresentation,
-  requestWaitingOnAssignment,
+  subagentGroup,
+  subagentTurnModel,
   taskRowNote,
   threadMark,
+  type AgentCard,
   type AssignmentEntry,
   type AssignmentPresentation,
   type AssignmentTone,
@@ -16,10 +17,20 @@ import {
   type HostClient,
   type HostSnapshot,
   type TaskMark as ResolvedTaskMark,
+  type Turn,
+  type TurnAgents,
 } from "@opensteer/client/host";
 import { useActionReview, useHostSelector } from "@opensteer/client/react";
 import { MenuView } from "@expo/ui/community/menu";
-import { createContext, Fragment, useContext, useEffect, useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 import { AccessibilityInfo, Alert, Pressable, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
@@ -28,17 +39,25 @@ import { ChatOrb } from "../ui/chat-orb.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
+import {
+  AgentCardRow,
+  AgentGroupView,
+  AgentMemoryContext,
+  type AgentScope,
+} from "./agent-cards.js";
+import { heldSelector, samePlain } from "./agent-select.js";
 
-/** What task lines need from the pane that owns the Host client. */
+/** What task and subagent cards need from the pane that owns the Host client. */
 export interface TaskScope {
   readonly hostClient: HostClient;
+  /** The conversation these cards stand in. */
+  readonly threadId: string;
   /** Opens a task's own Thread over this one, so back returns here. */
   readonly onViewWork: (threadId: string) => void;
-  /**
-   * The question this pane already shows above its composer, by id. A task
-   * held up by it says only "Needs you", so the question is not read twice.
-   */
-  readonly dockedRequestId: string | null;
+  /** Opens a subagent's own read-only view over this one. */
+  readonly onOpenSubagent: (threadId: string, nodeId: string) => void;
+  /** Whether this conversation is in front of the reader, so a helper's news is said aloud. */
+  readonly focused: boolean;
 }
 
 export const TaskScopeContext = createContext<TaskScope | null>(null);
@@ -46,24 +65,128 @@ export const TaskScopeContext = createContext<TaskScope | null>(null);
 const selectSnapshot = (snapshot: HostSnapshot): HostSnapshot => snapshot;
 
 /**
- * Work handed to other Threads, under the turn that handed it out: one quiet
- * line per task — its mark, its title, a dot and a word for where it stands —
- * that changes in place. A tap opens the task's own screen, and back returns
- * here; a long press offers what else it can do. Lines read the Host
- * themselves, since transcript rows are memoized on their entries and a task
- * moves without touching its entry.
+ * Where a card goes: a task opens its conversation, a subagent or workflow
+ * its own view. Null outside a pane that holds the Host.
  */
-export function AssignmentLines(props: {
+export function useAgentScope(live: boolean): AgentScope | null {
+  const scope = useContext(TaskScopeContext);
+  const onOpen = useCallback(
+    (card: AgentCard) => {
+      if (scope === null || card.opens === null) return;
+      if (card.opens.kind === "thread") scope.onViewWork(card.opens.threadId);
+      else scope.onOpenSubagent(card.opens.threadId, card.opens.nodeId);
+    },
+    [scope],
+  );
+  return useMemo(
+    () => (scope === null ? null : { live, onOpen, hostClient: scope.hostClient }),
+    [live, onOpen, scope],
+  );
+}
+
+/**
+ * A turn's helpers as the subagent model draws them, read from the Host so a
+ * memoized transcript row still moves as they do. Folded, the cards still at
+ * work are kept outside the fold, and stay kept for as long as the pane is.
+ */
+export function useTurnAgents(scope: TaskScope, turn: Turn, folded: boolean): TurnAgents | null {
+  const memory = useContext(AgentMemoryContext);
+  const select = useMemo(() => {
+    const own: Turn = { ...turn, assignments: [] };
+    const drawn = turn.work.some((entry) => entry.kind === "node" && entry.nodeKind !== "task");
+    if (!drawn) return noAgents;
+    return heldSelector((snapshot): TurnAgents | null => {
+      const keptKeys = turn.work.flatMap((entry) =>
+        entry.kind === "node" && memory.get(`kept:node:${entry.nodeId}`) === true
+          ? [`node:${entry.nodeId}`]
+          : [],
+      );
+      const agents = subagentTurnModel(own, scope.threadId, snapshot, { folded, keptKeys });
+      if (folded) for (const key of agents.keptKeys) memory.set(`kept:${key}`, true);
+      return agents;
+    });
+  }, [folded, memory, scope.threadId, turn]);
+  return useHostSelector(scope.hostClient, select, sameTurnAgents);
+}
+
+const noAgents = (): null => null;
+
+function sameTurnAgents(left: TurnAgents | null, right: TurnAgents | null): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.foldLabel === right.foldLabel &&
+    samePlain(left.keptOutside, right.keptOutside) &&
+    left.rows.length === right.rows.length &&
+    left.rows.every((row, index) => {
+      const other = right.rows[index];
+      if (other === undefined || other.kind !== row.kind) return false;
+      if (row.kind === "work") return other.kind === "work" && row.entry === other.entry;
+      return samePlain(row, other);
+    })
+  );
+}
+
+/**
+ * Work handed to other Threads, under the turn that handed it out: one task
+ * is its card, several share a group. A tap opens the task's own screen, and
+ * back returns here; a long press offers what else it can do. Cards read the
+ * Host themselves, since transcript rows are memoized on their entries and a
+ * task moves without touching its entry.
+ */
+export function TaskCards(props: {
   readonly entries: readonly AssignmentEntry[];
+  readonly live: boolean;
 }): ReactNode {
   const scope = useContext(TaskScopeContext);
-  if (scope === null) return null;
-  return props.entries.map((entry) => (
-    <Fragment key={entry.id}>
-      <ObservedWorker entry={entry} scope={scope} />
-      <AssignmentLine entry={entry} scope={scope} />
-    </Fragment>
-  ));
+  const agents = useAgentScope(props.live);
+  if (scope === null || agents === null || props.entries.length === 0) return null;
+  return (
+    <>
+      {props.entries.map((entry) => (
+        <ObservedWorker entry={entry} key={entry.id} scope={scope} />
+      ))}
+      <HeldTaskCards agents={agents} entries={props.entries} scope={scope} />
+    </>
+  );
+}
+
+function HeldTaskCards(props: {
+  readonly agents: AgentScope;
+  readonly entries: readonly AssignmentEntry[];
+  readonly scope: TaskScope;
+}): ReactNode {
+  const { agents, entries, scope } = props;
+  const select = useMemo(
+    () =>
+      heldSelector((snapshot) =>
+        subagentGroup(
+          entries.map((entry) =>
+            assignmentSubagentCard(currentAssignment(entry, snapshot.assignments), snapshot),
+          ),
+        ),
+      ),
+    [entries],
+  );
+  const group = useHostSelector(scope.hostClient, select, samePlain);
+  const byId = useMemo(
+    () => new Map<string, AssignmentEntry>(entries.map((entry) => [entry.assignment.id, entry])),
+    [entries],
+  );
+  const withTasks = useMemo<AgentScope>(
+    () => ({
+      ...agents,
+      renderTask: (card) => {
+        const entry = card.task === null ? undefined : byId.get(card.task.assignmentId);
+        return entry === undefined ? (
+          <AgentCardRow card={card} live={agents.live} onOpen={agents.onOpen} />
+        ) : (
+          <TaskCardRow agents={agents} card={card} entry={entry} scope={scope} />
+        );
+      },
+    }),
+    [agents, byId, scope],
+  );
+  return <AgentGroupView group={group} scope={withTasks} />;
 }
 
 /**
@@ -126,56 +249,38 @@ function ObservedWorker(props: { readonly entry: AssignmentEntry; readonly scope
   return null;
 }
 
-/** A task's presentation, without the question this pane already shows above its composer. */
-function linePresentation(
-  snapshot: HostSnapshot,
-  entry: AssignmentEntry,
-  dockedRequestId: string | null,
-) {
-  const assignment = currentAssignment(entry, snapshot.assignments);
-  const asked = assignmentPresentation(assignment, snapshot);
-  const docked =
-    asked.detail?.kind === "decision" &&
-    dockedRequestId !== null &&
-    requestWaitingOnAssignment(snapshot.waitingRequests, assignment.id)?.request.id ===
-      dockedRequestId;
-  return { assignment, presentation: docked ? { ...asked, detail: null } : asked };
-}
-
-function AssignmentLine(props: {
+/** A task's card, with the menu its line always had: open it, or stop it after asking. */
+function TaskCardRow(props: {
+  readonly agents: AgentScope;
+  readonly card: AgentCard;
   readonly entry: AssignmentEntry;
   readonly scope: TaskScope;
 }): ReactNode {
-  const { hostClient, onViewWork } = props.scope;
+  const { card, scope } = props;
+  const { hostClient, onViewWork } = scope;
   const snapshot = useHostSelector(hostClient, selectSnapshot);
-  const { assignment, presentation } = linePresentation(
-    snapshot,
-    props.entry,
-    props.scope.dockedRequestId,
-  );
+  const assignment = currentAssignment(props.entry, snapshot.assignments);
+  const presentation = assignmentPresentation(assignment, snapshot);
   const workerThreadId = assignment.workerThread.id;
-  const { open } = presentation;
-  const title = assignmentTitle(assignment, snapshot);
-  const status = assignmentStatusLine(assignment, presentation);
-  // Who does it is said, not drawn: the line keeps to the task's own mark.
-  const worker = snapshot.threads.find(({ id }) => id === workerThreadId);
-  const workspaceId = worker?.workspaceId ?? assignment.workerThread.workspaceId;
-  const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
-  const main = workspaceId === snapshot.homeWorkspaceId || workspace?.kind === "main";
-  const owner = main ? "Opensteer" : (workspace?.name ?? null);
   const stop = useAssignmentStop(hostClient, {
     assignmentId: assignment.id,
     requester: assignmentRequester(assignment, snapshot),
-    title,
+    title: card.title,
   });
-  const canStop = open && presentation.stopBlocked === null;
+  const canStop = presentation.open && presentation.stopBlocked === null;
+  const onAccessibilityAction = useCallback(
+    (name: string) => {
+      if (name === "stop") stop.ask();
+    },
+    [stop],
+  );
   return (
     <>
       {stop.sheet}
       <MenuView
         actions={[
           { id: "open", image: "arrow.up.right", title: "Open Task" },
-          ...(open
+          ...(presentation.open
             ? [
                 {
                   attributes: { destructive: true, disabled: !canStop },
@@ -195,21 +300,21 @@ function AssignmentLine(props: {
         shouldOpenOnLongPress
         style={styles.menu}
       >
-        <TaskLine
-          accessibilityActions={canStop ? [{ label: "Stop task", name: "stop" }] : []}
-          accessibilityLabel={[title, owner, status].filter((part) => part !== null).join(", ")}
-          mark={assignmentMark(assignment, snapshot)}
-          onAccessibilityAction={(name) => {
-            if (name === "stop") stop.ask();
-          }}
-          onPress={() => onViewWork(workerThreadId)}
-          presentation={presentation}
-          title={title}
+        <AgentCardRow
+          accessibilityActions={canStop ? stopAction : noActions}
+          card={card}
+          live={props.agents.live}
+          onAccessibilityAction={onAccessibilityAction}
+          onOpen={props.agents.onOpen}
+          owner={taskOwner(assignment, snapshot)}
         />
       </MenuView>
     </>
   );
 }
+
+const stopAction = [{ label: "Stop task", name: "stop" }] as const;
+const noActions = [] as const;
 
 /** The line every task shares: only the dot and the word change as it moves. */
 function TaskLine(props: {

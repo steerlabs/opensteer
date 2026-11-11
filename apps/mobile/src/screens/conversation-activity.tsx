@@ -9,8 +9,13 @@ import {
   type SurfaceDestination,
 } from "@opensteer/client/host";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useMemo, type ReactNode } from "react";
+import {
+  StackActions,
+  useIsFocused,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
+import { useCallback, useMemo, useRef, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { surfaceRoute } from "../browser/surface-route.js";
 import { color, space } from "../theme.js";
@@ -21,6 +26,8 @@ import {
   type TranscriptSurfaces,
 } from "../thread/surface-chips.js";
 import { ConversationSteps } from "../thread/transcript.js";
+import { AgentMemoryContext } from "../thread/agent-cards.js";
+import { TaskScopeContext, type TaskScope } from "../thread/task-line.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { useContentInsets } from "../ui/pane.js";
@@ -101,6 +108,29 @@ function ReplyActivity(props: {
   );
   // A page opens over the conversation, not inside this sheet: the sheet
   // closes first, so Back from the page returns to the conversation.
+  // A helper opens over the conversation too: its card in this sheet closes the sheet first.
+  const focused = useIsFocused();
+  const scope = useMemo<TaskScope>(
+    () => ({
+      focused,
+      hostClient,
+      threadId,
+      onOpenSubagent: (parentThreadId: string, nodeId: string) => {
+        navigation.goBack();
+        navigation.dispatch(
+          StackActions.push("Subagent", { deploymentId, nodeId, threadId: parentThreadId }),
+        );
+      },
+      onViewWork: (workerThreadId: string) => {
+        navigation.goBack();
+        navigation.dispatch(
+          StackActions.push("Thread", { deploymentId, threadId: workerThreadId }),
+        );
+      },
+    }),
+    [deploymentId, focused, hostClient, navigation, threadId],
+  );
+  const memory = useRef(new Map<string, boolean>()).current;
   const surfaces = useMemo<TranscriptSurfaces>(
     () => ({
       hostClient,
@@ -127,35 +157,39 @@ function ReplyActivity(props: {
     );
   }
   return (
-    <TranscriptHostClientContext value={hostClient}>
-      <Frame
-        status={
-          activity.live
-            ? "Now"
-            : activity.reply === null
-              ? null
-              : formatClockTime(activity.reply.createdAt)
-        }
-      >
-        <TranscriptSurfacesContext.Provider value={surfaces}>
-          <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
-        </TranscriptSurfacesContext.Provider>
-        {activity.steps.length === 0 ? (
-          <AppText role="secondary" tone="muted">
-            {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
-          </AppText>
-        ) : (
-          <ConversationSteps
-            reveal={props.messageId}
-            entries={activity.steps}
-            highlightRequestId={null}
-            live={live}
-            onOpenStep={openStep}
-            turn={activity.turn}
-          />
-        )}
-      </Frame>
-    </TranscriptHostClientContext>
+    <TaskScopeContext value={scope}>
+      <AgentMemoryContext value={memory}>
+        <TranscriptHostClientContext value={hostClient}>
+          <Frame
+            status={
+              activity.live
+                ? "Now"
+                : activity.reply === null
+                  ? null
+                  : formatClockTime(activity.reply.createdAt)
+            }
+          >
+            <TranscriptSurfacesContext.Provider value={surfaces}>
+              <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
+            </TranscriptSurfacesContext.Provider>
+            {activity.steps.length === 0 ? (
+              <AppText role="secondary" tone="muted">
+                {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
+              </AppText>
+            ) : (
+              <ConversationSteps
+                reveal={props.messageId}
+                entries={activity.steps}
+                highlightRequestId={null}
+                live={live}
+                onOpenStep={openStep}
+                turn={activity.turn}
+              />
+            )}
+          </Frame>
+        </TranscriptHostClientContext>
+      </AgentMemoryContext>
+    </TaskScopeContext>
   );
 }
 

@@ -3,6 +3,7 @@ import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import { markThreadStatePending } from "./thread-status.js";
 import {
   AgentEventSchema,
+  nodeDetailEventNodeId,
   MessageAuthorSchema,
   createId,
   type AgentEvent,
@@ -44,6 +45,14 @@ type HostWorkspaceEventInput =
       Extract<AgentEvent, { readonly type: "tool.completed" }>,
       "type" | "data" | "environmentId" | "runId" | "threadId" | "workspaceId"
     >
+  | {
+      readonly data: import("@opensteer/core").EventData<"node.updated">;
+      readonly environmentId: EnvironmentId;
+      readonly runId: RunId;
+      readonly threadId: ThreadId;
+      readonly type: "node.updated";
+      readonly workspaceId: WorkspaceId;
+    }
   | {
       readonly data: {
         readonly status: ThreadStatus;
@@ -239,6 +248,7 @@ export async function appendHostWorkspaceEvent(
     .insertInto("workspaceEvents")
     .values({
       createdAt,
+      nodeDetailId: nodeDetailEventNodeId(event) ?? null,
       data: sql`${JSON.stringify(event.data)}::jsonb`,
       environmentId: event.environmentId,
       eventId,

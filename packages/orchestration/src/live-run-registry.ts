@@ -6,6 +6,7 @@ import {
   liveStreamKeyOf,
   zeroSequence,
   type AgentEvent,
+  type ExecutionNodeId,
   type LiveItem,
   type LiveRunProgress,
   type LiveStreamKey,
@@ -23,6 +24,7 @@ export interface LiveFrame {
 
 interface LiveStreamState {
   readonly key: LiveStreamKey;
+  nodeId?: ExecutionNodeId;
   length: number;
   tail: string;
 }
@@ -196,10 +198,14 @@ export class LiveRunRegistry {
 
   #completeStream(state: LiveRunState, event: AgentEvent): void {
     switch (event.type) {
+      case "node.completed":
+        state.streams.delete(liveStreamKeyId({ nodeId: event.data.nodeId, stream: "node" }));
+        return;
       case "assistant.message":
         state.streams.delete(liveStreamKeyId({ stream: "assistant" }));
         return;
       case "reasoning.completed":
+        if (event.data.nodeId) return;
         state.streams.delete(liveStreamKeyId({ blockId: event.data.blockId, stream: "reasoning" }));
         return;
       case "tool.completed":
@@ -215,12 +221,14 @@ export class LiveRunRegistry {
     const id = liveStreamKeyId(key);
     if (item.op === "replace") {
       const stream = this.#stream(state, id, key);
+      if (item.stream === "tool" && item.nodeId !== undefined) stream.nodeId = item.nodeId;
       stream.length = item.length;
       stream.tail = item.text;
       return item;
     }
     const stream = state.streams.get(id) ?? (item.at === 0 ? this.#stream(state, id, key) : null);
     if (!stream) return undefined;
+    if (item.stream === "tool" && item.nodeId !== undefined) stream.nodeId = item.nodeId;
     const end = item.at + item.text.length;
     if (end <= stream.length) return undefined;
     if (item.at > stream.length) return undefined;
@@ -299,9 +307,18 @@ function replacementItem(stream: LiveStreamState): LiveItem {
         stream: "reasoning",
         text: stream.tail,
       };
+    case "node":
+      return {
+        nodeId: key.nodeId,
+        length: stream.length,
+        op: "replace",
+        stream: "node",
+        text: stream.tail,
+      };
     case "tool":
       return {
         callId: key.callId,
+        ...(stream.nodeId === undefined ? {} : { nodeId: stream.nodeId }),
         length: stream.length,
         op: "replace",
         stream: "tool",

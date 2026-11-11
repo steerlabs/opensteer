@@ -19,13 +19,18 @@ import {
   workSummary,
   type ActivityStepHead,
   type ActivityTone,
+  type AgentCard,
+  type AgentGroup,
   type MessageEntry,
   type ReasoningEntry,
   type RunEntry,
+  type SubagentDetailEntry,
+  type ToolEntry,
   type ThreadActivityIndicator,
   type TranscriptGroup,
   type TranscriptVoice,
   type Turn,
+  type TurnAgents,
   type WorkEntry,
   type WorkRow,
   type WorkSummary,
@@ -33,7 +38,7 @@ import {
 } from "@opensteer/client/host";
 import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
-import { memo, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View, useWindowDimensions } from "react-native";
 import Animated, { LayoutAnimationConfig } from "react-native-reanimated";
 import { CodeLines, Markdown, PlainProse } from "../markdown/markdown.js";
@@ -43,7 +48,22 @@ import { appear, bubblePop, bubbleRise, exit } from "../ui/motion.js";
 import { AppText, StatusDot, TypingDots, monoFontFamily } from "../ui/primitives.js";
 import { activitySymbol } from "../ui/activity-symbol.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import { AssignmentLines, DelegationLine, ThreadMark } from "./task-line.js";
+import {
+  AgentCardView,
+  AgentGroupView,
+  AgentNews,
+  WorkflowCard,
+  type AgentScope,
+} from "./agent-cards.js";
+import {
+  DelegationLine,
+  TaskCards,
+  TaskScopeContext,
+  ThreadMark,
+  useAgentScope,
+  useTurnAgents,
+  type TaskScope,
+} from "./task-line.js";
 import { AppCard } from "./app-card.js";
 import { MessageAttachments } from "./attachment-views.js";
 import { Bubble, bubble } from "./bubble.js";
@@ -145,7 +165,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         )
       ) : group.kind === "assignment" ? (
-        <AssignmentLines entries={[group.entry]} />
+        <TaskCards entries={[group.entry]} live={props.live ?? true} />
       ) : group.kind === "delegation" ? (
         <DelegationLine delegation={group.entry} onOpenThread={props.onOpenThread} />
       ) : props.voiceThread === true &&
@@ -210,7 +230,7 @@ function TurnView(props: {
       {turn.continued === true || turnState(turn) !== "settled" ? null : (
         <ReplySurfaces turn={turn} turnKey={props.turnKey} />
       )}
-      <AssignmentLines entries={turn.assignments} />
+      <TaskCards entries={turn.assignments} live={props.live ?? true} />
       {turn.run !== null && (hasRunOutcome(turn.run) || restarted(turn.run)) ? (
         <RunOutcome run={turn.run} />
       ) : null}
@@ -367,6 +387,7 @@ function ConversationTurn(props: {
           homeThreadId={props.homeThreadId}
         />
       ) : null}
+      <ChatAgents live={props.live} turn={turn} />
       {view.reply !== null ? (
         <ReplyBubble
           arrived={typed.current}
@@ -393,7 +414,7 @@ function ConversationTurn(props: {
           </AppText>
         </Animated.View>
       ) : null}
-      <AssignmentLines entries={turn.assignments} />
+      <TaskCards entries={turn.assignments} live={props.live} />
       {/* A turn that ended without a reply says how, and its Activity opens
           from that line, as a reply's opens from holding it. */}
       {outcome !== null && view.reply === null && onActivity !== undefined ? (
@@ -469,7 +490,7 @@ function ReplyBubble(props: {
       {/* The record of a finished reply; while its Run works, the conversation's header follows it. */}
       {props.turn === undefined || turnState(props.turn) === "settled" ? (
         <ReplySurfaces
-          turn={props.turn ?? { runId: message.runId, work: [], subagentWork: {} }}
+          turn={props.turn ?? { runId: message.runId, work: [] }}
           turnKey={props.turnKey}
         />
       ) : null}
@@ -601,7 +622,7 @@ export function ConversationSteps(props: {
   );
 }
 
-function TurnContent(props: {
+interface TurnContentProps {
   /** What of the turn to draw; all of its work unless a conversation keeps its reply apart. */
   readonly entries?: readonly WorkEntry[];
   /** Given, the turn's steps fold behind its status line, which opens and closes them (`turnFolds`). */
@@ -616,23 +637,77 @@ function TurnContent(props: {
   readonly status?: boolean;
   readonly turn: Turn;
   readonly live: boolean;
-}): ReactNode {
-  const { fold, turn } = props;
+}
+
+/** A turn's rows, its helpers among them, where the pane holds the Host they are read from. */
+function TurnContent(props: TurnContentProps): ReactNode {
+  const scope = useContext(TaskScopeContext);
+  const agentScope = useAgentScope(props.live);
+  return scope === null || agentScope === null ? (
+    <TurnRows {...props} agents={null} agentScope={null} focused={false} />
+  ) : (
+    <TurnContentWithAgents {...props} agentScope={agentScope} scope={scope} />
+  );
+}
+
+function TurnContentWithAgents(
+  props: TurnContentProps & { readonly agentScope: AgentScope; readonly scope: TaskScope },
+): ReactNode {
+  const { entries, turn } = props;
+  const drawn = useMemo(
+    () => (entries === undefined ? turn : { ...turn, work: entries }),
+    [entries, turn],
+  );
+  const agents = useTurnAgents(props.scope, drawn, props.fold?.open === false);
+  return <TurnRows {...props} agents={agents} focused={props.scope.focused} />;
+}
+
+/** A helper's card or group, standing in the trace where its first card started. */
+type AgentTraceRow =
+  | { readonly kind: "agents"; readonly key: string; readonly group: AgentGroup }
+  | { readonly kind: "workflow"; readonly key: string; readonly card: AgentCard };
+
+function TurnRows(
+  props: TurnContentProps & {
+    readonly agents: TurnAgents | null;
+    readonly agentScope: AgentScope | null;
+    readonly focused: boolean;
+  },
+): ReactNode {
+  const { agents, agentScope, fold, turn } = props;
   const [showAll, setShowAll] = useState(false);
   const active = turnState(turn) !== "settled";
   const status = props.status !== false;
   const summary = useMemo(() => (status ? workSummary(turn) : null), [status, turn]);
-  // Closed, only the last word stays mounted, keeping long transcripts light to scroll.
+  // Closed, only the last word stays mounted, keeping long transcripts light to scroll;
+  // helpers still at work stand outside the fold instead.
   const closed = fold?.open === false;
   const rows = useMemo(
-    () => workRows(closed ? turnWords(turn) : (props.entries ?? turn.work)),
+    () =>
+      workRows(
+        closed
+          ? turnWords(turn).filter((entry) => entry.kind !== "node" || entry.nodeKind === "task")
+          : (props.entries ?? turn.work),
+      ),
     [closed, props.entries, turn],
   );
   const trace = traceWindow(rows, { showAll: closed || showAll, keep: props.reveal ?? null });
+  const drawnRows = useMemo(() => withAgents(trace.rows, agents), [agents, trace.rows]);
+  const cards = useMemo(
+    () =>
+      agents?.rows.flatMap((row) =>
+        row.kind === "agents"
+          ? row.group.cards
+          : row.kind === "workflow"
+            ? [row.card, ...(row.card.workflow?.phases.flatMap(({ members }) => members) ?? [])]
+            : [],
+      ) ?? [],
+    [agents],
+  );
   const latestPlaceId = active
     ? (turn.work.findLast((entry) => entry.kind === "place")?.id ?? null)
     : null;
-  const lastWord = active ? null : trace.rows.findLast(({ kind }) => kind === "note");
+  const lastWord = active ? null : drawnRows.findLast((row): row is WorkRow => row.kind === "note");
   return (
     <>
       {summary === null ? null : (
@@ -643,6 +718,10 @@ function TurnContent(props: {
           {...(fold === undefined ? {} : fold)}
         />
       )}
+      {agentScope === null ? null : <AgentNews cards={cards} focused={props.focused} />}
+      {closed && agents?.keptOutside && agentScope !== null ? (
+        <AgentGroupView group={agents.keptOutside} scope={agentScope} />
+      ) : null}
       {trace.hidden > 0 ? (
         <Pressable
           accessibilityRole="button"
@@ -657,7 +736,20 @@ function TurnContent(props: {
       {/* Steps ease in and out after the turn is first drawn. Notes stay
           unanimated when a streamed message receives its durable id. */}
       <LayoutAnimationConfig skipEntering>
-        {trace.rows.map((row) => {
+        {drawnRows.map((row) => {
+          if (row.kind === "agents" || row.kind === "workflow") {
+            if (agentScope === null) return null;
+            return row.kind === "agents" ? (
+              <AgentGroupView group={row.group} key={row.key} scope={agentScope} />
+            ) : row.card.workflow ? (
+              <WorkflowCard
+                card={row.card}
+                key={row.key}
+                scope={agentScope}
+                workflow={row.card.workflow}
+              />
+            ) : null;
+          }
           const content = (
             <WorkRowView
               active={active}
@@ -666,7 +758,6 @@ function TurnContent(props: {
               latestPlaceId={latestPlaceId}
               onOpenStep={props.onOpenStep}
               row={row}
-              subagentWork={turn.subagentWork}
               key={row.key}
             />
           );
@@ -683,7 +774,168 @@ function TurnContent(props: {
   );
 }
 
-/** One row of a turn's work, or of a subagent's inside it. */
+/**
+ * The trace's rows with each run of helpers drawn as the model groups them,
+ * at the place its first visible card started. Without the model, helpers are
+ * left out rather than drawn as steps.
+ */
+function withAgents(
+  rows: readonly WorkRow[],
+  agents: TurnAgents | null,
+): readonly (WorkRow | AgentTraceRow)[] {
+  const homes = new Map<string, AgentTraceRow>();
+  for (const row of agents?.rows ?? []) {
+    if (row.kind === "agents")
+      for (const card of row.group.cards)
+        homes.set(card.key, { group: row.group, key: `agents:${row.group.key}`, kind: "agents" });
+    else if (row.kind === "workflow")
+      homes.set(row.card.key, {
+        card: row.card,
+        key: `workflow:${row.card.key}`,
+        kind: "workflow",
+      });
+  }
+  const drawn = new Set<string>();
+  return rows.flatMap((row): (WorkRow | AgentTraceRow)[] => {
+    if (row.kind !== "subagent") return [row];
+    const home = homes.get(`node:${row.entry.nodeId}`);
+    if (home === undefined || drawn.has(home.key)) return [];
+    drawn.add(home.key);
+    return [home];
+  });
+}
+
+/**
+ * Chat draws no trace, so a turn's subagents stand above its typing or its
+ * reply, where they would otherwise never be seen. Settled, a group folds to
+ * its one line; the reply is the summary.
+ */
+function ChatAgents(props: { readonly live: boolean; readonly turn: Turn }): ReactNode {
+  const scope = useContext(TaskScopeContext);
+  const agentScope = useAgentScope(props.live);
+  if (scope === null || agentScope === null) return null;
+  return <HeldChatAgents agentScope={agentScope} scope={scope} turn={props.turn} />;
+}
+
+function HeldChatAgents(props: {
+  readonly agentScope: AgentScope;
+  readonly scope: TaskScope;
+  readonly turn: Turn;
+}): ReactNode {
+  const { agentScope } = props;
+  const agents = useTurnAgents(props.scope, props.turn, false);
+  if (agents === null) return null;
+  return (
+    <View style={styles.chatAgents}>
+      <AgentNews
+        cards={agents.rows.flatMap((row) =>
+          row.kind === "agents" ? row.group.cards : row.kind === "workflow" ? [row.card] : [],
+        )}
+        focused={props.scope.focused}
+      />
+      {agents.rows.map((row) =>
+        row.kind === "agents" ? (
+          <AgentGroupView group={row.group} key={row.group.key} scope={agentScope} />
+        ) : row.kind === "workflow" && row.card.workflow ? (
+          <WorkflowCard
+            card={row.card}
+            key={row.card.key}
+            scope={agentScope}
+            workflow={row.card.workflow}
+          />
+        ) : null,
+      )}
+    </View>
+  );
+}
+
+/**
+ * A subagent's own steps, drawn with the transcript's rows: what it said as
+ * prose, what it thought, the tools it called (a run of them as one row, as
+ * in a turn), and the subagents it started as their cards, not expanded.
+ */
+export function SubagentSteps(props: {
+  readonly active: boolean;
+  readonly agentScope: AgentScope;
+  readonly entries: readonly SubagentDetailEntry[];
+  readonly onOpenStep: (entryId: string) => void;
+}): ReactNode {
+  const rows = useMemo(() => {
+    const drawn: (
+      | { readonly kind: "entry"; readonly entry: Exclude<SubagentDetailEntry, ToolEntry> }
+      | { readonly kind: "work"; readonly row: WorkRow }
+    )[] = [];
+    let tools: ToolEntry[] = [];
+    const flush = () => {
+      for (const row of workRows(tools)) drawn.push({ kind: "work", row });
+      tools = [];
+    };
+    for (const entry of props.entries) {
+      if (entry.kind === "tool") tools.push(entry);
+      else {
+        flush();
+        drawn.push({ entry, kind: "entry" });
+      }
+    }
+    flush();
+    return drawn;
+  }, [props.entries]);
+  return (
+    <LayoutAnimationConfig skipEntering>
+      {rows.map((item) => {
+        if (item.kind === "work")
+          return (
+            <Animated.View entering={appear} exiting={exit} key={item.row.key}>
+              <WorkRowView
+                active={props.active}
+                highlightRequestId={null}
+                latestPlaceId={null}
+                onOpenStep={props.onOpenStep}
+                row={item.row}
+              />
+            </Animated.View>
+          );
+        const { entry } = item;
+        switch (entry.kind) {
+          case "message":
+            return (
+              <View key={entry.id} style={styles.assistant}>
+                <Markdown text={entry.text} />
+              </View>
+            );
+          case "reasoning":
+            return (
+              <ReasoningRow
+                active={false}
+                key={entry.id}
+                reasoning={{
+                  createdAt: "",
+                  id: entry.id,
+                  kind: "reasoning",
+                  runId: null,
+                  state: "done",
+                  text: entry.text,
+                }}
+              />
+            );
+          case "agent":
+            return entry.card.workflow ? (
+              <WorkflowCard
+                card={entry.card}
+                key={entry.card.key}
+                scope={props.agentScope}
+                workflow={entry.card.workflow}
+              />
+            ) : (
+              <AgentCardView card={entry.card} key={entry.card.key} scope={props.agentScope} />
+            );
+        }
+      })}
+    </LayoutAnimationConfig>
+  );
+}
+
+/** One row of a turn's work. */
 function WorkRowView(props: {
   readonly active: boolean;
   readonly answer?: boolean;
@@ -692,7 +944,6 @@ function WorkRowView(props: {
   readonly latestPlaceId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly row: WorkRow;
-  readonly subagentWork: Turn["subagentWork"];
 }): ReactNode {
   const { row } = props;
   switch (row.kind) {
@@ -700,15 +951,11 @@ function WorkRowView(props: {
       return <AssistantMessage answer={props.answer === true} message={row.entry} />;
     case "reasoning":
       return <ReasoningRow active={props.active} reasoning={row.entry} />;
+    // A subagent is drawn as its card, by the turn; a background task is one step.
     case "subagent":
-      return (
-        <SubagentRow
-          highlightRequestId={props.highlightRequestId}
-          onOpenStep={props.onOpenStep}
-          row={row}
-          subagentWork={props.subagentWork}
-        />
-      );
+      return null;
+    case "task":
+      return <StepHead head={row.head} highlighted={false} />;
     case "steps":
       return (
         <StepsRow
@@ -721,58 +968,6 @@ function WorkRowView(props: {
     case "place":
       return <TracePlace entry={row.entry} latest={row.entry.id === props.latestPlaceId} />;
   }
-}
-
-const noWork: readonly WorkEntry[] = [];
-
-/**
- * A subagent the agent started, standing where it started. Its head reads as a
- * step's does; opened, it says what it was asked, draws its own steps with the
- * turn's rows — a subagent it started in turn included — and what it returned.
- */
-function SubagentRow(props: {
-  readonly highlightRequestId: string | null;
-  readonly onOpenStep: (entryId: string) => void;
-  readonly row: Extract<WorkRow, { kind: "subagent" }>;
-  readonly subagentWork: Turn["subagentWork"];
-}): ReactNode {
-  const { entry: node, head } = props.row;
-  const [open, setOpen] = useState(false);
-  const work = props.subagentWork[node.nodeId] ?? noWork;
-  const rows = useMemo(() => workRows(work), [work]);
-  return (
-    <View>
-      <StepHead expanded={open} head={head} highlighted={false} onPress={() => setOpen(!open)} />
-      {open ? (
-        <Animated.View entering={appear} exiting={exit} style={styles.subagent}>
-          {node.prompt ? (
-            <AppText numberOfLines={3} role="secondary" tone="muted">
-              {node.prompt}
-            </AppText>
-          ) : null}
-          {rows.map((row) => (
-            <WorkRowView
-              active={node.status === "running"}
-              highlightRequestId={props.highlightRequestId}
-              key={row.key}
-              latestPlaceId={null}
-              onOpenStep={props.onOpenStep}
-              row={row}
-              subagentWork={props.subagentWork}
-            />
-          ))}
-          {node.result ? (
-            <View style={styles.subagentResult}>
-              <AppText role="caption" tone="muted">
-                Result
-              </AppText>
-              <Markdown text={node.result} />
-            </View>
-          ) : null}
-        </Animated.View>
-      ) : null}
-    </View>
-  );
 }
 
 function StepsRow(props: {
@@ -1519,6 +1714,7 @@ const styles = StyleSheet.create({
     width: 22,
   },
   steps: { gap: space[4] },
+  chatAgents: { alignSelf: "stretch" },
   /** A turn's outcome and the way to its Activity, on one line. */
   outcomeRow: {
     alignItems: "center",
@@ -1657,16 +1853,6 @@ const styles = StyleSheet.create({
   },
   stepCompact: { marginHorizontal: 0 },
   stepText: { flex: 1, gap: space[2] },
-  /** A subagent's work hangs off a hairline under its glyph, as a row's steps do. */
-  subagent: {
-    borderLeftColor: color.lineStrong,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    gap: space[4],
-    marginLeft: space[10],
-    paddingBottom: space[8],
-    paddingLeft: space[12],
-  },
-  subagentResult: { gap: space[2] },
   thought: { paddingBottom: space[8], paddingLeft: space[28], paddingRight: space[8] },
   turn: { gap: space[4] },
   working: { alignItems: "center", flexDirection: "row", gap: space[8], minHeight: touchTarget },

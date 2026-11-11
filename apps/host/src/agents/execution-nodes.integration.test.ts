@@ -278,7 +278,7 @@ integration("Execution nodes", () => {
     },
   );
 
-  async function startClaude(script: ClaudeScript) {
+  async function startClaude(script: ClaudeScript, control?: ClaudeStopControl) {
     stack = await startVerticalStack({
       catalogTimeoutMs: 30_000,
       databaseUrl: databaseUrl!,
@@ -291,7 +291,10 @@ integration("Execution nodes", () => {
       harnesses: () => {
         const registry = new HarnessRegistry();
         registry.registerDriver(
-          new ClaudeHarnessDriver({ executable: process.execPath, sdk: fakeClaudeSdk(script) }),
+          new ClaudeHarnessDriver({
+            executable: process.execPath,
+            sdk: fakeClaudeSdk(script, control),
+          }),
         );
         return registry;
       },
@@ -352,6 +355,86 @@ integration("Execution nodes", () => {
           expect.objectContaining({ callId: "child-bash-1", nodeId: nodes[0]!.id }),
         ]),
       );
+    },
+  );
+
+  it(
+    "stops one node through the Host and Runner without ending its sibling or Run",
+    { timeout: 120_000 },
+    async () => {
+      const control: ClaudeStopControl = {
+        stopped: [],
+        cancelled: Promise.withResolvers<void>(),
+        finish: Promise.withResolvers<void>(),
+      };
+      try {
+        const { active, threadId } = await startClaude("stop-child", control);
+        const runId = await queue(active, threadId, "Run two children");
+        await vi.waitFor(async () => expect(await nodeRows(active, runId)).toHaveLength(2), {
+          timeout: 10_000,
+        });
+        const nodes = await nodeRows(active, runId);
+        const target = nodes.find(
+          (node) => node.nativeRef === "agent-call-1" || node.title === "Research release notes",
+        )!;
+        await testRpcData(
+          active.hostOrigin,
+          "commands.dispatch",
+          {
+            type: "node.stop",
+            idempotencyKey: `stop-node:${target.id}`,
+            runId,
+            threadId,
+            nodeId: target.id,
+          },
+          {
+            headers: {
+              cookie: active.sessionCookie,
+              origin: active.hostOrigin.origin,
+              "idempotency-key": `stop-node:${target.id}`,
+            },
+          },
+        );
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await nodeRows(active, runId)).find((node) => node.id === target.id)?.status,
+            ).toBe("interrupted"),
+          { timeout: 10_000 },
+        );
+        expect(control.stopped).toEqual(["agent-1"]);
+        expect(
+          (await nodeRows(active, runId))
+            .filter((node) => node.id !== target.id)
+            .map((node) => node.status),
+        ).toEqual(["running"]);
+        expect(
+          (
+            await active.host.store.database
+              .selectFrom("runs")
+              .select("status")
+              .where("id", "=", runId)
+              .executeTakeFirst()
+          )?.status,
+        ).toBe("running");
+        control.finish.resolve();
+        await vi.waitFor(
+          async () =>
+            expect(
+              (
+                await active.host.store.database
+                  .selectFrom("runs")
+                  .select("status")
+                  .where("id", "=", runId)
+                  .executeTakeFirst()
+              )?.status,
+            ).toBe("completed"),
+          { timeout: 10_000 },
+        );
+      } finally {
+        control.cancelled.resolve();
+        control.finish.resolve();
+      }
     },
   );
 
@@ -554,13 +637,18 @@ integration("Execution nodes", () => {
  * subagent's question, the question first, or a subagent that works until the
  * Run is stopped.
  */
-type ClaudeScript = "hold" | "question-first" | "task-first";
+type ClaudeScript = "hold" | "question-first" | "task-first" | "stop-child";
+interface ClaudeStopControl {
+  readonly stopped: string[];
+  readonly cancelled: ReturnType<typeof Promise.withResolvers<void>>;
+  readonly finish: ReturnType<typeof Promise.withResolvers<void>>;
+}
 
 /**
  * A Claude Agent SDK that runs one scripted turn: the root agent calls Agent,
  * the subagent runs a command it must ask about, and its result returns.
  */
-function fakeClaudeSdk(script: ClaudeScript): ClaudeAgentSdk {
+function fakeClaudeSdk(script: ClaudeScript, control?: ClaudeStopControl): ClaudeAgentSdk {
   return {
     inspectModels: async () => ({
       account: { email: "person@example.test", subscriptionType: "max" },
@@ -661,6 +749,51 @@ function fakeClaudeSdk(script: ClaudeScript): ClaudeAgentSdk {
         // The subagent's question can overtake the report that names it.
         const decision = script === "question-first" ? ask() : undefined;
         yield taskStarted;
+        if (script === "stop-child" && control) {
+          yield message({
+            description: "Sibling",
+            subtype: "task_started",
+            task_id: "sibling-task",
+            tool_use_id: "sibling-call",
+            type: "system",
+          });
+          await control.cancelled.promise;
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "agent-1",
+            tool_use_id: "agent-call-1",
+            status: "stopped",
+            summary: "Stopped target",
+          });
+          await control.finish.promise;
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "sibling-task",
+            tool_use_id: "sibling-call",
+            status: "completed",
+            summary: "Sibling completed",
+          });
+          yield message({
+            type: "result",
+            subtype: "success",
+            duration_api_ms: 5,
+            duration_ms: 10,
+            is_error: false,
+            modelUsage: {},
+            num_turns: 1,
+            result: "Root completed",
+            total_cost_usd: 0,
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+            },
+          });
+          return;
+        }
         yield assistant("agent-call-1", [
           {
             id: "child-bash-1",
@@ -716,8 +849,16 @@ function fakeClaudeSdk(script: ClaudeScript): ClaudeAgentSdk {
       const generator = turn();
       const handle: ClaudeQueryHandle = {
         [Symbol.asyncIterator]: () => generator as never,
-        close: () => abort.abort(),
+        close: () => {
+          abort.abort();
+          control?.cancelled.resolve();
+          control?.finish.resolve();
+        },
         interrupt: () => Promise.resolve(undefined),
+        stopTask: async (taskId) => {
+          control?.stopped.push(taskId);
+          control?.cancelled.resolve();
+        },
       };
       return handle;
     },

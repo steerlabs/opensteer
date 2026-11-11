@@ -5,6 +5,7 @@ import { heldThread, taskCanBeDone } from "./task-list.js";
 import { threadStopTarget } from "./thread-activity.js";
 
 export type ReviewedAction =
+  | { readonly kind: "stop-node"; readonly threadId: string; readonly nodeId: string }
   | { readonly kind: "stop-run"; readonly threadId: string }
   | { readonly kind: "stop-assignment"; readonly assignmentId: string }
   | { readonly kind: "task-done"; readonly threadId: string; readonly done: boolean }
@@ -75,6 +76,17 @@ function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | n
     return thread ? (threadStopTarget({ thread, runQueue: snapshot.runQueue })?.id ?? null) : null;
   };
   switch (action.kind) {
+    case "stop-node": {
+      const node = snapshot.transcripts[action.threadId]?.find(
+        (entry) => entry.kind === "node" && entry.nodeId === action.nodeId,
+      );
+      return node?.kind === "node" &&
+        node.status === "running" &&
+        node.stopSupported &&
+        !node.stopping
+        ? JSON.stringify([viewer, action, node.runId])
+        : null;
+    }
     case "stop-run": {
       const runId = stopTarget(action.threadId);
       return runId ? JSON.stringify([viewer, action, runId]) : null;
@@ -149,6 +161,8 @@ function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | n
 
 async function performAction(client: HostClient, action: ReviewedAction): Promise<unknown> {
   switch (action.kind) {
+    case "stop-node":
+      return client.stopNode(action.threadId, action.nodeId);
     case "stop-run":
       return client.stopRun(action.threadId);
     case "stop-assignment":

@@ -34,7 +34,7 @@ export function homeThreadKind(
 export function conversationAt(pathname: string, homeThreadId: string | null): string | null {
   if (pathname === "/") return homeThreadId;
   return pathname.startsWith("/threads/")
-    ? decodeURIComponent(pathname.slice("/threads/".length))
+    ? decodeURIComponent(pathname.slice("/threads/".length).split("/")[0]!)
     : null;
 }
 

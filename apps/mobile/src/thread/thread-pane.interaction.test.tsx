@@ -400,7 +400,10 @@ vi.mock("@react-navigation/native", async () => {
     useNavigation: () => navigation,
   };
 });
-vi.mock("../ui/glass.js", () => ({ useLiquidGlass: () => false }));
+vi.mock("../ui/glass.js", () => ({
+  GlassSurface: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
+  useLiquidGlass: () => false,
+}));
 vi.mock("@expo/ui/community/menu", () => ({
   MenuView: (props: {
     readonly actions: readonly {

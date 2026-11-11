@@ -228,6 +228,11 @@ export function runFromRow(row: {
 export function executionNodeFromRow(row: Selectable<ExecutionNodeTable>): ExecutionNode {
   return {
     attemptId: row.attemptId,
+    stopSupported: row.stopSupported,
+    stopping: row.stopping,
+    effort: row.effort,
+    phaseIndex: row.phaseIndex,
+    phases: row.phases,
     endedAt: row.endedAt?.toISOString() ?? null,
     id: row.id,
     kind: row.kind,

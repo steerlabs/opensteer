@@ -54,7 +54,7 @@ export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
 export * from "./action-review.js";
 export * from "./browser-tab-strip.js";
-export * from "./browser-tab-sections.js";
+export * from "./tab-list.js";
 
 export * from "./browser-preferences.js";
 
@@ -97,5 +97,7 @@ export * from "./team-session.js";
 export * from "./team-join.js";
 export * from "./team-paging.js";
 export * from "./team-settings.js";
+export * from "./subagent-model.js";
+export * from "./node-detail.js";
 
 export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./browser-tab-store.js";

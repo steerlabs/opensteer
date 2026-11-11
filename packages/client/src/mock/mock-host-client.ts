@@ -2,11 +2,13 @@ import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
 } from "./mock-browser-source.js";
-import { BrowserSessionIdSchema } from "@opensteer/core";
+import { BrowserSessionIdSchema, previewToolOutput } from "@opensteer/core";
 import type { WorkspaceTabLineage } from "../host/client.js";
 import { mockBrowserRows } from "./mock-browser-stream.js";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import { MockBrowserStream } from "./mock-browser-stream.js";
+import { seedMockSubagents } from "./mock-subagents.js";
+import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
@@ -113,6 +115,9 @@ import {
   sameProviderContinuationIdentity,
   ungroupBrowserTabs,
   type AgentEvent,
+  nodeDetailEventNodeId,
+  ExecutionNodeIdSchema,
+  compareSequence,
   type AssignmentSummary,
   type AssignmentView,
   type Attachment,
@@ -1616,7 +1621,7 @@ function mockDelegateCall(
     runId,
     state: "done",
     streamText: "",
-    tool: { name: "thread_delegate", namespace: "opensteer" },
+    tool: { name: "delegate_task", namespace: "opensteer" },
   };
 }
 
@@ -1937,6 +1942,7 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  subagents?: "seeded" | "absent";
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   /** Plugins an agent made in Main, from a folder in that Workspace. */
@@ -2423,17 +2429,44 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           new HostClientRequestError({ code: "not_found", message: "Run not found", status: 404 }),
         );
       }
+      const attemptId = createId("runAttempt");
       const ended =
         entry.status === "completed" || entry.status === "failed" || entry.status === "interrupted";
       return rpcSuccess(
         hostApi["run.attempts.list"].success.parse({
+          nodes: Object.values(client.getSnapshot().transcripts)
+            .flat()
+            .filter((node) => node.kind === "node" && node.runId === runId)
+            .map((node) => {
+              if (node.kind !== "node") throw new Error("Node expected.");
+              return {
+                id: node.nodeId,
+                stopSupported: node.stopSupported ?? false,
+                stopping: node.stopping ?? false,
+                attemptId,
+                kind: node.nodeKind,
+                model: node.model,
+                effort: node.effort,
+                parentNodeId: node.parentNodeId,
+                phaseIndex: node.phaseIndex,
+                phases: node.phases,
+                prompt: node.prompt,
+                result: node.result,
+                runId,
+                startedAt: node.createdAt,
+                endedAt: node.completedAt,
+                status: node.status,
+                title: node.title,
+                usage: node.usage ?? null,
+              };
+            }),
           attempts: [
             {
               createdAt: entry.createdAt,
               dispatchedAt: entry.status === "queued" ? null : entry.createdAt,
               endedAt: ended ? entry.createdAt : null,
               engineStart: entry.status === "queued" ? null : "cold",
-              id: createId("runAttempt"),
+              id: attemptId,
               modelSelection: null,
               ordinal: 1,
               outcome: ended ? entry.status : null,
@@ -2460,6 +2493,31 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     },
     // The preview projects transcripts directly; it keeps no durable event log
     // to page back through. Turn paging needs no additional projection here.
+    "tool.output.get": async ({ threadId, runId, callId, nodeId }) => {
+      const entry = (client.getSnapshot().transcripts[threadId] ?? []).find(
+        (entry) =>
+          entry.kind === "tool" &&
+          entry.runId === runId &&
+          entry.callId === callId &&
+          entry.nodeId === nodeId,
+      );
+      const event = client.nodeEvents.find(
+        (event) =>
+          event.type === "tool.completed" &&
+          event.threadId === threadId &&
+          event.runId === runId &&
+          event.data.callId === callId &&
+          event.data.nodeId === nodeId,
+      );
+      const output =
+        entry?.kind === "tool"
+          ? entry.output
+          : event?.type === "tool.completed"
+            ? event.data.output
+            : undefined;
+      if (!output) throw new Error("Tool output not found");
+      return rpcSuccess({ output });
+    },
     "thread.events.list": async ({ threadId }) => {
       const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
       if (!thread) throw new Error("Thread not found.");
@@ -2470,6 +2528,60 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           events: [],
           threadId,
           window: { ...mockWindow(0), threadId },
+        }),
+      );
+    },
+    "node.events.list": async ({ threadId, nodeId, through, before, toolOutputs, limit = 100 }) => {
+      const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
+        (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+      );
+      if (own?.kind !== "node" || !own.runId)
+        return mockRefusal(
+          new HostClientRequestError({
+            code: "not_found",
+            message: "Subagent not found",
+            status: 404,
+          }),
+        );
+      const all = client.nodeEvents.filter(
+        (event) =>
+          event.threadId === threadId &&
+          nodeDetailEventNodeId(event) === nodeId &&
+          (!through || compareSequence(event.sequence, through) <= 0) &&
+          (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
+      );
+      const events = all
+        .slice(-limit)
+        .map((event) => (toolOutputs === "preview" ? previewToolOutput(event) : event));
+      const hasMore = all.length > events.length;
+      return rpcSuccess(
+        hostApi["node.events.list"].success.parse({
+          threadId,
+          nodeId,
+          node: {
+            attemptId: createId("runAttempt"),
+            effort: own.effort,
+            endedAt: own.completedAt,
+            id: own.nodeId,
+            kind: own.nodeKind,
+            model: own.model,
+            parentNodeId: own.parentNodeId,
+            phaseIndex: own.phaseIndex,
+            phases: own.phases,
+            prompt: own.prompt,
+            result: own.result,
+            runId: own.runId,
+            startedAt: own.createdAt,
+            status: own.status,
+            title: own.title,
+            usage: own.usage ?? null,
+          },
+          events,
+          window: {
+            ...mockWindow(events.length),
+            hasMore,
+            nextBefore: hasMore ? events[0]?.sequence : null,
+          },
         }),
       );
     },
@@ -3280,6 +3392,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "channel.connection.status.set":
       await client.setChannelConnectionStatus(command.connectionId, command.status);
       return rpcSuccess({ type: command.type });
+    case "node.stop":
+      await client.stopNode(command.threadId, command.nodeId);
+      return rpcSuccess({ type: command.type, wasDuplicate: false });
     case "run.interrupt":
       await client.stopRun(command.threadId);
       return rpcSuccess({ type: command.type, wasDuplicate: false });
@@ -3881,6 +3996,7 @@ export class MockHostClient implements HostClient {
   }
   readonly #tabGroups: BrowserTabGroupClient;
   readonly #workspaceTabActivations: WorkspaceTabActivations;
+  readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
   readonly #worldSubscription: () => void;
@@ -4022,6 +4138,23 @@ export class MockHostClient implements HostClient {
     };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
+    this.#nodeDetails = new NodeDetailStore({
+      available: () => true,
+      nodes: (threadId) =>
+        (this.getSnapshot().transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
+      read: async (input) =>
+        unwrapRpcResult(
+          await this.rpc["node.events.list"]({
+            ...input,
+            nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
+          }),
+        ),
+      sendWatch: (workspaceId, nodeId) => {
+        const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
+        queueMicrotask(() => this.#nodeDetails.watched(workspaceId, nodeId, sequence));
+        return true;
+      },
+    });
     this.#tabGroups = new BrowserTabGroupClient(
       this.rpc,
       (browserTabGroups) =>
@@ -4604,6 +4737,12 @@ export class MockHostClient implements HostClient {
     return null;
   }
 
+  watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
+    const thread = this.getSnapshot().threads.find((entry) => entry.id === threadId);
+    if (!thread) throw new Error("Conversation not found.");
+    return this.#nodeDetails.open(threadId, nodeId, thread.workspaceId);
+  }
+
   observeThread(_threadId: string): () => void {
     return () => undefined;
   }
@@ -4947,6 +5086,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.#nodeDetails.clear();
     this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();
     this.#workspaceTabActivations.dispose();
@@ -5150,6 +5290,10 @@ export class MockHostClient implements HostClient {
     return session;
   }
 
+  async stopNode(threadId: string, nodeId: string): Promise<void> {
+    await this.#state.stopNode(threadId, nodeId);
+  }
+
   async stopRun(threadId: string): Promise<void> {
     const snapshot = this.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
@@ -5254,6 +5398,7 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   openPhoneTab(machineId: string) {
     this.update({
       ...this.snapshot,
@@ -6556,6 +6701,22 @@ class MockHostState {
           steered: [],
         });
       }
+    }
+    if (!firstRun && options.initialHome !== "absent" && options.subagents !== "absent") {
+      const fixture = seedMockSubagents(this.snapshot);
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+      this.assignments.set(fixture.assignment.id, fixture.assignment);
+      const worker = this.snapshot.threads.find(
+        (thread) => thread.id === fixture.assignment.workerThreadId,
+      )!;
+      const parent = this.snapshot.threads.find(
+        (thread) => thread.id === fixture.assignment.parentThreadId,
+      )!;
+      this.assignmentModels.set(fixture.assignment.id, {
+        modelSelection: worker.modelSelection,
+        parentModelSelection: parent.modelSelection,
+      });
     }
     // The rendered transcript and messages API must name the same published
     // positions: opening a seeded result can only mark what was actually seen.
@@ -11742,6 +11903,46 @@ class MockHostState {
       },
     });
     if (script.decision) this.openTaskDecision(workerId, run.id, script.decision, at(30));
+  }
+
+  async stopNode(threadId: string, nodeId: string): Promise<void> {
+    const entries = this.snapshot.transcripts[threadId] ?? [];
+    const node = entries.find((entry) => entry.kind === "node" && entry.nodeId === nodeId);
+    if (node?.kind !== "node" || node.status !== "running" || !node.stopSupported || node.stopping)
+      throw new Error("This subagent cannot be stopped.");
+    const stoppingIds = new Set([nodeId]);
+    if (node.nodeKind === "workflow") {
+      for (const parentId of stoppingIds) {
+        for (const entry of entries) {
+          if (entry.kind === "node" && entry.parentNodeId === parentId)
+            stoppingIds.add(entry.nodeId);
+        }
+      }
+    }
+    const stopping = entries.map((entry) =>
+      entry.kind === "node" && stoppingIds.has(entry.nodeId) && entry.status === "running"
+        ? { ...entry, stopping: true }
+        : entry,
+    );
+    this.update({
+      ...this.snapshot,
+      transcripts: { ...this.snapshot.transcripts, [threadId]: stopping },
+    });
+    await Promise.resolve();
+    const ended = stopping.map((entry) =>
+      entry.kind === "node" && stoppingIds.has(entry.nodeId) && entry.status === "running"
+        ? {
+            ...entry,
+            status: "interrupted" as const,
+            stopping: false,
+            completedAt: this.now().toISOString(),
+          }
+        : entry,
+    );
+    this.update({
+      ...this.snapshot,
+      transcripts: { ...this.snapshot.transcripts, [threadId]: ended },
+    });
   }
 
   async stopRun(threadId: string): Promise<void> {

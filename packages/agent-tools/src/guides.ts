@@ -17,7 +17,7 @@ Requests:
 - Request tools wait for the person and return the outcome. If the hold expires, Opensteer stops the Run; a later answer resumes this Thread.
 - A steered message can release the call with the Request still open; read the message, which never answers it.
 - Voice and background Runs get pending immediately. Pending is not permission: do not use the requested access, poll, repeat or route around the Request (including Guest or another account).
-- \`request_list\` shows a Request's status, not its answer, so do not poll it. When the person asks about a Request, answer from its kind and title there, never from memory.`;
+- \`pending_request\` shows a Request's status, not its answer, so do not poll it. When the person asks about a Request, answer from its kind and title there, never from memory.`;
 
 const routingGuide = `Routing:
 - Websites: read opensteer:browser and use Browser Harness.
@@ -28,21 +28,27 @@ const routingGuide = `Routing:
 - Reminders, schedules, webhooks or watches: read opensteer:triggers before writing code.
 - Full-access callers can manage Projects, settings, computers, integrations, channels, plugins and browser profiles with their *_write/*_manage tools, within reach. Revoke/disconnect/remove directly; new browser profiles, grants and credentials need the person.`;
 
+const helpersGuide = `Helpers:
+- Your engine's own subagents work inside this Run, under its authority, and end with it.
+- \`delegate_task\` starts a task: independent work in its own Thread that outlives your turn. Its result returns to you by itself, waking you if your turn ended, unless you read it first with \`thread_wait\` or \`task_status\`.
+- A task's ordinary question reaches its assigner, which may answer with \`pending_request\` when the answer follows from the task or the person's instructions, and otherwise leaves it for the person. Approvals are the person's alone.
+- \`thread_wait\` blocks for at most 100 seconds, so it suits work that short; longer work reaches you through its return, with nothing to poll. A timeout stops nothing.
+- \`orchestrator_capabilities\` lists engines, models and limits.`;
+
 const conversationGuide = `Keep Chat responsive: answer quick questions.
 - Before delegating work in one of the person's accounts, such as their email or calendar, check \`integration_search\` and request missing access yourself, or ask one short question if you can't tell which service they use.
-- \`thread_delegate\` sustained work with its goal, context, constraints and completion criteria. Prefer this Workspace unless an existing Project owns the work; use a ready matching specialist.
-- Continue finished work with \`thread_delegate\` + \`threadId\`; change active work with \`thread_message\`.
-- After delegation succeeds, briefly say what started and end your turn. Results return automatically; verify and deliver them once. Do not poll \`task_status\`.
+- \`delegate_task\` sustained work with its goal, context, constraints and completion criteria. Prefer this Workspace unless an existing Project owns the work; use a ready matching specialist.
+- Continue finished work with \`delegate_task\` + \`threadId\`; change active work with \`thread_send\`.
 - Your tasks: \`thread_list({parentThreadId: "self"})\`. What one is doing and where: \`thread_read\`.
 - On background wakes, deliver awaited results or useful news; end stale/duplicate/no-news wakes without assistant text.
 - Repair wanted ongoing work within authorization; reuse repair underway. Preserve the person's pauses and site constraints. Resume a Trigger paused by failure only after verifying repair.
 - Tell the person outcomes, material failures and repairs, never the routes a task tried; ask only for missing decisions/access. Call Main's home conversation "Chat" and project Workspaces "Projects".`;
 
-const workGuide = `Complete the focused work; choose your approach and native workers when useful. \`thread_delegate\` starts independent work; its result resumes you, so continue independent work or end your turn. Try authorized repairs; if blocked, name the evidence and missing decision/access. Verify and return a self-contained result with output locations and material limits.
+const workGuide = `Complete the focused work; choose your approach, and native workers or tasks when useful. Try authorized repairs; if blocked, name the evidence and missing decision/access. Verify, and return a self-contained result with output locations and material limits.
 
 On an Assignment:
-- Your final reply returns to the assigner automatically; an empty final reply returns nothing.
-- For distinct earlier news, \`thread_message\` the assigner: \`report\` leaves context, \`queue\` asks it to act or tell the person.
+- Your final reply is the task's result and returns to the assigner; an empty final reply wakes no one.
+- Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act or tell the person.
 - \`person_message\` and \`person_show\` are refused even when listed. When a page, app or phone is ready for the person, \`queue\` that to the assigner at once: only the main agent shows things.`;
 
 const reachGuide: Readonly<Record<ThreadReachScope["kind"], string>> = {
@@ -60,6 +66,7 @@ export function platformGuideForRun(input: {
 }): string {
   return [
     platformGuide,
+    helpersGuide,
     routingGuide,
     reachGuide[input.reach],
     `Role: ${input.role}`,
@@ -71,6 +78,6 @@ export function platformGuideForRun(input: {
 
 /** External callers have no Run context or automatic Assignment continuation. */
 export const connectionInstructions = `Opensteer runs agents and tools on the person's computers. Your connection can act only within its approved reach (all the person's Workspaces or one Workspace) and access-mode ceiling; grants can narrow it further.
-- Find a Workspace with \`project_list\`. Start work with \`thread_delegate\`; keep its \`threadId\`, then observe with \`thread_wait\` and \`thread_read\`.
+- Workspaces: \`project_list\`. Tasks: \`delegate_task\`, \`thread_read\` and bounded \`thread_wait\`. Choices/limits: \`orchestrator_capabilities\`.
 - Connections get no Assignment or automatic result return. You have no Thread of your own: always name \`threadId\`, and \`self\` is refused.
 - Act directly within authorization, including reducing access. Never grant access, raise power, handle credentials, sign in, pair or enroll. Ask the person in your conversation for those actions, or delegate a task that can open a Request; pending is not permission.`;

@@ -7,6 +7,7 @@ import {
   AssignmentRunContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
@@ -395,6 +396,14 @@ const ReconcileWatchesSchema = runnerCommandBase.extend({
   type: z.literal("watch.reconcile"),
 });
 
+const StopNodeSchema = runnerCommandBase.extend({
+  type: z.literal("node.stop"),
+  runId: RunIdSchema,
+  threadId: ThreadIdSchema,
+  nodeId: ExecutionNodeIdSchema,
+  bindingGeneration: z.number().int().positive(),
+});
+
 const InterruptExecutionSchema = runnerCommandBase.extend({
   /** Present when only that execution of the Run is to stop: a restart's predecessor. */
   bindingGeneration: z.number().int().positive().optional(),
@@ -450,6 +459,7 @@ export const RunnerCommandSchema = z
     ExecuteTriggerSchema,
     ReconcileWatchesSchema,
     InterruptExecutionSchema,
+    StopNodeSchema,
     InterruptTriggerExecutionSchema,
     ResolveRequestSchema,
     SteerExecutionSchema,
@@ -499,6 +509,7 @@ export const PendingAgentEventSchema = z
     pendingEventVariant("node.started"),
     pendingEventVariant("node.updated"),
     pendingEventVariant("node.completed"),
+    pendingEventVariant("node.message"),
     pendingEventVariant("tool.completed"),
     pendingEventVariant("tool.started"),
   ])

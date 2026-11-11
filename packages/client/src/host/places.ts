@@ -166,7 +166,13 @@ export class PlaceProjection {
     const dependencies = [source.appTabs, source.machines];
     if (!sameDependencies(this.#nativeDependencies, dependencies)) {
       this.#nativeDependencies = dependencies;
-      this.#native = nativePlaces(source);
+      // A computer reporting in anew rebuilds these; a place that reads the same keeps its identity.
+      const held = new Map(this.#native.map((place) => [place.key, place]));
+      const next = nativePlaces(source).map((place) => {
+        const before = held.get(place.key);
+        return before && JSON.stringify(before) === JSON.stringify(place) ? before : place;
+      });
+      if (!sameDependencies(this.#native, next)) this.#native = next;
     }
     return this.#native;
   }

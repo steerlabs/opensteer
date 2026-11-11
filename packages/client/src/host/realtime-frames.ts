@@ -40,6 +40,7 @@ const realtimeFrameLosses = {
   "host.events": "replay",
   "host.snapshot": "replay",
   "host.synchronized": "replay",
+  "host.node-watched": "replay",
   // Every subscribe streams all of these.
   "host.read-markers": "replay",
   // Synchronizing reissues this invalidation whatever frame carried it.

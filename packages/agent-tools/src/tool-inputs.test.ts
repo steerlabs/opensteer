@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { createId } from "@opensteer/core";
 import { z } from "zod";
 import { agentTools, type AgentToolName } from "./tools/index.js";
 function tool(name: AgentToolName) {
@@ -22,6 +23,20 @@ describe("Opensteer tool inputs", () => {
   });
   it("reads Chat by its home alias", () => {
     expect(tool("thread_read").input.safeParse({ threadId: "home", limit: 1 }).success).toBe(true);
+  });
+  it("names exactly one conversation, subagent or task target", () => {
+    const subagentId = createId("executionNode");
+    const assignmentId = createId("delegation");
+    const read = tool("thread_read").input;
+    const cancel = tool("task_cancel").input;
+    expect(read.safeParse({ subagentId }).success).toBe(true);
+    expect(read.safeParse({}).success).toBe(false);
+    expect(read.safeParse({ threadId: "home", subagentId }).success).toBe(false);
+    expect(read.safeParse({ subagentId, query: "text" }).success).toBe(false);
+    expect(cancel.safeParse({ subagentId }).success).toBe(true);
+    expect(cancel.safeParse({ assignmentId }).success).toBe(true);
+    expect(cancel.safeParse({}).success).toBe(false);
+    expect(cancel.safeParse({ assignmentId, subagentId }).success).toBe(false);
   });
   it("requires itemId for text offsets and refuses removed history fields", () => {
     const schema = tool("thread_read").input;
@@ -76,7 +91,7 @@ describe("Opensteer tool inputs", () => {
     }
   });
   it("requires an explicit thread message delivery policy", () => {
-    const schema = tool("thread_message").input;
+    const schema = tool("thread_send").input;
     const base = {
       message: "A self-contained update",
       threadId: "thr_00000000-0000-4000-a000-000000000000",

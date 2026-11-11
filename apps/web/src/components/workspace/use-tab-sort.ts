@@ -13,7 +13,6 @@ import { snapTop } from "./scroll-edges.js";
 import {
   homeSlot,
   nearestSlot,
-  sectionSortRows,
   slotMove,
   slotWords,
   sortSlots,
@@ -255,8 +254,7 @@ export function useTabSort(input: {
   };
 
   const begin = (current: Drag) => {
-    const { strip } = latest.current;
-    const rows = sectionSortRows(latest.current.rows, current.key);
+    const { rows, strip } = latest.current;
     const from = rows.findIndex((row) => row.key === current.key);
     const lifted = rows[from];
     if (!lifted) {
@@ -309,9 +307,9 @@ export function useTabSort(input: {
     }));
     const rowGap = parseFloat(getComputedStyle(list).rowGap) || 0;
     const slots = sortSlots(lift.rows, from, { boxes, rowGap });
-    // The row is drawn no further than its own section's rows reach: it cannot leave its
-    // device. Layout tops, not drawn ones: rows still sliding would misstate them.
-    const last = boxes.length - 1;
+    // Where layout ends the content: rows still sliding (a moving group's tabs folding
+    // away) would overstate it. The lifted row is in the list, so it has a last row.
+    const foot = list.lastElementChild as HTMLElement;
     current.geometry = {
       rows: lift.rows,
       from,
@@ -319,8 +317,8 @@ export function useTabSort(input: {
       slots,
       centre: boxes[from]!.top + boxes[from]!.height / 2,
       reach: [
-        boxes[0]!.top + boxes[from]!.height / 2,
-        boxes[last]!.top + boxes[last]!.height - boxes[from]!.height / 2,
+        boxes[from]!.height / 2,
+        foot.offsetTop + foot.offsetHeight - boxes[from]!.height / 2,
       ],
       step: boxes[from]!.height + rowGap,
       bounds: (list.closest("nav") ?? list).getBoundingClientRect(),
@@ -434,7 +432,7 @@ export function useTabSort(input: {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
       event.preventDefault();
       event.stopPropagation();
-      const rows = sectionSortRows(latest.current.rows, key);
+      const { rows } = latest.current;
       const lifted = rows.find((row) => row.key === key);
       if (!lifted) return;
       const shown =

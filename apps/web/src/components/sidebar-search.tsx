@@ -34,7 +34,9 @@ import {
   type RefObject,
 } from "react";
 import { ProfileAvatar } from "./workspace/identity.js";
-import { DeviceGlyph, PlaceMark } from "./workspace/place-mark.js";
+import { PlaceMark } from "./workspace/place-mark.js";
+import type { DeviceElsewhere } from "@opensteer/client/computers";
+import { DeviceLabel } from "./computers/device-label.js";
 import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { tabGroupStyle } from "./workspace/tab-group.js";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
@@ -88,7 +90,7 @@ export function SidebarSearch({
   inputRef,
   listsRef,
   listsStyle,
-  namedDevices,
+  deviceLabels,
   onClose,
   openerRef,
   onLoadMore,
@@ -109,7 +111,8 @@ export function SidebarSearch({
   readonly inputRef: RefObject<HTMLInputElement | null>;
   readonly listsRef: RefObject<HTMLDivElement | null>;
   readonly listsStyle: CSSProperties;
-  readonly namedDevices: boolean;
+  /** The device each tab names beside its title, by place key, as the list names them. */
+  readonly deviceLabels: ReadonlyMap<string, DeviceElsewhere>;
   readonly onClose: () => void;
   /** Where the keyboard was when search opened. */
   readonly openerRef: RefObject<HTMLElement | null>;
@@ -310,7 +313,7 @@ export function SidebarSearch({
                               badges={badges}
                               hostClient={hostClient}
                               key={result.key}
-                              namedDevices={namedDevices}
+                              device={deviceLabels.get(result.place.key) ?? null}
                               shown={result.place.key === shownPlaceKey}
                               result={result}
                               {...row}
@@ -524,22 +527,21 @@ function TaskResult({
 
 function TabResult({
   badges,
+  device,
   hostClient,
-  namedDevices,
   result,
   shown,
   ...row
 }: ResultRow & {
   readonly badges: boolean;
+  readonly device: DeviceElsewhere | null;
   readonly hostClient: HostClient;
-  readonly namedDevices: boolean;
   readonly result: Extract<Result, { kind: "tab" }>;
   readonly shown: boolean;
 }) {
   const { group, match, place } = result;
   const hint = match.hint;
   const profileMatch = hint != null && result.fields[hint.field]!.name === "profile";
-  const deviceName = place.kind === "app" ? (place.device?.name ?? null) : null;
   const classes = [
     "side-tab",
     "side-result",
@@ -574,12 +576,8 @@ function TabResult({
           <span className="side-result__hint">
             <Lit ranges={hint.ranges} text={result.fields[hint.field]!.text.source} />
           </span>
-        ) : !profileMatch && deviceName ? (
-          namedDevices ? (
-            <span className="side-tab__device">{deviceName}</span>
-          ) : (
-            <DeviceGlyph name={deviceName} />
-          )
+        ) : !profileMatch && device ? (
+          <DeviceLabel className="side-tab__device" device={device} />
         ) : null}
       </span>
     </div>

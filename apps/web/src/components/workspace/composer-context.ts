@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   browserPagePart,
-  browserTabSections,
   type BrowserFrameView,
   type HostClient,
   type HostSnapshot,
@@ -24,7 +23,6 @@ import { composerDrafts } from "../composer-drafts.js";
 import { destinationPlaceKey } from "./navigation.js";
 import { placeEnded, samePlaceEndSource } from "./place-succession.js";
 import { useOptionalWorkspace } from "./workspace-context.js";
-import { useHereId } from "../computers/here.js";
 
 /** A place a message carries: a browser page, a Mac app or a phone. */
 export type PlacePart = PlaceContentPart;
@@ -112,13 +110,8 @@ export function useComposerContext({
   readonly hostClient: HostClient;
 }): ComposerContext {
   const workspace = useOptionalWorkspace();
-  const strip = useBrowserTabStrip(hostClient);
-  const hereId = useHereId();
-  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
-  const places = useMemo(
-    () => attachablePlaces(browserTabSections({ strip, machines, hereId }).ordered),
-    [strip, machines, hereId],
-  );
+  const { ordered } = useBrowserTabStrip(hostClient);
+  const places = useMemo(() => attachablePlaces(ordered), [ordered]);
   const [frozen, setFrozen] = useState<readonly ContextChip[] | null>(() => {
     const saved = draftKey ? composerDrafts.read(draftKey)?.places : undefined;
     return saved ? saved.map(restoredChip) : auto ? null : [];

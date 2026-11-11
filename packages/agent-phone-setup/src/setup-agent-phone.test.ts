@@ -403,6 +403,10 @@ interface FakePhoneOptions {
   readonly enabledServices?: string;
   readonly accessibilityEnabled?: string;
   readonly batteryExempt?: boolean;
+  readonly projectionAllowed?: boolean;
+  readonly notificationsGranted?: boolean;
+  /** Refuses the shell's writes the way OnePlus's Android 12 does until permission monitoring is off. */
+  readonly refusesShellWrites?: boolean;
   readonly installFailure?: string;
   /** What reading the installed base.apk returns instead of the installed bytes. */
   readonly installedBytesOverride?: Uint8Array;
@@ -462,6 +466,8 @@ class FakePhone implements AgentPhoneAdb {
       this.secure.set("accessibility_enabled", options.accessibilityEnabled);
     }
     if (options.batteryExempt) this.whitelist.add(agentPhonePackageName);
+    this.projectionAllowed = this.projectionUidAllowed = options.projectionAllowed ?? false;
+    this.notificationsGranted = options.notificationsGranted ?? false;
     this.state = {
       connection: options.connection ?? "unpaired",
       issue: options.issue ?? null,
@@ -505,14 +511,26 @@ class FakePhone implements AgentPhoneAdb {
     return bytes.length > maxBytes ? null : bytes;
   }
 
-  projectionAllowed = false;
-  projectionUidAllowed = false;
+  projectionAllowed: boolean;
+  projectionUidAllowed: boolean;
+  notificationsGranted: boolean;
 
   async shell(argv: readonly string[]): Promise<AgentPhoneShellResult> {
     this.#plugged();
     this.commands.push([...argv]);
     const command = argv.join(" ");
     const ok = (stdout = ""): AgentPhoneShellResult => ({ exitCode: 0, stderr: "", stdout });
+    const write =
+      (argv[0] === "settings" && argv[1] === "put") ||
+      (argv[0] === "appops" && argv[1] === "set") ||
+      (argv[0] === "pm" && argv[1] === "grant");
+    if (write && this.options.refusesShellWrites) {
+      return {
+        exitCode: 255,
+        stderr: `\nException occurred while executing '${argv[1]}':\njava.lang.SecurityException: ${argv[0] === "settings" ? "Permission denial: writing to settings requires:android.permission.WRITE_SECURE_SETTINGS" : "uid 2000 does not have android.permission.MANAGE_APP_OPS_MODES."}\n\tat android.app.ContextImpl.enforce(ContextImpl.java:2187)\n`,
+        stdout: "",
+      };
+    }
     if (command === "settings get global device_name") return ok(this.deviceName + "\n");
     if (command === "dumpsys lock_settings") {
       return ok(
@@ -526,10 +544,10 @@ class FakePhone implements AgentPhoneAdb {
       }
       return ok(`${lines.join("\n")}\n`);
     }
-    if (command === `pm set-installer ${agentPhonePackageName} ${agentPhonePackageName}`)
-      return ok();
+    // Android may record another installer than a USB install names: OnePlus's
+    // Android 12 records `pc`, which lists as null.
     if (command === `pm list packages -i ${agentPhonePackageName}`)
-      return ok(`package:${agentPhonePackageName} installer=${agentPhonePackageName}\n`);
+      return ok(`package:${agentPhonePackageName} installer=null\n`);
     if (argv[0] === "appops" && argv.includes("REQUEST_INSTALL_PACKAGES"))
       return ok(argv[1] === "get" ? "REQUEST_INSTALL_PACKAGES: allow\n" : "");
     if (command === `pm path ${agentPhonePackageName}`) {
@@ -572,7 +590,16 @@ class FakePhone implements AgentPhoneAdb {
       return ok(`Added: ${agentPhonePackageName}\n`);
     }
     if (command === `pm grant ${agentPhonePackageName} android.permission.POST_NOTIFICATIONS`) {
+      this.notificationsGranted = true;
       return ok();
+    }
+    if (command === `dumpsys package ${agentPhonePackageName}`) {
+      // A work profile's grant is listed too, and is not user 0's.
+      const grant = (granted: boolean) =>
+        `      runtime permissions:\n        android.permission.POST_NOTIFICATIONS: granted=${granted}, flags=[ USER_SENSITIVE_WHEN_GRANTED ]\n`;
+      return ok(
+        `    User 0: ceDataInode=7029619 installed=true\n${grant(this.notificationsGranted)}    User 10: ceDataInode=7031144 installed=true\n${grant(true)}`,
+      );
     }
     if (command === `appops set ${agentPhonePackageName} PROJECT_MEDIA allow`) {
       this.projectionAllowed = true;
@@ -924,6 +951,8 @@ function completePhone(): FakePhoneOptions {
     connection: "online",
     enabledServices: shortServiceName,
     installed: { apk: ourApk, certificate: ourCertificate, versionCode: manifest.versionCode },
+    notificationsGranted: true,
+    projectionAllowed: true,
     pairing: {
       deploymentId,
       deploymentName,
@@ -1195,15 +1224,33 @@ describe("setupAgentPhone", () => {
     expect(phone.installs).toBe(0);
   });
 
-  it("surfaces the package manager's exact refusal and goes no further", async () => {
-    const output = "Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]";
-    const { host, phone, result } = await run({ installFailure: output });
-    expect(result).toEqual({
-      issue: { code: "install-failed", detail: output },
-      outcome: "issue",
-      runnerId: null,
+  it.each([
+    ["Failure [INSTALL_FAILED_INSUFFICIENT_STORAGE]", "install-failed"],
+    // Xiaomi's answer while Install via USB is off or its prompt goes unanswered.
+    ["Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]", "usb-restricted"],
+  ] as const)(
+    "surfaces the package manager's refusal %s and goes no further",
+    async (output, code) => {
+      const { host, phone, result } = await run({ installFailure: output });
+      expect(result).toEqual({
+        issue: { code, detail: output },
+        outcome: "issue",
+        runnerId: null,
+      });
+      expect(phone.wrote("enabled_accessibility_services")).toBe(false);
+      expect(host.mints).toEqual([]);
+    },
+  );
+
+  it("names the developer option when the phone refuses a change setup needs", async () => {
+    const { host, phone, result } = await run({ refusesShellWrites: true });
+    expect(result).toMatchObject({
+      issue: {
+        code: "usb-restricted",
+        detail: `settings put secure enabled_accessibility_services ${agentPhoneAccessibilityService}: Permission denial: writing to settings requires:android.permission.WRITE_SECURE_SETTINGS`,
+      },
     });
-    expect(phone.wrote("enabled_accessibility_services")).toBe(false);
+    expect(phone.broadcasts(agentPhoneSetupActions.pair)).toBe(0);
     expect(host.mints).toEqual([]);
   });
 
@@ -1621,15 +1668,26 @@ describe("setupAgentPhone", () => {
     expect(issueOf(result)).toBe("pairing-timed-out");
   });
 
-  it("does nothing to a phone that is already set up", async () => {
-    const { host, phone, result } = await run(completePhone(), {
-      configureHost: (configured) => {
-        configured.connected.add(phoneRunnerId);
+  it("does nothing to a phone that is already set up, even one that refuses changes", async () => {
+    const { host, phone, result } = await run(
+      { ...completePhone(), refusesShellWrites: true },
+      {
+        configureHost: (configured) => {
+          configured.connected.add(phoneRunnerId);
+        },
       },
-    });
+    );
     expect(result.outcome).toBe("done");
     expect(phone.installs).toBe(0);
-    expect(phone.commands.some((argv) => argv[0] === "settings" && argv[1] === "put")).toBe(false);
+    expect(
+      phone.commands.some(
+        ([command, verb]) =>
+          (command === "settings" && verb === "put") ||
+          (command === "appops" && verb === "set") ||
+          (command === "pm" && verb === "grant") ||
+          (command === "dumpsys" && verb === "deviceidle"),
+      ),
+    ).toBe(false);
     expect(host.targetReads).toBe(1);
     expect(phone.retargets).toEqual([]);
     expect(host.mints).toEqual([]);

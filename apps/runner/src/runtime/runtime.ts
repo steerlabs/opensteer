@@ -15,6 +15,7 @@ import { join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
 import {
   createId,
+  executionNodeMessageMaxLength,
   createToolArguments,
   messageContentMaxSerializedBytes,
   messageTextPartMaxLength,
@@ -30,6 +31,7 @@ import {
   utf8HeadAndTail,
   utf8Prefix,
   type ContentPart,
+  type ExecutionNodeId,
   type UserId,
   type RequestPresentation,
   type HarnessId,
@@ -272,6 +274,7 @@ interface ActiveRun {
   interrupted?: true;
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
+  readonly toolNodeIds: Map<string, ExecutionNodeId>;
   primaryWorkspace?: RunWorkspace;
   /**
    * What the engine reaches the Host and the browser through, while this Run
@@ -1587,6 +1590,8 @@ export class RunnerRuntime {
           return { status: "accepted" };
         case "trigger.interrupt":
           return this.#interruptTrigger(command.occurrenceId);
+        case "node.stop":
+          return this.#stopNode(command);
         case "run.interrupt":
           return this.#interrupt(command.runId, command.threadId, command.bindingGeneration);
         case "request.resolve":
@@ -2284,6 +2289,7 @@ export class RunnerRuntime {
       fileAbort: new AbortController(),
       steerTasks: new Set(),
       toolDeltaBytes: new Map(),
+      toolNodeIds: new Map(),
       workspaceIds: new Set([context.workspaceId]),
     };
     this.#watchLeases();
@@ -3150,23 +3156,29 @@ export class RunnerRuntime {
       case "reasoning.delta":
         active.live.append({ blockId: event.data.blockId, stream: "reasoning" }, event.data.text);
         return;
+      case "node.progress":
+        active.live.replaceNode(event.data.nodeId, event.data.text);
+        return;
       case "tool.delta": {
         const { callId, text } = event.data;
+        const nodeId = active.toolNodeIds.get(callId);
+        const key = {
+          callId,
+          stream: "tool" as const,
+          ...(nodeId === undefined ? {} : { nodeId }),
+        };
         if (active.saturatedToolDeltaCallIds.has(callId)) return;
         const emittedBytes = active.toolDeltaBytes.get(callId) ?? 0;
         const availableBytes = Math.max(0, toolDeltaContentMaxBytes - emittedBytes);
         const incomingBytes = utf8ByteLength(text);
         if (incomingBytes <= availableBytes) {
           active.toolDeltaBytes.set(callId, emittedBytes + incomingBytes);
-          active.live.append({ callId, stream: "tool" }, text);
+          active.live.append(key, text);
           return;
         }
         active.saturatedToolDeltaCallIds.add(callId);
         active.toolDeltaBytes.set(callId, toolOutputTextMaxBytes);
-        active.live.append(
-          { callId, stream: "tool" },
-          `${utf8Prefix(text, availableBytes)}${toolDeltaOmissionMarker}`,
-        );
+        active.live.append(key, `${utf8Prefix(text, availableBytes)}${toolDeltaOmissionMarker}`);
         return;
       }
     }
@@ -3181,13 +3193,21 @@ export class RunnerRuntime {
     await active.live.flush();
     await this.#emit(active, event);
     switch (event.type) {
+      case "tool.started":
+        if (event.data.nodeId) active.toolNodeIds.set(event.data.callId, event.data.nodeId);
+        return;
+      case "node.completed":
+        active.live.complete({ nodeId: event.data.nodeId, stream: "node" });
+        return;
       case "assistant.message":
         active.live.complete({ stream: "assistant" });
         return;
       case "reasoning.completed":
+        if (event.data.nodeId) return;
         active.live.complete({ blockId: event.data.blockId, stream: "reasoning" });
         return;
       case "tool.completed":
+        active.toolNodeIds.delete(event.data.callId);
         active.toolDeltaBytes.delete(event.data.callId);
         active.saturatedToolDeltaCallIds.delete(event.data.callId);
         active.live.complete({ callId: event.data.callId, stream: "tool" });
@@ -3301,6 +3321,28 @@ export class RunnerRuntime {
     await this.#pumpJournal(active);
     active.pendingRequestIds.clear();
     for (const requestId of pendingAfter) active.pendingRequestIds.add(requestId);
+  }
+
+  async #stopNode(
+    command: Extract<RunnerCommand, { type: "node.stop" }>,
+  ): Promise<CommandDecision> {
+    const active = this.#runs.get(command.runId);
+    if (
+      !active ||
+      active.settling ||
+      active.abort.signal.aborted ||
+      active.command.context.threadId !== command.threadId ||
+      active.command.context.bindingGeneration !== command.bindingGeneration
+    )
+      return reject("conflict", "Subagent stop targets an inactive attempt", false);
+    if (
+      !this.#harnesses.driverCapabilities(active.command.context.harness.driverKind)
+        ?.subagentStop ||
+      !active.session?.stopNode
+    )
+      return reject("conflict", "This engine cannot stop a subagent separately", false);
+    await active.session.stopNode(command.nodeId);
+    return { status: "accepted" };
   }
 
   async #interrupt(
@@ -3736,6 +3778,14 @@ const reasoningCompletedMaxLength = 300_000;
  */
 function fittedDurableEvent(event: HarnessDurableEvent): HarnessDurableEvent {
   switch (event.type) {
+    case "node.message": {
+      const text = fittedHead(
+        event.data.text,
+        pendingAgentEventMaxSerializedBytes - 8_192,
+        executionNodeMessageMaxLength,
+      );
+      return text === event.data.text ? event : { ...event, data: { ...event.data, text } };
+    }
     case "reasoning.completed": {
       const text = fittedHead(
         event.data.text,

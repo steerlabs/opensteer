@@ -12,15 +12,17 @@ import {
   ModelSelectionSchema,
   type AgentEvent,
   type ThreadId,
+  nodeDetailEventNodeId,
 } from "../../packages/core/src/index.js";
-import { jsonValue } from "../../packages/database/src/store-primitives.js";
+import { PendingAgentEventSchema } from "../../packages/protocol/src/index.js";
+import { eventFromRow, jsonValue } from "../../packages/database/src/store-primitives.js";
 import { WorkspaceTabStore } from "../../packages/database/src/workspace-tab-store.js";
 import {
   BrowserSurfaceIdSchema,
   createBrowserSessionId,
 } from "../../packages/protocol/src/index.js";
 
-export type SeedName = "light" | "heavy";
+export type SeedName = "light" | "heavy" | "busy-subagents";
 
 /** Real store commands establish authority; bulk history uses the integration fixtures' DB path. */
 export async function seedWorkspace(
@@ -227,6 +229,129 @@ export async function seedWorkspace(
     await run.complete();
     await history(id, seed === "heavy" ? 12 : 4, seed === "heavy", run.runId);
   }
+  let busySubagents: {
+    threadId: ThreadId;
+    nodeIds: string[];
+    toolCalls: number[];
+    detailEvents: number;
+    detailBytes: number;
+  } | null = null;
+  if (seed === "busy-subagents") {
+    const threadId = await createThread("busy-subagents");
+    const run = await dispatchCallerRun(host, caller, {
+      key: "busy-subagents",
+      title: "Investigate with three subagents",
+      workspaceId: workspace.id,
+      threadId,
+    });
+    let ordinal = run.attempt.nextOrdinal;
+    const emit = async (type: string, data: unknown) => {
+      await host.store.commitRunnerEvent({
+        environmentId: caller.environmentId,
+        runnerId: caller.runnerId,
+        runnerBootId: caller.primary.bootId,
+        event: PendingAgentEventSchema.parse({
+          type,
+          data,
+          ordinal: ordinal++,
+          bindingGeneration: run.attempt.bindingGeneration,
+          emittedAt: new Date().toISOString(),
+          environmentId: caller.environmentId,
+          runId: run.runId,
+          threadId,
+          workspaceId: workspace.id,
+        }),
+      });
+    };
+    const reply = (text: string) =>
+      emit("assistant.message", {
+        messageId: createId("message"),
+        content: [{ type: "text", text }],
+      });
+    await reply("I will split the investigation between three subagents.");
+    const nodeIds = Array.from({ length: 3 }, () => createId("executionNode"));
+    const toolCalls = [174, 173, 173];
+    for (const [index, nodeId] of nodeIds.entries()) {
+      await emit("node.started", {
+        nodeId,
+        kind: "subagent",
+        title: `Investigate component ${index + 1}`,
+        model: "gpt-5.6-sol",
+        effort: "low",
+        nativeRef: `bench-${index}`,
+        originCallId: null,
+        parentNodeId: null,
+        sessionRef: null,
+        prompt: `Inspect component ${index + 1} and report findings.`,
+      });
+      for (let call = 0; call < toolCalls[index]!; call++) {
+        if (call % 60 === 0) {
+          await emit("node.message", {
+            nodeId,
+            text: `Inspecting component ${index + 1}, batch ${call / 60 + 1}.`,
+          });
+          await emit("reasoning.completed", {
+            nodeId,
+            blockId: `reason-${index}-${call}`,
+            text: "Compare the implementation with the failing execution trace.",
+          });
+        }
+        const callId = `child-${index}-${call}`;
+        await emit("tool.started", {
+          nodeId,
+          callId,
+          tool: { namespace: "functions", name: "shell" },
+          arguments: { command: `inspect component-${index} file-${call}` },
+        });
+        await emit("tool.completed", {
+          nodeId,
+          callId,
+          isError: false,
+          output: {
+            text: Array.from(
+              { length: 64 },
+              (_, line) =>
+                `component-${index}/file-${call}:${line}: inspected dependency and verified execution trace.\n`,
+            ).join(""),
+          },
+        });
+      }
+      const result = `Component ${index + 1}: investigation complete; verified ${toolCalls[index]} source locations.`;
+      await emit("node.message", { nodeId, text: result });
+      await emit("node.completed", { nodeId, result, status: "completed", usage: null });
+    }
+    for (let call = 0; call < 4; call++) {
+      const callId = `parent-${call}`;
+      await emit("tool.started", {
+        callId,
+        tool: { namespace: "functions", name: "shell" },
+        arguments: { command: "review findings" },
+      });
+      await emit("tool.completed", {
+        callId,
+        isError: false,
+        output: { text: "Findings verified against the parent investigation." },
+      });
+    }
+    await reply("All three investigations finished. The findings agree and the checks passed.");
+    await emit("run.completed", { status: "completed" });
+    const rows = await database
+      .selectFrom("workspaceEvents")
+      .selectAll()
+      .where("threadId", "=", threadId)
+      .execute();
+    const detail = rows.map(eventFromRow).filter((event) => nodeDetailEventNodeId(event));
+    busySubagents = {
+      threadId,
+      nodeIds,
+      toolCalls,
+      detailEvents: detail.length,
+      detailBytes: detail.reduce(
+        (total, event) => total + Buffer.byteLength(JSON.stringify(event)),
+        0,
+      ),
+    };
+  }
   const pendingRequests = seed === "heavy" ? 3 : 1;
   for (let index = 0; index < pendingRequests; index++) {
     const run = await dispatchCallerRun(host, caller, {
@@ -274,11 +399,13 @@ export async function seedWorkspace(
   await host.store.transitionBrowserSession({ sessionId, state: "closed" });
   return {
     homeThreadId,
+    busySubagents,
     taskIds,
     workspaceId: workspace.id,
     manifest: {
       seed,
-      tasks: taskCount,
+      busySubagents,
+      tasks: taskCount + (busySubagents ? 1 : 0),
       homeMessages: messageCount,
       historyTasks: Math.min(5, taskCount),
       addedMessagesPerHistoryTask: seed === "heavy" ? 12 : 4,

@@ -49,7 +49,7 @@ describe("Runner Agent Skills", () => {
     const runTools = new Set<string>(
       agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
     );
-    const references = [...skill.matchAll(/`((?:browser|request)_[a-z_]+)`/gu)].map(
+    const references = [...skill.matchAll(/`((?:browser|request|pending)_[a-z_]+)`/gu)].map(
       (match) => match[1],
     );
     expect(references).toEqual(
@@ -59,7 +59,7 @@ describe("Runner Agent Skills", () => {
         "browser_profile_list",
         "browser_profile_request",
         "browser_tab_read",
-        "request_list",
+        "pending_request",
         "request_withdraw",
       ]),
     );
@@ -131,7 +131,7 @@ describe("Runner Agent Skills", () => {
     expect(triggers).toContain("# Reminders and updates for the person");
     // The reminder recipe wakes Chat's agent, whose reply is the notification.
     expect(triggers).toMatch(
-      /opensteer\.callTool\("thread_message", \{\s+delivery: "queue",\s+message: `Reminder: /u,
+      /opensteer\.callTool\("thread_send", \{\s+delivery: "queue",\s+message: `Reminder: /u,
     );
     expect(triggers).toContain('threadId: "home"');
     expect(triggers).toContain("toolContractVersion: 3");

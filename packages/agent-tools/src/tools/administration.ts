@@ -114,7 +114,7 @@ export const settings_read = defineAgentTool({
   minimumReach: "user",
   title: "Read settings",
   description:
-    "Read non-secret engine accounts, remembered execution choices and time zone. Requires user-wide reach. Use environment_list for live models.",
+    "Read non-secret engine accounts, remembered execution choices and time zone. Requires user-wide reach. Use orchestrator_capabilities for live models.",
   input: z.strictObject({}),
   output: z.object({
     harnesses: z.array(harness),

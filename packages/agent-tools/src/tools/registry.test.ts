@@ -1,28 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { agentTools, computer, thread_wait, thread_configure } from "./index.js";
+import {
+  agentTools,
+  computer,
+  delegate_task,
+  pending_request,
+  thread_wait,
+  thread_configure,
+} from "./index.js";
 import { sign_in } from "./browser.js";
 import { person_message } from "./person.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
   it("has one specification per product and integration tool", () => {
-    expect(agentTools).toHaveLength(50);
-    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(50);
+    expect(agentTools).toHaveLength(51);
+    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(51);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
     expect(runs).toContain("integration_call");
-    expect(runs).toContain("thread_delegate");
+    expect(runs).toEqual(
+      expect.arrayContaining([
+        "delegate_task",
+        "thread_send",
+        "thread_wait",
+        "pending_request",
+        "orchestrator_capabilities",
+      ]),
+    );
+    for (const old of ["thread_delegate", "thread_message", "request_list"])
+      expect(runs).not.toContain(old);
     const programs = agentTools
       .filter((t) => t.callers.some((c) => c === "program"))
       .map((t) => t.name);
-    expect(programs).toContain("thread_delegate");
+    expect(programs).toContain("delegate_task");
     expect(programs).not.toContain("person_show");
     expect(programs).not.toContain("computer");
   });
   it("exposes bounded waiting and connection work without human-only controls", () => {
     const connections = agentTools.filter((t) => t.callers.some((c) => c === "connection"));
     for (const name of [
-      "thread_delegate",
-      "thread_message",
+      "delegate_task",
+      "thread_send",
       "thread_wait",
       "thread_configure",
       "thread_queue",
@@ -43,6 +60,28 @@ describe("Opensteer tool registry", () => {
         surpriseSecret: "never leave the Host",
       }),
     ).not.toHaveProperty("surpriseSecret");
+  });
+  it("refuses task placement, ambiguous waits and unobserved Request answers", () => {
+    expect(
+      delegate_task.input.safeParse({ task: "Inspect", environmentId: "env_any" }).success,
+    ).toBe(false);
+    expect(thread_wait.input.safeParse({}).success).toBe(false);
+    expect(
+      thread_wait.input.safeParse({
+        threadId: "thr_11111111-1111-4111-8111-111111111111",
+        assignmentId: "dlg_11111111-1111-4111-8111-111111111111",
+      }).success,
+    ).toBe(false);
+    expect(pending_request.input.safeParse({ action: "read" }).success).toBe(false);
+    expect(pending_request.input.safeParse({ action: "respond" }).success).toBe(false);
+    expect(
+      pending_request.input.safeParse({
+        action: "respond",
+        requestId: "req_11111111-1111-4111-8111-111111111111",
+        expectedRevision: "seen",
+        response: { kind: "form", answers: { answer: ["42"] } },
+      }).success,
+    ).toBe(true);
   });
   it("strips wait metadata and refuses access-mode changes through configure", () => {
     expect(

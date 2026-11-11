@@ -321,6 +321,10 @@ export function StatusDot(props: {
   readonly size?: 6 | 8;
   /** `ember` is the agent itself at work somewhere, as a live computer-use session is. */
   readonly tone: "green" | "amber" | "red" | "muted" | "ember";
+  /** Drawn as a ring rather than filled: something stopped, which no colour alone can say. */
+  readonly ring?: boolean;
+  /** How strongly the fill reads; a settled subagent's dot is the muted one at 70%. */
+  readonly opacity?: number;
 }): ReactNode {
   const reduceMotion = useReducedMotion();
   const breathing = props.live === true && !reduceMotion;
@@ -350,8 +354,12 @@ export function StatusDot(props: {
       style={[
         styles.statusDot,
         props.size === undefined ? null : { height: props.size, width: props.size },
-        { backgroundColor: dotColor(props.tone) },
+        props.ring === true
+          ? { borderColor: dotColor(props.tone), borderWidth: 1.5 }
+          : { backgroundColor: dotColor(props.tone) },
         animated,
+        // After the breathing, which holds a still dot at full strength.
+        props.opacity === undefined ? null : { opacity: props.opacity },
       ]}
     />
   );

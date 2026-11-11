@@ -142,7 +142,7 @@ describe("ContinuationService", () => {
     expect(input.content[0].text).toContain(first.id);
     expect(input.content[0].text).toContain(second.id);
     expect(input.content[0].text).toContain(broken.id);
-    expect(input.content[0].text).toContain("request_list");
+    expect(input.content[0].text).toContain("pending_request");
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
   });
   it("settles historical Guest-save continuations without delivering agent instructions", async () => {

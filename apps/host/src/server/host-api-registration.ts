@@ -110,6 +110,8 @@ const hostApiScopes = {
   "connections.authorization.get": "session",
   "personal.remoteAccess.get": "session",
   "thread.events.list": "session",
+  "node.events.list": "session",
+  "tool.output.get": "session",
   "thread.messages.list": "session",
   "thread.readState.get": "session",
   "thread.inputQueue.get": "session",

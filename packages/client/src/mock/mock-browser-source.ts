@@ -35,21 +35,24 @@ export interface MockBrowserSource extends HostSnapshot {
   browserGroups?: WorkspaceTabLineage[] | undefined;
 }
 
+/**
+ * The mock's own read of the place list. It shares the keyed store's
+ * projection with the published snapshot, so it lists the sessions that
+ * snapshot derives, from the keyed groups in the authored order: a read with
+ * other sessions would rebuild every row a client holds.
+ */
 export function mockPlaceList(snapshot: MockBrowserSource) {
-  const sessions = new Map<string, BrowserSessionSummary>(
-    snapshot.browserSessions.map((session) => [session.id, session]),
-  );
-  // Runtime sessions omit sleeping browsers; their authorized metadata remains in the keyed groups.
-  for (const id of snapshot.browserTabs?.groups().ids ?? []) {
-    const group = snapshot.browserTabs!.group(id)!;
-    if (!sessions.has(group.sessionId))
-      sessions.set(group.sessionId, {
-        ...groupSession(group),
-        dialog: null,
-        error: null,
-        viewerState: "disconnected",
-        viewerError: null,
-      });
-  }
-  return placeList({ ...snapshot, browserSessions: [...sessions.values()] });
+  const store = snapshot.browserTabs;
+  const order = new Map(snapshot.browserSessions.map((session, index) => [session.id, index]));
+  const sessions: BrowserSessionSummary[] = (store?.groups().ids ?? [])
+    .map((id) => store!.group(id)!)
+    .sort((a, b) => (order.get(a.sessionId) ?? Infinity) - (order.get(b.sessionId) ?? Infinity))
+    .map((group) => ({
+      ...groupSession(group),
+      dialog: null,
+      error: null,
+      viewerState: "disconnected",
+      viewerError: null,
+    }));
+  return placeList({ ...snapshot, browserSessions: sessions });
 }

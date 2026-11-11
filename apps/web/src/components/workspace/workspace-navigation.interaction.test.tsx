@@ -336,7 +336,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
   it("task line in Chat: only the conversation", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
-    const card = element<HTMLAnchorElement>(".task-line__open");
+    const card = element<HTMLAnchorElement>(".agent-row__open");
     const before = history.length;
     await click(card);
     expect(history.length).toBe(before + 1);

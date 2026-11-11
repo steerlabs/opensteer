@@ -1,4 +1,5 @@
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
+import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { agentTools, requestToolNames } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
@@ -334,11 +335,13 @@ describe("Codex app-server harness", () => {
   it.each([
     ["host_only_tool"],
     ["thread_read", "integration_call", "computer"],
-    ["thread_read", ...requestToolNames],
+    ["thread_read", "thread_wait", ...requestToolNames],
+    ["thread_wait"],
     [...requestToolNames],
   ])("enables exactly the Host plan %j", async (...tools) => {
     const fixture = await setup("happy");
     expect(fixture.adapter.capabilities.longRequestHold).toBe(true);
+    expect(heldToolCallTimeoutMs).toBeGreaterThan(threadWaitMaxMs);
     try {
       const session = await fixture.adapter.startSession({
         ...fixture.context,
@@ -349,7 +352,9 @@ describe("Codex app-server harness", () => {
         const threadStart = captured.find((message) => message.method === "thread/start");
         const config =
           (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
-        const directTools = tools.filter((tool) => requestToolNames.some((name) => name === tool));
+        const directTools = tools.filter(
+          (tool) => tool === "thread_wait" || requestToolNames.some((name) => name === tool),
+        );
         expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
           tools.filter((tool) => !directTools.includes(tool)),
         );
@@ -1889,6 +1894,142 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
+  it.each([
+    ["subagent_v2", 1, "Hello."],
+    ["subagent_v2_nested", 3, "Hello."],
+    ["subagent_v2_approval", 1, "Written."],
+    ["subagent_v2_nested_approval", 2, "Written."],
+    ["subagent_v2_continued", 2, "Hello."],
+  ] as const)("replays %s with exact child ownership", async (name, count, reply) => {
+    for (const suffix of ["", "-perturbed"]) {
+      const fixture = await setup(`recorded-${name}${suffix}`);
+      const session = await fixture.adapter.startSession(fixture.context);
+      const events: HarnessEvent[] = [];
+      const done = (async () => {
+        for await (const event of session.events) {
+          events.push(event);
+          if (event.type === "request.opened")
+            await session.resolveRequest(event.data.request.id, {
+              kind: "choice",
+              optionId: "allow-once",
+            });
+        }
+      })();
+      try {
+        const input = fixture.turn("Replay the recorded child turns");
+        await session.execute(input);
+        await session.stop();
+        await done;
+        const nodes = events.filter((event) => event.type === "node.started");
+        expect(nodes).toHaveLength(count);
+        const updates = events.filter((event) => event.type === "node.updated");
+        const projected = nodes.map(({ data }) => ({
+          ...data,
+          ...Object.assign(
+            {},
+            ...updates
+              .filter((event) => event.data.nodeId === data.nodeId)
+              .map((event) => event.data),
+          ),
+        }));
+        const titles =
+          name === "subagent_v2_nested"
+            ? ["chain_level_1", "chain_level_2", "say_hello"]
+            : name === "subagent_v2_nested_approval"
+              ? ["relay", "writer"]
+              : name === "subagent_v2_approval"
+                ? ["fixture_writer"]
+                : Array(count).fill("say_hello");
+        projected.sort((left, right) => titles.indexOf(left.title) - titles.indexOf(right.title));
+        nodes.sort(
+          (left, right) =>
+            projected.findIndex((node) => node.nodeId === left.data.nodeId) -
+            projected.findIndex((node) => node.nodeId === right.data.nodeId),
+        );
+        expect(projected.map((node) => node.title)).toEqual(titles);
+        expect(projected.map((node) => node.model)).toEqual(
+          Array.from({ length: count }, (_, i) =>
+            name.endsWith("continued") && i === 1 ? "gpt-6.1-sol" : "gpt-6-luna",
+          ),
+        );
+        expect(projected.map((node) => node.effort)).toEqual(
+          Array.from({ length: count }, (_, i) =>
+            name.endsWith("continued") && i === 1 ? "low" : "high",
+          ),
+        );
+        expect(projected.map((node) => node.parentNodeId)).toEqual(
+          name.endsWith("continued")
+            ? [null, null]
+            : nodes.map((_, i) => (i === 0 ? null : nodes[i - 1]!.data.nodeId)),
+        );
+        const messages = events.filter((event) => event.type === "node.message");
+        expect(messages.map((event) => event.data.text)).toEqual(
+          name.endsWith("continued") ? ["Hello.", "Confirmed."] : Array(count).fill(reply),
+        );
+        expect(new Set(messages.map((event) => event.data.nodeId))).toEqual(
+          new Set(nodes.map((event) => event.data.nodeId)),
+        );
+        expect(
+          events
+            .filter((event) => event.type === "assistant.message")
+            .map((event) => event.data.content),
+        ).toEqual([[{ type: "text", text: reply }]]);
+        expect(events.filter((event) => event.type === "node.completed")).toHaveLength(count);
+        if (name.includes("approval")) {
+          const request = events.find((event) => event.type === "request.opened");
+          expect(request?.data.request.originatingNodeId).toBe(nodes.at(-1)!.data.nodeId);
+          expect(request?.data.request.originatingRunId).toBe(input.runId);
+          expect(events.some((event) => event.type === "node.progress")).toBe(true);
+        }
+        const reasoning = events
+          .filter((event) => event.type === "reasoning.completed")
+          .filter((event) => event.data.nodeId);
+        if (name === "subagent_v2_approval")
+          expect(reasoning.map((event) => event.data.text)).toEqual([
+            "**Preparing fixture creation**",
+          ]);
+        if (name.endsWith("continued")) {
+          expect(reasoning.map((event) => event.data.text)).toEqual(["Check the answer."]);
+          expect(reasoning[0]!.data.nodeId).toBe(nodes[1]!.data.nodeId);
+          expect(nodes[0]!.data.sessionRef).toBe(nodes[1]!.data.sessionRef);
+        }
+      } finally {
+        await session.stop();
+        await fixture.adapter.close();
+      }
+    }
+  });
+
+  it("gives the Run a child whose spawn it never saw, and still finishes", async () => {
+    const fixture = await setup("recorded-subagent_v2_unseen_spawn");
+    const session = await fixture.adapter.startSession(fixture.context);
+    const events: HarnessEvent[] = [];
+    const done = (async () => {
+      for await (const event of session.events) events.push(event);
+    })();
+    try {
+      await session.execute(fixture.turn("Follow up with the child from before the restart"));
+      await session.stop();
+      await done;
+      const nodes = events.filter((event) => event.type === "node.started");
+      expect(nodes.map((event) => event.data.parentNodeId)).toEqual([null, null]);
+      expect(
+        events.filter((event) => event.type === "node.message").map((event) => event.data.text),
+      ).toEqual(["Resumed.", "Unnamed."]);
+      expect(
+        events.filter((event) => event.type === "node.completed").map((event) => event.data.status),
+      ).toEqual(["completed", "completed"]);
+      expect(
+        events
+          .filter((event) => event.type === "assistant.message")
+          .map((event) => event.data.content),
+      ).toEqual([[{ type: "text", text: "Hello." }]]);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
   it("accepts concurrent root and native-child actions within the live Run", async () => {
     const fixture = await setup("native-child-actions");
     const session = await fixture.adapter.startSession(fixture.context);
@@ -2382,6 +2523,53 @@ describe("Codex app-server harness", () => {
     const session = await fixture.adapter.startSession(fixture.context);
     await session.stop();
     await fixture.adapter.close();
+  });
+
+  it("interrupts only the named child turn and leaves the Codex Run live", async () => {
+    const fixture = await setup("subagents-hold");
+    const adapter = fixture.adapter;
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      const executing = session.execute(fixture.turn("Inspect notes"));
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) => event.type === "node.updated" && event.data.stopSupported,
+          ),
+        ).toBe(true),
+      );
+      const node = observer.events.find((event) => event.type === "node.started");
+      if (node?.type !== "node.started") throw new Error("Codex child never started");
+      await session.stopNode!(node.data.nodeId);
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) =>
+              event.type === "node.completed" &&
+              event.data.nodeId === node.data.nodeId &&
+              event.data.status === "interrupted",
+          ),
+        ).toBe(true),
+      );
+      expect(
+        observer.events.some(
+          (event) => event.type === "run.interrupted" || event.type === "run.completed",
+        ),
+      ).toBe(false);
+      const interruptions = (await fixture.capture()).filter(
+        (message) => message.method === "turn/interrupt",
+      );
+      expect(interruptions).toHaveLength(1);
+      expect(interruptions[0]).toMatchObject({
+        params: { threadId: node.data.sessionRef, turnId: "child-turn-1" },
+      });
+      await session.interrupt();
+      await executing;
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
   });
 
   it("interrupts the exact active Codex turn and waits for its terminal event", async () => {

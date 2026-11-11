@@ -1,9 +1,10 @@
 import {
   agentTools,
   environment_list,
+  orchestrator_capabilities,
   thread_read,
   thread_list,
-  thread_message,
+  thread_send,
 } from "@opensteer/agent-tools/tools";
 import { ThreadAccessModeSchema, createId, type Message } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
@@ -933,7 +934,7 @@ describe("wire protocol", () => {
     const requestId = randomUUID();
     const harnessIds = Array.from({ length: 64 }, () => createId("harnessInstance"));
     const environments = Array.from({ length: 64 }, (_, index) => ({
-      compatibleHarnessInstanceIds: harnessIds,
+      capabilities: ["filesystem", "shell", "browser"],
       connected: true,
       id: createId("environment"),
       kind: index === 0 ? ("main" as const) : ("local" as const),
@@ -973,7 +974,18 @@ describe("wire protocol", () => {
       modelId: `${index}`.padEnd(255, "m"),
       providerId: `p${index}`.padEnd(100, "p"),
     });
-    const catalog = environment_list.output.parse({
+    const catalog = orchestrator_capabilities.output.parse({
+      accessCeiling: "full-access",
+      limits: {
+        maxDepth: 4,
+        remainingDepth: 4,
+        maxTasks: 32,
+        remainingTasks: 32,
+        maxAutonomousRuns: 64,
+        remainingAutonomousRuns: 64,
+        maxWaitMs: 100_000,
+        taskDeadlineAt: null,
+      },
       delegationDefault: {
         environmentId: environments[0]!.id,
         harnessInstanceId: harnessIds[0],
@@ -984,7 +996,6 @@ describe("wire protocol", () => {
           ),
         },
       },
-      environments,
       harnesses: harnessIds.map((id, index) => ({
         driverKind: "d".repeat(100),
         enabled: true,
@@ -997,11 +1008,13 @@ describe("wire protocol", () => {
         name: "h".repeat(120),
       })),
       requestId,
-      type: "environment.list.result",
     });
     expect(Buffer.byteLength(JSON.stringify(catalog), "utf8")).toBeLessThanOrEqual(
       agentToolPayloadMaxSerializedBytes,
     );
+    expect(
+      Buffer.byteLength(JSON.stringify(environment_list.output.parse({ environments })), "utf8"),
+    ).toBeLessThanOrEqual(agentToolPayloadMaxSerializedBytes);
 
     const threadId = createId("thread");
     const thread = { ...threads[0], id: threadId };
@@ -1063,21 +1076,21 @@ describe("wire protocol", () => {
       }).success,
     ).toBe(false);
 
-    const untitled = thread_message.input.parse({
+    const untitled = thread_send.input.parse({
       message: "Status?",
       delivery: "queue",
       threadId: createId("thread"),
     });
     expect(untitled).toMatchObject({ delivery: "queue" });
     expect(
-      thread_message.input.safeParse({
+      thread_send.input.safeParse({
         message: "Status?",
         threadId: createId("thread"),
       }).success,
     ).toBe(false);
     for (const delivery of ["turn", "notify"] as const) {
       expect(
-        thread_message.input.safeParse({
+        thread_send.input.safeParse({
           message: "Status?",
           delivery,
           threadId: createId("thread"),

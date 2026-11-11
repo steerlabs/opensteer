@@ -17,6 +17,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   heldToolCallTimeoutMs,
+  normalizeToolOutput,
   ModelSelectionSchema,
   createId,
   harnessUsageLimitFailureCode,
@@ -38,7 +39,8 @@ import {
   type HarnessSessionContext,
   type HarnessRuntimeBoundary,
 } from "@opensteer/harness";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { workflowSessionRoot } from "./workflow-transcript.js";
 import { MINIMUM_CLAUDE_CODE_VERSION, TESTED_CLAUDE_CODE_VERSION } from "./config.js";
 import {
   ClaudeHarnessDriver,
@@ -743,7 +745,6 @@ describe("Claude Agent SDK harness", () => {
       disableBundledSkills: true,
       disableClaudeAiConnectors: true,
       disableRemoteControl: true,
-      disableWorkflows: true,
     });
     expect(sdk.calls[0]?.options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
     expect(sdk.calls[0]?.options.env?.CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS).toBeUndefined();
@@ -760,6 +761,7 @@ describe("Claude Agent SDK harness", () => {
       "ToolSearch",
       "Write",
       "Agent",
+      "Workflow",
       "TaskStop",
     ]);
     expect(sdk.calls[0]?.options.disallowedTools).toBeUndefined();
@@ -2340,6 +2342,7 @@ describe("Claude Agent SDK harness", () => {
             held.close();
           },
           interrupt: () => new Promise<void>(() => {}),
+          stopTask: () => Promise.resolve(),
         };
       });
       const { adapter, session } = await openSession(sdk);
@@ -3007,6 +3010,778 @@ function authenticationDriver(authentication: FakeAuthentication): ClaudeHarness
   });
 }
 
+describe("Claude subagent transcripts", () => {
+  it.each([
+    ["claude_nested_subagent_model", 2, ["NESTED_LEAF_OK"]],
+    ["claude_nested_background_subagent_wake", 2, ["ROOT_STARTED", "ROOT_WAKE_DONE"]],
+    ["claude_background_subagent_after_root", 1, ["ROOT_STARTED", "ROOT_WAKE_DONE"]],
+  ] as const)(
+    "replays T3 Code's %s recording through the production driver",
+    async (recording, count, expectedReplies) => {
+      const lines = (
+        await readFile(new URL(`./fixtures/${recording}.ndjson`, import.meta.url), "utf8")
+      )
+        .trim()
+        .split("\n")
+        .slice(1)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const sdk = new FakeSdk((parameters) =>
+        scriptedQuery(
+          lines
+            .filter(
+              (frame) => frame.subtype !== "hook_started" && frame.subtype !== "hook_response",
+            )
+            .map((frame) => {
+              const sessionId = providerSessionId(parameters.options);
+              if (frame.type === "system" && frame.subtype === "init")
+                return initMessage(sessionId);
+              return message({ ...frame, session_id: sessionId });
+            }),
+        ),
+      );
+      const { adapter, session } = await openSession(sdk);
+      const observer = observe(session.events);
+      try {
+        await send(session, "Replay recorded subagents");
+        expect(observer.events.filter((event) => event.type === "run.failed")).toEqual([]);
+        await vi.waitFor(
+          () => expect(observer.events.some((event) => event.type === "run.completed")).toBe(true),
+          { timeout: 1_000 },
+        );
+        const starts = observer.events.filter((event) => event.type === "node.started");
+        expect(starts).toHaveLength(count);
+        if (count === 2) expect(starts[1]?.data.parentNodeId).toBe(starts[0]?.data.nodeId);
+        expect(replies(observer.events)).toEqual(expectedReplies);
+        expect(observer.events.filter((event) => event.type === "node.completed")).toHaveLength(
+          count,
+        );
+        if (recording !== "claude_nested_subagent_model") {
+          expect(
+            observer.events.some(
+              (event) =>
+                event.type === "reasoning.completed" &&
+                event.data.nodeId === starts[0]?.data.nodeId,
+            ),
+          ).toBe(true);
+          expect(
+            observer.events.some(
+              (event) =>
+                event.type === "node.message" && event.data.nodeId === starts[0]?.data.nodeId,
+            ),
+          ).toBe(true);
+          expect(phases(observer.events)).toContain("background");
+        }
+        expect(observer.events.filter((event) => event.type === "run.failed")).toEqual([]);
+      } finally {
+        await adapter.close();
+        await observer.done;
+      }
+    },
+  );
+
+  it("buffers exact child and task ids, retains foreground thinking, and repairs nested parents", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const id = providerSessionId(parameters.options);
+      const earlyChild = message({
+        ...assistantMessage(id, [
+          { type: "thinking", thinking: "Child reasoning" },
+          { type: "text", text: "Child answer" },
+        ]),
+        parent_tool_use_id: "child-task",
+        effort: "high",
+      });
+      return scriptedQuery([
+        initMessage(id),
+        earlyChild,
+        message({
+          type: "system",
+          subtype: "task_progress",
+          task_id: "child-task",
+          description: "Checking the change",
+          last_tool_name: "Read",
+          usage: {},
+          session_id: id,
+        }),
+        message({
+          type: "system",
+          subtype: "task_started",
+          task_id: "child-task",
+          tool_use_id: "child-call",
+          parent_task_id: "parent-task",
+          task_type: "local_agent",
+          description: "Nested child",
+          session_id: id,
+        }),
+        assistantMessage(id, [
+          {
+            type: "tool_use",
+            id: "parent-call",
+            name: "Agent",
+            input: {
+              description: "Parent",
+              prompt: "Parent brief",
+              model: "sonnet",
+              effort: "medium",
+            },
+          },
+        ]),
+        message({
+          type: "system",
+          subtype: "task_started",
+          task_id: "parent-task",
+          tool_use_id: "parent-call",
+          task_type: "local_agent",
+          description: "Parent",
+          session_id: id,
+        }),
+        message({
+          ...assistantMessage(id, [
+            {
+              type: "tool_use",
+              id: "child-call",
+              name: "Agent",
+              input: { description: "Nested child", prompt: "Child brief" },
+            },
+          ]),
+          parent_tool_use_id: "parent-call",
+        }),
+        userMessage(id, [
+          { type: "tool_result", tool_use_id: "child-call", content: "Child result" },
+          { type: "tool_result", tool_use_id: "parent-call", content: "Parent result" },
+        ]),
+        successMessage(id, "Root answer"),
+      ]);
+    });
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    try {
+      await send(session, "Run a child");
+      await vi.waitFor(() =>
+        expect(observer.events.some((event) => event.type === "run.completed")).toBe(true),
+      );
+      const starts = observer.events.filter((event) => event.type === "node.started");
+      expect(starts).toHaveLength(2);
+      const child = starts.find((event) => event.data.originCallId === "child-call")!.data.nodeId;
+      const parent = starts.find((event) => event.data.originCallId === "parent-call")!.data.nodeId;
+      expect(observer.events).toContainEqual({
+        type: "node.updated",
+        data: { nodeId: child, parentNodeId: parent },
+      });
+      expect(observer.events).toContainEqual({
+        type: "node.message",
+        data: { nodeId: child, text: "Child answer" },
+      });
+      expect(observer.events).toContainEqual({
+        type: "reasoning.completed",
+        data: { nodeId: child, blockId: expect.any(String), text: "Child reasoning" },
+      });
+      expect(
+        observer.events.some(
+          (event) =>
+            event.type === "node.updated" &&
+            event.data.nodeId === child &&
+            event.data.effort === "high",
+        ),
+      ).toBe(true);
+      expect(
+        observer.events.some(
+          (event) => event.type === "node.progress" && event.data.nodeId === child,
+        ),
+      ).toBe(true);
+      expect(replies(observer.events)).toEqual(["Root answer"]);
+    } finally {
+      await adapter.close();
+      await observer.done;
+    }
+  });
+
+  it("replays a task notification that overtook its launch without reopening the finished child", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const id = providerSessionId(parameters.options);
+      return scriptedQuery([
+        initMessage(id),
+        message({
+          type: "system",
+          subtype: "task_notification",
+          task_id: "early-task",
+          status: "completed",
+          summary: "Child summary",
+          session_id: id,
+        }),
+        message({
+          ...childAssistantMessage(id, "Child transcript"),
+          parent_tool_use_id: "early-call",
+        }),
+        message({
+          type: "system",
+          subtype: "task_started",
+          task_id: "early-task",
+          tool_use_id: "early-call",
+          task_type: "local_agent",
+          description: "Early child",
+          session_id: id,
+        }),
+        assistantMessage(id, [
+          {
+            type: "tool_use",
+            id: "early-call",
+            name: "Agent",
+            input: { description: "Early child" },
+          },
+        ]),
+        successMessage(id, "Root reply"),
+      ]);
+    });
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    try {
+      await send(session, "Replay early completion");
+      await vi.waitFor(() =>
+        expect(observer.events.some((event) => event.type === "run.completed")).toBe(true),
+      );
+      const starts = observer.events.filter((event) => event.type === "node.started");
+      expect(starts).toHaveLength(1);
+      expect(observer.events).toContainEqual({
+        type: "node.message",
+        data: { nodeId: starts[0]!.data.nodeId, text: "Child transcript" },
+      });
+      expect(
+        observer.events
+          .filter((event) => event.type === "node.completed")
+          .map((event) => ({ status: event.data.status, result: event.data.result })),
+      ).toEqual([{ status: "completed", result: "Child summary" }]);
+      expect(replies(observer.events)).toEqual(["Root reply"]);
+    } finally {
+      await adapter.close();
+      await observer.done;
+    }
+  });
+
+  it("attributes a child's question when its exact report arrives and leaves an unknown agent with the Run", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let asked: Promise<PermissionResult | null> | undefined;
+    let unknown: Promise<PermissionResult | null> | undefined;
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        const id = providerSessionId(parameters.options);
+        yield initMessage(id);
+        yield assistantMessage(id, [
+          {
+            type: "tool_use",
+            id: "child-call",
+            name: "Agent",
+            input: { description: "Question asker" },
+          },
+        ]);
+        asked = parameters.options.canUseTool!(
+          "AskUserQuestion",
+          {
+            questions: [
+              {
+                question: "Where?",
+                header: "Place",
+                options: [{ label: "Here", description: "Use here" }],
+              },
+            ],
+          },
+          { ...permissionOptions("child-question"), agentID: "child-task" },
+        );
+        yield message({
+          type: "system",
+          subtype: "task_started",
+          task_id: "child-task",
+          tool_use_id: "child-call",
+          task_type: "local_agent",
+          description: "Question asker",
+          session_id: id,
+        });
+        await asked;
+        unknown = parameters.options.canUseTool!(
+          "Bash",
+          { command: "echo unknown" },
+          { ...permissionOptions("unknown-call"), agentID: "unrelated-agent" },
+        );
+        await vi.advanceTimersByTimeAsync(2_000);
+        await unknown;
+        yield successMessage(id, "Root done");
+      }),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    try {
+      const run = send(session, "Ask a child");
+      await vi.waitFor(() =>
+        expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(1),
+      );
+      const node = observer.events.find((event) => event.type === "node.started")!;
+      const request = observer.events.find((event) => event.type === "request.opened")!;
+      expect(request.data.request).toMatchObject({
+        originatingNodeId: node.data.nodeId,
+        callId: "child-question",
+      });
+      await session.resolveRequest(request.data.request.id, {
+        kind: "form",
+        answers: { question_1: ["Here"] },
+      });
+      await vi.waitFor(() =>
+        expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(2),
+      );
+      const second = observer.events.filter((event) => event.type === "request.opened")[1]!;
+      expect(second.data.request.originatingNodeId).toBeUndefined();
+      await session.resolveRequest(second.data.request.id, {
+        kind: "choice",
+        optionId: "allow-once",
+      });
+      await run;
+      expect(await asked).toMatchObject({ behavior: "allow" });
+      expect(await unknown).toMatchObject({ behavior: "allow" });
+    } finally {
+      vi.useRealTimers();
+      await adapter.close();
+      await observer.done;
+    }
+  });
+
+  it.each(["local_agent", "local_workflow"])(
+    "stops one Claude %s with SDK confirmation while its sibling and Run continue",
+    async (taskType) => {
+      const cancelled = new Gate();
+      const finish = new Gate();
+      const stopped: string[] = [];
+      const sdk = new FakeSdk((parameters) => {
+        const id = providerSessionId(parameters.options);
+        const inner = generatedQuery(async function* () {
+          yield initMessage(id);
+          for (const task of ["target", "sibling"])
+            yield message({
+              type: "system",
+              subtype: "task_started",
+              task_id: task,
+              tool_use_id: `${task}-call`,
+              task_type: task === "target" ? taskType : "local_agent",
+              description: task,
+              session_id: id,
+            });
+          await cancelled.reached;
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "target",
+            tool_use_id: "target-call",
+            status: "stopped",
+            summary: "Stopped",
+            session_id: id,
+          });
+          await finish.reached;
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "sibling",
+            tool_use_id: "sibling-call",
+            status: "completed",
+            summary: "Sibling result",
+            session_id: id,
+          });
+          yield successMessage(id, "Root result");
+        });
+        return {
+          ...inner,
+          async stopTask(taskId) {
+            stopped.push(taskId);
+            cancelled.open();
+          },
+          close() {
+            cancelled.open();
+            finish.open();
+            inner.close();
+          },
+        };
+      });
+      const { adapter, session } = await openSession(sdk);
+      const observer = observe(session.events);
+      try {
+        const run = send(session, "Run two children");
+        await vi.waitFor(() =>
+          expect(
+            observer.events.filter(
+              (event) => event.type === "node.updated" && event.data.stopSupported,
+            ),
+          ).toHaveLength(2),
+        );
+        const target = observer.events.find(
+          (event) => event.type === "node.started" && event.data.title === "target",
+        );
+        if (target?.type !== "node.started") throw new Error("Target node was not started");
+        await session.stopNode!(target.data.nodeId);
+        await vi.waitFor(() =>
+          expect(observer.events).toContainEqual({
+            type: "node.completed",
+            data: {
+              nodeId: target.data.nodeId,
+              status: "interrupted",
+              result: "Stopped",
+              usage: null,
+            },
+          }),
+        );
+        expect(stopped).toEqual(["target"]);
+        expect(observer.events.filter((event) => event.type === "node.completed")).toHaveLength(1);
+        expect(
+          observer.events.some(
+            (event) => event.type === "run.completed" || event.type === "run.interrupted",
+          ),
+        ).toBe(false);
+        await expect(session.stopNode!(target.data.nodeId)).rejects.toThrow("no stoppable task");
+        finish.open();
+        await run;
+        expect(
+          observer.events
+            .filter((event) => event.type === "node.completed")
+            .map((event) => event.data.status),
+        ).toEqual(["interrupted", "completed"]);
+      } finally {
+        cancelled.open();
+        finish.open();
+        await session.stop();
+        await adapter.close();
+        await observer.done;
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "projects workflow phases, retries, terminal-first members, and post-turn progress (stop=%s)",
+    async (stop) => {
+      const launched = new Gate();
+      const finish = new Gate();
+      const stopped: string[] = [];
+      let profile: string | undefined;
+      let cwd: string | undefined;
+      const sdk = new FakeSdk((parameters) => {
+        const id = providerSessionId(parameters.options);
+        const inner = generatedQuery(async function* () {
+          yield initMessage(id, { tools: ["Workflow"] });
+          const root = workflowSessionRoot(profile!, await realpath(cwd!), id);
+          const transcriptDir = join(root, "workflows", "wf");
+          await mkdir(transcriptDir, { recursive: true });
+          const transcript =
+            [
+              { type: "attachment", uuid: "bookkeeping" },
+              { type: "user", isMeta: true, uuid: "meta", message: { content: "Hidden" } },
+              {
+                type: "assistant",
+                uuid: "thinking",
+                effort: "xhigh",
+                message: {
+                  id: "answer",
+                  model: "claude-opus-5",
+                  content: [
+                    { type: "thinking", thinking: "Member thinking" },
+                    { type: "text", text: "Member introduction" },
+                  ],
+                },
+              },
+              {
+                type: "assistant",
+                uuid: "tool",
+                message: {
+                  id: "answer",
+                  content: [
+                    {
+                      type: "tool_use",
+                      id: "member-tool",
+                      name: "Read",
+                      input: { file_path: "package.json" },
+                    },
+                  ],
+                },
+              },
+              ...(!stop
+                ? [
+                    {
+                      type: "user",
+                      uuid: "result",
+                      message: {
+                        content: [
+                          {
+                            type: "tool_result",
+                            tool_use_id: "member-tool",
+                            content: "Read contents",
+                          },
+                        ],
+                      },
+                    },
+                  ]
+                : []),
+              {
+                type: "assistant",
+                uuid: "reply",
+                message: { id: "answer", content: [{ type: "text", text: "Member final answer" }] },
+              },
+            ]
+              .map((line) => JSON.stringify(line))
+              .join("\n") + "\n";
+          await writeFile(join(transcriptDir, "agent-a1.jsonl"), transcript);
+          yield assistantMessage(id, [
+            {
+              type: "tool_use",
+              id: "workflow-call",
+              name: "Workflow",
+              input: { script: "alpha.js" },
+            },
+          ]);
+          await parameters.options.canUseTool!(
+            "Workflow",
+            { script: "alpha.js" },
+            permissionOptions("workflow-call"),
+          );
+          yield message({
+            type: "system",
+            subtype: "task_started",
+            task_id: "workflow-task",
+            tool_use_id: "workflow-call",
+            task_type: "local_workflow",
+            workflow_name: "Alpha workflow",
+            description: "Run Alpha",
+            session_id: id,
+          });
+          yield message({
+            ...userMessage(id, [
+              {
+                type: "tool_result",
+                tool_use_id: "workflow-call",
+                content: `Transcript dir: ${transcriptDir}`,
+              },
+            ]),
+            tool_use_result: { taskType: "local_workflow", runId: "wf", transcriptDir },
+          });
+          const progress = (entries: readonly unknown[]) =>
+            message({
+              type: "system",
+              subtype: "task_progress",
+              task_id: "workflow-task",
+              tool_use_id: "workflow-call",
+              description: "Alpha",
+              workflow_progress: entries,
+              usage: {},
+              session_id: id,
+            });
+          yield progress([
+            { type: "workflow_phase", index: 1, title: "Review" },
+            {
+              type: "workflow_agent",
+              index: 1,
+              label: "Reviewer",
+              agentId: "a1",
+              phaseIndex: 1,
+              model: "claude-opus-5",
+              state: "start",
+              attempt: 1,
+            },
+            {
+              type: "workflow_agent",
+              index: 2,
+              label: "Already done",
+              agentId: "a2",
+              phaseIndex: 1,
+              state: "done",
+              resultPreview: "Terminal summary",
+            },
+          ]);
+          await parameters.options.canUseTool!(
+            "Bash",
+            { command: "echo member" },
+            { ...permissionOptions("member-shell"), agentID: "a1" },
+          );
+          yield successMessage(id, "Workflow launched; work continues");
+          launched.open();
+          await finish.reached;
+          if (stop) return;
+          yield progress([
+            {
+              type: "workflow_agent",
+              index: 1,
+              label: "Reviewer retry",
+              phaseIndex: 1,
+              state: "start",
+              attempt: 2,
+            },
+          ]);
+          yield progress([
+            {
+              type: "workflow_agent",
+              index: 1,
+              label: "Stale retry",
+              state: "done",
+              attempt: 1,
+              resultPreview: "Stale",
+            },
+          ]);
+          yield progress([
+            {
+              type: "workflow_agent",
+              index: 1,
+              label: "Reviewer retry",
+              state: "done",
+              attempt: 2,
+              resultPreview: "Retry result",
+            },
+          ]);
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "workflow-task",
+            tool_use_id: "workflow-call",
+            status: "completed",
+            summary: "Workflow done",
+            ambient: true,
+            skip_transcript: true,
+            session_id: id,
+          });
+        });
+        return {
+          ...inner,
+          close() {
+            finish.open();
+            inner.close();
+          },
+          async stopTask(taskId) {
+            stopped.push(taskId);
+            finish.open();
+          },
+        };
+      });
+      const { adapter, context, session } = await openSession(sdk, {
+        accessMode: "approval-required",
+      });
+      profile = context.environment.CLAUDE_CONFIG_DIR;
+      cwd = context.workspacePath;
+      const observer = observe(session.events);
+      try {
+        const run = send(session, "Run the workflow");
+        await vi.waitFor(() =>
+          expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(
+            1,
+          ),
+        );
+        const launchRequest = observer.events.find((event) => event.type === "request.opened")!.data
+          .request;
+        expect(launchRequest.originatingNodeId).toBeUndefined();
+        expect(launchRequest.callId).toBe("workflow-call");
+        await session.resolveRequest(launchRequest.id, { kind: "choice", optionId: "allow-once" });
+        await vi.waitFor(() =>
+          expect(observer.events.filter((event) => event.type === "request.opened")).toHaveLength(
+            2,
+          ),
+        );
+        const memberRequest = observer.events.filter((event) => event.type === "request.opened")[1]!
+          .data.request;
+        const memberNode = observer.events.filter((event) => event.type === "node.started")[1]!.data
+          .nodeId;
+        expect(memberRequest).toMatchObject({
+          callId: "member-shell",
+          originatingNodeId: memberNode,
+          originatingRunId: launchRequest.originatingRunId,
+          originatingThreadId: context.threadId,
+          originatingWorkspaceId: context.workspaceId,
+        });
+        await session.resolveRequest(memberRequest.id, { kind: "choice", optionId: "allow-once" });
+        await vi.waitFor(() =>
+          expect(
+            observer.events.some(
+              (event) => event.type === "run.phase" && event.data.phase === "background",
+            ),
+          ).toBe(true),
+        );
+        await launched.reached;
+        expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+        const starts = observer.events.filter((event) => event.type === "node.started");
+        expect(starts.map((event) => event.data.kind)).toEqual([
+          "workflow",
+          "subagent",
+          "subagent",
+        ]);
+        expect(starts.slice(1).map((event) => event.data.parentNodeId)).toEqual([
+          starts[0]!.data.nodeId,
+          starts[0]!.data.nodeId,
+        ]);
+        expect(starts.slice(1).map((event) => event.data.phaseIndex)).toEqual([0, 0]);
+        expect(observer.events).toContainEqual({
+          type: "node.updated",
+          data: { nodeId: starts[0]!.data.nodeId, phases: ["Review"] },
+        });
+        const member = starts[1]!.data.nodeId;
+        expect(
+          observer.events
+            .filter((event) => event.type === "node.message")
+            .map((event) => event.data.text),
+        ).toEqual(["Member introduction", "Member final answer"]);
+        expect(observer.events).toContainEqual({
+          type: "reasoning.completed",
+          data: { nodeId: member, blockId: "thinking:thinking:0", text: "Member thinking" },
+        });
+        expect(
+          observer.events.some(
+            (event) =>
+              event.type === "node.updated" &&
+              event.data.nodeId === member &&
+              event.data.effort === "xhigh",
+          ),
+        ).toBe(true);
+        expect(
+          observer.events.some(
+            (event) =>
+              event.type === "node.completed" &&
+              event.data.nodeId === starts[2]!.data.nodeId &&
+              event.data.result === "Terminal summary",
+          ),
+        ).toBe(true);
+        if (stop) await session.interrupt();
+        else finish.open();
+        await run;
+        await vi.waitFor(() =>
+          expect(observer.events.filter((event) => event.type === "node.completed")).toHaveLength(
+            stop ? 3 : 4,
+          ),
+        );
+        expect(replies(observer.events)).toEqual(["Workflow launched; work continues"]);
+        expect(stopped).toEqual(stop ? ["workflow-task"] : []);
+        if (stop) {
+          expect(
+            observer.events
+              .filter((event) => event.type === "node.completed")
+              .find((event) => event.data.nodeId === member)!.data.status,
+          ).toBe("interrupted");
+          expect(observer.events).toContainEqual({
+            type: "tool.completed",
+            data: {
+              callId: "member-tool",
+              nodeId: member,
+              isError: true,
+              output: normalizeToolOutput("Claude subagent ended before this tool returned"),
+            },
+          });
+        } else {
+          const allStarts = observer.events.filter((event) => event.type === "node.started");
+          expect(allStarts).toHaveLength(4);
+          expect(allStarts[3]!.data.nodeId).not.toBe(member);
+          expect(allStarts[3]!.data.parentNodeId).toBe(starts[0]!.data.nodeId);
+          expect(
+            observer.events
+              .filter((event) => event.type === "node.completed")
+              .map((event) => event.data.result),
+          ).not.toContain("Stale");
+        }
+        expect(JSON.stringify(observer.events)).not.toContain(profile!);
+      } finally {
+        finish.open();
+        await adapter.close();
+        await observer.done;
+      }
+    },
+  );
+});
+
 type ClaudeQueryParameters = Parameters<ClaudeAgentSdk["query"]>[0];
 
 class FakeSdk implements ClaudeAgentSdk {
@@ -3358,6 +4133,7 @@ function generatedQuery(factory: () => AsyncGenerator<SDKMessage, void>): Claude
       void generator?.return();
     },
     interrupt: () => Promise.resolve(undefined),
+    stopTask: () => Promise.resolve(),
   };
 }
 
@@ -3378,6 +4154,7 @@ function blockingQuery(initial: SDKMessage): ClaudeQueryHandle {
       release?.();
     },
     interrupt: () => Promise.resolve(undefined),
+    stopTask: () => Promise.resolve(),
   };
 }
 

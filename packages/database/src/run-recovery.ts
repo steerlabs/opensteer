@@ -231,7 +231,7 @@ export async function recoverLostRunTransaction(
         .slice(0, 10)
         .map(
           (node) =>
-            `- ${node.kind === "subagent" ? "Subagent" : "Background task"}: ${utf8Prefix(node.title, 200)}`,
+            `- ${node.kind === "subagent" ? "Subagent" : node.kind === "workflow" ? "Workflow" : "Background task"}: ${utf8Prefix(node.title, 200)}`,
         ),
       ...(nodes.length > 10 ? [`- and ${nodes.length - 10} more background tasks.`] : []),
       ...requests

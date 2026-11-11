@@ -1018,12 +1018,21 @@ export type RunAttempt = z.infer<typeof RunAttemptSchema>;
 
 /** One subagent a Run's engine started, as the Host recorded it. */
 const executionNodeShape = {
+  /** Its engine can stop it without stopping the Run. */
+  stopSupported: z.boolean().optional(),
+  /** A stop was asked for and has not ended it yet. */
+  stopping: z.boolean().optional(),
   attemptId: RunAttemptIdSchema,
+  effort: z.string().min(1).max(64).nullable(),
   endedAt: IsoDateTimeSchema.nullable(),
   id: ExecutionNodeIdSchema,
-  kind: z.enum(["subagent", "task"]),
+  kind: z.enum(["subagent", "task", "workflow"]),
   model: z.string().min(1).max(255).nullable(),
   parentNodeId: ExecutionNodeIdSchema.nullable(),
+  /** Which of its workflow's phases a member belongs to. */
+  phaseIndex: z.number().int().min(0).nullable(),
+  /** A workflow's phases, in order, by title; empty for anything else. */
+  phases: z.array(z.string().min(1).max(120)),
   prompt: z
     .string()
     .max(8 * 1_024)
@@ -1045,6 +1054,7 @@ export const ExecutionNodeViewSchema = z.object({
   usage: RunUsageViewSchema.nullable(),
 });
 export type ExecutionNode = z.infer<typeof ExecutionNodeSchema>;
+export type ExecutionNodeView = z.infer<typeof ExecutionNodeViewSchema>;
 
 /**
  * How long a Run's background work may keep it live after its engine's turn
@@ -1135,7 +1145,8 @@ export const AssignmentSchema = z
     if (
       assignment.returnStatus === "delivered" &&
       assignment.returnMessageId === null &&
-      assignment.resultText !== ""
+      assignment.resultText !== "" &&
+      assignment.returnReason !== "read-by-assigner"
     ) {
       context.addIssue({
         code: "custom",

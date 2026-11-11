@@ -1,3 +1,4 @@
+import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import type { BrowserClientStreamMessage } from "./browser/browser-client-streams.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
@@ -1387,6 +1388,15 @@ export async function createHostServer(
         }),
       );
     },
+    "tool.output.get": async (input, context) => {
+      const output = await dependencies.store.toolOutputForOwner({
+        ...input,
+        ownerId: requireRpcSession(context).user.id,
+      });
+      if (!output)
+        throw new OpensteerError({ code: "not_found", message: "Tool output not found" });
+      return rpcSuccess({ output });
+    },
     "thread.events.list": async (input, context) => {
       const page = await dependencies.store.threadEventPageForOwner({
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
@@ -1399,7 +1409,27 @@ export async function createHostServer(
         threadId: input.threadId,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(hostApi["thread.events.list"].success.parse(page));
+      return rpcSuccess(
+        hostApi["thread.events.list"].success.parse(
+          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+        ),
+      );
+    },
+    "node.events.list": async (input, context) => {
+      const page = await dependencies.store.nodeEventPageForOwner({
+        nodeId: input.nodeId,
+        threadId: input.threadId,
+        ...(input.before === undefined ? {} : { before: input.before }),
+        ...(input.through === undefined ? {} : { through: input.through }),
+        maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems),
+        ownerId: requireRpcSession(context).user.id,
+      });
+      if (!page) throw new OpensteerError({ code: "not_found", message: "Subagent not found" });
+      return rpcSuccess(
+        hostApi["node.events.list"].success.parse(
+          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+        ),
+      );
     },
     "thread.messages.list": async (input, context) => {
       const page = await dependencies.store.threadMessagePageForOwner({
@@ -1454,7 +1484,19 @@ export async function createHostServer(
       );
       if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       return rpcSuccess({
-        runs: dependencies.liveRuns.threadFrames(thread.id).slice(0, 64),
+        runs: dependencies.liveRuns
+          .threadFrames(thread.id)
+          .slice(0, 64)
+          .map((frame) => ({
+            ...frame,
+            progress: {
+              ...frame.progress,
+              items: frame.progress.items.filter(
+                (item) => item.stream !== "tool" || item.nodeId === undefined,
+              ),
+            },
+          }))
+          .filter((frame) => frame.progress.items.length > 0),
         threadId: thread.id,
       });
     },
@@ -1648,6 +1690,8 @@ export async function createHostServer(
     | "run.attempts.list"
     | "tasks.list"
     | "thread.events.list"
+    | "node.events.list"
+    | "tool.output.get"
     | "thread.messages.list"
     | "thread.readState.get"
     | "thread.inputQueue.get"
@@ -1966,6 +2010,10 @@ export async function createHostServer(
           })),
           type: command.type,
         };
+      }
+      case "node.stop": {
+        const result = await dependencies.commands.stopNode({ ...command, requestedBy: userId });
+        return { type: command.type, wasDuplicate: result.wasDuplicate };
       }
       case "run.interrupt":
         return {
@@ -3007,6 +3055,8 @@ export function advertisedCapabilities(
     "task-family-v1",
     "snapshot-messages-omit-v1",
     "history-turns-v1",
+    "node-detail-v1",
+    "tool-output-detail-v1",
     "place-events-v1",
     "person-show-v1",
     "shared-task-done-v1",
@@ -3975,6 +4025,16 @@ function attachRealtimeSocket(
         }
         continue;
       }
+      if (message.type === "client.watch-node") {
+        if (!unsubscribe || workspaceId !== message.workspaceId)
+          throw badMessage("Subscribe before watching a subagent");
+        realtime.watchNode({
+          sinkId: sink.id,
+          workspaceId: message.workspaceId,
+          nodeId: message.nodeId,
+        });
+        continue;
+      }
       if (unsubscribe) throw badMessage("Client is already subscribed");
       // Nothing is streamed to a client on another epoch: the events it would
       // receive are exactly what the epoch governs, so the refusal comes
@@ -3997,6 +4057,7 @@ function attachRealtimeSocket(
         unsubscribe = await realtime.subscribe({
           afterSequence: message.afterSequence,
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
+          ...(message.toolOutputs ? { toolOutputs: message.toolOutputs } : {}),
           ...(message.personShow ? { personShow: message.personShow } : {}),
           ...(message.snapshotMessages ? { snapshotMessages: message.snapshotMessages } : {}),
           sink,
@@ -4391,4 +4452,15 @@ function requireBearerToken(request: FastifyRequest, maximumTokenLength = 4_096)
 
 function badMessage(message: string): OpensteerError {
   return new OpensteerError({ code: "bad_request", message });
+}
+
+function clientToolOutputPage<
+  T extends { events: readonly AgentEventView[]; window: { byteCount: number } },
+>(page: T) {
+  const events = page.events.map(previewToolOutput);
+  return {
+    ...page,
+    events,
+    window: { ...page.window, byteCount: Buffer.byteLength(JSON.stringify(events)) },
+  };
 }

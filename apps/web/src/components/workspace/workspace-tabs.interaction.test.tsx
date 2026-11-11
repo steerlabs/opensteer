@@ -284,17 +284,18 @@ describe("tabs that read like a browser's", () => {
     await settle(60);
   }
 
-  it("a device's web tabs, then its apps with no line between, each in authoritative order, and + New tab last", async () => {
+  it("web tabs first, a hairline, then Mac apps and phones, each in authoritative order, and + New tab last", async () => {
     await mount("/");
-    const places = tabOrder(placeList(client.getSnapshot()));
+    const places = placeList(client.getSnapshot());
     const web = places.filter((place) => place.kind === "browser").map((place) => place.key);
     const native = places.filter((place) => place.kind !== "browser").map((place) => place.key);
     expect(web.length).toBeGreaterThan(1);
     expect(native.length).toBeGreaterThan(0);
-    expect(rowKeys()).toEqual(places.map(({ key }) => key));
+    expect(rowKeys()).toEqual([...web, ...native]);
     const items = [...element(".side-section--tabs .side-list").children];
     const lastWeb = items.indexOf(row(web.at(-1)!));
-    expect(items[lastWeb + 1]).toBe(row(native[0]!));
+    expect(items[lastWeb + 1]?.classList.contains("side-divider")).toBe(true);
+    expect(items[lastWeb + 2]).toBe(row(native[0]!));
     expect(items.at(-1)?.classList.contains("side-new")).toBe(true);
     const webPlaces = places.filter((place) => place.kind === "browser");
     const boundary = webPlaces.findIndex((place, index) => {
@@ -369,7 +370,7 @@ describe("tabs that read like a browser's", () => {
         (place) => place.kind === "browser" && isMockPage(place, source) && !placeHasAgents(place),
       )!;
     await mount((source) => `/${tabSearch(quietOf(source))}`);
-    const places = tabOrder(placeList(client.getSnapshot()));
+    const places = placeList(client.getSnapshot());
     const quiet = quietOf(client);
     const busy = places.filter(placeHasAgents).map((place) => place.key);
     expect(busy.length).toBeGreaterThan(0);
@@ -418,6 +419,33 @@ describe("tabs that read like a browser's", () => {
     await click(element(".side-tab-filter__clear"));
     expect(rowKeys()).toEqual(places.map(({ key }) => key));
     expect(document.querySelector(".side-section--tabs .sidebar__empty")).toBeNull();
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
+    // One list across devices: a row elsewhere names where it runs. A browser is at no device,
+    // so it is home at the Mac mini that runs the Deployment, whose rows name nothing.
+    const deviceOf = (key: string) =>
+      row(key).querySelector(".side-tab__device .device-label__name")?.textContent ?? null;
+    const studio = places.filter((place) => place.device?.name === "Studio Mac");
+    const phone = places.find((place) => place.kind === "phone")!;
+    expect(studio.length).toBeGreaterThan(0);
+    expect(deviceOf(studio[0]!.key)).toBe("Studio Mac");
+    expect(places.find(({ key }) => key === busy[0])!.device!.name).toBe("Mac mini");
+    expect(deviceOf(busy[0]!)).toBeNull();
+    expect(deviceOf(phone.key)).toBeNull();
+    expect(element(".side-tab__title", row(phone.key)).textContent).toBe(phone.device!.name);
+    // Narrowed to one device, the tab in front stays and nothing else from elsewhere does.
+    await click(filter());
+    expect(option("Studio Mac").getAttribute("aria-description")).toBe(`${studio.length} tabs`);
+    await click(option("Studio Mac"));
+    expect(filter().getAttribute("aria-label")).toBe("Filter tabs: Tabs on Studio Mac");
+    expect(filter().textContent).toBe("Studio Mac");
+    expect(rowKeys()).toEqual(
+      places.flatMap(({ key, device }) =>
+        device?.name === "Studio Mac" || key === busy[0] ? [key] : [],
+      ),
+    );
+    await click(filter());
+    await click(option("All devices"));
+    expect(rowKeys()).toEqual(places.map(({ key }) => key));
     expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
   });
 
@@ -848,8 +876,10 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
             new KeyboardEvent("keydown", { bubbles: true, key: "w", metaKey: true }),
           ),
       ],
+      // One list across devices: the phone's tab after it is its neighbour.
+      ["Q4 roadmap – Linear", "Running shoes – Allbirds", closeButton],
       // The last web tab: the Mac apps past the hairline are not its neighbours; the tab before it is.
-      ["Q4 roadmap – Linear", "storage documentation", closeButton],
+      ["Running shoes – Allbirds", "storage documentation", closeButton],
     ];
     for (const [closing, next, close] of closes) {
       const place = tab(closing);

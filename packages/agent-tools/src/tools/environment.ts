@@ -1,11 +1,11 @@
 import { defineAgentTool } from "../registry.js";
-import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
+import { EnvironmentIdSchema, HarnessInstanceIdSchema, WorkspaceIdSchema } from "@opensteer/core";
 
 import { z } from "zod";
 
 import { CursorSchema } from "./inputs.js";
-import { EnvironmentDiscoverySchema } from "./outputs.js";
-export const EnvironmentListInputSchema = z
+import { OrchestratorCapabilitiesSchema, EnvironmentDiscoverySchema } from "./outputs.js";
+export const OrchestratorCapabilitiesInputSchema = z
   .strictObject({
     query: z
       .string()
@@ -15,24 +15,39 @@ export const EnvironmentListInputSchema = z
       .optional(),
     harnessInstanceId: HarnessInstanceIdSchema.optional(),
     cursor: CursorSchema.optional(),
-    environmentCursor: EnvironmentIdSchema.optional(),
+    workspaceId: WorkspaceIdSchema.optional(),
     harnessCursor: HarnessInstanceIdSchema.optional(),
   })
   .superRefine((input, context) => {
     if (input.cursor && !input.harnessInstanceId)
       context.addIssue({ code: "custom", message: "cursor requires harnessInstanceId" });
-    if (input.harnessInstanceId && (input.environmentCursor || input.harnessCursor))
+    if (input.harnessInstanceId && input.harnessCursor)
       context.addIssue({
         code: "custom",
         message: "Focus cannot be combined with directory cursors",
       });
   });
+export type OrchestratorCapabilitiesInput = z.output<typeof OrchestratorCapabilitiesInputSchema>;
+export const orchestrator_capabilities = defineAgentTool({
+  name: "orchestrator_capabilities",
+  title: "Discover orchestration choices",
+  description:
+    "Engine accounts, models/options for delegate_task and thread_configure, your access ceiling and enforced budgets. workspaceId selects a reachable destination. Copy selectors exactly; unavailable choices never imply substitution. Page with harnessesNextCursor as harnessCursor; for models keep query/harnessInstanceId and pass modelsNextCursor as cursor.",
+  input: OrchestratorCapabilitiesInputSchema,
+  output: OrchestratorCapabilitiesSchema,
+  access: "read",
+  callers: ["run", "program", "connection"] as const,
+});
+
+export const EnvironmentListInputSchema = z.strictObject({
+  environmentCursor: EnvironmentIdSchema.optional(),
+});
 export type EnvironmentListInput = z.output<typeof EnvironmentListInputSchema>;
 export const environment_list = defineAgentTool({
   name: "environment_list",
-  title: "Find engines and models",
+  title: "Find computers",
   description:
-    "Find computers, engine accounts, models/options before choosing execution settings. Copy selectors; pass an engine’s lightModel directly as thread_delegate model for cheap work; report unavailable catalogs without substitution. query matches all words across IDs/names/engines. Page directories with environmentsNextCursor as environmentCursor and harnessesNextCursor as harnessCursor. For model pages, keep query/harnessInstanceId; pass modelsNextCursor as cursor.",
+    "List reachable computers and their connection status and Workspace storage capabilities. Browser, app, phone and shell tools use these computers. Engine/model choices: orchestrator_capabilities. Page with environmentsNextCursor as environmentCursor.",
   input: EnvironmentListInputSchema,
   output: EnvironmentDiscoverySchema,
   access: "read",

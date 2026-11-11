@@ -6,7 +6,8 @@ import {
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { HarnessIdSchema, ModelSelectionSchema, createId } from "@opensteer/core";
-import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
+import { nodeDetailEventNodeId } from "@opensteer/core";
+import { type PendingAgentEvent, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { expect } from "vitest";
 import { ChannelStore, OpensteerStore } from "./index.js";
@@ -1724,6 +1725,247 @@ describeStore("PostgreSQL store", (it) => {
     await expect(store.createThread(create)).rejects.toMatchObject({ code: "forbidden" });
     await expect(store.updateThreadExecutionSelection(selection)).rejects.toMatchObject({
       code: "forbidden",
+    });
+  });
+
+  it("keeps node detail out of parent history and pages it only for its own Thread", async ({
+    storeFixture,
+  }) => {
+    const { startRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
+    const fixture = await startRunFixture("node-detail");
+    const sibling = await store.createThread({
+      createdBy: fixture.userId,
+      environmentId: fixture.environmentId,
+      harnessInstanceId: fixture.harnessInstance.id,
+      idempotencyKey: "node-detail-sibling",
+      modelSelection: testModelSelection,
+      title: "Sibling",
+      workspaceId: fixture.workspace.id,
+    });
+    const turn = await enqueueHumanTrigger({
+      content: [{ type: "text", text: "Other Run" }],
+      idempotencyKey: "node-detail-other-run",
+      requestedBy: fixture.userId,
+      threadId: sibling.thread.id,
+    });
+    await store.claimCommand(turn.command.id, "node-detail-other-dispatcher");
+    const binding = await store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: testContinuationIdentity,
+      harnessInstanceId: fixture.harnessInstance.id,
+      leaseTokenHash: "node-detail-other-lease",
+      membershipGeneration: 1,
+      runnerBootId: fixture.runnerBootId,
+      runnerId: fixture.runnerId,
+      runId: turn.run.id,
+      threadId: sibling.thread.id,
+    });
+    const other = {
+      ...fixture,
+      thread: sibling.thread,
+      run: turn.run,
+      bindingGeneration: binding.bindingGeneration,
+    };
+    await store.commitRunnerEvent({
+      environmentId: other.environmentId,
+      runnerId: other.runnerId,
+      runnerBootId: other.runnerBootId,
+      event: pendingEvent({
+        type: "run.started",
+        data: { status: "running" },
+        ordinal: 0,
+        bindingGeneration: other.bindingGeneration,
+        environmentId: other.environmentId,
+        runId: other.run.id,
+        threadId: other.thread.id,
+        workspaceId: other.workspace.id,
+      }),
+    });
+    let ordinal = 1;
+    type RunEvent = {
+      [K in PendingAgentEvent["type"]]: Pick<
+        Extract<PendingAgentEvent, { type: K }>,
+        "type" | "data"
+      >;
+    }[PendingAgentEvent["type"]];
+    const emit = async (event: RunEvent) => {
+      const result = await store.commitRunnerEvent({
+        environmentId: fixture.environmentId,
+        runnerId: fixture.runnerId,
+        runnerBootId: fixture.runnerBootId,
+        event: pendingEvent({
+          ...event,
+          ordinal,
+          runId: fixture.run.id,
+          threadId: fixture.thread.id,
+          workspaceId: fixture.workspace.id,
+          environmentId: fixture.environmentId,
+          bindingGeneration: fixture.bindingGeneration,
+        }),
+      });
+      ordinal += 1;
+      return result;
+    };
+    const nodeId = createId("executionNode");
+    const workflowId = createId("executionNode");
+    for (const [id, kind] of [
+      [nodeId, "subagent"],
+      [workflowId, "workflow"],
+    ] as const) {
+      await emit({
+        type: "node.started",
+        data: {
+          nodeId: id,
+          kind,
+          effort: "high",
+          model: "research-model",
+          phaseIndex: 0,
+          nativeRef: id,
+          sessionRef: null,
+          originCallId: null,
+          parentNodeId: null,
+          prompt: "Research",
+          title: "Research",
+        },
+      });
+    }
+    await emit({ type: "node.updated", data: { nodeId, parentNodeId: workflowId } });
+    await emit({
+      type: "node.updated",
+      data: { nodeId: workflowId, phases: ["Research", "Review"], effort: "medium" },
+    });
+    await expect(
+      emit({ type: "node.updated", data: { nodeId, parentNodeId: workflowId } }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      emit({ type: "node.updated", data: { nodeId: workflowId, parentNodeId: nodeId } }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    const foreignNodeId = createId("executionNode");
+    await store.commitRunnerEvent({
+      environmentId: other.environmentId,
+      runnerId: other.runnerId,
+      runnerBootId: other.runnerBootId,
+      event: pendingEvent({
+        type: "node.started",
+        bindingGeneration: other.bindingGeneration,
+        ordinal: 1,
+        runId: other.run.id,
+        threadId: other.thread.id,
+        workspaceId: other.workspace.id,
+        environmentId: other.environmentId,
+        data: {
+          nodeId: foreignNodeId,
+          kind: "subagent",
+          model: null,
+          title: "Other",
+          nativeRef: "other",
+          parentNodeId: null,
+          originCallId: null,
+          sessionRef: null,
+          prompt: null,
+        },
+      }),
+    });
+    for (const event of [
+      { type: "node.message", data: { nodeId: foreignNodeId, text: "Foreign" } },
+      {
+        type: "reasoning.completed",
+        data: { nodeId: foreignNodeId, blockId: "foreign", text: "Foreign" },
+      },
+      { type: "node.updated", data: { nodeId: workflowId, parentNodeId: foreignNodeId } },
+    ] as const)
+      await expect(emit(event)).rejects.toMatchObject({ code: "conflict" });
+    const detail = [
+      { type: "node.message", data: { nodeId, text: "I found the answer" } },
+      {
+        type: "reasoning.completed",
+        data: { nodeId, blockId: "thinking", text: "Check the source" },
+      },
+      {
+        type: "tool.started",
+        data: {
+          nodeId,
+          callId: "child-call",
+          tool: { namespace: "test", name: "read" },
+          arguments: {},
+        },
+      },
+      {
+        type: "tool.completed",
+        data: { nodeId, callId: "child-call", isError: false, output: { text: "Source" } },
+      },
+    ] as const;
+    for (const event of detail) await emit(event);
+    await emit({
+      type: "node.completed",
+      data: { nodeId, status: "completed", result: "Answer", usage: null },
+    });
+    const stored = await database
+      .selectFrom("workspaceEvents")
+      .selectAll()
+      .where("runId", "=", fixture.run.id)
+      .where("nodeDetailId", "=", nodeId)
+      .orderBy("sequence", "asc")
+      .execute();
+    expect(stored.map((row) => row.type)).toEqual(detail.map((event) => event.type));
+    const read = { ownerId: fixture.userId, threadId: fixture.thread.id };
+    for (const mode of [
+      {},
+      { maxTurns: 1 },
+      { aroundMessageId: fixture.run.seedInputId },
+    ] as const) {
+      const page = await store.threadEventPageForOwner({ ...read, ...mode });
+      expect(page!.events.some((event) => nodeDetailEventNodeId(event) !== undefined)).toBe(false);
+      expect(page!.events.map((event) => event.type)).toEqual(
+        expect.arrayContaining(["node.started", "node.completed"]),
+      );
+      expect(page!.window.itemCount).toBe(page!.events.length);
+      expect(page!.window.byteCount).toBe(Buffer.byteLength(JSON.stringify(page!.events)));
+    }
+    const page = await store.nodeEventPageForOwner({ ...read, nodeId });
+    expect(page!.events.map((event) => ({ type: event.type, data: event.data }))).toEqual(detail);
+    // The subagent itself comes with its page, whatever its conversation's history holds.
+    expect(page!.node.id).toBe(nodeId);
+    expect(page!.window).toMatchObject({
+      itemCount: 4,
+      totalItems: 4,
+      hasMore: false,
+      byteCount: Buffer.byteLength(JSON.stringify(page!.events)),
+    });
+    const through = page!.events[2]!.sequence;
+    const newest = await store.nodeEventPageForOwner({ ...read, nodeId, through, maxItems: 2 });
+    expect(newest!.events).toEqual(page!.events.slice(1, 3));
+    expect(newest!.window).toMatchObject({ hasMore: true, totalItems: 3 });
+    const older = await store.nodeEventPageForOwner({
+      ...read,
+      nodeId,
+      through,
+      before: newest!.window.nextBefore!,
+      maxItems: 2,
+    });
+    expect(older!.events).toEqual(page!.events.slice(0, 1));
+    expect(older!.window.hasMore).toBe(false);
+    await expect(
+      store.nodeEventPageForOwner({ ...read, threadId: sibling.thread.id, nodeId }),
+    ).resolves.toBeNull();
+    await expect(
+      store.nodeEventPageForOwner({ ...read, ownerId: await store.createUser("Outsider"), nodeId }),
+    ).resolves.toBeNull();
+    const nodes = (await store.listRunAttemptsForOwner({
+      ownerId: fixture.userId,
+      runId: fixture.run.id,
+    }))!.nodes;
+    expect(nodes.find((node) => node.id === nodeId)).toMatchObject({
+      effort: "high",
+      phaseIndex: 0,
+      phases: [],
+      parentNodeId: workflowId,
+    });
+    expect(nodes.find((node) => node.id === workflowId)).toMatchObject({
+      kind: "workflow",
+      effort: "medium",
+      phases: ["Research", "Review"],
+      parentNodeId: null,
     });
   });
 

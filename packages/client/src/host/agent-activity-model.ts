@@ -1,3 +1,4 @@
+import { foldedSubagentSummary, turnSubagentCount } from "./subagent-model.js";
 import { pageSiteLabel } from "./surfaces.js";
 import {
   isIntegrationGatewayTool,
@@ -109,6 +110,7 @@ export type ActivityFeedEntry = Exclude<
  * stretch is its own turn, and the Run's outcome sits with the last one.
  */
 export interface Turn {
+  readonly nodes?: readonly NodeEntry[];
   readonly personWaiting?: boolean;
   readonly startedBy?: MessageAuthor;
   readonly source?: {
@@ -138,8 +140,6 @@ export interface Turn {
    * subagent stands where it started, in place of the call that started it.
    */
   readonly work: readonly WorkEntry[];
-  /** What each subagent did, by node id: its steps and the subagents it started. */
-  readonly subagentWork: Readonly<Record<string, readonly WorkEntry[]>>;
   /**
    * Work this turn handed to other Threads. Each stays with the turn that
    * started it, below what the agent said about it, however far the turn went on.
@@ -194,9 +194,6 @@ export function groupTranscriptEntries(
     entries.flatMap((entry) => (entry.kind === "run" ? (entry.turnReplyMessageIds ?? []) : [])),
   );
   let open: Extract<Slot, { kind: "stretch" }> | null = null;
-  // Each subagent's stretch: its later steps belong with it, wherever the
-  // Run's own agent has got to since.
-  const nodeStretch = new Map<string, Extract<Slot, { kind: "stretch" }>>();
   const runsDrawn = new Set<string>();
   for (const entry of entries) {
     // The composer shows the current AI choice; its retained history is state, not conversation.
@@ -257,21 +254,12 @@ export function groupTranscriptEntries(
     if (entry.kind === "withdrawn" || entry.kind === "delivery" || entry.kind === "request-wait")
       continue;
     if (entry.kind === "run" && entry.runId === null) continue;
-    const owner =
-      entry.kind === "tool" ? entry.nodeId : entry.kind === "node" ? entry.parentNodeId : null;
-    const home = owner ? nodeStretch.get(owner) : undefined;
-    if (home && home !== open) {
-      home.entries.push(entry);
-      if (entry.kind === "node") nodeStretch.set(entry.nodeId, home);
-      continue;
-    }
     if (open === null || open.runId !== entry.runId) {
       open = { entries: [], kind: "stretch", runId: entry.runId };
       slots.push(open);
     }
     open.entries.push(entry);
     if (entry.runId !== null) runsDrawn.add(entry.runId);
-    if (entry.kind === "node") nodeStretch.set(entry.nodeId, open);
     if (entry.kind === "message" && turnReplies.has(entry.id)) open = null;
   }
 
@@ -382,29 +370,23 @@ function turnFrom(
     ),
   );
   const work: WorkEntry[] = [];
-  const subagentWork: Record<string, WorkEntry[]> = {};
   for (const entry of all) {
-    // A subagent stands in place of the call that started it, at any depth.
-    if (entry.kind === "tool" && spawnCalls.has(entry.callId)) continue;
-    const owner = workOwner(entry);
-    if (owner !== null) {
-      (subagentWork[owner] ??= []).push(entry);
-      continue;
-    }
+    if (entry.kind === "tool" && (entry.nodeId || spawnCalls.has(entry.callId))) continue;
+    if (entry.kind === "node" && entry.parentNodeId !== null) continue;
     work.push(entry);
   }
   const reply =
     work.findLast(
       (entry): entry is MessageEntry => entry.kind === "message" && replies.has(entry.id),
     ) ?? null;
-  return { assignments, reply, run, runId, subagentWork, work };
-}
-
-/** The subagent a step belongs to, or null for the Run's own agent. */
-function workOwner(entry: WorkEntry): string | null {
-  if (entry.kind === "tool") return entry.nodeId ?? null;
-  if (entry.kind === "node") return entry.parentNodeId;
-  return null;
+  return {
+    assignments,
+    reply,
+    run,
+    runId,
+    work,
+    nodes: all.filter((entry): entry is NodeEntry => entry.kind === "node"),
+  };
 }
 
 function turnHasContent(turn: Turn): boolean {
@@ -547,7 +529,10 @@ export function turnOpen(turn: Turn, chosen: boolean | null): boolean {
  */
 export function turnWords(turn: Turn): readonly WorkEntry[] {
   const last = turn.reply ?? turn.work.findLast((entry) => entry.kind === "message");
-  return last === undefined ? [] : [last];
+  const live = turn.work.filter(
+    (entry) => entry.kind === "node" && entry.nodeKind !== "task" && entry.status === "running",
+  );
+  return last === undefined ? live : [last, ...live];
 }
 
 /** Why a live turn's Run is still queued, when the client knows; otherwise null. */
@@ -854,16 +839,9 @@ function joinedTurn(turns: readonly Turn[]): Turn {
   const last = turns.at(-1);
   if (!last || !only) throw new Error("A reply gathers at least one turn.");
   if (turns.length === 1) return only;
-  const subagentWork: Record<string, WorkEntry[]> = {};
-  for (const turn of turns) {
-    for (const [nodeId, work] of Object.entries(turn.subagentWork)) {
-      (subagentWork[nodeId] ??= []).push(...work);
-    }
-  }
   return {
     ...last,
     assignments: turns.flatMap((turn) => turn.assignments),
-    subagentWork,
     work: turns.flatMap((turn) => turn.work),
   };
 }
@@ -998,8 +976,11 @@ export function workSummary(turn: Turn): WorkSummary | null {
   const onlyThinking = steps.length > 0 && steps.every((entry) => entry.kind === "reasoning");
   const verb = onlyThinking ? "Thought" : "Worked";
   return {
-    label:
+    label: foldedSubagentSummary(
       silent && run.endedAt ? silentRunLabel(run) : duration ? `${verb} for ${duration}` : verb,
+      turnSubagentCount(turn),
+      turn.assignments.length,
+    ),
     state,
   };
 }
@@ -1057,7 +1038,7 @@ function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
   if (state === "waiting") return "Waiting for you";
   // The turn is over; what it started runs on in the background.
   if (turn.run?.background) {
-    const live = [...turn.work, ...Object.values(turn.subagentWork).flat()].filter(
+    const live = turn.work.filter(
       (entry) => entry.kind === "node" && entry.status === "running",
     ).length;
     return live > 0 ? `Background · ${countNoun(live, "task")}` : "Background";
@@ -1077,7 +1058,8 @@ function liveLabel(turn: Turn, state: Exclude<TurnState, "settled">): string {
       return toolPresentation(entry).activeLabel;
     }
     if (entry?.kind === "reasoning" && entry.state === "streaming") return "Thinking";
-    if (entry?.kind === "node" && entry.status === "running") return `Subagent: ${entry.title}`;
+    if (entry?.kind === "node" && entry.status === "running")
+      return entry.nodeKind === "task" ? entry.title : `Subagent: ${entry.title}`;
   }
   for (let index = turn.work.length - 1; index >= 0; index -= 1) {
     const entry = turn.work[index];
@@ -1104,7 +1086,7 @@ function workDuration(work: readonly WorkEntry[]): string | null {
   const completed = done
     .map((entry) =>
       Date.parse(
-        entry.kind === "tool" || entry.kind === "reasoning"
+        entry.kind === "tool" || entry.kind === "reasoning" || entry.kind === "node"
           ? (entry.completedAt ?? entry.createdAt)
           : entry.createdAt,
       ),
@@ -1154,12 +1136,12 @@ export type WorkRow =
       readonly kind: "steps";
     }
   | { readonly entry: MessageEntry; readonly key: string; readonly kind: "note" }
-  /** A subagent: its own steps are the turn's `subagentWork` under its node id. */
+  /** A helper card, or a background activity. */
   | {
       readonly entry: NodeEntry;
       readonly head: ActivityStepHead;
       readonly key: string;
-      readonly kind: "subagent";
+      readonly kind: "subagent" | "task";
     }
   /** Where the Run began acting in a browser tab: a point in the trace, not a span. */
   | { readonly entry: PlaceEntry; readonly key: string; readonly kind: "place" }
@@ -1270,7 +1252,12 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       continue;
     }
     if (entry.kind === "node") {
-      result.push({ entry, head: nodeHead(entry), key: `subagent:${entry.id}`, kind: "subagent" });
+      result.push({
+        entry,
+        head: nodeHead(entry),
+        key: `subagent:${entry.id}`,
+        kind: entry.nodeKind === "task" ? "task" : "subagent",
+      });
       continue;
     }
     const presentation = entry.kind === "tool" ? toolPresentation(entry) : null;
@@ -1735,8 +1722,8 @@ function nodeHead(node: NodeEntry): ActivityStepHead {
     detailKind: "prose",
     duration: ran !== null && ran >= 1_000 ? formatDuration(ran) : null,
     errors: node.status === "failed" ? 1 : 0,
-    icon: "sparkles",
-    label: `Subagent: ${node.title}`,
+    icon: node.nodeKind === "task" ? "terminal" : "sparkles",
+    label: node.nodeKind === "task" ? node.title : `Subagent: ${node.title}`,
     tone,
   };
 }
@@ -1919,7 +1906,15 @@ export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const kind = identity ? toolKinds.get(`${identity.namespace}/${identity.name}`) : undefined;
 
   if (identity?.namespace === "opensteer") {
-    const present = opensteerSteps.get(identity.name);
+    const present = opensteerSteps.get(
+      (
+        {
+          thread_delegate: "delegate_task",
+          thread_message: "thread_send",
+          request_list: "pending_request",
+        } as Readonly<Record<string, string>>
+      )[identity.name] ?? identity.name,
+    );
     if (present) return present(tool, args);
   }
 
@@ -2243,12 +2238,13 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["browser_sign_in", signInPresentation],
   ["browser_tab_read", said(["Looking at saved tabs", "Looked at saved tabs"], "browser")],
   ["browser_tab_write", saidByAction(tabActions, ["Arranging tabs", "Arranged tabs"], "browser")],
+  ["orchestrator_capabilities", said(["Looking up engines", "Looked up engines"], "list")],
   ["environment_list", said(["Looking up computers", "Looked up computers"], "laptop")],
   [
     "machine_full_disk_access_request",
     said(["Asking for full access to a Mac", "Asked for full access to a Mac"], "laptop"),
   ],
-  ["request_list", said(["Checking its requests", "Checked its requests"], "list")],
+  ["pending_request", said(["Checking its requests", "Checked its requests"], "list")],
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
   ["sign_in", signInPresentation],
   [
@@ -2278,7 +2274,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     },
   ],
   [
-    "thread_delegate",
+    "delegate_task",
     (_tool, args) =>
       step({
         activeLabel: "Starting a task",
@@ -2295,7 +2291,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["person_message", said(["Sending a message", "Sent a message"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
   ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
-  ["thread_message", said(["Sending a message", "Sent a message"], "share")],
+  ["thread_send", said(["Sending a message", "Sent a message"], "share")],
   ["thread_read", said(["Reading a conversation", "Read a conversation"], "list")],
   [
     "thread_update",

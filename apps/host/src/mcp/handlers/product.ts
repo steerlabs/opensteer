@@ -1,14 +1,30 @@
+import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { ThreadDetailSchema } from "@opensteer/agent-tools/outputs";
 import {
   readAgentThreadRecent,
   readAgentThreadActivity,
   encodeThreadHistoryCursor,
-  assignmentSummaryInTransaction,
+  readAssignmentResult,
+  beginAssignmentResultWait,
+  endAssignmentResultWait,
+  withoutDatabaseOperationSignal,
+  readAgentRequest,
+  requestRevision,
+  AgentRequestResponderSchema,
+  reachableNode,
 } from "@opensteer/database";
-import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
+import {
+  activityItem,
+  messageItem,
+  taskItem,
+  boundedThreadItems,
+  itemText,
+} from "../thread-items.js";
+import { sql } from "kysely";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
+import type { TaskQuestionNotices } from "../../threads/task-question-notices.js";
 import { readThreadWaitSnapshot } from "@opensteer/database";
 import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
@@ -17,6 +33,9 @@ import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
+  agentDelegationMaxDepth,
+  causalChainMaxDelegations,
+  causalChainMaxAutonomousRuns,
   catalogDefaultCandidate,
   catalogDefaultModelSelection,
   isPlaceContentPart,
@@ -26,6 +45,7 @@ import {
   placeContentLabel,
   provisionalThreadTitle,
   requestTitleText,
+  requestIsAgentAnswerable,
   type Request,
   type AssignmentSummary,
   compareSequence,
@@ -34,6 +54,7 @@ import {
   MessageIdSchema,
   WorkspaceIdSchema,
   type AgentEvent,
+  AgentEventSchema,
   type PlaceContentPart,
   type PlaceIdentity,
   type EnvironmentId,
@@ -70,6 +91,10 @@ import type { MemoryPassService } from "../../agents/memory-pass-service.js";
 import { callerThread, type AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./index.js";
 import {
+  sealRequestResponse,
+  type RequestResponseVault,
+} from "../../identity/request-response-vault.js";
+import {
   assertMutableTarget,
   messageSource,
   assertTarget,
@@ -101,9 +126,9 @@ interface ConnectionTask {
 }
 
 const assignedRunRefusal = "A task reaches the person through the Thread that assigned it";
-const assignedRunNext = "Send it to the assigner with thread_message.";
+const assignedRunNext = "Send it to the assigner with thread_send.";
 const unknownEnvironment = "Selected execution environment does not exist";
-const chooseEnvironmentNext = "See the current choices with environment_list.";
+const chooseExecutionNext = "See the current choices with orchestrator_capabilities.";
 
 export class ProductToolHandlers {
   readonly #threads: ThreadService;
@@ -134,6 +159,8 @@ export class ProductToolHandlers {
     driverKind: HarnessId,
   ) => readonly ThreadAccessMode[] | undefined;
   readonly #commands: CommandService;
+  readonly #requestResponseVault: RequestResponseVault | undefined;
+  readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
   ) => readonly WorkspaceBackingKind[];
@@ -176,6 +203,8 @@ export class ProductToolHandlers {
       driverKind: HarnessId,
     ) => readonly ThreadAccessMode[] | undefined;
     readonly commands: CommandService;
+    readonly requestResponseVault?: RequestResponseVault;
+    readonly questionNotices?: Pick<TaskQuestionNotices, "wait">;
     readonly defaultWorkspaceBacking: WorkspaceBackingKind;
     readonly environmentWorkspaceBackings: (
       environmentId: EnvironmentId,
@@ -202,6 +231,8 @@ export class ProductToolHandlers {
     this.#canRunHarness = options.canRunHarness;
     this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
+    this.#requestResponseVault = options.requestResponseVault;
+    this.#questionNotices = options.questionNotices;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
@@ -362,10 +393,28 @@ export class ProductToolHandlers {
     return { messageId: result.message.id };
   }
 
-  async environment_list({ caller, input }: ToolCall<"environment_list">) {
+  async orchestrator_capabilities({ caller, input }: ToolCall<"orchestrator_capabilities">) {
     const currentThread = caller.kind === "connection" ? undefined : callerThread(caller);
     const claims = { requestedBy: caller.userId };
-
+    const workspaceId =
+      input.workspaceId ??
+      currentThread?.workspaceId ??
+      (caller.reach.kind === "workspace" ? caller.reach.workspaceId : undefined);
+    const workspace = workspaceId
+      ? await this.#store.getWorkspaceForOwner(workspaceId, caller.userId)
+      : null;
+    if (input.workspaceId && !workspace) throw forbidden("Workspace is unavailable");
+    if (
+      workspace &&
+      caller.reach.kind !== "user" &&
+      workspace.id !==
+        (caller.reach.kind === "workspace" ? caller.reach.workspaceId : currentThread?.workspaceId)
+    )
+      throw forbidden("Workspace is outside the caller's reach");
+    const environmentId =
+      workspace?.backing.kind === "local-directory"
+        ? workspace.backing.ownerEnvironmentId
+        : currentThread?.environmentId;
     const result = await environmentDiscovery({
       store: this.#store,
       userId: claims.requestedBy,
@@ -373,9 +422,82 @@ export class ProductToolHandlers {
       input,
       connected: this.#isEnvironmentConnected,
       canRun: this.#canRunHarness,
-      workspaceBackings: this.#environmentWorkspaceBackings,
+      ...(environmentId ? { environmentId } : {}),
     });
-    return { ...result };
+    const harnesses = result.harnesses;
+    const source =
+      caller.kind === "run"
+        ? await this.#store.database
+            .selectFrom("runs")
+            .select("causalChainId")
+            .where("id", "=", caller.claims.runId)
+            .executeTakeFirst()
+        : caller.kind === "program" && caller.program.kind === "trigger"
+          ? await this.#store.database
+              .selectFrom("triggerOccurrences")
+              .select("causalChainId")
+              .where("id", "=", caller.program.occurrenceId)
+              .executeTakeFirst()
+          : undefined;
+    const chain = source?.causalChainId
+      ? await this.#store.database
+          .selectFrom("causalChains")
+          .selectAll()
+          .where("id", "=", source.causalChainId)
+          .executeTakeFirst()
+      : undefined;
+    let depth = 0;
+    let ancestor = currentThread;
+    const visited = new Set<string>();
+    while (ancestor) {
+      if (visited.has(ancestor.id)) throw conflict("Thread lineage contains a cycle");
+      visited.add(ancestor.id);
+      if (!ancestor.parentThreadId) break;
+      depth++;
+      ancestor =
+        (await this.#store.getThreadForOwner(ancestor.parentThreadId, caller.userId)) ?? undefined;
+    }
+    return {
+      ...(result.delegationDefault ? { delegationDefault: result.delegationDefault } : {}),
+      harnesses,
+      ...(result.harnessesNextCursor ? { harnessesNextCursor: result.harnessesNextCursor } : {}),
+      accessCeiling: caller.accessMode,
+      limits: {
+        maxDepth: caller.kind === "connection" ? null : agentDelegationMaxDepth,
+        remainingDepth: currentThread ? Math.max(0, agentDelegationMaxDepth - depth) : null,
+        maxTasks:
+          caller.kind === "connection"
+            ? null
+            : (chain?.maxDelegations ?? causalChainMaxDelegations),
+        remainingTasks: chain ? Math.max(0, chain.maxDelegations - chain.usedDelegations) : null,
+        maxAutonomousRuns: chain?.maxAutonomousRuns ?? causalChainMaxAutonomousRuns,
+        remainingAutonomousRuns: chain
+          ? Math.max(0, chain.maxAutonomousRuns - chain.usedAutonomousRuns)
+          : null,
+        maxWaitMs: threadWaitMaxMs,
+        taskDeadlineAt: null,
+      },
+    };
+  }
+
+  async environment_list({ caller, input }: ToolCall<"environment_list">) {
+    const rows = await this.#store.listEnvironmentsForUser(
+      caller.userId,
+      65,
+      input.environmentCursor ? { afterId: input.environmentCursor } : {},
+    );
+    const environments = rows.slice(0, 64);
+    return {
+      environments: environments.map(({ id, kind, name, capabilities }) => ({
+        id,
+        kind,
+        name,
+        capabilities,
+        connected: this.#isEnvironmentConnected(id),
+        workspaceBackings: this.#environmentWorkspaceBackings(id),
+      })),
+      ...(rows.length > 64 ? { environmentsNextCursor: environments[63]!.id } : {}),
+    };
   }
 
   async project_list({ caller, input }: ToolCall<"project_list">) {
@@ -512,6 +634,7 @@ export class ProductToolHandlers {
   }
 
   async thread_read({ caller, input }: ToolCall<"thread_read">) {
+    if (input.subagentId) return this.#readSubagent(caller, input);
     const claims = { requestedBy: caller.userId };
     const threadId =
       input.threadId === "home"
@@ -590,6 +713,92 @@ export class ProductToolHandlers {
         hasMore && items.length
           ? encodeThreadHistoryCursor(thread.id, messages[items.length - 1]!.sequence, input.query)
           : null,
+    };
+  }
+
+  async #readSubagent(caller: AgentCaller, input: ToolCall<"thread_read">["input"]) {
+    const missing = () => forbidden("Subagent is unavailable");
+    const node = await reachableNode(this.#store.database, input.subagentId!, caller.userId);
+    if (!node) throw missing();
+    const thread = await this.#store.getThreadForOwner(node.threadId, caller.userId);
+    if (!thread) throw missing();
+    try {
+      assertTarget(caller, thread);
+    } catch {
+      throw missing();
+    }
+    const page = await this.#store.nodeEventPageForOwner({
+      ownerId: caller.userId,
+      threadId: thread.id,
+      nodeId: node.id,
+      maxItems: input.itemId ? 1 : input.limit,
+      types:
+        input.view === "activity" || input.itemId
+          ? ["node.message", "tool.started", "tool.completed"]
+          : ["node.message"],
+      ...(input.before ? { before: input.before } : {}),
+      ...(input.itemId ? { itemId: input.itemId } : {}),
+    });
+    if (!page) throw missing();
+    const calls = page.events.flatMap((event) =>
+      event.type === "tool.completed" ? [event.data.callId] : [],
+    );
+    const starts = calls.length
+      ? await this.#store.database
+          .selectFrom("workspaceEvents")
+          .selectAll()
+          .where("nodeDetailId", "=", node.id)
+          .where("type", "=", "tool.started")
+          .where(sql<string>`data->>'callId'`, "in", calls)
+          .execute()
+      : [];
+    const started = new Map(
+      starts
+        .map((row) => {
+          const event = AgentEventSchema.parse({
+            ...row,
+            createdAt: row.createdAt.toISOString(),
+            sequence: String(row.sequence),
+          });
+          return event.type === "tool.started" ? ([event.data.callId, event] as const) : null;
+        })
+        .filter((entry) => entry !== null),
+    );
+    const mapped = [...page.events].reverse().flatMap((event) => {
+      if (event.type === "node.message")
+        return [
+          {
+            itemId: event.sequence,
+            type: "node.message",
+            status: "published",
+            runId: event.runId,
+            title: null,
+            ...itemText(event.data.text, input.maxCharsPerItem, input.textOffset),
+            createdAt: event.createdAt,
+          },
+        ];
+      if (event.type !== "tool.started" && event.type !== "tool.completed") return [];
+      return [
+        activityItem(event, {
+          start: event.type === "tool.started" ? event : started.get(event.data.callId),
+          ownRun: node.requestedBy === caller.userId,
+          named: !!input.itemId,
+          maxChars: input.maxCharsPerItem,
+          offset: input.textOffset,
+        }),
+      ];
+    });
+    const items = boundedThreadItems(mapped);
+    if (input.itemId && !items.length) throw forbidden("Item is unavailable in this subagent");
+    const hasMore = items.length < mapped.length || page.window.hasMore;
+    return {
+      thread: ThreadDetailSchema.parse(thread),
+      subagent: page.node,
+      recentRuns: [],
+      recentPlaces: [],
+      items,
+      hasMore,
+      nextBefore: hasMore ? (items.at(-1)?.itemId ?? page.window.nextBefore) : null,
     };
   }
 
@@ -793,8 +1002,13 @@ export class ProductToolHandlers {
   }
 
   async assignmentTargets({ caller, input }: ToolCall<"task_cancel">) {
+    if (input.subagentId) {
+      const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
+      if (!node) throw forbidden("Subagent is unavailable");
+      return [node.threadId];
+    }
     const assignment = await this.#store.getAssignmentForOwner({
-      assignmentId: input.assignmentId,
+      assignmentId: input.assignmentId!,
       ownerId: caller.userId,
     });
     if (!assignment) throw forbidden("Assignment is unavailable");
@@ -803,9 +1017,24 @@ export class ProductToolHandlers {
   async task_cancel({ caller, input, operationKey }: ToolCall<"task_cancel">) {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "task_cancel");
+    if (input.subagentId) {
+      const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
+      if (!node) throw forbidden("Subagent is unavailable");
+      if (node.runId !== claims.runId)
+        throw forbidden("Only this Run's agent may stop its subagents");
+      await this.#commands.stopNode({
+        nodeId: node.id,
+        runId: node.runId,
+        threadId: node.threadId,
+        requestedBy: caller.userId,
+        authority: threadCallerAuthority(caller),
+        idempotencyKey: idempotencyKey(caller, requestId, "node.stop"),
+      });
+      return { subagentId: node.id, status: "stopping" as const };
+    }
 
     const assignment = await this.#store.getAssignmentForOwner({
-      assignmentId: input.assignmentId,
+      assignmentId: input.assignmentId!,
       ownerId: caller.userId,
     });
     if (!assignment) throw forbidden("Assignment is unavailable");
@@ -813,7 +1042,7 @@ export class ProductToolHandlers {
     if (!target) throw forbidden("Thread is unavailable");
     assertMutableTarget(caller, target);
     const cancelled = await this.#commands.cancelAssignment({
-      assignmentId: input.assignmentId,
+      assignmentId: input.assignmentId!,
       requestedBy: claims.requestedBy,
       actorRunId: claims.runId,
       idempotencyKey: idempotencyKey(caller, requestId, "assignment.cancel"),
@@ -839,18 +1068,67 @@ export class ProductToolHandlers {
     const worker = await this.#store.getThreadForOwner(assignment.workerThreadId, caller.userId);
     if (!worker) throw forbidden("Thread is unavailable");
     assertTarget(caller, worker);
-    const row = await this.#store.database
-      .selectFrom("delegations")
-      .selectAll()
-      .where("id", "=", input.assignmentId)
-      .executeTakeFirstOrThrow();
-    return taskItem(
-      await assignmentSummaryInTransaction(this.#store.database, row),
-      assignment.resultText,
-    );
+    const read = await readAssignmentResult(this.#store.database, {
+      assignmentId: input.assignmentId,
+      authority: threadCallerAuthority(caller),
+    });
+    for (const event of read.events) this.#onWorkspaceEvent(event);
+    return taskItem(read.assignment, read.result);
   }
 
-  async request_list({ caller, input }: ToolCall<"request_list">) {
+  async pending_request({ caller, input, operationKey }: ToolCall<"pending_request">) {
+    if (input.action === "respond") {
+      const run = requireRun(caller);
+      const request = await readAgentRequest(
+        this.#store.database,
+        threadCallerAuthority(run),
+        input.requestId!,
+      );
+      if (!requestIsAgentAnswerable(request))
+        throw forbidden("This Request needs the person to answer");
+      if (!this.#requestResponseVault)
+        throw conflict("Request answers are unavailable on this Host");
+      if (!request.originatingRunId) throw conflict("This Request has no waiting Run");
+      const agentResponder = AgentRequestResponderSchema.parse({
+        authority: threadCallerAuthority(run),
+        expectedRevision: input.expectedRevision,
+      });
+      const response = input.response!;
+      const sealedResponse = await sealRequestResponse(this.#requestResponseVault, response, {
+        requestId: request.id,
+        runId: request.originatingRunId,
+        threadId: request.originatingThreadId,
+      });
+      await this.#commands.sendControl({
+        type: "request.respond",
+        requestId: request.id,
+        response,
+        sealedResponse,
+        requestedBy: caller.userId,
+        runId: request.originatingRunId,
+        threadId: request.originatingThreadId,
+        idempotencyKey: idempotencyKey(
+          caller,
+          operationId(caller, operationKey, "pending_request"),
+          "respond",
+        ),
+        agentResponder,
+      });
+      return { request: agentRequest((await this.#store.requests.get(request.id))!) };
+    }
+    if (input.action === "read") {
+      const request = await readAgentRequest(
+        this.#store.database,
+        threadCallerAuthority(caller),
+        input.requestId!,
+      );
+      return {
+        request: {
+          ...agentRequest(request),
+          ...(requestIsAgentAnswerable(request) ? { presentation: request.presentation } : {}),
+        },
+      };
+    }
     if (caller.kind === "connection") {
       const page = await this.#store.requests.connectionPage({
         userId: caller.userId,
@@ -883,7 +1161,7 @@ export class ProductToolHandlers {
     return { request: agentRequest(withdrawn.request) };
   }
 
-  async prepareDelegation({ caller, input }: ToolCall<"thread_delegate">) {
+  async prepareDelegation({ caller, input }: ToolCall<"delegate_task">) {
     const currentThread = callerThread(caller);
     const claims = callerContext(caller);
     const existingThread = input.threadId
@@ -910,27 +1188,11 @@ export class ProductToolHandlers {
       input.specialist,
       existingThread,
     );
-    if (specialist && (input.model || input.harnessInstanceId || input.environmentId))
+    if (specialist && (input.model || input.harnessInstanceId))
       throw badRequest("Specialist execution is selected by its registration");
-    const chosenEnvironmentId = input.environmentId;
-    const environmentId =
-      existingThread?.environmentId ??
-      chosenEnvironmentId ??
-      (specialist && workspace.backing.kind === "local-directory"
-        ? workspace.backing.ownerEnvironmentId
-        : currentThread.environmentId);
+    const environmentId = existingThread?.environmentId ?? workspace.backing.ownerEnvironmentId;
     const environment = await this.#store.getEnvironment(environmentId);
-    if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
-    if (
-      chosenEnvironmentId &&
-      !(await this.#store.environmentIsAvailableToUser(environment.id, claims.requestedBy))
-    ) {
-      throw forbidden("Selected execution environment is unavailable to this user");
-    }
-    // The owning-machine fence is a fact about the Workspace, not about how
-    // the environment was named: an inherited environment lands on the wrong
-    // disk exactly as easily as a chosen one, and the Run would be queued
-    // before the dispatcher could refuse it.
+    if (!environment) throw badRequest(unknownEnvironment, chooseExecutionNext);
     if (
       workspace.backing.kind === "local-directory" &&
       workspace.backing.ownerEnvironmentId !== environment.id
@@ -954,9 +1216,9 @@ export class ProductToolHandlers {
             parent: currentThread,
           });
 
-    return { existingThread, workspace, specialist, environment, placement, chosenEnvironmentId };
+    return { existingThread, workspace, specialist, environment, placement };
   }
-  async authorizeDelegation(call: ToolCall<"thread_delegate">) {
+  async authorizeDelegation(call: ToolCall<"delegate_task">) {
     if (call.caller.kind === "connection") {
       if (!(await this.#priorConnectionTask(call.caller, call.input, call.operationKey)))
         await this.#prepareConnectionDelegation(call.caller, call.input);
@@ -970,11 +1232,11 @@ export class ProductToolHandlers {
    */
   async #priorConnectionTask(
     caller: Extract<AgentCaller, { kind: "connection" }>,
-    input: ToolCall<"thread_delegate">["input"],
+    input: ToolCall<"delegate_task">["input"],
     operationKey: string,
   ): Promise<ConnectionTask | null> {
     if (input.threadId) return null;
-    const requestId = operationId(caller, operationKey, "thread_delegate");
+    const requestId = operationId(caller, operationKey, "delegate_task");
     const key = idempotencyKey(caller, requestId, "create");
     const prior = await this.#store.database
       .selectFrom("commands")
@@ -986,7 +1248,6 @@ export class ProductToolHandlers {
     const requested = prior.payload as Readonly<Record<string, unknown>>;
     const asked = {
       ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
-      ...(input.environmentId === undefined ? {} : { environmentId: input.environmentId }),
       ...(input.harnessInstanceId === undefined
         ? {}
         : { harnessInstanceId: input.harnessInstanceId }),
@@ -1021,7 +1282,7 @@ export class ProductToolHandlers {
   }
   async #createConnectionTask(
     caller: Extract<AgentCaller, { kind: "connection" }>,
-    input: ToolCall<"thread_delegate">["input"],
+    input: ToolCall<"delegate_task">["input"],
     requestId: string,
   ): Promise<ConnectionTask> {
     const {
@@ -1056,9 +1317,21 @@ export class ProductToolHandlers {
     );
     return { thread, ...expected };
   }
-  async thread_delegate({ caller, input, operationKey }: ToolCall<"thread_delegate">) {
+  async delegate_task(call: ToolCall<"delegate_task">) {
+    const task = await this.#delegate(call);
+    if (call.input.mode !== "wait") return task;
+    const wait = await this.thread_wait({
+      ...call,
+      input: {
+        ...(task.assignmentId ? { assignmentId: task.assignmentId } : { threadId: task.threadId }),
+        timeoutMs: call.input.timeoutMs,
+      },
+    });
+    return { ...(wait.task ?? task), wait };
+  }
+  async #delegate({ caller, input, operationKey }: ToolCall<"delegate_task">) {
     if (caller.kind === "connection") {
-      const requestId = operationId(caller, operationKey, "thread_delegate");
+      const requestId = operationId(caller, operationKey, "delegate_task");
       const { thread: created, expectedHarnessRevision } =
         (await this.#priorConnectionTask(caller, input, operationKey)) ??
         (await this.#createConnectionTask(caller, input, requestId));
@@ -1101,7 +1374,7 @@ export class ProductToolHandlers {
           return forwarded;
         }),
       };
-    const requestId = operationId(caller, operationKey, "thread_delegate");
+    const requestId = operationId(caller, operationKey, "delegate_task");
 
     if (caller.kind !== "run" && input.places?.length)
       throw badRequest("Program delegation cannot forward place references");
@@ -1110,14 +1383,8 @@ export class ProductToolHandlers {
       claims.requestedBy,
       idempotencyKey(caller, requestId, "delegate"),
       async () => {
-        const {
-          existingThread,
-          workspace,
-          specialist,
-          environment,
-          placement,
-          chosenEnvironmentId,
-        } = await this.prepareDelegation({ caller, input, operationKey });
+        const { existingThread, workspace, specialist, environment, placement } =
+          await this.prepareDelegation({ caller, input, operationKey });
         const delegateInput = {
           ...(specialist ? { specialistId: specialist.id } : {}),
           ...(placement.harnessRevision === undefined
@@ -1160,12 +1427,11 @@ export class ProductToolHandlers {
             workspace.status === "provisioning" || workspace.status === "unavailable",
           );
         }
-        if (!chosenEnvironmentId && !this.#isEnvironmentConnected(environment.id)) {
+        if (!this.#isEnvironmentConnected(environment.id))
           throw conflict("Selected execution environment is not connected", true);
-        }
         const harness = await this.#store.getHarnessInstance(delegateInput.harnessInstanceId);
         if (!harness?.enabled)
-          throw badRequest("Selected harness is disabled or unavailable", chooseEnvironmentNext);
+          throw badRequest("Selected harness is disabled or unavailable", chooseExecutionNext);
         if (
           this.#isEnvironmentConnected(environment.id) &&
           !this.#canRunHarness(environment.id, harness.driverKind)
@@ -1177,7 +1443,7 @@ export class ProductToolHandlers {
         const delegated = await this.#commands.delegateAdmittedThread({
           admission: mutationAdmission(
             caller,
-            "thread_delegate",
+            "delegate_task",
             input,
             requestId,
             existingThread ? [existingThread.id] : [],
@@ -1337,7 +1603,8 @@ export class ProductToolHandlers {
     const chosenEnvironmentId = input.environmentId;
     if (chosenEnvironmentId) {
       const environment = await this.#store.getEnvironment(chosenEnvironmentId);
-      if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
+      if (!environment)
+        throw badRequest(unknownEnvironment, "See the current computers with environment_list.");
       if (
         !(await this.#store.environmentIsAvailableToUser(chosenEnvironmentId, claims.requestedBy))
       ) {
@@ -1374,9 +1641,9 @@ export class ProductToolHandlers {
     };
   }
 
-  async thread_message({ caller, input, operationKey }: ToolCall<"thread_message">) {
+  async thread_send({ caller, input, operationKey }: ToolCall<"thread_send">) {
     const anchor = caller.kind === "connection" ? null : callerThread(caller);
-    const requestId = operationId(caller, operationKey, "thread_message");
+    const requestId = operationId(caller, operationKey, "thread_send");
     const observationId = input.observationId ?? requestId;
     const destination =
       input.threadId === "home"
@@ -1411,7 +1678,7 @@ export class ProductToolHandlers {
       },
       caller.kind === "connection"
         ? undefined
-        : mutationAdmission(caller, "thread_message", input, requestId, [thread.id]),
+        : mutationAdmission(caller, "thread_send", input, requestId, [thread.id]),
     );
     return {
       assignmentId: delivered.input.assignmentId,
@@ -1422,7 +1689,7 @@ export class ProductToolHandlers {
   }
   async #prepareConnectionDelegation(
     caller: Extract<AgentCaller, { kind: "connection" }>,
-    input: ToolCall<"thread_delegate">["input"],
+    input: ToolCall<"delegate_task">["input"],
   ) {
     if (!input.workspaceId && !input.threadId)
       throw badRequest("A connected agent must name workspaceId or threadId");
@@ -1446,7 +1713,7 @@ export class ProductToolHandlers {
       input.specialist,
       existing,
     );
-    if (specialist && (input.model || input.harnessInstanceId || input.environmentId))
+    if (specialist && (input.model || input.harnessInstanceId))
       throw badRequest("Specialist execution is selected by its registration");
     if (existing) {
       const assignment = await this.#store.database
@@ -1458,16 +1725,10 @@ export class ProductToolHandlers {
       if (assignment) throw conflict("Thread already has an open Assignment");
     }
     const preferences = await this.#store.getExecutionPreferences(caller.userId);
-    const environmentId =
-      existing?.environmentId ??
-      input.environmentId ??
-      (workspace.backing.kind === "local-directory"
-        ? workspace.backing.ownerEnvironmentId
-        : preferences.history[0]?.environmentId);
-    if (!environmentId) throw badRequest("Choose an execution environment", chooseEnvironmentNext);
+    const environmentId = existing?.environmentId ?? workspace.backing.ownerEnvironmentId;
     if (specialist && !existing) {
       const environment = await this.#store.getEnvironment(environmentId);
-      if (!environment) throw badRequest(unknownEnvironment, chooseEnvironmentNext);
+      if (!environment) throw badRequest(unknownEnvironment, chooseExecutionNext);
       const placement = await this.#specialistPlacement({
         userId: caller.userId,
         environmentId: environment.id,
@@ -1482,7 +1743,7 @@ export class ProductToolHandlers {
     const automatic = named ? null : await this.#automaticDefault(caller.userId, environmentId);
     const harnessInstanceId = named ?? automatic?.harnessInstanceId;
     if (!harnessInstanceId)
-      throw badRequest("Choose harnessInstanceId for the new task", chooseEnvironmentNext);
+      throw badRequest("Choose harnessInstanceId for the new task", chooseExecutionNext);
     const modelSelection =
       existing?.modelSelection ??
       input.model ??
@@ -1491,7 +1752,7 @@ export class ProductToolHandlers {
       catalogDefaultModelSelection(
         await this.#store.getHarnessCatalog(environmentId, harnessInstanceId),
       );
-    if (!modelSelection) throw badRequest("Choose a model for the new task", chooseEnvironmentNext);
+    if (!modelSelection) throw badRequest("Choose a model for the new task", chooseExecutionNext);
     return {
       existing,
       workspace,
@@ -1643,78 +1904,193 @@ export class ProductToolHandlers {
   }
   async thread_wait(call: ToolCall<"thread_wait">) {
     const { caller, input } = call;
-    let runId: import("@opensteer/core").RunId | undefined;
-    let afterSequence: import("@opensteer/core").Sequence | undefined;
-    const wait = new ThreadWaitService({
-      subscribe: (wake) => {
-        const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
-        const detach = this.#realtime.observe((change) => {
-          if (
-            // Revocation ends a connection's whole session, so the service owns that wake.
-            ("threadId" in change &&
-              (change.threadId === input.threadId || change.threadId === anchorId)) ||
-            change.type === "host.machines.changed" ||
-            (caller.kind === "program" && change.type === "host.triggers-changed")
-          )
-            wake();
-        });
-        const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
-          if (membership.userId === caller.userId) wake();
-        });
-        return () => {
-          detach();
-          detachMembership();
-        };
-      },
-      read: async () => {
-        await call.checkLive?.();
-        const thread = await this.#store.getThreadForOwner(input.threadId, caller.userId);
-        if (!thread) throw forbidden("Thread is unavailable");
-        assertTarget(caller, thread);
-        await withDatabaseTransaction(this.#store.database, (tx) =>
-          assertThreadCaller(tx, threadCallerAuthority(caller)),
+    // A caller waiting on the conversation of a task it assigned is waiting on that task: the
+    // result it is handed must not also return to it by itself.
+    const own = input.threadId ? await this.#assignedTask(caller, input.threadId) : undefined;
+    const assignmentId = input.assignmentId ?? (input.afterMessageId ? undefined : own);
+    const assignment = assignmentId
+      ? await this.#store.getAssignmentForOwner({ assignmentId, ownerId: caller.userId })
+      : null;
+    if (assignmentId && !assignment) throw forbidden("Assignment is unavailable");
+    const threadId = assignment?.workerThreadId ?? input.threadId!;
+    await this.#assertWaitTarget(caller, threadId);
+    // Watching its own task's messages holds that task's return too: it reads the result at the end.
+    const held = assignment?.id ?? own;
+    const waitId = held
+      ? await beginAssignmentResultWait(this.#store.database, {
+          assignmentId: held,
+          authority: threadCallerAuthority(caller),
+          timeoutMs: input.timeoutMs,
+          ...(call.signal ? { signal: call.signal } : {}),
+        })
+      : null;
+    try {
+      let runId: import("@opensteer/core").RunId | undefined;
+      let afterSequence: import("@opensteer/core").Sequence | undefined;
+      const wait = new ThreadWaitService({
+        subscribe: (wake) => {
+          const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
+          const detach = this.#realtime.observe((change) => {
+            if (
+              // Revocation ends a connection's whole session, so the service owns that wake.
+              ("threadId" in change &&
+                (change.threadId === threadId || change.threadId === anchorId)) ||
+              change.type === "host.machines.changed" ||
+              (caller.kind === "program" && change.type === "host.triggers-changed")
+            )
+              wake();
+          });
+          const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
+            if (membership.userId === caller.userId) wake();
+          });
+          return () => {
+            detach();
+            detachMembership();
+          };
+        },
+        read: async () => {
+          await call.checkLive?.();
+          const thread = await this.#store.getThreadForOwner(threadId, caller.userId);
+          if (!thread) throw forbidden("Thread is unavailable");
+          assertTarget(caller, thread);
+          await this.#assertWaitTarget(caller, threadId);
+          await withDatabaseTransaction(this.#store.database, (tx) =>
+            assertThreadCaller(tx, threadCallerAuthority(caller)),
+          );
+          const snapshot = await readThreadWaitSnapshot(this.#store.database, {
+            threadId: thread.id,
+            userId: caller.userId,
+            ...(!assignment && runId ? { runId } : {}),
+            ...(assignment ? { assignmentId: assignment.id } : {}),
+            ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
+            ...(!assignment && afterSequence ? { afterSequence } : {}),
+          });
+          runId ??= snapshot.run?.id;
+          afterSequence ??= snapshot.lastSequence ?? zeroSequence;
+          const task = assignment
+            ? await this.#store.getAssignmentForOwner({
+                assignmentId: assignment.id,
+                ownerId: caller.userId,
+              })
+            : null;
+          if (assignment && !task) throw forbidden("Assignment is unavailable");
+          const connection =
+            caller.kind === "connection"
+              ? await this.#store.database
+                  .selectFrom("agentConnections")
+                  .select("expiresAt")
+                  .where("id", "=", caller.connectionId)
+                  .executeTakeFirst()
+              : undefined;
+          await call.checkLive?.();
+          return {
+            ...snapshot,
+            ...(task ? { settled: task.status !== "open", messages: [] } : {}),
+            ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
+            connected: this.#isEnvironmentConnected(thread.environmentId),
+            messages: assignment ? [] : await this.#readableMessages(caller, snapshot.messages),
+          };
+        },
+      });
+      const finishWait =
+        caller.kind === "run" ? this.#questionNotices?.wait(caller.thread.id, threadId) : undefined;
+      const result = await wait
+        .wait({
+          timeoutMs: input.timeoutMs,
+          ...(call.signal ? { signal: call.signal } : {}),
+        })
+        .then(
+          (result) => {
+            finishWait?.(result.pendingRequest?.id);
+            return result;
+          },
+          (error: unknown) => {
+            finishWait?.();
+            throw error;
+          },
         );
-        const snapshot = await readThreadWaitSnapshot(this.#store.database, {
-          threadId: thread.id,
-          userId: caller.userId,
-          ...(runId ? { runId } : {}),
-          ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
-          ...(afterSequence ? { afterSequence } : {}),
-        });
-        runId ??= snapshot.run?.id;
-        afterSequence ??= snapshot.lastSequence ?? zeroSequence;
-        const connection =
-          caller.kind === "connection"
-            ? await this.#store.database
-                .selectFrom("agentConnections")
-                .select("expiresAt")
-                .where("id", "=", caller.connectionId)
-                .executeTakeFirst()
-            : undefined;
-        await call.checkLive?.();
-        return {
-          ...snapshot,
-          ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
-          connected: this.#isEnvironmentConnected(thread.environmentId),
-          messages: await this.#readableMessages(caller, snapshot.messages),
-        };
-      },
-    });
-    const result = await wait.wait({
-      timeoutMs: input.timeoutMs,
-      ...(call.signal ? { signal: call.signal } : {}),
-    });
-    // Oldest first, so the last item is where the next wait resumes.
-    const items = boundedThreadItems(
-      result.messages.map((message) => messageItem(message, 20_000)),
-    );
-    return {
-      status: result.status,
-      ...(result.run ? { run: result.run } : {}),
-      ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
-      items,
-      hasMore: result.hasMore === true || items.length < result.messages.length,
-    };
+      await call.checkLive?.();
+      const target = await this.#store.getThreadForOwner(threadId, caller.userId);
+      if (!target) throw forbidden("Thread is unavailable");
+      assertTarget(caller, target);
+      await withDatabaseTransaction(this.#store.database, (tx) =>
+        assertThreadCaller(tx, threadCallerAuthority(caller), { threadId, readOnly: true }),
+      );
+      // Watching its own task's messages hands the caller the final reply too, once it has settled.
+      const settled = assignment?.id ?? (result.status === "settled" ? own : undefined);
+      const task =
+        settled && result.status === "settled"
+          ? await readAssignmentResult(this.#store.database, {
+              assignmentId: settled,
+              authority: threadCallerAuthority(caller),
+              ...(call.signal ? { signal: call.signal } : {}),
+            })
+          : undefined;
+      if (task) for (const event of task.events) this.#onWorkspaceEvent(event);
+      // Oldest first, so the last item is where the next wait resumes.
+      const items = boundedThreadItems(
+        result.messages.map((message) => messageItem(message, 20_000)),
+      );
+      return {
+        status: result.status,
+        ...(task ? { task: taskItem(task.assignment, task.result) } : {}),
+        ...(result.run ? { run: result.run } : {}),
+        ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
+        items,
+        hasMore: result.hasMore === true || items.length < result.messages.length,
+      };
+    } finally {
+      if (held && waitId) {
+        const events = await withoutDatabaseOperationSignal(() =>
+          endAssignmentResultWait(this.#store.database, { assignmentId: held, waitId }),
+        );
+        for (const event of events) this.#onWorkspaceEvent(event);
+      }
+    }
+  }
+  /** The newest task on `threadId` that this very caller assigned, if it assigned one. */
+  async #assignedTask(caller: AgentCaller, threadId: Thread["id"]) {
+    if (caller.kind === "connection") return undefined;
+    const authority = threadCallerAuthority(caller);
+    if (authority.kind === "connection") return undefined;
+    const row = await this.#store.database
+      .selectFrom("delegations")
+      .select("id")
+      .where("childThreadId", "=", threadId)
+      .where(
+        authority.kind === "run"
+          ? "parentRunId"
+          : authority.kind === "trigger"
+            ? "parentOccurrenceId"
+            : "parentWatchActivationId",
+        "=",
+        authority.kind === "run"
+          ? authority.scope.runId
+          : authority.kind === "trigger"
+            ? authority.scope.occurrenceId
+            : authority.scope.activationId,
+      )
+      .orderBy("createdAt", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    return row?.id;
+  }
+  async #assertWaitTarget(caller: AgentCaller, threadId: Thread["id"]) {
+    if (caller.kind === "connection") return;
+    let current: Thread["id"] | null = callerThread(caller).id;
+    const visited = new Set<string>();
+    while (current && !visited.has(current)) {
+      if (current === threadId)
+        throw badRequest("Cannot wait on yourself or a conversation you are working for");
+      visited.add(current);
+      const assigned = await this.#store.database
+        .selectFrom("delegations")
+        .select("parentThreadId")
+        .where("childThreadId", "=", current)
+        .where("status", "=", "open")
+        .executeTakeFirst();
+      current = assigned?.parentThreadId ?? null;
+    }
   }
   async #reachableThread(caller: AgentCaller, threadId?: Thread["id"]) {
     const thread = await this.#store.getThreadForOwner(
@@ -1760,8 +2136,11 @@ function agentRequest(request: Request) {
     originatingThreadId: request.originatingThreadId,
     targetWorkspaceId: request.targetWorkspaceId,
     createdAt: request.createdAt,
+    revision: requestRevision(request),
     settlementProvenance: request.settlementProvenance
-      ? { deviceLabel: request.settlementProvenance.deviceLabel }
+      ? "kind" in request.settlementProvenance
+        ? request.settlementProvenance
+        : { deviceLabel: request.settlementProvenance.deviceLabel }
       : request.settlementProvenance,
   };
 }

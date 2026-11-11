@@ -457,6 +457,7 @@ export interface ToolEntry {
   nodeId?: string;
   /** Undefined until the call completes; canonical text is ready for every client. */
   output: ToolOutput | undefined;
+  outputPreview?: { bytes: number; cut: boolean; digest: string } | undefined;
   runId: string | null;
   /**
    * `failed` is the tool's own report of an error. `stopped` is a call the Run
@@ -578,15 +579,23 @@ export interface DeliveryEntry {
 }
 
 /**
- * A subagent the Run's engine started. Its tool calls are entries naming it by
- * `nodeId`; its own text is not a message, and `result` is what it returned.
+ * A helper's card in the conversation. Its own work is read only through a node watch.
  */
 export interface NodeEntry {
+  /** Its engine can stop it without stopping the Run. */
+  stopSupported?: boolean;
+  stopping?: boolean;
+  sequence?: import("@opensteer/core").Sequence;
   completedAt: string | null;
   createdAt: string;
   id: string;
   kind: "node";
   model: string | null;
+  effort: string | null;
+  nodeKind: import("@opensteer/core").ExecutionNodeKind;
+  phaseIndex: number | null;
+  phases: readonly string[];
+  progress: string | null;
   nodeId: string;
   /** The tool call of the agent that started it, which the subagent stands for. */
   originCallId: string | null;
@@ -1222,6 +1231,7 @@ export interface HostClient {
    * Returns the release; holds are counted.
    */
   observeThread(threadId: string): () => void;
+  watchNode(threadId: string, nodeId: string): import("./node-detail.js").NodeDetailSubscription;
   /**
    * How far this client has applied the Workspace's durable events, in the
    * Host's own sequence; null until its channel has caught up. Later durable
@@ -1458,6 +1468,7 @@ export interface HostClient {
    */
   steerThreadInput(threadId: string, messageId: string): Promise<void>;
   stopRun(threadId: string): Promise<void>;
+  stopNode(threadId: string, nodeId: string): Promise<void>;
   subscribe(listener: () => void): () => void;
   /** Moves a Thread to another access mode; remembered once the Host accepts. */
   updateThreadAccess(threadId: string, accessMode: ThreadAccessMode): Promise<ThreadSummary>;

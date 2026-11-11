@@ -1,5 +1,6 @@
 import {
   OpensteerError,
+  type AssignmentId,
   type MessageId,
   type RunId,
   type ThreadId,
@@ -23,6 +24,7 @@ export function readThreadWaitSnapshot(
     readonly afterMessageId?: MessageId;
     readonly afterSequence?: Sequence;
     readonly runId?: RunId;
+    readonly assignmentId?: AssignmentId;
   },
 ) {
   return withDatabaseTransaction(
@@ -75,20 +77,29 @@ export function readThreadWaitSnapshot(
               .limit(101)
               .execute();
       const kept = boundedSerializedPrefix(messages.map(messageFromRow), 100, 400 * 1024).items;
-      const runQuery = tx
+      let runQuery = tx
         .selectFrom("runs")
         .select(["id", "status"])
         .where("threadId", "=", input.threadId);
+      if (input.assignmentId) runQuery = runQuery.where("assignmentId", "=", input.assignmentId);
       const run = await (
         input.runId
           ? runQuery.where("id", "=", input.runId)
           : runQuery.orderBy("runOrdinal", "desc").limit(1)
       ).executeTakeFirst();
-      const pendingRequest = await tx
+      let requestQuery = tx
         .selectFrom("requests")
         .select(["id", "kind"])
         .where("originatingThreadId", "=", input.threadId)
-        .where("status", "=", "pending")
+        .where("status", "=", "pending");
+      if (input.assignmentId)
+        requestQuery = requestQuery.where("originatingRunId", "in", (eb) =>
+          eb
+            .selectFrom("runs")
+            .select("runs.id")
+            .where("runs.assignmentId", "=", input.assignmentId!),
+        );
+      const pendingRequest = await requestQuery
         .orderBy("createdAt", "asc")
         .limit(1)
         .executeTakeFirst();

@@ -23,7 +23,9 @@ export * from "./use-browser-agent-follow.js";
 export * from "./use-thread-server-approvals.js";
 export * from "./use-team.js";
 export * from "./use-paged-list.js";
+export * from "./use-tool-output.js";
 
 export * from "./use-browser-tabs.js";
 export * from "./use-browser-tab-icon.js";
 export * from "./use-syncing-placeholder.js";
+export * from "./use-tab-filter.js";

@@ -638,13 +638,13 @@ describe("task titles", () => {
 
   it("updates a delegated task line when its worker is renamed", async () => {
     await mount("/");
-    const card = element<HTMLAnchorElement>(".task-line__open");
+    const card = element<HTMLAnchorElement>(".agent-row__open");
     const worker = card.getAttribute("href")!.match(/threads\/([^?]+)/u)![1]!;
     await act(async () => {
       await client.renameThread(worker, "Renamed delegated task");
     });
     await settle();
-    expect(element(".task-line__title").textContent).toBe("Renamed delegated task");
+    expect(element(".agent-row__open").textContent).toBe("Renamed delegated task");
   });
 
   it("refreshes a completed task line from a higher assignment revision without holding its worker", async () => {
@@ -664,13 +664,13 @@ describe("task titles", () => {
       await vi.waitFor(() =>
         expect(
           Object.values(client.getSnapshot().assignments).some(
-            (assignment) => assignment.status === "completed",
+            (assignment) => assignment.status === "completed" && assignment.parentThreadId === home,
           ),
         ).toBe(true),
       );
     });
     const assignment = Object.values(client.getSnapshot().assignments).find(
-      (assignment) => assignment.status === "completed",
+      (assignment) => assignment.status === "completed" && assignment.parentThreadId === home,
     )!;
     expect(assignment).toBeDefined();
     const worker = assignment.workerThread.id;
@@ -689,8 +689,7 @@ describe("task titles", () => {
       await goTo!("/?unheld=1");
     });
     expect(client.getSnapshot().threads.some(({ id }) => id === worker)).toBe(false);
-    const cardTitle = () =>
-      element(`.task-line__open[href*="${worker}"] .task-line__title`).textContent;
+    const cardTitle = () => element(`.agent-row__open[href*="${worker}"]`).textContent;
     expect(cardTitle()).toBe(assignment.workerThread.title);
     await act(async () => {
       await client.renameThread(worker, "Guest room mattress");

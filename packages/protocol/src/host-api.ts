@@ -1,3 +1,4 @@
+import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, TeamCommandResultSchema, teamReadSchemas } from "./team-access.js";
 import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
@@ -63,6 +64,7 @@ import {
   BrowserSourceIdSchema,
   BrowserSurfaceIdSchema,
   EnvironmentIdSchema,
+  ExecutionNodeIdSchema,
   ExecutionNodeViewSchema,
   ExecutionPreferencesViewSchema,
   ExecutionSelectionSchema,
@@ -220,6 +222,7 @@ import {
   DurableWindowCursorSchema,
   DurableWindowSchema,
   TaskPageSchema,
+  NodeEventPageSchema,
   ThreadEventPageSchema,
   ThreadMessagePageSchema,
   WorkspaceCatalogPageSchema,
@@ -642,6 +645,13 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     runId: RunIdSchema,
     threadId: ThreadIdSchema,
     type: z.literal("run.interrupt"),
+  }),
+  z.strictObject({
+    type: z.literal("node.stop"),
+    idempotencyKey: idempotencyKeySchema,
+    nodeId: ExecutionNodeIdSchema,
+    threadId: ThreadIdSchema,
+    runId: RunIdSchema,
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1324,6 +1334,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
+  z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
   z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),
@@ -2052,6 +2063,16 @@ export const hostApi = defineRpc({
     emptyInputSchema,
     z.object({ sessions: z.array(AuthSessionSummaryViewSchema).max(100) }),
   ),
+  "tool.output.get": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      runId: RunIdSchema,
+      callId: z.string().min(1),
+      nodeId: ExecutionNodeIdSchema.optional(),
+    }),
+    z.object({ output: ToolOutputViewSchema }),
+  ),
   "thread.events.list": declaration(
     "GET",
     z
@@ -2059,6 +2080,7 @@ export const hostApi = defineRpc({
         threadId: ThreadIdSchema,
         aroundMessageId: MessageIdSchema.optional(),
         placeEvents: z.literal("include").optional(),
+        toolOutputs: z.literal("preview").optional(),
         /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
         turns: z.number().int().positive().max(turnPageMaxTurns).optional(),
       })
@@ -2072,6 +2094,22 @@ export const hostApi = defineRpc({
         "A turn page sets its own size",
       ),
     ThreadEventPageSchema,
+  ),
+  /**
+   * One subagent's own events through `through`, the sequence its watch
+   * began after. Needs `node-detail-v1`.
+   */
+  "node.events.list": declaration(
+    "GET",
+    z
+      .strictObject({
+        nodeId: ExecutionNodeIdSchema,
+        threadId: ThreadIdSchema,
+        toolOutputs: z.literal("preview").optional(),
+        through: SequenceSchema.optional(),
+      })
+      .extend(durablePageInputSchema.shape),
+    NodeEventPageSchema,
   ),
   "thread.assignments.list": declaration(
     "GET",

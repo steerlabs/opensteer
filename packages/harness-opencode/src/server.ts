@@ -148,16 +148,11 @@ export class OpencodeServer {
 
   static async #startOnce(options: OpencodeServerOptions): Promise<OpencodeServer> {
     const password = randomBytes(24).toString("base64url");
-    const {
-      // Background subagents would outlive the turn that started them.
-      OPENCODE_EXPERIMENTAL: _experimental,
-      OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: _backgroundSubagents,
-      ...inherited
-    } = options.environment ?? {};
     const environment = {
-      ...inherited,
+      ...options.environment,
       ...opencodeDisableEnvironment,
       ...(options.disableModelsFetch ? { OPENCODE_DISABLE_MODELS_FETCH: "1" } : {}),
+      OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS: "true",
       OPENCODE_SERVER_PASSWORD: password,
       XDG_CACHE_HOME: options.cacheHome,
       XDG_CONFIG_HOME: options.configHome,
@@ -246,7 +241,7 @@ export class OpencodeServer {
 
   /** One v1 request. `directory` is a query parameter on every v1 route, not a body field. */
   async request(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     path: string,
     options: {
       readonly body?: unknown;
@@ -379,7 +374,7 @@ export class OpencodeServer {
   }
 
   async #fetch(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     path: string,
     options: {
       readonly accept?: string;

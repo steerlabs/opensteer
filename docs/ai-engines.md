@@ -70,6 +70,18 @@ subscription charges; never invent prices or show an unknown zero price as free.
 native subagents. Codex reports cumulative thread totals across warm Runs and resume, so count only
 growth for this Run's turns, without recharging history after compaction resets.
 
+What a native subagent says, thinks and calls is reported against its node through
+[`SubagentNodes`](../packages/harness/src/subagent-nodes.ts), never as the Run's own. An event a
+driver cannot tie to a child belongs to the Run, never to a guessed child. OpenCode may run custom,
+nested and background subagents only because each child session is given its parent's permission
+rules, seeded with deny-all and keeping only the child's own refusals
+([`opencodeChildPermissionRules`](../packages/harness-opencode/src/configuration.ts)); that holds
+while project-level OpenCode config stays disabled. A Claude Workflow member's transcript is read
+only inside the Run's own session directory
+([workflow-transcript.ts](../packages/harness-claude/src/workflow-transcript.ts)). Replay tests
+prove attribution; only `pnpm test:engines` proves a workflow's processes stay inside the Run's
+containment.
+
 ## Engine releases and new models
 
 Use [upgrade-engines](../.agents/skills/upgrade-engines/SKILL.md) to bump pins, qualify real

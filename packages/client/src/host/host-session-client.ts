@@ -2,6 +2,9 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
 import { BrowserTabStore } from "./browser-tab-store.js";
 import { BrowserSnapshotDerivation, workspaceTabLineage } from "./browser-snapshot.js";
+import { catalogModelDisplayName } from "./model-catalog.js";
+import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
+import { executionNodeEntry } from "./subagent-model.js";
 import { hostDeploymentPolicy } from "./deployment-policy.js";
 import { AppTabSchema } from "@opensteer/protocol";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
@@ -20,7 +23,7 @@ import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
 import { browserTabOrderTabs } from "./browser-tab-order.js";
 import { BrowserTabGroupClient } from "./browser-tab-groups.js";
-import type { HostCapability } from "@opensteer/deployment-authority";
+import type { HostCapability as AuthorityHostCapability } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "./surfaces.js";
 import { BrowserHistoryClient } from "./browser-history.js";
 import type { BrowserPreferencesStorage } from "./browser-preferences.js";
@@ -29,6 +32,8 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   RunnerIdSchema,
+  ExecutionNodeIdSchema,
+  nodeDetailEventNodeId,
   type QuietTaskDays,
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,
@@ -168,6 +173,8 @@ import {
   realtimeFrameLoss,
 } from "./realtime-frames.js";
 
+type HostCapability = AuthorityHostCapability | "node-detail-v1";
+
 const defaultRefreshIntervalMs = 15_000;
 const historyPageTurns = 10;
 const historyScanMaxPages = 20;
@@ -193,7 +200,7 @@ const realtimeLiveEnvelopeSchema = z.object({
   }),
 });
 const realtimeLiveKindSchema = z.object({
-  stream: z.enum(["assistant", "reasoning", "tool"]),
+  stream: z.enum(["assistant", "reasoning", "tool", "node"]),
   op: z.enum(["append", "replace"]),
 });
 type RealtimeEvent = AgentEvent | (z.infer<typeof realtimeEventPositionSchema> & { type: null });
@@ -581,7 +588,9 @@ export class HttpHostClient {
       this.#baseUrl,
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
-    const passkeys = this.browserPasskeys.optIn(this.#capabilities);
+    const passkeys = this.browserPasskeys.optIn(
+      this.#capabilities?.filter((capability) => capability !== "node-detail-v1"),
+    );
     if (mode === "control" && passkeys) url.searchParams.set("passkeys", passkeys);
     if (mode === "control") {
       url.searchParams.set("popups", "1");
@@ -870,6 +879,36 @@ export class HttpHostClient {
   >();
   /** The authority for `snapshot.runQueue`, reconciled across events, reads and answers. */
   readonly #runQueue = new RunQueueProjection();
+  readonly #nodeDetails = new NodeDetailStore({
+    available: () => this.#capabilities?.includes("node-detail-v1") === true,
+    nodes: (threadId) =>
+      (this.#snapshot.transcripts[threadId] ?? []).filter((entry) => entry.kind === "node"),
+    readNodes: (runId) => this.#readRunNodes(runId),
+    read: async (input) => {
+      const page = unwrapRpcResult(
+        await this.rpc["node.events.list"]({
+          ...(this.#capabilities?.includes("tool-output-detail-v1")
+            ? { toolOutputs: "preview" as const }
+            : {}),
+          ...input,
+          nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
+        }),
+      );
+      if (page.threadId !== input.threadId || page.nodeId !== input.nodeId)
+        throw new Error("Node event page mismatch.");
+      return page;
+    },
+    sendWatch: (workspaceId, nodeId) => {
+      const channel = this.#channels.get(workspaceId);
+      if (!channel?.synchronized || channel.socket?.readyState !== 1) return false;
+      try {
+        channel.socket.send(JSON.stringify({ type: "client.watch-node", workspaceId, nodeId }));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
   /** What each active Run is streaming, the authority for every live entry drawn. */
   readonly #live = new LiveStreamLedger();
   /** Threads whose streams are reread whole, one read at a time per Thread. */
@@ -1710,6 +1749,34 @@ export class HttpHostClient {
     return channel?.synchronized ? channel.cursor : null;
   }
 
+  watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
+    const workspaceId = this.#threadWorkspace.get(threadId);
+    if (!workspaceId) throw new Error("Open the conversation before its subagent.");
+    ExecutionNodeIdSchema.parse(nodeId);
+    const releaseThread = this.observeThread(threadId);
+    const detail = this.#nodeDetails.open(threadId, nodeId, workspaceId);
+    let held = true;
+    const releaseThreadOnce = () => {
+      if (!held) return;
+      held = false;
+      releaseThread();
+    };
+    const unsubscribe = detail.subscribe(() => {
+      if (detail.getSnapshot().status === "closed") {
+        queueMicrotask(releaseThreadOnce);
+        unsubscribe();
+      }
+    });
+    return {
+      ...detail,
+      release: () => {
+        detail.release();
+        releaseThreadOnce();
+        unsubscribe();
+      },
+    };
+  }
+
   observeThread(threadId: string): () => void {
     const opened = !this.#showsThread(threadId);
     this.#observedThreads.set(threadId, (this.#observedThreads.get(threadId) ?? 0) + 1);
@@ -2281,6 +2348,9 @@ export class HttpHostClient {
     await scan?.promise;
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
+        ...(this.#capabilities?.includes("tool-output-detail-v1")
+          ? { toolOutputs: "preview" as const }
+          : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
@@ -2523,7 +2593,17 @@ export class HttpHostClient {
         throw new Error("The connection changed while loading this conversation. Try again.");
       const { history, page, window, complete } = latest;
       this.#allowWorkspace(page.thread.workspaceId, generation);
+      const activeNodes = await this.#readActiveNodes(threadId);
+      if (!this.#viewerStillCurrent(generation, userId)) return;
       let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
+      const loadedNodeIds = new Set(
+        entries.filter((entry) => entry.kind === "node").map((node) => node.nodeId),
+      );
+      for (const node of activeNodes) {
+        if (loadedNodeIds.has(node.nodeId)) continue;
+        const index = entries.findIndex((entry) => entry.createdAt > node.createdAt);
+        entries.splice(index < 0 ? entries.length : index, 0, node);
+      }
       const replayed = buffer.filter(
         (event) => compareSequence(event.sequence, page.readState.asOfSequence) > 0,
       );
@@ -2635,6 +2715,21 @@ export class HttpHostClient {
     };
   }
 
+  async #readActiveNodes(threadId: string) {
+    const runs = this.#snapshot.runQueue.filter(
+      (run) => run.threadId === threadId && run.status !== "queued",
+    );
+    const pages = await Promise.all(runs.map((run) => this.#readRunNodes(run.id)));
+    return pages.flat();
+  }
+
+  async #readRunNodes(runId: string) {
+    const result = unwrapRpcResult(
+      await this.rpc["run.attempts.list"]({ runId: RunIdSchema.parse(runId) }),
+    );
+    return result.nodes.map(executionNodeEntry);
+  }
+
   /** How many rows a Thread's transcript draws once its history is settled. */
   #drawnRowCount(
     thread: Pick<ThreadSummary, "id" | "role" | "inputQueuePaused">,
@@ -2652,6 +2747,9 @@ export class HttpHostClient {
   async #readThreadHistory(threadId: string, before?: string) {
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
+        ...(this.#capabilities?.includes("tool-output-detail-v1")
+          ? { toolOutputs: "preview" as const }
+          : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
@@ -3055,6 +3153,27 @@ export class HttpHostClient {
     await this.rememberExecution(choice).catch(() => undefined);
   }
 
+  async stopNode(threadId: string, nodeId: string): Promise<void> {
+    const node = this.#snapshot.transcripts[threadId]?.find(
+      (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+    );
+    if (
+      node?.kind !== "node" ||
+      !node.runId ||
+      !node.stopSupported ||
+      node.stopping ||
+      node.status !== "running"
+    )
+      throw new Error("This subagent cannot be stopped.");
+    await this.dispatch({
+      type: "node.stop",
+      nodeId: ExecutionNodeIdSchema.parse(nodeId),
+      threadId,
+      runId: RunIdSchema.parse(node.runId),
+      idempotencyKey: mutationIdempotencyKey("node-stop"),
+    });
+  }
+
   async stopRun(threadId: string): Promise<void> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");
@@ -3251,6 +3370,7 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.#nodeDetails.clear();
     this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
     this.#clearInterruptionHold();
@@ -3665,6 +3785,7 @@ export class HttpHostClient {
       capabilities.length !== this.#capabilities.length ||
       capabilities.some((capability) => !this.#capabilities?.includes(capability));
     this.#capabilities = [...capabilities];
+    this.#nodeDetails.capabilitiesChanged();
     this.#update({
       ...this.#snapshot,
       threadRenameAvailable: capabilities.includes("thread-titles-v1"),
@@ -4320,6 +4441,9 @@ export class HttpHostClient {
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
+            ...(this.#capabilities?.includes("tool-output-detail-v1")
+              ? { toolOutputs: "preview" }
+              : {}),
             ...(this.#capabilities?.includes("place-events-v1")
               ? { placeEvents: "include" as const }
               : {}),
@@ -4365,6 +4489,7 @@ export class HttpHostClient {
       channel.socket = null;
       channel.synchronized = false;
       this.#releaseBrowserCarrier(channel);
+      this.#nodeDetails.disconnected(channel.workspaceId);
       this.#scheduleReconnect(channel);
       this.#recomputeConnection();
     });
@@ -4463,7 +4588,7 @@ export class HttpHostClient {
       const items = live.progress.items.flatMap((raw, index) => {
         const kind = z.object({ stream: z.string().min(1), op: z.string().min(1) }).parse(raw);
         if (
-          !["assistant", "reasoning", "tool"].includes(kind.stream) ||
+          !["assistant", "reasoning", "tool", "node"].includes(kind.stream) ||
           !["append", "replace"].includes(kind.op)
         ) {
           const parsed = realtimeLiveKindSchema.safeParse(raw);
@@ -4674,6 +4799,11 @@ export class HttpHostClient {
       this.#applyWorkspaceSnapshot(message.snapshot);
       return;
     }
+    if (message.type === "host.node-watched") {
+      if (message.workspaceId === channel.workspaceId)
+        this.#nodeDetails.watched(message.workspaceId, message.nodeId, message.sequence);
+      return;
+    }
     if (message.type === "host.events") {
       this.#applyEvents(channel, message.events);
       this.#sendAck(channel);
@@ -4773,6 +4903,7 @@ export class HttpHostClient {
     }
     const reconnected = channel.reconnectAttempt > 0 || channel.unreadableFrames > 0;
     channel.synchronized = true;
+    this.#nodeDetails.connected(channel.workspaceId);
     channel.reconnectAttempt = 0;
     channel.unreadableFrames = 0;
     this.#invalidatePersonalRemoteAccess();
@@ -4985,6 +5116,7 @@ export class HttpHostClient {
   }
 
   #drawLive(input: LiveProgressInput): void {
+    this.#nodeDetails.acceptLive(input);
     const { changed, gap } = this.#live.apply(input);
     const threadId = input.progress.threadId;
     const retained = this.#showsThread(threadId) || this.#hydratedThreads.has(threadId);
@@ -5082,6 +5214,12 @@ export class HttpHostClient {
     for (const event of events) {
       if (compareSequence(event.sequence, channel.cursor) <= 0) continue;
       if (event.type === null) {
+        channel.cursor = event.sequence;
+        continue;
+      }
+      this.#nodeDetails.accept(event);
+      if (nodeDetailEventNodeId(event)) {
+        this.#live.complete(event);
         channel.cursor = event.sequence;
         continue;
       }
@@ -5195,6 +5333,7 @@ export class HttpHostClient {
     channel.socket = null;
     channel.synchronized = false;
     this.#releaseBrowserCarrier(channel);
+    this.#nodeDetails.disconnected(channel.workspaceId);
     if (reconnect) this.#scheduleReconnect(channel);
     try {
       socket?.close(code, reason);
@@ -5453,6 +5592,7 @@ export class HttpHostClient {
 
   #expireSession(): void {
     this.#browserCarrier = null;
+    this.#nodeDetails.clear();
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.#savedViewReadiness = emptySavedViewReadiness();
@@ -5540,6 +5680,7 @@ export class HttpHostClient {
   }
 
   #refuseWorkspace(workspaceId: string): void {
+    this.#nodeDetails.forgetWorkspace(workspaceId);
     this.#savedViewReadiness = {
       ...emptySavedViewReadiness(),
       workspaceRefusal: this.#savedViewReadiness.workspaceRefusal + 1,
@@ -5697,6 +5838,7 @@ export class HttpHostClient {
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
       for (const check of this.#browserWaiters) check();
+      this.#nodeDetails.clear();
       this.#runPlaces.clear();
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
@@ -5919,6 +6061,7 @@ export class HttpHostClient {
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();
+    this.#nodeDetails.refreshNodes();
     this.browserHistory.setConnected(this.#snapshot.connection === "connected");
     for (const listener of this.#listeners) listener();
     this.#checkBrowserUsageRuns();
@@ -6571,17 +6714,10 @@ function modelLabel(
   selection: Thread["modelSelection"],
   environments: readonly EnvironmentSummary[],
 ): string {
-  for (const environment of environments) {
-    for (const catalog of environment.harnessCatalogs) {
-      if (catalog.status !== "ready") continue;
-      const model = catalog.models.find(
-        (candidate) =>
-          candidate.providerId === selection.providerId && candidate.modelId === selection.modelId,
-      );
-      if (model) return model.displayName;
-    }
-  }
-  return selection.modelId;
+  return (
+    catalogModelDisplayName(selection.modelId, environments, selection.providerId) ??
+    selection.modelId
+  );
 }
 
 function patchThread(

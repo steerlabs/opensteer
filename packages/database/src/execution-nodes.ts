@@ -5,7 +5,7 @@ import {
   type RunAttemptId,
   type RunId,
 } from "@opensteer/core";
-import type { Kysely, Selectable, Transaction } from "kysely";
+import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema, ExecutionNodeTable } from "./schema.js";
 
 export type ExecutionNodeRow = Selectable<ExecutionNodeTable>;
@@ -30,7 +30,11 @@ export async function startExecutionNode(
     .insertInto("executionNodes")
     .values({
       attemptId: input.attemptId,
+      stopSupported: node.stopSupported ?? false,
       endedAt: null,
+      effort: node.effort ?? null,
+      phaseIndex: node.phaseIndex ?? null,
+      phases: sql`${JSON.stringify([])}::jsonb`,
       id: node.nodeId,
       kind: node.kind,
       model: node.model,
@@ -54,9 +58,43 @@ export async function updateExecutionNode(
   update: EventData<"node.updated">,
 ): Promise<void> {
   await requireRunNode(transaction, runId, update.nodeId);
+  if (update.stopping !== undefined)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Runner event cannot say a subagent is stopping",
+    });
+  if (update.parentNodeId !== undefined) {
+    await requireRunNode(transaction, runId, update.parentNodeId);
+    const node = await transaction
+      .selectFrom("executionNodes")
+      .select("parentNodeId")
+      .where("id", "=", update.nodeId)
+      .executeTakeFirstOrThrow();
+    const ancestors = await sql<{ id: ExecutionNodeId }>`
+      with recursive ancestors as (
+        select id, parent_node_id from execution_nodes where id = ${update.parentNodeId}
+        union
+        select node.id, node.parent_node_id from execution_nodes node
+        join ancestors on node.id = ancestors.parent_node_id
+      ) select id from ancestors where id = ${update.nodeId}
+    `.execute(transaction);
+    if (node.parentNodeId !== null || ancestors.rows.length > 0) {
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Runner event cannot change this subagent's parent",
+      });
+    }
+  }
   await transaction
     .updateTable("executionNodes")
     .set({
+      ...(update.effort === undefined ? {} : { effort: update.effort }),
+      ...(update.stopSupported === undefined ? {} : { stopSupported: update.stopSupported }),
+      ...(update.parentNodeId === undefined ? {} : { parentNodeId: update.parentNodeId }),
+      ...(update.phaseIndex === undefined ? {} : { phaseIndex: update.phaseIndex }),
+      ...(update.phases === undefined
+        ? {}
+        : { phases: sql`${JSON.stringify(update.phases)}::jsonb` }),
       ...(update.model === undefined ? {} : { model: update.model }),
       ...(update.originCallId === undefined ? {} : { originCallId: update.originCallId }),
       ...(update.prompt === undefined ? {} : { prompt: update.prompt }),

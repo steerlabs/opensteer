@@ -1,7 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import {
   placeDestinationEnded,
-  browserTabSections,
   samePlaceListSource,
   type HostClient,
   type HostSnapshot,
@@ -19,15 +18,14 @@ import {
 import { destinationPlaceKey, placeAddress } from "./navigation.js";
 import { tabSections } from "./tab-order.js";
 import { useWorkspace } from "./workspace-context.js";
-import { useHereId } from "../computers/here.js";
 
 /**
  * The row that takes the middle when the place it showed is no longer listed,
  * as a browser picks a tab after one closes: the tab that opened it, so a
  * finished sign-in returns to the page that asked for it, else the nearest
- * independent row after it in the device sections' order, else before it.
+ * independent row after it on its side of the Tabs' hairline, else before it.
  * A Mac app's owner and task destinations keep their own authority and never
- * replace each other. Web tabs succeed web tabs, and apps succeed apps. A row that
+ * replace each other. Web tabs stay on their side of the hairline. A row that
  * cannot be shown is passed over; null when none is left.
  */
 export function placeSuccessor(
@@ -73,12 +71,6 @@ export function usePlaceSuccession(hostClient: HostClient): void {
   const { nav, selection } = useWorkspace();
   const places = usePlaceList(hostClient);
   const strip = useBrowserTabStrip(hostClient);
-  const hereId = useHereId();
-  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
-  const ordered = useMemo(
-    () => browserTabSections({ strip, machines, hereId }).ordered,
-    [strip, machines, hereId],
-  );
   const source = useHostSelector(hostClient, selectPlaceSource, samePlaceListSource);
   const known = useHostSelector(hostClient, selectPlacesKnown);
   const viewer = useHostSelector(hostClient, selectViewer);
@@ -171,14 +163,14 @@ export function usePlaceSuccession(hostClient: HostClient): void {
               place.destination.tabId === browser.tabId),
         )
       )
-        shown.current = { address, viewer, places: ordered };
+        shown.current = { address, viewer, places: strip.ordered };
       return;
     }
     const last = shown.current;
     shown.current = null;
     if (last?.address !== address || last.viewer !== viewer) return;
     nav.succeedPlace(placeSuccessor(last.places, strip.visible, key)?.destination ?? null);
-  }, [known, nav, places, selection, source, viewer, strip, ordered]);
+  }, [known, nav, places, selection, source, viewer, strip]);
 }
 
 /** Whether a place has ended, by a snapshot known enough to prove it. */

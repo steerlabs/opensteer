@@ -433,6 +433,11 @@ describe("conversationTurn", () => {
       completedAt: null,
       createdAt: at(2),
       id: "node:researcher",
+      effort: null,
+      nodeKind: "subagent",
+      phaseIndex: null,
+      phases: [],
+      progress: null,
       kind: "node",
       model: null,
       nodeId: "researcher",
@@ -801,6 +806,14 @@ describe("Opensteer's own steps", () => {
   const opensteer = (name: string, args: Record<string, unknown> = {}) =>
     toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
 
+  it.each([
+    ["thread_delegate", "delegate_task"],
+    ["thread_message", "thread_send"],
+    ["request_list", "pending_request"],
+  ])("keeps stored %s calls readable after the %s cutover", (old, current) => {
+    expect(opensteer(old, { title: "Review" })).toEqual(opensteer(current, { title: "Review" }));
+  });
+
   it.each(["opensteer", "opensteer.integrations", "mcp:opensteer_integrations"])(
     "keeps integration summaries and model-only details consistent in %s",
     (namespace) => {
@@ -858,7 +871,7 @@ describe("Opensteer's own steps", () => {
       label: "Renamed a task",
     });
     expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
-    expect(opensteer("thread_message").label).toBe("Sent a message");
+    expect(opensteer("thread_send").label).toBe("Sent a message");
   });
 });
 
@@ -2477,52 +2490,6 @@ it("places an addressed message between Run stretches and reveals its exact anch
   expect(conversationTurnRevealing(groups, addressed.id)).toBeNull();
 });
 
-it.each([true, false])(
-  "keeps child task rows reachable across an addressed message (nested already running: %s)",
-  (nestedRunning) => {
-    const child: Extract<TranscriptEntry, { kind: "node" }> = {
-      kind: "node",
-      id: "child",
-      nodeId: "child",
-      parentNodeId: null,
-      runId: "run-a",
-      createdAt: at(1),
-      completedAt: null,
-      model: null,
-      originCallId: null,
-      prompt: "Research",
-      result: null,
-      status: "running",
-      title: "Research",
-    };
-    const nested = { ...child, id: "nested", nodeId: "nested", parentNodeId: "child" };
-    const first = tool({ nodeId: "child" });
-    const second = tool({ nodeId: "nested" });
-    const groups = groupTranscriptEntries([
-      child,
-      ...(nestedRunning ? [nested] : []),
-      message({ addressedToUserId: "person" }),
-      first,
-      ...(nestedRunning ? [] : [nested]),
-      second,
-    ]);
-    const owner = groups.find(
-      (group) => group.kind === "turn" && group.turn.work.some((entry) => entry.id === child.id),
-    );
-    if (owner?.kind !== "turn") throw new Error("Missing child task row");
-    expect(workRows(owner.turn.work)).toEqual([
-      expect.objectContaining({ kind: "subagent", entry: child }),
-    ]);
-    expect(owner.turn.subagentWork.child).toEqual(
-      nestedRunning ? [nested, first] : [first, nested],
-    );
-    expect(owner.turn.subagentWork.nested).toEqual([second]);
-    expect(workRows(owner.turn.subagentWork.child!)).toContainEqual(
-      expect.objectContaining({ kind: "subagent", entry: nested }),
-    );
-    expect(workRows(owner.turn.subagentWork.nested!)).toHaveLength(1);
-  },
-);
 it("marks an addressed message read beyond the active Run's intermediate message", () => {
   const notification = message({ id: "notification", sequence: "3", addressedToUserId: "person" });
   const entries = [
@@ -2844,39 +2811,5 @@ describe("page stops", () => {
       hidden: 0,
       rows: grouped,
     });
-  });
-  it("keeps a subagent's stop inside its own trace", () => {
-    const node: Extract<TranscriptEntry, { kind: "node" }> = {
-      kind: "node",
-      id: "child",
-      nodeId: "child",
-      parentNodeId: null,
-      runId: "run-a",
-      createdAt: at(1),
-      completedAt: null,
-      model: null,
-      originCallId: null,
-      prompt: "Research",
-      result: null,
-      status: "running",
-      title: "Research",
-    };
-    const parent = turns([run({ status: "running" }), node])[0]!;
-    const place = stop("child-stop");
-    const turn: Turn = {
-      ...parent,
-      subagentWork: { child: [place, browser("one"), browser("two")] },
-    };
-    expect(workRows(turn.work)).toMatchObject([{ kind: "subagent", entry: node }]);
-    expect(workRows(turn.subagentWork.child!)).toMatchObject([
-      {
-        kind: "steps",
-        entries: [
-          place,
-          expect.objectContaining({ kind: "tool" }),
-          expect.objectContaining({ kind: "tool" }),
-        ],
-      },
-    ]);
   });
 });

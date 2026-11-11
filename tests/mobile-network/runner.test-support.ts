@@ -1,3 +1,5 @@
+import { expect, vi } from "vitest";
+import { nodeDetailEventNodeId } from "../../packages/core/src/index.js";
 import { testRpcData } from "../../apps/host/src/server/test-host-api-request.js";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket from "ws";
@@ -32,6 +34,8 @@ export const scenarios = [
   "reconnect",
   "foreground-after-30s",
   "network-change",
+  "open-subagent-parent",
+  "open-subagent",
 ] as const;
 export type Scenario = (typeof scenarios)[number];
 
@@ -90,6 +94,7 @@ interface WsRecord {
   readonly eventCount?: number;
 }
 export interface ScenarioResult {
+  readonly toolOutputHistoryBytes: { readonly whole: number; readonly preview: number };
   readonly seed: SeedName;
   readonly profile: ProfileName;
   readonly run: number;
@@ -97,6 +102,8 @@ export interface ScenarioResult {
   readonly milestonesMs: Record<string, number>;
   readonly elapsedMs: number;
   readonly backgroundWaitMs: number;
+  readonly nodeDetailEvents: number;
+  readonly nodeDetailBytes: number;
   readonly bytesDown: number;
   readonly bytesUp: number;
   readonly tcpConnections: number;
@@ -166,6 +173,30 @@ export async function runMobileNetworkSample(options: {
     cleanup.push(() => host.close());
     console.info(`Seeding ${options.seed}/${options.profile} run ${options.run}`);
     const fixture = await seedWorkspace(host, options.seed, cleanup);
+    const wholePage = await testRpcData(
+      host.origin,
+      "thread.events.list",
+      { threadId: fixture.homeThreadId, turns: 10 },
+      { headers: host.ownerHeaders },
+    );
+    const previewPage = await testRpcData(
+      host.origin,
+      "thread.events.list",
+      { threadId: fixture.homeThreadId, turns: 10, toolOutputs: "preview" },
+      { headers: host.ownerHeaders },
+    );
+    const toolOutputHistoryBytes = {
+      whole: Buffer.byteLength(JSON.stringify(wholePage)),
+      preview: Buffer.byteLength(JSON.stringify(previewPage)),
+    };
+    for (const event of previewPage.events)
+      if (event.type === "tool.completed") {
+        expect(event.data.outputPreview).toBeDefined();
+        expect(event.data.output.text).not.toContain(
+          "Build log: checked workspace and synchronized dependency.\n".repeat(440),
+        );
+      }
+    console.info("Tool output history bytes", toolOutputHistoryBytes);
     options.onManifest?.(fixture.manifest);
     console.info(
       `Seeded ${fixture.manifest.tasks} tasks, ${fixture.manifest.homeMessages} Chat messages, ${fixture.manifest.tabs} tabs`,
@@ -179,6 +210,22 @@ export async function runMobileNetworkSample(options: {
     cleanup.push(async () => {
       for (const socket of sockets) socket.terminate();
     });
+    let nodeDetailEvents = 0;
+    let nodeDetailBytes = 0;
+    const inspectPayload = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if (
+        "type" in value &&
+        typeof value.type === "string" &&
+        "data" in value &&
+        nodeDetailEventNodeId({ type: value.type, data: value.data })
+      ) {
+        nodeDetailEvents++;
+        nodeDetailBytes += Buffer.byteLength(JSON.stringify(value));
+        return;
+      }
+      for (const child of Object.values(value)) inspectPayload(child);
+    };
     let inFlight = 0;
     let lastActivity = performance.now();
     let synchronized = 0;
@@ -204,6 +251,8 @@ export async function runMobileNetworkSample(options: {
       try {
         const response = await fetch(request);
         const body = await response.arrayBuffer();
+        if (response.headers.get("content-type")?.includes("application/json"))
+          inspectPayload(JSON.parse(Buffer.from(body).toString("utf8")));
         record.responseBytes = body.byteLength;
         record.status = response.status;
         return new Response(body, { status: response.status, headers: response.headers });
@@ -245,6 +294,7 @@ export async function runMobileNetworkSample(options: {
             afterSequence?: string;
             events?: unknown[];
           };
+          if (direction === "down") inspectPayload(data);
           messages.push({
             atMs: performance.now(),
             direction,
@@ -290,15 +340,14 @@ export async function runMobileNetworkSample(options: {
     const unsubscribe = client.subscribe(inspect);
     cleanup.push(async () => unsubscribe());
     const wait = async (name: string, condition: () => boolean) => {
-      const deadline = performance.now() + 120_000;
-      while (!condition()) {
-        options.signal.throwIfAborted();
-        if (performance.now() > deadline)
-          throw new Error(
-            `${name} timed out (${options.seed}/${options.profile}); snapshot=${JSON.stringify({ session: client.getSnapshot().session, connection: client.getSnapshot().connection, homeThreadId: client.getSnapshot().homeThreadId, windows: Object.keys(client.getSnapshot().transcriptWindows), tabs: placeList(client.getSnapshot()).length })}`,
-          );
-        await delay(10, undefined, { signal: options.signal });
-      }
+      await vi.waitFor(
+        () => {
+          options.signal.throwIfAborted();
+          if (!condition())
+            throw new Error(`${name} not ready (${options.seed}/${options.profile})`);
+        },
+        { timeout: 120_000, interval: 10 },
+      );
     };
     const settle = () =>
       wait(
@@ -309,10 +358,15 @@ export async function runMobileNetworkSample(options: {
             Math.max(150, options.link.latencyDownMs + options.link.latencyUpMs + 25),
       );
     const results: ScenarioResult[] = [];
+    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- The foreground scenario measures a fixed background interval; readiness uses vi.waitFor.
     for (const scenario of scenarios) {
       const selected = options.scenarios.includes(scenario);
       // Warm scenarios all need the same real attach; run only the prerequisites they use.
-      if (!selected && scenario !== "cold-attach") continue;
+      const parentPrerequisite =
+        scenario === "open-subagent-parent" && options.scenarios.includes("open-subagent");
+      if (!selected && scenario !== "cold-attach" && !parentPrerequisite) continue;
+      if (scenario.startsWith("open-subagent") && !fixture.busySubagents)
+        throw new Error("Subagent scenarios require --seed busy-subagents");
       let backgroundWaitMs = 0;
       if (scenario === "foreground-after-30s") {
         lifecycle.background();
@@ -328,6 +382,8 @@ export async function runMobileNetworkSample(options: {
       const proxyStart = proxy.now();
       started = scenario === "cold-attach" ? constructionStarted : performance.now();
       milestones = {};
+      const priorDetailEvents = nodeDetailEvents;
+      const priorDetailBytes = nodeDetailBytes;
       const priorSync = synchronized;
       if (scenario === "cold-attach") {
         const loading = client.load();
@@ -344,6 +400,50 @@ export async function runMobileNetworkSample(options: {
             "tabsLoaded",
           ].every((key) => milestones[key] !== undefined),
         );
+      } else if (scenario === "open-subagent-parent") {
+        const busy = fixture.busySubagents!;
+        client.activateThread(busy.threadId);
+        await wait(
+          "three subagent cards",
+          () =>
+            (client.getSnapshot().transcripts[busy.threadId] ?? []).filter(
+              (entry) => entry.kind === "node",
+            ).length === 3,
+        );
+        mark("parentFirstPage");
+      } else if (scenario === "open-subagent") {
+        const busy = fixture.busySubagents!;
+        const detail = client.watchNode(busy.threadId, busy.nodeIds[0]!);
+        cleanup.push(async () => detail.release());
+        const ready = () => {
+          const snapshot = detail.getSnapshot();
+          if (snapshot.status === "error") throw new Error(snapshot.error ?? "Node detail failed");
+          return snapshot.status === "ready";
+        };
+        await wait("subagent first page", ready);
+        mark("nodeFirstPage");
+        for (let page = 0; detail.getSnapshot().hasMore && page < 10; page++) {
+          await detail.loadOlder();
+          expect(detail.getSnapshot().error).toBeNull();
+        }
+        expect(detail.getSnapshot().hasMore).toBe(false);
+        const before = detail.getSnapshot().entries;
+        expect(before.filter((entry) => entry.kind === "tool")).toHaveLength(busy.toolCalls[0]!);
+        expect(before.filter((entry) => entry.kind === "node-message")).toHaveLength(4);
+        expect(before.filter((entry) => entry.kind === "reasoning")).toHaveLength(3);
+        expect(new Set(before.map((entry) => entry.id)).size).toBe(before.length);
+        mark("nodeFullHistory");
+        proxy.dropConnections();
+        await wait(
+          "subagent reconnect",
+          () =>
+            synchronized > priorSync && client.getSnapshot().connection === "connected" && ready(),
+        );
+        expect(detail.getSnapshot().entries).toEqual(before);
+        expect(new Set(detail.getSnapshot().entries.map((entry) => entry.id)).size).toBe(
+          before.length,
+        );
+        mark("nodeReconnected");
       } else if (scenario === "open-task") {
         const list = taskList(client.getSnapshot());
         const task = list.ready[0] ?? list.working[0];
@@ -383,6 +483,10 @@ export async function runMobileNetworkSample(options: {
       }
       const elapsedMs = performance.now() - started;
       await settle();
+      if (scenario === "open-subagent-parent") {
+        expect(nodeDetailEvents - priorDetailEvents).toBe(0);
+        expect(nodeDetailBytes - priorDetailBytes).toBe(0);
+      }
       const connections = proxy.connections.map((connection, index) => ({
         id: connection.id,
         bytesDown: connection.bytesDown - (priorConnections[index]?.bytesDown ?? 0),
@@ -412,6 +516,7 @@ export async function runMobileNetworkSample(options: {
       const tcpConnections = connections.filter((connection) => connection.openedInScenario).length;
       const rtt = options.link.latencyUpMs + options.link.latencyDownMs;
       const result = {
+        toolOutputHistoryBytes,
         seed: options.seed,
         profile: options.profile,
         run: options.run,
@@ -419,6 +524,8 @@ export async function runMobileNetworkSample(options: {
         milestonesMs: milestones,
         elapsedMs,
         backgroundWaitMs,
+        nodeDetailEvents: nodeDetailEvents - priorDetailEvents,
+        nodeDetailBytes: nodeDetailBytes - priorDetailBytes,
         bytesDown: connections.reduce((total, connection) => total + connection.bytesDown, 0),
         bytesUp: connections.reduce((total, connection) => total + connection.bytesUp, 0),
         tcpConnections,

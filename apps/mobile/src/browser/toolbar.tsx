@@ -59,7 +59,9 @@ export function Toolbar(props: {
   readonly testID?: string;
 }): ReactNode {
   return (
+    // Never flattened: gaining a testID must not re-parent a focused field inside the bar.
     <View
+      collapsable={false}
       style={[styles.bar, props.edge === "top" ? styles.top : styles.bottom]}
       testID={props.testID}
     >

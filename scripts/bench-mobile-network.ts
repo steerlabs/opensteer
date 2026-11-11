@@ -28,10 +28,14 @@ const scenarios = [
   "reconnect",
   "foreground-after-30s",
   "network-change",
+  "open-subagent-parent",
+  "open-subagent",
+  "busy-subagents",
 ];
 if (!(values.profile === "all" || Object.hasOwn(linkProfiles, values.profile!)))
   throw new Error("Unknown --profile");
-if (!["all", "heavy", "light"].includes(values.seed!)) throw new Error("Unknown --seed");
+if (!["all", "heavy", "light", "busy-subagents"].includes(values.seed!))
+  throw new Error("Unknown --seed");
 if (!(values.scenario === "all" || scenarios.includes(values.scenario!)))
   throw new Error("Unknown --scenario");
 for (const [name, value] of [

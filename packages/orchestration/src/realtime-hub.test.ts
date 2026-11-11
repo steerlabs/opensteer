@@ -158,6 +158,315 @@ describe("snapshot-before-live synchronization", () => {
     },
   );
 
+  it("switches node watches at the delivery boundary and filters durable and live detail", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    const nodeId = createId("executionNode");
+    const otherNodeId = createId("executionNode");
+    const hub = new RealtimeHub({
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+      } as unknown as OpensteerStore,
+    });
+    const sink = new MemorySink();
+    const release = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink,
+      userId,
+      workspaceId,
+      placeEvents: "include",
+    });
+    const detail = (value: string, id = nodeId): AgentEvent => ({
+      ...event(workspaceId, value),
+      type: "node.message",
+      data: { nodeId: id, text: value },
+    });
+    const received = () =>
+      sink.messages.flatMap((message) => (message.type === "host.events" ? message.events : []));
+    const watch = (id: typeof nodeId | null) =>
+      hub.watchNode({ sinkId: sink.id, workspaceId, nodeId: id });
+    try {
+      const first = detail("1");
+      hub.publish(first);
+      hub.publishLive({
+        afterSequence: sequence("1"),
+        progress: {
+          runId: first.runId!,
+          threadId: first.threadId,
+          workspaceId,
+          items: [
+            { callId: "child-tool", nodeId, stream: "tool", op: "append", at: 0, text: "private" },
+            { nodeId, stream: "node", op: "replace", length: 7, text: "working" },
+          ],
+        },
+      });
+      await vi.waitFor(
+        () =>
+          expect(sink.messages.find((message) => message.type === "host.live")).toMatchObject({
+            afterSequence: "0",
+            progress: {
+              items: [{ nodeId, stream: "node", op: "replace", length: 7, text: "working" }],
+            },
+          }),
+        { timeout: 1_000 },
+      );
+      expect(received()).toEqual([]);
+      watch(nodeId);
+      // Events queued on either side of the watch must stay on their side of its acknowledgement.
+      hub.publish(detail("2"));
+      hub.publish(detail("3", otherNodeId));
+      watch(otherNodeId);
+      hub.publish(detail("4"));
+      hub.publish(detail("5", otherNodeId));
+      hub.publishLive({
+        afterSequence: sequence("5"),
+        progress: {
+          runId: first.runId!,
+          threadId: first.threadId,
+          workspaceId,
+          items: [
+            { callId: "child-tool", nodeId, stream: "tool", op: "append", at: 0, text: "private" },
+            {
+              callId: "other-tool",
+              nodeId: otherNodeId,
+              stream: "tool",
+              op: "append",
+              at: 0,
+              text: "visible",
+            },
+          ],
+        },
+      });
+      await vi.waitFor(
+        () =>
+          expect(sink.messages.filter((message) => message.type === "host.live")).toHaveLength(2),
+        { timeout: 1_000 },
+      );
+      expect(received().map((event) => event.sequence)).toEqual(["2", "5"]);
+      expect(sink.messages.filter((message) => message.type === "host.node-watched")).toEqual([
+        { type: "host.node-watched", workspaceId, nodeId, sequence: "1" },
+        { type: "host.node-watched", workspaceId, nodeId: otherNodeId, sequence: "3" },
+      ]);
+      const secondLive = sink.messages.filter((message) => message.type === "host.live")[1]!;
+      expect(secondLive.progress.items).toEqual([
+        {
+          callId: "other-tool",
+          nodeId: otherNodeId,
+          stream: "tool",
+          op: "append",
+          at: 0,
+          text: "visible",
+        },
+      ]);
+      expect(secondLive.afterSequence).toBe("5");
+      watch(null);
+      hub.publish(detail("6", otherNodeId));
+      hub.publish(event(workspaceId, "7"));
+      await vi.waitFor(() => expect(received().at(-1)?.sequence).toBe("7"), { timeout: 1_000 });
+      expect(received().map((event) => event.sequence)).toEqual(["2", "5", "7"]);
+    } finally {
+      release();
+    }
+  });
+
+  it("sends a running tool's output so far to a reader that starts watching its subagent", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    const nodeId = createId("executionNode");
+    const liveRuns = new LiveRunRegistry();
+    const seed = event(workspaceId, "1");
+    liveRuns.observeCommitted([seed]);
+    const hub = new RealtimeHub({
+      liveRuns,
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceSnapshot: async () => snapshot(workspaceId, "1"),
+      } as unknown as OpensteerStore,
+    });
+    const sink = new MemorySink();
+    const release = await hub.subscribe({
+      afterSequence: sequence("0"),
+      sink,
+      workspaceId,
+      userId,
+    });
+    try {
+      const progress = {
+        runId: seed.runId!,
+        threadId: seed.threadId,
+        workspaceId,
+        items: [
+          {
+            callId: "child-tool",
+            nodeId,
+            stream: "tool" as const,
+            op: "append" as const,
+            at: 0,
+            text: "so far",
+          },
+        ],
+      };
+      const frame = liveRuns.apply(progress);
+      if (frame) hub.publishLive(frame);
+      hub.watchNode({ sinkId: sink.id, workspaceId, nodeId });
+      await vi.waitFor(
+        () =>
+          expect(sink.messages.filter((message) => message.type === "host.live")).toHaveLength(1),
+        { timeout: 1_000 },
+      );
+      expect(sink.messages.find((message) => message.type === "host.live")).toMatchObject({
+        progress: {
+          items: [
+            {
+              callId: "child-tool",
+              nodeId,
+              stream: "tool",
+              op: "replace",
+              length: 6,
+              text: "so far",
+            },
+          ],
+        },
+      });
+    } finally {
+      release();
+    }
+  });
+
+  it("acknowledges a watch requested during synchronization after its replay boundary", async () => {
+    const workspaceId = createId("workspace");
+    const userId = createId("user");
+    const nodeId = createId("executionNode");
+    const ready = Promise.withResolvers<WorkspaceSnapshot>();
+    const liveRuns = new LiveRunRegistry();
+    const seed = event(workspaceId, "1");
+    const progress = {
+      runId: seed.runId!,
+      threadId: seed.threadId,
+      workspaceId,
+      items: [
+        {
+          callId: "child-tool",
+          nodeId,
+          stream: "tool" as const,
+          op: "append" as const,
+          at: 0,
+          text: "private",
+        },
+        { nodeId, stream: "node" as const, op: "replace" as const, length: 4, text: "work" },
+      ],
+    };
+    liveRuns.observeCommitted([seed]);
+    liveRuns.apply(progress);
+    const hub = new RealtimeHub({
+      liveRuns,
+      store: {
+        notificationState: viewerState(),
+        workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+        workspaceSnapshot: async () => ready.promise,
+      } as unknown as OpensteerStore,
+    });
+    const sink = new MemorySink();
+    const pending = hub.subscribe({ afterSequence: sequence("0"), sink, workspaceId, userId });
+    hub.watchNode({ sinkId: sink.id, workspaceId, nodeId });
+    const second: AgentEvent = {
+      ...seed,
+      sequence: sequence("2"),
+      type: "node.message",
+      data: { nodeId, text: "before watch" },
+    };
+    hub.publish(second);
+    ready.resolve(snapshot(workspaceId, "1"));
+    const release = await pending;
+    try {
+      await vi.waitFor(
+        () =>
+          expect(sink.messages.filter((message) => message.type === "host.live")).toHaveLength(1),
+        { timeout: 1_000 },
+      );
+      expect(sink.messages.filter((message) => message.type === "host.node-watched")).toEqual([
+        { type: "host.node-watched", workspaceId, nodeId, sequence: "2" },
+      ]);
+      expect(
+        sink.messages.flatMap((message) => (message.type === "host.events" ? message.events : [])),
+      ).toEqual([]);
+      expect(sink.messages.find((message) => message.type === "host.live")).toMatchObject({
+        progress: {
+          items: [
+            {
+              callId: "child-tool",
+              nodeId,
+              stream: "tool",
+              op: "replace",
+              length: 7,
+              text: "private",
+            },
+            { nodeId, stream: "node", op: "replace", length: 4, text: "work" },
+          ],
+        },
+      });
+      hub.publish({ ...second, sequence: sequence("3"), eventId: createId("event") });
+      await vi.waitFor(
+        () =>
+          expect(
+            sink.messages.flatMap((message) =>
+              message.type === "host.events" ? message.events.map((event) => event.sequence) : [],
+            ),
+          ).toEqual(["3"]),
+        { timeout: 1_000 },
+      );
+      const unwatched = new MemorySink("unwatched");
+      const stop = await hub.subscribe({
+        afterSequence: sequence("0"),
+        sink: unwatched,
+        workspaceId,
+        userId,
+      });
+      try {
+        await vi.waitFor(
+          () =>
+            expect(unwatched.messages.some((message) => message.type === "host.live")).toBe(true),
+          { timeout: 1_000 },
+        );
+        expect(
+          unwatched.messages.flatMap((message) =>
+            message.type === "host.live" ? message.progress.items : [],
+          ),
+        ).toEqual([{ nodeId, stream: "node", op: "replace", length: 4, text: "work" }]);
+      } finally {
+        stop();
+      }
+      liveRuns.observeCommitted([
+        {
+          ...seed,
+          sequence: sequence("4"),
+          type: "node.completed",
+          data: { nodeId, status: "completed", result: null, usage: null },
+        },
+      ]);
+      expect(
+        liveRuns
+          .threadFrames(seed.threadId)
+          .flatMap((frame) => frame.progress.items)
+          .some((item) => item.stream === "node"),
+      ).toBe(false);
+      liveRuns.observeCommitted([
+        {
+          ...seed,
+          sequence: sequence("5"),
+          type: "run.completed",
+          data: { ...seed.data, status: "completed", replyMessageId: null },
+        },
+      ]);
+      expect(liveRuns.threadFrames(seed.threadId)).toEqual([]);
+    } finally {
+      release();
+    }
+  });
+
   it("counts broad notices once at publication, before socket fanout", () => {
     const hub = new RealtimeHub({ store: {} as OpensteerStore });
     const summary = JSON.stringify({
@@ -808,7 +1117,10 @@ function viewerState() {
   };
 }
 
-function event(workspaceId: WorkspaceId, value: string): AgentEvent {
+function event(
+  workspaceId: WorkspaceId,
+  value: string,
+): Extract<AgentEvent, { type: "run.started" }> {
   return {
     createdAt: new Date().toISOString(),
     data: {
@@ -838,3 +1150,60 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+it.each([false, true])("sends tool previews only to opted-in subscribers (%s)", async (opted) => {
+  const workspaceId = createId("workspace");
+  const userId = createId("user");
+  const hub = new RealtimeHub({
+    store: {
+      notificationState: viewerState(),
+      workspaceMembershipForUser: async () => activeMembership(workspaceId, userId),
+      workspaceSnapshot: async () => snapshot(workspaceId, "0"),
+    } as unknown as OpensteerStore,
+  });
+  const sink = new MemorySink();
+  const release = await hub.subscribe({
+    afterSequence: sequence("0"),
+    sink,
+    userId,
+    workspaceId,
+    ...(opted ? { toolOutputs: "preview" as const } : {}),
+  });
+  try {
+    await vi.waitFor(
+      () =>
+        expect(
+          sink.messages.some((message) => message.type === "host.synchronized"),
+          "subscription never synchronized",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    const text = "tool output\n".repeat(2000);
+    hub.publish({
+      ...event(workspaceId, "1"),
+      type: "tool.completed",
+      data: { callId: "call", isError: false, output: { text } },
+    });
+    await vi.waitFor(
+      () =>
+        expect(
+          sink.messages.some((message) => message.type === "host.events"),
+          "tool completion never arrived",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    const batch = sink.messages.find((message) => message.type === "host.events");
+    const completed =
+      batch?.type === "host.events"
+        ? batch.events.find((event) => event.type === "tool.completed")
+        : undefined;
+    expect(completed?.type).toBe("tool.completed");
+    if (completed?.type !== "tool.completed") throw new Error("Tool completion missing");
+    expect(completed.data.output.text === text).toBe(!opted);
+    expect(completed.data.outputPreview).toEqual(
+      opted ? { bytes: Buffer.byteLength(text), cut: true, digest: expect.any(String) } : undefined,
+    );
+  } finally {
+    release();
+  }
+});

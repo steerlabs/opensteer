@@ -1,3 +1,4 @@
+import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
 import * as voiceStore from "./voice-store.js";
@@ -1130,6 +1131,7 @@ export class OpensteerStore {
     userId: UserId,
     options: {
       readonly includeDisabled?: boolean;
+      readonly environmentId?: EnvironmentId;
       readonly afterId?: HarnessInstanceId;
       readonly id?: HarnessInstanceId;
       readonly limit?: number;
@@ -1697,6 +1699,10 @@ export class OpensteerStore {
     );
   }
 
+  stopNode(input: import("./node-control.js").NodeStopInput) {
+    return enqueueNodeStop(this.#database, input);
+  }
+
   async enqueueRunnerControl(input: RunnerControlInput): Promise<{
     readonly command: CommandRow;
     readonly events: readonly AgentEvent[];
@@ -2093,6 +2099,14 @@ export class OpensteerStore {
 
   async threadMessagePageForOwner(input: ThreadHistoryQuery): Promise<ThreadMessagePage | null> {
     return snapshotStore.threadMessagePageForOwner(this.#database, input);
+  }
+
+  toolOutputForOwner(input: Parameters<typeof snapshotStore.toolOutputForOwner>[1]) {
+    return snapshotStore.toolOutputForOwner(this.#database, input);
+  }
+
+  nodeEventPageForOwner(input: Parameters<typeof snapshotStore.nodeEventPageForOwner>[1]) {
+    return snapshotStore.nodeEventPageForOwner(this.#database, input);
   }
 
   async threadEventPageForOwner(input: {

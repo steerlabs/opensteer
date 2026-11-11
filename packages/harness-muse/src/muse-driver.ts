@@ -5,6 +5,7 @@ import {
   attachmentNativeImageMediaTypes,
   HarnessIdSchema,
   OpensteerError,
+  type ExecutionNodeId,
   RequestFormAnswersSchema,
   createId,
   harnessCatalogEntry,
@@ -76,6 +77,7 @@ import {
   MuseHost,
   MuseItemDeltaSchema,
   MuseItemEventSchema,
+  MuseItemReadOutputSchema,
   MuseSessionTokenUsageSchema,
   isMuseMspError,
   parseMuseApprovalDecide,
@@ -129,6 +131,7 @@ const museCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  subagentStop: true,
   mcpImageContent: true,
   resume: true,
   steering: true,
@@ -611,6 +614,10 @@ interface ActiveTurn {
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
   readonly workflows: Set<string>;
+  readonly itemRevisions: Map<string, number>;
+  readonly settledNodes: Set<string>;
+  readonly workflowPhases: Map<string, string[]>;
+  readonly subagents: Set<string>;
   interruptRequested: boolean;
   rootCompleted: boolean;
   started: boolean;
@@ -706,6 +713,10 @@ class MuseHarnessSession implements HarnessSession {
       started: false,
       terminal: false,
       workflows: new Set(),
+      itemRevisions: new Map(),
+      settledNodes: new Set(),
+      workflowPhases: new Map(),
+      subagents: new Set(),
     };
     this.#active = active;
     const abort = () => {
@@ -782,6 +793,32 @@ class MuseHarnessSession implements HarnessSession {
     if (result.turnId !== active.turnId) throw new Error("Muse Code steered a different turn");
   }
 
+  async stopNode(nodeId: ExecutionNodeId): Promise<void> {
+    const active = this.#active;
+    const key = active?.nodes.keyForNode(nodeId);
+    if (!active || active.terminal || active.interruptRequested || !key || !this.#host)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Muse Code has no running child for this subagent",
+      });
+    if (active.subagents.has(key))
+      await this.#host.command("subagent/stop", {
+        sessionId: this.providerSessionReference,
+        subagentId: key,
+        reason: "Opensteer subagent stopped",
+      });
+    else if (key.startsWith("workflow:") && active.workflows.has(key.slice(9)))
+      await this.#host.command("workflow/cancel", {
+        sessionId: this.providerSessionReference,
+        workflowRunId: key.slice(9),
+      });
+    else
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Muse Code cannot stop this workflow member separately",
+      });
+  }
+
   async interrupt(): Promise<void> {
     const active = this.#active;
     if (!active || active.terminal) return;
@@ -798,7 +835,7 @@ class MuseHarnessSession implements HarnessSession {
         host.command("turn/interrupt", { sessionId: this.providerSessionReference, turnId }),
       );
     }
-    for (const key of active.nodes.liveKeys()) {
+    for (const key of active.subagents) {
       commands.push(
         host.command("subagent/stop", {
           reason: "Opensteer Run stopped",
@@ -1058,6 +1095,9 @@ class MuseHarnessSession implements HarnessSession {
   }
 
   #item(active: ActiveTurn, item: Item, method: string): void {
+    const previousRevision = active.itemRevisions.get(item.itemId) ?? 0;
+    if (item.revision <= previousRevision) return;
+    active.itemRevisions.set(item.itemId, item.revision);
     const complete = method === "item/completed";
     if (complete) active.openItems.delete(item.itemId);
     else if (!active.openItems.has(item.itemId))
@@ -1085,21 +1125,40 @@ class MuseHarnessSession implements HarnessSession {
     }
     if (item.kind === "subagent") {
       const key = item.subagentId ?? item.childSessionId ?? item.itemId;
-      if (!complete && !active.nodes.nodeId(key)) {
+      if (active.settledNodes.has(key)) return;
+      active.subagents.add(key);
+      if (!active.nodes.nodeId(key)) {
         active.nodes.ensure(key, {
           nativeRef: key,
+          stopSupported: !!item.subagentId,
           originCallId: item.callId ?? null,
+          parentKey: item.workflowRunId ? `workflow:${item.workflowRunId}` : null,
           prompt: item.objective ?? null,
           sessionRef: item.childSessionId ?? null,
           title: item.summary?.[0] ?? item.objective ?? "Muse Code subagent",
         });
       }
+      active.nodes.update(key, {
+        stopSupported: !!item.subagentId,
+        parentKey: item.workflowRunId ? `workflow:${item.workflowRunId}` : null,
+        ...(item.objective ? { prompt: item.objective } : {}),
+        ...(item.summary?.[0] || item.objective
+          ? { title: item.summary?.[0] ?? item.objective }
+          : {}),
+      });
       const result = item.result?.text ?? item.result?.summary ?? item.finalSummary;
       if (result) active.nodes.noteResult(key, result);
-      if (complete || item.controlStatus === "closed") {
+      if (complete || item.controlStatus === "closed" || item.controlStatus === "resultReady") {
+        if (item.result?.text) active.nodes.message(key, item.result.text);
+        active.settledNodes.add(key);
+        active.subagents.delete(key);
         active.nodes.complete(
           key,
-          item.failureReason ? "failed" : "completed",
+          item.status === "cancelled"
+            ? "interrupted"
+            : item.failureReason || item.status === "failed"
+              ? "failed"
+              : "completed",
           result !== undefined ? { result } : {},
         );
         this.#settleBackground(active);
@@ -1107,25 +1166,91 @@ class MuseHarnessSession implements HarnessSession {
       return;
     }
     if (item.kind === "workflow") {
-      const workflowRunId = item.callId ?? item.itemId;
-      const children = item.children ?? [];
+      const workflowRunId = item.workflowRunId ?? item.itemId;
+      const workflowKey = `workflow:${workflowRunId}`;
+      if (active.settledNodes.has(workflowKey)) return;
+      active.nodes.ensure(workflowKey, {
+        kind: "workflow",
+        stopSupported: !!item.workflowRunId,
+        nativeRef: workflowRunId,
+        title: item.entryId ?? item.scriptId ?? item.fallbackText ?? "Muse Code workflow",
+        originCallId: item.callId ?? null,
+      });
       if (complete) active.workflows.delete(workflowRunId);
-      else active.workflows.add(workflowRunId);
-      for (const child of children) {
+      else if (item.workflowRunId) active.workflows.add(workflowRunId);
+      const phases = active.workflowPhases.get(workflowKey) ?? [];
+      for (const child of item.children ?? []) {
+        if (child.phase && !phases.includes(child.phase)) phases.push(child.phase);
+      }
+      active.workflowPhases.set(workflowKey, phases);
+      active.nodes.update(workflowKey, { phases });
+      for (const child of item.children ?? []) {
         const key = `${workflowRunId}:${child.childId}:${child.attempt}`;
-        const terminal = child.terminal ?? (child.status === "completed" ? "completed" : undefined);
-        if (!terminal && !active.nodes.nodeId(key)) {
-          active.nodes.ensure(key, {
-            nativeRef: child.childId,
-            title: child.label ?? "Muse Code workflow child",
-          });
-        }
-        if (terminal)
-          active.nodes.complete(
-            key,
-            child.failureKind ? "failed" : terminal === "completed" ? "completed" : "interrupted",
-            { result: child.failureReason ?? null },
-          );
+        if (active.settledNodes.has(key)) continue;
+        const phaseIndex = child.phase ? phases.indexOf(child.phase) : undefined;
+        active.nodes.ensure(key, {
+          nativeRef: child.childId,
+          parentKey: workflowKey,
+          ...(phaseIndex === undefined ? {} : { phaseIndex }),
+          title: child.label ?? "Muse Code workflow child",
+        });
+        active.nodes.update(key, {
+          parentKey: workflowKey,
+          ...(child.label ? { title: child.label } : {}),
+          ...(phaseIndex === undefined ? {} : { phaseIndex }),
+        });
+        const terminal =
+          child.terminal ??
+          (["completed", "failed", "cancelled", "skipped"].includes(child.status)
+            ? child.status
+            : complete
+              ? item.status
+              : undefined);
+        if (!terminal) continue;
+        active.settledNodes.add(key);
+        const outcome =
+          child.failureKind || terminal === "failed"
+            ? "failed"
+            : terminal === "completed"
+              ? "completed"
+              : "interrupted";
+        const finish = (result: string | null) => {
+          if (active.terminal) return;
+          active.nodes.complete(key, outcome, { result });
+          this.#settleBackground(active);
+        };
+        if (child.resultRef && this.#host) {
+          void this.#host
+            .command("item/readOutput", {
+              sessionId: this.providerSessionReference,
+              itemId: item.itemId,
+              outputRef: child.resultRef,
+              lengthBytes: 64 * 1024,
+            })
+            .then(
+              (output) => {
+                const parsed = MuseItemReadOutputSchema.safeParse(output);
+                finish(
+                  parsed.success && parsed.data.encoding === "utf8"
+                    ? parsed.data.content
+                    : (child.failureReason ?? null),
+                );
+              },
+              () => finish(child.failureReason ?? null),
+            );
+        } else finish(child.failureReason ?? null);
+      }
+      if (complete) {
+        active.settledNodes.add(workflowKey);
+        active.nodes.complete(
+          workflowKey,
+          item.status === "cancelled"
+            ? "interrupted"
+            : item.status === "failed"
+              ? "failed"
+              : "completed",
+          { result: item.finalSummary ?? item.message ?? null },
+        );
       }
       this.#settleBackground(active);
       return;

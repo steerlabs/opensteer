@@ -13,8 +13,8 @@ describe("mcpToolCallId", () => {
   });
 
   it("uses an explicit identity while the MCP session is initializing", () => {
-    const initializingCall = mcpToolCallId("run_1", undefined, "call-1", "request_list");
-    expect(initializingCall).toBe(mcpToolCallId("run_1", undefined, "call-1", "request_list"));
+    const initializingCall = mcpToolCallId("run_1", undefined, "call-1", "pending_request");
+    expect(initializingCall).toBe(mcpToolCallId("run_1", undefined, "call-1", "pending_request"));
     expect(initializingCall).toMatch(/^[a-f0-9-]{36}$/);
   });
 });

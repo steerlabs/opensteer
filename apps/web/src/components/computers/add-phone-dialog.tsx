@@ -741,6 +741,8 @@ function issueText(
       return `Android didn’t turn on the app’s accessibility service.${detail} On the phone, open Settings → Accessibility → Opensteer Agent Phone, turn it on, then try again.`;
     case "configure-failed":
       return `The phone didn’t accept a setting setup needs.${detail}`;
+    case "usb-restricted":
+      return `This phone refused a change setup makes over USB.${detail} Some phones need a developer option on first: in Settings → Developer options, turn on Disable permission monitoring (OnePlus, OPPO, realme), or Install via USB and USB debugging (Security settings) (Xiaomi, Redmi, POCO), then try again. A phone an organization manages may not allow it.`;
     case "phone-app-refused":
       return `Opensteer Agent Phone on the phone turned down the pairing.${detail} Try again; if it keeps happening, remove the app from the phone and add it again.`;
     case "phone-app-unresponsive":
