@@ -1,6 +1,7 @@
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { HostClientRequestError } from "./client.js";
+import { threadActivity } from "./thread-activity.js";
 import {
   composerRuntimeNotice,
   requestAnswerNote,
@@ -16,6 +17,15 @@ const requestId = createId("request");
 const at = "2026-11-10T10:42:00.000Z";
 
 describe("a shared task's facts, in words", () => {
+  it("never says a shared task waits for the reader when its Host says whom it waits on", () => {
+    const thread = { id: createId("thread"), status: "waiting" as const };
+    const input = { entries: [], runQueue: [] };
+    expect(threadActivity({ ...input, thread })).toBe("waiting_for_you");
+    expect(
+      threadActivity({ ...input, thread: { ...thread, requestWaits: { items: [], total: 1 } } }),
+    ).toBe("waiting");
+  });
+
   it("names the starter, and the reader as you", () => {
     const userId = createId("user");
     expect(taskStarterLine({ kind: "person", userId, name: "Maya Chen" }, userId)).toBe(

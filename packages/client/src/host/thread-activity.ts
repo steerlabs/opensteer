@@ -19,13 +19,13 @@ import { accountGettingReady, threadAccountPreparing } from "./thread-placement.
  * whose turn has ended while work it started carries on.
  */
 export type ThreadActivity =
-  "background" | "idle" | "queued" | "stopping" | "waiting_for_you" | "working";
+  "background" | "idle" | "queued" | "stopping" | "waiting" | "waiting_for_you" | "working";
 
 export interface ThreadActivityInput {
   /** The Thread's transcript, which carries a Stop already asked for. */
   readonly entries: readonly TranscriptEntry[];
   readonly runQueue: readonly RunQueueEntry[];
-  readonly thread: Pick<ThreadSummary, "id" | "status">;
+  readonly thread: Pick<ThreadSummary, "id" | "status" | "requestWaits">;
 }
 
 /**
@@ -41,7 +41,8 @@ export function threadActivity(input: ThreadActivityInput): ThreadActivity {
   const executing = runs.find((run) => run.status !== "queued");
   const earliest = executing ?? runs[0];
   if (earliest && stopRequested(input.entries, earliest.id)) return "stopping";
-  if (status === "waiting") return "waiting_for_you";
+  // A team Host says whom a task waits on; the reader is told that by name, not as "you".
+  if (status === "waiting") return input.thread.requestWaits ? "waiting" : "waiting_for_you";
   if (executing && inBackground(input.entries, executing.id)) return "background";
   return !executing && runs.length > 0 ? "queued" : "working";
 }
@@ -127,7 +128,7 @@ export function threadWatch(
     stopping: activity === "stopping",
     // A question someone else is to answer: this reader has nothing to answer.
     words:
-      activity === "waiting_for_you"
+      activity === "waiting_for_you" || activity === "waiting"
         ? "Waiting on someone"
         : activity === "stopping"
           ? activityLabels.stopping
@@ -199,7 +200,9 @@ export function threadActivityIndicator(
         group.turn.continued !== true &&
         turnState(group.turn) !== "settled",
     );
-    return replying || activity === "waiting_for_you" ? null : { kind: "typing" };
+    return replying || activity === "waiting_for_you" || activity === "waiting"
+      ? null
+      : { kind: "typing" };
   }
   return { kind: "status", label: activityLabels[activity] };
 }
@@ -208,6 +211,7 @@ const activityLabels: Readonly<Record<Exclude<ThreadActivity, "idle">, string>> 
   background: "Working in the background",
   queued: "Starting",
   stopping: "Stopping",
+  waiting: "Waiting",
   waiting_for_you: "Waiting for you",
   working: "Working",
 };
