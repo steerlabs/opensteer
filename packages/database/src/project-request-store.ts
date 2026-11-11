@@ -918,7 +918,8 @@ export async function projectRunRecipients(
     ])
     .where("runs.id", "=", runId)
     .executeTakeFirst();
-  if (!row?.requestedBy) return [];
+  if (!row) return [];
+  if (row.requestedBy === null) return eligibleProjectRequestManagers(database, row.workspaceId);
   const root = HumanRootSchema.parse({
     userId: row.requestedBy,
     initiatorGeneration: Number(row.initiatorGeneration),
@@ -928,7 +929,7 @@ export async function projectRunRecipients(
   return (await liveRoot(database, row.workspaceId, root)) ? [root.userId] : [];
 }
 
-function projectRequestAudienceSql(userId: UserId) {
+export function projectRequestAudienceSql(userId: UserId) {
   return sql<boolean>`exists (
         select 1 from grants g join runs r on r.id = g.run_id
         join workspace_memberships m on m.workspace_id = requests.originating_workspace_id

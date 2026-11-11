@@ -277,31 +277,38 @@ interface NotificationCandidate {
   readonly userId: UserId;
 }
 
+interface DirectOutcomeRecipient {
+  readonly muted: boolean;
+  readonly title: string;
+  readonly userId: UserId;
+}
+
 /** The people one event notifies, and what each is told. */
 async function candidatesFor(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
+  recipient?: DirectOutcomeRecipient,
 ): Promise<readonly NotificationCandidate[]> {
   switch (event.type) {
     case "message.created":
       return event.data.addressedToUserId
-        ? replyCandidates(transaction, event, event.data.message.id)
+        ? replyCandidates(transaction, event, event.data.message.id, recipient)
         : [];
     case "request.opened":
       return requestCandidates(transaction, event);
     case "run.completed":
     case "run.phase": {
       const replyMessageId = replyMessageIdOf(event);
-      return replyMessageId ? replyCandidates(transaction, event, replyMessageId) : [];
+      return replyMessageId ? replyCandidates(transaction, event, replyMessageId, recipient) : [];
     }
     case "run.failed":
       // An engine that errors while winding down a stop somebody asked for
       // reports a failure the person did not wait on.
       return event.runId && (await runWasStopped(transaction, event.runId))
         ? []
-        : failureCandidates(transaction, event, failureBody(event.data.message));
+        : failureCandidates(transaction, event, failureBody(event.data.message), recipient);
     case "run.interrupted":
-      return interruptionCandidates(transaction, event);
+      return interruptionCandidates(transaction, event, recipient);
     default:
       return [];
   }
@@ -350,9 +357,11 @@ async function replyCandidates(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
   replyMessageId: MessageId,
+  directRecipient?: DirectOutcomeRecipient,
 ): Promise<readonly NotificationCandidate[]> {
   const addressed = event.type === "message.created" ? event.data.addressedToUserId : undefined;
-  const recipient = await personAnswered(transaction, event, addressed);
+  const recipient = directRecipient ?? (await personAnswered(transaction, event, addressed));
+  if (addressed !== undefined && recipient?.userId !== addressed) return [];
   if (!recipient || recipient.muted) return [];
   const reply = await transaction
     .selectFrom("messages")
@@ -402,8 +411,9 @@ async function failureCandidates(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
   body: string,
+  directRecipient?: DirectOutcomeRecipient,
 ): Promise<readonly NotificationCandidate[]> {
-  const recipient = await personAnswered(transaction, event);
+  const recipient = directRecipient ?? (await personAnswered(transaction, event));
   if (!recipient || recipient.muted) return [];
   return [
     {
@@ -427,6 +437,7 @@ async function failureCandidates(
 async function interruptionCandidates(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
+  recipient?: DirectOutcomeRecipient,
 ): Promise<readonly NotificationCandidate[]> {
   if (!event.runId) return [];
   const run = await transaction
@@ -438,7 +449,7 @@ async function interruptionCandidates(
   // A recovery can end work past its deadline with no stop to record: no
   // Runner held it to be told.
   if (run.backgroundDeadlineAt && run.backgroundDeadlineAt <= new Date(event.createdAt)) return [];
-  return failureCandidates(transaction, event, "Opensteer stopped before it finished.");
+  return failureCandidates(transaction, event, "Opensteer stopped before it finished.", recipient);
 }
 
 /**
@@ -486,11 +497,10 @@ async function personAnswered(
     .where("threads.workspaceId", "=", event.workspaceId)
     .where("workspaceMemberships.state", "=", "active")
     .where("users.disabledAt", "is", null)
-    // The inner join to users on runs.requestedBy excludes null requesters.
-    .$narrowType<{ requestedBy: UserId }>()
     .executeTakeFirst();
   if (
     !run ||
+    !run.requestedBy ||
     (run.homeThreadId !== event.threadId &&
       run.voiceThreadId !== event.threadId &&
       !run.personWaited &&
@@ -672,9 +682,37 @@ export class ProjectNotificationStore extends NotificationStore {
       if (!event.runId) return [];
       const recipients = await projectRunRecipients(transaction, event.runId);
       if (!recipients.length) return [];
-      return (await candidatesFor(transaction, event)).filter((candidate) =>
-        recipients.includes(candidate.userId),
-      );
+      const run = await transaction
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .select(["runs.requestedBy", "runs.assignmentId", "runs.replyTarget"])
+        .where("runs.id", "=", event.runId)
+        .where("runs.threadId", "=", event.threadId)
+        .where("threads.workspaceId", "=", event.workspaceId)
+        .executeTakeFirst();
+      if (!run) return [];
+      if (run.requestedBy !== null)
+        return (await candidatesFor(transaction, event)).filter((candidate) =>
+          recipients.includes(candidate.userId),
+        );
+      if (run.assignmentId !== null || run.replyTarget !== null) return [];
+      const title = await threadTitle(transaction, event.threadId);
+      if (!title) return [];
+      const mutes = await transaction
+        .selectFrom("agentNotificationMutes")
+        .select(["userId", "muted"])
+        .where("workspaceId", "=", event.workspaceId)
+        .where("userId", "in", [...recipients])
+        .execute();
+      const muted = new Set(mutes.filter((row) => row.muted).map((row) => row.userId));
+      const candidates: NotificationCandidate[] = [];
+      for (const userId of recipients) {
+        if (!muted.has(userId))
+          candidates.push(
+            ...(await candidatesFor(transaction, event, { userId, title, muted: false })),
+          );
+      }
+      return candidates;
     }
     const row = await transaction
       .selectFrom("requests")
