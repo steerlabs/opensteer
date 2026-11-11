@@ -299,6 +299,7 @@ async function runDesktop(
   const uninstallAppProtocol = installDesktopAppProtocol(
     protocol,
     path.join(import.meta.dirname, "web"),
+    (request) => reportEvent("desktop.app-protocol.slow", request),
   );
   const updater = new DesktopUpdater({
     updates: loaded.config.updates,
@@ -1139,6 +1140,7 @@ async function runDesktop(
     .resumeIfConfigured()
     .catch((error) => reportNonFatal("desktop.personal.resume-failed", error));
   const mainWindows = new ElectronWindowFactory(loaded.config, {
+    log: reportEvent,
     policy: appOriginPolicy,
     onCreated: (window) => {
       workspaceContents = window.webContents;
@@ -1366,7 +1368,7 @@ async function runDesktop(
 
   desktopSupervisorReady = true;
   if (!shutdown.requested) void desktopSupervisor.connect();
-  await mainProcess.start({
+  const starting = mainProcess.start({
     openWindow: shouldOpenDesktopWindowAtLaunch({
       arguments: process.argv,
       wasOpenedAtLogin:
@@ -1374,6 +1376,7 @@ async function runDesktop(
     }),
   });
   if (webLinks.pending || mcpAuthorizationLinks.pending) mainProcess.focus();
+  await starting;
 
   function handleAsyncFatal(error: unknown): void {
     if (shutdown.requested || fatal) return;

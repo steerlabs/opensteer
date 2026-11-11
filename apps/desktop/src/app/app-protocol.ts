@@ -60,21 +60,29 @@ export function registerDesktopAppScheme(protocol: DesktopProtocolRegistrar): vo
   ]);
 }
 
+type SlowDesktopAppRequest = (request: {
+  readonly path: string;
+  readonly elapsedMs: number;
+}) => void;
+
 export function installDesktopAppProtocol(
   protocol: DesktopProtocolRegistrar,
   webRoot: string,
+  onSlowRequest?: SlowDesktopAppRequest,
 ): () => void {
-  const handler = createDesktopAppProtocolHandler(webRoot);
+  const handler = createDesktopAppProtocolHandler(webRoot, onSlowRequest);
   protocol.handle(desktopAppScheme, handler);
   return () => protocol.unhandle(desktopAppScheme);
 }
 
 export function createDesktopAppProtocolHandler(
   webRoot: string,
+  onSlowRequest?: SlowDesktopAppRequest,
 ): (request: Request) => Promise<Response> {
   const root = path.resolve(webRoot);
   const verifiedRoot = realDirectory(root);
   return async (request) => {
+    const started = performance.now();
     if (request.method !== "GET" && request.method !== "HEAD")
       return response(405, "Method Not Allowed");
     let url: URL;
@@ -94,17 +102,22 @@ export function createDesktopAppProtocolHandler(
     }
     const requested = safeAssetPath(url.pathname);
     if (requested === null) return response(404, "Not Found");
-    const candidate = path.join(root, requested);
-    const realRoot = await verifiedRoot;
-    let asset = await regularAsset(candidate, root, realRoot);
-    if (!asset && !path.extname(requested))
-      asset = await regularAsset(path.join(root, "index.html"), root, realRoot);
-    if (!asset) return response(404, "Not Found");
-    const body = request.method === "HEAD" ? null : await readFile(asset.filePath);
-    return new Response(body, {
-      headers: securityHeaders(asset.contentType),
-      status: 200,
-    });
+    try {
+      const candidate = path.join(root, requested);
+      const realRoot = await verifiedRoot;
+      let asset = await regularAsset(candidate, root, realRoot);
+      if (!asset && !path.extname(requested))
+        asset = await regularAsset(path.join(root, "index.html"), root, realRoot);
+      if (!asset) return response(404, "Not Found");
+      const body = request.method === "HEAD" ? null : await readFile(asset.filePath);
+      return new Response(body, {
+        headers: securityHeaders(asset.contentType),
+        status: 200,
+      });
+    } finally {
+      const elapsedMs = performance.now() - started;
+      if (elapsedMs >= 1_000) onSlowRequest?.({ path: url.pathname, elapsedMs });
+    }
   };
 }
 
