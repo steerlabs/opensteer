@@ -1,5 +1,6 @@
 import "./linkedin.css";
 import type { BrowserTab } from "./browser.js";
+import { PEOPLE, face, type Person } from "./face.js";
 
 const glyph = (path: string): string =>
   `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}" fill="currentColor"/></svg>`;
@@ -29,16 +30,70 @@ const NAV = [
 const TOP_NAV = `<header class="li-nav">
   <i class="li-logo">in</i>
   <span class="li-search">${SEARCH}<span>Search</span></span>
-  <nav class="li-icons">${NAV.map(([name, path], index) => `<span${index === 4 ? ' class="li-dot"' : ""}>${glyph(path)}<b>${name}</b></span>`).join("")}<span class="li-me"><i>AR</i><b>Me ▾</b></span></nav>
+  <nav class="li-icons">${NAV.map(([name, path], index) => `<span${index === 4 ? ' class="li-dot"' : ""}>${glyph(path)}<b>${name}</b></span>`).join("")}<span class="li-me">${face(PEOPLE.alex, "li-face")}<b>Me ▾</b></span></nav>
 </header>`;
 
-const PORTRAIT = `<svg viewBox="0 0 120 120" aria-hidden="true"><rect width="120" height="120" fill="#c8d8e4"/><path d="M33 58c-4-26 10-41 27-41s32 14 27 41c-2 12 2 22 6 30H27c4-8 8-18 6-30Z" fill="#2a1c17"/><path d="M14 120c3-22 22-31 46-31s43 9 46 31Z" fill="#2f5d62"/><path d="M51 76h18v17c-3 4-15 4-18 0Z" fill="#a8704f"/><ellipse cx="60" cy="57" rx="19" ry="23" fill="#bb7f5b"/><path d="M40 52c4-15 13-21 24-21 8 0 15 5 17 15-11-1-21-5-27-11-3 7-8 13-14 17Z" fill="#2a1c17"/></svg>`;
+/* Far and near towers as [x, width, height]; the cover is an evening skyline over the river. */
+const FAR = [
+  [0, 26, 34],
+  [24, 18, 46],
+  [40, 30, 30],
+  [70, 20, 52],
+  [92, 26, 40],
+  [150, 22, 44],
+  [172, 30, 58],
+  [204, 18, 36],
+  [228, 26, 48],
+  [262, 20, 62],
+  [300, 30, 42],
+  [334, 22, 54],
+  [360, 40, 36],
+] as const;
+const NEAR = [
+  [10, 22, 40],
+  [36, 16, 56],
+  [56, 26, 30],
+  [112, 20, 66],
+  [134, 14, 48],
+  [186, 24, 72],
+  [214, 12, 50],
+  [244, 22, 44],
+  [280, 18, 80],
+  [300, 26, 52],
+  [346, 20, 60],
+  [372, 26, 34],
+] as const;
+const BASE = 84;
+const towers = (set: readonly (readonly [number, number, number])[], fill: string): string =>
+  set
+    .map(
+      ([x, w, h]) => `<rect x="${x}" y="${BASE - h}" width="${w}" height="${h}" fill="${fill}"/>`,
+    )
+    .join("");
+const windows = NEAR.flatMap(([x, w, h], index) =>
+  Array.from({ length: Math.floor(h / 9) }, (_, row) =>
+    (row + index) % 3 === 0
+      ? ""
+      : `<rect x="${x + 3 + ((row * 5 + index * 3) % Math.max(1, w - 6))}" y="${BASE - h + 5 + row * 9}" width="2.4" height="2.4"/>`,
+  ),
+).join("");
 
-const face = (initials: string, color: string): string =>
-  `<i class="li-face" style="background:${color}">${initials}</i>`;
+const COVER = `<div class="li-cover"><svg viewBox="0 0 400 104" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+<circle cx="300" cy="62" r="16" fill="#ffe2b0" opacity=".55"/>
+${towers(FAR, "#6e7397")}
+${towers(NEAR, "#353c5c")}
+<g fill="#ffd28f" opacity=".75">${windows}</g>
+<rect y="${BASE}" width="400" height="20" fill="#3a4466"/>
+<g opacity=".35">${NEAR.map(([x, w, h]) => `<rect x="${x}" y="${BASE + 1}" width="${w}" height="${Math.min(h / 4, 18)}" fill="#1f2640"/>`).join("")}</g>
+<path d="M0 ${BASE + 6}h400M30 ${BASE + 11}h140M210 ${BASE + 14}h160" stroke="#f6b98a" stroke-width=".8" opacity=".5"/>
+</svg></div>`;
 
-const peer = (initials: string, color: string, name: string, role: string): string =>
-  `<div class="li-peer">${face(initials, color)}<div><b>${name}</b><span>${role}</span><em class="li-btn">Connect</em></div></div>`;
+const CONNECT = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM2 13.5c.4-2.6 2.1-4 4.5-4s4.1 1.4 4.5 4M13 5.5v4M11 7.5h4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+
+const pic = (person: Person): string => face(person, "li-face");
+
+const peer = (person: Person, name: string, role: string): string =>
+  `<div class="li-peer">${pic(person)}<div><b>${name}</b><span>${role}</span><em class="li-btn">${CONNECT}Connect</em></div></div>`;
 
 export const linkedin: BrowserTab = {
   id: "linkedin",
@@ -49,8 +104,8 @@ export const linkedin: BrowserTab = {
   <div class="li-body">
     <main class="li-main">
       <section class="li-card li-top">
-        <div class="li-cover"></div>
-        <div class="li-photo">${PORTRAIT}</div>
+        ${COVER}
+        <div class="li-photo">${pic(PEOPLE.priya)}</div>
         <div class="li-intro">
           <div class="li-who">
             <h4>Priya Raman <span>· 1st</span></h4>
@@ -60,7 +115,7 @@ export const linkedin: BrowserTab = {
           </div>
           <ul class="li-orgs"><li><i class="li-co">A</i>Acme Corp</li><li><i class="li-co li-co--edu">UT</i>UT Austin</li></ul>
         </div>
-        <p class="li-mutual"><span class="li-faces">${face("JL", "#7a5c99")}${face("SO", "#c0723f")}</span>Jordan Lee, Sam Okafor and 4 other mutual connections</p>
+        <p class="li-mutual"><span class="li-faces">${pic(PEOPLE.jordan)}${pic(PEOPLE.sam)}</span>Jordan Lee, Sam Okafor and 4 other mutual connections</p>
         <div class="li-actions"><span class="li-btn li-btn--primary">Message</span><span class="li-btn li-btn--quiet">More</span></div>
       </section>
       <section class="li-card">
@@ -73,7 +128,7 @@ export const linkedin: BrowserTab = {
         <div class="li-pills"><span class="is-on">Posts</span><span>Comments</span><span>Images</span></div>
         <article class="li-post" data-h="li-post">
           <p class="li-post__by">Priya Raman posted this · 2w</p>
-          <p class="li-post__text">Three months in at Acme, and our ops team just reached <mark data-h="li-team">120 people</mark>. <mark class="li-mark--late" data-h="li-onboard">What made it work was onboarding: every new hire ships something real in week one, with a buddy beside them.</mark></p>
+          <p class="li-post__text">Since joining Acme, I've watched our ops team grow to <mark data-h="li-team">120 people</mark>. <mark class="li-mark--late" data-h="li-onboard">What made it work was onboarding: every new hire ships something real in week one, with a buddy beside them.</mark></p>
           <p class="li-post__stats"><i class="li-react"></i><i class="li-react li-react--love"></i>214 · 38 comments</p>
         </article>
       </section>
@@ -86,9 +141,9 @@ export const linkedin: BrowserTab = {
     <aside class="li-side">
       <section class="li-card li-also">
         <h6>People also viewed</h6>
-        ${peer("MB", "#4f7a5a", "Marcus Bell", "COO at Fieldstone Logistics")}
-        ${peer("NA", "#8f5a6b", "Nadia Aziz", "Head of People at Acme Corp")}
-        ${peer("TV", "#5b6fa6", "Tomás Vega", "Ops Director at Northwind")}
+        ${peer(PEOPLE.marcus, "Marcus Bell", "COO at Fieldstone Logistics")}
+        ${peer(PEOPLE.nadia, "Nadia Aziz", "Head of People at Acme Corp")}
+        ${peer(PEOPLE.tomas, "Tomás Vega", "Ops Director at Northwind")}
       </section>
     </aside>
   </div>

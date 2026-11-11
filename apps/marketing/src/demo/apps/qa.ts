@@ -6,7 +6,7 @@ const check = (n: number, label: string, result: string): string =>
 /** A floating test-run panel: the release checklist the agent works through in Till. */
 export const qa = `<div class="win qa is-open is-front" data-win="qa" style="left:0;top:204px;width:248px;height:332px">
   <div class="qa-bar"><span class="tl"><i></i><i></i><i></i></span><b>Release 2.4 · Checkout</b></div>
-  <div class="qa-head"><span data-h="qa-run">Run 1 · build 411</span><span class="qa-go" data-h="qa-go"><span class="qa-go__idle">▶ Run</span><span class="qa-go__busy">Running</span></span></div>
+  <div class="qa-head"><span data-h="qa-run">Run 1 · build 411</span><span class="qa-go" data-h="qa-go"><span class="qa-go__idle"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.8v8.4L10 6Z" fill="currentColor"/></svg>Run</span><span class="qa-go__busy">Running</span></span></div>
   <ol class="qa-list">
     ${check(1, "Launch 2.4 (411)", "0.9s")}
     ${check(2, "New order", "#1048")}

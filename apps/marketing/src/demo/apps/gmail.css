@@ -172,8 +172,11 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 33%;
-  padding: 0 14px;
+  width: 25%;
+  min-width: 0;
+  padding: 0 12px;
+  overflow: hidden;
+  white-space: nowrap;
   color: #444746;
   font-size: 14px;
 }
@@ -505,11 +508,12 @@
   margin: 0 12px 0 10px;
 }
 .gm-compose__foot .gm-ico {
-  width: 30px;
+  width: 28px;
   height: 30px;
 }
 .gm-saved {
   margin-left: auto;
+  white-space: nowrap;
   color: #5f6368;
   font-size: 12.5px;
   opacity: 0;
@@ -520,4 +524,7 @@
 }
 .gm-trash {
   margin-left: 6px;
+}
+.gm-search .gm-tune {
+  margin-left: auto;
 }

@@ -106,7 +106,6 @@ export const support: Scene = {
     });
     api.at(7900, () => api.go("st-second", 0.5, 0.5));
     api.at(8600, () => {
-      api.click();
       api.flag("dup");
       api.step("Found the same $480 charge twice");
     });
@@ -121,14 +120,20 @@ export const support: Scene = {
     });
     api.at(14400, () => {
       api.front("stripe");
-      api.go("st-refund");
+      api.go("st-more");
     });
-    api.at(15300, () => {
+    api.at(15200, () => {
       api.click();
+      api.flag("menu");
+    });
+    api.at(15500, () => api.go("st-refund", 0.3, 0.5));
+    api.at(16300, () => {
+      api.click();
+      api.flag("menu", false);
       api.flag("modal");
     });
-    api.at(15800, () => api.go("st-go", 0.5, 0.55, "st-modal"));
-    api.at(16500, () => {
+    api.at(16800, () => api.go("st-go", 0.5, 0.55, "st-modal"));
+    api.at(17500, () => {
       api.flag("held");
       api.ask({
         title: "Refund $480 to Northwind?",
@@ -140,7 +145,7 @@ export const support: Scene = {
         onDeny: () => denied(api),
       });
     });
-    api.at(17300, () =>
+    api.at(18300, () =>
       api.label("Nothing moves until you allow it", "phone:request", 1, 0.3, "R", 46, 3000),
     );
   },

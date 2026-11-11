@@ -61,6 +61,15 @@
   font-weight: 600;
   transition: background-color 300ms;
 }
+.qa-go__idle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.qa-go__idle svg {
+  width: 10px;
+  height: 10px;
+}
 .qa-go__busy {
   display: none;
 }
