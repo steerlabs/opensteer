@@ -11,7 +11,7 @@ export const projectRequestStorageSql = sql`
       alter table public.requests
         drop constraint requests_cancellation_reason_check,
         add constraint requests_cancellation_reason_check check (cancellation_reason is null or cancellation_reason in (
-          'run-ended', 'process-lost', 'source-closed', 'thread-archived', 'workspace-deleted',
+          'run-ended', 'process-lost', 'source-closed', 'thread-archived', 'task-done', 'workspace-deleted',
           'membership-revoked', 'resource-deleted', 'authority-revoked', 'no-eligible-manager')) not valid;
       alter table public.requests
         add constraint requests_originating_grant_id_fkey
