@@ -432,6 +432,10 @@ describeStore("dormant Project access", (it) => {
       const upgradedObjects = new Map(
         (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
       );
+      const extendedEventChecks = new Set([
+        "constraint:agent_control_requests:agent_control_requests_action_check",
+        "constraint:agent_control_requests:agent_control_requests_action_class_check",
+      ]);
       const extendedPrincipalChecks = new Set([
         "constraint:principals:principals_kind_check",
         "constraint:principals:principals_kind_shape_check",
@@ -455,7 +459,14 @@ describeStore("dormant Project access", (it) => {
       ]);
       for (const original of originalObjects) {
         const definition = upgradedObjects.get(original.name);
-        if (extendedPrincipalChecks.has(original.name))
+        if (extendedEventChecks.has(original.name))
+          expect(definition, original.name).toBe(
+            original.definition.replace(
+              "'thread.read'::text",
+              "'thread.read'::text, 'project.event'::text",
+            ) + " NOT VALID",
+          );
+        else if (extendedPrincipalChecks.has(original.name))
           expect(definition, original.name).toContain("'project'");
         else if (nullable.has(original.name)) expect(definition, original.name).toBeUndefined();
         else if (replaced.has(original.name)) expect(definition, original.name).toBeDefined();
