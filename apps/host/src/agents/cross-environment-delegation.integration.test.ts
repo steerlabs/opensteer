@@ -1686,11 +1686,15 @@ integration("cross-environment delegation reaches the Runner", () => {
 
     await drainReturns();
     await drainReturns();
+    // Both tasks were started by the same Run, so their results wait in one return.
     const returned = await returnMessages(fixture.parentThreadId);
-    expect(returned.map(({ content }) => messageText(content).split("\n")[0])).toEqual([
-      "Task failed: Trial terms",
-      "Task completed: Delivery windows",
-    ]);
+    expect(
+      returned.map(({ content }) =>
+        messageText(content)
+          .split("\n")
+          .filter((line) => line.startsWith("Task ") && !line.startsWith("Task Thread:")),
+      ),
+    ).toEqual([["Task failed: Trial terms", "Task completed: Delivery windows"]]);
     const policies = await database
       .selectFrom("threadInputs")
       .select("policy")
@@ -1700,7 +1704,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         returned.map(({ id }) => id),
       )
       .execute();
-    expect(policies).toEqual([{ policy: "queue" }, { policy: "queue" }]);
+    expect(policies).toEqual([{ policy: "queue" }]);
     acceptanceEvidence.push({
       caseId: "L09",
       runnerFailureAssignmentId: runnerFailure.assignmentId,
