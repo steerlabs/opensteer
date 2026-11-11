@@ -94,6 +94,6 @@ final class ProtectedStoreTests: XCTestCase {
   }
 
   func testNamesAreFixed() {
-    XCTAssertEqual(ProtectedName.allCases.map(\.rawValue), ["owner-agreement-key", "owner-signing-key", "checkpoint", "settings", "person-fill", "owner-key-policy"])
+    XCTAssertEqual(ProtectedName.allCases.map(\.rawValue), ["owner-agreement-key", "owner-signing-key", "checkpoint", "settings", "person-fill", "person-save", "owner-key-policy"])
   }
 }

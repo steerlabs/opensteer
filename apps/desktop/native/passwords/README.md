@@ -25,3 +25,7 @@ Person fills require protocol 8; earlier connections retain their status shape a
 Their setting and activity use separate stores so downgrading preserves agent settings and person
 history. Native fills on the vault Mac require the broker’s own device-owner check; another viewer
 owns its device check. A person transaction never grants agent access and lasts at most five minutes.
+
+Saving a login a person typed requires protocol 9. The broker holds it in memory for its connection
+for at most two minutes, never prompts, and on commit adds exactly that login with no grant; this path
+cannot edit, delete or grant anything. Its setting and activity use their own stores, like person fill's.

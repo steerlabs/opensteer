@@ -141,6 +141,7 @@ private struct AddPasswordsView: View {
       // Off is the one setting that can outlive the last saved login, and it needs a way back.
       if !model.agentSignIns { AgentSignInsToggle(model: model) }
       PersonFillToggle(model: model)
+      PersonSaveToggle(model: model)
       SourceList { source in Task { await model.importPasswords(from: source) } }
       if let message = model.message {
         Text(message).foregroundStyle(.orange)
@@ -163,6 +164,20 @@ private struct PersonFillToggle: View {
       VStack(alignment: .leading, spacing: 2) {
         Text(Copy.personFill)
         Text(Copy.personFillDetail).font(.callout).foregroundStyle(.secondary)
+      }
+    }
+    .toggleStyle(AccentSwitchStyle())
+  }
+}
+
+private struct PersonSaveToggle: View {
+  @ObservedObject var model: PasswordsWindowModel
+
+  var body: some View {
+    Toggle(isOn: Binding(get: { model.personSave }, set: { on in Task { await model.setPersonSave(on) } })) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(Copy.personSave)
+        Text(Copy.personSaveDetail).font(.callout).foregroundStyle(.secondary)
       }
     }
     .toggleStyle(AccentSwitchStyle())
@@ -248,6 +263,7 @@ private struct ReadyView: View {
       Section {
         AgentSignInsToggle(model: model)
         PersonFillToggle(model: model)
+        PersonSaveToggle(model: model)
       }
 
       Section {
@@ -273,6 +289,7 @@ private struct ReadyView: View {
             switch entry {
             case .agent(let entry): ActivityRow(entry: entry)
             case .person(let entry): PersonActivityRow(entry: entry)
+            case .saved(let entry): PersonSaveRow(entry: entry)
             }
           }
         }
@@ -491,6 +508,18 @@ private struct PersonActivityRow: View {
         Text("\(entry.site) · \(Copy.personFillLocation(entry.presence))")
           .font(.callout).foregroundStyle(.secondary)
       }
+      Spacer()
+      Text(entry.at.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
+    }
+  }
+}
+
+private struct PersonSaveRow: View {
+  let entry: PersonSaveEntry
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline) {
+      Text(Copy.personSaveTitle(entry)).font(.body.weight(.medium))
       Spacer()
       Text(entry.at.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
     }

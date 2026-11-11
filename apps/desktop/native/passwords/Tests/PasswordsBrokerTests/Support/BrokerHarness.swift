@@ -126,6 +126,7 @@ final class BrokerHarness {
   let windows = RecordingWindows()
   let activity: ActivityLog
   let personActivity: PersonActivityLog
+  let personSaves: PersonSaveLog
   let vault: VaultService
   let broker: Broker
   private(set) var server: IPCServer!
@@ -148,6 +149,7 @@ final class BrokerHarness {
     keys = SoftwareOwnerKeys(isAvailable: secureEnclave)
     activity = ActivityLog(url: paths.activity)
     personActivity = PersonActivityLog(url: paths.personActivity)
+    personSaves = PersonSaveLog(url: paths.personSaves)
     controlled = controlledStore ? try ControlledStore(directory: paths.protectedFiles) : nil
     vault = VaultService(
       root: paths.vault, protectedStore: controlled ?? protected, keys: keys, deviceName: "Test Mac"
@@ -155,7 +157,8 @@ final class BrokerHarness {
     broker = Broker(
       configuration: BrokerConfiguration(
         development: true, brokerVersion: "9.9.9-test", windowIdleLimit: windowIdleLimit),
-      vault: vault, presence: presence, activity: activity, personActivity: personActivity)
+      vault: vault, presence: presence, activity: activity, personActivity: personActivity,
+      personSaves: personSaves)
     broker.windows = windows
   }
 
@@ -190,6 +193,7 @@ final class BrokerHarness {
     for client in clients { client.close() }
     await activity.flush()
     await personActivity.flush()
+    await personSaves.flush()
     try? FileManager.default.removeItem(at: directory)
   }
 

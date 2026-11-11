@@ -10,6 +10,9 @@ public enum Copy {
   public static let appName = "Opensteer Passwords"
   public static let personFill = "Fill passwords for me in Opensteer"
   public static let personFillDetail = "Offers your saved logins when you click a sign-in field in Opensteer’s browser, on this Mac or another device."
+  public static let personSave = "Offer to save passwords in Opensteer"
+  public static let personSaveDetail = "After you sign in by hand in Opensteer’s browser, on this Mac or another device, asks to keep that login on this Mac."
+  public static func personSaveTitle(_ entry: PersonSaveEntry) -> String { "You saved \(entry.account) for \(entry.site)" }
   public static func fillReason(_ site: String) -> String { "fill your saved login on \(site)" }
   public static func personFillTitle(_ entry: PersonActivityEntry) -> String {
     entry.kind == .code ? "You filled a verification code" : "You filled \(entry.account)"

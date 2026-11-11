@@ -1,16 +1,16 @@
 import Foundation
 import PasswordsCore
 
-/// The broker IPC, v4 through v8: exactly the shapes `packages/protocol/src/passwords-broker.ts`
+/// The broker IPC, v4 through v9: exactly the shapes `packages/protocol/src/passwords-broker.ts`
 /// declares. Frames are parsed with the strict JSON parser (no duplicate keys,
 /// integers only) and every object is closed, as `z.strictObject` is. Answers
 /// are encoded canonically. `Tests/Fixtures/passwords-wire.json` is written
 /// from these types and parsed by the protocol's schemas.
 public enum Wire {
-  /// Login requests retain the v6 shape on v7–8 connections.
+  /// Login requests retain the v6 shape on v7–9 connections.
   public static let protocolVersion: Int64 = 6
-  public static let latestProtocolVersion: Int64 = 8
-  public static let supportedProtocolVersions: [Int64] = [8, 7, 6, 5, 4]
+  public static let latestProtocolVersion: Int64 = 9
+  public static let supportedProtocolVersions: [Int64] = [9, 8, 7, 6, 5, 4]
   public static let maxAccounts = 100
 
   public enum Method: String, CaseIterable, Sendable {
@@ -21,6 +21,9 @@ public enum Wire {
     case fillAccounts = "fill.accounts"
     case fillBegin = "fill.begin"
     case hello
+    case saveBegin = "save.begin"
+    case saveCommit = "save.commit"
+    case saveCancel = "save.cancel"
     case status
     case windowOpen = "window.open"
     case signInProbe = "signin.probe"
@@ -181,7 +184,7 @@ public enum Wire {
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
       if let negotiated {
-        version = (negotiated == 7 || negotiated == 8) ? 6 : negotiated
+        version = (7...9).contains(negotiated) ? 6 : negotiated
       } else if case .object(let fields) = json,
         case .integer(let offered)? = fields["protocolVersion"]
       {
@@ -368,7 +371,7 @@ public enum Wire {
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
       let version: Int64
       if let negotiated {
-        version = (negotiated == 7 || negotiated == 8) ? 6 : negotiated
+        version = (7...9).contains(negotiated) ? 6 : negotiated
       } else if case .object(let fields) = json, fields["kind"] != nil {
         version = 5
       } else {
@@ -465,7 +468,61 @@ public enum Wire {
     }
   }
 
+  /// A login the person typed into a page, held by the broker until they
+  /// answer. Its values are never trimmed or normalized, and no message here
+  /// names one.
+  public struct SaveBeginParams: Sendable {
+    public let transactionId: String
+    /// As sent; the vault's site rules decide later whether it can be saved.
+    public let origin: String
+    public let username: String
+    public let password: String
+
+    public init(json: JSONValue) throws {
+      let object = try strict(json, ["transactionId", "origin", "username", "password"])
+      transactionId = try transaction(object)
+      origin = try string(object, "origin")
+      username = try string(object, "username")
+      password = try string(object, "password")
+      guard WireRules.length(origin, within: 1...2_048),
+        (1...VaultLimits.maxUsernameBytes).contains(username.utf8.count),
+        (1...VaultLimits.maxPasswordBytes).contains(password.utf8.count)
+      else { throw Failure.invalid("Invalid login to save.") }
+    }
+
+    public var json: JSONValue {
+      .object(["transactionId": .string(transactionId), "origin": .string(origin),
+        "username": .string(username), "password": .string(password)])
+    }
+  }
+
   // MARK: Results
+
+  public enum SaveSkipReason: String, CaseIterable, Sendable {
+    case saved, off, unsaveable, unavailable
+    case notSetUp = "not-set-up"
+  }
+  public enum SaveDecision: Equatable, Sendable {
+    case offer(Date), skip(SaveSkipReason)
+    public var json: JSONValue {
+      switch self {
+      case .offer(let deadline):
+        return .object(["decision": .string("offer"), "expiresAt": .string(ActivityLog.timestamp(deadline))])
+      case .skip(let reason): return .object(["decision": .string("skip"), "reason": .string(reason.rawValue)])
+      }
+    }
+  }
+
+  public enum SaveRefusal: String, CaseIterable, Sendable { case saved, ended, off, unavailable }
+  public enum SaveCommitResult: Equatable, Sendable {
+    case saved, refused(SaveRefusal)
+    public var json: JSONValue {
+      switch self {
+      case .saved: return .object(["saved": .bool(true)])
+      case .refused(let reason): return .object(["saved": .bool(false), "reason": .string(reason.rawValue)])
+      }
+    }
+  }
 
   public struct FillAccount: Equatable, Sendable {
     public let id: String
@@ -512,11 +569,13 @@ public enum Wire {
     public let vault: VaultState
     public let agentSignIns: Bool
     public let personFill: Bool
+    public let personSave: Bool
 
-    public init(vault: VaultState, agentSignIns: Bool, personFill: Bool = false) {
+    public init(vault: VaultState, agentSignIns: Bool, personFill: Bool = false, personSave: Bool = false) {
       self.vault = vault
       self.agentSignIns = agentSignIns
       self.personFill = personFill
+      self.personSave = personSave
     }
 
     public var json: JSONValue { json(protocolVersion: 7) }
@@ -526,6 +585,7 @@ public enum Wire {
         "agentSignIns": .string(agentSignIns ? "on" : "off"), "vault": .string(vault.rawValue),
       ]
       if protocolVersion >= 8 { fields["personFill"] = .string(personFill ? "on" : "off") }
+      if protocolVersion >= 9 { fields["personSave"] = .string(personSave ? "on" : "off") }
       return .object(fields)
     }
   }
