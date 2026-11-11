@@ -4,6 +4,7 @@ import {
   type DeploymentId,
   type DeploymentKind,
   type TeamActor,
+  TeamChannelIdSchema,
 } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { TeamCommandSchema, TeamBootstrapSchema, teamReadSchemas } from "@opensteer/protocol";
@@ -274,20 +275,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     if (name.startsWith("team.knowledge.")) return options.knowledge.read(actor, name, raw);
     switch (name) {
       case "team.bootstrap.get": {
-        const page = await members.page(actor);
-        const member =
-          page.members.find((m) => m.userId === actor.userId) ??
-          (await options.database.transaction().execute(async (t) => {
-            await access.member(t, actor.userId);
-            const row = await t
-              .selectFrom("teamMembers as m")
-              .innerJoin("users as u", "u.id", "m.userId")
-              .selectAll("m")
-              .select(["u.displayName", "u.image"])
-              .where("m.userId", "=", actor.userId)
-              .executeTakeFirstOrThrow();
-            return { ...row, joinedAt: row.joinedAt.toISOString() };
-          }));
+        const member = await members.get(actor);
         return TeamBootstrapSchema.strip().parse({
           teamId: options.teamId,
           teamName: options.teamName,
@@ -450,8 +438,38 @@ export async function startTeamServices(options: TeamServiceOptions) {
       const session = await authenticate();
       const actor: TeamActor = { kind: "human", userId: session.user.id };
       await options.database.transaction().execute((t) => access.member(t, actor.userId));
-      if (name === "commands.dispatch") return dispatch(actor, raw);
-      return read(actor, name, raw);
+      if (name === "commands.dispatch") {
+        const revision = access.revision;
+        const command = TeamCommandSchema.parse(raw);
+        const result = await dispatch(actor, command);
+        return access.handoff(
+          revision,
+          () =>
+            options.database.transaction().execute(async (t) => {
+              await access.member(t, actor.userId);
+              if (command.type === "team.invite.create") await access.admin(t, actor);
+              let channelId = "channelId" in command ? command.channelId : undefined;
+              if (
+                typeof result === "object" &&
+                result !== null &&
+                "channel" in result &&
+                typeof result.channel === "object" &&
+                result.channel !== null &&
+                "id" in result.channel
+              )
+                channelId = TeamChannelIdSchema.parse(result.channel.id);
+              return !channelId || (await access.channel(t, actor, channelId)).read;
+            }),
+          () => result,
+        );
+      }
+      for (;;) {
+        const revision = access.revision;
+        const result = await read(actor, name, raw);
+        if (revision === access.revision) return result;
+        await authenticate();
+        await options.database.transaction().execute((t) => access.member(t, actor.userId));
+      }
     },
     dispatch,
     read,

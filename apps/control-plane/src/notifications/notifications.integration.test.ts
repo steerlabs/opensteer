@@ -7,6 +7,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import {
   NotificationIdSchema,
+  TeamMessageIdSchema,
   NotificationPreviewEnvelopeSchema,
   createId,
   notificationExpiryMilliseconds,
@@ -123,7 +124,6 @@ integration("control-plane notification boundary", () => {
       schemaVersion: 1,
       sequence: "42",
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
       ...overrides,
     });
   }
@@ -504,6 +504,79 @@ integration("control-plane notification boundary", () => {
       .execute();
     expect(new Set(delivered.map((row) => row.accountId))).toEqual(new Set([ownerId, memberId]));
     expect([owner.installationId, member.installationId]).toHaveLength(2);
+  });
+
+  it("routes team push only to published members, keeps sealed previews opaque, and stops after removal", async () => {
+    await database
+      .updateTable("deployments")
+      .set({
+        authorityEnvelope: sql`jsonb_build_object('document',jsonb_build_object('deploymentShape',jsonb_build_object('kind','team')))`,
+      })
+      .where("id", "=", deploymentId)
+      .execute();
+    await registerPhone({ accountId: ownerId });
+    await registerPhone({ accountId: memberId, installationId: "team-installation" });
+    await registerPhone({ accountId: outsiderId });
+    const authority = await store.authenticateHostCredential(`Bearer ${hostCredential}`);
+    const target = {
+      kind: "team-message" as const,
+      origin: `https://${deploymentId}.opensteer.invalid`,
+      teamId: deploymentId,
+      channelId: createId("teamChannel"),
+      messageId: TeamMessageIdSchema.parse("1"),
+    };
+    const preview = NotificationPreviewEnvelopeSchema.parse({
+      version: 1,
+      keyId: Buffer.alloc(16).toString("base64url"),
+      nonce: Buffer.alloc(12).toString("base64url"),
+      ciphertext: Buffer.alloc(17).toString("base64url"),
+    });
+    const published = publication({
+      kind: "team-message",
+      requestId: null,
+      runId: null,
+      threadId: null,
+      teamTarget: target,
+      recipientAccountIds: [ownerId, memberId, outsiderId],
+      previews: [{ accountId: memberId, installationId: "team-installation", preview }],
+    });
+    await expect(notifications.ingest(authority, published)).resolves.toEqual({ deliveries: 1 });
+    const sent = await sendDue();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.message).toMatchObject({
+      title: "Opensteer",
+      body: "New team message",
+      data: {
+        kind: "team-message",
+        teamId: deploymentId,
+        channelId: target.channelId,
+        teamMessageId: "1",
+        preview: JSON.stringify(preview),
+      },
+    });
+    expect(sent[0]!.message.data.deepLink).toContain(encodeURIComponent(target.origin));
+    expect(sent[0]!.message.data.threadId).toBeUndefined();
+    const pending = { ...published, notificationId: createId("notification") };
+    await expect(notifications.ingest(authority, pending)).resolves.toEqual({ deliveries: 1 });
+    await database
+      .updateTable("deploymentDirectoryEntries")
+      .set({ present: false, generation: 2 })
+      .where("deploymentId", "=", deploymentId)
+      .where("accountId", "=", memberId)
+      .execute();
+    await expect(
+      notifications.ingest(authority, { ...published, notificationId: createId("notification") }),
+    ).resolves.toEqual({ deliveries: 0 });
+    await expect(sendDue()).resolves.toEqual([]);
+    await expect(store.deploymentForAccount(memberId, deploymentId)).resolves.toBeNull();
+    await expect(store.deploymentForAccount(ownerId, deploymentId)).resolves.toBeNull();
+    await expect(
+      notifications.ingest(authority, {
+        ...published,
+        notificationId: createId("notification"),
+        teamTarget: { ...target, origin: "https://other.invalid" },
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it("delivers a reply published with a day-long window, worded and anchored for the phone", async () => {

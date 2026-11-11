@@ -9,7 +9,7 @@ import {
   type TeamLinkId,
   type UserId,
 } from "@opensteer/core";
-import { sql, type Kysely, type Transaction } from "kysely";
+import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { addTeamSelfAddNotices } from "./team-notices-store.js";
@@ -35,7 +35,7 @@ export function teamConflict(message: string): never {
   throw new OpensteerError({ code: "conflict", message });
 }
 
-export function teamGroupPaths(userId: UserId) {
+export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
   return sql`with recursive member_groups(id, path) as (
     select p.group_id, array[p.group_id] from team_group_people p
     join team_groups g on g.id=p.group_id and g.deleted_at is null where p.user_id=${userId}
@@ -46,14 +46,21 @@ export function teamGroupPaths(userId: UserId) {
     where cardinality(p.path)<16 and not e.parent_group_id=any(p.path)
   )`;
 }
-export function teamReadableChannels(actor: TeamActor) {
-  return sql<TeamChannelId>`(${teamGroupPaths(actor.userId)}
-    select c.id from team_channels c where (${actor.kind}='human' or not c.people_only)
-    and exists(select 1 from team_members m where m.user_id=${actor.userId} and m.state='active')
+export function teamReadableChannelIds(
+  userId: UserId | RawBuilder<unknown>,
+  kind: TeamActor["kind"],
+) {
+  return sql<TeamChannelId>`(${teamGroupPaths(userId)}
+    select c.id from team_channels c where (${kind}='human' or not c.people_only)
+    and exists(select 1 from team_members m where m.user_id=${userId} and m.state='active')
     and exists(select 1 from team_channel_members a where a.channel_id=c.id and
-      ((a.subject_kind='person' and a.subject_id=${actor.userId}) or
+      ((a.subject_kind='person' and a.subject_id=${userId}) or
        (a.subject_kind='group' and a.subject_id in (select id from member_groups))))
   )`;
+}
+
+export function teamReadableChannels(actor: TeamActor) {
+  return teamReadableChannelIds(actor.userId, actor.kind);
 }
 
 export class TeamAccessStore {
@@ -173,8 +180,17 @@ export class TeamAccessStore {
         .selectFrom("teamAccessState")
         .select("revision")
         .where("singletonKey", "=", "team")
+        // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
         .forUpdate()
         .executeTakeFirstOrThrow();
+      // Authority UPDATE already excludes content; reserve channels before later request cancellation discovers them.
+      await transaction
+        .selectFrom("teamChannels")
+        .select("id")
+        .orderBy("id")
+        // FOR UPDATE: M1/M2 requires the same channel lock before content and ACL removal.
+        .forUpdate()
+        .execute();
       const result = await write(transaction);
       const effects = await this.#terminalize(transaction, result.effects);
       const state = await transaction
@@ -190,7 +206,12 @@ export class TeamAccessStore {
       return { ...result, effects, revision: SequenceSchema.parse(state.revision) };
     });
     if (BigInt(committed.revision) > BigInt(this.#revision)) this.#revision = committed.revision;
-    await Promise.all([...this.#closers].map((close) => close(committed.effects)));
+    const closed = await Promise.allSettled(
+      [...this.#closers].map((close) => close(committed.effects)),
+    );
+    const failed = closed.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
+    if (failed.length)
+      throw new AggregateError(failed, "Team access committed but closing a transport failed");
     return committed.value;
   }
   async mutateAs<Value>(
@@ -360,6 +381,7 @@ export class TeamAccessStore {
         .select("id")
         .where("id", "in", [...channels].sort())
         .orderBy("id")
+        // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
         .forUpdate()
         .execute();
     for (const channelId of [...channels].sort()) {
@@ -405,6 +427,7 @@ export class TeamAccessStore {
         .selectFrom("teamChannels")
         .select("id")
         .where("id", "=", channelId)
+        // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
         .forUpdate()
         .executeTakeFirstOrThrow();
       return write(transaction, await this.channel(transaction, actor, channelId));
@@ -435,6 +458,7 @@ export class TeamAccessStore {
           .selectFrom("teamChannels")
           .select("id")
           .where("id", "=", topic.originChannelId)
+          // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
           .forUpdate()
           .executeTakeFirstOrThrow();
       const authority = await this.topic(transaction, actor, topicId);

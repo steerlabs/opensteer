@@ -775,6 +775,9 @@ export class ControlPlaneStore {
           )
           .select(deploymentSelection)
           .where("deployments.ownerAccountId", "=", accountId)
+          .where(
+            sql<boolean>`coalesce(deployments.authority_envelope->'document'->'deploymentShape'->>'kind','personal')<>'team' or exists(select 1 from deployment_directory_entries e where e.deployment_id=deployments.id and e.account_id=${accountId} and e.present)`,
+          )
           .where(({ not, exists, selectFrom }) =>
             not(
               exists(
@@ -885,6 +888,15 @@ export class ControlPlaneStore {
           .where("deployments.id", "=", deploymentId)
           .executeTakeFirst();
         if (!deployment || deployment.authorityEnvelope === null) return null;
+        const team = z
+          .object({ document: z.object({ deploymentShape: z.object({ kind: z.string() }) }) })
+          .safeParse(deployment.authorityEnvelope);
+        if (
+          team.success &&
+          team.data.document.deploymentShape.kind === "team" &&
+          deployment.memberPresent !== true
+        )
+          return null;
         const access =
           deployment.ownerAccountId === accountId
             ? "owner"

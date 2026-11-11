@@ -39,6 +39,7 @@ export class TeamOutboxStore {
         .selectAll()
         .orderBy("id")
         .limit(16)
+        // FOR UPDATE: This worker deletes each claimed outbox row.
         .forUpdate()
         .skipLocked()
         .execute();

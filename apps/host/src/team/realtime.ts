@@ -31,6 +31,7 @@ interface Peer {
   watched: UserId[];
   seen: number;
   closed: boolean;
+  presence: string;
 }
 export class TeamRealtimeHub {
   readonly #peers = new Set<Peer>();
@@ -95,6 +96,7 @@ export class TeamRealtimeHub {
       watched: [],
       seen: Date.now(),
       closed: false,
+      presence: "",
     };
     this.#peers.add(peer);
     return {
@@ -122,13 +124,14 @@ export class TeamRealtimeHub {
             can: null,
           };
           peer.subscription = subscription;
-          if (frame.sidebar)
-            this.#send(peer, {
-              type: "team.sidebar",
-              sidebar: await chat.directory(actor, undefined, true),
-            });
+          if (frame.sidebar) {
+            const revision = this.access.revision;
+            const sidebar = await this.chat.directory(actor, undefined, true);
+            await this.#handoff(peer, { type: "team.sidebar", sidebar }, revision);
+          }
           if (frame.scope) {
-            const cut = await chat.resume(actor, {
+            const revision = this.access.revision;
+            const cut = await this.chat.resume(actor, {
               subscriptionId: frame.subscriptionId,
               generation: frame.generation,
               scope: frame.scope,
@@ -136,7 +139,7 @@ export class TeamRealtimeHub {
             });
             if (peer.subscription !== subscription || peer.closed) return;
             subscription.can = cut.channel.can;
-            await this.#handoff(peer, { type: "team.cut", cut });
+            await this.#handoff(peer, { type: "team.cut", cut }, revision);
             subscription.since = cut.throughSeq;
           }
         } else if (frame.type === "team.presence") {
@@ -144,9 +147,9 @@ export class TeamRealtimeHub {
           peer.watched = frame.watchedUserIds;
           this.#presence(peer);
         } else {
-          const allowed = await access.database
+          const allowed = await this.access.database
             .transaction()
-            .execute(async (t) => (await access.channel(t, actor, frame.channelId)).read);
+            .execute(async (t) => (await this.access.channel(t, actor, frame.channelId)).read);
           if (!allowed) return;
           const key = `${actor.userId}:${frame.channelId}:${frame.rootId}`;
           const prior = this.#typing.get(key);
@@ -173,8 +176,7 @@ export class TeamRealtimeHub {
     if (!peer.closed && !peer.socket.send(frame))
       this.#close(peer, "Team connection exceeded its buffer");
   }
-  async #handoff(peer: Peer, frame: Frame) {
-    const revision = this.access.revision;
+  async #handoff(peer: Peer, frame: Frame, revision: typeof this.access.revision) {
     await this.access.handoff(
       revision,
       () =>
@@ -216,6 +218,7 @@ export class TeamRealtimeHub {
             subscription = first.subscription!;
           if (!subscription.scope) continue;
           try {
+            const revision = this.access.revision;
             const cut = await this.chat.resume(first.actor, {
               subscriptionId: subscription.id,
               generation: subscription.generation,
@@ -230,15 +233,19 @@ export class TeamRealtimeHub {
                 !current.can
               )
                 continue;
-              await this.#handoff(peer, {
-                type: "team.cut",
-                cut: {
-                  ...cut,
-                  subscriptionId: current.id,
-                  generation: current.generation,
-                  channel: { ...cut.channel, can: current.can },
+              await this.#handoff(
+                peer,
+                {
+                  type: "team.cut",
+                  cut: {
+                    ...cut,
+                    subscriptionId: current.id,
+                    generation: current.generation,
+                    channel: { ...cut.channel, can: current.can },
+                  },
                 },
-              });
+                revision,
+              );
               current.since = cut.throughSeq;
             }
           } catch {
@@ -267,16 +274,19 @@ export class TeamRealtimeHub {
           userIds,
         });
   }
-  #presence(peer: Peer) {
-    this.#send(peer, {
-      type: "team.presence",
-      people: peer.watched.map((userId) => ({
-        userId,
-        online: [...this.#peers].some(
-          (p) => p.actor.userId === userId && p.visible && p.seen > Date.now() - 90000,
-        ),
-      })),
-    });
+  #presence(peer: Peer, online = this.#online()) {
+    const people = peer.watched.map((userId) => ({ userId, online: online.has(userId) }));
+    const key = JSON.stringify(people);
+    if (key === peer.presence) return;
+    peer.presence = key;
+    this.#send(peer, { type: "team.presence", people });
+  }
+  #online() {
+    return new Set(
+      [...this.#peers]
+        .filter((p) => p.visible && p.seen > Date.now() - 90000)
+        .map((p) => p.actor.userId),
+    );
   }
   #expire() {
     const now = Date.now();
@@ -285,7 +295,8 @@ export class TeamRealtimeHub {
         this.#typing.delete(key);
         this.#typingFrame(typing.channelId, typing.rootId);
       }
-    for (const peer of this.#peers) if (peer.watched.length) this.#presence(peer);
+    const online = this.#online();
+    for (const peer of this.#peers) if (peer.watched.length) this.#presence(peer, online);
   }
   #close(peer: Peer, reason: string) {
     if (peer.closed) return;

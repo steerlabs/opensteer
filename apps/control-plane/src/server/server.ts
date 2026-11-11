@@ -459,7 +459,7 @@ function toFetchRequest(request: FastifyRequest, publicOrigin: URL, requestUrl?:
 
 function serializeRequestBody(body: unknown) {
   if (body === undefined || body === null) return undefined;
-  if (Buffer.isBuffer(body)) return body;
+  if (Buffer.isBuffer(body)) return new Uint8Array(body);
   if (typeof body === "string") return body;
   return JSON.stringify(body);
 }

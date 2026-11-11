@@ -461,6 +461,7 @@ const migrationProvider = {
       "0014_notification_previews": notificationPreviewsMigration,
       "0015_oauth_browser_binding": oauthBrowserBindingMigration,
       "0016_oauth_app_finish": oauthAppFinishMigration,
+      "0017_team_notifications": teamNotificationsMigration,
     };
   },
 };
@@ -519,5 +520,18 @@ const oauthAppFinishMigration: Migration = {
           or (status in ('denied','failed','expired') and launch_ticket_hash is null and encrypted_context is null and context_key_version is null)
         )
     `.execute(database);
+  },
+};
+
+const teamNotificationsMigration: Migration = {
+  async up(database) {
+    for (const table of ["notification_publications", "notification_deliveries"]) {
+      await sql`alter table ${sql.table(table)} alter column thread_id drop not null,add column team_target jsonb,
+      drop constraint ${sql.id(`${table}_kind_check`)},
+      add constraint ${sql.id(`${table}_kind_check`)} check(kind in ('reply-published','request-opened','run-failed','report-published','run-completed','run-interrupted','team-message','team-agent-needs-you','team-agent-completed','team-notice')),
+      add constraint ${sql.id(`${table}_target_check`)} check((kind like 'team-%' and thread_id is null and team_target is not null) or(kind not like 'team-%' and thread_id is not null and team_target is null))`.execute(
+        database,
+      );
+    }
   },
 };

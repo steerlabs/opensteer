@@ -26,7 +26,8 @@
     "jose": "catalog:",
     "kysely": "catalog:",
     "nanostores": "catalog:",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@opensteer/control-plane-protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

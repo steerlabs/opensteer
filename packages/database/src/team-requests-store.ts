@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import {
   TeamStatusStepSchema,
   type TeamAgentRequestId,
@@ -10,7 +11,7 @@ import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
 import { TeamAccessStore, bumpTeamChannel, requireTeam } from "./team-access-store.js";
-import { TeamChatStore, teamRequestView } from "./team-chat-store.js";
+import { TeamChatStore, teamRequestView, teamMessageViews } from "./team-chat-store.js";
 
 export class TeamRequestsStore implements TeamRequestStorePort {
   readonly access: TeamAccessStore;
@@ -175,9 +176,37 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         request.threadRootId,
         request.triggerMessageId,
       );
-      const messages = page.messages;
-      while (Buffer.byteLength(JSON.stringify(messages)) > 32768 && messages.length)
-        messages.shift();
+      const requiredRows = await t
+        .selectFrom("teamMessages")
+        .selectAll()
+        .where("channelId", "=", request.channelId)
+        .where("id", "in", [request.threadRootId, request.triggerMessageId])
+        .execute();
+      const required = await teamMessageViews(t, requiredRows);
+      const merged = new Map(
+        [...page.messages, ...required].map((m) => [m.id, { ...m, requests: [] }]),
+      );
+      const messages = [...merged.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+      const protectedIds = new Set([request.threadRootId, request.triggerMessageId]);
+      while (Buffer.byteLength(JSON.stringify(messages)) > 32768) {
+        const removable = messages.findIndex((m) => !protectedIds.has(m.id));
+        if (removable >= 0) {
+          messages.splice(removable, 1);
+          continue;
+        }
+        const longest = [...messages].sort(
+          (a, b) => b.bodyMarkdown.length - a.bodyMarkdown.length,
+        )[0];
+        requireTeam(
+          longest && longest.bodyMarkdown.length > 128,
+          "Request context metadata exceeds its byte bound",
+        );
+        longest.bodyMarkdown =
+          Array.from(longest.bodyMarkdown)
+            .slice(0, Math.floor(longest.bodyMarkdown.length / 2))
+            .join("") + "\n\n[Excerpt; read the full message with team_read.]";
+        longest.plainText = plainTextExcerpt(longest.bodyMarkdown, 32768) ?? "";
+      }
       return TeamRequestContextSchema.parse({
         request,
         instructionsMarkdown: page.channel.instructionsMarkdown,

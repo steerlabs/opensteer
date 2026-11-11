@@ -643,7 +643,7 @@ create table auth_jwks (
   primary key ("id")
 );
 
-create table host_o_auth_resources (
+create table host_oauth_resources (
   "id" text not null,
   "identifier" text not null,
   "name" text not null,
@@ -651,7 +651,7 @@ create table host_o_auth_resources (
   "refresh_token_ttl" integer,
   "signing_algorithm" text,
   "signing_key_id" text,
-  "allowed_scopes" text[],
+  "allowed_scopes" jsonb,
   "custom_claims" jsonb,
   "dpop_bound_access_tokens_required" boolean,
   "disabled" boolean,
@@ -662,7 +662,7 @@ create table host_o_auth_resources (
   primary key ("id")
 );
 
-create table host_o_auth_client_resources (
+create table host_oauth_client_resources (
   "id" text not null,
   "client_id" text not null,
   "resource_id" text not null,
@@ -671,13 +671,13 @@ create table host_o_auth_client_resources (
   primary key ("id")
 );
 
-create table host_o_auth_client_assertions (
+create table host_oauth_client_assertions (
   "id" text not null,
   "expires_at" timestamptz not null default now(),
   primary key ("id")
 );
 
-create table host_o_auth_clients (
+create table host_oauth_clients (
   "id" text not null,
   "client_id" text not null,
   "client_secret" text,
@@ -685,29 +685,29 @@ create table host_o_auth_clients (
   "skip_consent" boolean,
   "enable_end_session" boolean,
   "subject_type" text,
-  "scopes" text[],
+  "scopes" jsonb,
   "user_id" text,
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now(),
   "name" text,
   "uri" text,
   "icon" text,
-  "contacts" text[],
+  "contacts" jsonb,
   "tos" text,
   "policy" text,
   "software_id" text,
   "software_version" text,
   "software_statement" text,
-  "redirect_uris" text[] not null,
-  "post_logout_redirect_uris" text[],
+  "redirect_uris" jsonb not null,
+  "post_logout_redirect_uris" jsonb,
   "token_endpoint_auth_method" text,
-  "grant_types" text[],
-  "response_types" text[],
+  "grant_types" jsonb,
+  "response_types" jsonb,
   "require_pkce" boolean,
   "reference_id" text,
   "metadata" jsonb,
   "client_discovery_id" text,
-  "client_credentials_scopes" text[],
+  "client_credentials_scopes" jsonb,
   "backchannel_logout_uri" text,
   "backchannel_logout_session_required" boolean,
   "application_type" text,
@@ -717,7 +717,7 @@ create table host_o_auth_clients (
   primary key ("id")
 );
 
-create table host_o_auth_refresh_tokens (
+create table host_oauth_refresh_tokens (
   "id" text not null,
   "token" text not null,
   "client_id" text not null,
@@ -728,10 +728,10 @@ create table host_o_auth_refresh_tokens (
   "created_at" timestamptz not null default now(),
   "revoked" timestamptz,
   "auth_time" timestamptz,
-  "scopes" text[] not null,
+  "scopes" jsonb not null,
   "authorization_code_id" text,
-  "resources" text[],
-  "requested_user_info_claims" text[],
+  "resources" jsonb,
+  "requested_user_info_claims" jsonb,
   "rotated_at" timestamptz,
   "rotation_replay_response" text,
   "rotation_replay_expires_at" timestamptz,
@@ -739,7 +739,7 @@ create table host_o_auth_refresh_tokens (
   primary key ("id")
 );
 
-create table host_o_auth_access_tokens (
+create table host_oauth_access_tokens (
   "id" text not null,
   "token" text not null,
   "client_id" text not null,
@@ -749,25 +749,25 @@ create table host_o_auth_access_tokens (
   "refresh_id" text,
   "expires_at" timestamptz not null default now(),
   "created_at" timestamptz not null default now(),
-  "scopes" text[] not null,
+  "scopes" jsonb not null,
   "authorization_code_id" text,
-  "resources" text[],
-  "requested_user_info_claims" text[],
+  "resources" jsonb,
+  "requested_user_info_claims" jsonb,
   "revoked" timestamptz,
   "confirmation" jsonb,
   primary key ("id")
 );
 
-create table host_o_auth_consents (
+create table host_oauth_consents (
   "id" text not null,
   "client_id" text not null,
   "user_id" text,
   "reference_id" text,
-  "scopes" text[] not null,
+  "scopes" jsonb not null,
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now(),
-  "resources" text[],
-  "requested_user_info_claims" text[],
+  "resources" jsonb,
+  "requested_user_info_claims" jsonb,
   primary key ("id")
 );
 
@@ -2508,4 +2508,10 @@ alter table personal_team_requests add unique(local_input_id);
 create index personal_team_requests_unpublished on personal_team_requests(team_deployment_id,created_at,request_id) where publication_state='pending';
 
 create unique index triggers_system_role on triggers(system_role) where system_role is not null;
+
+alter table host_oauth_refresh_tokens add foreign key(session_id) references auth_sessions(id) on delete cascade;
+create index host_oauth_refresh_tokens_session on host_oauth_refresh_tokens(session_id);
+alter table host_oauth_access_tokens add foreign key(session_id) references auth_sessions(id) on delete cascade;
+create index host_oauth_access_tokens_session on host_oauth_access_tokens(session_id);
+
 `;

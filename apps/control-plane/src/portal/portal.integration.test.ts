@@ -583,8 +583,7 @@ integration("Opensteer web portal", () => {
       hostInstanceId,
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory" as const,
-        kind: "server" as const,
+        kind: "team" as const,
       },
     };
     const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse({

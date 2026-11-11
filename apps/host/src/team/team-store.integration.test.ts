@@ -1,6 +1,13 @@
 import { randomUUID, createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createId, type TeamActor, type UserId } from "@opensteer/core";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { once } from "node:events";
+import { TeamFileService } from "./file-service.js";
+import { startTeamServices } from "./services.js";
+import { createId, type TeamActor, type KnowledgeTopicId } from "@opensteer/core";
 import { createTeamFixture } from "@opensteer/database/test-support/team";
 import { sql } from "kysely";
 import { TeamAccessStore } from "@opensteer/database/team-access";
@@ -124,6 +131,118 @@ describe("team transaction authority", () => {
     });
     expect((await rights(owner, c.id)).read).toBe(true);
   });
+  it("applies nested topic ACLs and people-only to every agent path while retaining human access", async () => {
+    const member = await person("TopicReader"),
+      agent = { ...member, kind: "agent" as const };
+    const group = createId("teamGroup"),
+      topicId = createId("knowledgeTopic");
+    await groups.create(owner, group, "Topic readers");
+    await groups.person(owner, group, member.userId, true);
+    await sql`insert into knowledge.topics(id,name,people_only) values(${topicId},'Shared',false)`.execute(
+      fixture.database,
+    );
+    await access.mutate(async (t) => {
+      await t
+        .insertInto("teamTopicGrants")
+        .values({
+          topicId,
+          subjectKind: "group",
+          subjectId: group,
+          level: "read",
+          addedBy: owner.userId,
+          addedAt: new Date(),
+        })
+        .execute();
+      return {
+        value: undefined,
+        effects: { users: [], channels: [], topics: [topicId], links: [], requests: [] },
+      };
+    });
+    const topicRights = (actor: TeamActor) =>
+      fixture.database.transaction().execute((t) => access.topic(t, actor, topicId));
+    expect(await topicRights(agent)).toMatchObject({ read: true, write: false, manage: false });
+    expect(await topicRights(owner)).toMatchObject({ read: false, write: false, manage: true });
+    await access.mutate(async (t) => {
+      await sql`update knowledge.topics set people_only=true where id=${topicId}`.execute(t);
+      return {
+        value: undefined,
+        effects: { users: [], channels: [], topics: [topicId], links: [], requests: [] },
+      };
+    });
+    expect(await topicRights(agent)).toMatchObject({ read: false, write: false });
+    expect((await topicRights(member)).read).toBe(true);
+    const c = await channel("private", true);
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "group", groupId: group }, level: "post", manage: false },
+    ]);
+    const message = await send(c.id, "confidential phrase");
+    await expect(chat.page(agent, c.id)).rejects.toThrow();
+    await expect(chat.message(agent, c.id, message.message.id)).rejects.toThrow();
+    expect((await chat.search(agent, { query: "confidential" })).results).toEqual([]);
+    expect((await chat.directory(agent)).channels).toEqual([]);
+    const channelTopic = (
+      await sql<{
+        id: KnowledgeTopicId;
+      }>`select id from knowledge.topics where origin_channel_id=${c.id}`.execute(fixture.database)
+    ).rows[0]!.id;
+    const inherited = await fixture.database
+      .transaction()
+      .execute((t) => access.topic(t, agent, channelTopic));
+    expect(inherited).toMatchObject({ read: false, write: false, peopleOnly: true });
+    await expect(
+      access.knowledgeWrite(agent, channelTopic, async () => "unexpected"),
+    ).rejects.toThrow();
+    expect((await chat.message(member, c.id, message.message.id)).bodyMarkdown).toBe(
+      "confidential phrase",
+    );
+    const admin = await person("TopicAdmin", "admin");
+    await access.mutateAs(admin, "topic.access.set", async (t) => {
+      await t
+        .insertInto("teamTopicGrants")
+        .values([
+          {
+            topicId,
+            subjectKind: "person",
+            subjectId: admin.userId,
+            level: "read",
+            addedBy: admin.userId,
+            addedAt: new Date(),
+          },
+          {
+            topicId,
+            subjectKind: "person",
+            subjectId: owner.userId,
+            level: "manage",
+            addedBy: admin.userId,
+            addedAt: new Date(),
+          },
+        ])
+        .execute();
+      return {
+        value: undefined,
+        effects: { users: [], channels: [], topics: [topicId], links: [], requests: [] },
+      };
+    });
+    expect(
+      await fixture.database
+        .selectFrom("teamAudit")
+        .select("id")
+        .where("action", "=", "admin.self-added")
+        .where("resourceId", "=", topicId)
+        .execute(),
+    ).toHaveLength(1);
+    expect(
+      await fixture.database
+        .selectFrom("teamNotices")
+        .select("id")
+        .where("recipientUserId", "=", owner.userId)
+        .execute(),
+    ).toHaveLength(1);
+    await new TeamMembersStore(access).change(member, member.userId, "remove");
+    expect((await topicRights(member)).read).toBe(false);
+  });
+
   it("serializes concurrent cycles and keeps the last owner", async () => {
     const a = createId("teamGroup"),
       b = createId("teamGroup");
@@ -212,7 +331,7 @@ describe("team transaction authority", () => {
     const c = await channel();
     const l = await link();
     await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }]);
-    const [{ request }] = await requests.pending(l);
+    const request = (await requests.pending(l))[0]!.request;
     const revision = access.revision;
     let delivered = false;
     await chat.update(owner, c.id, { peopleOnly: true });
@@ -288,5 +407,401 @@ describe("team transaction authority", () => {
     expect(a.generation).toBe(b.generation);
     await new TeamMembersStore(access).change(owner, member.userId, "remove");
     await expect(invites.accept(member.userId, selector, url.hash.slice(1))).rejects.toThrow();
+  });
+
+  it("holds the content share lock through commit and rechecks posts after the last access path is removed", async () => {
+    const member = await person("Writer");
+    const c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: member.userId }, level: "post", manage: false },
+    ]);
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const writer = access.contentWrite(member, c.id, async (t, a) => {
+      expect(a.post).toBe(true);
+      entered.resolve();
+      await withTimeout(release.promise, 5000, {
+        timeoutError: () => new Error("Content writer was never released"),
+      });
+      return chat.insert(t, member, {
+        channelId: c.id,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "committed before removal",
+        mentions: [],
+        attachmentIds: [],
+      });
+    });
+    await withTimeout(entered.promise, 5000, {
+      timeoutError: () => new Error("Content writer never acquired SHARE"),
+    });
+    const removal = chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+    ]);
+    try {
+      await vi.waitFor(
+        async () => {
+          const blocked = await sql<{
+            count: string;
+          }>`select count(*)::text as count from pg_stat_activity where datname=current_database() and wait_event_type='Lock' and query like '%team_access_state%'`.execute(
+            fixture.database,
+          );
+          expect(Number(blocked.rows[0]?.count)).toBeGreaterThan(0);
+        },
+        { timeout: 3000 },
+      );
+    } finally {
+      release.resolve();
+    }
+    await writer;
+    await removal;
+    await expect(send(c.id, "too late", member)).rejects.toThrow();
+  });
+
+  it("discards an already buffered page when removal returns before handoff", async () => {
+    const member = await person("Reader");
+    const c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: member.userId }, level: "read", manage: false },
+    ]);
+    await send(c.id, "private data");
+    const buffered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const page = chat.read(member, "read", c.id, async (t) => {
+      const value = await chat.pageIn(t, member, c.id, { direction: "newest" });
+      buffered.resolve();
+      await withTimeout(release.promise, 5000, {
+        timeoutError: () => new Error("Buffered response was never released"),
+      });
+      return value;
+    });
+    const outcome = page.then(
+      () => "delivered",
+      () => "denied",
+    );
+    await withTimeout(buffered.promise, 5000, {
+      timeoutError: () => new Error("Page never reached its handoff barrier"),
+    });
+    try {
+      await chat.setAccess(owner, c.id, access.revision, [
+        { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      ]);
+    } finally {
+      release.resolve();
+    }
+    expect(await outcome).toBe("denied");
+  });
+
+  it("serializes two owner departures and keeps exactly one active owner", async () => {
+    const second = await person("Second", "owner");
+    const store = new TeamMembersStore(access);
+    const result = await Promise.allSettled([
+      store.change(owner, owner.userId, "remove"),
+      store.change(second, second.userId, "remove"),
+    ]);
+    expect(result.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(
+      await fixture.database
+        .selectFrom("teamMembers")
+        .select("userId")
+        .where("state", "=", "active")
+        .where("role", "=", "owner")
+        .execute(),
+    ).toHaveLength(1);
+  });
+
+  it("keeps other-agent references inert and leaves refused rate-limit asks as stored messages", async () => {
+    const member = await person("Mentioned");
+    const c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: member.userId }, level: "read", manage: false },
+    ]);
+    const l = await link();
+    expect(
+      (await send(c.id, "other agent", owner, [{ kind: "agent", userId: member.userId }])).wake,
+    ).toBe("not-requested");
+    for (let i = 0; i < 10; i++)
+      expect(
+        (await send(c.id, "own ask", owner, [{ kind: "agent", userId: owner.userId }])).wake,
+      ).toBe("queued");
+    const refused = await send(c.id, "limited", owner, [{ kind: "agent", userId: owner.userId }]);
+    expect(refused.wake).toBe("rate-limited");
+    expect((await chat.message(owner, c.id, refused.message.id)).bodyMarkdown).toBe("limited");
+    const request = (await requests.pending(l))[0]!.request;
+    await requests.accept(l, request!.id);
+    await requests.reply(l, request!.id, {
+      bodyMarkdown: "@maya-agent is an inert agent-authored reference",
+      attachmentIds: [],
+    });
+    expect(
+      await fixture.database.selectFrom("teamAgentRequests").select("id").execute(),
+    ).toHaveLength(10);
+    for (let i = 0; i < 23; i++) {
+      await fixture.database
+        .updateTable("teamAgentRequests")
+        .set({ createdAt: new Date(Date.now() - 120000) })
+        .execute();
+      expect(
+        (await send(c.id, "queued", owner, [{ kind: "agent", userId: owner.userId }])).wake,
+      ).toBe("queued");
+    }
+    expect(
+      (await send(c.id, "queue full", owner, [{ kind: "agent", userId: owner.userId }])).wake,
+    ).toBe("rate-limited");
+  });
+
+  it("snapshots over 200 changed rows, resumes compacted rows, and carries request and metadata updates", async () => {
+    const c = await channel();
+    const first = await send(c.id);
+    const since = first.message.changeSeq;
+    for (let i = 0; i < 3; i++)
+      await chat.editOrDelete(owner, c.id, first.message.id, {
+        bodyMarkdown: `edit ${i}`,
+        mentions: [],
+      });
+    const compacted = await chat.resume(owner, {
+      subscriptionId: "c",
+      generation: 1,
+      scope: { kind: "channel", channelId: c.id },
+      sinceSeq: since,
+    });
+    expect(compacted.type).toBe("resumed");
+    if (compacted.type === "resumed") expect(compacted.changedRows).toHaveLength(1);
+    const l = await link();
+    await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }], first.message.id);
+    const request = (await requests.pending(l))[0]!.request;
+    await requests.accept(l, request!.id);
+    await chat.update(owner, c.id, { instructionsMarkdown: "current" });
+    const cut = await chat.resume(owner, {
+      subscriptionId: "t",
+      generation: 1,
+      scope: { kind: "thread", channelId: c.id, rootId: first.message.id },
+      sinceSeq: compacted.throughSeq,
+    });
+    expect(cut.channel.instructionsMarkdown).toBe("current");
+    if (cut.type === "resumed") expect(cut.requests[0]?.state).toBe("working");
+    await access.contentWrite(owner, c.id, async (t) => {
+      const rows = Array.from({ length: 201 }, (_, i) => ({
+        channelId: c.id,
+        threadRootId: null,
+        authorUserId: owner.userId,
+        authorKind: "human" as const,
+        agentRequestId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: `seed ${i}`,
+        plainText: `seed ${i}`,
+        createdAt: new Date(),
+        editedAt: null,
+        deletedAt: null,
+        changeSeq: String(BigInt(cut.throughSeq) + BigInt(i) + 1n),
+      }));
+      await t.insertInto("teamMessages").values(rows).execute();
+      await t
+        .updateTable("teamChannels")
+        .set({ changeSeq: String(BigInt(cut.throughSeq) + 201n) })
+        .where("id", "=", c.id)
+        .execute();
+    });
+    const snapshot = await chat.resume(owner, {
+      subscriptionId: "c",
+      generation: 1,
+      scope: { kind: "channel", channelId: c.id },
+      sinceSeq: cut.throughSeq,
+    });
+    expect(snapshot.type).toBe("snapshot");
+    if (snapshot.type === "snapshot") expect(snapshot.messages).toHaveLength(50);
+    const filtered = await chat.resume(owner, {
+      subscriptionId: "t",
+      generation: 1,
+      scope: { kind: "thread", channelId: c.id, rootId: first.message.id },
+      sinceSeq: cut.throughSeq,
+    });
+    expect(filtered.throughSeq).toBe(snapshot.throughSeq);
+    if (filtered.type === "resumed") {
+      expect(filtered.changedRows).toEqual([]);
+      expect(filtered.requests).toEqual([]);
+    }
+  });
+
+  it("rechecks authenticated files, cancels an agent stream on people-only, and interrupts an upload on removal", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-team-files-"));
+    const store = new TeamFilesStore(access),
+      files = new TeamFileService(store, access, directory);
+    const blocked = Promise.withResolvers<void>();
+    try {
+      const c = await channel();
+      const data = Buffer.from("private attachment");
+      const metadata = {
+        clientUploadId: randomUUID(),
+        filename: "safe.txt",
+        mediaType: "text/plain",
+        sizeBytes: data.length,
+        sha256: createHash("sha256").update(data).digest("hex"),
+        previewSizeBytes: 0,
+      };
+      const file = await files.upload(owner, c.id, metadata, {
+        original: (async function* () {
+          yield data;
+        })(),
+      });
+      const l = await link();
+      await chat.send(owner, {
+        channelId: c.id,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "ask",
+        mentions: [{ kind: "agent", userId: owner.userId }],
+        attachmentIds: [file.id],
+      });
+      const request = (await requests.pending(l))[0]!.request;
+      await requests.accept(l, request!.id);
+      const stranger = await person("Stranger");
+      await expect(files.download(stranger, file.id, "original")).rejects.toThrow();
+      const download = await files.download(
+        { ...owner, kind: "agent" },
+        file.id,
+        "original",
+        request!.id,
+      );
+      download.body.on("error", () => {});
+      const closed = once(download.body, "close").catch(() => undefined);
+      await chat.update(owner, c.id, { peopleOnly: true });
+      expect(download.body.destroyed).toBe(true);
+      await withTimeout(closed, 5000, {
+        timeoutError: () => new Error("Revoked file stream never closed"),
+      });
+      await expect(
+        files.download({ ...owner, kind: "agent" }, file.id, "original", request!.id),
+      ).rejects.toThrow();
+      const human = await files.download(owner, file.id, "original");
+      const received: Buffer[] = [];
+      for await (const chunk of human.body) received.push(Buffer.from(chunk));
+      expect(Buffer.concat(received)).toEqual(data);
+      const uploader = await person("Uploader");
+      await chat.setAccess(owner, c.id, access.revision, [
+        { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+        { subject: { kind: "person", userId: uploader.userId }, level: "post", manage: false },
+      ]);
+      const started = Promise.withResolvers<void>();
+      const upload = files.upload(
+        uploader,
+        c.id,
+        { ...metadata, clientUploadId: randomUUID() },
+        {
+          original: (async function* () {
+            yield data.subarray(0, 1);
+            started.resolve();
+            await withTimeout(blocked.promise, 5000, {
+              timeoutError: () => new Error("Upload fixture was never released"),
+            });
+            yield data.subarray(1);
+          })(),
+        },
+      );
+      const outcome = upload.then(
+        () => "accepted",
+        () => "cancelled",
+      );
+      await withTimeout(started.promise, 5000, {
+        timeoutError: () => new Error("Upload never began streaming"),
+      });
+      await new TeamMembersStore(access).change(owner, uploader.userId, "remove");
+      expect(
+        await withTimeout(outcome, 5000, {
+          timeoutError: () => new Error("Removed uploader kept its stream"),
+        }),
+      ).toBe("cancelled");
+      expect(
+        (await readdir(join(directory, "team-files"))).some((name) => name.startsWith("pending-")),
+      ).toBe(false);
+    } finally {
+      blocked.resolve();
+      files.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("uses teamApiVersion before authentication and parsing and ignores the personal epoch", async () => {
+    const services = await startTeamServices({
+      kind: "team",
+      database: fixture.database,
+      teamId: fixture.deploymentId,
+      teamName: "Acme",
+      origin: "https://team.example.invalid",
+      dataDirectory: tmpdir(),
+      topics: chat.topics,
+      async ensureKnowledge() {},
+      knowledge: {
+        async read() {
+          throw new Error("Unexpected knowledge call");
+        },
+        async command() {
+          throw new Error("Unexpected knowledge command");
+        },
+      },
+      links: {
+        async createCode() {
+          throw new Error("Unexpected link code");
+        },
+        async list() {
+          return { links: [] };
+        },
+        async revoke() {},
+      },
+      async publishPush() {},
+      backgroundError() {},
+    });
+    try {
+      const authenticate = vi.fn(async () => ({
+        id: createId("authSession"),
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        absoluteExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        user: {
+          id: owner.userId,
+          displayName: "Maya",
+          email: "maya@example.invalid",
+          emailVerified: true,
+          image: null,
+          disabledAt: null,
+        },
+      }));
+      const raw = {
+        get type() {
+          throw new Error("Payload parsed before version gate");
+        },
+      };
+      await expect(
+        services.rpc(
+          new Headers({ "x-opensteer-api-version": "52" }),
+          "commands.dispatch",
+          raw,
+          authenticate,
+        ),
+      ).rejects.toMatchObject({ reason: "api-version-mismatch" });
+      expect(authenticate).not.toHaveBeenCalled();
+      await expect(
+        services.rpc(
+          new Headers({ "x-opensteer-team-api-version": "1" }),
+          "tasks.list",
+          {},
+          authenticate,
+        ),
+      ).rejects.toThrow("Personal routes");
+      expect(authenticate).not.toHaveBeenCalled();
+      const result = await services.rpc(
+        new Headers({ "x-opensteer-team-api-version": "1", "x-opensteer-api-version": "99999" }),
+        "team.bootstrap.get",
+        {},
+        authenticate,
+      );
+      expect(result).toMatchObject({ teamId: fixture.deploymentId });
+      expect(authenticate).toHaveBeenCalledOnce();
+    } finally {
+      await services.close();
+    }
   });
 });

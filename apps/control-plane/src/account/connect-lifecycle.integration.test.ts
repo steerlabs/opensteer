@@ -960,7 +960,6 @@ async function personalLoopbackFixture(
     hostInstanceId,
     hostKey: { algorithm: "Ed25519" },
     deploymentShape: {
-      defaultWorkspaceBacking: "local-directory",
       kind: "personal" as const,
     },
   } as const;

@@ -101,7 +101,7 @@ export class TeamInvitesStore {
       .selectFrom("teamInvites")
       .selectAll()
       .where("selector", "=", selector)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     requireTeam(invite, "Invite unavailable");
     const receipt = await transaction
@@ -179,16 +179,14 @@ export class TeamInvitesStore {
       if (after) query = query.where("id", ">", after);
       const rows = await query.orderBy("id").limit(51).execute();
       return {
-        invites: rows
-          .slice(0, 50)
-          .map((r) =>
-            TeamInviteSchema.strip().parse({
-              ...r,
-              expiresAt: r.expiresAt.toISOString(),
-              createdAt: r.createdAt.toISOString(),
-              revokedAt: r.revokedAt?.toISOString() ?? null,
-            }),
-          ),
+        invites: rows.slice(0, 50).map((r) =>
+          TeamInviteSchema.strip().parse({
+            ...r,
+            expiresAt: r.expiresAt.toISOString(),
+            createdAt: r.createdAt.toISOString(),
+            revokedAt: r.revokedAt?.toISOString() ?? null,
+          }),
+        ),
         hasMore: rows.length > 50,
       };
     });

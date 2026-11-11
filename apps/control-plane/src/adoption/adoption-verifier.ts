@@ -1,3 +1,4 @@
+import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { createPublicHttpsFetch } from "@opensteer/access/host";
 import {
   ConsumeHostAccountAdoptionProofRequestSchema,
@@ -64,6 +65,7 @@ export class HttpHostAccountAdoptionProofVerifier implements HostAccountAdoption
       credentials: "omit",
       headers: {
         accept: "application/json",
+        [teamApiVersionHeader]: String(teamApiVersion),
         "content-type": "application/json",
       },
       method: "POST",

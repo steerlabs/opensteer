@@ -104,7 +104,7 @@ export class TeamGroupsStore {
           .selectFrom("teamGroups")
           .selectAll()
           .where("id", "=", id)
-          .forUpdate()
+          .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
         if ((name === null && !row.deletedAt) || (name !== null && row.name !== name)) {
           await transaction
@@ -183,7 +183,7 @@ export class TeamGroupsStore {
           .where("id", "in", [parent, child].sort())
           .where("deletedAt", "is", null)
           .orderBy("id")
-          .forUpdate()
+          .forNoKeyUpdate()
           .execute();
         requireTeam(groups.length === 2, "Both groups must exist and differ");
         const result = add

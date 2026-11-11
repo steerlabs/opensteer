@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { link, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { Readable } from "node:stream";
+import { Readable } from "node:stream";
 import type { TeamActor, TeamAgentRequestId, TeamBlobId, TeamChannelId } from "@opensteer/core";
 import type { TeamBinaryUploadMetadataSchema } from "@opensteer/protocol";
 import { teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
@@ -21,6 +21,7 @@ interface ActiveFileTransfer {
 export class TeamFileService {
   readonly #directory: string;
   readonly #active = new Set<ActiveFileTransfer>();
+  readonly #uploads = new Set<TeamBlobId>();
   readonly #unsubscribe: () => void;
   readonly store: TeamFilesStore;
   readonly access: TeamAccessStore;
@@ -48,8 +49,14 @@ export class TeamFileService {
     requestId?: TeamAgentRequestId,
     signal?: AbortSignal,
   ) {
+    requireTeam(
+      !metadata.mediaType.startsWith("image/") || metadata.previewSizeBytes > 0,
+      "Image preview required",
+    );
     const row = await this.store.begin(actor, channelId, metadata, requestId);
     requireTeam(row.state !== "deleting");
+    requireTeam(!this.#uploads.has(row.id), "Upload already in progress");
+    this.#uploads.add(row.id);
     const controller = new AbortController();
     const authorize = () =>
       this.access.database.transaction().execute(async (t) => {
@@ -78,11 +85,11 @@ export class TeamFileService {
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     const pending = join(this.#directory, `pending-${randomUUID()}`);
     const pendingPreview = `${pending}-preview`;
-    await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     const final = join(this.#directory, row.storageKey),
       previewFinal = `${final}-preview`;
     let installed = false;
     try {
+      await mkdir(this.#directory, { recursive: true, mode: 0o700 });
       const original = await this.#write(
         pending,
         parts.original,
@@ -112,7 +119,12 @@ export class TeamFileService {
             ["jpeg", "png", "webp"].includes(info.format ?? ""),
           "Invalid image preview",
         );
-        previewMediaType = `image/${info.format}` as typeof previewMediaType;
+        previewMediaType =
+          info.format === "jpeg"
+            ? "image/jpeg"
+            : info.format === "png"
+              ? "image/png"
+              : "image/webp";
       } else requireTeam(!parts.preview, "Unexpected preview");
       combined.throwIfAborted();
       requireTeam(await authorize());
@@ -143,6 +155,7 @@ export class TeamFileService {
       }
       throw error;
     } finally {
+      this.#uploads.delete(row.id);
       this.#active.delete(transfer);
       await rm(pending, { force: true });
       await rm(pendingPreview, { force: true });
@@ -158,8 +171,19 @@ export class TeamFileService {
     const file = await open(path, "wx", 0o600);
     const hash = createHash("sha256");
     let size = 0;
+    const iterator = body[Symbol.asyncIterator]();
+    const cancelled = Promise.withResolvers<never>();
+    const abort = () => {
+      cancelled.reject(signal.reason ?? new Error("Upload cancelled"));
+      if (body instanceof Readable) body.destroy();
+    };
     try {
-      for await (const chunk of body) {
+      signal.throwIfAborted();
+      signal.addEventListener("abort", abort, { once: true });
+      for (;;) {
+        const next = await Promise.race([iterator.next(), cancelled.promise]);
+        if (next.done) break;
+        const chunk = next.value;
         signal.throwIfAborted();
         size += chunk.byteLength;
         requireTeam(size <= expected && size <= maximum, "Upload exceeds fixed byte limit");
@@ -175,6 +199,8 @@ export class TeamFileService {
       await file.sync();
       return { size, sha256: hash.digest("hex") };
     } finally {
+      signal.removeEventListener("abort", abort);
+      if (signal.aborted) void iterator.return?.().catch(() => {});
       await file.close();
     }
   }
@@ -210,7 +236,7 @@ export class TeamFileService {
         stream.once("close", () => this.#active.delete(transfer));
         return {
           body: stream,
-          sizeBytes: part === "original" ? row.sizeBytes : row.previewSizeBytes!,
+          sizeBytes: part === "original" ? Number(row.sizeBytes) : Number(row.previewSizeBytes),
           headers: {
             "content-type":
               part === "original" ? "application/octet-stream" : row.previewMediaType!,
@@ -248,6 +274,11 @@ export class TeamFileService {
       await rm(join(this.#directory, row.storageKey), { force: true });
       if (row.previewStorageKey)
         await rm(join(this.#directory, row.previewStorageKey), { force: true });
+      await this.access.database
+        .deleteFrom("teamBlobs")
+        .where("id", "=", row.id)
+        .where("state", "=", "deleting")
+        .execute();
     }
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     for (const name of await readdir(this.#directory))

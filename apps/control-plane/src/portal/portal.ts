@@ -1,3 +1,4 @@
+import { registerTeamSetupPortal } from "../adoption/team-setup.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
@@ -339,6 +340,15 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           throw new ControlPlaneError("not_found", "Route was not found");
         }
       };
+
+      registerTeamSetupPortal(app, {
+        store,
+        publicOrigin,
+        portalOrigin: origin,
+        fonts,
+        guard,
+        readSession,
+      });
 
       app.get("/mac", async (request, reply) => {
         guard(request);

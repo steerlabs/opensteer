@@ -19,10 +19,10 @@ export function teamFileView(row: Selectable<TeamBlobTable>) {
     channelId: row.channelId,
     filename: row.filename,
     mediaType: row.verifiedType ?? row.declaredType,
-    sizeBytes: row.sizeBytes,
+    sizeBytes: Number(row.sizeBytes),
     sha256: row.sha256,
     preview: row.previewStorageKey
-      ? { mediaType: row.previewMediaType, sizeBytes: row.previewSizeBytes }
+      ? { mediaType: row.previewMediaType, sizeBytes: Number(row.previewSizeBytes) }
       : null,
   });
 }
@@ -39,7 +39,7 @@ export async function bindTeamFiles(
     .selectAll()
     .where("id", "in", [...ids].sort())
     .orderBy("id")
-    .forUpdate()
+    .forNoKeyUpdate()
     .execute();
   requireTeam(rows.length === ids.length);
   for (const row of rows)
@@ -119,6 +119,13 @@ export class TeamFilesStore {
         requireTeam(
           prior.uploaderKind === actor.kind && prior.agentRequestId === (requestId ?? null),
         );
+        requireTeam(
+          Number(prior.sizeBytes) === metadata.sizeBytes &&
+            prior.sha256 === metadata.sha256 &&
+            prior.filename === metadata.filename &&
+            prior.declaredType === metadata.mediaType,
+          "Upload identity already names different bytes",
+        );
         return prior;
       }
       const id = createId("teamBlob");
@@ -179,7 +186,7 @@ export class TeamFilesStore {
         .selectFrom("teamBlobs")
         .selectAll()
         .where("id", "=", id)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
         row.uploaderUserId === actor.userId &&
@@ -188,7 +195,7 @@ export class TeamFilesStore {
       );
       if (row.state === "ready") return teamFileView(row);
       requireTeam(
-        input.receivedBytes === row.sizeBytes &&
+        input.receivedBytes === Number(row.sizeBytes) &&
           input.sha256 === row.sha256 &&
           input.previewSizeBytes <= 65536,
         "File size or digest mismatch",
@@ -237,48 +244,61 @@ export class TeamFilesStore {
     });
   }
   async authorized(actor: TeamActor, id: TeamBlobId, requestId?: TeamAgentRequestId) {
-    return this.access.database.transaction().execute(async (t) => {
-      const row = await t
-        .selectFrom("teamBlobs")
-        .selectAll()
-        .where("id", "=", id)
-        .where("state", "=", "ready")
-        .executeTakeFirst();
-      requireTeam(row);
-      requireTeam((await this.access.channel(t, actor, row.channelId)).read);
-      const bound = await t
-        .selectFrom("teamMessageAttachments as a")
-        .innerJoin("teamMessages as m", "m.id", "a.messageId")
-        .select("a.messageId")
-        .where("a.blobId", "=", id)
-        .where("m.deletedAt", "is", null)
-        .executeTakeFirst();
-      requireTeam(bound, "Only sent attachments can be downloaded");
-      if (actor.kind === "agent") {
-        requireTeam(requestId);
-        const request = await t
-          .selectFrom("teamAgentRequests as r")
-          .innerJoin("teamLinks as l", "l.id", "r.linkId")
-          .selectAll("r")
-          .where("r.id", "=", requestId)
-          .where("r.ownerUserId", "=", actor.userId)
-          .where("r.state", "in", ["working", "needs_you"])
-          .where("r.expiresAt", ">", new Date())
-          .where("l.state", "=", "active")
+    return this.access.database
+      .transaction()
+      .execute(async (t) => {
+        const row = await t
+          .selectFrom("teamBlobs")
+          .selectAll()
+          .where("id", "=", id)
+          .where("state", "=", "ready")
           .executeTakeFirst();
-        requireTeam(request && (await this.access.channel(t, actor, request.channelId)).read);
-        await appendTeamAudit(t, {
-          actor,
-          action: "agent.file.read",
-          resourceKind: "file",
-          resourceId: id,
-          channelId: row.channelId,
-          requestId,
-          linkId: request.linkId,
-        });
-      }
-      return { ...row, messageId: bound.messageId };
-    });
+        requireTeam(row);
+        requireTeam((await this.access.channel(t, actor, row.channelId)).read);
+        const bound = await t
+          .selectFrom("teamMessageAttachments as a")
+          .innerJoin("teamMessages as m", "m.id", "a.messageId")
+          .select("a.messageId")
+          .where("a.blobId", "=", id)
+          .where("m.deletedAt", "is", null)
+          .executeTakeFirst();
+        requireTeam(bound, "Only sent attachments can be downloaded");
+        if (actor.kind === "agent") {
+          requireTeam(requestId);
+          const request = await t
+            .selectFrom("teamAgentRequests as r")
+            .innerJoin("teamLinks as l", "l.id", "r.linkId")
+            .selectAll("r")
+            .where("r.id", "=", requestId)
+            .where("r.ownerUserId", "=", actor.userId)
+            .where("r.state", "in", ["working", "needs_you"])
+            .where("r.expiresAt", ">", new Date())
+            .where("l.state", "=", "active")
+            .executeTakeFirst();
+          requireTeam(request && (await this.access.channel(t, actor, request.channelId)).read);
+          await appendTeamAudit(t, {
+            actor,
+            action: "agent.file.read",
+            resourceKind: "file",
+            resourceId: id,
+            channelId: row.channelId,
+            requestId,
+            linkId: request.linkId,
+          });
+        }
+        return { ...row, messageId: bound.messageId };
+      })
+      .catch(async (error: unknown) => {
+        if (actor.kind === "agent")
+          await appendTeamAudit(this.access.database, {
+            actor,
+            action: "agent.file.read",
+            resourceKind: "file",
+            resourceId: id,
+            outcome: "denied",
+          });
+        throw error;
+      });
   }
   async page(actor: TeamActor, channelId: TeamChannelId, before?: TeamMessageId) {
     return this.access.database.transaction().execute(async (t) => {

@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { NotificationPreviewEnvelope } from "@opensteer/core";
-import type { PublishedNotificationKind } from "@opensteer/control-plane-protocol";
+import {
+  teamNotificationDeepLink,
+  type TeamNotificationTarget,
+  type PublishedNotificationKind,
+} from "@opensteer/control-plane-protocol";
 import {
   buildMobileThreadDeepLink,
   DeploymentIdSchema,
@@ -29,6 +33,14 @@ interface NotificationPhrase {
  * people keep the words those Hosts were built with until the Host upgrades.
  */
 const notificationPhrases: Readonly<Record<PublishedNotificationKind, NotificationPhrase>> = {
+  "team-message": { anchor: "message", body: "New team message", title: "Opensteer" },
+  "team-agent-needs-you": { anchor: "thread", body: "Your agent needs you", title: "Opensteer" },
+  "team-agent-completed": {
+    anchor: "message",
+    body: "Your agent replied to your team",
+    title: "Opensteer",
+  },
+  "team-notice": { anchor: "thread", body: "New team notice", title: "Opensteer" },
   "reply-published": { anchor: "message", body: "Opensteer replied", title: "Opensteer" },
   "request-opened": {
     anchor: "request",
@@ -57,7 +69,11 @@ export interface NotificationMessage {
     readonly kind: PublishedNotificationKind;
     readonly messageId?: string;
     readonly requestId?: string;
-    readonly threadId: string;
+    readonly threadId?: string;
+    readonly teamId?: string;
+    readonly channelId?: string;
+    readonly teamMessageId?: string;
+    readonly noticeId?: string;
   };
   readonly title: string;
 }
@@ -73,10 +89,37 @@ export function notificationMessage(input: {
   readonly kind: PublishedNotificationKind;
   readonly messageId?: string | null;
   readonly requestId: string | null;
-  readonly threadId: string;
+  readonly threadId: string | null;
+  readonly teamTarget?: TeamNotificationTarget | null | undefined;
 }): NotificationMessage {
   const phrase = notificationPhrases[input.kind];
   const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
+  if (input.kind.startsWith("team-")) {
+    if (!input.teamTarget || input.teamTarget.teamId !== deploymentId)
+      throw new Error("Team notification target required");
+    const target = input.teamTarget;
+    return {
+      body: phrase.body,
+      title: phrase.title,
+      data: {
+        deploymentId,
+        kind: input.kind,
+        deepLink: teamNotificationDeepLink(target),
+        teamId: target.teamId,
+        ...(target.kind === "team-message"
+          ? { channelId: target.channelId, teamMessageId: target.messageId }
+          : { noticeId: target.noticeId }),
+        ...(input.preview
+          ? {
+              notificationId: input.preview.notificationId,
+              installationId: input.preview.installationId,
+              expiresAt: input.preview.expiresAt.toISOString(),
+              preview: JSON.stringify(input.preview.envelope),
+            }
+          : {}),
+      },
+    };
+  }
   const threadId = ThreadIdSchema.parse(input.threadId);
   const requestId =
     phrase.anchor !== "request" || input.requestId === null
@@ -118,7 +161,8 @@ export function notificationCollapseId(input: {
   readonly kind: PublishedNotificationKind;
   readonly requestId: string | null;
   readonly notificationId: string;
-  readonly threadId: string;
+  readonly threadId: string | null;
+  readonly teamTarget?: TeamNotificationTarget | null | undefined;
 }): string {
   return (
     "osn1_" +
@@ -129,7 +173,11 @@ export function notificationCollapseId(input: {
           input.kind,
           input.kind === "request-opened"
             ? (input.requestId ?? input.notificationId)
-            : input.threadId,
+            : input.teamTarget?.kind === "team-message"
+              ? input.teamTarget.channelId
+              : input.teamTarget?.kind === "team-notice"
+                ? input.teamTarget.noticeId
+                : input.threadId,
         ]),
         "utf8",
       )

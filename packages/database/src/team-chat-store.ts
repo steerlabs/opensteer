@@ -35,6 +35,7 @@ import {
   requireTeam,
   teamConflict,
   teamReadableChannels,
+  teamReadableChannelIds,
 } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
@@ -162,7 +163,7 @@ export class TeamChatStore {
       (
         await sql<{
           count: string;
-        }>`select count(*)::text as count from team_members m where m.state='active' and ${channelId} in ${teamReadableChannelsForMember()}`.execute(
+        }>`select count(*)::text as count from team_members m where m.state='active' and ${channelId} in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}`.execute(
           transaction,
         )
       ).rows[0]?.count ?? "0";
@@ -314,7 +315,7 @@ export class TeamChatStore {
         channelId: input.id,
         name: input.name,
         createdBy: actor.userId,
-        peopleOnly: input.peopleOnly,
+        peopleOnly: false,
       });
       await appendTeamAudit(transaction, {
         actor,
@@ -402,7 +403,7 @@ export class TeamChatStore {
         .selectFrom("teamChannels")
         .selectAll()
         .where("id", "=", channelId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
         row.kind === "group_dm" && (await this.access.channel(transaction, actor, channelId)).post,
@@ -490,7 +491,7 @@ export class TeamChatStore {
         .selectFrom("teamChannels")
         .selectAll()
         .where("id", "=", channelId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
         actor.kind === "human" && (await this.access.channel(transaction, actor, channelId)).manage,
@@ -556,7 +557,7 @@ export class TeamChatStore {
           .selectFrom("teamChannels")
           .selectAll()
           .where("id", "=", channelId)
-          .forUpdate()
+          .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
         requireTeam(
           join
@@ -618,7 +619,7 @@ export class TeamChatStore {
         .selectFrom("teamChannels")
         .selectAll()
         .where("id", "=", channelId)
-        .forUpdate()
+        .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       if (
         input.expectedRevision !== undefined &&
@@ -627,6 +628,13 @@ export class TeamChatStore {
       )
         teamConflict("Channel instructions changed");
       if (input.name !== undefined) requireTeam(row.kind === "public" || row.kind === "private");
+      const changed =
+        (input.name !== undefined && input.name !== row.name) ||
+        (input.peopleOnly !== undefined && input.peopleOnly !== row.peopleOnly) ||
+        (input.archived !== undefined && input.archived !== (row.archivedAt !== null)) ||
+        (input.instructionsMarkdown !== undefined &&
+          input.instructionsMarkdown !== row.instructionsMarkdown);
+      if (!changed) return { value: undefined, effects: emptyTeamAccessEffects };
       const change = {
         ...(input.name !== undefined
           ? { name: input.name, normalizedName: input.name.normalize("NFKC").toLowerCase() }
@@ -742,6 +750,21 @@ export class TeamChatStore {
       actor.kind === "human" || input.agentRequestId,
       "An agent reply requires a request",
     );
+    if (actor.kind === "agent") {
+      const request = await transaction
+        .selectFrom("teamAgentRequests as r")
+        .innerJoin("teamLinks as l", "l.id", "r.linkId")
+        .select("r.id")
+        .where("r.id", "=", input.agentRequestId!)
+        .where("r.ownerUserId", "=", actor.userId)
+        .where("r.channelId", "=", input.channelId)
+        .where("r.threadRootId", "=", input.threadRootId!)
+        .where("r.state", "in", ["working", "needs_you"])
+        .where("r.expiresAt", ">", new Date())
+        .where("l.state", "=", "active")
+        .executeTakeFirst();
+      requireTeam(request, "Active request scope required");
+    }
     const mentions = await this.#mentions(transaction, actor, input.channelId, input.mentions);
     if (input.threadRootId) {
       const root = await transaction
@@ -760,7 +783,7 @@ export class TeamChatStore {
       .selectFrom("teamMembers")
       .select("userId")
       .where("userId", "=", actor.userId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     const { changeSeq } = await bumpTeamChannel(transaction, input.channelId);
     const row = await transaction
@@ -974,6 +997,10 @@ export class TeamChatStore {
               .select("blobId")
               .where("messageId", "=", messageId),
           )
+          .execute();
+        await transaction
+          .deleteFrom("teamMessageAttachments")
+          .where("messageId", "=", messageId)
           .execute();
         await appendTeamAudit(transaction, {
           actor,
@@ -1302,12 +1329,10 @@ export class TeamChatStore {
           updatedAt: new Date(),
         })
         .onConflict((c) =>
-          c
-            .columns(["channelId", "userId"])
-            .doUpdateSet({
-              lastReadMessageId: sql`greatest(team_channel_member_state.last_read_message_id,excluded.last_read_message_id)`,
-              updatedAt: new Date(),
-            }),
+          c.columns(["channelId", "userId"]).doUpdateSet({
+            lastReadMessageId: sql`greatest(team_channel_member_state.last_read_message_id,excluded.last_read_message_id)`,
+            updatedAt: new Date(),
+          }),
         )
         .execute();
     });
@@ -1339,88 +1364,87 @@ export class TeamChatStore {
     this.changed(channelId);
   }
   async directory(actor: TeamActor, after?: TeamChannelId, sidebar = false) {
-    return this.access.database.transaction().execute(async (t) => {
-      const member = await this.access.member(t, actor.userId);
-      let query = t
-        .selectFrom("teamChannels")
-        .selectAll()
-        .where((e) =>
-          sidebar
-            ? e("id", "in", teamReadableChannels(actor))
-            : e.or([
-                e("id", "in", teamReadableChannels(actor)),
-                e("kind", "=", "public"),
-                ...(member.role !== "member" ? [e("kind", "=", "private")] : []),
-              ]),
-        );
-      if (after) query = query.where("id", ">", after);
-      const rows = await query.orderBy("id").limit(51).execute();
-      const channels = [];
-      for (const row of rows.slice(0, 50)) {
-        const authority = await this.access.channel(t, actor, row.id);
-        const summary = {
-          id: row.id,
-          kind: row.kind,
-          name: row.name ?? "Direct message",
-          peopleOnly: row.peopleOnly,
-          archivedAt: row.archivedAt?.toISOString() ?? null,
-          changeSeq: SequenceSchema.parse(row.changeSeq),
-          latestMessageId: authority.read ? row.latestMessageId : null,
-          can: {
-            read: authority.read,
-            post: authority.post,
-            manage: authority.manage,
-            join: !authority.read && row.kind === "public" && !row.archivedAt,
-            leave: authority.read && (row.kind === "public" || row.kind === "private"),
-            wakeOwnAgent:
-              authority.post &&
-              !authority.peopleOnly &&
-              !!(await t
-                .selectFrom("teamLinks")
-                .select("id")
-                .where("ownerUserId", "=", actor.userId)
-                .where("state", "=", "active")
-                .executeTakeFirst()),
-          },
-        };
-        const state = await t
-          .selectFrom("teamChannelMemberState")
+    for (;;) {
+      const revision = this.access.revision;
+      const result = await this.access.database.transaction().execute(async (t) => {
+        const member = await this.access.member(t, actor.userId);
+        let query = t
+          .selectFrom("teamChannels")
           .selectAll()
-          .where("channelId", "=", row.id)
-          .where("userId", "=", actor.userId)
-          .executeTakeFirst();
-        const unread = (
-          await sql<{
-            unread: boolean;
-            mentionCount: string;
-          }>`select exists(select 1 from team_messages m where m.channel_id=${row.id} and m.id>coalesce(${state?.lastReadMessageId ?? null}::bigint,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as unread,
+          .where((e) =>
+            sidebar || actor.kind === "agent"
+              ? e("id", "in", teamReadableChannels(actor))
+              : e.or([
+                  e("id", "in", teamReadableChannels(actor)),
+                  e("kind", "=", "public"),
+                  ...(member.role !== "member" ? [e("kind", "=", "private")] : []),
+                ]),
+          );
+        if (after) query = query.where("id", ">", after);
+        const rows = await query.orderBy("id").limit(51).execute();
+        const channels = [];
+        for (const row of rows.slice(0, 50)) {
+          const authority = await this.access.channel(t, actor, row.id);
+          const summary = {
+            id: row.id,
+            kind: row.kind,
+            name: row.name ?? "Direct message",
+            peopleOnly: row.peopleOnly,
+            archivedAt: row.archivedAt?.toISOString() ?? null,
+            changeSeq: SequenceSchema.parse(row.changeSeq),
+            latestMessageId: authority.read ? row.latestMessageId : null,
+            can: {
+              read: authority.read,
+              post: authority.post,
+              manage: authority.manage,
+              join: !authority.read && row.kind === "public" && !row.archivedAt,
+              leave: authority.read && (row.kind === "public" || row.kind === "private"),
+              wakeOwnAgent:
+                authority.post &&
+                !authority.peopleOnly &&
+                !!(await t
+                  .selectFrom("teamLinks")
+                  .select("id")
+                  .where("ownerUserId", "=", actor.userId)
+                  .where("state", "=", "active")
+                  .executeTakeFirst()),
+            },
+          };
+          const state = await t
+            .selectFrom("teamChannelMemberState")
+            .selectAll()
+            .where("channelId", "=", row.id)
+            .where("userId", "=", actor.userId)
+            .executeTakeFirst();
+          const unread = (
+            await sql<{
+              unread: boolean;
+              mentionCount: string;
+            }>`select exists(select 1 from team_messages m where m.channel_id=${row.id} and m.id>coalesce(${state?.lastReadMessageId ?? null}::bigint,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as unread,
           (select count(*)::text from team_mentions n join team_messages m on m.id=n.message_id where n.channel_id=${row.id} and n.target_user_id=${actor.userId} and n.target_kind='person' and m.id>coalesce(${state?.lastReadMessageId ?? null}::bigint,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as mention_count`.execute(
-            t,
-          )
-        ).rows[0]!;
-        channels.push({
-          channel: summary,
-          unread: unread.unread,
-          mentionCount: Number(unread.mentionCount),
-          lastReadMessageId: state?.lastReadMessageId ?? null,
-          notificationLevel:
-            state?.notificationLevel ??
-            (row.kind === "dm" || row.kind === "group_dm" ? "all" : "mentions"),
-          agentOnline: false,
-        });
-      }
-      return {
-        channels,
-        nextCursor: rows.length > 50 ? rows[49]!.id : null,
-        accessRevision: this.access.revision,
-      };
-    });
+              t,
+            )
+          ).rows[0]!;
+          channels.push({
+            channel: summary,
+            unread: unread.unread,
+            mentionCount: Number(unread.mentionCount),
+            lastReadMessageId: state?.lastReadMessageId ?? null,
+            notificationLevel:
+              state?.notificationLevel ??
+              (row.kind === "dm" || row.kind === "group_dm" ? "all" : "mentions"),
+            agentOnline: false,
+          });
+        }
+        if (actor.kind === "agent")
+          await appendTeamAudit(t, { actor, action: "agent.directory", resourceKind: "team" });
+        return {
+          channels,
+          nextCursor: rows.length > 50 ? rows[49]!.id : null,
+          accessRevision: revision,
+        };
+      });
+      if (revision === this.access.revision) return result;
+    }
   }
-}
-
-function teamReadableChannelsForMember() {
-  return sql`(with recursive member_groups(id,path) as (
-    select group_id,array[group_id] from team_group_people where user_id=m.user_id union all
-    select e.parent_group_id,p.path||e.parent_group_id from member_groups p join team_group_edges e on e.child_group_id=p.id join team_groups g on g.id=e.parent_group_id and g.deleted_at is null where cardinality(p.path)<16 and not e.parent_group_id=any(p.path))
-    select a.channel_id from team_channel_members a where (a.subject_kind='person' and a.subject_id=m.user_id) or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))`;
 }

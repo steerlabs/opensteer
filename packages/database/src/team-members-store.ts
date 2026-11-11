@@ -67,6 +67,19 @@ export class TeamMembersStore {
   constructor(access: TeamAccessStore) {
     this.access = access;
   }
+  async get(actor: TeamActor) {
+    return this.access.database.transaction().execute(async (transaction) => {
+      await this.access.member(transaction, actor.userId);
+      const row = await transaction
+        .selectFrom("teamMembers as m")
+        .innerJoin("users as u", "u.id", "m.userId")
+        .selectAll("m")
+        .select(["u.displayName", "u.image"])
+        .where("m.userId", "=", actor.userId)
+        .executeTakeFirstOrThrow();
+      return TeamMemberSchema.strip().parse({ ...row, joinedAt: row.joinedAt.toISOString() });
+    });
+  }
   async page(actor: TeamActor, after?: UserId) {
     return this.access.database.transaction().execute(async (transaction) => {
       await this.access.member(transaction, actor.userId);
@@ -89,18 +102,21 @@ export class TeamMembersStore {
   }
   async change(actor: TeamActor, userId: UserId, change: "remove" | "owner" | "admin" | "member") {
     return this.access.mutateAs(actor, `member.${change}`, async (transaction) => {
-      const caller = await this.access.admin(transaction, actor);
+      const selfLeave = change === "remove" && userId === actor.userId;
+      const caller = selfLeave
+        ? await this.access.member(transaction, actor.userId)
+        : await this.access.admin(transaction, actor);
       const rows = await transaction
         .selectFrom("teamMembers")
         .selectAll()
         .where((e) => e.or([e("role", "=", "owner"), e("userId", "in", [actor.userId, userId])]))
         .orderBy("userId")
-        .forUpdate()
+        .forNoKeyUpdate()
         .execute();
       const target = rows.find((r) => r.userId === userId);
       requireTeam(target?.state === "active");
       requireTeam(
-        caller.role === "owner" || target.role === "member",
+        selfLeave || caller.role === "owner" || target.role === "member",
         "Only an owner can change administrators",
       );
       if (change === "owner")
@@ -116,7 +132,10 @@ export class TeamMembersStore {
           .set({ role: "admin", changedAt: new Date(), changedBy: actor.userId })
           .where("userId", "=", actor.userId)
           .execute();
-      const changed = change === "remove" || target.role !== change;
+      const changed =
+        change === "remove" ||
+        target.role !== change ||
+        (change === "owner" && target.userId !== actor.userId);
       if (changed) {
         await transaction
           .updateTable("teamMembers")
