@@ -21,9 +21,15 @@ import {
   type UserId,
   type WorkspaceId,
   type ThreadId,
+  type RequestView,
   type ThreadRequestWaits,
   type ThreadRequestOutcome,
   ThreadRequestWaitsSchema,
+  RequestViewSchema,
+  CanSchema,
+  RequestWaitingOnSchema,
+  AutomationSourceSchema,
+  RequestCancelledForSchema,
   ThreadRequestOutcomesSchema,
   threadRequestFactLimit,
 } from "@opensteer/core";
@@ -273,6 +279,11 @@ function pending(row: RequestRow): ProjectPendingEngineRequest {
     targetWorkspaceId: row.targetWorkspaceId,
   };
 }
+
+type ProjectRequestViewFacts = Pick<
+  RequestView,
+  "answer" | "waitingOn" | "source" | "resolvedByName" | "cancelledFor"
+>;
 
 export class ProjectRequestStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -561,6 +572,147 @@ export class ProjectRequestStore {
       .executeTakeFirstOrThrow();
   }
 
+  async viewFacts(
+    transaction: Transaction<DatabaseSchema>,
+    input: { readonly userId: UserId; readonly requestIds: readonly RequestId[] },
+  ): Promise<ReadonlyMap<RequestId, ProjectRequestViewFacts>> {
+    if (input.requestIds.length > 100)
+      throw new TypeError("Request view limit must not exceed 100");
+    if (!input.requestIds.length) return new Map();
+    const rows = await transaction
+      .selectFrom("requests")
+      .leftJoin("users as requester", "requester.id", "requests.requestedBy")
+      .leftJoin("users as resolver", "resolver.id", "requests.resolvedBy")
+      .leftJoin("runs as askingRun", "askingRun.id", "requests.originatingRunId")
+      .leftJoin("triggerOccurrences as occurrence", (join) =>
+        join.on(
+          "occurrence.id",
+          "=",
+          sql<
+            import("@opensteer/core").TriggerOccurrenceId
+          >`asking_run.authority_source->>'occurrenceId'`,
+        ),
+      )
+      .leftJoin("triggers as automation", (join) =>
+        join
+          .on(
+            "automation.id",
+            "=",
+            sql<
+              import("@opensteer/core").TriggerId
+            >`coalesce(asking_run.authority_source->>'triggerId', occurrence.trigger_id)`,
+          )
+          .onRef("automation.workspaceId", "=", "requests.originatingWorkspaceId"),
+      )
+      .select([
+        "requests.id",
+        "requests.status",
+        "requests.requestedBy",
+        "requests.cancellationReason",
+        "requester.displayName as requesterName",
+        "resolver.displayName as resolverName",
+        "automation.name as sourceName",
+        "askingRun.authoritySource",
+      ])
+      .where("requests.id", "in", [...input.requestIds])
+      .where(storedProjectDeployment)
+      .where(projectRequestAudienceSql(input.userId))
+      .execute();
+    return new Map(
+      rows.map((row) => {
+        const sourceKind =
+          row.authoritySource?.kind === "watch-observation"
+            ? "watch"
+            : row.authoritySource?.kind === "trigger-occurrence"
+              ? "trigger"
+              : null;
+        const source =
+          sourceKind && row.requestedBy === null && row.sourceName
+            ? AutomationSourceSchema.parse({ kind: sourceKind, name: row.sourceName })
+            : undefined;
+        const cancelledFor =
+          row.requestedBy !== null &&
+          row.status === "cancelled" &&
+          (row.cancellationReason === "authority-revoked" ||
+            row.cancellationReason === "membership-revoked")
+            ? RequestCancelledForSchema.parse({ name: row.requesterName })
+            : undefined;
+        return [
+          row.id,
+          {
+            ...(row.status === "pending" ? { answer: CanSchema.parse({ allowed: true }) } : {}),
+            waitingOn:
+              row.status === "pending"
+                ? RequestWaitingOnSchema.parse(
+                    row.requestedBy === null
+                      ? { kind: "managers" }
+                      : { kind: "person", name: row.requesterName },
+                  )
+                : null,
+            resolvedByName: row.resolverName,
+            ...(source ? { source } : {}),
+            ...(cancelledFor ? { cancelledFor } : {}),
+          },
+        ] as const;
+      }),
+    );
+  }
+
+  async detailView(
+    transaction: Transaction<DatabaseSchema>,
+    input: { requestId: RequestId; userId: UserId },
+  ) {
+    const row = await this.detail(transaction, input);
+    const facts = (
+      await this.viewFacts(transaction, { userId: input.userId, requestIds: [row.id] })
+    ).get(row.id);
+    if (!facts) denied();
+    return RequestViewSchema.parse({ ...requestFromRow(row), ...facts });
+  }
+
+  async listViews(
+    transaction: Transaction<DatabaseSchema>,
+    userId: UserId,
+    limit = 100,
+    before?: { readonly createdAt: Date; readonly id: RequestId },
+  ) {
+    const rows = await this.list(transaction, userId, limit, before);
+    const facts = await this.viewFacts(transaction, {
+      userId,
+      requestIds: rows.map((row) => row.id),
+    });
+    return rows.map((row) => {
+      const display = facts.get(row.id);
+      if (!display) denied();
+      return RequestViewSchema.parse({ ...requestFromRow(row), ...display });
+    });
+  }
+
+  async cancelledEventViews(
+    transaction: Transaction<DatabaseSchema>,
+    events: readonly Extract<AgentEvent, { type: "request.cancelled" }>[],
+    userId: UserId,
+  ) {
+    const facts = await this.viewFacts(transaction, {
+      userId,
+      requestIds: [...new Set(events.map((event) => event.data.requestId))],
+    });
+    return events.flatMap((event) => {
+      const display = facts.get(event.data.requestId);
+      return display
+        ? [
+            {
+              ...event,
+              data: {
+                ...event.data,
+                ...(display.cancelledFor ? { cancelledFor: display.cancelledFor } : {}),
+              },
+            },
+          ]
+        : [];
+    });
+  }
+
   async list(
     transaction: Transaction<DatabaseSchema>,
     userId: UserId,
@@ -627,6 +779,17 @@ export class ProjectRequestStore {
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     if (!(await this.recipients(transaction, row.id)).includes(input.userId)) denied();
+    if (row.status !== "pending") {
+      if (row.resolvedBy !== input.userId || !isDeepStrictEqual(row.response, input.response))
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "request-already-settled",
+          message: "Request was already settled",
+        });
+      await fencePeople(transaction, [input.userId]);
+      await authenticatedResponder(transaction, input.userId, input.sessionId);
+      return { replayed: true, events: [] };
+    }
     const source = await storedBinding(transaction, observed.originatingGrantId);
     if (
       source.row.grantStatus !== "active" ||
@@ -641,12 +804,6 @@ export class ProjectRequestStore {
       !row.presentation.options.some((option) => option.id === response.optionId)
     )
       denied();
-    if (row.status !== "pending") {
-      if (row.resolvedBy !== input.userId || !isDeepStrictEqual(row.response, response)) denied();
-      await fencePeople(transaction, [input.userId]);
-      await authenticatedResponder(transaction, input.userId, input.sessionId);
-      return { replayed: true, events: [] };
-    }
     if (row.requestedBy !== null) assertRequestResponse(requestFromRow(row), response, false);
     else if (row.presentation.kind === "form" && response.kind === "form") {
       if (Object.keys(response.answers).length !== row.presentation.fields.length) denied();

@@ -1,5 +1,6 @@
 import {
   createId,
+  AgentEventSchema,
   ProjectEngineRequestEventSchema,
   type ProjectEngineRequestEvent,
 } from "@opensteer/core";
@@ -76,6 +77,24 @@ describeStore("Project Requests", (it) => {
       .execute();
     const event = proposal(fixture.binding);
     await database.transaction().execute((tx) => requests.propose(tx, event));
+    let refusedQueries = 0;
+    const poisonDatabase = database.withPlugin({
+      transformQuery(args) {
+        refusedQueries++;
+        return args.node;
+      },
+      async transformResult(args) {
+        return args.result;
+      },
+    });
+    await expect(
+      new ProjectRequestStore(poisonDatabase).activityFacts(
+        { ...fixture.binding, workspaceId: createId("workspace") },
+        { threadId: fixture.thread.id, requestIds: [event.data.request.id] },
+        () => true,
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(refusedQueries).toBe(0);
     const activity = await fixture.work.projectActivity(fixture.binding, {
       threadId: fixture.thread.id,
       limit: 50,
@@ -104,6 +123,32 @@ describeStore("Project Requests", (it) => {
       ],
     });
     expect(await read(fixture.userId)).toEqual(await read());
+    const detail = await database
+      .transaction()
+      .execute((tx) =>
+        requests.detailView(tx, { requestId: event.data.request.id, userId: fixture.userId }),
+      );
+    expect(detail).toMatchObject({
+      answer: { allowed: true },
+      waitingOn: { kind: "person", name: "Alex" },
+      resolvedByName: null,
+    });
+    expect(detail.source).toBeUndefined();
+    let viewQueries = 0;
+    const viewDatabase = database.withPlugin({
+      transformQuery(args) {
+        viewQueries++;
+        return args.node;
+      },
+      async transformResult(args) {
+        return args.result;
+      },
+    });
+    await viewDatabase
+      .transaction()
+      .execute((tx) => new ProjectRequestStore(viewDatabase).listViews(tx, fixture.userId));
+    expect(viewQueries).toBe(3);
+
     expect(await read(outsider)).toEqual(new Map());
     const snapshot = await legacy.workspaceSnapshot(fixture.workspace.id, { viewerId: member });
     expect(snapshot.pendingRequests).toEqual([]);
@@ -134,6 +179,25 @@ describeStore("Project Requests", (it) => {
       .where("id", "=", fixture.userId)
       .execute();
     const ended = (await read()).get(fixture.thread.id)!;
+    const settledView = await database
+      .transaction()
+      .execute((tx) =>
+        requests.detailView(tx, { requestId: event.data.request.id, userId: fixture.userId }),
+      );
+    expect(settledView.answer).toBeUndefined();
+    expect(settledView.waitingOn).toBeNull();
+    expect(settledView.resolvedByName).toBe("Renamed");
+    await expect(
+      database.transaction().execute((tx) =>
+        requests.answer(tx, {
+          requestId: event.data.request.id,
+          userId: fixture.userId,
+          sessionId: fixture.sessionId,
+          response: { kind: "choice", optionId: "different" },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "conflict", reason: "request-already-settled" });
+
     expect(ended.requestWaits).toEqual({ total: 0, items: [] });
     const settledActivity = await fixture.work.projectActivity(fixture.binding, {
       threadId: fixture.thread.id,
@@ -182,6 +246,12 @@ describeStore("Project Requests", (it) => {
       )
       .execute();
     const bounded = (await read()).get(fixture.thread.id)!;
+    viewQueries = 0;
+    const views = await viewDatabase
+      .transaction()
+      .execute((tx) => new ProjectRequestStore(viewDatabase).listViews(tx, fixture.userId));
+    expect(views).toHaveLength(36);
+    expect(viewQueries).toBe(3);
     expect(bounded.requestWaits.total).toBe(36);
     expect(bounded.requestWaits.items).toHaveLength(32);
     expect(bounded.requestWaits.items[0]!.requestId).toBe(second.data.request.id);
@@ -196,6 +266,30 @@ describeStore("Project Requests", (it) => {
       });
     });
     const cancelled = (await read()).get(fixture.thread.id)!;
+    const cancelView = await database
+      .transaction()
+      .execute((tx) =>
+        requests.detailView(tx, { requestId: second.data.request.id, userId: fixture.userId }),
+      );
+    expect(cancelView.answer).toBeUndefined();
+    expect(cancelView.cancelledFor).toEqual({ name: "Renamed" });
+    const cancellationEvent = await database
+      .selectFrom("workspaceEvents")
+      .selectAll()
+      .where("type", "=", "request.cancelled")
+      .where(sql<boolean>`data->>'requestId' = ${second.data.request.id}`)
+      .executeTakeFirstOrThrow();
+    const parsedCancellation = AgentEventSchema.parse({
+      ...cancellationEvent,
+      createdAt: cancellationEvent.createdAt.toISOString(),
+    });
+    if (parsedCancellation.type !== "request.cancelled")
+      throw new Error("Expected Request cancellation");
+    const eventView = await database
+      .transaction()
+      .execute((tx) => requests.cancelledEventViews(tx, [parsedCancellation], fixture.userId));
+    expect(eventView[0]?.data.cancelledFor).toEqual({ name: "Renamed" });
+
     expect(cancelled.requestWaits).toEqual({ total: 0, items: [] });
     expect(cancelled.requestOutcomes).toHaveLength(32);
     expect(
@@ -741,6 +835,24 @@ describeStore("Unattended Project Requests", (it) => {
       { type: "thread.execution-updated", threadId: fixture.thread.id },
     ]);
     expect(JSON.stringify(result.events)).not.toContain("Run command?");
+    const display = await database
+      .transaction()
+      .execute((tx) =>
+        requests.viewFacts(tx, { userId: fixture.userId, requestIds: [event.data.request.id] }),
+      );
+    expect(display.get(event.data.request.id)).toMatchObject({
+      answer: { allowed: true },
+      waitingOn: { kind: "managers" },
+      source: { kind: "watch", name: "Files" },
+    });
+    await expect(
+      database
+        .transaction()
+        .execute((tx) =>
+          requests.detailView(tx, { requestId: event.data.request.id, userId: fixture.userId }),
+        ),
+    ).rejects.toMatchObject({ reason: "unattended-project-request-unsupported" });
+
     const activity = await fixture.work.projectActivity(fixture.binding, {
       threadId: fixture.thread.id,
       limit: 50,
@@ -836,6 +948,28 @@ describeStore("Unattended Project Requests", (it) => {
         { status: "fulfilled", class: "approval", resolvedByName: "Alex" },
       ]);
     }
+    const originalSession = await database
+      .selectFrom("authSessions")
+      .selectAll()
+      .where("id", "=", fixture.sessionId)
+      .executeTakeFirstOrThrow();
+    const managerSessionId = createId("authSession");
+    await database
+      .insertInto("authSessions")
+      .values({
+        ...originalSession,
+        id: managerSessionId,
+        userId: manager,
+        token: `other-${originalSession.token}`,
+      })
+      .execute();
+    await expect(
+      database
+        .transaction()
+        .execute((tx) =>
+          requests.answer(tx, { ...answer, userId: manager, sessionId: managerSessionId }),
+        ),
+    ).rejects.toMatchObject({ code: "conflict", reason: "request-already-settled" });
     const commands = await database
       .selectFrom("commands")
       .selectAll()
@@ -857,6 +991,26 @@ describeStore("Unattended Project Requests", (it) => {
     expect(
       await controls.transact(database, (tx) => requests.canContinue(tx, answer.requestId)),
     ).toBe(true);
+    const competing = proposal(fixture.binding);
+    competing.data.request.callId = "competing";
+    await database.transaction().execute((tx) => requests.propose(tx, competing));
+    const race = await Promise.allSettled([
+      database
+        .transaction()
+        .execute((tx) => requests.answer(tx, { ...answer, requestId: competing.data.request.id })),
+      database.transaction().execute((tx) =>
+        requests.answer(tx, {
+          ...answer,
+          requestId: competing.data.request.id,
+          userId: manager,
+          sessionId: managerSessionId,
+        }),
+      ),
+    ]);
+    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(
+      race.filter((result) => result.status === "rejected").map((result) => result.reason),
+    ).toMatchObject([{ code: "conflict", reason: "request-already-settled" }]);
     await database
       .updateTable("users")
       .set({ memberKind: "guest" })
