@@ -98,7 +98,7 @@ export const delegate_task = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. The Host places it. Omit `workspaceId` for this Workspace; connections must name it. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
+    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. The Host places it. Omit `workspaceId` for this Workspace; connections must name it. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
   input: z
     .strictObject({
       mode: z.enum(["async", "wait"]).default("async"),

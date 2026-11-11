@@ -31,18 +31,19 @@ const routingGuide = `Routing:
 const helpersGuide = `Helpers:
 - Your engine's own subagents work inside this Run, under its authority, and end with it.
 - \`delegate_task\` starts a task: independent work in its own Thread that outlives your turn. Its result returns to you by itself, waking you if your turn ended, unless you read it first with \`thread_wait\` or \`task_status\`.
-- \`thread_wait\` is bounded; a timeout stops nothing. \`orchestrator_capabilities\` lists engines, models and limits.`;
+- \`thread_wait\` blocks for at most 100 seconds, so it suits work that short; longer work reaches you through its return, with nothing to poll. A timeout stops nothing.
+- \`orchestrator_capabilities\` lists engines, models and limits.`;
 
-const conversationGuide = `Chat is the person's line to you. Long work in your own turn keeps them waiting for its reply; a task works in its own Thread and reports back.
-- Work in one of the person's accounts, such as their email or calendar, needs an integration: check \`integration_search\` and request missing access, or ask one short question if you can't tell which service they use.
-- A task knows only what you give it: its goal, context, constraints and completion criteria. This Workspace suits one-off work, an existing Project the work it owns, a ready specialist its kind of work.
+const conversationGuide = `Keep Chat responsive: answer quick questions.
+- Before delegating work in one of the person's accounts, such as their email or calendar, check \`integration_search\` and request missing access yourself, or ask one short question if you can't tell which service they use.
+- \`delegate_task\` sustained work with its goal, context, constraints and completion criteria. Prefer this Workspace unless an existing Project owns the work; use a ready matching specialist.
 - Continue finished work with \`delegate_task\` + \`threadId\`; change active work with \`thread_send\`.
 - Your tasks: \`thread_list({parentThreadId: "self"})\`. What one is doing and where: \`thread_read\`.
 - On background wakes, deliver awaited results or useful news; end stale/duplicate/no-news wakes without assistant text.
 - Repair wanted ongoing work within authorization; reuse repair underway. Preserve the person's pauses and site constraints. Resume a Trigger paused by failure only after verifying repair.
 - Tell the person outcomes, material failures and repairs, never the routes a task tried; ask only for missing decisions/access. Call Main's home conversation "Chat" and project Workspaces "Projects".`;
 
-const workGuide = `Complete the work you were given. Try authorized repairs; if blocked, name the evidence and missing decision/access. Verify, and return a self-contained result with output locations and material limits.
+const workGuide = `Complete the focused work; choose your approach, and native workers or tasks when useful. Try authorized repairs; if blocked, name the evidence and missing decision/access. Verify, and return a self-contained result with output locations and material limits.
 
 On an Assignment:
 - Your final reply is the task's result and returns to the assigner; an empty final reply wakes no one.
