@@ -1,4 +1,5 @@
 import { OpensteerError } from "@opensteer/core";
+import type { PersonFillVersion } from "@opensteer/protocol";
 import {
   BrowserAttachTicketClaimsSchema,
   type BrowserAttachTicketClaims,
@@ -15,7 +16,7 @@ interface IssueBrowserAttachTicketInput {
   readonly operationExpiresAt?: string;
   readonly remainingBudgetMs?: number;
   readonly passkeys?: 1;
-  readonly personFillVersion?: 1;
+  readonly personFillVersion?: PersonFillVersion | undefined;
   readonly navigationVersion?: 1;
   readonly initialNavigation?: BrowserAttachTicketClaims["initialNavigation"];
   readonly navigationAttributionVersion?: 1;
@@ -124,7 +125,7 @@ export class BrowserAttachTicketSigner {
       access: input.access,
       ...(input.basicInput === 1 ? { basicInput: 1 } : {}),
       ...(input.surfaceState === 1 ? { surfaceState: 1 } : {}),
-      ...(input.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
+      ...(input.personFillVersion ? { personFillVersion: input.personFillVersion } : {}),
       ...(input.passkeys === 1 ? { passkeys: 1 } : {}),
       ...(input.editingVersion
         ? {

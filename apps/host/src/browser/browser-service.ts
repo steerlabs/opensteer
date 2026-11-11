@@ -107,6 +107,7 @@ import {
   type PlaceActivityNotice,
   type PlaceIdentity,
   type PlaceOccupant,
+  type PersonFillVersion,
   type RequestCreationResult,
   type ThreadPlaceReference,
 } from "@opensteer/protocol";
@@ -174,6 +175,7 @@ function browserActionFailure(reason: BrowserActionErrorCode, message: string): 
  */
 const consumerMessageTypes: ReadonlySet<BrowserClientMessage["type"]> = new Set([
   "autofill.fill",
+  "passwordSave.answer",
   "cursor.query",
   "cursor.reset",
   "input.command",
@@ -479,7 +481,8 @@ export interface BrowserRuntimeConnection {
 }
 
 export interface BrowserRuntimeTarget {
-  readonly personFill?: boolean;
+  /** The person fill version the runtime advertises (`person-fill.ts`). */
+  readonly personFill?: PersonFillVersion | undefined;
   readonly placementKey: string;
   readonly runtimeId: string;
   readonly main?: boolean;
@@ -3813,7 +3816,8 @@ export class BrowserService {
       readonly mode: BrowserConsumerMode;
       readonly passkeys?: PasskeyMode | undefined;
       readonly popups?: boolean | undefined;
-      readonly autofill?: boolean | undefined;
+      /** The person fill version the viewer understands. */
+      readonly autofill?: PersonFillVersion | undefined;
       readonly editing?: 1 | 2 | undefined;
       readonly basicInput?: 1 | undefined;
       readonly surfaceState?: 1 | undefined;
@@ -3878,7 +3882,7 @@ export class BrowserService {
         {
           basicInput: options.basicInput,
           surfaceState: options.surfaceState,
-          autofill: options.autofill === true,
+          autofill: options.autofill,
         },
       );
     } catch (error) {
@@ -4166,7 +4170,7 @@ export class BrowserService {
       access: "read-write",
       ...(target.passkeys && this.#passkeys ? { passkeys: 1 } : {}),
       ...(target.personFill && target.main === true && this.#personal
-        ? { personFillVersion: 1 }
+        ? { personFillVersion: target.personFill }
         : {}),
       ...(target.navigationVersion ? { navigationVersion: 1 } : {}),
       ...(target.navigationAttributionVersion ? { navigationAttributionVersion: 1 } : {}),
@@ -5318,7 +5322,7 @@ class HostedBrowserBroker {
     negotiation: {
       readonly basicInput?: 1 | undefined;
       readonly surfaceState?: 1 | undefined;
-      readonly autofill?: boolean | undefined;
+      readonly autofill?: PersonFillVersion | undefined;
     } = {},
   ): Promise<BrowserConsumerAttachment> {
     if (this.#settled) throw new OpensteerError({ code: "conflict", message: "Browser closed." });
@@ -5351,7 +5355,7 @@ class HostedBrowserBroker {
     outlet.userId = userId;
     outlet.passkeys = this.passkeys ? passkeys : undefined;
     outlet.popups = popups && mode === "control";
-    outlet.autofill = negotiation.autofill === true && mode === "control";
+    outlet.autofill = mode === "control" ? (negotiation.autofill ?? 0) : 0;
     outlet.authorized = async () => (await stillVisible()) && (await signedIn());
     this.#consumers.set(peer.id, outlet);
     try {
@@ -6018,10 +6022,13 @@ class HostedBrowserBroker {
     if (message.type === "browser.editing") this.#editingContexts.set(message.surfaceId, message);
     const [unaddressedAuthor, ...otherSenders] = this.#unaddressedKeySenders;
     for (const consumer of this.#consumers.values()) {
+      // A person's autofill and save offers reach only the viewer they name,
+      // and save offers only one that negotiated them.
       if (
-        message.type.startsWith("browser.autofill.") &&
-        (!this.#snapshot?.personFillVersion ||
-          !consumer.autofill ||
+        (message.type.startsWith("browser.autofill.") ||
+          message.type.startsWith("browser.passwordSave.")) &&
+        (Math.min(this.#snapshot?.personFillVersion ?? 0, consumer.autofill) <
+          (message.type.startsWith("browser.passwordSave.") ? 2 : 1) ||
           consumer.mode !== "control" ||
           !("consumerToken" in message) ||
           message.consumerToken !== consumer.clipboardToken)
@@ -6301,8 +6308,12 @@ class HostedBrowserBroker {
     }
     if (message.type === "passkey.result" || message.type === "passkey.cancel")
       return Promise.reject(new Error("Viewer cannot answer a runtime ceremony."));
-    if (message.type === "autofill.fill") {
-      if (!outlet.autofill || outlet.mode !== "control" || this.#snapshot?.personFillVersion !== 1)
+    if (message.type === "autofill.fill" || message.type === "passwordSave.answer") {
+      const needed = message.type === "passwordSave.answer" ? 2 : 1;
+      if (
+        outlet.mode !== "control" ||
+        Math.min(this.#snapshot?.personFillVersion ?? 0, outlet.autofill) < needed
+      )
         return Promise.reject(new Error("Browser autofill was not negotiated."));
     }
     outlet.recordEditing(message.type);
@@ -6870,7 +6881,7 @@ class HostedBrowserBroker {
               ...legacy
             } = compatible;
             compatible =
-              message.type === "autofill.fill"
+              message.type === "autofill.fill" || message.type === "passwordSave.answer"
                 ? { ...legacy, producerId: message.producerId }
                 : legacy;
             if (legacy.type === "input.pointer") {
@@ -7070,7 +7081,8 @@ export class BrowserConsumerOutlet {
   passkeys: PasskeyMode | undefined;
   /** Understands `browser.popup.opened`, and hears its own token for reporting native input. */
   popups = false;
-  autofill = false;
+  /** The person fill version this controller negotiated; 0 for none. */
+  autofill: 0 | PersonFillVersion = 0;
   authorized: () => Promise<boolean> = async () => false;
   readonly clipboardToken = randomUUID();
   readonly legacyClipboard = new LegacyBrowserClipboard(this.clipboardToken, maxBrowserTextBytes);

@@ -168,6 +168,7 @@ import {
   type IntegrationsModuleEvent,
   type MachineAppStatus,
   type MachineModuleSummary,
+  type PersonFillVersion,
   type RunnerAuxiliaryChallenge,
   type RunnerAuxiliaryFrameFence,
   type RunnerAuxiliaryModule,
@@ -522,7 +523,7 @@ export async function createHostServer(
       readonly surfaceState: 1 | undefined;
       readonly passkeys: "native" | "notice" | undefined;
       readonly popups: boolean;
-      readonly autofill: boolean;
+      readonly autofill: PersonFillVersion | undefined;
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
@@ -2965,7 +2966,14 @@ export async function createHostServer(
           popups: request.query.popups === "1",
           basicInput: request.query.basicInput === "1" ? 1 : undefined,
           surfaceState: request.query.surfaceState === "1" ? 1 : undefined,
-          autofill: mode === "control" && request.query.autofill === "1",
+          autofill:
+            mode !== "control"
+              ? undefined
+              : request.query.autofill === "2"
+                ? 2
+                : request.query.autofill === "1"
+                  ? 1
+                  : undefined,
         });
       },
       websocket: true,
@@ -3113,7 +3121,7 @@ function attachBrowserSocket(
   negotiation: {
     readonly basicInput: 1 | undefined;
     readonly surfaceState: 1 | undefined;
-    readonly autofill: boolean;
+    readonly autofill: PersonFillVersion | undefined;
   },
   signedIn: () => Promise<boolean>,
 ): void {
