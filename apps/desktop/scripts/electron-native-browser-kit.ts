@@ -344,7 +344,7 @@ export function createNativeBrowserE2EKit(options: {
         const session = snapshot?.browserSessions.find(s => s.id === selectedSession);
         const viewer = selectedSession && selectedSurface ? client?.browserViewerState(selectedSession,selectedSurface) : null;
         return {stageText: document.querySelector('.browser-stage')?.textContent,
-          selectedSession: session ? {state: session.state, tabCatalog: session.tabCatalog} : null,
+          selectedSession: session ? {state: session.state, tab: client.browserTabs.sessionTab(selectedSession,selectedSurface)} : null,
           viewer: viewer ? {status:viewer.status,admitted:viewer.admitted,error:viewer.error,admissionId:viewer.admissionId} : null,
           visibility: document.visibilityState, documentFocused: document.hasFocus(),
           localVisible: await window.opensteerDesktop?.getLocalVisibility(), online: navigator.onLine,

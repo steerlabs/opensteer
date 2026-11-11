@@ -1,3 +1,4 @@
+import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createId,
@@ -244,7 +245,9 @@ function harness() {
       return { request, events: [], replayed: false };
     }),
   } satisfies PasswordSignInServiceOptions["requests"];
+  const pins = vi.fn();
   const service = new PasswordSignInService({
+    onPendingBrowserPins: pins,
     authority: hub,
     resolveAuthority: async () => target.computer,
     requests,
@@ -263,6 +266,7 @@ function harness() {
   services.push(service);
   return {
     call,
+    pins,
     target,
     site,
     service,
@@ -952,4 +956,19 @@ describe("card Workspace lifecycle", () => {
     expect(h.hub.sendPasswordSignIn).not.toHaveBeenCalled();
     expect(h.requests.openPasswordSignIn).not.toHaveBeenCalled();
   });
+});
+
+it("pins a session sign-in while authorization and its Request wait, then releases on settlement", async () => {
+  vi.useFakeTimers();
+  const h = harness();
+  const sessionId = createBrowserSessionId();
+  const result = h.service.request({ ...h.call, sessionId, site: h.site, admitStart: () => true });
+  await vi.advanceTimersByTimeAsync(1);
+  expect(h.pins).toHaveBeenLastCalledWith(h.operationId(), [{ sessionId, runId: h.call.runId }]);
+  h.event({ kind: "needs", need: "approval" });
+  expect((await result).status).toBe("pending");
+  expect(h.pins).toHaveBeenLastCalledWith(h.operationId(), [{ sessionId, runId: h.call.runId }]);
+  h.end();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(h.pins).toHaveBeenLastCalledWith(h.operationId(), []);
 });

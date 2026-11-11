@@ -1,3 +1,4 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import { act, useEffect, type ReactNode } from "react";
@@ -14,7 +15,7 @@ import type {
   BrowserFrameView,
   BrowserSessionSummary,
 } from "@opensteer/client/host";
-import { BrowserCursorStore, browserTabPicture } from "@opensteer/client/host";
+import { BrowserCursorStore, BrowserTabStore, browserTabPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema, TargetedBrowserClientMessageSchema } from "@opensteer/protocol";
 import type { PictureMetadata, PictureOutcome } from "../computers/phone-display-native.js";
 import { BrowserStream, type BrowserStreamProps } from "./browser-stream.js";
@@ -152,24 +153,27 @@ afterEach(() => {
 
 const surfaceId = BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000001");
 function session(viewerState: BrowserSessionSummary["viewerState"]): BrowserSessionSummary {
-  return {
-    access: "read-write",
-    attachedRunIds: [],
-    dialog: null,
-    error: null,
-    id: "bsn_00000000-0000-4000-8000-000000000001",
-    origin: "agent",
-    placement: { kind: "runner", runnerId: "runner-a" },
-    profileId: null,
-    runtimeId: "runtime-a",
-    state: "ready",
-    tabs: [{ active: true, id: surfaceId, title: "A page", url: "https://example.com" }],
-    viewerError: null,
-    viewerState,
-    watchViewerError: null,
-    watchViewerState: "synchronized",
-    workspaceId: "workspace-a",
-  };
+  return seedBrowserSession(
+    {
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      id: "bsn_00000000-0000-4000-8000-000000000001",
+      origin: "agent",
+      placement: { kind: "runner", runnerId: "runner-a" },
+      profileId: null,
+      runtimeId: "runtime-a",
+      state: "ready",
+      viewerError: null,
+      viewerState,
+      watchViewerError: null,
+      watchViewerState: "synchronized",
+      workspaceId: "workspace-a",
+    },
+    undefined,
+    [{ active: true, id: surfaceId, title: "A page", url: "https://example.com" }],
+  );
 }
 function frame(): BrowserFrameView {
   return {
@@ -232,6 +236,7 @@ function setup(interactive = true, cursor?: BrowserCursorStore) {
   };
   const hostClient: BrowserStreamProps["hostClient"] = {
     acceptBrowserWatchFrame: vi.fn(),
+    browserTabs: new BrowserTabStore(),
     browserFrames: frames,
     browserWatchFrames: frames,
     retainBrowserViewer: vi.fn(() => {

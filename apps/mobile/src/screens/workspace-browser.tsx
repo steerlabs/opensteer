@@ -12,6 +12,7 @@ import {
   threadMark,
   type BrowserTabDestination,
   type BrowserTabOpenHandle,
+  type BrowserTabStore,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -794,21 +795,23 @@ function samePlace(place: PlaceItem, destination: WorkspaceSurfaceDestination): 
   return sameDestination(place.destination, destination);
 }
 
-/** Whether a browser tab is drawn as a page now: listed by a running browser. */
-function browserShowsPage(snapshot: HostSnapshot, sessionId: string, tabId: string): boolean {
+/**
+ * Whether a browser tab is drawn as a page now: listed awake, with a page, by
+ * a running browser. A sleeping tab keeps its last document but is restored.
+ */
+function browserShowsPage(
+  snapshot: HostSnapshot,
+  store: BrowserTabStore,
+  sessionId: string,
+  tabId: string,
+): boolean {
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId);
+  const row = store.sessionTab(sessionId, tabId);
   return (
     session !== undefined &&
     session.state !== "closed" &&
     session.state !== "failed" &&
-    !(session.state === "ready" && !tabListed(session, tabId))
-  );
-}
-
-function tabListed(session: HostSnapshot["browserSessions"][number], tabId: string): boolean {
-  return (
-    session.tabCatalog?.tabs.some((tab) => tab.id === tabId) ??
-    session.tabs.some((tab) => tab.id === tabId)
+    !(session.state === "ready" && (row?.documentId == null || row.state !== "live"))
   );
 }
 
@@ -875,7 +878,8 @@ function BrowserTab(props: {
   }, [pageKey]);
 
   const session = snapshot.browserSessions.find(({ id }) => id === sessionId) ?? null;
-  const live = session !== null && browserShowsPage(snapshot, sessionId, tabId);
+  const live =
+    session !== null && browserShowsPage(snapshot, hostClient.browserTabs, sessionId, tabId);
   const elsewhere =
     session === null
       ? null
@@ -899,7 +903,7 @@ function BrowserTab(props: {
     tabId,
   });
   if (shown.current.tabId !== tabId) {
-    const order = session === null ? [] : tabOrder(session);
+    const order = session === null ? [] : hostClient.browserTabs.sessionList(sessionId).ids;
     const from = order.indexOf(shown.current.tabId);
     const to = order.indexOf(tabId);
     shown.current = { arrival: from >= 0 && to >= 0 && to < from ? -1 : 1, tabId };
@@ -1023,14 +1027,6 @@ function BrowserTab(props: {
       )}
     </>
   );
-}
-
-/** A browser's tab ids in its own order, as its tab strip shows them. */
-function tabOrder(session: HostSnapshot["browserSessions"][number]): readonly string[] {
-  const catalog = session.tabCatalog?.tabs;
-  return catalog === undefined
-    ? session.tabs.map(({ id }) => id)
-    : [...catalog].sort((a, b) => a.order - b.order).map(({ id }) => id);
 }
 
 /**

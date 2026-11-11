@@ -380,7 +380,7 @@ it("resolves and refreshes real page icons as decodable bounded rasters", async 
     const navigationPublications: { url: string; committedUrl: string; oldIcon: boolean }[] = [];
     const stopObservingNavigation = ledger.subscribe((event) => {
       if (event.type !== "changed" || event.surface.id !== active.surface.id) return;
-      const committedUrl = ledger.durableSnapshot().find((tab) => tab.id === event.surface.id)?.url;
+      const committedUrl = ledger.toRecord(event.surface.id)?.url;
       if (committedUrl && committedUrl !== precedingUrl)
         navigationPublications.push({
           url: event.surface.url,

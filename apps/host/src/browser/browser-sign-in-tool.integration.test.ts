@@ -79,7 +79,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2, cardUse: 1 },
         browser: {
           runtimeId: "browser-runtime-integration",
-          wireVersion: 1,
+          wireVersion: 2,
           cdpBoundary: 1,
           sharedControl: 1,
           signIn: { version: 3 },

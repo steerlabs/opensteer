@@ -1,3 +1,5 @@
+import { HostToClientMessageSchema } from "@opensteer/protocol";
+import { browserRows } from "./browser-rows.test-support.js";
 import {
   BrowserActionRequestSchema,
   BrowserActionResponseSchema,
@@ -59,7 +61,12 @@ async function connect(url: string, headers: Record<string, string>) {
     2_000,
     { timeoutError: () => new Error("Browser test socket did not open") },
   );
-  if (snapshot) await snapshot;
+  if (snapshot) {
+    await snapshot;
+    const metadata = waitForMessage(socket, (message) => message.type === "browser.surface", 2_000);
+    socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-integration" }));
+    await metadata;
+  }
   return socket;
 }
 async function setup(surfaceState = true) {
@@ -189,7 +196,10 @@ integration("session-scoped browser agent backends", () => {
   it("activates a sleeping surface in place, projects its state with notices, and preserves agent resume", async () => {
     const f = await setup();
     const tabId = BrowserSurfaceIdSchema.parse("page-integration");
-    const group = () => f.host.runtime.browser.readWorkspaceTabs(f.host.ownerId, f.sessionId);
+    const group = () =>
+      browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then(
+        (rows) => rows.lineage!,
+      );
     await vi.waitFor(async () => expect((await group()).tabs).toHaveLength(1), { timeout: 2000 });
     const realtime = await connect(
       `ws://127.0.0.1:${f.host.hostPort}/v1/realtime`,
@@ -210,6 +220,7 @@ integration("session-scoped browser agent backends", () => {
       }),
     );
     await synchronized;
+    realtime.send(JSON.stringify({ type: "client.browser.resync" }));
     const viewer = await connect(
       `ws://127.0.0.1:${f.host.hostPort}/v1/browser-sessions/${f.sessionId}/connect?surfaceState=1&mode=watch`,
       f.host.ownerHeaders,
@@ -217,11 +228,21 @@ integration("session-scoped browser agent backends", () => {
     const publish = async (state: "live" | "suspended") => {
       const noticed = waitForMessage(
         realtime,
-        (message) => message.type === "host.browser-sessions-changed",
+        (message) => {
+          const parsed = HostToClientMessageSchema.safeParse(message);
+          if (!parsed.success || parsed.data.type !== "host.browser-tabs") return false;
+          const stream = parsed.data.stream;
+          return (
+            stream.op === "rows"
+              ? stream.rows
+              : stream.op === "change"
+                ? [...(stream.add ?? []), ...(stream.update ?? [])]
+                : []
+          ).some((row) => row.id === tabId && row.state === state);
+        },
         2000,
       );
-      f.phone.sendServer({
-        type: "browser.surfaces.changed",
+      f.phone.publishTabs({
         surfaces: [
           {
             id: tabId,
@@ -237,9 +258,7 @@ integration("session-scoped browser agent backends", () => {
       await noticed;
       expect((await group()).tabs?.[0]?.state).toBe(state);
       expect(
-        (await f.host.runtime.browser.bootstrap(f.host.ownerId)).workspaceTabs?.find(
-          (held) => held.id === f.sessionId,
-        )?.tabs?.[0]?.state,
+        (await browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId)).tabs[0]?.state,
       ).toBe(state);
     };
     await publish("suspended");
@@ -291,7 +310,8 @@ integration("session-scoped browser agent backends", () => {
     f.phone.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
     expect(await activation).toMatchObject({
       type: "workspace.tab.activate",
-      group: { tabs: [expect.objectContaining({ state: "live" })] },
+      tabId,
+      session: { id: f.sessionId },
     });
     expect(
       f.phone
@@ -359,7 +379,7 @@ integration("session-scoped browser agent backends", () => {
           {},
         )
       ).tabs.find((tab) => tab.tabId === tabId),
-    ).toMatchObject({ state: "open", sessionId: f.sessionId });
+    ).toMatchObject({ state: "asleep", sessionId: f.sessionId });
     const socket = await f.actions();
     const pending = f.act(
       socket,
@@ -403,13 +423,20 @@ integration("session-scoped browser agent backends", () => {
     await vi.waitFor(
       async () =>
         expect(
-          (await f.host.runtime.browser.readWorkspaceTabs(f.host.ownerId, f.sessionId)).tabs,
+          (
+            await browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then(
+              (rows) => rows.lineage!,
+            )
+          ).tabs,
         ).toHaveLength(1),
       { timeout: 2000 },
     );
     const before = f.phone.receivedCommands().length;
     const result = await f.host.runtime.browser.activateWorkspaceTab(f.host.ownerId, tabId);
-    expect(result.group.tabs?.[0]?.state).toBe("live");
+    expect(
+      (await browserRows(f.host.runtime.browser, f.host.ownerId, result.session.id)).lineage
+        ?.tabs?.[0]?.state,
+    ).toBe("live");
     expect(
       f.phone
         .receivedCommands()
@@ -421,10 +448,6 @@ integration("session-scoped browser agent backends", () => {
   it("admits focus, empty-session actions and suspended close without resuming or loosening other fences", async () => {
     const f = await setup();
     const socket = await f.actions();
-    const viewer = await connect(
-      `ws://127.0.0.1:${f.host.hostPort}/v1/browser-sessions/${f.sessionId}/connect?surfaceState=1`,
-      f.host.ownerHeaders,
-    );
     const forward = async (action: BrowserAction, result: BrowserActionResult, overrides = {}) => {
       const start = f.phone.receivedCommands().length;
       const pending = f.act(socket, action, overrides);
@@ -454,19 +477,24 @@ integration("session-scoped browser agent backends", () => {
     );
     expect(focused.documentId).toBe("document-integration");
     const publish = async (surfaces: readonly Record<string, unknown>[]) => {
-      const changed = waitForMessage(
-        viewer,
-        (message) => message.type === "browser.surfaces.changed",
-        2_000,
+      f.phone.publishTabs({ surfaces });
+      await vi.waitFor(
+        () => {
+          const records = f.host.runtime.browser.clientStreams.source.ports.live(
+            f.sessionId,
+          )?.records;
+          expect(records?.size).toBe(surfaces.length);
+          for (const { active: _active, ...surface } of surfaces)
+            expect(records?.get(String(surface.id))).toMatchObject(surface);
+        },
+        { timeout: 2_000 },
       );
-      f.phone.sendServer({ type: "browser.surfaces.changed", surfaces });
-      await changed;
     };
     await publish([]);
     const noTarget = { surfaceId: undefined, documentId: undefined, geometryRevision: undefined };
     const tabs = await forward(
       { type: "session.tabs" },
-      { type: "session.tabs", tabs: [] },
+      { type: "session.tabs", tabs: [], nextCursor: null },
       noTarget,
     );
     expect(tabs).not.toHaveProperty("surfaceId");
@@ -693,11 +721,10 @@ integration("session-scoped browser agent backends", () => {
     );
     const suspended = waitForMessage(
       viewer,
-      (message) => message.type === "browser.surfaces.changed",
+      (message) => message.type === "browser.surface",
       2_000,
     );
-    f.phone.sendServer({
-      type: "browser.surfaces.changed",
+    f.phone.publishTabs({
       surfaces: [
         {
           id: "page-integration",
@@ -864,13 +891,8 @@ integration("session-scoped browser agent backends", () => {
       code: 4002,
       reason: "Browser editing was not negotiated.",
     });
-    const changed = waitForMessage(
-      viewer,
-      (message) => message.type === "browser.surfaces.changed",
-      2_000,
-    );
-    f.phone.sendServer({
-      type: "browser.surfaces.changed",
+    const changed = waitForMessage(viewer, (message) => message.type === "browser.surface", 2_000);
+    f.phone.publishTabs({
       surfaces: [
         {
           id: "page-integration",

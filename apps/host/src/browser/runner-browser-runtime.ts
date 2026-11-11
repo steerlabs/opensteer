@@ -72,7 +72,6 @@ const erasureTimeoutMs = 120_000;
 const maxPendingRequests = 64;
 const maxQueuedControlBytes = 2 * 1_024 * 1_024;
 const maxQueuedControlItems = 256;
-const maxChannelsPerRunnerRuntime = 32;
 const maxQueuedFrameBytes = 32 * 1_024 * 1_024;
 const maxQueuedFrameSurfaces = 128;
 
@@ -308,8 +307,6 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       if (placementLease.renewal) await placementLease.renewal;
       this.#assertCurrentPlacementLease(placementLease);
       this.#requireExpectedStream(runnerId, expectedFence);
-      if (placementLease.channels.size >= maxChannelsPerRunnerRuntime)
-        throw relayError("That computer's Browser Runtime session limit is full.");
       const activePlacementLease = placementLease;
       if (!activePlacementLease) {
         throw relayError("The browser capability lease is unavailable.");

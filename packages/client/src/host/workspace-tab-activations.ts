@@ -1,4 +1,4 @@
-import type { WorkspaceTabLineage } from "@opensteer/protocol";
+import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
 import type { HostClient, HostSnapshot, WorkspaceTabActivationOptions } from "./client.js";
 import { browserPlaceUnavailableReason } from "./places.js";
 import { browserIdentity } from "./start-page-model.js";
@@ -17,7 +17,8 @@ interface ActivationPorts {
   readonly snapshot: () => HostSnapshot;
   readonly subscribe: (listener: () => void) => () => void;
   readonly dispatch: (tabId: string) => Promise<ActivationResult>;
-  readonly apply: (result: ActivationResult) => void;
+  readonly apply?: (result: ActivationResult) => void;
+  readonly resolved?: (result: ActivationResult) => boolean;
   readonly changed: (ids: readonly string[]) => void;
 }
 
@@ -65,22 +66,21 @@ export class WorkspaceTabActivations {
       return held.promise;
     }
     const scope = JSON.stringify(viewerScopeOf(this.#ports.snapshot()));
-    let lineage: WorkspaceTabLineage | undefined;
+    let lineage: BrowserGroupRow | undefined;
     const read = () => {
       const snapshot = this.#ports.snapshot();
-      const current = snapshot.workspaceTabs?.find(
-        (group) => group.id === lineage?.id || group.tabs?.some((tab) => tab.id === tabId),
-      );
+      const store = snapshot.browserTabs;
+      const groupId = lineage?.id ?? store?.groupForTab(tabId);
+      const current = groupId ? store?.group(groupId) : undefined;
       if (current) lineage = current;
       const placement = snapshot.browserPlacements.find(
-        (value) => value.runnerId === lineage?.session.placement.runnerId,
+        (value) => value.runnerId === lineage?.placement.runnerId,
       );
-      // Omitted lineages and byte-bounded tab arrays cannot prove a close.
-      const closed = !!current?.tabs && !current.tabs.some((tab) => tab.id === tabId);
+      const closed = !!current && store!.tabs(current.id).whole && !store!.tab(current.id, tabId);
       const reason = lineage
         ? browserPlaceUnavailableReason(
-            browserIdentity(lineage.session.profileId, snapshot.browserProfiles),
-            lineage.unavailableReason,
+            browserIdentity(lineage.profileId, snapshot.browserProfiles),
+            lineage.unavailableReason ?? undefined,
             placement?.unavailableReason,
           )
         : null;
@@ -92,7 +92,7 @@ export class WorkspaceTabActivations {
         ready: !!lineage && snapshot.connection === "connected" && placement?.available === true,
         key: JSON.stringify([
           snapshot.connection,
-          lineage?.session.placement.runnerId,
+          lineage?.placement.runnerId,
           placement?.available,
           placement?.runtimeId,
         ]),
@@ -150,7 +150,7 @@ export class WorkspaceTabActivations {
       if (changed) revision++;
       state = next;
       if (state.ended) finish(null);
-      else if (changed) wake?.();
+      else wake?.();
     };
     unsubscribe = this.#ports.subscribe(observe);
     this.#ports.changed(this.#ids);
@@ -190,7 +190,13 @@ export class WorkspaceTabActivations {
         }
         observe();
         if (settled) return;
-        this.#ports.apply(result);
+        this.#ports.apply?.(result);
+        while (!settled && this.#ports.resolved?.(result) === false) {
+          await new Promise<void>((resume) => {
+            wake = resume;
+          });
+          wake = null;
+        }
         finish(result);
       }
     };

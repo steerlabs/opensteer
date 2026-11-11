@@ -120,11 +120,11 @@ class CoreTest {
     }
     @Test fun `primary and auxiliary proofs pin challenge descriptor module and credential digest`() {
         val challenge = Wire.parse("""{"type":"host.challenge","challengeId":"rch_11111111-1111-4111-8111-111111111111","nonce":"11111111111111111111111111111111","hostSessionId":"22222222222222222222222222222222","expiresAt":"2026-11-09T12:00:01.000Z","proofFormatVersion":2}""")
-        val descriptor = Wire.parse("""{"name":"Phone","modules":{"browser":{"wireVersion":1,"runtimeId":"phone"}}}""")
+        val descriptor = Wire.parse("""{"name":"Phone","modules":{"browser":{"wireVersion":2,"runtimeId":"phone"}}}""")
         val proof = Proofs.primary(challenge, descriptor, "fingerprint", "disposable-enrollment")
         val transcript = Wire.canonical(proof)
         assertTrue(transcript.startsWith("[\"opensteer-runner-enroll-v2\",\"challengeId\",\"rch_11111111-1111-4111-8111-111111111111\""))
-        assertTrue(transcript.contains("\"descriptor\",{\"modules\":{\"browser\":{\"runtimeId\":\"phone\",\"wireVersion\":1}},\"name\":\"Phone\"}"))
+        assertTrue(transcript.contains("\"descriptor\",{\"modules\":{\"browser\":{\"runtimeId\":\"phone\",\"wireVersion\":2}},\"name\":\"Phone\"}"))
         assertEquals(JsonPrimitive(Wire.digest("disposable-enrollment".toByteArray())), proof.last())
         assertFalse(transcript.contains("disposable-enrollment"))
         val authentication = Proofs.primary(challenge, descriptor, "fingerprint", null)

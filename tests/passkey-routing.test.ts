@@ -1,3 +1,9 @@
+import { KeyedStreamReceiver } from "../packages/protocol/src/keyed-stream.js";
+import type {
+  BrowserTabRecord,
+  BrowserTabStreamMeta,
+} from "../packages/protocol/src/browser-tabs.js";
+import { BrowserRuntimeServerMessageSchema } from "../packages/protocol/src/browser.js";
 import { decodeBase64Url } from "@opensteer/shared/base64url";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import assert from "node:assert/strict";
@@ -56,6 +62,7 @@ it.each([true, false])(
     const offers: string[] = [];
     const other: BrowserServerMessage[] = [];
     const causes: unknown[] = [];
+    const tabStream = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
     let surfaceId: string | null = null;
     let surfaces: Extract<BrowserServerMessage, { type: "browser.snapshot" }>["surfaces"] = [];
     let browser: LaunchedBrowser | undefined;
@@ -156,6 +163,7 @@ it.each([true, false])(
         keyId: "example",
         privateKey: keys.privateKey,
       }).issue({
+        creationOrigin: "person",
         access: "read-write",
         runtimeId: "example",
         sessionId,
@@ -185,10 +193,14 @@ it.each([true, false])(
           BrowserBridgeAttachedSchema.parse(value);
           return;
         }
-        const message = BrowserServerMessageSchema.parse(value);
-        if (message.type === "browser.snapshot") surfaceId = message.surfaces[0]?.id ?? null;
-        if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-          surfaces = message.surfaces;
+        const message = BrowserRuntimeServerMessageSchema.parse(value);
+        if (message.type === "browser.tabs" && tabStream.apply(message.stream) === "applied") {
+          surfaceId ??= tabStream.rows.keys().next().value ?? null;
+          surfaces = [...tabStream.rows.values()].map((row) => ({
+            ...row,
+            active: row.id === tabStream.meta?.activeId,
+          }));
+        }
         if (message.type === "passkey.ceremony") {
           causes.push(message.cause);
           host.ceremony(message);

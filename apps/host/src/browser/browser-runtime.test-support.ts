@@ -1,3 +1,5 @@
+import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
+import { BrowserTabRecordSchema, type BrowserTabRecord } from "@opensteer/protocol/browser";
 import { createId } from "@opensteer/core";
 import {
   BrowserAttachTicketClaimsSchema,
@@ -18,7 +20,7 @@ import {
   type HostToBrowserRelayMessage,
 } from "@opensteer/protocol/browser-relay";
 import { createRunnerAuxiliarySignature } from "@opensteer/runner-auth";
-import { createPublicKey, randomUUID, verify } from "node:crypto";
+import { createPublicKey, createHash, randomUUID, verify } from "node:crypto";
 import WebSocket from "ws";
 import {
   closed,
@@ -74,6 +76,14 @@ export async function startBrowserRuntime(
   nextCommand(): Promise<Record<string, unknown>>;
   sendFrame(frame: Buffer): void;
   sendServer(message: Record<string, unknown>, sessionId?: string): void;
+  publishTabs(
+    input: {
+      surfaces: readonly Record<string, unknown>[];
+      inventoryRevision?: number;
+      closed?: readonly string[];
+    },
+    sessionId?: string,
+  ): void;
 }> {
   const runnerId = options.primary?.fence.runnerId ?? createId("runner");
   const bootId = options.primary?.bootId ?? RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
@@ -83,7 +93,7 @@ export async function startBrowserRuntime(
     ...(options.device ? { device: options.device } : {}),
     modules: {
       browser: {
-        wireVersion: 1,
+        wireVersion: 2,
         ...(!options.runtimeUrl
           ? {
               localProfileStorage: {
@@ -175,6 +185,97 @@ export async function startBrowserRuntime(
   const waiters: Array<(command: Record<string, unknown>) => void> = [];
   const send = (message: Record<string, unknown>) =>
     auxiliary.send(JSON.stringify({ ...fence, ...message }));
+  const streams = new Map<
+    string,
+    {
+      rows: Map<string, BrowserTabRecord>;
+      publisher: KeyedStreamPublisher<
+        BrowserTabRecord,
+        { activeId: BrowserTabRecord["id"] | null; inventoryRevision: number }
+      >;
+      meta: { activeId: BrowserTabRecord["id"] | null; inventoryRevision: number };
+    }
+  >();
+  const publishTabs = (
+    input: {
+      surfaces: readonly Record<string, unknown>[];
+      inventoryRevision?: number;
+      closed?: readonly string[];
+    },
+    sessionId?: string,
+  ) => {
+    const id = sessionId ? sessionChannels.get(sessionId) : channelId;
+    if (!id || !capability) throw new Error("No browser channel is attached.");
+    const emit = (message: unknown) =>
+      send({ type: "browser.server-message", capability, channelId: id, message });
+    let stream = streams.get(id);
+    if (!stream) {
+      const rows = new Map<string, BrowserTabRecord>(),
+        meta = { activeId: null as BrowserTabRecord["id"] | null, inventoryRevision: 1 };
+      stream = {
+        rows,
+        meta,
+        publisher: new KeyedStreamPublisher({
+          ids: () => rows.keys(),
+          read: (key) => rows.get(key),
+          meta: () => ({ ...meta }),
+          targetBytes: 64 * 1024,
+          envelopeBytes: 1024,
+        }),
+      };
+      streams.set(id, stream);
+    }
+    for (const key of stream.rows.keys())
+      if (!input.surfaces.some((row) => row.id === key)) {
+        stream.rows.delete(key);
+        stream.publisher.mark(key);
+      }
+    for (const [order, surface] of input.surfaces.entries()) {
+      const { active: _active, favicon, ...fields } = surface;
+      const previous = typeof surface.id === "string" ? stream.rows.get(surface.id) : undefined;
+      const icon =
+        typeof favicon === "string"
+          ? createHash("sha256").update(favicon).digest("base64url")
+          : null;
+      if (icon) emit({ type: "browser.tab.icon", key: icon, favicon });
+      const row = BrowserTabRecordSchema.parse({
+        state: "live",
+        url: "about:blank",
+        openerId: null,
+        documentId: "document-integration",
+        geometryRevision: options.agentActions ? 1 : 0,
+        loading: false,
+        navigationFailed: false,
+        canGoBack: false,
+        canGoForward: false,
+        sizedByAgent: false,
+        ...previous,
+        ...fields,
+        order: typeof surface.order === "number" ? surface.order : order,
+        title: typeof surface.title === "string" ? surface.title.slice(0, 256) : "",
+        icon: icon ?? (previous && previous.url === surface.url ? previous.icon : null),
+      });
+      stream.rows.set(row.id, row);
+      stream.publisher.mark(row.id);
+    }
+    stream.meta.activeId =
+      [...stream.rows.values()].find(
+        (row) => input.surfaces.find((surface) => surface.id === row.id)?.active,
+      )?.id ??
+      stream.rows.values().next().value?.id ??
+      null;
+    stream.meta.inventoryRevision = input.inventoryRevision ?? stream.meta.inventoryRevision;
+    stream.publisher.markMeta();
+    let frame = stream.publisher.next();
+    if (!frame) {
+      stream.publisher.reset();
+      frame = stream.publisher.next();
+    }
+    for (; frame; frame = stream.publisher.next()) {
+      emit({ type: "browser.tabs", stream: frame });
+      stream.publisher.settled(frame, true);
+    }
+  };
   const heartbeat = options.keepAlive
     ? setInterval(() => {
         if (auxiliary.readyState === WebSocket.OPEN)
@@ -311,49 +412,32 @@ export async function startBrowserRuntime(
               ? { basicInput: latestClaims.basicInput, inputLanesVersion: 1 }
               : {}),
             ...(latestClaims.surfaceState ? { surfaceState: latestClaims.surfaceState } : {}),
-            ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
+            ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
             access: latestClaims.access,
             dialog: options.initialDialog ?? null,
             sessionId: latestClaims.sessionId,
             state: "ready",
-            surfaces: [
-              {
-                active: true,
-                ...(options.agentActions
-                  ? { documentId: "document-integration", geometryRevision: 1 }
-                  : {}),
-                ...(latestClaims.surfaceState ? { state: "live" } : {}),
-                ...(options.navigation && latestClaims.navigationVersion === 1
-                  ? { canGoBack: false, canGoForward: false }
-                  : {}),
-                id: "page-integration",
-                title: "Integration page",
-                url: "about:blank",
-              },
-            ],
             type: "browser.snapshot",
           },
           type: "browser.server-message",
         });
-        if (options.workspaceTabs)
-          send({
-            capability: message.capability,
-            channelId: message.channelId,
-            message: {
-              type: "browser.workspace-tabs",
-              tabs: [
-                {
-                  id: "page-integration",
-                  title: "Integration page",
-                  url: "about:blank",
-                  order: 0,
-                  openerId: null,
-                },
-              ],
-              closed: [],
+        publishTabs({
+          surfaces: [
+            {
+              active: true,
+              ...(options.agentActions
+                ? { documentId: "document-integration", geometryRevision: 1 }
+                : {}),
+              ...(latestClaims.surfaceState ? { state: "live" } : {}),
+              ...(options.navigation && latestClaims.navigationVersion === 1
+                ? { canGoBack: false, canGoForward: false }
+                : {}),
+              id: "page-integration",
+              title: "Integration page",
+              url: "about:blank",
             },
-            type: "browser.server-message",
-          });
+          ],
+        });
         return;
       }
       case "browser.client-message": {
@@ -425,6 +509,7 @@ export async function startBrowserRuntime(
         { binary: true },
       );
     },
+    publishTabs,
     sendServer: (message, sessionId) => {
       if (!capability || !channelId) throw new Error("No browser channel is attached.");
       send({

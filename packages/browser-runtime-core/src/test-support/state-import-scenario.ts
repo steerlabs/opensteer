@@ -6,7 +6,7 @@ import {
   LocalProfileBindingSchema,
   type BrowserAttachTicketClaims,
   type BrowserClientMessage,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
@@ -307,8 +307,8 @@ export async function runStateImportScenario(options: {
     for (const name of ["first", "second", "viewer"] as const) {
       const sink = new FakeSink();
       sink.sendServerImplementation = async (message) => {
-        if (message.type === "browser.surfaces.changed")
-          for (const surface of message.surfaces) titleWaiters.get(surface.title)?.resolve();
+        if (message.type === "browser.tabs")
+          for (const surface of sink.tabs.rows.values()) titleWaiters.get(surface.title)?.resolve();
         if (message.type === "state.import.result") receivedAt.set(message.operationId, ++order);
       };
       sessions.set(name, {
@@ -328,7 +328,9 @@ export async function runStateImportScenario(options: {
       await send(name, { cookies: [...cookies], operationId, site, type: "state.import" });
       return awaitMessage(
         session(name).sink,
-        (message): message is Extract<BrowserServerMessage, { type: "state.import.result" }> =>
+        (
+          message,
+        ): message is Extract<BrowserRuntimeServerMessage, { type: "state.import.result" }> =>
           message.type === "state.import.result" && message.operationId === operationId,
       );
     };
@@ -396,7 +398,9 @@ export async function runStateImportScenario(options: {
     ] as const) {
       const result = await awaitMessage(
         session(name).sink,
-        (message): message is Extract<BrowserServerMessage, { type: "state.import.result" }> =>
+        (
+          message,
+        ): message is Extract<BrowserRuntimeServerMessage, { type: "state.import.result" }> =>
           message.type === "state.import.result" && message.operationId === operationId,
       );
       if (result.error !== null)
@@ -467,9 +471,9 @@ function assertJar(
   return actual.map((cookie) => `${browserCookieIdentity(cookie)}=${cookie.value}`).sort();
 }
 
-async function awaitMessage<Message extends BrowserServerMessage>(
+async function awaitMessage<Message extends BrowserRuntimeServerMessage>(
   sink: FakeSink,
-  predicate: (message: BrowserServerMessage) => message is Message,
+  predicate: (message: BrowserRuntimeServerMessage) => message is Message,
   from = 0,
 ): Promise<Message> {
   const found = sink.messages.slice(from).find(predicate);

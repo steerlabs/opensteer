@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 type Bounds = { x: number; y: number; width: number; height: number };
 
 const electron = vi.hoisted(() => ({
+  restore: undefined as undefined | (() => Promise<void>),
   storage: undefined as undefined | (() => Promise<unknown>),
   blankLoad: undefined as undefined | (() => Promise<void>),
   bootstrap: undefined as
@@ -69,6 +70,15 @@ const electron = vi.hoisted(() => ({
 
 vi.mock("electron", () => {
   class MockWebContents {
+    readonly id = electron.views.length + 1;
+    readonly navigationHistory = {
+      restore: vi.fn(async () => electron.restore?.()),
+      getAllEntries: vi.fn(() => [{ url: "https://restore.test/", title: "Saved" }]),
+      getActiveIndex: vi.fn(() => 0),
+    };
+    readonly isCurrentlyAudible = vi.fn(() => false);
+    readonly isBeingCaptured = vi.fn(() => false);
+    readonly opener = null;
     readonly debugger = {
       attach: vi.fn(),
       detach: vi.fn(),
@@ -179,11 +189,17 @@ vi.mock("electron", () => {
     setPermissionRequestHandler: vi.fn(),
     setUserAgent: vi.fn(),
     unregisterPreloadScript: vi.fn(),
-    webRequest: { onBeforeRequest: vi.fn(), onHeadersReceived: vi.fn() },
+    webRequest: {
+      onBeforeRequest: vi.fn(),
+      onHeadersReceived: vi.fn(),
+      onCompleted: vi.fn(),
+      onErrorOccurred: vi.fn(),
+    },
   });
 
   const sessions = new Map<string, ReturnType<typeof makeSession>>();
   return {
+    ipcMain: { on: vi.fn(), off: vi.fn() },
     app: { on: vi.fn(), whenReady: vi.fn(async () => undefined) },
     safeStorage: {
       isAsyncEncryptionAvailable: async () => true,
@@ -216,6 +232,200 @@ const {
   electronPagePresentation,
   nativePlacement,
 } = await import("./electron-browser-launcher.js");
+
+it("restores a Guest page before announcing without loading a blank", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    partitionKey: "session:restore",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const state = {
+    entries: [{ url: "https://restore.test/", title: "Saved" }],
+    index: 0,
+    sessionStorage: null,
+  };
+  try {
+    const announced = vi.fn(() => {
+      const view = electron.views.at(-1)!;
+      expect(view.webContents.loadURL).not.toHaveBeenCalled();
+      expect(
+        (
+          view.webContents as unknown as {
+            navigationHistory: { restore: ReturnType<typeof vi.fn> };
+          }
+        ).navigationHistory.restore,
+      ).toHaveBeenCalledWith({ entries: state.entries, index: 0 });
+    });
+    browser.context.onPage(announced);
+    await browser.context.createPage({ restore: state });
+    expect(announced).toHaveBeenCalledOnce();
+  } finally {
+    await browser.close();
+    launcher.close();
+  }
+});
+
+it("keeps POST results and engine activity awake and treats a POST redirect as GET", async () => {
+  const downloads = { accept: vi.fn(), active: vi.fn(() => false) };
+  const launcher = new ElectronBrowserLauncher({ downloads, pagePolicyPreloadPath: "/policy.cjs" });
+  const browser = await launcher.launch({
+    partitionKey: "session:signals",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const contents = electron.views.at(-1)!.webContents as unknown as import("electron").WebContents;
+  const page = browser.context.pages()[0]!;
+  const { session } = await import("electron");
+  const profile = vi.mocked(session.fromPartition).mock.results.at(-1)!.value;
+  const before = vi.mocked(profile.webRequest.onBeforeRequest).mock.calls[0]![0] as (
+    details: object,
+    answer: (value: object) => void,
+  ) => void;
+  const emit = (event: string) => {
+    for (const [name, listener] of electron.views.at(-1)!.webContents.on.mock.calls)
+      if (name === event) listener();
+  };
+  const finished = vi.mocked(profile.webRequest.onCompleted).mock.calls[0]![0]!;
+  const request = (method: string) => {
+    before(
+      {
+        id: 0,
+        url: "https://site.test/",
+        resourceType: "mainFrame",
+        webContentsId: contents.id,
+        method,
+      },
+      () => {},
+    );
+    finished({ id: 0 } as import("electron").OnCompletedListenerDetails);
+  };
+  try {
+    request("POST");
+    emit("did-navigate");
+    expect(await page.keepAwake!()).toBe("post");
+    request("GET");
+    emit("did-fail-load");
+    expect(await page.keepAwake!()).toBe("post");
+    request("POST");
+    request("GET");
+    emit("did-navigate");
+    expect(await page.keepAwake!()).toBeNull();
+    const upload = (id: number, method: string) =>
+      before(
+        {
+          id,
+          method,
+          webContentsId: contents.id,
+          url: "https://site.test/upload",
+          resourceType: "xhr",
+        },
+        () => {},
+      );
+    const failed = vi.mocked(profile.webRequest.onErrorOccurred).mock.calls[0]![0]!;
+    upload(1, "POST");
+    upload(2, "PUT");
+    expect(await page.keepAwake!()).toBe("upload");
+    finished({ id: 1 } as import("electron").OnCompletedListenerDetails);
+    expect(await page.keepAwake!()).toBe("upload");
+    failed({ id: 2 } as import("electron").OnErrorOccurredListenerDetails);
+    expect(await page.keepAwake!()).toBeNull();
+    downloads.active.mockReturnValue(true);
+    expect(await page.keepAwake!()).toBe("download");
+    downloads.active.mockReturnValue(false);
+    vi.mocked(contents.isCurrentlyAudible).mockReturnValue(true);
+    expect(await page.keepAwake!()).toBe("media");
+    vi.mocked(contents.isCurrentlyAudible).mockReturnValue(false);
+    emit("media-started-playing");
+    expect(await page.keepAwake!()).toBe("media");
+    emit("media-paused");
+    emit("enter-html-full-screen");
+    expect(await page.keepAwake!()).toBe("fullscreen");
+    emit("leave-html-full-screen");
+    vi.mocked(contents.isBeingCaptured).mockReturnValue(true);
+    expect(await page.keepAwake!()).toBe("capturing");
+  } finally {
+    await browser.close();
+    launcher.close();
+  }
+});
+
+it("refuses capture when session storage is oversized or the isolated read is denied", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    partitionKey: "session:capture-bounds",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  let denied = false;
+  electron.bootstrap = (method) =>
+    method === "Page.createIsolatedWorld"
+      ? Promise.resolve({ executionContextId: 31 })
+      : method === "Runtime.evaluate"
+        ? Promise.resolve(
+            denied
+              ? { result: {}, exceptionDetails: {} }
+              : {
+                  result: {
+                    value: {
+                      origin: "https://restore.test",
+                      items: [["key", "x".repeat(256 * 1024)]],
+                    },
+                  },
+                },
+          )
+        : undefined;
+  try {
+    expect(await browser.context.pages()[0]!.captureRestore!()).toBeNull();
+    denied = true;
+    expect(await browser.context.pages()[0]!.captureRestore!()).toBeNull();
+  } finally {
+    electron.bootstrap = undefined;
+    await browser.close();
+    launcher.close();
+  }
+});
+
+it("rejects a refused restore before announcing and closes its unloaded view", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    partitionKey: "session:refused-restore",
+    initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
+    storage: { kind: "guest" },
+  });
+  const announced = vi.fn();
+  browser.context.onPage(announced);
+  electron.restore = async () => {
+    throw new Error("History refused");
+  };
+  try {
+    await expect(
+      browser.context.createPage({
+        restore: {
+          entries: [{ url: "https://restore.test/", title: "Saved" }],
+          index: 0,
+          sessionStorage: null,
+        },
+      }),
+    ).rejects.toThrow("History refused");
+    expect(announced).not.toHaveBeenCalled();
+    expect(electron.views.at(-1)!.webContents.loadURL).not.toHaveBeenCalled();
+    expect(electron.views.at(-1)!.webContents.close).toHaveBeenCalled();
+  } finally {
+    electron.restore = undefined;
+    await browser.close();
+    launcher.close();
+  }
+});
 
 describe("electronBrowserPartition", () => {
   it("keeps fresh partitions in a namespace of their own", () => {
@@ -2008,6 +2218,32 @@ describe("native Electron profiles", () => {
       },
     };
   }
+  it("restores a local-profile page without either blank load", async () => {
+    const f = await fixture();
+    let browser: Awaited<ReturnType<typeof f.launch>> | undefined;
+    try {
+      await f.initialize();
+      browser = await f.launch(true);
+      await browser.profile!.admit();
+      const announced = vi.fn(() =>
+        expect(electron.views.at(-1)!.webContents.loadURL).not.toHaveBeenCalled(),
+      );
+      browser.context.onPage(announced);
+      await browser.context.createPage({
+        restore: {
+          entries: [{ url: "https://restore.test/", title: "Saved" }],
+          index: 0,
+          sessionStorage: null,
+        },
+      });
+      expect(announced).toHaveBeenCalledOnce();
+    } finally {
+      await browser?.close();
+      f.launcher.close();
+      await f.launcher.localProfiles.release(f.directory);
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
   it("keeps an admitted page and request gate open after a cookie capture times out", async () => {
     const f = await fixture();
     const { acquireElectronLocalProfile } = await import("./electron-local-profile.js");

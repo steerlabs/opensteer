@@ -1,3 +1,9 @@
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import type {
+  BrowserTabRecord,
+  BrowserTabStreamMeta,
+  BrowserRuntimeServerMessage,
+} from "@opensteer/protocol/browser";
 import { existsSync as guestMarkerExists } from "node:fs";
 import {
   browserViewerEditingVersion,
@@ -15,6 +21,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import {
   BrowserClientMessageSchema,
   BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   hostApi,
   hostApiVersionHeader,
   type BrowserServerMessage,
@@ -69,7 +76,49 @@ const output = path.join(
 let viewerVersion: 1 | 2 | undefined;
 let requestedVersion: 1 | 2 | undefined;
 const consumerToken = randomUUID();
-function project(message: BrowserServerMessage): BrowserServerMessage | undefined {
+const tabStream = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+let heldSurfaceId: string | null = null;
+let runtimeSnapshot: Extract<BrowserRuntimeServerMessage, { type: "browser.snapshot" }> | undefined;
+const icons = new Map<string, string>();
+function heldSurface(): BrowserServerMessage | undefined {
+  if (!heldSurfaceId) return;
+  const row = tabStream.rows.get(heldSurfaceId);
+  if (!row)
+    return {
+      type: "browser.surface",
+      surfaceId: BrowserSurfaceIdSchema.parse(heldSurfaceId),
+      surface: null,
+    };
+  const {
+    icon,
+    order: _order,
+    openerId: _opener,
+    canGoBack: _back,
+    canGoForward: _forward,
+    ...surface
+  } = row;
+  return {
+    type: "browser.surface",
+    surfaceId: row.id,
+    surface: { ...surface, favicon: icon ? (icons.get(icon) ?? null) : null },
+  };
+}
+function project(
+  message: BrowserServerMessage | BrowserRuntimeServerMessage,
+): BrowserServerMessage | undefined {
+  if (message.type === "browser.tab.icon") {
+    icons.set(message.key, message.favicon);
+    return;
+  }
+  if (message.type === "browser.snapshot" && !("surfaces" in message)) {
+    runtimeSnapshot = message;
+    return browserViewerMessage({ ...message, surfaces: [] }, viewerVersion);
+  }
+  if (message.type === "browser.tabs") {
+    if (tabStream.apply(message.stream) !== "applied") return;
+    return heldSurface();
+  }
+
   if (
     !viewerVersion &&
     [
@@ -90,7 +139,7 @@ const run = promisify(execFile);
 const scratch = mkdtempSync(path.join(tmpdir(), "opensteer-baseline-viewer-"));
 app.setPath("userData", path.join(scratch, "user-data"));
 const records: string[] = [];
-const runtimeMessages: BrowserServerMessage[] = [];
+const runtimeMessages: BrowserRuntimeServerMessage[] = [];
 const rendererErrors: string[] = [];
 let failure: string | undefined;
 let window: BrowserWindow | undefined;
@@ -245,12 +294,18 @@ server.on("upgrade", (request, socket, head) => {
     requestedVersion =
       new URL(request.url!, "http://fixture").searchParams.get("editing") === "2" ? 2 : 1;
     viewerVersion = browserViewerEditingVersion(snapshot, requestedVersion);
-    for (const message of runtimeMessages) {
-      const projected = project(message);
-      if (projected) ws.send(JSON.stringify(projected));
-    }
+    assert(runtimeSnapshot);
+    ws.send(
+      JSON.stringify(browserViewerMessage({ ...runtimeSnapshot, surfaces: [] }, viewerVersion)),
+    );
     ws.on("message", (data) => {
       const message = BrowserClientMessageSchema.parse(JSON.parse(data.toString()));
+      if (message.type === "stream.subscribe") {
+        assert(message.surfaceId, "The viewer must subscribe to one surface.");
+        heldSurfaceId = message.surfaceId;
+        const surface = heldSurface();
+        if (surface) ws.send(JSON.stringify(surface));
+      } else if (message.type === "stream.unsubscribe") heldSurfaceId = null;
       const input = [
         "input.key",
         "input.pointer",
@@ -315,11 +370,9 @@ async function main() {
     attachment = await runtime.attach("baseline", {
       sendServer: async (message) => {
         runtimeMessages.push(message);
-        if (message.type === "browser.snapshot") snapshot = message;
-        if (peer?.readyState === WebSocket.OPEN) {
-          const projected = project(message);
-          if (projected) peer.send(JSON.stringify(projected));
-        }
+        const projected = project(message);
+        if (projected?.type === "browser.snapshot") snapshot = projected;
+        if (projected && peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify(projected));
       },
       sendFrame: async (frame) => {
         if (peer?.readyState === WebSocket.OPEN) peer.send(encodeBrowserFrame(frame));
@@ -329,7 +382,8 @@ async function main() {
     assert.equal(snapshot.editingVersion, rawBaseline ? undefined : 2);
     assert.equal(snapshot.clipboard, rawBaseline ? undefined : false);
     assert.equal(browser?.clipboard, undefined);
-    const surfaceId = snapshot.surfaces[0]!.id;
+    const surfaceId = tabStream.meta?.activeId;
+    assert(surfaceId);
     await attachment.handle(JSON.stringify({ type: "navigation.go", url: origin, surfaceId }));
     const page = browser!.context.pages()[0]!;
     const cdp = await page.cdp();

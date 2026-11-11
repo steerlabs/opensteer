@@ -1,3 +1,4 @@
+import { browserRows } from "./browser-rows.test-support.js";
 import {
   connectCallerMachine,
   enrollmentToken,
@@ -222,7 +223,7 @@ integration("Host browser broker vertical", () => {
     );
     uiSocket = connected.socket;
     expect(connected.messages.map((message) => message.type)).toEqual(["browser.snapshot"]);
-    uiSocket.send(JSON.stringify({ type: "stream.subscribe" }));
+    uiSocket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-integration" }));
     await expect(browserRuntime.nextCommand()).resolves.toMatchObject({
       type: "stream.subscribe",
     });
@@ -230,7 +231,13 @@ integration("Host browser broker vertical", () => {
     browserRuntime.sendFrame(browserFrame(3));
     expect((await framePromise).subarray(-4)).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
 
-    uiSocket.send(JSON.stringify({ type: "navigation.reload", ignoreCache: true }));
+    uiSocket.send(
+      JSON.stringify({
+        type: "navigation.reload",
+        surfaceId: "page-integration",
+        ignoreCache: true,
+      }),
+    );
     await expect(browserRuntime.nextCommand()).resolves.toMatchObject({
       type: "navigation.reload",
       ignoreCache: true,
@@ -261,7 +268,7 @@ integration("Host browser broker vertical", () => {
     });
     // Joining a stream already under way starts from its current picture.
     const firstWatchFrame = waitForBinary(watchSocket);
-    watchSocket.send(JSON.stringify({ type: "stream.subscribe" }));
+    watchSocket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-integration" }));
     const firstWatchHeader = decodeBrowserFrameEnvelope(await firstWatchFrame).header;
     expect(firstWatchHeader.frameId).toBe(3);
     expect(firstWatchHeader.watchToken).toBeDefined();
@@ -274,7 +281,7 @@ integration("Host browser broker vertical", () => {
     expect((await fastViewerFrame).frameId).toBe(6);
     // A new title or address while a picture is out is the same picture: its
     // acknowledgement still counts and nothing is dropped.
-    browserRuntime.sendServer({
+    browserRuntime.publishTabs({
       surfaces: [
         {
           active: true,
@@ -285,7 +292,6 @@ integration("Host browser broker vertical", () => {
           url: "https://example.com/next",
         },
       ],
-      type: "browser.surfaces.changed",
     });
     await new Promise((resolve) => setTimeout(resolve, 75));
     const latestWatchFrame = waitForBinary(watchSocket);
@@ -294,24 +300,23 @@ integration("Host browser broker vertical", () => {
     expect(latestWatchHeader.frameId).toBe(6);
     expect(latestWatchHeader.watchToken).not.toBe(firstWatchHeader.watchToken);
     for (const frames of [connected.messages, watched.messages]) {
-      for (const frame of frames) {
-        if (frame.type !== "browser.snapshot" && frame.type !== "browser.surfaces.changed")
-          continue;
-        const parsed = BrowserServerMessageSchema.parse(frame);
-        if (parsed.type !== "browser.snapshot" && parsed.type !== "browser.surfaces.changed")
-          throw new Error("Expected browser surfaces");
-        const surfaces = parsed.surfaces;
-        expect(surfaces).toHaveLength(1);
-        expect(surfaces[0]).not.toHaveProperty("canGoBack");
-        expect(surfaces[0]).not.toHaveProperty("canGoForward");
+      const snapshots = frames.filter((frame) => frame.type === "browser.snapshot");
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({ surfaces: [] });
+      const surfaces = frames
+        .map((frame) => BrowserServerMessageSchema.parse(frame))
+        .flatMap((frame) =>
+          frame.type === "browser.surface" && frame.surface ? [frame.surface] : [],
+        );
+      expect(surfaces.length).toBeGreaterThan(0);
+      for (const surface of surfaces) {
+        expect(surface.id).toBe("page-integration");
+        expect(surface).not.toHaveProperty("canGoBack");
+        expect(surface).not.toHaveProperty("canGoForward");
       }
+      expect(frames.some((frame) => frame.type === "browser.surfaces.changed")).toBe(false);
     }
-    const catalog = await testRpcData(
-      origin,
-      "browser.tabs.get",
-      { sessionId: started.session.id },
-      { headers: sessionHeaders },
-    );
+    const catalog = await browserRows(runtime.browser, owner.id, started.session.id);
     expect(catalog.tabs[0]).toMatchObject({ canGoBack: true, canGoForward: false });
     // A late or repeated acknowledgement changes nothing and ends nothing.
     watchSocket.send(JSON.stringify({ type: "stream.ack", token: firstWatchHeader.watchToken }));
@@ -326,7 +331,9 @@ integration("Host browser broker vertical", () => {
       { cookie, origin },
     );
     const currentPicture = waitForBinary(secondViewer.socket);
-    secondViewer.socket.send(JSON.stringify({ type: "stream.subscribe" }));
+    secondViewer.socket.send(
+      JSON.stringify({ type: "stream.subscribe", surfaceId: "page-integration" }),
+    );
     const currentHeader = decodeBrowserFrameEnvelope(await currentPicture).header;
     expect(currentHeader.frameId).toBe(6);
     secondViewer.socket.send(
@@ -348,7 +355,10 @@ integration("Host browser broker vertical", () => {
     expect(bootstrap.browser).toMatchObject({
       available: true,
       profiles: [{ name: "Integration browser" }],
-      sessions: [{ attachedRunIds: [], id: started.session.id, state: "ready" }],
+      groups: {
+        complete: true,
+        rows: [{ attachedRunIds: [], sessionId: started.session.id, state: "ready" }],
+      },
     });
     // Only an active Run holds a session; one that is not running holds nothing.
     const projectionRunId = createId("run");
@@ -367,8 +377,8 @@ integration("Host browser broker vertical", () => {
       { headers: { cookie } },
     );
     expect(
-      detachedBootstrap.browser.sessions.find(
-        (session: { id: string }) => session.id === started.session.id,
+      detachedBootstrap.browser.groups.rows.find(
+        (session) => session.sessionId === started.session.id,
       ),
     ).toMatchObject({ acting: false, attachedRunIds: [] });
 
@@ -581,6 +591,7 @@ function browserFrame(frameId: number): Buffer {
     JSON.stringify({
       encoding: "jpeg",
       frameId,
+      geometryRevision: 0,
       rasterHeight: 1,
       rasterWidth: 1,
       surfaceId: "page-integration",

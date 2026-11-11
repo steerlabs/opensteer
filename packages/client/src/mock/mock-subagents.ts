@@ -11,8 +11,10 @@ import {
 } from "@opensteer/core";
 import type { HostSnapshot, NodeEntry, RunEntry, TranscriptEntry } from "../host/client.js";
 
-export function seedMockSubagents(snapshot: HostSnapshot): {
-  snapshot: HostSnapshot;
+export function seedMockSubagents<Snapshot extends HostSnapshot>(
+  snapshot: Snapshot,
+): {
+  snapshot: Snapshot;
   events: readonly AgentEvent[];
   assignment: AssignmentView;
 } {

@@ -1,4 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -777,23 +779,25 @@ describe("page rail", () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const original = client
       .getSnapshot()
-      .browserSessions.find((session) => session.tabCatalog?.tabs.length)!;
-    const tab = original.tabCatalog!.tabs[0]!;
-    const session: BrowserSessionSummary = {
-      ...original,
-      attachedRunIds: [run.runId!],
-      uses: [
-        {
-          runId: run.runId!,
-          tabId: tab.id,
-          threadId: "thread-1",
-          firstUsedAt: run.createdAt,
-          lastUsedAt: run.createdAt,
-        },
-      ],
-      tabCatalog: {
-        ...original.tabCatalog!,
-        tabs: [
+      .browserSessions.find(
+        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
+      )!;
+    const tab = (original.browserTabs?.sessionTabs(original?.id) ?? [])[0]!;
+    const browserUses = [
+      {
+        sessionId: original.id,
+        runId: run.runId!,
+        tabId: tab.id,
+        threadId: "thread-1",
+        firstUsedAt: run.createdAt,
+        lastUsedAt: run.createdAt,
+      },
+    ];
+    const rawSession: BrowserSessionSummary = seedBrowserSession(
+      { ...original, attachedRunIds: [run.runId!] },
+      {
+        ...original.browserTabs!.inventory(original?.id)!,
+        rows: [
           {
             ...tab,
             occupants: [
@@ -808,7 +812,17 @@ describe("page rail", () => {
           },
         ],
       },
-    };
+    );
+    const session = seedBrowserSnapshot(
+      seedBrowserSnapshot(
+        {
+          ...client.getSnapshot(),
+          workspaceTabRestoreVersion: undefined,
+          browserSessions: [rawSession],
+        } as import("@opensteer/client/host").HostSnapshot,
+        undefined,
+      ),
+    ).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "first-stop",
@@ -827,7 +841,12 @@ describe("page rail", () => {
     const root = createRoot(container);
     roots.push(root);
     const show = vi.fn();
-    const draw = (entries: TranscriptEntry[], sessions = [session], conversation = false) =>
+    const draw = (
+      entries: TranscriptEntry[],
+      sessions = [session],
+      conversation = false,
+      uses = browserUses,
+    ) =>
       act(() =>
         root.render(
           <MemoryRouter>
@@ -835,6 +854,7 @@ describe("page rail", () => {
               <AgentTranscript
                 entries={entries}
                 browserSessions={sessions}
+                browserUses={uses}
                 conversation={conversation}
                 threadId="thr_00000000-0000-4000-8000-000000000001"
               />
@@ -891,12 +911,12 @@ describe("page rail", () => {
         site: null,
         place: { kind: "phone", machineId: createId("runner"), display: "main" },
       };
-      f.draw([{ ...run, status: "running" }, app, phone], []);
+      f.draw([{ ...run, status: "running" }, app, phone], [], false, []);
       const stops = f.container.querySelectorAll(".trace-place");
       expect(stops).toHaveLength(2);
       expect(stops[0]!.textContent).toContain("Notes");
       expect(stops[1]!.textContent).toContain("Pixel 7");
-      f.draw([run, app, phone], []);
+      f.draw([run, app, phone], [], false, []);
       expect(
         [...f.container.querySelectorAll(".surface-chip__title")].map((node) => node.textContent),
       ).toEqual(["Notes", "Pixel 7"]);

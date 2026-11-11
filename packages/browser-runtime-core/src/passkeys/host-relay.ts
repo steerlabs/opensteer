@@ -7,7 +7,10 @@ import {
   passkeyBytesToJSON,
   type PasskeyCause,
 } from "@opensteer/protocol/passkeys";
-import type { BrowserServerMessage, BrowserClientMessage } from "@opensteer/protocol/browser";
+import type {
+  BrowserRuntimeServerMessage,
+  BrowserClientMessage,
+} from "@opensteer/protocol/browser";
 import type {
   PasskeyAuthenticator,
   PasskeyAuthenticatorInput,
@@ -68,7 +71,7 @@ export function passkeyClientDataMatches(
 interface Route {
   readonly sessionId: string;
   readonly surfaceId: string;
-  send(message: BrowserServerMessage): void;
+  send(message: BrowserRuntimeServerMessage): void;
 }
 /** One physical browser's relay; each request remains pinned to its session and document. */
 export class HostRelayAuthenticator implements PasskeyAuthenticator {
@@ -170,6 +173,9 @@ export class HostRelayAuthenticator implements PasskeyAuthenticator {
     } catch {
       pending.settle(refused);
     }
+  }
+  holdsSession(sessionId: string): boolean {
+    return [...this.#pending.values()].some((pending) => pending.sessionId === sessionId);
   }
   disconnect(sessionId: string): void {
     for (const pending of this.#pending.values())

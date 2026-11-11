@@ -1,15 +1,168 @@
 import { AppTabSchema } from "@opensteer/protocol";
-import { defaultTaskSymbol } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { defaultTaskSymbol, BrowserSurfaceIdSchema } from "@opensteer/core";
+import { describe, expect, it, vi } from "vitest";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList, placeDestinationEnded, samePlaceListSource } from "./places.js";
 import { taskMark, threadMark } from "./task-marks.js";
 import { assignmentMark } from "./assignment-presentation.js";
+import { startPageIndex, startPageResults } from "./start-page-model.js";
+import { PlaceProjection } from "./places.js";
 
 const now = () => new Date("2026-10-19T12:00:00.000Z");
 
 describe("place catalog", () => {
+  it("visits no rows on unchanged reads and only the changed row after a keyed title update", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const source = client.getSnapshot();
+      const store = client.browserTabs;
+      const first = store.structure()[0]!;
+      const row = store.tab(first.groupId, first.tabId)!;
+      const rows = Array.from({ length: 10_000 }, (_, i) => ({
+        ...row,
+        id: BrowserSurfaceIdSchema.parse(`large-${i}`),
+        order: i,
+        openerId: null,
+      }));
+      store.applyTabs(first.groupId, { op: "begin", generation: "large" });
+      store.applyTabs(first.groupId, { op: "rows", rows });
+      store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+      const projection = new PlaceProjection(store);
+      const before = projection.list(source);
+      const visit = vi.spyOn(projection, "place");
+      for (let i = 0; i < 20; i++)
+        expect(projection.list({ ...source, openingAppTabs: [] })).toBe(before);
+      expect(visit).toHaveBeenCalledTimes(0);
+      store.applyTabs(first.groupId, {
+        op: "change",
+        generation: "large",
+        base: 0,
+        revision: 1,
+        update: [{ id: rows[0]!.id, title: "Fresh title" }],
+      });
+      const after = projection.list(source);
+      expect(visit).toHaveBeenCalledTimes(1);
+      expect(after.find((place) => place.key.endsWith(":large-0"))?.title).toBe("Fresh title");
+      expect(after.find((place) => place.key.endsWith(":large-1"))).toBe(
+        before.find((place) => place.key.endsWith(":large-1")),
+      );
+      visit.mockClear();
+      expect(projection.list(source)).toBe(after);
+      expect(visit).not.toHaveBeenCalled();
+      store.applyTabs(first.groupId, {
+        op: "change",
+        generation: "large",
+        base: 1,
+        revision: 2,
+        remove: [rows[0]!.id],
+      });
+      expect(projection.list(source)).toHaveLength(after.length - 1);
+      expect(projection.list(source).some((place) => place.key.endsWith(":large-0"))).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+  it("projects keyed rows without rebuilding structure or unchanged places", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const source = client.getSnapshot();
+      const store = client.browserTabs;
+      const projection = new PlaceProjection(store);
+      const structure = projection.structure(source);
+      const first = store.structure().find((key) => store.sessionTabs(key.sessionId).length > 1);
+      const second = store
+        .structure()
+        .find((key) => key.groupId === first?.groupId && key.tabId !== first.tabId);
+      if (!first || !second) throw new Error("Missing seeded tabs");
+      const key = `browser:${first.sessionId}:${first.tabId}`;
+      const siblingKey = `browser:${second.sessionId}:${second.tabId}`;
+      const before = projection.place(source, key);
+      const sibling = projection.place(source, siblingKey);
+      const replace = (rows: ReturnType<typeof store.sessionTabs>) => {
+        store.applyTabs(first.groupId, { op: "begin", generation: "places" });
+        store.applyTabs(first.groupId, { op: "rows", rows: [...rows] });
+        store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+      };
+      const rows = store.sessionTabs(first.sessionId);
+      replace(
+        rows.map((row) =>
+          row.id === first.tabId ? { ...row, title: "Needle in keyed store", loading: true } : row,
+        ),
+      );
+      expect(projection.structure(source)).toBe(structure);
+      expect(projection.place(source, siblingKey)).toBe(sibling);
+      expect(projection.place(source, key)).not.toBe(before);
+      expect(projection.place(source, key)).toMatchObject({
+        title: "Needle in keyed store",
+        loading: true,
+      });
+      expect(placeList(source).find((place) => place.key === key)?.title).toBe(
+        "Needle in keyed store",
+      );
+      expect(
+        startPageResults(startPageIndex({ snapshot: source }), {
+          query: "Needle in keyed store",
+          choice: { kind: "guest" },
+        }).some((result) => result.kind === "tab" && result.title === "Needle in keyed store"),
+      ).toBe(true);
+      const committed = projection.structure(source);
+      store.applyTabs(first.groupId, { op: "begin", generation: "interrupted" });
+      store.applyTabs(first.groupId, { op: "rows", rows: [] });
+      expect(projection.structure(source)).toBe(committed);
+      store.disconnected();
+      expect(projection.structure(source)).toBe(committed);
+      expect(projection.place(source, siblingKey)).toBe(sibling);
+      const added = {
+        ...rows[0]!,
+        id: BrowserSurfaceIdSchema.parse("mock-added"),
+        openerId: null,
+        order: -1,
+      };
+      replace([added, ...store.sessionTabs(first.sessionId)]);
+      expect(
+        projection.structure(source).findIndex((place) => place.key.endsWith(":mock-added")),
+      ).toBeLessThan(projection.structure(source).findIndex((place) => place.key === key));
+      const inserted = projection.structure(source);
+      replace(
+        store
+          .sessionTabs(first.sessionId)
+          .map((row) => (row.id === first.tabId ? { ...row, order: -2 } : row)),
+      );
+      expect(projection.structure(source)).not.toBe(inserted);
+      expect(projection.structure(source).findIndex((place) => place.key === key)).toBeLessThan(
+        projection.structure(source).findIndex((place) => place.key.endsWith(":mock-added")),
+      );
+      replace(store.sessionTabs(first.sessionId).filter((row) => row.id !== first.tabId));
+      expect(projection.place(source, key)).toBeUndefined();
+      expect(projection.structure(source).some((place) => place.key === key)).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+  it("searches the current store even when the compatibility snapshot has not changed", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const source = client.getSnapshot();
+      const store = client.browserTabs;
+      const first = store.structure()[0]!;
+      const rows = store
+        .sessionTabs(first.sessionId)
+        .map((tab) => (tab.id === first.tabId ? { ...tab, title: "Keyed search needle" } : tab));
+      store.applyTabs(first.groupId, { op: "begin", generation: "search" });
+      store.applyTabs(first.groupId, { op: "rows", rows });
+      store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+      const results = startPageResults(startPageIndex({ snapshot: source }), {
+        query: "Keyed search needle",
+        choice: { kind: "guest" },
+      });
+      expect(
+        results.some((result) => result.kind === "tab" && result.title === "Keyed search needle"),
+      ).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
   it("lists Opensteer apps independently of machines and detects closed tabs", async () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
@@ -53,7 +206,9 @@ describe("place catalog", () => {
       const places = placeList(snapshot);
       expect(new Set(places.map((place) => place.key)).size).toBe(places.length);
       const shared = snapshot.browserSessions.find(
-        (session) => session.origin === "workspace" && (session.tabCatalog?.tabs.length ?? 0) > 1,
+        (session) =>
+          session.origin === "workspace" &&
+          ((session.browserTabs?.sessionTabs(session?.id) ?? []).length ?? 0) > 1,
       )!;
       expect(shared).toBeDefined();
       const tabs = places.filter(
@@ -62,7 +217,9 @@ describe("place catalog", () => {
       );
       expect(tabs[0]?.occupants).toEqual([]);
       expect(tabs.some((place) => place.occupants.some((occupant) => occupant.acting))).toBe(true);
-      expect(shared.tabCatalog!.tabs.some((tab) => tab.openerId)).toBe(true);
+      expect((shared.browserTabs?.sessionTabs(shared?.id) ?? []).some((tab) => tab.openerId)).toBe(
+        true,
+      );
       expect(places.some((place) => place.occupants.some((occupant) => occupant.home))).toBe(true);
       expect(
         new Set(
@@ -183,10 +340,14 @@ describe("place catalog", () => {
     try {
       const snapshot = {
         ...client.getSnapshot(),
-        workspaceTabs: undefined,
+        browserSessions: client.getSnapshot().browserSessions.map((session) => ({
+          ...session,
+          workspaceTabRestoreVersion: undefined,
+        })),
+        lineages: undefined,
         workspaceTabRestoreVersion: undefined,
       };
-      const source = { ...snapshot, workspaceTabRestoreVersion: 1 as const, workspaceTabs: [] };
+      const source = { ...snapshot, workspaceTabRestoreVersion: 1 as const };
       const expected = placeList(snapshot).filter((place) => place.kind === "browser");
       expect(expected.length).toBeGreaterThan(0);
       expect(placeList(source).filter((place) => place.kind === "browser")).toEqual(expected);
@@ -195,24 +356,47 @@ describe("place catalog", () => {
       client.dispose();
     }
   });
-  it("suppresses the live projection only for a participating durable session", () => {
+  it("removes only the group whose complete stream ends", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
       const snapshot = client.getSnapshot();
-      const participating = snapshot.browserSessions[0]!;
-      const source = {
-        ...snapshot,
-        workspaceTabRestoreVersion: 1 as const,
-        workspaceTabs: [],
-        browserSessions: snapshot.browserSessions.map((session) =>
-          session === participating
-            ? { ...session, workspaceTabRestoreVersion: 1 as const }
-            : session,
+      const first = client.browserTabs.structure()[0]!;
+      const before = placeList(snapshot);
+      client.browserTabs.applyTabs(first.groupId, { op: "begin", generation: "removed" });
+      client.browserTabs.applyTabs(first.groupId, { op: "end", revision: 0, count: 0, meta: {} });
+      const places = placeList(snapshot);
+      expect(places.some((place) => place.browser?.sessionId === first.sessionId)).toBe(false);
+      expect(places).toEqual(
+        before.filter((place) => place.browser?.sessionId !== first.sessionId),
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+  it("lists a tab its browser put to sleep as suspended, so selecting it wakes it", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const snapshot = client.getSnapshot();
+      const store = client.browserTabs;
+      const group = store
+        .groups()
+        .ids.map((id) => store.group(id)!)
+        .find((group) => group.state === "ready" && store.tabs(group.id).ids.length)!;
+      const rows = store.sessionTabs(group.sessionId);
+      const asleep = rows[0]!.id;
+      store.applyTabs(group.id, { op: "begin", generation: "sleeping" });
+      store.applyTabs(group.id, {
+        op: "rows",
+        rows: rows.map((tab) => (tab.id === asleep ? { ...tab, state: "suspended" } : tab)),
+      });
+      store.applyTabs(group.id, { op: "end", revision: 0, count: rows.length, meta: {} });
+      const states = new Map(
+        placeList(snapshot).flatMap((place) =>
+          place.workspaceTab ? [[place.workspaceTab.id, place.workspaceTab.state] as const] : [],
         ),
-      };
-      const places = placeList(source).filter((place) => place.kind === "browser");
-      expect(places.some((place) => place.browser?.sessionId === participating.id)).toBe(false);
-      expect(places.length).toBeGreaterThan(0);
+      );
+      expect(states.get(asleep)).toBe("suspended");
+      expect([...states.values()]).toContain("live");
     } finally {
       client.dispose();
     }
@@ -226,7 +410,7 @@ describe("place catalog", () => {
       )!.destination;
       expect(
         placeDestinationEnded(
-          { ...snapshot, browserSessions: [], workspaceTabRestoreVersion: 1, workspaceTabs: [] },
+          { ...snapshot, browserSessions: [], workspaceTabRestoreVersion: 1 },
           destination,
         ),
       ).toBe(false);

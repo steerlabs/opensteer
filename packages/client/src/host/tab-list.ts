@@ -9,7 +9,7 @@ import {
   type ComputerGlyph,
   type DeviceElsewhere,
 } from "../computers/computers.js";
-import { placeHasAgents, type PlaceItem } from "./places.js";
+import { placeHasAgents, type PlaceItem, type PlaceFilterItem } from "./places.js";
 import { sameIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
 
 /**
@@ -31,7 +31,7 @@ export function tabFilterActive(filter: TabFilter): boolean {
 }
 
 /** A device filter leaves out what runs on none, as Opensteer Apps do; a profile one, what browses as none. */
-export function tabMatchesFilter(place: PlaceItem, filter: TabFilter): boolean {
+export function tabMatchesFilter(place: PlaceFilterItem, filter: TabFilter): boolean {
   return (
     (!filter.agents || placeHasAgents(place)) &&
     (!filter.profile ||
@@ -67,7 +67,7 @@ export interface TabDeviceChoice {
  * still list it.
  */
 export function tabDeviceChoice(input: {
-  readonly places: readonly PlaceItem[];
+  readonly places: readonly PlaceFilterItem[];
   readonly machines: readonly MachineSummary[];
   readonly hereId: string | null;
   readonly homeId: string | null;
@@ -95,6 +95,27 @@ export function tabDeviceChoice(input: {
     input.homeId,
   );
   return { devices, filter };
+}
+
+/** The same devices, counts and filter: a selector of the choice keeps its identity across a title. */
+export function sameTabDeviceChoice(a: TabDeviceChoice, b: TabDeviceChoice): boolean {
+  return (
+    a.filter.agents === b.filter.agents &&
+    a.filter.profile === b.filter.profile &&
+    a.filter.device === b.filter.device &&
+    a.devices.length === b.devices.length &&
+    a.devices.every((device, index) => {
+      const other = b.devices[index]!;
+      return (
+        device.id === other.id &&
+        device.name === other.name &&
+        device.glyph === other.glyph &&
+        device.online === other.online &&
+        device.here === other.here &&
+        device.count === other.count
+      );
+    })
+  );
 }
 
 /** What the filter shows, as a title or a label: "Work tabs on Studio Mac with agents". */

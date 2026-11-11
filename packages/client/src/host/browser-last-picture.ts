@@ -15,6 +15,8 @@ export interface BrowserTabPicture {
 }
 
 interface Entry {
+  readonly sessionId: string;
+  readonly tabId: string;
   readonly picture: BrowserLastPicture;
   readonly invalidation: string | number | undefined;
   readonly unsubscribe: () => void;
@@ -32,8 +34,9 @@ const keptPictures = 8;
 const keptBytes = 3 * 1024 * 1024;
 
 const caches = new WeakMap<BrowserFrameStore, Map<string, Entry>>();
-/** Each listed tab's page as of the latest place list, so a picture is tied to the page it shows. */
-const listedDocuments = new WeakMap<BrowserFrameStore, ReadonlyMap<string, string | null>>();
+/** Resolve the current document when retaining a picture, including tabs never listed by the UI. */
+type DocumentForTab = (sessionId: string, tabId: string) => string | null | undefined;
+const listedDocuments = new WeakMap<BrowserFrameStore, DocumentForTab>();
 
 function cacheFor(frames: BrowserFrameStore) {
   let cache = caches.get(frames);
@@ -120,9 +123,18 @@ export function keepBrowserLastPictures(
         pictureKey(place.destination.sessionId, place.destination.tabId),
         place.browser.documentId,
       );
-  listedDocuments.set(frames, documents);
+  reconcileBrowserLastPictures(frames, (sessionId, tabId) =>
+    documents.get(pictureKey(sessionId, tabId)),
+  );
+}
+
+export function reconcileBrowserLastPictures(
+  frames: BrowserFrameStore,
+  document: DocumentForTab,
+): void {
+  listedDocuments.set(frames, document);
   for (const [key, entry] of caches.get(frames) ?? []) {
-    const documentId = documents.get(key);
+    const documentId = document(entry.sessionId, entry.tabId);
     if (documentId === undefined || (entry.documentId != null && entry.documentId !== documentId)) {
       entry.unsubscribe();
       caches.get(frames)?.delete(key);
@@ -167,10 +179,12 @@ export function rememberBrowserLastPicture(
   );
   cache.delete(key);
   cache.set(key, {
+    sessionId,
+    tabId,
     picture,
     unsubscribe,
     invalidation,
-    documentId: listedDocuments.get(frames)?.get(key),
+    documentId: listedDocuments.get(frames)?.(sessionId, tabId),
   });
   let bytes = 0;
   for (const entry of cache.values()) bytes += entry.picture.frame.data.byteLength;

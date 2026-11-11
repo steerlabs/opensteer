@@ -20,7 +20,7 @@ final class PhoneBrowserTransportTests: XCTestCase {
     let key = Curve25519.Signing.PrivateKey()
     var welcome = fences["welcome"] as! [String: Any]
     welcome["streamLeaseExpiresAt"] = "2026-11-09T12:02:00.000Z"
-    welcome["browserWireVersion"] = 1
+    welcome["browserWireVersion"] = 2
     welcome["browserAttachPublicKeys"] = [["keyId": "test", "publicKeyPem": IphoneProofs.publicKeyPem(key)]]
     var events: [[String: Any]] = []
     connection.setObserver { events.append($0) }
@@ -112,7 +112,7 @@ final class PhoneBrowserTransportTests: XCTestCase {
           now: (test["now"] as? NSNumber ?? fixture["now"] as! NSNumber).int64Value)
       }
       if test["accepted"] as! Bool {
-        XCTAssertNoThrow(try operation(), test["name"] as! String)
+        XCTAssertEqual(try operation().claims as NSDictionary, fixture["claims"] as! NSDictionary, test["name"] as! String)
       } else {
         XCTAssertThrowsError(try operation(), test["name"] as! String)
       }
@@ -276,7 +276,7 @@ final class PhoneBrowserTransportTests: XCTestCase {
     let connection = PhoneBrowserConnection(now: { clock.now }, queue: queue, onDetach: { _, attachment in detached.append(attachment) })
     try connection.configure(epoch: 0, runtimeId: "phone", ledger: ledger)
     var welcome = fenceFixture["welcome"] as! [String: Any]
-    welcome["browserWireVersion"] = 1
+    welcome["browserWireVersion"] = 2
     welcome["browserAttachPublicKeys"] = [["keyId": "fixture", "publicKeyPem": ticketFixture["publicKeyPem"]!]]
     var events: [[String: Any]] = []
     let sends = BrowserSentMessages()
@@ -433,7 +433,7 @@ final class PhoneBrowserTransportTests: XCTestCase {
     let connection = PhoneBrowserConnection(now: { now }, queue: queue)
     try connection.configure(epoch: 0, runtimeId: "phone", ledger: PhoneBrowserReplayLedger(directory: directory))
     var welcome = fixture["welcome"] as! [String: Any]
-    welcome["browserWireVersion"] = 1
+    welcome["browserWireVersion"] = 2
     welcome["browserAttachPublicKeys"] = [["keyId": "fixture", "publicKeyPem": ticketFixture["publicKeyPem"]!]]
     try connection.adopt(welcome, sender: { _, completion in XCTFail("Retired call reached socket"); completion(nil) }, close: {})
     defer { connection.offline(reason: "test-finished") }

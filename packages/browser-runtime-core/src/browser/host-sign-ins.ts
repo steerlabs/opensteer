@@ -184,6 +184,13 @@ export class HostSignIns {
     );
   }
 
+  holdsSession(sessionId: string): boolean {
+    return (
+      (this.#fills.get(sessionId)?.size ?? 0) > 0 ||
+      [...this.#operations.values()].some((op) => op.input.sessionId === sessionId)
+    );
+  }
+
   sessionDetached(sessionId: string): void {
     for (const controller of this.#fills.get(sessionId) ?? []) controller.abort();
     for (const [id, operation] of this.#operations) {

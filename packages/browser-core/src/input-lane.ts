@@ -48,14 +48,17 @@ export class BrowserInputLane {
   readonly execute: (message: Message) => Promise<void>;
   readonly refuse: (message: Message, reason: string) => Promise<void>;
   readonly diagnose: (record: InputLaneDiagnostic) => void;
+  readonly onIdle: () => void;
   constructor(
     limit: number,
     execute: (message: Message) => Promise<void>,
     refuse: (message: Message, reason: string) => Promise<void>,
     surfaceId?: string,
     diagnose: (record: InputLaneDiagnostic) => void = () => undefined,
+    onIdle: () => void = () => undefined,
   ) {
     this.diagnose = diagnose;
+    this.onIdle = onIdle;
     this.surfaceId = surfaceId;
     this.limit = limit;
     this.execute = execute;
@@ -223,6 +226,7 @@ export class BrowserInputLane {
     if (!entry) {
       for (const resolve of this.#idle) resolve();
       this.#idle.clear();
+      this.onIdle();
       return;
     }
     this.#bytes -= entry.bytes;

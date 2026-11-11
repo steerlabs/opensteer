@@ -6,11 +6,12 @@ import {
   tabFilterActive,
   tabFilterWords,
   tabMatchesFilter,
+  type HostClient,
   type PlaceBrowserIdentity,
-  type PlaceItem,
   type TabFilter,
   type TabFilterDevice,
 } from "@opensteer/client/host";
+import { usePlaceList } from "@opensteer/client/react";
 import { computerIcon } from "../computers/device-art.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -24,16 +25,18 @@ import { ProfileAvatar } from "./identity.js";
  */
 export function TabFilterControl({
   devices,
+  hostClient,
   onChange,
-  places,
   value,
 }: {
   /** The devices to narrow to, from `tabDeviceChoice`; empty while there is only one. */
   readonly devices: readonly TabFilterDevice[];
+  readonly hostClient: HostClient;
   readonly onChange: (filter: TabFilter) => void;
-  readonly places: readonly PlaceItem[];
   readonly value: TabFilter;
 }) {
+  // Its counts read every place; the list beside it arranges slots alone.
+  const places = usePlaceList(hostClient);
   const anchor = useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = useState(false);
   const profiles = useMemo(() => {

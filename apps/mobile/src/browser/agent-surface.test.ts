@@ -9,18 +9,8 @@ const page = (key: string, actingThread: string | null): SurfaceItem =>
     key,
     // The browser's own flag says only that someone acts there.
     acting: actingThread !== null,
-    session: {
-      id: `browser-${key}`,
-      state: "ready",
-      tabCatalog: {
-        tabs: [
-          {
-            id: key,
-            occupants: actingThread === null ? [] : [{ acting: true, threadId: actingThread }],
-          },
-        ],
-      },
-    },
+    session: { id: `browser-${key}`, state: "ready" },
+    occupants: actingThread === null ? [] : [{ acting: true, threadId: actingThread }],
     tabId: key,
   }) as unknown as SurfaceItem;
 const browser = page("page", null);

@@ -97,7 +97,7 @@ try {
         const tabId = key!.split(":").slice(2).join(":");
         return client
           .getSnapshot()
-          .browserSessions.flatMap((session) => session.tabCatalog?.tabs ?? [])
+          .browserSessions.flatMap((session) => session.browserTabs?.sessionTabs(session?.id) ?? [])
           .find((tab) => tab.id === tabId)!.title;
       }, firstKey);
       await page

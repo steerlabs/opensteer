@@ -39,7 +39,7 @@ class Socket extends EventEmitter {
     let result: unknown;
     switch (request.action.type) {
       case "session.tabs":
-        result = { type: request.action.type, tabs: this.tabs };
+        result = { type: request.action.type, tabs: this.tabs, nextCursor: null };
         break;
       case "surface.attach":
       case "surface.resume":
@@ -206,6 +206,33 @@ describe("actions Harness conformance", () => {
       expect(socket.requests.some((request) => request.action.type === "text.insert")).toBe(false);
     }
   });
+  it("lists every page before claiming an unknown tab", async () => {
+    const requests: { type: string; cursor?: string }[] = [];
+    const last = { ...binding, surfaceId: "tab-1000" };
+    const client = {
+      onEvent: () => {},
+      request: async (_binding: unknown, action: { type: string; cursor?: string }) => {
+        requests.push(action);
+        if (action.type !== "session.tabs") return { type: action.type, binding: last };
+        return action.cursor
+          ? { type: action.type, tabs: [last], nextCursor: null }
+          : { type: action.type, tabs: [binding], nextCursor: "999" };
+      },
+    };
+    const harness = createActionsHarness(client, last.surfaceId);
+    expect(await harness.listTabs()).toMatchObject([
+      { targetId: binding.surfaceId },
+      { targetId: last.surfaceId },
+    ]);
+    await harness.ensureRealTab();
+    expect(requests).toEqual([
+      { type: "session.tabs" },
+      { type: "session.tabs", cursor: "999" },
+      { type: "surface.attach" },
+      { type: "page.info" },
+    ]);
+  });
+
   it("maps page operations to the real bounded action schemas", async () => {
     const { socket, harness } = fixture();
     expect(await harness.listTabs()).toMatchObject([{ targetId: binding.surfaceId }]);

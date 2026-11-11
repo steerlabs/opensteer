@@ -1,10 +1,10 @@
+import type { BrowserTabSummary } from "@opensteer/client/host";
 import {
   browserPagePart,
   browserSiteLabel,
   browserTabTitle,
   nativeViewerSource,
   type BrowserSessionSummary,
-  type BrowserTabSummary,
   type TaskSurfaceDestination,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";

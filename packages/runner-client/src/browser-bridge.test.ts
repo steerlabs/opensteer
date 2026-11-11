@@ -71,6 +71,26 @@ describe("LocalBrowserRuntimeBridge", () => {
       await old.close();
     }
   });
+  it("opens local relay channel 33", async () => {
+    const f = await fixture();
+    f.sockets.on("connection", (socket) =>
+      socket.send(JSON.stringify({ type: "browser.attached" })),
+    );
+    try {
+      for (let index = 0; index < 33; index++)
+        await expect(
+          f.bridge.attach(BrowserChannelIdSchema.parse(`bch_${randomUUID()}`), "abc.def.ghi", {
+            onClosed() {},
+            onFrame() {},
+            onServerMessage() {},
+          }),
+        ).resolves.toEqual({ type: "browser.attached" });
+      expect(f.sockets.clients.size).toBe(33);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("waits for page readiness rather than the transport upgrade", async () => {
     const f = await fixture();
     const held = gate({ label: "runtime initial page", deadlineMs: 2000 });

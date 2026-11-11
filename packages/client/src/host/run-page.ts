@@ -113,12 +113,10 @@ export function runPlaceActing(
     return snapshot.browserSessions.some(
       (session) =>
         session.state === "ready" &&
-        (session.tabCatalog?.tabs.some(
-          (tab) =>
-            tab.id === place.surfaceId &&
-            tab.occupants?.some((occupant) => occupant.acting && occupant.threadId === threadId),
-        ) ??
-          false),
+        session.browserTabs
+          ?.sessionTab(session.id, place.surfaceId)
+          ?.occupants.some((occupant) => occupant.acting && occupant.threadId === threadId) ===
+          true,
     );
   const session = snapshot.machines
     .find((machine) => machine.id === place.machineId)

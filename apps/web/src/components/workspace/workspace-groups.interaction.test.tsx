@@ -1,3 +1,5 @@
+import type { WorkspaceTabLineage } from "@opensteer/client/host";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { readFileSync } from "node:fs";
 import { act } from "react";
@@ -16,7 +18,6 @@ import {
   ThreadIdSchema,
   WorkspaceIdSchema,
 } from "@opensteer/core";
-import { WorkspaceTabLineageSchema } from "@opensteer/protocol";
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
@@ -45,37 +46,38 @@ describe("personal browser tab groups", () => {
         const snapshot = read();
         const held = projections.get(snapshot);
         if (held) return held;
-        const saved: HostSnapshot = {
-          ...snapshot,
-          workspaceTabRestoreVersion: 1,
-          workspaceTabs: snapshot.browserSessions.map((session) =>
-            WorkspaceTabLineageSchema.parse({
-              id: session.id,
-              revision: session.tabCatalog?.revision ?? 0,
-              createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
-              session: {
+        const saved: HostSnapshot = seedBrowserSnapshot(
+          { ...snapshot, workspaceTabRestoreVersion: 1 } as HostSnapshot,
+          snapshot.browserSessions.map(
+            (session) =>
+              ({
                 id: session.id,
-                access: session.access,
-                origin: session.origin,
-                placement: session.placement,
-                profileId: session.profileId,
-                runtimeId: session.runtimeId,
-                state: session.state,
-                workspaceId: session.workspaceId,
+                revision: session.browserTabs!.inventory(session?.id)?.revision ?? 0,
                 createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
-                updatedAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
-              },
-              tabs: (session.tabCatalog?.tabs ?? []).map((tab) => ({
-                ...tab,
-                kind: "browser",
-                sessionId: session.id,
-                state: "live",
-              })),
-            }),
+                session: {
+                  id: session.id,
+                  access: session.access,
+                  origin: session.origin,
+                  placement: session.placement,
+                  profileId: session.profileId,
+                  runtimeId: session.runtimeId,
+                  state: session.state,
+                  workspaceId: session.workspaceId,
+                  createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
+                  updatedAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
+                },
+                tabs: (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
+                  ...tab,
+                  kind: "browser",
+                  sessionId: session.id,
+                  state: "live",
+                })),
+              }) as unknown as WorkspaceTabLineage,
           ),
-        };
-        projections.set(snapshot, saved);
-        return saved;
+        );
+        const keyed = seedBrowserSnapshot(saved);
+        projections.set(snapshot, keyed);
+        return keyed;
       });
       return "/";
     });
@@ -382,22 +384,32 @@ describe("personal browser tab groups", () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
       const live = placeList(snapshot).find((place) => place.kind === "browser")!;
-      vi.spyOn(source, "getSnapshot").mockReturnValue({
-        ...snapshot,
-        workspaceTabs: [],
-        browserTabGroups: {
-          revision: 1,
-          groups: [
+      vi.spyOn(source, "getSnapshot").mockReturnValue(
+        seedBrowserSnapshot(
+          seedBrowserSnapshot(
             {
-              id: createId("browserTabGroup"),
-              title: "Live only",
-              color: "blue",
-              collapsed: false,
-              tabIds: groupIds(live).map((id) => BrowserSurfaceIdSchema.parse(id)),
-            },
-          ],
-        },
-      });
+              ...snapshot,
+              browserSessions: snapshot.browserSessions.map((session) => ({
+                ...session,
+                workspaceTabRestoreVersion: undefined,
+              })),
+              browserTabGroups: {
+                revision: 1,
+                groups: [
+                  {
+                    id: createId("browserTabGroup"),
+                    title: "Live only",
+                    color: "blue",
+                    collapsed: false,
+                    tabIds: groupIds(live).map((id) => BrowserSurfaceIdSchema.parse(id)),
+                  },
+                ],
+              },
+            } as HostSnapshot,
+            [],
+          ),
+        ),
+      );
       return "/";
     });
     const live = placeList(client.getSnapshot()).find((place) => place.kind === "browser")!;

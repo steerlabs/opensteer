@@ -1,3 +1,8 @@
+import { KeyedStreamReceiver } from "../../packages/protocol/src/keyed-stream.js";
+import type {
+  BrowserTabRecord,
+  BrowserTabStreamMeta,
+} from "../../packages/protocol/src/browser-tabs.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,12 +54,14 @@ export async function startJpegProducer(): Promise<BrowserStreamProducer> {
     },
     sessionFilesRoot: join(directory, "files"),
   });
+  const tabs = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
   const attach = runtime.attach.bind(runtime);
   runtime.attach = async (ticket, sink) =>
     attach(ticket, {
       sendFrame: (frame) => sink.sendFrame(frame),
       sendServer: (message) => {
-        if (message.type === "browser.snapshot") surface = message.surfaces[0]?.id;
+        if (message.type === "browser.tabs" && tabs.apply(message.stream) === "applied")
+          surface = tabs.rows.keys().next().value;
         return sink.sendServer(message);
       },
     });

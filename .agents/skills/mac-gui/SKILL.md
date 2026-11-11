@@ -29,3 +29,14 @@ Procedures for anything that drives a macOS screen, and for Mac app control.
 - [Mac app control](references/app-control.md): helper checks and app-control journeys.
 - [Frozen live view](references/live-view.md): diagnosing window pictures from logs.
 - [Set up a Mac app](references/app-setup.md): guiding a person through macOS grants.
+
+## Sleep fidelity trial
+
+In a disposable VM with test profiles, drive the real launcher and ledger: create navigation
+history, window and nested scroll, typed text, selects and checkboxes, plus password/file inputs
+and session storage. Leave edits quiet for at least six seconds, sleep, then resume by the same tab
+ID. Compare Electron history, active entry, window scroll, ordinary forms and same-origin session
+storage; verify excluded state is not promised. Repeat with Playwright expecting a URL reload.
+Check that Watch stays asleep, selection wakes once, an unfinished stream snapshot closes nothing,
+and runtime shutdown loses restore state while preserving the durable tab. Report engine/version and mismatches without
+saved values; unrun trials remain unverified.

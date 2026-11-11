@@ -6,7 +6,12 @@ import {
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { useBrowserTabStrip, useHostSelector } from "@opensteer/client/react";
+import {
+  useBrowserSessionGroupId,
+  useBrowserTab,
+  useBrowserTabStrip,
+  useHostSelector,
+} from "@opensteer/client/react";
 import {
   PlaceContentPartSchema,
   RunnerIdSchema,
@@ -163,14 +168,8 @@ export function useComposerContext({
   // during a read starts a new read, so the older read's untitled answer is
   // not the last word. The catalog's raw title is watched, since the list
   // names an untitled page by its site.
-  const selectTitle = useCallback(
-    (snapshot: HostSnapshot) =>
-      snapshot.browserSessions
-        .find((session) => session.id === sessionId)
-        ?.tabCatalog?.tabs.find((tab) => tab.id === tabId)?.title ?? null,
-    [sessionId, tabId],
-  );
-  const catalogTitle = useHostSelector(hostClient, selectTitle);
+  const groupId = useBrowserSessionGroupId(hostClient, sessionId ?? undefined);
+  const catalogTitle = useBrowserTab(hostClient, groupId, tabId ?? undefined)?.title ?? null;
   const titleSeen = useRef<{ readonly key: string; readonly title: string } | null>(null);
   const [titled, setTitled] = useState(0);
   useEffect(() => {

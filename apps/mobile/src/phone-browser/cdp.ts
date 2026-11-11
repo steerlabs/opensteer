@@ -9,8 +9,15 @@ import {
 import type { PhoneBrowserNativePort, NativeDocumentRef } from "./native-port.js";
 import { PhoneBrowserError } from "./native-port.js";
 import { agentObservationMethods } from "@opensteer/browser-core/agent-cdp-policy";
-import { BrowserStageFileParametersSchema } from "@opensteer/protocol/browser-actions";
-import type { PhoneTab } from "./state.js";
+import {
+  BrowserStageFileParametersSchema,
+  BrowserListTabsParametersSchema,
+  BrowserResumeTabParametersSchema,
+  pageBrowserTabs,
+  type AgentTab,
+} from "@opensteer/protocol/browser-actions";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
+import { isLive, type PhoneTab } from "./state.js";
 
 export interface PhoneCdpOwner {
   readonly sessionId: string;
@@ -46,6 +53,7 @@ export class PhoneCdpSession {
     }
   >();
   readonly #targets = new Map<string, { generation: number; live: boolean }>();
+  readonly #rootSurfaceId: string;
   #sequence = 0;
   #closed = false;
 
@@ -81,6 +89,7 @@ export class PhoneCdpSession {
     );
     const first = owner.tabs()[0];
     if (!first) throw new PhoneBrowserError("target-closed", "The session has no tabs.");
+    this.#rootSurfaceId = first.id;
     this.#router.registerSession(
       owner.sessionId,
       first.id,
@@ -96,8 +105,52 @@ export class PhoneCdpSession {
     this.#router.onEvent(owner.sessionId, owner.event);
   }
 
-  async send(command: CdpCommand): Promise<unknown> {
+  async send(command: CdpCommand, requestId = this.#owner.uuid()): Promise<unknown> {
     if (this.#closed) throw new PhoneBrowserError("target-closed", "The attachment has ended.");
+    this.#assertAttachedLive(command);
+    if (command.method === "Opensteer.listTabs" || command.method === "Opensteer.resumeTab") {
+      if (command.sessionId !== undefined)
+        throw new PhoneBrowserError("forbidden", "Tab selection belongs to the browser session.");
+      if (command.method === "Opensteer.listTabs") {
+        const { cursor } = BrowserListTabsParametersSchema.parse(command.parameters ?? {});
+        const records = function* (tabs: readonly PhoneTab[]) {
+          for (const tab of [...tabs].sort((a, b) => a.order - b.order)) {
+            if (tab.state === "closed") continue;
+            const row: AgentTab = {
+              surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
+              targetId: isLive(tab) ? tab.id : null,
+              state: isLive(tab) ? "live" : "suspended",
+              order: tab.order,
+              openerId: tab.openerId ? BrowserSurfaceIdSchema.parse(tab.openerId) : null,
+              title: tab.metadata.title.slice(0, 256),
+              url: tab.metadata.url,
+              userActivity: null,
+              pageResize: null,
+              dialog: tab.dialog
+                ? { id: tab.dialog.id, type: tab.dialog.type, message: tab.dialog.message }
+                : null,
+            };
+            yield { order: tab.order, tab: row };
+          }
+        };
+        return pageBrowserTabs(records(this.#owner.tabs()), cursor, (result) => ({
+          type: "cdp.result",
+          requestId,
+          result,
+        }));
+      }
+      const { surfaceId } = BrowserResumeTabParametersSchema.parse(command.parameters);
+      const tab = this.#tab(surfaceId);
+      const documentId = tab.metadata.documentId;
+      const generation = tab.metadata.generation;
+      await this.#owner.resume(tab);
+      return {
+        surfaceId,
+        targetId: tab.id,
+        documentId: tab.metadata.documentId,
+        reloaded: tab.metadata.documentId !== documentId || tab.metadata.generation !== generation,
+      };
+    }
     if (command.method === "Opensteer.stageFile") {
       if (command.sessionId !== undefined)
         throw new PhoneBrowserError("forbidden", "File staging belongs to the browser session.");
@@ -130,6 +183,7 @@ export class PhoneCdpSession {
         "unsupported-operation",
         "Capture is limited to the native viewport.",
       );
+    this.#assertAttachedLive(command);
     const signal = this.#router.admitPageCommand(this.#owner.sessionId, { ...command, parameters });
     const tab = this.#tab(
       command.sessionId
@@ -208,6 +262,19 @@ export class PhoneCdpSession {
     }
   }
 
+  #assertAttachedLive(command: CdpCommand): void {
+    if (!command.sessionId) return;
+    const targetId = this.#router.attachedTargetId(this.#owner.sessionId, command.sessionId);
+    if (!targetId) return;
+    const tab = this.#tab(targetId);
+    if (tab.state === "closed") throw new PhoneBrowserError("target-closed", "The tab is closed.");
+    if (!isLive(tab))
+      throw new PhoneBrowserError(
+        "target-suspended",
+        "Resume the sleeping tab before using its document.",
+      );
+  }
+
   #tab(targetId: unknown): PhoneTab {
     const tab = this.#owner.tabs().find((entry) => entry.id === targetId);
     if (!tab) throw new PhoneBrowserError("target-closed", "The tab is closed.");
@@ -270,7 +337,10 @@ export class PhoneCdpSession {
   async #send(method: string, params: CdpParameters): Promise<unknown> {
     switch (method) {
       case "Target.getTargets":
-        return { targetInfos: this.#owner.tabs().map(targetInfo) };
+        return {
+          rootSurfaceId: this.#rootSurfaceId,
+          targetInfos: this.#owner.tabs().map(targetInfo),
+        };
       case "Target.getTargetInfo":
         return { targetInfo: targetInfo(this.#tab(params.targetId)) };
       case "Target.getBrowserContexts":

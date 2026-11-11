@@ -1,3 +1,4 @@
+import { committedBrowserTabs } from "@opensteer/browser-runtime-core/test-support";
 import {
   BrowserController,
   BrowserRuntime,
@@ -12,8 +13,8 @@ import {
 import {
   type BrowserClientMessage,
   BrowserClientMessageSchema,
-  type BrowserServerMessage,
-  BrowserServerMessageSchema,
+  type BrowserRuntimeServerMessage,
+  BrowserRuntimeServerMessageSchema,
   decodeBrowserFrameEnvelope,
   editingClipboardPartMaxBytes,
 } from "@opensteer/protocol";
@@ -44,8 +45,8 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
     let failure: string | undefined;
     let captureFailure: string | undefined;
     let capture: (() => Promise<void>) | undefined;
-    const messages: BrowserServerMessage[] = [];
-    let holdEditing: ((message: BrowserServerMessage) => boolean) | undefined;
+    const messages: BrowserRuntimeServerMessage[] = [];
+    let holdEditing: ((message: BrowserRuntimeServerMessage) => boolean) | undefined;
     let releaseEditing: (() => void) | undefined;
     let releaseEditingTurn: ReturnType<typeof setImmediate> | undefined;
     let frameCount = 0;
@@ -147,7 +148,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
 
       socket.on("message", (raw, binary) => {
         if (!binary) {
-          const message = BrowserServerMessageSchema.parse(JSON.parse(raw.toString()));
+          const message = BrowserRuntimeServerMessageSchema.parse(JSON.parse(raw.toString()));
           if (!holdEditing?.(message)) messages.push(message);
         } else {
           decodeBrowserFrameEnvelope(Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer));
@@ -161,7 +162,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
       );
       if (!negotiated) expect(snapshot).not.toHaveProperty("editingVersion");
       checks.push("negotiation");
-      const surfaceId = snapshot!.type === "browser.snapshot" ? snapshot!.surfaces[0]!.id : never();
+      const surfaceId = committedBrowserTabs(messages).rows.values().next().value?.id ?? never();
       const consumerToken = randomUUID();
       const send = (message: BrowserClientMessage) =>
         socket.send(
@@ -190,15 +191,8 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         send({ type: "navigation.go", surfaceId, url });
         // Page.navigate returns before commit; document reads need the loaded surface acknowledgement.
         await waitForBrowserState(() => {
-          const latest = messages
-            .slice(after)
-            .findLast((message) => message.type === "browser.surfaces.changed");
-          return (
-            latest?.type === "browser.surfaces.changed" &&
-            latest.surfaces.some(
-              (surface) => surface.id === surfaceId && surface.url === url && !surface.loading,
-            )
-          );
+          const surface = committedBrowserTabs(messages).rows.get(surfaceId);
+          return messages.length > after && surface?.url === url && !surface.loading;
         });
       };
       await navigate(`http://127.0.0.1:${address.port}/`);
@@ -367,7 +361,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
           "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))",
         );
         const moved = context().context.contextId;
-        const staged: Extract<BrowserServerMessage, { type: "browser.editing" }>[] = [];
+        const staged: Extract<BrowserRuntimeServerMessage, { type: "browser.editing" }>[] = [];
         holdEditing = (message) => {
           if (message.type !== "browser.editing") return false;
           staged.push(message);
@@ -974,7 +968,7 @@ it.each(["editing", "editing-v2", "typing", "pressure", "undo", "undo-baseline"]
         );
         const copiedParts = () =>
           messages.filter(
-            (m): m is Extract<BrowserServerMessage, { type: "clipboard.part" }> =>
+            (m): m is Extract<BrowserRuntimeServerMessage, { type: "clipboard.part" }> =>
               m.type === "clipboard.part" && m.part.operationId === htmlCopy,
           );
         await waitForBrowserState(

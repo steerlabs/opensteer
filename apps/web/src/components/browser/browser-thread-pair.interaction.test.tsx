@@ -16,9 +16,11 @@ function taskBrowser() {
   const session = client
     .getSnapshot()
     .browserSessions.find((candidate) =>
-      candidate.tabCatalog?.tabs.some((tab) => tab.title === "Le Petit Jardin"),
+      (candidate.browserTabs?.sessionTabs(candidate?.id) ?? []).some(
+        (tab) => tab.title === "Le Petit Jardin",
+      ),
     )!;
-  const [reading, acting, confirm] = session.tabCatalog!.tabs;
+  const [reading, acting, confirm] = session.browserTabs?.sessionTabs(session?.id) ?? [];
   const threadId = acting!.occupants[0]!.threadId;
   const placeKey = (tabId: string) =>
     placeList(client.getSnapshot()).find(

@@ -25,7 +25,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { ownChild } from "../agents/owned-child.test-support.js";
@@ -337,7 +337,16 @@ integration("Host and Chromium editing contract", () => {
           Buffer.from(screenshot.data, "base64"),
         );
       };
-      const surfaceId = snapshot.surfaces[0]!.id;
+      const bootstrap = await runtime.browser.bootstrap(owner.id);
+      const surfaceId = bootstrap.tabs.find((group) => group.groupId === opened.session.id)?.rows[0]
+        ?.id;
+      if (!surfaceId) throw new Error("Missing browser tab in bootstrap");
+      for (const viewer of [person, other, old])
+        viewer.send({ type: "stream.subscribe", surfaceId, frames: false });
+      await vi.waitFor(() => {
+        for (const viewer of [person, other, old])
+          expect(viewer.messages.some((message) => message.type === "browser.surface")).toBe(true);
+      });
       const evaluate = async (expression: string) =>
         (
           await cdp.send<{ result: { value: unknown } }>("Runtime.evaluate", {

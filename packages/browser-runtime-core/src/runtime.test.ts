@@ -18,6 +18,193 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntime", () => {
+  it("retires an idle Guest process with a reason and preserves suspended tab records", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(process, "availableMemory").mockReturnValue(0);
+    const context = new FakeContext([new FakePage()]);
+    const browser = new FakeLaunchedBrowser(context);
+    const runtime = new BrowserRuntime({
+      launcher: Object.assign(new FakeLauncher(browser), { hostCost: "process" as const }),
+      memoryBudgetBytes: 100 * 1024 ** 2,
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(
+        freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 }),
+      ),
+    });
+    const sink = new FakeSink();
+    try {
+      const attachment = await runtime.attach("fresh-ticket", sink);
+      await attachment.handle(
+        JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.waitFor(
+        () => expect(runtime.health().sessionCount, "Idle Guest never retired").toBe(0),
+        { timeout: 1000 },
+      );
+      expect(sink.messages).toContainEqual({
+        type: "browser.status",
+        state: "closed",
+        reason: "retired",
+      });
+      expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(["suspended"]);
+    } finally {
+      await runtime.shutdown();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+  it("receives Host session state before releasing an agent's page and drops its timer on detach", async () => {
+    vi.useFakeTimers();
+    const context = new FakeContext([new FakePage()]);
+    const claims = freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 });
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(claims),
+    });
+    const sink = new FakeSink();
+    try {
+      const attachment = await runtime.attach("fresh-ticket", sink);
+      expect(sink.messages.find((message) => message.type === "browser.snapshot")).toMatchObject({
+        surfaceState: 1,
+      });
+      await attachment.handle(
+        JSON.stringify({
+          type: "cdp.command",
+          requestId: crypto.randomUUID(),
+          command: { method: "Target.createTarget", parameters: { url: "https://leftover.test/" } },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const tab = [...sink.tabs.rows.values()].find((row) => row.order === 1)!;
+      expect(tab).toBeDefined();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+      await attachment.handle(
+        JSON.stringify({ type: "session.state", runs: 1, personUsed: [], viewed: [], pinned: [] }),
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+      await attachment.handle(
+        JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
+      );
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("suspended");
+      await attachment.close();
+      expect(runtime.health().sessionCount).toBe(0);
+    } finally {
+      await runtime.shutdown();
+      vi.useRealTimers();
+    }
+  });
+  it.each([
+    { creationOrigin: "agent", activity: "unviewed" },
+    { creationOrigin: "agent", activity: "watch" },
+    { creationOrigin: "agent", activity: "activation" },
+    { creationOrigin: "agent", activity: "host-activation" },
+    { creationOrigin: "agent", activity: "native" },
+    { creationOrigin: "person", activity: "unviewed" },
+  ] as const)(
+    "uses Host creation origin for initial pages and popups ($creationOrigin, $activity)",
+    async ({ creationOrigin, activity }) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const root = new FakePage();
+      const context = new FakeContext([root]);
+      const claims = freshClaims({
+        workspaceTabRestoreVersion: 1,
+        surfaceState: 1,
+        creationOrigin,
+      });
+      const runtime = new BrowserRuntime({
+        launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(claims),
+      });
+      const sink = new FakeSink();
+      try {
+        const attachment = await runtime.attach("fresh-ticket", sink);
+        const popup = new FakePage({ opener: root });
+        popup.hasOpenerAccess = () => false;
+        context.addPage(popup);
+        await flushMicrotasks();
+        await attachment.handle(
+          JSON.stringify({
+            type: "session.state",
+            runs: 1,
+            personUsed: [],
+            viewed: [],
+            pinned: [],
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(["live", "live"]);
+        const initialId = [...sink.tabs.rows.values()][0]!.id;
+        if (activity === "watch")
+          await attachment.handle(
+            JSON.stringify({
+              type: "session.state",
+              runs: 0,
+              personUsed: [],
+              viewed: [initialId],
+              pinned: [],
+            }),
+          );
+        const activeBefore = sink.tabs.meta?.activeId;
+        if (activity === "host-activation") {
+          await attachment.handle(
+            JSON.stringify({
+              type: "session.state",
+              runs: 0,
+              personUsed: [initialId],
+              viewed: [],
+              pinned: [],
+            }),
+          );
+          expect(sink.tabs.meta?.activeId).toBe(activeBefore);
+        }
+        if (activity === "activation")
+          await attachment.handle(
+            JSON.stringify({ type: "surface.activate", surfaceId: initialId }),
+          );
+        if (activity === "native") {
+          const presentation = runtime.presentSurface(claims.sessionId, initialId);
+          expect(presentation).not.toBeNull();
+          presentation?.release();
+        }
+        await attachment.handle(
+          JSON.stringify({
+            type: "session.state",
+            runs: 0,
+            personUsed: [],
+            viewed: [],
+            pinned: [],
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(["live", "live"]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(
+          creationOrigin === "person"
+            ? ["live", "live"]
+            : [
+                activity === "activation" || activity === "native" || activity === "host-activation"
+                  ? "live"
+                  : "suspended",
+                "suspended",
+              ],
+        );
+      } finally {
+        await runtime.shutdown();
+        vi.useRealTimers();
+      }
+    },
+  );
   it("sizes only the page a Fit names and leaves the session's other pages alone", async () => {
     const root = new FakePage({ title: "Root" });
     const context = new FakeContext([root]);
@@ -36,11 +223,7 @@ describe("BrowserRuntime", () => {
     popup.cdpSession.responses.set("Emulation.setDeviceMetricsOverride", () => {
       throw new Error("a write that reached the popup");
     });
-    const snapshot = sink.messages.find((message) => message.type === "browser.snapshot");
-    const rootSurface =
-      snapshot?.type === "browser.snapshot"
-        ? snapshot.surfaces.find((surface) => surface.title === "Root")
-        : undefined;
+    const rootSurface = [...sink.tabs.rows.values()].find((surface) => surface.title === "Root");
     if (!rootSurface) throw new Error("Missing root surface");
 
     await attachment.handle(
@@ -176,28 +359,32 @@ describe("BrowserRuntime", () => {
     }
   });
 
-  it("counts fresh hosts against the runtime host capacity", async () => {
+  it("attaches Guest host 9", async () => {
     const verifier = new FakeTicketVerifier(freshClaims());
-    verifier.setClaims(
-      "second-fresh",
-      freshClaims({
-        nonce: "nonce_1123456789abcdef",
-        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
-      }),
-    );
     const runtime = new BrowserRuntime({
       launcher: new FakeIsolatingLauncher(),
-      maxProfileHosts: 1,
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,
     });
-
-    await runtime.attach("fresh-ticket", new FakeSink());
-    await expect(runtime.attach("second-fresh", new FakeSink())).rejects.toMatchObject({
-      code: "conflict",
-    });
-    await runtime.shutdown();
+    try {
+      for (let index = 1; index <= 9; index++) {
+        const ticket = `guest-${index}`;
+        verifier.setClaims(
+          ticket,
+          freshClaims({
+            nonce: `nonce_${String(index).padStart(16, "0")}`,
+            sessionId: BrowserSessionIdSchema.parse(
+              `bsn_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            ),
+          }),
+        );
+        await runtime.attach(ticket, new FakeSink());
+      }
+      expect(runtime.health()).toMatchObject({ profileHostCount: 9, sessionCount: 9 });
+    } finally {
+      await runtime.shutdown();
+    }
   });
 });
 
@@ -258,10 +445,8 @@ it.each(["live", "released", "ambiguous", "other-consumer"] as const)(
     const attachment = await runtime.attach("fresh-ticket", sink);
     try {
       await flushMicrotasks();
-      const snapshot = sink.messages.find((message) => message.type === "browser.snapshot");
-      if (snapshot?.type !== "browser.snapshot" || !snapshot.surfaces[0])
-        throw new Error("Missing browser surface");
-      const surfaceId = snapshot.surfaces[0].id;
+      const surfaceId = sink.tabs.rows.values().next().value?.id;
+      if (!surfaceId) throw new Error("Missing browser surface");
       const presentation = runtime.presentSurface(
         BrowserSessionIdSchema.parse(claims.sessionId),
         surfaceId,

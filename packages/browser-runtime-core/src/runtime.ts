@@ -33,6 +33,7 @@ import type {
 } from "./browser/presentation.js";
 import { SessionFiles, sessionFilesRoot } from "./browser/session-files.js";
 import type { BrowserLoginAuthority } from "./browser/sign-in.js";
+import { TabSleeper } from "./browser/tab-sleeper.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
@@ -45,10 +46,9 @@ const acquisitionTimeoutMs = 18_000;
 const cleanupTimeoutMs = 2_000;
 const shutdownTimeoutMs = 5_000;
 export interface BrowserRuntimeOptions {
+  memoryBudgetBytes?: number | undefined;
   initialViewport?: Viewport;
   launcher: BrowserLauncher;
-  maxProfileHosts?: number;
-  maxSessionsPerProfile?: number;
   /**
    * The caller must own this root exclusively for the process lifetime (desktop
    * application lock or standalone OS lock). Only one live runtime may use it.
@@ -86,7 +86,7 @@ export interface BrowserOpenTiming {
 }
 
 export interface BrowserRuntimeHealth {
-  wireVersion: 1;
+  wireVersion: 2;
   localProfileStorage?: { storageInstanceId: string; engine: BrowserEngine };
   profileHostCount: number;
   runtimeId: string;
@@ -192,10 +192,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private generation = 0;
   private readonly initialViewport: Viewport;
   private readonly launcher: BrowserLauncher;
-  private readonly maxProfileHosts: number;
-  private readonly maxSessionsPerProfile: number;
   private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
-  private reservations = 0;
   private readonly pendingSessions = new Set<string>();
   private usage = 0;
   private readonly onOpenTiming: NonNullable<BrowserRuntimeOptions["onOpenTiming"]>;
@@ -222,6 +219,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly onHostCleanupFailure: NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>;
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
+  private readonly sleeper: TabSleeper;
   private shuttingDown = false;
   private readonly attempts = new Set<AbortController>();
   private shutdownResult: Promise<void> | undefined;
@@ -250,6 +248,29 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new TypeError("The initial browser viewport is invalid.");
     }
     this.launcher = options.launcher;
+    this.sleeper = new TabSleeper({
+      memoryBudgetBytes: options.memoryBudgetBytes,
+      hostCost: this.launcher.hostCost,
+      hosts: () =>
+        [...this.hosts.values()].map((host) => ({
+          key: host.identity.key,
+          kind: host.identity.kind,
+          lastUsed: host.lastUsed,
+          sessionIds: [...host.sessions.keys()],
+          blocked:
+            !host.acceptingSessions ||
+            host.holdUntilClosed ||
+            host.stateMutations.size > 0 ||
+            [...host.sessions.values()].some(
+              (session) =>
+                session.presentations.size > 0 || host.signIns.holdsSession(session.sessionId),
+            ),
+        })),
+      retireHost: (key) =>
+        this.retireHost(key).catch((error: unknown) =>
+          this.reportHostCleanupFailure("fresh", "retire", error),
+        ),
+    });
     this.acknowledgeProfileReady = options.acknowledgeProfileReady ?? acknowledgeNativeProfileReady;
     this.onOpenTiming = options.onOpenTiming ?? (() => {});
     this.onHostCleanupFailure =
@@ -262,8 +283,6 @@ export class BrowserRuntime implements NativePresentationSource {
         });
       });
     this.localProfilesOptions = options.localProfiles;
-    this.maxProfileHosts = options.maxProfileHosts ?? 8;
-    this.maxSessionsPerProfile = options.maxSessionsPerProfile ?? 32;
     this.runtimeId = options.runtimeId;
     if (
       !path.isAbsolute(options.sessionFilesRoot) ||
@@ -296,22 +315,11 @@ export class BrowserRuntime implements NativePresentationSource {
             diagnostic.error instanceof BrowserRuntimeError ? diagnostic.error.code : "internal",
         });
       });
-    for (const [name, value, maximum] of [
-      ["maxProfileHosts", this.maxProfileHosts, 64],
-      ["maxSessionsPerProfile", this.maxSessionsPerProfile, 128],
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
-        throw new TypeError(`${name} is outside its supported range.`);
-      }
-    }
-    if (this.maxProfileHosts < 1 || this.maxSessionsPerProfile < 1) {
-      throw new TypeError("Browser Runtime capacities must be positive.");
-    }
   }
 
   health(): BrowserRuntimeHealth {
     return {
-      wireVersion: 1,
+      wireVersion: 2,
       ...(this.localProfileStorage
         ? {
             localProfileStorage: this.localProfileStorage,
@@ -393,16 +401,19 @@ export class BrowserRuntime implements NativePresentationSource {
     surfaceId: BrowserSurfaceId,
   ): PresentedSurface | null {
     const session = this.sessions.get(sessionId);
+    session?.ledger.demand(surfaceId);
     const binding = session?.ledger.binding(surfaceId);
     if (this.shuttingDown || !session || !binding || binding.page.isClosed()) return null;
     const listeners = new Set<(event: PresentedSurfaceEvent) => void>();
     let released = false;
     const native = { sessionId, surfaceId, consumerToken: null as string | null };
     this.nativePresentations.add(native);
+    session.ledger.touch(surfaceId, true);
     const release = () => {
       if (released) return;
       released = true;
       this.nativePresentations.delete(native);
+      this.sleeper.poke();
       unsubscribe();
       session.presentations.delete(closed);
       binding.page.offClose(closed);
@@ -612,7 +623,7 @@ export class BrowserRuntime implements NativePresentationSource {
     };
     const verified = await wait(this.ticketVerifier.verify(ticket, { runtimeId: this.runtimeId }));
     const claims = options.passkeys ? verified : { ...verified, passkeys: undefined };
-    if (claims.wireVersion !== 1)
+    if (claims.wireVersion !== 2)
       throw new BrowserRuntimeError(
         "conflict",
         "Update this Browser Runtime to use the current browser contract.",
@@ -659,6 +670,7 @@ export class BrowserRuntime implements NativePresentationSource {
             "conflict",
             "The initial browser operation already has an outcome; it cannot start another browser.",
           );
+        this.sleeper.resetSessionState(active.sessionId);
         await wait(active.controller.reattach(sink));
         active.generation = ++this.generation;
         const generation = active.generation;
@@ -736,20 +748,19 @@ export class BrowserRuntime implements NativePresentationSource {
           stage = "session-initialize";
           const sessionRouter = host.router;
           ledger = new SurfaceLedger(host.browser.context, {
+            creationOrigin: claims.creationOrigin,
             navigationVersion: claims.navigationVersion,
             beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
             // Every page the session holds, a tab the person opened included, is
             // one its agents can list and attach to.
             claimTarget: (targetId) => sessionRouter.claimTarget(claims.sessionId, targetId),
+            releaseTarget: (targetId) => sessionRouter.releaseTarget(claims.sessionId, targetId),
             // A person who started the browser from a view gets its first page
             // at that view's size, before anything loads there.
             initialViewport: claims.viewport
               ? { devicePixelRatio: 1, ...claims.viewport }
               : this.initialViewport,
             rootPages: [rootPage],
-            ...(claims.workspaceTabRestoreVersion === 1 && claims.dormantSurfaceIds
-              ? { dormantSurfaceIds: claims.dormantSurfaceIds }
-              : {}),
             ...(claims.workspaceTabRestoreVersion === 1 && claims.initialSurfaceId
               ? { initialSurfaceId: claims.initialSurfaceId }
               : {}),
@@ -765,6 +776,7 @@ export class BrowserRuntime implements NativePresentationSource {
           const stateImports = host.stateImports;
           const stateHost = host;
           controller = new BrowserController({
+            sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
             loginAuthority: this.loginAuthority,
             nativePresentation: (surfaceId, consumerToken) => {
               const live = [...this.nativePresentations].filter(
@@ -814,6 +826,16 @@ export class BrowserRuntime implements NativePresentationSource {
           };
           host.sessions.set(claims.sessionId, active);
           this.sessions.set(claims.sessionId, active);
+          this.sleeper.add(claims.sessionId, {
+            ledger,
+            restoreVersion: claims.workspaceTabRestoreVersion,
+            blocked: (id) =>
+              [...this.nativePresentations].some(
+                (p) => p.sessionId === claims.sessionId && p.surfaceId === id,
+              )
+                ? "native"
+                : active.controller.sleepProtection(id),
+          });
           stage = "session-snapshot";
           await wait(controller.start());
           timing("root-page-ready", pageStarting);
@@ -843,6 +865,7 @@ export class BrowserRuntime implements NativePresentationSource {
               () => undefined,
             );
           }
+          this.sleeper.remove(claims.sessionId);
           this.sessions.delete(claims.sessionId);
           await boundedCleanup(
             settleCleanup([
@@ -893,7 +916,6 @@ export class BrowserRuntime implements NativePresentationSource {
     assertCurrent();
     let host = this.hosts.get(hostKey);
     let createdHost = false;
-    let reserved = false;
     let stage = "profile-state";
     let acquisition: BrowserOpenTiming["acquisition"] =
       claims.identity.kind === "profile-local" ? "cold" : "guest";
@@ -925,8 +947,6 @@ export class BrowserRuntime implements NativePresentationSource {
         stage = "profile-state";
       }
       if (!host) {
-        await wait(this.reserveCapacity());
-        reserved = true;
         let localDirectory: string | undefined;
         if (claims.identity.kind === "profile-local") {
           const identity = claims.identity;
@@ -1004,9 +1024,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const stateImports = new AsyncMutex();
         const router = new SessionCdpRouter(
           browser.cdp,
-          {
-            maxSessions: this.maxSessionsPerProfile,
-          },
+          {},
           browser.clipboard?.machineClipboardShared !== false,
         );
         const onBrowserClose = () => {
@@ -1049,8 +1067,6 @@ export class BrowserRuntime implements NativePresentationSource {
         host = launchedHost;
         browser.onClose(onBrowserClose);
         this.hosts.set(hostKey, host);
-        this.reservations--;
-        reserved = false;
         createdHost = true;
         await wait(Promise.resolve(browser.profile?.ready()));
         assertCurrent();
@@ -1071,16 +1087,12 @@ export class BrowserRuntime implements NativePresentationSource {
             { retryable: true },
           );
         }
-        if (host.sessions.size >= this.maxSessionsPerProfile) {
-          throw new BrowserRuntimeError("conflict", "Browser Host session capacity is full.");
-        }
         acquisition = "warm";
       }
 
       assertCurrent();
       return { host, createdHost, acquisition };
     } catch (error) {
-      if (reserved) this.reservations--;
       if (createdHost && host) {
         const { kind } = host.identity;
         await boundedCleanup(this.cleanupHost(host)).catch((error: unknown) =>
@@ -1090,26 +1102,6 @@ export class BrowserRuntime implements NativePresentationSource {
       this.updateState();
       throw this.startFailure("sessionId" in claims ? claims.sessionId : hostKey, stage, error);
     }
-  }
-
-  private async reserveCapacity(): Promise<void> {
-    // Synchronous counters/selection are the entire capacity reservation. No I/O
-    // holds this critical section, including an evicted host's process exit.
-    if (this.hosts.size + this.reservations < this.maxProfileHosts) {
-      this.reservations++;
-      return;
-    }
-    const victim = [...this.hosts.values()]
-      .filter(
-        (host) =>
-          host.acceptingSessions && host.sessions.size === 0 && !this.lanes.busy(host.identity.key),
-      )
-      .sort((a, b) => a.lastUsed - b.lastUsed)[0];
-    if (!victim)
-      throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
-    victim.acceptingSessions = false;
-    await this.closeHost(victim.identity.key, victim.generation);
-    return this.reserveCapacity();
   }
 
   private reportHostCleanupFailure(kind: "fresh" | "local", stage: string, error: unknown): void {
@@ -1138,6 +1130,7 @@ export class BrowserRuntime implements NativePresentationSource {
   }
 
   shutdown(): Promise<void> {
+    this.sleeper.close();
     if (this.shutdownResult) return this.shutdownResult;
     this.shuttingDown = true;
     for (const attempt of this.attempts) attempt.abort();
@@ -1183,6 +1176,7 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.lanes.run(current.host.identity.key, async () => {
       const active = this.sessions.get(sessionId);
       if (!active || active.generation !== generation) return;
+      this.sleeper.remove(sessionId);
       this.sessions.delete(sessionId);
       const host = active.host;
       host.sessions.delete(sessionId);
@@ -1192,7 +1186,7 @@ export class BrowserRuntime implements NativePresentationSource {
         await settleCleanup([
           ...closeSession(active),
           () => active.files.dispose(),
-          ...((closeHost && host.identity.kind === "fresh"
+          ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
             ? [() => this.cleanupHost(host)]
             : []) satisfies (() => Promise<void>)[]),
         ]);
@@ -1206,6 +1200,19 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.lanes.run(key, async () => {
       const host = this.hosts.get(key);
       if (!host || host.generation !== generation) return;
+      await this.cleanupHost(host);
+      this.updateState();
+    });
+  }
+  private retireHost(key: string): Promise<void> {
+    const host = [...this.hosts.values()].find((host) => host.identity.key === key);
+    if (!host || this.launcher.hostCost !== "process") return Promise.resolve();
+    return this.lanes.run(host.identity.key, async () => {
+      if (this.hosts.get(host.identity.key) !== host || !this.sleeper.canRetireHost(key)) return;
+      host.acceptingSessions = false;
+      await Promise.all(
+        [...host.sessions.values()].map((session) => session.controller.close("retired")),
+      );
       await this.cleanupHost(host);
       this.updateState();
     });
@@ -1274,7 +1281,10 @@ export class BrowserRuntime implements NativePresentationSource {
     await settleCleanup(
       sessions.flatMap((session) => [...closeSession(session), () => session.files.dispose()]),
     );
-    for (const session of sessions) this.sessions.delete(session.sessionId);
+    for (const session of sessions) {
+      this.sleeper.remove(session.sessionId);
+      this.sessions.delete(session.sessionId);
+    }
     host.sessions.clear();
     host.quiesced = true;
   }

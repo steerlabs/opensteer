@@ -82,7 +82,7 @@ export function passwordsAnywhereJourneys() {
                 ? {
                     browser: {
                       runtimeId: "browser-runtime-integration",
-                      wireVersion: 1 as const,
+                      wireVersion: 2 as const,
                       cdpBoundary: 1 as const,
                       sharedControl: 1 as const,
                       signIn: { version: 3 as const },

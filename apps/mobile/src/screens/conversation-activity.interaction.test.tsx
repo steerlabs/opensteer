@@ -378,19 +378,20 @@ describe("Run details", () => {
       viewerError: null,
       viewerState: "synchronized",
       workspaceId,
-      uses: [
-        {
-          threadId: chatId,
-          runId: runA,
-          tabId: "used-tab",
-          firstUsedAt: at,
-          lastUsedAt: at,
-          pageTitle: "Research",
-          pageSite: "https://research.test",
-        },
-      ],
     } as BrowserSessionSummary;
-    fakeHost({ ...snapshotWith(answered), browserSessions: [browser] });
+    const browserUses = [
+      {
+        sessionId: "exact-browser",
+        threadId: chatId,
+        runId: runA,
+        tabId: "used-tab",
+        firstUsedAt: at,
+        lastUsedAt: at,
+        pageTitle: "Research",
+        pageSite: "https://research.test",
+      },
+    ];
+    fakeHost({ ...snapshotWith(answered), browserSessions: [browser], browserUses });
     const sheet = activity(`turn:run:${runA}`);
     press(sheet, "Research, research.test");
     // The sheet closes first, so the page opens over the conversation rather than inside it.

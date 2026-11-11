@@ -75,7 +75,6 @@ import type {
   ThreadMessageWindow,
   WorkspaceFilePreviewMetadata,
   WorkspaceTabActivateResultSchema,
-  WorkspaceTabLineage,
   WorkspaceTabReopenResultSchema,
   WorkspaceView,
 } from "@opensteer/protocol";
@@ -109,7 +108,6 @@ import type { NativeViewerSource } from "./surfaces.js";
 
 import type {
   BrowserContextCandidate,
-  BrowserTabCatalog,
   BrowserTabCloseResult,
   BrowserTabOpenResult,
   PlaceIdentity,
@@ -717,10 +715,10 @@ export interface BrowserFrameStore {
   /** Application/auth scope shared by Control and Watch picture presenters. */
   readonly scope?: object;
   /** Hold this delivery until accept; unclaimed replacements can be discarded by the store. */
-  claim?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
-  accept?: (sessionId: string, surfaceId: string | undefined, token: string) => void;
-  get: (sessionId: string, surfaceId?: string) => BrowserFrameView | null;
-  subscribe: (sessionId: string, listener: () => void, surfaceId?: string) => () => void;
+  claim?: (sessionId: string, surfaceId: string, token: string) => void;
+  accept?: (sessionId: string, surfaceId: string, token: string) => void;
+  get: (sessionId: string, surfaceId: string) => BrowserFrameView | null;
+  subscribe: (sessionId: string, listener: () => void, surfaceId: string) => () => void;
   /**
    * Leases the raster density one presenter of an exact target needs. Holders
    * retained with `rasterDemand` share their leases' maximum; until measured a
@@ -736,6 +734,7 @@ export interface BrowserFrameStore {
  * browser that has ended can still say which site it was.
  */
 export interface BrowserSessionUseSummary {
+  readonly sessionId: string;
   readonly threadId: string;
   readonly runId: string | null;
   readonly tabId?: string | null | undefined;
@@ -746,13 +745,42 @@ export interface BrowserSessionUseSummary {
   readonly pageSite?: string | null | undefined;
 }
 
+export interface BrowserInventory {
+  readonly generation: number;
+  readonly revision: number;
+  readonly inventoryRevision?: number | undefined;
+}
+
+export interface WorkspaceTabLineage {
+  readonly whole?: boolean;
+  id: import("@opensteer/protocol").BrowserSessionId;
+  revision: number;
+  createdAt: string;
+  unavailableReason?: string | undefined;
+  session: import("@opensteer/protocol").HostedBrowserSession;
+  tabs?:
+    | Array<{
+        kind: "browser";
+        id: BrowserSurfaceId;
+        sessionId: import("@opensteer/protocol").BrowserSessionId;
+        title: string;
+        site: string;
+        iconRef?: string | null | undefined;
+        order: number;
+        openerId: BrowserSurfaceId | null;
+        state: "suspended" | "restoring" | "live";
+        createdAt?: string | undefined;
+      }>
+    | undefined;
+}
+
 export interface BrowserSessionSummary {
+  readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
   navigationVersion?: 1 | undefined;
   workspaceTabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
-  tabCatalog?: BrowserTabCatalog;
   access: "read" | "read-write";
   /**
    * An agent is acting in this browser now: it sent a command within the
@@ -768,8 +796,6 @@ export interface BrowserSessionSummary {
    * catalog names them, most recently active first and bounded per browser.
    */
   threadIds?: readonly string[];
-  /** The uses of this browser by the conversations this client shows. */
-  uses?: readonly BrowserSessionUseSummary[];
   dialog: BrowserDialog | null;
   error: string | null;
   id: string;
@@ -779,7 +805,6 @@ export interface BrowserSessionSummary {
   profileId: string | null;
   runtimeId: string;
   state: HostedBrowserSessionState;
-  tabs: BrowserTabSummary[];
   viewerError: string | null;
   viewerState: "connecting" | "disconnected" | "synchronized";
   watchViewerError?: string | null;
@@ -804,6 +829,8 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  /** Live tab selectors, shared with HostClient.browserTabs. */
+  readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
   readonly openingAppTabs?: readonly string[];
   readonly appTabs?: readonly import("@opensteer/protocol").AppTab[];
   readonly appVersions?: Readonly<Record<string, number>>;
@@ -841,7 +868,6 @@ export interface HostSnapshot {
   runQueue: RunQueueEntry[];
   browserProfileGrants: BrowserProfileGrantSummary[];
   workspaceTabRestoreVersion?: 1 | undefined;
-  workspaceTabs?: WorkspaceTabLineage[] | undefined;
   /** Tab activation calls owned by this client, before the Host reports restoration. */
   readonly activatingWorkspaceTabs?: readonly string[] | undefined;
   browserTabGroups?: BrowserTabLayout | undefined;
@@ -855,6 +881,8 @@ export interface HostSnapshot {
   browserProfileHomes?: readonly string[] | undefined;
   browserProfileDeletions?: BrowserProfileDeletionSummary[] | undefined;
   browserSessions: BrowserSessionSummary[];
+  /** Recorded browser uses of the conversations this client shows, including ended sessions. */
+  readonly browserUses: readonly BrowserSessionUseSummary[];
   connection: HostConnectionState;
   /** The connection has been down long enough to say so, or stopped trying. */
   connectionInterrupted: boolean;
@@ -1120,6 +1148,17 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
+  readonly browserTabs: import("./browser-tab-store.js").BrowserTabStore;
+  /**
+   * The page a viewer of this tab holds now, exactly (its address, icon and
+   * size owner); undefined until a viewer of it is admitted. A list row reads
+   * the tab's row instead, which carries only its site. The same object
+   * returns until the page changes.
+   */
+  browserViewerSurface(
+    sessionId: string,
+    surfaceId: string,
+  ): import("@opensteer/protocol/browser-tabs").BrowserViewerSurface | undefined;
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;
@@ -1295,7 +1334,7 @@ export interface HostClient {
   ): Promise<WorkspaceFilePreview>;
   readonly retainBrowserViewer: (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly picture?: boolean;
       readonly captureRegion?: boolean;
@@ -1308,7 +1347,7 @@ export interface HostClient {
   readonly browserTargetControlAvailable?: () => Promise<boolean | null>;
   readonly retainBrowserWatch: (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
@@ -1379,7 +1418,7 @@ export interface HostClient {
   closeBrowserTab(
     sessionId: string,
     surfaceId: string,
-    expected: Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">,
+    expected: BrowserInventory,
   ): Promise<BrowserTabCloseResult>;
   browserWatchFrame(sessionId: string, surfaceId: string): BrowserFrameView | null;
   browserWatchState(sessionId: string, surfaceId: string): BrowserWatchState;
@@ -1400,7 +1439,7 @@ export interface HostClient {
    * The view is done with this Control or Watch picture — drawn, or dropped because it
    * could not be — so the next may come. A late or repeated token is ignored.
    */
-  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId?: string): void;
+  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId: string): void;
   /** Only a person's explicit Retry may reopen a terminal realtime refusal. */
   refresh(options?: { readonly retryConnection?: boolean }): Promise<void>;
   /**

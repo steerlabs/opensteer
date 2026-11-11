@@ -1,3 +1,4 @@
+import { placeList } from "@opensteer/client/host";
 import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
@@ -12,20 +13,27 @@ import {
   placeHasAgents,
   profileBadgesVisible,
   samePlaceAgents,
-  tabDeviceChoice,
   tabFilterActive,
   tabFilterEmptyWords,
   tabFilterWords,
-  tabMatchesFilter,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
   type PlaceKind,
+  type PlaceDescriptor,
   type TabFilter,
   type TabFilterDevice,
 } from "@opensteer/client/host";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import {
+  useBrowserGroups,
+  useHostSelector,
+  usePlace,
+  usePlaceStructure,
+  useSyncingPlaceholder,
+  useTabDeviceChoice,
+  useTabFilterMatches,
+} from "@opensteer/client/react";
 import {
   StackActions,
   useIsFocused,
@@ -149,10 +157,10 @@ function AttachedTabs(props: {
  */
 interface PlaceRun {
   readonly key: "web" | "native";
-  readonly data: readonly PlaceItem[];
+  readonly data: readonly PlaceDescriptor[];
 }
 
-function placeRuns(places: readonly PlaceItem[]): readonly PlaceRun[] {
+function placeRuns(places: readonly PlaceDescriptor[]): readonly PlaceRun[] {
   const runs: PlaceRun[] = [
     { key: "web", data: places.filter((place) => place.kind === "browser") },
     { key: "native", data: places.filter((place) => place.kind !== "browser") },
@@ -177,7 +185,7 @@ function selectSignIns(snapshot: HostSnapshot): string {
 }
 
 const selectLoaded = (snapshot: HostSnapshot) => snapshot.deploymentShape !== null;
-const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
+const selectAnyAgents = (snapshot: HostSnapshot) => placeList(snapshot).some(placeHasAgents);
 
 function TabsForReader(props: {
   readonly active: boolean;
@@ -191,8 +199,9 @@ function TabsForReader(props: {
   const navigation = useNavigation();
   const column = useReadingColumn();
   const insets = useListContentInsets(space[32]);
-  const places = usePlaceList(hostClient);
-  const machines = useHostSelector(hostClient, selectMachines);
+  // The list arranges slots; each row reads its own place, so a title repaints one row.
+  const places = usePlaceStructure(hostClient);
+  const groupList = useBrowserGroups(hostClient);
   const hereId = useHereDeviceId(deploymentId);
   const selectHome = useCallback(
     (snapshot: HostSnapshot) => tabListHomeId(snapshot, hereId),
@@ -208,13 +217,12 @@ function TabsForReader(props: {
   const loaded = useHostSelector(hostClient, selectLoaded);
   const signInKeys = useHostSelector(hostClient, selectSignIns);
   const [chosenFilter, setFilter] = useState<TabFilter>(allTabs);
-  const choice = useMemo(
-    () => tabDeviceChoice({ places, machines, hereId, homeId, filter: chosenFilter }),
-    [chosenFilter, hereId, homeId, machines, places],
-  );
+  const choice = useTabDeviceChoice(hostClient, hereId, homeId, chosenFilter);
   const filter = choice.filter;
   const filtering = tabFilterActive(filter);
   const deviceName = choice.devices.find(({ id }) => id === filter.device)?.name ?? null;
+  const matched = useTabFilterMatches(hostClient, filter);
+  const anyAgents = useHostSelector(hostClient, selectAnyAgents);
   const canOpen = useHostSelector(hostClient, selectCanOpen);
   const openApp = useCallback(
     () => navigation.dispatch(StackActions.push("OpenApp", { deploymentId })),
@@ -223,18 +231,22 @@ function TabsForReader(props: {
   useTabsBar({
     devices: choice.devices,
     filter,
-    filterOffered: filtering || choice.devices.length > 0 || places.some(placeHasAgents),
+    filterOffered: filtering || choice.devices.length > 0 || anyAgents,
     onChange: setFilter,
     onOpen: canOpen ? openApp : null,
   });
   const shown = useMemo(
-    () => (filtering ? places.filter((place) => tabMatchesFilter(place, filter)) : places),
-    [filter, filtering, places],
+    () => (matched ? places.filter((place) => matched.has(place.key)) : places),
+    [matched, places],
   );
   const sections = useMemo(() => placeRuns(shown), [shown]);
   const deviceLabels = useMemo(() => placeDeviceLabels(shown, elsewhere), [elsewhere, shown]);
   const signIns = useMemo(() => new Set(signInKeys.split("\n")), [signInKeys]);
-  const showProfile = useMemo(() => profileBadgesVisible(places), [places]);
+  const selectShowProfile = useCallback(
+    () => profileBadgesVisible(placeList(hostClient.getSnapshot())),
+    [hostClient],
+  );
+  const showProfile = useHostSelector(hostClient, selectShowProfile);
   const open = useCallback(
     (place: PlaceItem) =>
       navigation.dispatch(
@@ -243,8 +255,8 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const renderItem = useCallback(
-    ({ index, item, section }: SectionListRenderItemInfo<PlaceItem, PlaceRun>) => (
-      <PlaceRow
+    ({ index, item, section }: SectionListRenderItemInfo<PlaceDescriptor, PlaceRun>) => (
+      <KeyedPlaceRow
         device={deviceLabels.get(item.key) ?? null}
         first={index === 0}
         hostClient={hostClient}
@@ -254,46 +266,54 @@ function TabsForReader(props: {
           signIns.has(`${item.destination.sessionId}:${item.destination.tabId}`)
         }
         onOpen={open}
-        place={item}
+        placeKey={item.key}
         shown={props.active}
         showProfile={showProfile}
       />
     ),
     [deviceLabels, hostClient, open, props.active, showProfile, signIns],
   );
-  const loading = !loaded && places.length === 0;
+  // Still syncing with nothing to list: no empty state, and past a moment the loading line.
+  const loading = (!loaded || groupList.syncing) && places.length === 0;
+  const finding = useSyncingPlaceholder(!loaded || groupList.syncing, places.length);
   return (
     <Screen edgeToEdge>
-      <SectionList<PlaceItem, PlaceRun>
+      <SectionList<PlaceDescriptor, PlaceRun>
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
         keyExtractor={(item) => item.key}
         ListEmptyComponent={
-          <View style={styles.empty}>
-            <AppText role="bodyMedium" tone={loading ? "muted" : "default"}>
-              {loading
-                ? "Finding tabs…"
-                : filtering
-                  ? tabFilterEmptyWords(filter, deviceName)
-                  : "No tabs yet"}
-            </AppText>
-            {loading || (filtering && !filter.agents) ? null : (
-              <AppText role="secondary" style={styles.centred} tone="muted">
-                {filtering
-                  ? "Tabs appear here while a task works in them."
-                  : "Tabs you and your agents open appear here."}
+          loading && !finding ? undefined : (
+            <View style={styles.empty}>
+              <AppText role="bodyMedium" tone={loading ? "muted" : "default"}>
+                {loading
+                  ? "Finding tabs…"
+                  : filtering
+                    ? tabFilterEmptyWords(filter, deviceName)
+                    : "No tabs yet"}
               </AppText>
-            )}
-            {loading ? null : filtering ? (
-              <View style={styles.emptyAction}>
-                <SecondaryButton compact label="Show all tabs" onPress={() => setFilter(allTabs)} />
-              </View>
-            ) : canOpen ? (
-              <View style={styles.emptyAction}>
-                <SecondaryButton compact label="Open an app" onPress={openApp} />
-              </View>
-            ) : null}
-          </View>
+              {loading || (filtering && !filter.agents) ? null : (
+                <AppText role="secondary" style={styles.centred} tone="muted">
+                  {filtering
+                    ? "Tabs appear here while a task works in them."
+                    : "Tabs you and your agents open appear here."}
+                </AppText>
+              )}
+              {loading ? null : filtering ? (
+                <View style={styles.emptyAction}>
+                  <SecondaryButton
+                    compact
+                    label="Show all tabs"
+                    onPress={() => setFilter(allTabs)}
+                  />
+                </View>
+              ) : canOpen ? (
+                <View style={styles.emptyAction}>
+                  <SecondaryButton compact label="Open an app" onPress={openApp} />
+                </View>
+              ) : null}
+            </View>
+          )
         }
         ListHeaderComponent={
           <>
@@ -374,6 +394,15 @@ interface PlaceRowProps {
   readonly shown: boolean;
   readonly showProfile: boolean;
 }
+
+/** A row reads its own place, so one tab's title or loading repaints only it. */
+const KeyedPlaceRow = memo(function KeyedPlaceRow({
+  placeKey,
+  ...props
+}: Omit<PlaceRowProps, "place"> & { readonly placeKey: string }): ReactNode {
+  const place = usePlace(props.hostClient, placeKey);
+  return place ? <PlaceRow {...props} place={place} /> : null;
+});
 
 /**
  * One place: its mark, its title, its site or kind, and who is in it as the

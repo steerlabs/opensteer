@@ -1,4 +1,16 @@
 import {
+  BrowserListTabsParametersSchema,
+  BrowserResumeTabParametersSchema,
+  pageBrowserTabs,
+  type AgentTab,
+} from "@opensteer/protocol/browser-actions";
+import {
+  KeyedStreamPublisher,
+  KeyedStreamReceiver,
+  keyedStreamBytes,
+} from "@opensteer/protocol/keyed-stream";
+import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
+import {
   SessionCdpRouter,
   SessionCdpRouterError,
   type CdpCommand,
@@ -30,7 +42,7 @@ import {
   type BrowserAttachTicketClaims,
   type BrowserClientMessage,
   type BrowserDialog,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
   type BrowserSurfaceId,
 } from "@opensteer/protocol";
 import type { EditingCaret } from "@opensteer/protocol/editing";
@@ -84,10 +96,11 @@ import type {
 } from "./surface-ledger.js";
 
 export interface BrowserControllerSink extends BrowserFrameSink {
-  sendServer(message: BrowserServerMessage): Promise<void>;
+  sendServer(message: BrowserRuntimeServerMessage): Promise<void>;
 }
 
 interface BrowserControllerOptions {
+  sessionState?: (state: import("@opensteer/protocol/browser").BrowserSessionState) => void;
   loginAuthority?: BrowserLoginAuthority | undefined;
   nativePresentation?:
     ((surfaceId: BrowserSurfaceId, consumerToken: string) => boolean) | undefined;
@@ -224,6 +237,8 @@ interface PersonOffer {
 }
 
 export class BrowserController {
+  private readonly sessionState: BrowserControllerOptions["sessionState"];
+  private readonly legacySubscriptions = new Set<BrowserSurfaceId>();
   private readonly personAuthority: BrowserLoginAuthority | undefined;
   private readonly nativePresentation: BrowserControllerOptions["nativePresentation"];
   private readonly personOffers = new Map<BrowserSurfaceId, PersonOffer>();
@@ -310,6 +325,7 @@ export class BrowserController {
   private readonly claims: BrowserAttachTicketClaims;
   private readonly files: SessionFiles;
   private readonly ledger: SurfaceLedger;
+  private rootSurfaceId: BrowserSurfaceId | undefined;
   private readonly maxPendingCommands: number;
   private readonly maxPendingMessageBytes: number;
   private readonly maxPendingMessages: number;
@@ -319,14 +335,31 @@ export class BrowserController {
   private pendingMessages = 0;
   private readonly screencast: ScreencastController;
   private sink: BrowserControllerSink;
-  private surfaceRevision = 0;
   /** The pages named in the latest surface list viewers were sent, and the one shown. */
-  private deliveredSurfaces = new Set<BrowserSurfaceId>();
   private deliveredActive: BrowserSurfaceId | null = null;
   /** A dialog on a page no list has named yet; it follows the list that does. */
   private heldDialog: BrowserDialog | null = null;
-  private surfaceSnapshotQueued = false;
-  private surfaceSnapshotTail: Promise<void> = Promise.resolve();
+  private readonly tabRows = new Map<string, BrowserTabRecord>();
+  private readonly tabIcons = new Map<string, string>();
+  private readonly tabIconReferences = new Map<string, number>();
+  private readonly sentIcons = new Set<string>();
+  private readonly inFlightIcons = new Set<string>();
+  private readonly savedTabs = new KeyedStreamReceiver<
+    { id: BrowserSurfaceId },
+    Record<string, never>
+  >();
+  private readonly tabPublisher = new KeyedStreamPublisher<BrowserTabRecord, BrowserTabStreamMeta>({
+    ids: () => this.tabRows.keys(),
+    read: (id) => this.tabRows.get(id),
+    meta: () => ({
+      activeId: this.ledger.activeSurfaceId,
+      inventoryRevision: this.ledger.inventoryRevision,
+    }),
+    targetBytes: 64 * 1024,
+    envelopeBytes: keyedStreamBytes({ type: "browser.tabs", stream: null }) - 4,
+  });
+  private tabSend: Promise<void> | null = null;
+
   /** `closed` has been published; nothing else follows it. */
   private terminated = false;
   private unsubscribeCdp: (() => void) | null = null;
@@ -345,6 +378,7 @@ export class BrowserController {
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
+  private readonly laneIdleTimers = new Map<BrowserSurfaceId, ReturnType<typeof setTimeout>>();
   private readonly laneGeometries = new Map<BrowserSurfaceId, number>();
   /** Each actor's cursor on each page, least recently used first. */
   private readonly agentPointers = new Map<string, AgentPointer>();
@@ -360,10 +394,11 @@ export class BrowserController {
   }[] = [];
 
   readonly #passkeys: HostRelayAuthenticator | undefined;
-  sendPasskey(message: BrowserServerMessage): Promise<void> {
+  sendPasskey(message: BrowserRuntimeServerMessage): Promise<void> {
     return this.send(message);
   }
   constructor(options: BrowserControllerOptions) {
+    this.sessionState = options.sessionState;
     this.personAuthority =
       options.claims.personFillVersion === 1 &&
       options.loginAuthority?.personFillAccounts &&
@@ -426,6 +461,17 @@ export class BrowserController {
     });
   }
 
+  sleepProtection(id: BrowserSurfaceId): string | null {
+    if (this.targetedCasts.has(id) || this.legacySubscriptions.has(id)) return "viewer";
+    if (this.gestures.has(id) || this.keyOwners.has(id)) return "held-input";
+    if (
+      this.personOffers.has(id) ||
+      this.signIns.holdsSession(this.claims.sessionId) ||
+      this.#passkeys?.holdsSession(this.claims.sessionId)
+    )
+      return "sign-in";
+    return null;
+  }
   diagnostics() {
     return [...this.lanes].map(([surfaceId, lane]) => ({
       surfaceId,
@@ -473,6 +519,7 @@ export class BrowserController {
 
   async start(): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
+    this.rootSurfaceId = this.claims.initialSurfaceId ?? this.ledger.snapshot()[0]?.id;
     this.unsubscribeCdp = this.cdpRouter.onEvent(this.claims.sessionId, (event) => {
       if (this.closed || !this.initialSnapshotQueued) return;
       void this.send({ event, type: "cdp.event" }).catch(() => undefined);
@@ -496,21 +543,22 @@ export class BrowserController {
   async reattach(sink: BrowserControllerSink): Promise<void> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The browser controller is closed.");
     this.sink = sink;
+    this.sentIcons.clear();
+    this.tabPublisher.reset();
     await this.publishSnapshot();
   }
 
   private async publishSnapshot(): Promise<void> {
     const surfaces = this.ledger.snapshot();
-    this.deliveredSurfaces = new Set(surfaces.map((surface) => surface.id));
     this.deliveredActive = surfaces.find((surface) => surface.active)?.id ?? null;
     await this.send({
       access: this.claims.access,
       dialog: this.screencast.currentDialog(),
       sessionId: this.claims.sessionId,
       state: "ready",
-      surfaces,
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
+      ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(this.personAuthority ? { personFillVersion: 1 } : {}),
       ...(this.claims.navigationAttributionVersion === 1
         ? { navigationAttributionVersion: 1 }
@@ -523,12 +571,12 @@ export class BrowserController {
               : {}),
           }
         : {}),
-      inventoryRevision: this.ledger.inventoryRevision,
       type: "browser.snapshot",
     });
     if (this.editing || this.personAuthority)
       for (const surface of surfaces) void this.editingObserver(surface.id).catch(() => undefined);
-    await this.publishWorkspaceTabs();
+    for (const surface of surfaces) this.updateTab(surface.id);
+    await this.drainTabs();
     this.screencast.viewersShown(this.deliveredActive);
   }
 
@@ -622,7 +670,9 @@ export class BrowserController {
     this.releaseDisconnect();
   }
 
-  close(): Promise<void> {
+  private closeReason: "retired" | undefined;
+  close(reason?: "retired"): Promise<void> {
+    if (!this.closePromise) this.closeReason = reason;
     for (const surfaceId of this.personOffers.keys()) this.withdrawPersonOffer(surfaceId);
     for (const entry of this.cursorHints.values()) {
       entry.unsubscribe();
@@ -659,6 +709,8 @@ export class BrowserController {
     );
     this.observers.clear();
     this.closed = true;
+    for (const timer of this.laneIdleTimers.values()) clearTimeout(timer);
+    this.laneIdleTimers.clear();
     this.unsubscribeCdp?.();
     this.unsubscribeCdp = null;
     this.unsubscribeLedger?.();
@@ -681,10 +733,27 @@ export class BrowserController {
       ]);
     }
     this.terminated = true;
-    await this.send({ state: "closed", type: "browser.status" }).catch(() => undefined);
+    await this.send({
+      state: "closed",
+      type: "browser.status",
+      ...(this.closeReason ? { reason: this.closeReason } : {}),
+    }).catch(() => undefined);
   }
 
   private enqueue(message: BrowserClientMessage): Promise<void> {
+    if (message.type === "session.state") {
+      this.sessionState?.(message);
+      return Promise.resolve();
+    }
+    if (message.type === "tabs.resync") {
+      if (!this.closed && !this.ledger.closing) this.tabPublisher.reset();
+      return this.drainTabs();
+    }
+    if (message.type === "session.saved") {
+      this.savedTabs.apply(message.stream);
+      return Promise.resolve();
+    }
+
     if (message.type === "autofill.fill") return this.fillPersonOffer(message);
     if (
       (message.type === "navigation.go" || message.type === "cdp.command") &&
@@ -789,7 +858,6 @@ export class BrowserController {
     const surfaceId = this.pageOf(message);
     // Resolve implicit targets now: a later activation cannot retarget admitted work.
     if (surfaceId && (!isCdpRequest(message) || isOrderedAgentMutation(message))) {
-      const lane = this.inputLane(surfaceId);
       const reservation = this.reservation(message, surfaceId);
       const release = isInputRelease(message);
       const cleanup = release && reservation !== null && this.cleanupReservations.has(reservation);
@@ -822,10 +890,12 @@ export class BrowserController {
         message.type === "input.wheel" || message.type === "input.key"
           ? this.cursorHints.get(surfaceId)?.hints.pause()
           : undefined;
-      return lane.enqueue(message, cleanup).finally(() => {
-        resumeCursor?.();
-        if (release && reservation) this.cleanupReservations.delete(reservation);
-      });
+      return this.inputLane(surfaceId)
+        .enqueue(message, cleanup)
+        .finally(() => {
+          resumeCursor?.();
+          if (release && reservation) this.cleanupReservations.delete(reservation);
+        });
     }
     const queue = isCdpRequest(message) ? this.agentCommands : this.viewerCommands;
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
@@ -871,13 +941,12 @@ export class BrowserController {
   private inputLane(surfaceId: BrowserSurfaceId): BrowserInputLane {
     let lane = this.lanes.get(surfaceId);
     if (!lane) {
-      if (this.lanes.size >= 128)
-        throw new BrowserRuntimeError("conflict", "Too many browser input surfaces.");
       lane = new BrowserInputLane(
         this.maxPendingCommands,
         (message) => this.run(message, surfaceId),
         (message, reason) => this.refuseInput(message, reason),
         surfaceId,
+        () => this.releaseIdleLane(surfaceId),
       );
       this.lanes.set(surfaceId, lane);
       this.laneGeometries.set(
@@ -886,6 +955,27 @@ export class BrowserController {
       );
     }
     return lane;
+  }
+
+  private releaseIdleLane(surfaceId: BrowserSurfaceId): void {
+    clearTimeout(this.laneIdleTimers.get(surfaceId));
+    if (this.closed) return;
+    // Preserve the wheel transaction's anchor during its 200 ms quiet period.
+    const timer = setTimeout(() => {
+      this.laneIdleTimers.delete(surfaceId);
+      const lane = this.lanes.get(surfaceId);
+      if (
+        !lane ||
+        lane.contains(() => true) ||
+        this.gestures.has(surfaceId) ||
+        this.keyOwners.has(surfaceId)
+      )
+        return;
+      this.lanes.delete(surfaceId);
+      this.laneGeometries.delete(surfaceId);
+    }, 200);
+    timer.unref();
+    this.laneIdleTimers.set(surfaceId, timer);
   }
 
   private reservation(message: BrowserClientMessage, surfaceId: BrowserSurfaceId): string | null {
@@ -931,7 +1021,7 @@ export class BrowserController {
 
   private clipboardResult(
     message: object,
-    result: Extract<BrowserServerMessage, { type: "clipboard.result" }>,
+    result: Extract<BrowserRuntimeServerMessage, { type: "clipboard.result" }>,
   ): Promise<void> {
     if (this.clipboardTerminals.has(message)) return Promise.resolve();
     this.clipboardTerminals.add(message);
@@ -1065,7 +1155,13 @@ export class BrowserController {
     surfaceId: BrowserSurfaceId | null = null,
   ): Promise<void> {
     try {
-      await this.dispatch(message, surfaceId);
+      const target = surfaceId ?? this.pageOf(message);
+      const lifecycle =
+        message.type === "surface.close" ||
+        (message.type === "cdp.command" && message.command.method === "Target.closeTarget");
+      if (target && !lifecycle)
+        await this.ledger.use(target, () => this.dispatch(message, surfaceId));
+      else await this.dispatch(message, surfaceId);
     } catch (error) {
       await this.refuseClipboard(message);
       const normalized = normalizeControllerError(error);
@@ -1101,7 +1197,7 @@ export class BrowserController {
         });
         return;
       }
-      if (surfaceId && (this.closingSurfaces.has(surfaceId) || !this.ledger.binding(surfaceId))) {
+      if (surfaceId && (this.closingSurfaces.has(surfaceId) || !this.ledger.stateOf(surfaceId))) {
         return;
       }
       await this.send({
@@ -1120,10 +1216,14 @@ export class BrowserController {
   private pageOf(message: BrowserClientMessage): BrowserSurfaceId | null {
     switch (message.type) {
       case "cdp.command": {
-        const closing =
-          message.command.method === "Target.closeTarget"
-            ? message.command.parameters?.targetId
-            : null;
+        const closing = [
+          "Target.closeTarget",
+          "Target.attachToTarget",
+          "Target.getTargetInfo",
+          "Target.activateTarget",
+        ].includes(message.command.method)
+          ? message.command.parameters?.targetId
+          : null;
         if (typeof closing === "string") return this.ledger.surfaceIdForTarget(closing) ?? null;
         const sessionId = message.command.sessionId;
         const targetId =
@@ -1324,6 +1424,23 @@ export class BrowserController {
         "Watch frame acknowledgements terminate at the Host.",
       );
     }
+    if (
+      message.type === "cdp.command" &&
+      message.command.method === "Target.closeTarget" &&
+      typeof message.command.parameters?.targetId === "string"
+    ) {
+      const id = this.ledger.surfaceIdForTarget(message.command.parameters.targetId);
+      if (id) {
+        await this.ledger.closeSurface(id);
+        await this.drainTabs();
+        await this.send({
+          type: "cdp.result",
+          requestId: message.requestId,
+          result: { success: true },
+        });
+        return;
+      }
+    }
     if (message.type === "cdp.command" && message.command.method === stageFileMethod) {
       if (message.command.sessionId !== undefined) {
         throw new BrowserRuntimeError(
@@ -1354,6 +1471,8 @@ export class BrowserController {
       if (this.claims.access !== "read-write")
         throw new BrowserRuntimeError("forbidden", "Filling a card requires read-write access.");
       this.ledger.recordAgentCommand(targetId);
+      const surface = this.ledger.surfaceIdForTarget(targetId);
+      if (surface) this.ledger.recordAgentInput(surface, true);
       const status = await this.signIns.fillCard({
         ...params.data,
         targetId,
@@ -1380,6 +1499,8 @@ export class BrowserController {
         throw new BrowserRuntimeError("forbidden", "Filling a login requires read-write access.");
       }
       this.ledger.recordAgentCommand(targetId);
+      const surface = this.ledger.surfaceIdForTarget(targetId);
+      if (surface) this.ledger.recordAgentInput(surface, true);
       const status = await this.signIns.fill({
         ...params.data,
         targetId,
@@ -1405,6 +1526,7 @@ export class BrowserController {
     if (message.type === "stream.subscribe" || message.type === "stream.unsubscribe") {
       if (message.surfaceId) {
         const surfaceId = message.surfaceId;
+        this.ledger.touch(surfaceId);
         let target = this.targetedCasts.get(surfaceId);
         if (message.type === "stream.unsubscribe") {
           this.targetedCasts.delete(surfaceId);
@@ -1473,15 +1595,23 @@ export class BrowserController {
           }
           throw error;
         }
-      } else
+      } else {
+        const id = this.ledger.activeSurfaceId;
+        if (id) {
+          if (message.type === "stream.subscribe") this.legacySubscriptions.add(id);
+          else this.legacySubscriptions.delete(id);
+          this.ledger.touch(id);
+        }
         await this.screencast.setStreaming(
           message.type === "stream.subscribe",
           message.type === "stream.subscribe" && message.captureRegion === true,
         );
+      }
       return;
     }
     if (message.type === "surface.activate") {
       this.releaseDepartingInput(message, message.surfaceId);
+      this.ledger.touch(message.surfaceId, true);
       await this.ledger.activate(message.surfaceId);
       return;
     }
@@ -2580,14 +2710,88 @@ export class BrowserController {
     }
   }
 
-  private lastWorkspaceTabs: string | null = null;
-  private publishWorkspaceTabs(closed: BrowserSurfaceId[] = []): Promise<void> {
-    if (this.claims.workspaceTabRestoreVersion !== 1) return Promise.resolve();
-    const tabs = this.ledger.durableSnapshot();
-    const fingerprint = JSON.stringify(tabs);
-    if (!closed.length && this.lastWorkspaceTabs === fingerprint) return Promise.resolve();
-    this.lastWorkspaceTabs = fingerprint;
-    return this.send({ type: "browser.workspace-tabs", tabs, closed });
+  private updateTab(id: BrowserSurfaceId, closed = false): void {
+    const previousIcon = this.tabRows.get(id)?.icon;
+    const row = closed ? undefined : this.ledger.toRecord(id);
+    if (previousIcon !== row?.icon) {
+      if (previousIcon) {
+        const count = this.tabIconReferences.get(previousIcon)! - 1;
+        if (count) this.tabIconReferences.set(previousIcon, count);
+        else this.tabIconReferences.delete(previousIcon);
+      }
+      if (row?.icon)
+        this.tabIconReferences.set(row.icon, (this.tabIconReferences.get(row.icon) ?? 0) + 1);
+    }
+    if (row) {
+      this.tabRows.set(id, row);
+      if (row.icon) {
+        const favicon = this.ledger.faviconOf(id);
+        if (favicon) this.tabIcons.set(row.icon, favicon);
+      }
+    } else this.tabRows.delete(id);
+    if (previousIcon) this.pruneTabIcon(previousIcon);
+    this.tabPublisher.mark(id);
+  }
+
+  private pruneTabIcon(key: string): void {
+    if (!this.tabIconReferences.has(key) && !this.inFlightIcons.has(key)) this.tabIcons.delete(key);
+  }
+
+  private async drainTabs(): Promise<void> {
+    if (this.closed) return;
+    if (this.tabSend) {
+      await this.tabSend;
+      if (this.tabPublisher.pending) await this.drainTabs();
+      return;
+    }
+    const work = (async () => {
+      await Promise.resolve();
+      for (
+        let frame = this.tabPublisher.next();
+        frame && !this.closed;
+        frame = this.tabPublisher.next()
+      ) {
+        try {
+          const rows =
+            frame.op === "rows"
+              ? frame.rows
+              : frame.op === "change"
+                ? [...(frame.add ?? []), ...(frame.update ?? [])]
+                : [];
+          for (const row of rows) if (row.icon) this.inFlightIcons.add(row.icon);
+          for (const row of rows)
+            if (row.icon && !this.sentIcons.has(row.icon)) {
+              const favicon = this.tabIcons.get(row.icon);
+              if (!favicon) throw new Error("Missing browser tab icon.");
+              await this.send({ type: "browser.tab.icon", key: row.icon, favicon });
+              this.sentIcons.add(row.icon);
+            }
+          await this.send({ type: "browser.tabs", stream: frame });
+          this.tabPublisher.settled(frame, true);
+          const keys = [...this.inFlightIcons];
+          this.inFlightIcons.clear();
+          for (const key of keys) this.pruneTabIcon(key);
+        } catch (error) {
+          this.tabPublisher.settled(frame, false);
+          throw error;
+        }
+        const shown = this.ledger.activeSurfaceId;
+        if (this.deliveredActive !== shown && this.tabPublisher.flushed(shown ?? "")) {
+          this.deliveredActive = shown;
+          this.screencast.viewersShown(shown);
+        }
+        const held = this.heldDialog;
+        if (held && this.tabPublisher.hasSent(held.surfaceId)) {
+          this.heldDialog = null;
+          await this.send({ dialog: held, type: "browser.dialog.changed" });
+        }
+      }
+    })();
+    this.tabSend = work.finally(() => {
+      this.tabSend = null;
+    });
+    await this.tabSend;
+    if (this.tabPublisher.pending) await this.drainTabs();
   }
 
   private onLedgerEvent(event: SurfaceLedgerEvent): void {
@@ -2603,23 +2807,18 @@ export class BrowserController {
     }
     if (event.type === "popup") {
       if (!this.closed && this.claims.popupFollowVersion === 1)
-        void this.send({
-          type: "browser.popup.opened",
-          surfaceId: event.surfaceId,
-          consumerToken: event.consumerToken,
-        }).catch(() => undefined);
+        void this.drainTabs()
+          .then(async () => {
+            if (this.tabPublisher.hasSent(event.surfaceId))
+              await this.send({
+                type: "browser.popup.opened",
+                surfaceId: event.surfaceId,
+                consumerToken: event.consumerToken,
+              });
+          })
+          .catch(() => undefined);
       return;
     }
-    if (
-      !this.closed &&
-      this.initialSnapshotQueued &&
-      (event.type === "changed" || event.type === "snapshot")
-    )
-      void this.publishWorkspaceTabs(
-        event.type === "changed" && event.change === "closed" && event.closure !== "teardown"
-          ? [event.surface.id]
-          : [],
-      ).catch(() => undefined);
     if (
       (this.editing || this.personAuthority) &&
       event.type === "changed" &&
@@ -2628,7 +2827,14 @@ export class BrowserController {
       void this.editingObserver(event.surface.id).catch(() => undefined);
     if (event.type === "geometry") this.cursorHints.get(event.surfaceId)?.hints.invalidate();
     if (event.type === "geometry") this.observers.get(event.surfaceId)?.observer.refresh();
-    if (event.type === "closed" || event.type === "geometry") return;
+    if (event.type === "geometry") {
+      if (this.initialSnapshotQueued && !this.closed && !this.ledger.closing) {
+        this.updateTab(event.surfaceId);
+        void this.drainTabs().catch(() => undefined);
+      }
+      return;
+    }
+    if (event.type === "closed") return;
     if (
       event.type === "changed" &&
       event.change === "updated" &&
@@ -2647,7 +2853,10 @@ export class BrowserController {
       for (const owner of owners)
         if (owner) void lane.enqueue({ type: "input.cancel", producerId: owner }, true);
     }
-    if (event.type === "changed" && event.change === "closed") {
+    if (
+      event.type === "changed" &&
+      (event.change === "closed" || event.surface.state === "suspended")
+    ) {
       const surfaceId = event.surface.id;
       this.cursorHints.get(surfaceId)?.unsubscribe();
       this.cursorHints.get(surfaceId)?.hints.close();
@@ -2666,71 +2875,38 @@ export class BrowserController {
       this.keyOwners.delete(surfaceId);
       for (const [key, pointer] of this.agentPointers)
         if (pointer.surfaceId === surfaceId) this.agentPointers.delete(key);
-      if (lane) void lane.idle().then(() => this.lanes.delete(surfaceId));
+      if (lane)
+        void lane.idle().then(() => {
+          if (this.lanes.get(surfaceId) === lane) this.lanes.delete(surfaceId);
+        });
     }
     if (!this.initialSnapshotQueued || event.type === "dialog") return;
-    this.surfaceRevision += 1;
-    this.queueLatestSurfaceSnapshot();
+    if (
+      this.closed ||
+      this.ledger.closing ||
+      (event.type === "changed" && event.closure === "teardown")
+    )
+      return;
+    if (event.type === "changed") this.updateTab(event.surface.id);
+    if (event.type === "resized") this.updateTab(event.surfaceId);
+    this.tabPublisher.markMeta();
+    void this.drainTabs().catch(() => undefined);
   }
 
   private onDialogChanged(dialog: BrowserDialog | null): void {
     if (this.closed || !this.initialSnapshotQueued) return;
-    // A viewer knows a page before its dialog: a popup can open one as its
-    // first script runs, before the list that names it goes out.
-    if (dialog && !this.deliveredSurfaces.has(dialog.surfaceId)) {
+    if (dialog && !this.tabPublisher.hasSent(dialog.surfaceId)) {
       this.heldDialog = dialog;
-      this.queueLatestSurfaceSnapshot();
+      void this.drainTabs().catch(() => undefined);
       return;
     }
     this.heldDialog = null;
     void this.send({ dialog, type: "browser.dialog.changed" }).catch(() => undefined);
   }
 
-  private publishSurfaceSnapshot(): Promise<void> {
-    const surfaces = this.ledger.snapshot();
-    this.deliveredSurfaces = new Set(surfaces.map((surface) => surface.id));
-    const shown = surfaces.find((surface) => surface.active)?.id ?? null;
-    const turned = shown !== this.deliveredActive;
-    this.deliveredActive = shown;
-    const sent = this.send({
-      surfaces,
-      type: "browser.surfaces.changed",
-      inventoryRevision: this.ledger.inventoryRevision,
-    });
-    if (turned) void sent.then(() => this.screencast.viewersShown(shown)).catch(() => undefined);
-    const held = this.heldDialog;
-    if (held && this.deliveredSurfaces.has(held.surfaceId)) {
-      this.heldDialog = null;
-      void this.send({ dialog: held, type: "browser.dialog.changed" }).catch(() => undefined);
-    }
-    return sent;
-  }
-
-  private queueLatestSurfaceSnapshot(): void {
-    if (this.closed || this.surfaceSnapshotQueued) return;
-    this.surfaceSnapshotQueued = true;
-    queueMicrotask(() => {
-      const revision = this.surfaceRevision;
-      const sent = this.publishSurfaceSnapshot();
-      this.surfaceSnapshotTail = sent;
-      void sent
-        .catch(() => undefined)
-        .finally(() => {
-          this.surfaceSnapshotQueued = false;
-          if (this.surfaceRevision !== revision) this.queueLatestSurfaceSnapshot();
-        });
-    });
-  }
-
   private async sendFrame(frame: Parameters<BrowserControllerSink["sendFrame"]>[0]): Promise<void> {
-    await Promise.resolve();
-    // Geometry must be announced before its pixels, even when another list is in flight.
-    let announced: Promise<void>;
-    do {
-      announced = this.surfaceSnapshotTail;
-      await announced;
-      await Promise.resolve();
-    } while (this.surfaceSnapshotQueued || announced !== this.surfaceSnapshotTail);
+    while (!this.closed && !this.tabPublisher.flushed(frame.header.surfaceId))
+      await this.drainTabs();
     const surface = this.ledger.binding(frame.header.surfaceId)?.surface;
     if (surface?.geometryRevision !== frame.header.geometryRevision) return;
     if (!this.closed)
@@ -2769,6 +2945,15 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const requested = message.command;
+    const inputSurface = this.pageOf(message);
+    if (
+      inputSurface &&
+      (requested.method.startsWith("Input.") || requested.method === "DOM.setFileInputFiles")
+    )
+      this.ledger.recordAgentInput(
+        inputSurface,
+        requested.method === "Input.insertText" || typeof requested.parameters?.text === "string",
+      );
     const command: CdpCommand = {
       method: requested.method,
       ...(requested.parameters === undefined ? {} : { parameters: requested.parameters }),
@@ -3064,6 +3249,75 @@ export class BrowserController {
     message: Extract<BrowserClientMessage, { type: "cdp.command" }>,
   ): Promise<void> {
     const parameters = message.command.parameters;
+    if (message.command.method === browserHostMethods.listTabs) {
+      const parsed = BrowserListTabsParametersSchema.safeParse(parameters ?? {});
+      if (!parsed.success) throw new BrowserRuntimeError("bad_message", "Invalid tab-list cursor.");
+      const ledger = this.ledger;
+      const records = function* () {
+        for (const record of ledger.policyRecords()) {
+          if (!record.announced) continue;
+          const row = ledger.toRecord(record.id)!;
+          const dialog = ledger.dialogOf(record.id);
+          const tab: AgentTab = {
+            surfaceId: record.id,
+            targetId: record.live?.targetId ?? null,
+            state: row.state,
+            title: row.title,
+            url: row.url,
+            order: record.order,
+            openerId: record.openerId,
+            userActivity: record.userActivity
+              ? {
+                  ...record.userActivity,
+                  sinceLastAgentCommand: record.userActivitySequence > record.agentSequence,
+                }
+              : null,
+            pageResize: record.pageResize
+              ? {
+                  ...record.pageResize,
+                  sinceLastAgentCommand: record.pageResizeSequence > record.agentSequence,
+                }
+              : null,
+            dialog: dialog ? { id: dialog.id, message: dialog.message, type: dialog.type } : null,
+          };
+          yield { order: record.order, tab };
+        }
+      };
+      const envelope = (result: { tabs: AgentTab[]; nextCursor: string | null }) => ({
+        type: "cdp.result" as const,
+        requestId: message.requestId,
+        result,
+      });
+      await this.send(envelope(pageBrowserTabs(records(), parsed.data.cursor, envelope)));
+      return;
+    }
+    if (message.command.method === browserHostMethods.resumeTab) {
+      const parsed = BrowserResumeTabParametersSchema.safeParse(parameters);
+      if (!parsed.success)
+        throw new BrowserRuntimeError("bad_message", "Invalid tab-resume parameters.");
+      const reloaded = this.ledger.stateOf(parsed.data.surfaceId) === "suspended";
+      const binding = await this.ledger.wake(parsed.data.surfaceId);
+      await this.drainTabs();
+      await this.send({
+        type: "cdp.result",
+        requestId: message.requestId,
+        result: {
+          surfaceId: parsed.data.surfaceId,
+          targetId: binding.targetId,
+          documentId: binding.surface.documentId,
+          reloaded,
+        },
+      });
+      return;
+    }
+    if (
+      ![
+        browserHostMethods.openTab,
+        browserHostMethods.closeTab,
+        browserHostMethods.contextCandidate,
+      ].some((method) => method === message.command.method)
+    )
+      throw new BrowserRuntimeError("bad_message", "Unsupported Opensteer method.");
     if (message.command.method === browserHostMethods.openTab) {
       const fields = BrowserSessionTabOpenCommandSchema.omit({
         type: true,
@@ -3164,14 +3418,7 @@ export class BrowserController {
           void this.ledger.navigate(tabId, url, message.navigationId).catch(() => undefined);
         }
       }
-      // A coalesced inventory notice may still be in flight. Publish this replacement
-      // before answering so the Host's command result always contains the new tab.
-      await this.send({
-        type: "browser.surfaces.changed",
-        surfaces: this.ledger.snapshot(),
-        inventoryRevision: this.ledger.inventoryRevision,
-      });
-      await this.publishWorkspaceTabs();
+      await this.drainTabs();
       await this.send({ type: "cdp.result", requestId: message.requestId, result: { tabId } });
       return;
     }
@@ -3183,10 +3430,8 @@ export class BrowserController {
     if (
       durableClose &&
       message.command.method === browserHostMethods.closeTab &&
-      !this.ledger.binding(BrowserSurfaceIdSchema.parse(surfaceId))
+      !this.ledger.stateOf(BrowserSurfaceIdSchema.parse(surfaceId))
     ) {
-      const tabId = BrowserSurfaceIdSchema.parse(surfaceId);
-      if (!this.ledger.binding(tabId)) this.ledger.forgetDormantSurface(tabId);
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,
@@ -3196,8 +3441,7 @@ export class BrowserController {
     }
     const surface = this.ledger.snapshot().find((entry) => entry.id === surfaceId);
     const binding = surface ? this.ledger.binding(surface.id) : null;
-    if (!surface || !binding)
-      throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
+    if (!surface) throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
     if (message.command.method === browserHostMethods.closeTab) {
       const parsed = z
         .object({
@@ -3211,17 +3455,15 @@ export class BrowserController {
         throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       let last = this.ledger.snapshot().length === 1;
       if (last) {
-        await this.publishWorkspaceTabs([surface.id]);
         last = this.ledger.sealLastSurface(surface.id);
         if (!last && !durableClose)
           throw new BrowserRuntimeError("conflict", "The browser inventory changed.");
       }
-      if (!last && this.ledger.binding(surface.id)) await this.ledger.closeSurface(surface.id);
-      await this.send({
-        type: "browser.surfaces.changed",
-        surfaces: this.ledger.snapshot(),
-        inventoryRevision: this.ledger.inventoryRevision,
-      });
+      if (!last && this.ledger.stateOf(surface.id)) await this.ledger.closeSurface(surface.id);
+      if (last) {
+        this.updateTab(surface.id, true);
+      }
+      await this.drainTabs();
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,
@@ -3232,6 +3474,12 @@ export class BrowserController {
     }
     // The engine's live address can run ahead of the commit the ledger has
     // taken in; the identity and title belong to that commit, not the address.
+    if (!binding)
+      throw new BrowserRuntimeError(
+        "conflict",
+        `Resume tab ${surface.id} before reading its document.`,
+        { reason: "target-suspended", retryable: true },
+      );
     const url = binding.page.url();
     if (url !== this.ledger.committedUrl(surface.id))
       throw new BrowserRuntimeError("conflict", "The browser page changed while reading context.");
@@ -3354,13 +3602,20 @@ export class BrowserController {
       };
     };
     return method === "Target.getTargets" && Array.isArray(record.targetInfos)
-      ? { ...record, targetInfos: record.targetInfos.map(decorate) }
+      ? {
+          ...record,
+          rootSurfaceId: this.rootSurfaceId,
+          rootTargetId: this.rootSurfaceId
+            ? (this.ledger.binding(this.rootSurfaceId)?.targetId ?? null)
+            : record.rootTargetId,
+          targetInfos: record.targetInfos.map(decorate),
+        }
       : method === "Target.getTargetInfo"
         ? { ...record, targetInfo: decorate(record.targetInfo) }
         : result;
   }
 
-  private send(message: BrowserServerMessage): Promise<void> {
+  private send(message: BrowserRuntimeServerMessage): Promise<void> {
     if (
       this.editing &&
       (message.type === "browser.editing" ||

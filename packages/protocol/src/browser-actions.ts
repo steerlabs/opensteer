@@ -128,10 +128,15 @@ export const BrowserStageFileParametersSchema = z.strictObject({
     .max(512 * 1_024 * 1_024)
     .optional(),
 });
+const tabCursor = z
+  .string()
+  .regex(/^\d+$/u)
+  .refine((value) => Number.isSafeInteger(Number(value)));
+const tabPage = { cursor: tabCursor.optional() };
 const emptyAction = <Name extends string>(type: Name) => z.strictObject({ type: z.literal(type) });
 const locatorFields = { locator: BrowserActionLocatorSchema };
 export const BrowserActionSchema = z.discriminatedUnion("type", [
-  emptyAction("session.tabs"),
+  z.strictObject({ type: z.literal("session.tabs"), ...tabPage }),
   emptyAction("surface.attach"),
   emptyAction("surface.resume"),
   emptyAction("surface.close"),
@@ -344,7 +349,8 @@ export const BrowserActionResultSchema = z
   .discriminatedUnion("type", [
     z.strictObject({
       type: z.literal("session.tabs"),
-      tabs: z.array(BrowserActionBindingSchema).max(64),
+      tabs: z.array(BrowserActionBindingSchema),
+      nextCursor: tabCursor.nullable(),
     }),
     bindingResult("surface.attach"),
     bindingResult("surface.resume"),
@@ -474,3 +480,79 @@ export const BrowserAgentEventSchema = z.strictObject({
   attachmentId: z.uuid(),
   event: BrowserActionEventSchema,
 });
+
+export const BrowserResumeTabParametersSchema = z.strictObject({
+  surfaceId: BrowserSurfaceIdSchema,
+});
+export const BrowserResumeTabResultSchema = z.strictObject({
+  surfaceId: BrowserSurfaceIdSchema,
+  targetId: identifier,
+  documentId: z.string().min(1).max(255),
+  reloaded: z.boolean(),
+});
+export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;
+export const BrowserListTabsParametersSchema = z.strictObject(tabPage);
+export const AgentTabSchema = z.strictObject({
+  surfaceId: BrowserSurfaceIdSchema,
+  targetId: identifier.nullable(),
+  state: z.enum(["live", "suspended"]),
+  title: z.string().max(256),
+  url: z.string().max(16_384),
+  order: z.number().int().nonnegative(),
+  openerId: BrowserSurfaceIdSchema.nullable(),
+  userActivity: z
+    .strictObject({
+      at: z.string(),
+      kind: z.enum(["click", "scroll", "typing", "navigation", "dialog"]),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      sinceLastAgentCommand: z.boolean(),
+    })
+    .nullable(),
+  pageResize: z
+    .strictObject({
+      at: z.string(),
+      width: z.number(),
+      height: z.number(),
+      agentSizeRemoved: z.literal(true).optional(),
+      sinceLastAgentCommand: z.boolean(),
+    })
+    .nullable(),
+  dialog: z
+    .strictObject({ id: z.string(), message: z.string().max(10_000), type: z.string() })
+    .nullable(),
+});
+export type AgentTab = z.infer<typeof AgentTabSchema>;
+/** Page target; one larger record travels alone within browserActionMaxBytes. */
+export const browserListTabsMaxBytes = 64 * 1024;
+export const BrowserListTabsResultSchema = z.strictObject({
+  tabs: z.array(AgentTabSchema),
+  nextCursor: z.string().nullable(),
+});
+
+export type BrowserListTabsResult = z.infer<typeof BrowserListTabsResultSchema>;
+
+export function pageBrowserTabs<T>(
+  records: Iterable<{ readonly order: number; readonly tab: T }>,
+  cursor: string | undefined,
+  envelope: (page: { tabs: T[]; nextCursor: string | null }) => unknown,
+): { tabs: T[]; nextCursor: string | null } {
+  const after = cursor === undefined ? -1 : Number(tabCursor.parse(cursor));
+  const tabs: T[] = [];
+  let lastOrder = after;
+  for (const record of records) {
+    if (record.order <= after) continue;
+    const candidate = { tabs: [...tabs, record.tab], nextCursor: String(record.order) };
+    if (
+      tabs.length &&
+      Math.max(
+        utf8Size(JSON.stringify(envelope(candidate))),
+        utf8Size(JSON.stringify(envelope({ ...candidate, nextCursor: null }))),
+      ) > browserListTabsMaxBytes
+    )
+      return { tabs, nextCursor: String(lastOrder) };
+    tabs.push(record.tab);
+    lastOrder = record.order;
+  }
+  return { tabs, nextCursor: null };
+}

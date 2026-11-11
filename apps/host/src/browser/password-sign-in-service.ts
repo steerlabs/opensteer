@@ -1,3 +1,4 @@
+import { BrowserSessionIdSchema } from "@opensteer/protocol/browser";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -57,6 +58,7 @@ type Settlement = Parameters<RequestStore["settlePasswordSignInRequest"]>[0]["se
 type Finish = "settled" | "ended-elsewhere" | "retrying";
 
 interface Call {
+  readonly sessionId?: string | undefined;
   readonly credential?: "card" | undefined;
   readonly callId: string;
   readonly arrivedAt?: number;
@@ -122,6 +124,7 @@ export class PasswordSignInService {
   readonly #declineAnswerMs: number;
   readonly #describe: PasswordSignInServiceOptions["describe"];
   readonly #now: () => number;
+  readonly #onPendingBrowserPins: PasswordSignInServiceOptions["onPendingBrowserPins"];
   readonly #onError: (error: unknown) => void;
   readonly #onRequestResolved: () => void;
   readonly #onWorkspaceEvent: (event: AgentEvent) => void;
@@ -169,6 +172,7 @@ export class PasswordSignInService {
       };
     };
     this.#now = options.now ?? Date.now;
+    this.#onPendingBrowserPins = options.onPendingBrowserPins;
     this.#onError = options.onError ?? (() => undefined);
     this.#onRequestResolved = options.onRequestResolved;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
@@ -1161,11 +1165,29 @@ export class PasswordSignInService {
     }
   }
 
+  #publishPins(operation: Operation): void {
+    const pending =
+      !this.#closed &&
+      (!operation.settlement || Boolean(operation.requestId && !operation.settled));
+    this.#onPendingBrowserPins?.(
+      operation.id,
+      pending
+        ? [...operation.calls.values()].flatMap((call) =>
+            call.sessionId
+              ? [{ sessionId: BrowserSessionIdSchema.parse(call.sessionId), runId: call.runId }]
+              : [],
+          )
+        : [],
+    );
+  }
+
   #notify(operation: Operation): void {
+    this.#publishPins(operation);
     for (const waiter of operation.waiters) waiter();
   }
   #recordCall(operation: Operation, call: Call): void {
     const identity: Call = {
+      sessionId: call.sessionId,
       credential: call.credential,
       callId: call.callId,
       ownerId: call.ownerId,
@@ -1176,6 +1198,7 @@ export class PasswordSignInService {
     };
     operation.calls.set(callKey(call), identity);
     this.#calls.set(callKey(call), operation);
+    this.#publishPins(operation);
   }
   #assertScope(operation: Operation, input: Call & { readonly site: string }): void {
     if (
@@ -1217,6 +1240,10 @@ export interface PasswordSignInServiceOptions {
     readonly workspaceName: string;
   }>;
   readonly now?: () => number;
+  readonly onPendingBrowserPins?: (
+    key: string,
+    pins: readonly { sessionId: import("@opensteer/protocol").BrowserSessionId; runId: RunId }[],
+  ) => void;
   readonly onError?: (error: unknown) => void;
   readonly onRequestResolved: () => void;
   readonly onWorkspaceEvent: (event: AgentEvent) => void;
