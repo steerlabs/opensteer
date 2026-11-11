@@ -39,6 +39,8 @@ import {
   type HostSnapshot,
   type NodeEntry,
   type SurfaceModel,
+  requestAnswerNote,
+  requestAnswerRefusalText,
 } from "@opensteer/client/host";
 import { integrationInstallNextStep } from "@opensteer/client/integrations";
 
@@ -58,6 +60,7 @@ export function InputSurface({
   requests,
   restoredDraft = null,
   running,
+  sendBlocked = null,
   stopLabel,
   stopping = false,
   threadId,
@@ -75,6 +78,8 @@ export function InputSurface({
   footerExtras?: ReactNode;
   /** See `Composer`'s `inputRef`. */
   inputRef?: React.RefObject<HTMLTextAreaElement | null> | undefined;
+  /** Why this Thread can't take a message now, from the Host; drafts are still kept. */
+  sendBlocked?: string | null;
   /** Escape in the field: back to the open request's answers, when one is docked. */
   onEscape?: (() => void) | undefined;
   onStop?: (() => Promise<void>) | undefined;
@@ -200,7 +205,7 @@ export function InputSurface({
           running={running}
           stopping={stopping}
           {...(stopLabel === undefined ? {} : { stopLabel })}
-          sendBlocked={"unavailable" in durable ? durable.unavailable : null}
+          sendBlocked={"unavailable" in durable ? durable.unavailable : sendBlocked}
           voice={voice ? <VoiceButton /> : undefined}
         />
       </div>
@@ -451,6 +456,11 @@ function RequestPanel({
   // An integration card names the integration, the reason and the proposal
   // itself, so the panel's own head would only say them twice.
   const ownHead = request.kind === "integration.access" && !surface.denied;
+  const answerNote = requestAnswerNote(
+    request,
+    snapshot.workspaces.find(({ id }) => id === request.originatingWorkspaceId)?.name ??
+      "this project",
+  );
   return (
     <fieldset
       aria-label="Opensteer needs your input"
@@ -468,6 +478,7 @@ function RequestPanel({
           {request.presentation.agentProposed ? <AgentProposedChip /> : null}
         </div>
       )}
+      {answerNote ? <p className="action-panel__audience">{answerNote}</p> : null}
       {subagent ? (
         <AreaLink
           className="action-panel__asker"
@@ -554,7 +565,10 @@ function ActionBody({
         response,
         type: "request.respond",
       })
-      .catch(reportActionError)
+      .catch((error: unknown) => {
+        const lost = requestAnswerRefusalText(error);
+        reportActionError(lost ? new Error(lost) : error);
+      })
       .finally(() => setPendingId(null));
   };
 

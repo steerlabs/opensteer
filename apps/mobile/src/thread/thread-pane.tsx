@@ -1,3 +1,4 @@
+import { TeamTaskFacts, useTeamSendBlocked } from "../team/team-task.js";
 import {
   messageAuthorName,
   conversationActivityTurn,
@@ -1143,6 +1144,7 @@ function ThreadPaneForUser(
       loadEarlier();
   };
 
+  const teamSendBlocked = useTeamSendBlocked(props.hostClient, thread);
   if (thread === null) {
     return (
       <View style={[styles.centred, sides]}>
@@ -1424,6 +1426,7 @@ function ThreadPaneForUser(
             </>
           ) : (
             <View>
+              <TeamTaskFacts hostClient={props.hostClient} thread={thread} />
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={isHome}
@@ -1436,6 +1439,7 @@ function ThreadPaneForUser(
                 // another Thread builds a new one rather than inheriting this one's.
                 key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
                 disabledReason={disabledReason}
+                sendBlockedReason={teamSendBlocked}
                 readOnly={thread.status === "archived"}
                 drafts={client.drafts}
                 driverKind={placement?.driverKind}

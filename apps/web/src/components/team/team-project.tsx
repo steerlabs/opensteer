@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { runtimeStateForUser, type ProjectAccessView } from "@opensteer/client/host";
+import { audienceLabel, runtimeStateForUser, type ProjectAccessView } from "@opensteer/client/host";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -50,9 +50,25 @@ export function TeamProjectSections({ access }: { readonly access: ProjectAccess
   );
 }
 
-/** The marker on a shared Project's own page, read after the page paints. */
+/**
+ * The marker on a shared Project's own page. The snapshot's audience paints
+ * with the page; a Host that doesn't send it is read after the page paints.
+ */
 export function TeamProjectHomeMarker({ workspaceId }: { readonly workspaceId: string }) {
+  const { snapshot } = useShell();
   const { identity } = useShellTeam();
+  const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId);
+  if (workspace?.audience)
+    return (
+      <AreaLink
+        className="team-marker"
+        title="Who can see this"
+        to={`/workspaces/${encodeURIComponent(workspaceId)}/settings`}
+      >
+        <Icon name="users" />
+        {audienceLabel(workspace.audience, workspace.name)}
+      </AreaLink>
+    );
   return <HomeMarker key={identity ?? ""} workspaceId={workspaceId} />;
 }
 

@@ -584,3 +584,57 @@
 .team-others__add {
   flex: none;
 }
+
+.team-task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0 auto var(--space-8);
+  padding: var(--space-8) var(--space-14);
+  width: min(100%, var(--thread-column, 760px));
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.team-task p {
+  display: flex;
+  gap: var(--space-6);
+  align-items: center;
+  margin: 0;
+}
+
+.team-task__line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  align-items: center;
+}
+
+.team-task__starter {
+  display: inline-flex;
+  gap: var(--space-6);
+  align-items: center;
+}
+
+.team-task__stopped,
+.team-task__outcome {
+  color: var(--muted);
+}
+
+.team-marker {
+  display: inline-flex;
+  gap: var(--space-6);
+  align-items: center;
+  padding: var(--space-2) var(--space-8);
+  border: 1px solid var(--rim-plate);
+  border-radius: 999px;
+  color: var(--text-soft);
+  text-decoration: none;
+}
+
+.action-panel__audience {
+  margin: 0;
+  padding: 0 var(--space-14) var(--space-6);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}

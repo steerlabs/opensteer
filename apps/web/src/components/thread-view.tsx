@@ -72,6 +72,7 @@ import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
 import { homeThreadKind, useTaskDirectory } from "./workspace/task-directory.js";
+import { TeamTaskFacts, useTeamSendBlocked } from "./team/team-task.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -252,6 +253,7 @@ function ThreadView({
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
   const composerKey = `${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`;
+  const teamSendBlocked = useTeamSendBlocked(thread);
   useEffect(() => {
     // Handed over once; opening this conversation again starts from its own draft.
     setRestoredDraft(null);
@@ -1132,6 +1134,7 @@ function ThreadView({
           ) : null}
         </div>
         <ThreadServerApprovals threadId={thread.id} />
+        <TeamTaskFacts thread={thread} />
         <RequestStack
           disabled={!canRespond}
           items={dockedRequests}
@@ -1220,6 +1223,7 @@ function ThreadView({
             }
             restoredDraft={restoredDraft?.composer === composerKey ? restoredDraft.restore : null}
             running={stopTarget !== null}
+            sendBlocked={teamSendBlocked}
             stopping={activity === "stopping"}
             threadId={thread.id}
             footerExtras={
