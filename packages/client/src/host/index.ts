@@ -54,7 +54,7 @@ export * from "./navigation-input.js";
 export * from "./computer-view-retention.js";
 export * from "./action-review.js";
 export * from "./browser-tab-strip.js";
-export * from "./browser-tab-sections.js";
+export * from "./tab-list.js";
 
 export * from "./browser-preferences.js";
 

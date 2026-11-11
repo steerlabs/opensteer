@@ -26,10 +26,18 @@ import type {
   DesktopDeploymentSummary,
 } from "@opensteer/protocol/desktop";
 import {
-  browserTabSections,
-  tabSectionPlaceTitle,
+  allTabs,
   browserTabStrip,
   browserSiteLabel,
+  devicesElsewhere,
+  placeDeviceLabels,
+  sameDevicesElsewhere,
+  tabListHomeId,
+  tabDeviceChoice,
+  tabFilterActive,
+  tabFilterEmptyWords,
+  tabMatchesFilter,
+  type TabFilter,
   describeHostConnection,
   doneDays,
   doneTaskList,
@@ -40,6 +48,7 @@ import {
   requestsWaitingOn,
   taskRowLabel,
   type HostClient,
+  type HostSnapshot,
   type PlaceItem,
   type TaskRow,
 } from "@opensteer/client/host";
@@ -78,15 +87,9 @@ import {
 } from "./workspace/identity.js";
 import { OccupantMarks, useFocusRescue } from "./workspace/occupant-marks.js";
 import { PlaceMark } from "./workspace/place-mark.js";
+import type { DeviceElsewhere } from "@opensteer/client/computers";
+import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
-import {
-  TabSectionHead,
-  groupRowKey,
-  sectionPlaces,
-  sortRowsOfSections,
-  splitGroups,
-  useFoldedTabSections,
-} from "./sidebar-tab-sections.js";
 import {
   homeThreadKind,
   useTaskDirectory,
@@ -111,14 +114,7 @@ import { RowMotion } from "./workspace/row-motion.js";
 import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
-import {
-  TabFilter,
-  allTabs,
-  tabFilterActive,
-  tabFilterEmptyWords,
-  tabMatchesFilter,
-  type TabFilterValue,
-} from "./workspace/tab-filter.js";
+import { TabFilterControl } from "./workspace/tab-filter.js";
 import type { SortRow } from "./workspace/tab-sort.js";
 import { useTabSort, type TabSortHandle } from "./workspace/use-tab-sort.js";
 import { useTaskSnapshot } from "./task-rows.js";
@@ -182,10 +178,26 @@ export function Sidebar({
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const hereId = useHereId();
   const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
+  const selectHome = useCallback(
+    (snapshot: HostSnapshot) => tabListHomeId(snapshot, hereId),
+    [hereId],
+  );
+  const homeId = useHostSelector(hostClient, selectHome);
+  const selectElsewhere = useCallback(
+    (snapshot: HostSnapshot) => devicesElsewhere(snapshot.machines, homeId),
+    [homeId],
+  );
+  // Labels keep their identity while their devices stay the same, so rows stay undrawn.
+  const elsewhere = useHostSelector(hostClient, selectElsewhere, sameDevicesElsewhere);
   const pendingTabs = useHostSelector(hostClient, (snapshot) => snapshot.pendingBrowserTabs);
-  const profiles = useHostSelector(hostClient, (snapshot) => snapshot.browserProfiles);
-  const [foldedSections, toggleSection] = useFoldedTabSections(deploymentId, userId);
-  const [filter, setFilter] = useState<TabFilterValue>(allTabs);
+  const [chosenFilter, setFilter] = useState<TabFilter>(allTabs);
+  const deviceChoice = useMemo(
+    () => tabDeviceChoice({ places, machines, hereId, homeId, filter: chosenFilter }),
+    [places, machines, hereId, homeId, chosenFilter],
+  );
+  const filter = deviceChoice.filter;
+  const filterDeviceName =
+    deviceChoice.devices.find(({ id }) => id === filter.device)?.name ?? null;
   const [heldTabs, setHeldTabs] = useState<{
     readonly height: number;
     readonly rows: number;
@@ -197,7 +209,7 @@ export function Sidebar({
   const tabsSection = useRef<HTMLElement | null>(null);
   // A filter draws fewer rows in the box all of them took, its floor included, so the line
   // between Tasks and Tabs stays put until the filter clears.
-  const filterTabs = (next: TabFilterValue) => {
+  const filterTabs = (next: TabFilter) => {
     if (!tabFilterActive(next)) setHeldTabs(null);
     else if (!tabFilterActive(filter) && tabsSection.current)
       setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: places.length });
@@ -216,24 +228,20 @@ export function Sidebar({
     [places, filter, shownPlaceKey],
   );
   const liveStrip = browserTabStrip(filteredPlaces, layout);
+  const deviceLabels = useMemo(
+    () => placeDeviceLabels(filteredPlaces, elsewhere),
+    [filteredPlaces, elsewhere],
+  );
+  const searchDeviceLabels = useMemo(
+    () => placeDeviceLabels(places, elsewhere),
+    [places, elsewhere],
+  );
   const searchStrip = browserTabStrip(places, layout);
   const toast = useToast();
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
   const announcer = useRef<HTMLParagraphElement | null>(null);
-  const sectionsOf = (from: BrowserTabStrip) =>
-    browserTabSections({ strip: from, machines, hereId, pending: pendingTabs, profiles });
-  const liveSections = useMemo(
-    () =>
-      browserTabSections({ strip: liveStrip, machines, hereId, pending: pendingTabs, profiles }),
-    [liveStrip, machines, hereId, pendingTabs, profiles],
-  );
-  // Without headings there is nothing to fold.
-  const liveFolded = liveSections.headed ? foldedSections : noFolds;
-  const sortRows = useMemo(
-    () => sortRowsOfSections(liveSections.sections, liveFolded),
-    [liveSections, liveFolded],
-  );
+  const sortRows = useMemo(() => sortRowsOf(liveStrip), [liveStrip]);
   const sort = useTabSort({
     strip: liveStrip,
     rows: sortRows,
@@ -254,11 +262,9 @@ export function Sidebar({
   useNativeBrowserOverlay(sort.lift !== null);
   // Until the drop the list stands as it was when the row lifted.
   const strip = sort.lift?.strip ?? liveStrip;
-  const tabSections = strip === liveStrip ? liveSections : sectionsOf(strip);
-  const folded = tabSections.headed ? foldedSections : noFolds;
   const tabIndices = useMemo(
-    () => new Map(tabSections.ordered.map((place, index) => [place.key, index])),
-    [tabSections.ordered],
+    () => new Map(strip.ordered.map((place, index) => [place.key, index])),
+    [strip.ordered],
   );
   const [editingGroup, editGroup] = useState<string | null>(null);
   const presentations = useBrowserPresentations(places);
@@ -572,30 +578,16 @@ export function Sidebar({
     );
   };
   const startPageOpen = workspace.selection.kind === "launcher";
-  const split = splitGroups(tabSections.sections);
-  // Every member of each group, wherever it runs: what the group's own actions act on.
-  const groupMembers = new Map(
-    strip.web.flatMap((row) => (row.kind === "group" ? [[row.group.id, row.places] as const] : [])),
-  );
   // The order the tab list shows; a change slides its rows to their new places.
   const motionSignature = [
-    ...tabSections.unplaced.map((pending) => `pending:${pending.idempotencyKey}`),
-    ...tabSections.sections.flatMap((section) => [
-      ...(tabSections.headed ? [`device:${section.key}`] : []),
-      ...(folded.has(section.key)
-        ? []
-        : [
-            ...section.web.map((row) => {
-              if (row.kind === "place") return row.place.key;
-              const key = groupRowKey(row.group.id, section.key, split);
-              return row.group.collapsed || key === sort.lift?.key
-                ? key
-                : `${key}:${row.places.map((place) => place.key).join(",")}`;
-            }),
-            ...section.pending.map((pending) => `pending:${pending.idempotencyKey}`),
-            ...section.native.map((place) => place.key),
-          ]),
-    ]),
+    ...strip.web.map((row) =>
+      row.kind === "place"
+        ? row.place.key
+        : row.group.collapsed || row.group.id === sort.lift?.groupId
+          ? row.group.id
+          : `${row.group.id}:${row.places.map((place) => place.key).join(",")}`,
+    ),
+    ...strip.native.map((place) => place.key),
     startPageOpen ? "start" : "new",
   ].join("|");
   const newTab = () => {
@@ -612,11 +604,11 @@ export function Sidebar({
         groupColor={groupColor}
         onEditGroup={editGroup}
         active={place.key === shownPlaceKey}
-        headed={tabSections.headed}
         badge={presentations.badges ? place.identity : null}
         directory={directory}
         hostClient={hostClient}
         index={index}
+        device={deviceLabels.get(place.key) ?? null}
         hereId={hereId}
         key={place.key}
         onOpen={openPlace}
@@ -628,10 +620,6 @@ export function Sidebar({
       />
     );
   };
-  const devices = new Set(
-    places.flatMap((place) => (place.device ? [place.device.machineId] : [])),
-  );
-  const namedDevices = devices.size >= 2;
 
   return (
     <nav
@@ -686,7 +674,7 @@ export function Sidebar({
         inputRef={searchRef}
         listsRef={listsRef}
         listsStyle={{ "--side-tasks-share": tasksShare } as CSSProperties}
-        namedDevices={namedDevices}
+        deviceLabels={searchDeviceLabels}
         onClose={closeSearch}
         onLoadMore={loadMore}
         onOpenPlace={openPlace}
@@ -951,7 +939,12 @@ export function Sidebar({
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
               Tabs
             </h2>
-            <TabFilter onChange={filterTabs} places={places} value={filter} />
+            <TabFilterControl
+              devices={deviceChoice.devices}
+              onChange={filterTabs}
+              places={places}
+              value={filter}
+            />
             {places.length > 0 ? (
               <button
                 aria-label="New tab"
@@ -974,73 +967,43 @@ export function Sidebar({
               {tabFilterActive(filter) &&
               !filteredPlaces.some((place) => tabMatchesFilter(place, filter)) ? (
                 <li className="sidebar__empty" data-motion-key="filter-empty" role="status">
-                  {tabFilterEmptyWords(filter)}
+                  {`${tabFilterEmptyWords(filter, filterDeviceName)}.`}
                 </li>
               ) : null}
+              {strip.web.flatMap((row) => {
+                if (row.kind === "place")
+                  return [tabRow(row.place, tabIndices.get(row.place.key)!)];
+                // A group on the move folds its tabs under its header until it lands.
+                const folded = row.group.id === sort.lift?.groupId;
+                return [
+                  <TabGroupHeader
+                    active={row.places.some((place) => place.key === shownPlaceKey)}
+                    directory={directory}
+                    editing={editingGroup === row.group.id}
+                    group={folded ? { ...row.group, collapsed: true } : row.group}
+                    hostClient={hostClient}
+                    key={row.group.id}
+                    onEdit={editGroup}
+                    onOpenMark={openMark}
+                    places={row.places}
+                    sort={sort.handle}
+                  />,
+                  ...(row.group.collapsed || folded
+                    ? []
+                    : row.places.map((place) =>
+                        tabRow(place, tabIndices.get(place.key)!, row.group.color),
+                      )),
+                ];
+              })}
               <PendingBrowserTabRows
                 hostClient={hostClient}
                 onOpen={onCloseMobile}
-                rows={tabSections.unplaced}
+                rows={pendingTabs ?? []}
               />
-              {tabSections.sections.flatMap((section) => {
-                const shut = folded.has(section.key);
-                const listed = sectionPlaces(section);
-                return [
-                  ...(tabSections.headed
-                    ? [
-                        <TabSectionHead
-                          active={listed.some((place) => place.key === shownPlaceKey)}
-                          directory={directory}
-                          folded={shut}
-                          key={`device:${section.key}`}
-                          onOpenMark={openMark}
-                          onToggle={toggleSection}
-                          places={listed}
-                          section={section}
-                        />,
-                      ]
-                    : []),
-                  ...(shut
-                    ? []
-                    : [
-                        ...section.web.flatMap((row) => {
-                          if (row.kind === "place")
-                            return [tabRow(row.place, tabIndices.get(row.place.key)!)];
-                          const key = groupRowKey(row.group.id, section.key, split);
-                          // A group on the move folds its tabs under its header until it lands.
-                          const moving = key === sort.lift?.key;
-                          return [
-                            <TabGroupHeader
-                              active={row.places.some((place) => place.key === shownPlaceKey)}
-                              directory={directory}
-                              editing={editingGroup === key}
-                              group={moving ? { ...row.group, collapsed: true } : row.group}
-                              groupPlaces={groupMembers.get(row.group.id) ?? row.places}
-                              hostClient={hostClient}
-                              key={key}
-                              onEdit={editGroup}
-                              onOpenMark={openMark}
-                              places={row.places}
-                              rowKey={key}
-                              sort={sort.handle}
-                            />,
-                            ...(row.group.collapsed || moving
-                              ? []
-                              : row.places.map((place) =>
-                                  tabRow(place, tabIndices.get(place.key)!, row.group.color),
-                                )),
-                          ];
-                        }),
-                        <PendingBrowserTabRows
-                          hostClient={hostClient}
-                          key={`pending:${section.key}`}
-                          onOpen={onCloseMobile}
-                          rows={section.pending}
-                        />,
-                        ...section.native.map((place) => tabRow(place, tabIndices.get(place.key)!)),
-                      ]),
-                ];
-              })}
+              {strip.native.length > 0 && strip.web.length > 0 ? (
+                <li aria-hidden className="side-divider" data-motion-key="divider" />
+              ) : null}
+              {strip.native.map((place) => tabRow(place, tabIndices.get(place.key)!))}
               {startPageOpen ? (
                 <li className="side-tab side-tab--start is-active" data-motion-key="start">
                   <button
@@ -1545,8 +1508,8 @@ const TabRowItem = memo(function TabRowItem({
   badge,
   groupColor,
   onEditGroup,
+  device,
   directory,
-  headed,
   hereId,
   highlight,
   hostClient,
@@ -1565,10 +1528,10 @@ const TabRowItem = memo(function TabRowItem({
   readonly active: boolean;
   /** The profile badge on the site's icon, when two or more identities are in use. */
   readonly badge: PlaceItem["identity"];
+  /** The device it runs on, beside its title, while the list names devices. */
+  readonly device: DeviceElsewhere | null;
   readonly directory: TaskDirectory;
-  /** The row stands under its device's heading. */
-  readonly headed: boolean;
-  /** The device this window is on, which a row never names. */
+  /** The device this window is on, which the row's words never name. */
   readonly hereId: string | null;
   readonly highlight: WorkspaceState["highlight"];
   readonly hostClient: HostClient;
@@ -1612,21 +1575,21 @@ const TabRowItem = memo(function TabRowItem({
   useFocusRescue(mainRef, fallbackRef);
   const unavailable = place.availability === "unavailable";
   const site = place.site ? browserSiteLabel(place.site) : null;
-  // Its section's heading shows the device; its name still says it, but only when it is elsewhere.
-  const title = tabSectionPlaceTitle(place, headed);
-  const device =
-    place.device &&
-    place.device.machineId !== hereId &&
-    (place.kind !== "phone" || title !== place.title)
+  // A phone's row is its name already.
+  const elsewhere =
+    place.kind !== "phone" && place.device && place.device.machineId !== hereId
       ? place.device.name
       : null;
-  // The whole destination in words, badge or not: "Q4 numbers – Notion — Work · Mac mini".
-  const where = presentation
-    ? browserWords(presentation, hereId)
-    : place.ownerView
-      ? [device, "View only"].filter(Boolean).join(" · ")
-      : device;
-  const tip = where ? `${title} — ${where}` : title;
+  // The whole destination in words, label or not: "Q4 numbers – Notion — Work · Mac mini · Offline".
+  const where =
+    [
+      presentation ? browserWords(presentation, hereId) : elsewhere,
+      !presentation && place.ownerView ? "View only" : null,
+      device && !device.online ? "Offline" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || null;
+  const tip = where ? `${place.title} — ${where}` : place.title;
   const label = [tip, place.loading ? "loading" : null, unavailable ? "unavailable" : null]
     .filter(Boolean)
     .join(", ");
@@ -1730,7 +1693,8 @@ const TabRowItem = memo(function TabRowItem({
             </span>
           ) : null}
         </span>
-        <span className="side-tab__title">{title}</span>
+        <span className="side-tab__title">{place.title}</span>
+        {device ? <DeviceLabel className="side-tab__device" device={device} /> : null}
       </button>
       <OccupantMarks
         className="side-tab__marks"
@@ -2007,7 +1971,34 @@ function SidebarFooter({
   );
 }
 
-const noFolds: ReadonlySet<string> = new Set();
+/** The tab list's saved web tabs and group headers, as drag-and-drop sees them. */
+function sortRowsOf(strip: BrowserTabStrip): SortRow[] {
+  const tab = (place: PlaceItem, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
+    place.workspaceTab && place.destination.kind === "browser" && place.destination.tabId
+      ? [
+          {
+            kind: "tab",
+            key: place.key,
+            tabId: place.destination.tabId,
+            group: group ? { id: group.groupId, color: group.color } : null,
+          },
+        ]
+      : [];
+  return strip.web.flatMap((row): SortRow[] => {
+    if (row.kind === "place") return tab(row.place, null);
+    const header = {
+      kind: "group",
+      key: row.group.id,
+      groupId: row.group.id,
+      color: row.group.color,
+      collapsed: row.group.collapsed,
+    } as const;
+    return [
+      header,
+      ...(row.group.collapsed ? [] : row.places.flatMap((place) => tab(place, header))),
+    ];
+  });
+}
 
 function rowTitle(strip: BrowserTabStrip, row: SortRow): string {
   if (row.kind === "group") {
