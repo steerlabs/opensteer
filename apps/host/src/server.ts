@@ -445,7 +445,6 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
-  const storageAuthority = await dependencies.store.securityEffectAuthority();
   const threadService = new ThreadService(dependencies);
   const publishWorkspaceEvent =
     dependencies.publishWorkspaceEvent ??
@@ -2823,7 +2822,8 @@ export async function createHostServer(
     phoneUpdates.attach(socket, releaseChallenge);
   });
 
-  app.get(hostInternalRoutePaths.runners, { websocket: true }, (socket) => {
+  app.get(hostInternalRoutePaths.runners, { websocket: true }, async (socket) => {
+    const storageAuthority = await dependencies.store.securityEffectAuthority();
     const releaseChallenge = runnerChallenges.acquire();
     if (!releaseChallenge) {
       socket.close(1013, "Runner authentication capacity reached");
