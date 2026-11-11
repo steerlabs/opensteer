@@ -46,6 +46,7 @@ const acquisitionTimeoutMs = 18_000;
 const cleanupTimeoutMs = 2_000;
 const shutdownTimeoutMs = 5_000;
 export interface BrowserRuntimeOptions {
+  memoryBudgetBytes?: number | undefined;
   initialViewport?: Viewport;
   launcher: BrowserLauncher;
   maxProfileHosts?: number;
@@ -223,7 +224,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly onHostCleanupFailure: NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>;
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
-  private readonly sleeper = new TabSleeper();
+  private readonly sleeper: TabSleeper;
   private shuttingDown = false;
   private readonly attempts = new Set<AbortController>();
   private shutdownResult: Promise<void> | undefined;
@@ -252,6 +253,29 @@ export class BrowserRuntime implements NativePresentationSource {
       throw new TypeError("The initial browser viewport is invalid.");
     }
     this.launcher = options.launcher;
+    this.sleeper = new TabSleeper({
+      memoryBudgetBytes: options.memoryBudgetBytes,
+      hostCost: this.launcher.hostCost,
+      hosts: () =>
+        [...this.hosts.values()].map((host) => ({
+          key: host.identity.key,
+          kind: host.identity.kind,
+          lastUsed: host.lastUsed,
+          sessionIds: [...host.sessions.keys()],
+          blocked:
+            !host.acceptingSessions ||
+            host.holdUntilClosed ||
+            host.stateMutations.size > 0 ||
+            [...host.sessions.values()].some(
+              (session) =>
+                session.presentations.size > 0 || host.signIns.holdsSession(session.sessionId),
+            ),
+        })),
+      retireHost: (key) =>
+        this.retireHost(key).catch((error: unknown) =>
+          this.reportHostCleanupFailure("fresh", "retire", error),
+        ),
+    });
     this.acknowledgeProfileReady = options.acknowledgeProfileReady ?? acknowledgeNativeProfileReady;
     this.onOpenTiming = options.onOpenTiming ?? (() => {});
     this.onHostCleanupFailure =
@@ -1210,7 +1234,7 @@ export class BrowserRuntime implements NativePresentationSource {
         await settleCleanup([
           ...closeSession(active),
           () => active.files.dispose(),
-          ...((closeHost && host.identity.kind === "fresh"
+          ...((closeHost && (host.identity.kind === "fresh" || this.launcher.hostCost === "process")
             ? [() => this.cleanupHost(host)]
             : []) satisfies (() => Promise<void>)[]),
         ]);
@@ -1224,6 +1248,19 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.lanes.run(key, async () => {
       const host = this.hosts.get(key);
       if (!host || host.generation !== generation) return;
+      await this.cleanupHost(host);
+      this.updateState();
+    });
+  }
+  private retireHost(key: string): Promise<void> {
+    const host = [...this.hosts.values()].find((host) => host.identity.key === key);
+    if (!host || this.launcher.hostCost !== "process") return Promise.resolve();
+    return this.lanes.run(host.identity.key, async () => {
+      if (this.hosts.get(host.identity.key) !== host || !this.sleeper.canRetireHost(key)) return;
+      host.acceptingSessions = false;
+      await Promise.all(
+        [...host.sessions.values()].map((session) => session.controller.close("retired")),
+      );
       await this.cleanupHost(host);
       this.updateState();
     });

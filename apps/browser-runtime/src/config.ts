@@ -1,4 +1,5 @@
 import { RuntimeModeSchema, type RuntimeMode } from "@opensteer/core";
+import { browserMemoryBudgetBytes } from "@opensteer/browser-runtime-core";
 import { validateRunnerTransport } from "@opensteer/runner-client";
 import { requiredEnvironmentValue as required } from "@opensteer/shared/envParsing";
 import { createPublicKey, type KeyObject } from "node:crypto";
@@ -20,6 +21,7 @@ export const browserRuntimeEnvironmentKeys = {
 } as const;
 
 export interface BrowserRuntimeConfig {
+  memoryBudgetBytes?: number | undefined;
   /** Present when this process is itself a browser-only Runner. */
   relay:
     | {
@@ -121,6 +123,7 @@ export function readBrowserRuntimeConfig(
     });
   }
   return {
+    memoryBudgetBytes: browserMemoryBudgetBytes(environment.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
     chromiumSandbox,
     deploymentMode,
     bridgeToken,

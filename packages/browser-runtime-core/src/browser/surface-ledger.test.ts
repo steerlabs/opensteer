@@ -34,6 +34,29 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
+  it("rechecks engine protections after capture and allows a noopener sibling", async () => {
+    const page = new FakePage({ url: "https://parent.test/" });
+    const popup = new FakePage({ url: "https://popup.test/", opener: page });
+    const ledger = new SurfaceLedger(new FakeContext([page, popup]));
+    await ledger.start();
+    const record = [...ledger.policyRecords()].find((record) => record.live?.page === page)!;
+    try {
+      expect(await ledger.sleep(record.id, () => null)).toBe(false);
+      popup.hasOpenerAccess = () => false;
+      page.captureRestore = async () => {
+        page.keepAwake = () => "download";
+        return {};
+      };
+      expect(await ledger.sleep(record.id, () => null)).toBe(false);
+      expect(record.live).not.toBeNull();
+      page.captureRestore = async () => ({});
+      page.keepAwake = () => null;
+      expect(await ledger.sleep(record.id, () => null)).toBe(true);
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
   it("sleeps a lease without closing its record and wakes once with the same identity", async () => {
     const page = new FakePage({ url: "https://sleep.test/", title: "Keep me" });
     const context = new FakeContext([page]);
@@ -175,7 +198,11 @@ describe("SurfaceLedger", () => {
       .spyOn(context, "createPage")
       .mockRejectedValueOnce(new Error("creation refused"));
     try {
-      await expect(ledger.wake(id)).rejects.toThrow("creation refused");
+      await expect(ledger.wake(id)).rejects.toMatchObject({
+        code: "conflict",
+        retryable: true,
+        cause: { message: "creation refused" },
+      });
       expect(ledger.stateOf(id)).toBe("suspended");
       const resumed = await ledger.wake(id);
       expect(resumed.surface.id).toBe(id);

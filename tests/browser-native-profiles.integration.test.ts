@@ -214,10 +214,10 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   const broadNotices = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
   const browser = await browserProcess();
   let journeyAssertionsComplete = false;
-  let warmTimings: BrowserOpenTiming[] = [];
+  let reopenTimings: BrowserOpenTiming[] = [];
   let coldTimings: BrowserOpenTiming[] = [];
   let coldNativeTimings: NativeProfileOpenTiming[] = [];
-  let warmWallMs: number | undefined;
+  let reopenWallMs: number | undefined;
   let coldWallMs: number | undefined;
   addCleanup(
     "native profile timing receipts",
@@ -227,12 +227,12 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
         JSON.stringify(
           {
             journeyAssertionsComplete,
-            warm: warmTimings,
+            reopen: reopenTimings,
             cold: coldTimings,
             timings: browser.timings,
             nativeTimings: browser.nativeTimings,
             coldNativeTimings,
-            warmWallMs,
+            reopenWallMs,
             coldWallMs,
           },
           null,
@@ -350,17 +350,22 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   await close(converted);
   await vi.waitFor(
     async () =>
-      expect((await browser.health()).sessionCount, "Closed profile still holds a session").toBe(0),
+      expect(
+        await browser.health(),
+        "Closed profile still holds a session or process",
+      ).toMatchObject({ sessionCount: 0, profileHostCount: 0 }),
     { timeout: 5000 },
   );
-  const warmStart = browser.timings.length;
-  const warmWallStart = performance.now();
-  const warm = await open(profile.id, "/read?id=warm");
-  warmWallMs = performance.now() - warmWallStart;
-  expect(await site.observed("warm")).toEqual(expected);
-  expect(browser.timings.some((timing) => timing.acquisition === "warm")).toBe(true);
-  warmTimings = browser.timings.slice(warmStart);
-  await close(warm);
+  const reopenStart = browser.timings.length;
+  const reopenWallStart = performance.now();
+  const reopened = await open(profile.id, "/read?id=reopen");
+  reopenWallMs = performance.now() - reopenWallStart;
+  expect(await site.observed("reopen")).toEqual(expected);
+  expect(browser.timings.slice(reopenStart).some((timing) => timing.acquisition === "cold")).toBe(
+    true,
+  );
+  reopenTimings = browser.timings.slice(reopenStart);
+  await close(reopened);
   const visitsBeforeRestart = site.visits();
   await browser.close();
   await browser.start();

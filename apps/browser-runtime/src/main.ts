@@ -55,6 +55,7 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   });
   await launcher.prepare();
   const runtimeOptions: BrowserRuntimeOptions = {
+    memoryBudgetBytes: config.memoryBudgetBytes,
     localProfiles: { root: config.profileRoot },
     acknowledgeProfileReady: nativeProfileReadyClient(config.profileReadyTrustedHttpOrigin),
     launcher,

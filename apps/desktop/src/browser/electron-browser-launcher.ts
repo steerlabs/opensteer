@@ -36,6 +36,7 @@ import {
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   app,
+  ipcMain,
   BaseWindow,
   session as electronSession,
   screen,
@@ -53,6 +54,7 @@ import path from "node:path";
 import { z } from "zod";
 import { desktopBrowserAppShortcut } from "../app/application-menu.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
+import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-restore.js";
 import {
   applyBrowserSessionPolicy,
   bindBrowserSessionRequestGate,
@@ -102,7 +104,7 @@ interface ElectronBrowserLauncherOptions {
   readonly onLocalProfileDiagnostic?: (diagnostic: ElectronLocalProfileDiagnostic) => void;
   readonly authenticator?: PasskeyAuthenticator;
   readonly clipboard?: EngineClipboard;
-  readonly downloads: Pick<DesktopDownloads, "accept">;
+  readonly downloads: Pick<DesktopDownloads, "accept"> & Partial<Pick<DesktopDownloads, "active">>;
   readonly localProfileRoot?: string;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -120,9 +122,12 @@ export function electronBrowserPartition(partitionKey: BrowserPartitionKey): str
 
 /** Electron-native BrowserEngine used only by the connected desktop composition root. */
 export class ElectronBrowserLauncher implements BrowserLauncher {
+  readonly hostCost = "partition";
+  readonly #wakeSeeds: WakeSeeds;
+  readonly #methods = new Map<number, string>();
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
-  readonly #downloads: Pick<DesktopDownloads, "accept">;
+  readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
   readonly #configuredSessions = new WeakSet<Session>();
   readonly #pagePolicyPreloadPath: string;
   readonly #views: ElectronBrowserViewPool;
@@ -157,6 +162,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     this.#clipboard = options.clipboard;
     this.#downloads = options.downloads;
     this.#views = new ElectronBrowserViewPool();
+    this.#wakeSeeds = new WakeSeeds(ipcMain);
   }
 
   prepare(): Promise<void> {
@@ -170,6 +176,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
 
   /** Cancels native work when the owning shutdown deadline expires. */
   close(): void {
+    this.#wakeSeeds.close();
+    this.#methods.clear();
     this.#views.close();
   }
 
@@ -255,6 +263,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     this.#configureSession(profileSession, authenticator !== undefined);
     await Promise.all([profileSession.clearCache(), profileSession.clearStorageData()]);
     const context = new ElectronBrowserContext({
+      wakeSeeds: this.#wakeSeeds,
+      protection: (contents) => this.#protection(contents),
       createView: (options, opener) => this.#views.create(options, opener, request.initialViewport),
       createHelper: (options) => this.#views.createHelper(options),
       profileSession,
@@ -280,6 +290,8 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     onPageTiming?: PageOpenTiming,
   ): ElectronBrowserContext {
     return new ElectronBrowserContext({
+      wakeSeeds: this.#wakeSeeds,
+      protection: (contents) => this.#protection(contents),
       createView: (options, opener, timing, startRenderer) =>
         this.#views.create(options, opener, viewport, timing, startRenderer),
       createHelper: (options) => this.#views.createHelper(options),
@@ -301,12 +313,24 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       return;
     }
     applyBrowserSessionPolicy(profileSession, {
+      onMainFrameRequest: (id, method) => {
+        if (this.#methods.has(id)) this.#methods.set(id, method);
+      },
       provider,
       downloads: this.#downloads,
       pagePolicyPreloadPath: this.#pagePolicyPreloadPath,
       ...(requestGate ? { requestGate } : {}),
     });
     this.#configuredSessions.add(profileSession);
+  }
+
+  #protection(contents: WebContents) {
+    this.#methods.set(contents.id, "GET");
+    contents.once("destroyed", () => this.#methods.delete(contents.id));
+    return {
+      method: () => this.#methods.get(contents.id) ?? "GET",
+      downloading: () => this.#downloads.active?.(contents.id) === true,
+    };
   }
 }
 
@@ -609,6 +633,8 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 }
 
 interface ElectronBrowserContextOptions {
+  readonly wakeSeeds: WakeSeeds;
+  readonly protection: (contents: WebContents) => { method(): string; downloading(): boolean };
   readonly authenticator?: PasskeyAuthenticator;
   readonly createView: (
     options: ElectronBrowserViewOptions,
@@ -623,6 +649,7 @@ interface ElectronBrowserContextOptions {
 }
 
 class ElectronBrowserContext implements BrowserContext {
+  readonly #options: ElectronBrowserContextOptions;
   isConnected(): boolean {
     return !this.#closed;
   }
@@ -646,6 +673,7 @@ class ElectronBrowserContext implements BrowserContext {
   };
 
   constructor(options: ElectronBrowserContextOptions) {
+    this.#options = options;
     this.#authenticator = options.authenticator;
     this.#providerConfig = options.authenticator ? createPasskeyProviderConfig() : undefined;
     this.#createView = options.createView;
@@ -663,29 +691,36 @@ class ElectronBrowserContext implements BrowserContext {
     return [...this.#pages].filter((page) => !page.isClosed());
   }
 
-  async createPage(): Promise<BrowserPage> {
+  async createPage(options?: { readonly restore?: unknown }): Promise<BrowserPage> {
     await this.#localProfile?.ready();
     this.#assertOpen();
     this.#localProfile?.assertAdmitted();
+    const restore =
+      options?.restore === undefined ? null : ElectronPageRestoreSchema.parse(options.restore);
     const timing = this.#onPageTiming;
     this.#onPageTiming = undefined;
     timing?.("page-create-started");
     const page = this.#newPage(
       null,
       {
-        webPreferences: this.#securePreferences(),
+        webPreferences: this.#securePreferences(restore !== null),
       },
       timing,
-      this.#localProfile !== undefined,
+      restore === null && this.#localProfile !== undefined,
     );
     try {
       // Electron needs a renderer to answer Page.enable. Start it while target
       // identity and ledger ownership are established; the real navigation may
       // supersede this blank load before it finishes.
-      const loading = page.initialLoad ?? page.loadInitialUrl("about:blank");
-      if (this.#localProfile) {
-        void loading.then(() => timing?.("blank-loaded")).catch(() => undefined);
-      } else await loading;
+      if (restore) {
+        this.#options.wakeSeeds.offer(page.view.webContents, restore.sessionStorage);
+        page.restoreHistory(restore.entries, restore.index);
+      } else {
+        const loading = page.initialLoad ?? page.loadInitialUrl("about:blank");
+        if (this.#localProfile) {
+          void loading.then(() => timing?.("blank-loaded")).catch(() => undefined);
+        } else await loading;
+      }
       await this.#announcePage(page);
       timing?.("page-announced");
       timing?.("first-page-created");
@@ -791,6 +826,7 @@ class ElectronBrowserContext implements BrowserContext {
       this.#authenticator,
       this.#providerConfig,
       timing,
+      this.#options.protection,
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -833,15 +869,14 @@ class ElectronBrowserContext implements BrowserContext {
     this.#events.emit("page", page);
   }
 
-  #securePreferences(): WebPreferences {
+  #securePreferences(wake = false): WebPreferences {
     return {
-      ...(this.#providerConfig
-        ? {
-            additionalArguments: [
-              `--opensteer-passkey-provider=${JSON.stringify(this.#providerConfig)}`,
-            ],
-          }
-        : {}),
+      additionalArguments: [
+        ...(wake ? ["--opensteer-wake"] : []),
+        ...(this.#providerConfig
+          ? [`--opensteer-passkey-provider=${JSON.stringify(this.#providerConfig)}`]
+          : []),
+      ],
       allowRunningInsecureContent: false,
       backgroundThrottling: true,
       contextIsolation: true,
@@ -910,6 +945,10 @@ class ElectronBrowserContext implements BrowserContext {
 }
 
 class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
+  readonly #protection: { method(): string; downloading(): boolean };
+  #documentMethod = "GET";
+  #mediaPlaying = false;
+  #restore: Promise<void> | undefined;
   #cursor: import("@opensteer/protocol/browser").BrowserCursor = "default";
   readonly #cursorListeners = new Set<
     (cursor: import("@opensteer/protocol/browser").BrowserCursor | null) => void
@@ -999,11 +1038,16 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     authenticator?: PasskeyAuthenticator,
     providerConfig?: BrowserPagePolicyConfig,
     timing?: PageOpenTiming,
+    protection: ElectronBrowserContextOptions["protection"] = () => ({
+      method: () => "GET",
+      downloading: () => false,
+    }),
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
     this.#restingHost = host;
     this.#webContents = view.webContents;
+    this.#protection = protection(view.webContents);
     // Electron installs a native message-box listener even with Page enabled.
     // The debugger and ledger own these dialogs for the page's entire lifetime.
     view.webContents.removeAllListeners("-run-dialog");
@@ -1152,14 +1196,23 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       this.#fullscreen = false;
     });
     view.webContents.on("did-navigate", () => {
+      this.#documentMethod = this.#protection.method();
+      this.#mediaPlaying = false;
       this.#invalidateCursor();
       void this.invalidateSurface().catch(() => undefined);
+    });
+    view.webContents.on("media-started-playing", () => {
+      this.#mediaPlaying = true;
+    });
+    view.webContents.on("media-paused", () => {
+      this.#mediaPlaying = false;
     });
     view.webContents.on("render-process-gone", () => {
       this.#invalidateCursor();
       // The hub rejects placement while crashed; navigation can recover it.
       this.#cancelPaint("crash");
       this.#fullscreen = false;
+      this.#mediaPlaying = false;
       this.#contextMenuTrigger = null;
       this.#contextMenuCandidate = null;
     });
@@ -1508,6 +1561,77 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
 
   isFullscreen(): boolean {
     return this.#fullscreen;
+  }
+
+  keepAwake(): import("@opensteer/browser-runtime-core").KeepAwakeReason | null {
+    if (!["GET", "HEAD"].includes(this.#documentMethod)) return "post";
+    if (this.#protection.downloading()) return "download";
+    if (this.#webContents.isCurrentlyAudible() || this.#mediaPlaying) return "media";
+    if (this.#fullscreen) return "fullscreen";
+    if (this.#webContents.isBeingCaptured()) return "capturing";
+    return null;
+  }
+
+  hasOpenerAccess(): boolean {
+    return this.#webContents.opener !== null;
+  }
+
+  restoreHistory(
+    entries: z.infer<typeof ElectronPageRestoreSchema>["entries"],
+    index: number,
+  ): void {
+    this.#restore = this.#webContents.navigationHistory.restore({
+      entries: entries.map(({ url, title, pageState }) => ({
+        url,
+        title,
+        ...(pageState === undefined ? {} : { pageState }),
+      })),
+      index,
+    });
+    void this.#restore.catch(() => this.close()).catch(() => undefined);
+  }
+
+  async captureRestore(): Promise<unknown | null> {
+    const cdp = await this.cdp();
+    const frame = z
+      .object({ frameTree: z.object({ frame: z.object({ id: z.string() }) }) })
+      .parse(await cdp.send("Page.getFrameTree"));
+    const world = z.object({ executionContextId: z.number() }).parse(
+      await cdp.send("Page.createIsolatedWorld", {
+        frameId: frame.frameTree.frame.id,
+        worldName: "opensteer-restore",
+      }),
+    );
+    const result = z
+      .object({
+        result: z.object({ value: z.unknown().optional() }),
+        exceptionDetails: z.unknown().optional(),
+      })
+      .parse(
+        await cdp.send("Runtime.evaluate", {
+          contextId: world.executionContextId,
+          returnByValue: true,
+          expression: `(() => {
+        if (location.origin === 'null') return null;
+        const items = [];
+        let bytes = 0;
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const key = sessionStorage.key(i);
+          const value = sessionStorage.getItem(key);
+          bytes += new TextEncoder().encode(JSON.stringify([key, value])).length;
+          if (bytes > 262144) throw new Error('Session storage exceeds restore limit');
+          items.push([key, value]);
+        }
+        return { origin: location.origin, items };
+      })()`,
+        }),
+      );
+    if (result.exceptionDetails) return null;
+    return boundPageRestore({
+      entries: this.#webContents.navigationHistory.getAllEntries(),
+      index: this.#webContents.navigationHistory.getActiveIndex(),
+      sessionStorage: ElectronPageRestoreSchema.shape.sessionStorage.parse(result.result.value),
+    });
   }
 
   async exitFullscreen(): Promise<void> {
@@ -1882,6 +2006,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   async targetInfo(): Promise<Record<string, unknown>> {
+    await this.#restore;
     return {
       attached: this.#webContents.debugger.isAttached(),
       browserContextId: "opensteer-electron-profile",

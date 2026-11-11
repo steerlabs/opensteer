@@ -7537,6 +7537,54 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
   ]);
 });
 
+it("records a retired Guest closed, saves its tabs and closes viewers gracefully", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+  const saved = new Set(["page-1"]);
+  const suspend = vi.fn(async () => undefined);
+  const recordChanges = vi.fn(
+    async (sessionId: BrowserSessionId, _descriptors: unknown, closed: readonly string[]) => {
+      for (const id of closed) saved.delete(id);
+      return { groupId: sessionId, changed: false, rows: [], closedIds: [...closed] };
+    },
+  );
+  const service = freshService({
+    keys,
+    repository,
+    runtime,
+    workspaceTabs: new Proxy(
+      { suspend, recordChanges },
+      {
+        get: (store, key) =>
+          key === "suspend"
+            ? store.suspend
+            : key === "recordChanges"
+              ? store.recordChanges
+              : async () => undefined,
+      },
+    ) as unknown as WorkspaceTabStore,
+  });
+  const opened = await service.start({ fresh: true, ownerId, workspaceId });
+  const peer = new RecordingPeer("retired-viewer");
+  await service.attach(ownerId, opened.session.id, peer, consumerOptions());
+  runtime.sendServer({ type: "browser.status", state: "closed", reason: "retired" });
+  await vi.waitFor(
+    async () => {
+      expect(
+        (await repository.getBrowserSessionForOwner(opened.session.id, ownerId))?.state,
+        "Retired session never closed",
+      ).toBe("closed");
+      expect(suspend).toHaveBeenCalledWith(opened.session.id);
+    },
+    { timeout: 1000 },
+  );
+  expect(peer.closed?.code).toBe(1000);
+  expect(saved).toEqual(new Set(["page-1"]));
+});
+
 it("closes durable rows only on a change removal, never an interrupted or committed snapshot", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");

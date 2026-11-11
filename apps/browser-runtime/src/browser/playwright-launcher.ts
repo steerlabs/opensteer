@@ -862,6 +862,8 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  private requestMethod = "GET";
+  private documentMethod = "GET";
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
@@ -889,6 +891,43 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+        this.requestMethod = request.method();
+    });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) this.documentMethod = this.requestMethod;
+    });
+  }
+
+  async keepAwake(): Promise<"post" | "media" | null> {
+    if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
+    const cdp = await this.cdp();
+    const { frameTree } = z
+      .object({ frameTree: z.object({ frame: z.object({ id: z.string() }) }) })
+      .parse(await cdp.send("Page.getFrameTree"));
+    const { executionContextId } = z.object({ executionContextId: z.number() }).parse(
+      await cdp.send("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id,
+        worldName: "opensteer-sleep",
+      }),
+    );
+    const result = z.object({ result: z.object({ value: z.boolean() }) }).parse(
+      await cdp.send("Runtime.evaluate", {
+        contextId: executionContextId,
+        returnByValue: true,
+        expression:
+          "[...document.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)",
+      }),
+    );
+    return result.result.value ? "media" : null;
+  }
+
+  async hasOpenerAccess(): Promise<boolean> {
+    const info = z
+      .object({ targetInfo: z.object({ canAccessOpener: z.boolean().optional() }) })
+      .parse(await (await this.cdp()).send("Target.getTargetInfo"));
+    return info.targetInfo.canAccessOpener === true;
   }
 
   async captureViewport({

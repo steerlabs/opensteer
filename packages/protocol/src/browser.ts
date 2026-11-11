@@ -917,6 +917,7 @@ const BaselineBrowserServerMessageSchema = z.discriminatedUnion("type", [
     ...browserBase,
     type: z.literal("browser.status"),
     state: z.enum(["closing", "closed"]),
+    reason: z.literal("retired").optional(),
   }),
   /**
    * The page selection captured when a copy or cut chord reaches the remote

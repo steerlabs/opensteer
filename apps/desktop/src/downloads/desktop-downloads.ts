@@ -16,6 +16,7 @@ import {
 
 const execute = promisify(execFile);
 type Entry = {
+  source: number | undefined;
   view: DesktopDownload;
   item: DownloadItem | null;
   /** Chromium's file while it downloads, alone in its own folder under the staging root. */
@@ -66,7 +67,7 @@ export class DesktopDownloads {
     this.#sessions.add(session);
     // Bytes Chromium writes before a download's path is chosen stay private too.
     session.setDownloadPath(this.#staging);
-    session.on("will-download", (event, item) => {
+    session.on("will-download", (event, item, contents) => {
       if (this.#stopped) {
         event.preventDefault();
         return;
@@ -84,6 +85,7 @@ export class DesktopDownloads {
         resolve = done;
       });
       const entry: Entry = {
+        source: contents?.id,
         view,
         item,
         staged: null,
@@ -140,6 +142,10 @@ export class DesktopDownloads {
     return DesktopDownloadsSnapshotSchema.parse({
       downloads: this.#entries.map((entry) => entry.view),
     });
+  }
+
+  active(webContentsId: number): boolean {
+    return [...this.#transfers].some((entry) => entry.source === webContentsId);
   }
 
   subscribe(listener: (snapshot: DesktopDownloadsSnapshot) => void): () => void {

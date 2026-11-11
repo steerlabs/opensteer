@@ -1,5 +1,6 @@
 import {
   BrowserRuntime,
+  browserMemoryBudgetBytes,
   BrowserRuntimeServer,
   defaultAttachTicketReplayLedgerPath,
   Ed25519AttachTicketVerifier,
@@ -19,7 +20,7 @@ import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
 import { BoundedPersonalLog, RotatingPersonalLog } from "./personal-process-port.js";
 
 export interface LocalBrowserRuntimeOptions {
-  readonly downloads: Pick<DesktopDownloads, "accept">;
+  readonly downloads: Pick<DesktopDownloads, "accept"> & Partial<Pick<DesktopDownloads, "active">>;
   readonly registerPresentationSource?: (source: NativePresentationSource) => () => void;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
@@ -77,6 +78,7 @@ export async function startLocalBrowserRuntime(
     ? { localProfiles: { root: profileRoot } }
     : {};
   const runtime = new BrowserRuntime({
+    memoryBudgetBytes: browserMemoryBudgetBytes(process.env.OPENSTEER_BROWSER_MEMORY_BUDGET_MB),
     onOpenTiming: (timing) =>
       diagnostics.append(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
