@@ -1,0 +1,176 @@
+/* Slack: one channel */
+.sl {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  color: #1d1c1d;
+  font: 13.5px/1.45 var(--mac-font);
+}
+.sl-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 13px;
+  background: #350d36;
+  flex: none;
+}
+.sl-search {
+  position: absolute;
+  left: 50%;
+  width: 260px;
+  padding: 3px 12px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 18%);
+  color: rgb(255 255 255 / 80%);
+  font-size: 12.5px;
+  transform: translateX(-50%);
+}
+.sl-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.sl-side {
+  width: 172px;
+  padding: 10px 8px;
+  background: #3f0e40;
+  color: rgb(255 255 255 / 72%);
+  flex: none;
+}
+.sl-side h6 {
+  margin: 0 8px 8px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+}
+.sl-side .sl-side__group {
+  margin: 12px 8px 2px;
+  color: rgb(255 255 255 / 72%);
+  font-size: 13px;
+  font-weight: 500;
+}
+.sl-side div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.sl-side div.is-on {
+  background: #1164a3;
+  color: #fff;
+}
+.sl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2bac76;
+}
+.sl-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.sl-main header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  height: 44px;
+  padding: 12px 16px 0;
+  border-bottom: 1px solid #e3e3e3;
+  white-space: nowrap;
+  flex: none;
+}
+.sl-main header b {
+  font-size: 15.5px;
+  font-weight: 800;
+}
+.sl-main header span {
+  color: #616061;
+  font-size: 12.5px;
+}
+.sl-thread {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  flex: 1;
+  min-height: 0;
+  padding: 8px 16px;
+  overflow: hidden;
+}
+.sl-msg {
+  display: flex;
+  gap: 9px;
+  padding: 6px 0;
+}
+.sl-msg i {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: var(--v);
+  color: #fff;
+  font: 700 12px/1 var(--mac-font);
+  font-style: normal;
+  flex: none;
+}
+.sl-msg b {
+  font-weight: 800;
+}
+.sl-msg time {
+  margin-left: 8px;
+  color: #616061;
+  font-size: 11.5px;
+}
+.sl-msg p {
+  margin: 0;
+}
+.sl-msg--new {
+  display: none;
+}
+.grp[data-posted] .sl-msg--new {
+  display: flex;
+  animation: fadein 360ms var(--ease-out) both;
+}
+.sl-composer {
+  margin: 0 16px 14px;
+  border: 1px solid #b9b9b9;
+  border-radius: 8px;
+  flex: none;
+}
+.sl-composer p {
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 12px 0;
+}
+.sl-composer p:empty::before {
+  content: "Message #support";
+  color: #868686;
+}
+.sl-composer div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+}
+.sl-composer i {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: #c9c9c9;
+}
+.sl-send {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 24px;
+  margin-left: auto;
+  border-radius: 4px;
+  background: #007a5a;
+  color: #fff;
+  font-size: 11px;
+}

@@ -1,0 +1,1003 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Opensteer</title>
+    <meta
+      name="description"
+      content="Turn your computer into a team of AI employees. Give them real work in the apps and accounts already on your Mac, and steer it all from your phone."
+    />
+    <meta name="theme-color" content="#080808" />
+    <link rel="icon" type="image/png" href="/opensteer.png" />
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="i-check" viewBox="0 0 16 16">
+        <path
+          d="M3.5 8.5l3 3 6-7"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-circle-check" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <path
+          d="M5.2 8.2l1.9 1.9 3.7-4"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-mic" viewBox="0 0 16 16">
+        <rect
+          x="5.75"
+          y="1.75"
+          width="4.5"
+          height="8"
+          rx="2.25"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+        <path
+          d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.25"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="i-up" viewBox="0 0 16 16">
+        <path
+          d="M8 12.5v-9M4 7.5l4-4 4 4"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-lock" viewBox="0 0 16 16">
+        <rect x="3" y="7" width="10" height="7" rx="2" fill="currentColor" />
+        <path
+          d="M5.25 7V5.25a2.75 2.75 0 0 1 5.5 0V7"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+        />
+      </symbol>
+      <symbol id="i-download" viewBox="0 0 16 16">
+        <path
+          d="M8 2v8.5M4.5 7.25L8 10.75l3.5-3.5M2.75 13.25h10.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.7"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-star" viewBox="0 0 16 16">
+        <path
+          d="M8 1.9l1.85 3.75 4.15.6-3 2.92.7 4.13L8 11.35l-3.7 1.95.7-4.13-3-2.92 4.15-.6z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <path
+          d="M8 4.75V8l2.25 1.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="i-mail" viewBox="0 0 16 16">
+        <rect
+          x="2"
+          y="3.5"
+          width="12"
+          height="9"
+          rx="2"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+        <path
+          d="M2.5 4.5L8 8.75l5.5-4.25"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-branch" viewBox="0 0 16 16">
+        <circle cx="4.5" cy="3.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="4.5" cy="12.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <circle cx="11.5" cy="5.5" r="1.75" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <path
+          d="M4.5 5.25v5.5M11.5 7.25c0 2.5-3 2.5-6.25 3.75"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+      </symbol>
+      <symbol id="i-shield" viewBox="0 0 16 16">
+        <path
+          d="M8 1.75l5 2v4c0 3.25-2.25 5.5-5 6.5-2.75-1-5-3.25-5-6.5v-4z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-users" viewBox="0 0 16 16">
+        <circle cx="6" cy="5.5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+        <path
+          d="M1.75 13.5c.5-2.25 2.25-3.5 4.25-3.5s3.75 1.25 4.25 3.5M10.5 3.25a2.5 2.5 0 0 1 0 4.5M12 10.25c1.25.5 2 1.6 2.25 3.25"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="i-server" viewBox="0 0 16 16">
+        <rect
+          x="2.25"
+          y="2.5"
+          width="11.5"
+          height="4.5"
+          rx="1.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+        <rect
+          x="2.25"
+          y="9"
+          width="11.5"
+          height="4.5"
+          rx="1.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+        <circle cx="5" cy="4.75" r=".9" fill="currentColor" />
+        <circle cx="5" cy="11.25" r=".9" fill="currentColor" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 16 16">
+        <rect
+          x="5.25"
+          y="5.25"
+          width="8.5"
+          height="8.5"
+          rx="2"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+        <path
+          d="M10.75 3.5A1.75 1.75 0 0 0 9 2.25H4A1.75 1.75 0 0 0 2.25 4v5A1.75 1.75 0 0 0 3.5 10.75"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+        />
+      </symbol>
+      <symbol id="i-cloudoff" viewBox="0 0 16 16">
+        <path
+          d="M4.5 12.5h7a3 3 0 0 0 .4-5.97A4.5 4.5 0 0 0 3.6 6.6 3 3 0 0 0 4.5 12.5zM2 2l12 12"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="i-xmark" viewBox="0 0 16 16">
+        <path
+          d="M4.5 4.5l7 7M11.5 4.5l-7 7"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="i-pause" viewBox="0 0 16 16">
+        <path
+          d="M5.5 3.5v9M10.5 3.5v9"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <defs>
+        <linearGradient id="dg-blue" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#5cc1ff" />
+          <stop offset="1" stop-color="#1a6fe8" />
+        </linearGradient>
+        <linearGradient id="dg-sky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffffff" />
+          <stop offset="1" stop-color="#dfe6ee" />
+        </linearGradient>
+        <linearGradient id="dg-green" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#5fe07e" />
+          <stop offset="1" stop-color="#18a844" />
+        </linearGradient>
+        <linearGradient id="dg-teal" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#58e2c4" />
+          <stop offset="1" stop-color="#119a8a" />
+        </linearGradient>
+        <linearGradient id="dg-dark" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#3a3a3e" />
+          <stop offset="1" stop-color="#101012" />
+        </linearGradient>
+        <linearGradient id="dg-os" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#262423" />
+          <stop offset="1" stop-color="#090909" />
+        </linearGradient>
+        <linearGradient id="dg-orb" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#dcdcdc" />
+          <stop offset="1" stop-color="#e9c3b5" />
+        </linearGradient>
+        <linearGradient id="dg-globe" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#6fd0ff" />
+          <stop offset="1" stop-color="#2557e6" />
+        </linearGradient>
+      </defs>
+      <symbol id="d-files" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-blue)" />
+        <path
+          d="M11 17.5a2.5 2.5 0 0 1 2.5-2.5h6.2l3 3.2h11.8a2.5 2.5 0 0 1 2.5 2.5V31a2.5 2.5 0 0 1-2.5 2.5h-21A2.5 2.5 0 0 1 11 31z"
+          fill="#fff"
+        />
+        <path d="M11 22h26" stroke="#bfe0ff" stroke-width="1.4" />
+        <rect
+          x="2.5"
+          y="2.5"
+          width="43"
+          height="43"
+          rx="10"
+          fill="none"
+          stroke="rgb(255 255 255 / 35%)"
+        />
+      </symbol>
+      <symbol id="d-web" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-sky)" />
+        <circle cx="24" cy="24" r="14.5" fill="url(#dg-globe)" />
+        <path
+          d="M9.5 24h29M24 9.5c-6.5 5-6.5 24 0 29M24 9.5c6.5 5 6.500 24 0 29M12 16.500c7 3 17 3 24 0M12 31.500c7-3 17-3 24 0"
+          fill="none"
+          stroke="#fff"
+          stroke-width="1.3"
+          opacity="0.9"
+        />
+      </symbol>
+      <symbol id="d-mail" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-blue)" />
+        <rect x="9.500" y="14.500" width="29" height="19.500" rx="3.500" fill="#fff" />
+        <path
+          d="M10.500 16.500l13.500 10 13.500-10"
+          fill="none"
+          stroke="#3b8ef0"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="d-cols" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-green)" />
+        <rect x="10" y="12" width="28" height="24" rx="3" fill="#fff" />
+        <path
+          d="M10 19h28M10 25h28M10 31h28M19.500 12v24M29 12v24"
+          stroke="#22a850"
+          stroke-width="1.3"
+        />
+        <rect x="10" y="12" width="28" height="7" rx="3" fill="#c9f3d5" />
+      </symbol>
+      <symbol id="d-term" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-dark)" />
+        <rect x="6" y="6" width="36" height="36" rx="7" fill="#0b0b0c" stroke="#55555a" />
+        <path
+          d="M13 17l6 5-6 5M22.500 28h9"
+          fill="none"
+          stroke="#f2f2f2"
+          stroke-width="2.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="d-msgs" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-teal)" />
+        <path
+          d="M24 12c-8 0-14 5-14 11.500 0 3.600 1.900 6.800 4.900 8.900L13.500 37l5.800-2.700c1.500.4 3 .6 4.700.6 8 0 14-5 14-11.400S32 12 24 12z"
+          fill="#fff"
+        />
+        <circle cx="18" cy="23.500" r="1.900" fill="#15a595" />
+        <circle cx="24" cy="23.500" r="1.900" fill="#15a595" />
+        <circle cx="30" cy="23.500" r="1.900" fill="#15a595" />
+      </symbol>
+      <symbol id="d-cal" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="#fff" />
+        <path
+          d="M2 12.500A10.500 10.500 0 0 1 12.500 2h23A10.500 10.500 0 0 1 46 12.500V15H2z"
+          fill="#f0453a"
+        />
+        <text
+          x="24"
+          y="12"
+          text-anchor="middle"
+          font-family="-apple-system, Inter, sans-serif"
+          font-size="7.500"
+          font-weight="700"
+          fill="#fff"
+          letter-spacing="0.6"
+        >
+          NOV
+        </text>
+        <text
+          x="24"
+          y="38"
+          text-anchor="middle"
+          font-family="-apple-system, Inter, sans-serif"
+          font-size="22"
+          font-weight="300"
+          fill="#1d1d1f"
+        >
+          10
+        </text>
+      </symbol>
+      <symbol id="d-os" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-os)" />
+        <rect
+          x="2.500"
+          y="2.500"
+          width="43"
+          height="43"
+          rx="10"
+          fill="none"
+          stroke="rgb(255 255 255 / 16%)"
+        />
+        <circle cx="24" cy="24" r="11.500" fill="url(#dg-orb)" />
+        <path
+          d="M14 19a11.500 11.500 0 0 1 20 0"
+          fill="none"
+          stroke="rgb(255 255 255 / 55%)"
+          stroke-width="1"
+        />
+      </symbol>
+      <symbol id="d-trash" viewBox="0 0 48 48">
+        <path
+          d="M12 12h24l-2.600 28.500a3 3 0 0 1-3 2.500H17.600a3 3 0 0 1-3-2.500z"
+          fill="rgb(255 255 255 / 24%)"
+          stroke="rgb(255 255 255 / 60%)"
+          stroke-width="1.2"
+        />
+        <ellipse
+          cx="24"
+          cy="12"
+          rx="12"
+          ry="3"
+          fill="rgb(255 255 255 / 30%)"
+          stroke="rgb(255 255 255 / 70%)"
+          stroke-width="1.2"
+        />
+        <path
+          d="M19 18l1 20M24 18v20M29 18l-1 20"
+          stroke="rgb(255 255 255 / 40%)"
+          stroke-width="1.2"
+        />
+      </symbol>
+      <symbol id="m-sys" viewBox="0 0 16 16">
+        <path d="M8 1.500l5.600 3.250v6.500L8 14.500l-5.600-3.250v-6.500z" fill="currentColor" />
+      </symbol>
+      <symbol id="m-wifi" viewBox="0 0 16 16">
+        <path
+          d="M1.500 6.200a9.500 9.500 0 0 1 13 0M3.700 8.600a6.300 6.300 0 0 1 8.600 0M5.900 11a3.100 3.100 0 0 1 4.200 0"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
+        <circle cx="8" cy="13.200" r="1.100" fill="currentColor" />
+      </symbol>
+      <symbol id="m-batt" viewBox="0 0 25 12">
+        <rect
+          x="0.500"
+          y="0.500"
+          width="21"
+          height="11"
+          rx="3.200"
+          fill="none"
+          stroke="currentColor"
+          opacity="0.5"
+        />
+        <rect x="2" y="2" width="15.500" height="8" rx="1.900" fill="currentColor" />
+        <path d="M23 4v4c1-.3 1.500-1 1.500-2S24 4.300 23 4z" fill="currentColor" opacity="0.5" />
+      </symbol>
+      <symbol id="m-search" viewBox="0 0 16 16">
+        <circle
+          cx="6.800"
+          cy="6.800"
+          r="4.600"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+        />
+        <path
+          d="M10.300 10.300l3.700 3.700"
+          stroke="currentColor"
+          stroke-width="1.700"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="m-cc" viewBox="0 0 16 16">
+        <rect
+          x="1.500"
+          y="2.500"
+          width="13"
+          height="4.600"
+          rx="2.300"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.300"
+        />
+        <circle cx="4.300" cy="4.800" r="1.500" fill="currentColor" />
+        <rect x="1.500" y="8.900" width="13" height="4.600" rx="2.300" fill="currentColor" />
+        <circle cx="11.700" cy="11.200" r="1.500" fill="#2a2840" />
+      </symbol>
+      <symbol id="m-folder" viewBox="0 0 16 16">
+        <path
+          d="M1.800 4.300a1 1 0 0 1 1-1h3.400l1.400 1.500h5.600a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2.800a1 1 0 0 1-1-1z"
+          fill="currentColor"
+        />
+      </symbol>
+      <symbol id="m-compose" viewBox="0 0 16 16">
+        <path
+          d="M13.500 8.500v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M12.300 2.200l1.500 1.500L8 9.500l-2 .500.500-2z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.300"
+          stroke-linejoin="round"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="m-chevl" viewBox="0 0 16 16">
+        <path
+          d="M10 3L5 8l5 5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.800"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="m-chevr" viewBox="0 0 16 16">
+        <path
+          d="M6 3l5 5-5 5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.800"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="m-plus" viewBox="0 0 16 16">
+        <path
+          d="M8 3v10M3 8h10"
+          stroke="currentColor"
+          stroke-width="1.600"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="i-play" viewBox="0 0 16 16">
+        <path d="M5 3.25v9.5l7.5-4.75z" fill="currentColor" />
+      </symbol>
+      <symbol id="e-anthropic" viewBox="0 0 24 24">
+        <path
+          fill="currentColor"
+          d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"
+        />
+      </symbol>
+      <symbol id="e-openai" viewBox="0 0 24 24">
+        <path
+          fill="currentColor"
+          d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"
+        />
+      </symbol>
+      <symbol id="e-cursor" viewBox="0 0 24 24">
+        <path
+          fill="currentColor"
+          d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23"
+        />
+      </symbol>
+      <symbol id="e-xai" viewBox="0 0 24 24">
+        <path
+          fill="currentColor"
+          d="m9.269 15.284 7.979-5.923c.391-.29.95-.177 1.136.274.982 2.379.543 5.237-1.408 7.2-1.952 1.963-4.668 2.393-7.15 1.413L7.115 19.51c3.889 2.673 8.612 2.012 11.563-.958 2.34-2.354 3.065-5.563 2.387-8.456l.006.006c-.983-4.251.242-5.95 2.751-9.424L24 .429l-3.301 3.32v-.011L9.267 15.286"
+        />
+        <path
+          fill="currentColor"
+          d="M7.622 16.724c-2.791-2.682-2.31-6.832.072-9.225 1.761-1.771 4.647-2.494 7.166-1.431l2.705-1.257c-.487-.354-1.112-.735-1.829-1.003-3.239-1.34-7.118-.673-9.752 1.973-2.533 2.548-3.33 6.465-1.962 9.808 1.022 2.498-.653 4.265-2.341 6.049C1.083 22.27.483 22.902 0 23.572l7.62-6.846"
+        />
+      </symbol>
+      <symbol id="e-opencode" viewBox="0 0 24 24">
+        <path fill="currentColor" d="M22 24H2V0h20zM17 4.8H7v14.4h10z" />
+      </symbol>
+      <symbol id="m-cur2" viewBox="0 0 21 21">
+        <path
+          d="M3 2v15.5l4.3-3.8 2.7 6 2.6-1.2-2.7-5.9H15.5z"
+          fill="currentColor"
+          stroke="#141414"
+          stroke-width="1.3"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="e-pi" viewBox="0 0 24 24">
+        <text
+          x="12"
+          y="19"
+          text-anchor="middle"
+          font-family="Georgia, 'Times New Roman', serif"
+          font-size="23"
+          fill="currentColor"
+        >
+          π
+        </text>
+      </symbol>
+    </svg>
+
+    <header class="nav" id="nav">
+      <div class="wrap nav__inner">
+        <a class="brand" href="#top"><span class="orb"></span>opensteer</a>
+        <nav class="nav__links" aria-label="Sections">
+          <a href="#product">Product</a>
+          <a href="#teams">Teams</a>
+          <a href="#start">Get started</a>
+        </nav>
+        <div class="nav__end">
+          <a
+            class="btn btn--sm nav__gh"
+            href="https://github.com/steerlabs/opensteer"
+            target="_blank"
+            rel="noopener"
+            ><svg><use href="#i-star" /></svg>Star on GitHub</a
+          >
+          <a
+            class="btn btn--sm btn--accent"
+            href="https://github.com/steerlabs/opensteer/releases"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </div>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero__glow" aria-hidden="true"></div>
+        <div class="wrap">
+          <h1 data-in style="--d: 0">Turn your computer into a team of <em>AI employees.</em></h1>
+          <p class="hero__sub" data-in style="--d: 1">
+            Give them real work in the apps and accounts already on your Mac, and steer it all from
+            your phone. Nothing to set up.
+          </p>
+          <div class="hero__ctas" data-in style="--d: 2">
+            <a
+              class="btn btn--accent"
+              href="https://github.com/steerlabs/opensteer/releases"
+              target="_blank"
+              rel="noopener"
+              ><svg><use href="#i-download" /></svg>Download for Mac</a
+            >
+            <a
+              class="btn"
+              href="https://github.com/steerlabs/opensteer"
+              target="_blank"
+              rel="noopener"
+              ><svg><use href="#i-star" /></svg>Star on GitHub</a
+            >
+          </div>
+          <div class="rail" data-in style="--d: 3">
+            <span>Runs on the agents you already pay for</span>
+            <div class="rail__set" id="rail" role="group" aria-label="Agent engines"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="show" aria-label="Demo: three agents at work on a Mac, steered from a phone">
+        <div class="wrap" id="demo"></div>
+      </section>
+
+      <section class="section" id="product">
+        <div class="wrap">
+          <div class="section__head reveal">
+            <p class="eyebrow">What you get</p>
+            <h2>Everything an employee needs, <em>already on your computer.</em></h2>
+            <p class="section__lede">
+              Your accounts, your sessions, your files, your apps. Opensteer puts agents to work on
+              all of it.
+            </p>
+          </div>
+
+          <div class="bento">
+            <article class="tile tile--wide reveal">
+              <div class="tile__split">
+                <div>
+                  <h3>Bring your own agents</h3>
+                  <p>
+                    Claude Code, Codex, Cursor, Grok, OpenCode, Pi or models on your own hardware,
+                    signed in with the subscriptions you already have. No API bills. Switch the day
+                    something better ships.
+                  </p>
+                  <div class="engine-note" id="engineNote">
+                    Next task runs on <b>Claude Code</b>.
+                  </div>
+                </div>
+                <div class="enginelist" id="engines" role="group" aria-label="Pick an agent"></div>
+              </div>
+            </article>
+
+            <article class="tile reveal">
+              <div>
+                <h3>Skip the setup</h3>
+                <p>
+                  Connect Chrome once. Agents use the sites you're signed into and your saved
+                  logins.
+                </p>
+              </div>
+              <div class="tile__viz">
+                <div class="setup-row">
+                  <button class="btn btn--sm" type="button" id="connect">Connect Chrome</button>
+                  <span class="chip" id="loginCount">0 saved logins</span>
+                </div>
+                <div class="sites" id="sites"></div>
+              </div>
+            </article>
+
+            <article class="tile reveal">
+              <div>
+                <h3>Create specialists</h3>
+                <p>
+                  Set up agents for the jobs you do over and over, each with its own skills and
+                  tools.
+                </p>
+              </div>
+              <div class="tile__viz">
+                <div class="deck" id="deck">
+                  <div class="spec">
+                    <div class="spec__head">
+                      <span class="mark" style="--c: #84b5e0">R</span>Researcher
+                    </div>
+                    <div class="spec__skills">
+                      <span>Web</span><span>Sources</span><span>Briefs</span>
+                    </div>
+                  </div>
+                  <div class="spec">
+                    <div class="spec__head">
+                      <span class="mark" style="--c: #71c6a5">E</span>Engineer
+                    </div>
+                    <div class="spec__skills">
+                      <span>Repos</span><span>Tests</span><span>Pull requests</span>
+                    </div>
+                  </div>
+                  <div class="spec">
+                    <div class="spec__head"><span class="mark">B</span>Bookkeeper</div>
+                    <div class="spec__skills">
+                      <span>Bank</span><span>Invoices</span><span>Spreadsheets</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="tile tile--wide reveal">
+              <div class="tile__split">
+                <div>
+                  <h3>Automate the routine</h3>
+                  <p>
+                    Run work on a schedule or the moment something happens. Your agents keep going
+                    while you sleep, and you get the results.
+                  </p>
+                  <div class="runlog" id="runlog"></div>
+                </div>
+                <div class="triggers">
+                  <div class="trigger" id="trig0">
+                    <span class="trigger__icon"
+                      ><svg><use href="#i-clock" /></svg
+                    ></span>
+                    <div style="min-width: 0">
+                      <div class="trigger__when">Every weekday · 8:00</div>
+                      <div class="trigger__what">Summarize my inbox</div>
+                    </div>
+                    <span class="trigger__next" id="trigNext">in 0:12</span>
+                  </div>
+                  <div class="trigger" id="trig1">
+                    <span class="trigger__icon"
+                      ><svg><use href="#i-mail" /></svg
+                    ></span>
+                    <div style="min-width: 0">
+                      <div class="trigger__when">When an invoice arrives</div>
+                      <div class="trigger__what">File it and draft the payment</div>
+                    </div>
+                    <span class="trigger__next">Watching</span>
+                  </div>
+                  <div class="trigger" id="trig2">
+                    <span class="trigger__icon"
+                      ><svg><use href="#i-branch" /></svg
+                    ></span>
+                    <div style="min-width: 0">
+                      <div class="trigger__when">When a pull request opens</div>
+                      <div class="trigger__what">Review it and run the tests</div>
+                    </div>
+                    <span class="trigger__next">Watching</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="tile reveal">
+              <div>
+                <h3>Work together</h3>
+                <p>
+                  Your team and your agents share the work. Agents ask the right person when they
+                  need a decision.
+                </p>
+              </div>
+              <div class="tile__viz">
+                <div class="mini">
+                  <div class="msg">
+                    <span class="mark" style="--c: #c58af9">M</span>
+                    <div class="msg__body">
+                      <div class="msg__who"><b>Maya</b>Design</div>
+                      Can someone refund order 4471? The print came out wrong.
+                    </div>
+                  </div>
+                  <div class="msg">
+                    <span class="mark" style="--c: #78d9ec">S</span>
+                    <div class="msg__body">
+                      <div class="msg__who"><b>Support</b>agent</div>
+                      Refund is $240. Dev approves refunds, so it's waiting on Dev.
+                      <div>
+                        <span class="route"
+                          ><span class="dot dot--needs"></span>Needs you · Dev</span
+                        >
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="tile reveal">
+              <div>
+                <h3>Work from anywhere</h3>
+                <p>
+                  Phone, laptop, web, Slack or iMessage. A spare Android phone can even become a
+                  computer your agents use.
+                </p>
+              </div>
+              <div class="tile__viz">
+                <div class="constellation" id="constellation">
+                  <svg
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                    id="lines"
+                  ></svg>
+                  <div class="hub"><span class="orb"></span>Your computer</div>
+                </div>
+              </div>
+            </article>
+
+            <article class="tile reveal">
+              <div>
+                <h3>Keep it yours</h3>
+                <p>It runs on your machines. Your work and your data stay with you.</p>
+              </div>
+              <div class="tile__viz">
+                <div class="vault">
+                  <div class="vault__row">
+                    <svg><use href="#i-circle-check" /></svg>Files<span>on your Mac</span>
+                  </div>
+                  <div class="vault__row">
+                    <svg><use href="#i-circle-check" /></svg>Passwords<span>in your keychain</span>
+                  </div>
+                  <div class="vault__row">
+                    <svg><use href="#i-circle-check" /></svg>Agent history<span
+                      >in your database</span
+                    >
+                  </div>
+                  <div class="nocloud">
+                    <svg><use href="#i-cloudoff" /></svg>No Opensteer cloud holds your work. Open
+                    source, MIT.
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="teams">
+        <div class="wrap teams">
+          <div class="reveal">
+            <p class="eyebrow">For teams</p>
+            <h2>Give everyone <em>their own.</em></h2>
+            <p class="section__lede">
+              Each person on your team gets agents with exactly the access they should have. You
+              decide who can touch what, and it holds on every device.
+            </p>
+            <div class="facts">
+              <div class="fact">
+                <svg><use href="#i-shield" /></svg>
+                <div>
+                  <b>Checked on every action</b
+                  ><span>Your server decides access, not the app on someone's phone.</span>
+                </div>
+              </div>
+              <div class="fact">
+                <svg><use href="#i-users" /></svg>
+                <div>
+                  <b>Approvals reach the right person</b
+                  ><span>Refunds go to finance. Merges go to engineering.</span>
+                </div>
+              </div>
+              <div class="fact">
+                <svg><use href="#i-server" /></svg>
+                <div>
+                  <b>Self-host it</b
+                  ><span>Run it on your own server with Docker. Your data never leaves.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="matrix-wrap reveal">
+            <div class="matrix-head">
+              <b>Acme team access</b
+              ><span class="chip"
+                ><span class="dot dot--done" style="width: 6px; height: 6px"></span>Live</span
+              >
+            </div>
+            <div class="matrix-scroll">
+              <table class="matrix" id="matrix">
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th>Browser</th>
+                    <th>Logins</th>
+                    <th>Files</th>
+                    <th>Shell</th>
+                    <th>Payments</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="matrix-note" id="matrixNote">
+              <svg><use href="#i-shield" /></svg
+              ><span>Flip a switch. It applies to the next thing their agents do.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="start">
+        <div class="wrap">
+          <div class="section__head reveal">
+            <p class="eyebrow">Get started</p>
+            <h2>Running in <em>minutes.</em></h2>
+          </div>
+          <div class="start">
+            <div class="start__card start__card--main reveal">
+              <h3>On your Mac</h3>
+              <p>
+                Download it, open it, connect Chrome and sign in to an agent. Your phone pairs in
+                one scan.
+              </p>
+              <a
+                class="btn btn--accent"
+                href="https://github.com/steerlabs/opensteer/releases"
+                target="_blank"
+                rel="noopener"
+                ><svg><use href="#i-download" /></svg>Download for Mac</a
+              >
+            </div>
+            <div class="start__card reveal">
+              <h3>On a server for your team</h3>
+              <p>Run the Host, its database and a Linux runner with Docker Compose.</p>
+              <div class="code">
+                <pre><code><span>$ </span>git clone https://github.com/steerlabs/opensteer
+<span>$ </span>cd opensteer/deploy/self-host
+<span>$ </span>docker compose up -d</code></pre>
+                <button
+                  class="copy"
+                  type="button"
+                  aria-label="Copy commands"
+                  data-copy="git clone https://github.com/steerlabs/opensteer&#10;cd opensteer/deploy/self-host&#10;docker compose up -d"
+                >
+                  <svg><use href="#i-copy" /></svg>
+                </button>
+              </div>
+            </div>
+            <div class="start__card reveal">
+              <h3>From source</h3>
+              <p>Fork it, change anything, ship your own build.</p>
+              <div class="code">
+                <pre><code><span>$ </span>pnpm install --frozen-lockfile
+<span>$ </span>pnpm setup:local
+<span>$ </span>pnpm dev</code></pre>
+                <button
+                  class="copy"
+                  type="button"
+                  aria-label="Copy commands"
+                  data-copy="pnpm install --frozen-lockfile&#10;pnpm setup:local&#10;pnpm dev"
+                >
+                  <svg><use href="#i-copy" /></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing">
+        <div class="closing__orb" aria-hidden="true"></div>
+        <div class="wrap reveal">
+          <h2>Stop doing the work. <em>Start running it.</em></h2>
+          <p>
+            Your voice, your home, the devices you haven't bought yet. Every one becomes another way
+            to put your agents to work.
+          </p>
+          <div class="hero__ctas">
+            <a
+              class="btn btn--accent"
+              href="https://github.com/steerlabs/opensteer/releases"
+              target="_blank"
+              rel="noopener"
+              ><svg><use href="#i-download" /></svg>Download for Mac</a
+            >
+            <a
+              class="btn"
+              href="https://github.com/steerlabs/opensteer"
+              target="_blank"
+              rel="noopener"
+              >Read the source</a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer__inner">
+        <a class="brand" href="#top" style="font-size: 14px"
+          ><span class="orb" style="width: 16px; height: 16px"></span>opensteer</a
+        >
+        <span>MIT licensed · Runs on your machines</span>
+        <div class="footer__links">
+          <a href="https://github.com/steerlabs/opensteer" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/steerlabs/opensteer/releases" target="_blank" rel="noopener"
+            >Releases</a
+          >
+          <a
+            href="https://github.com/steerlabs/opensteer/blob/main/SECURITY.md"
+            target="_blank"
+            rel="noopener"
+            >Security</a
+          >
+        </div>
+      </div>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

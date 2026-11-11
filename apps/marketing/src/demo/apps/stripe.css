@@ -1,0 +1,325 @@
+/* Stripe Dashboard: one customer's payments, and the refund dialog */
+.st {
+  position: relative;
+  display: flex;
+  height: 100%;
+  background: #fff;
+  color: #30313d;
+  font: 13px/1.4 var(--mac-font);
+}
+.st-side {
+  width: 138px;
+  padding: 12px 10px;
+  border-right: 1px solid #ebeef1;
+  background: #f6f8fa;
+  flex: none;
+}
+.st-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.st-account i {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #30313d;
+  color: #fff;
+  font: 700 11px/1 var(--mac-font);
+}
+.st-side nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.st-side nav span {
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: #414552;
+  font-size: 13px;
+}
+.st-side nav .is-on {
+  color: #635bff;
+  font-weight: 600;
+}
+.st-side h6 {
+  margin: 14px 8px 4px;
+  color: #6a7383;
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.st-main {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 18px;
+}
+.st-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.st-search {
+  width: 240px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: #f6f8fa;
+  color: #6a7383;
+}
+.st-live {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #ebeef1;
+  color: #414552;
+  font-size: 11.5px;
+}
+.st-crumb {
+  margin: 0;
+  color: #635bff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.st-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 12px;
+}
+.st-head div {
+  flex: 1;
+  min-width: 0;
+}
+.st-head h4 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.st-head p {
+  margin: 0;
+  color: #6a7383;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.st-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px #d5dbe1,
+    0 1px 1px rgb(0 0 0 / 8%);
+  color: #30313d;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.st-btn--refund {
+  margin-top: 12px;
+}
+.st-btn--go {
+  background: #635bff;
+  box-shadow: 0 1px 1px rgb(0 0 0 / 12%);
+  color: #fff;
+  transition: box-shadow 400ms;
+}
+.grp[data-held] .st-btn--go {
+  box-shadow: 0 0 0 4px rgb(223 179 107 / 65%);
+}
+.st-balance {
+  display: none;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f6f8fa;
+}
+.grp[data-credit] .st-balance {
+  display: flex;
+  animation: st-in 900ms ease-out;
+}
+@keyframes st-in {
+  from {
+    background: #d9d6ff;
+  }
+}
+.st-balance span {
+  color: #6a7383;
+}
+.st-balance b {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.st-balance em {
+  color: #6a7383;
+  font-size: 12px;
+  font-style: normal;
+}
+.st-main h5 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.st-table {
+  border-top: 1px solid #ebeef1;
+}
+.st-row {
+  display: grid;
+  grid-template-columns: 62px 28px 158px minmax(0, 1fr) 98px 16px;
+  gap: 8px;
+  align-items: center;
+  height: 38px;
+  border-bottom: 1px solid #ebeef1;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: background-color 400ms;
+}
+.st-row--head {
+  height: 30px;
+  color: #6a7383;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.st-row b {
+  font-size: 14px;
+  font-weight: 600;
+  text-align: right;
+}
+.st-cur,
+.st-more {
+  color: #6a7383;
+}
+.st-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.st-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-style: normal;
+}
+.st-badge--ok {
+  background: #d7f7c2;
+  color: #006908;
+}
+.st-badge--back {
+  display: none;
+  background: #ebeef1;
+  color: #545969;
+}
+.st-flag {
+  display: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #ffe2a3;
+  color: #6e4300;
+  font-size: 11.5px;
+  font-weight: 650;
+  font-style: normal;
+}
+.grp[data-dup]:not([data-refunded]) .st-row--dup {
+  background: #fff7e0;
+}
+.grp[data-dup]:not([data-refunded]) .st-row--dup .st-flag {
+  display: inline-block;
+  animation: st-pop 420ms var(--ease-bubble) both;
+}
+@keyframes st-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+.grp[data-refunded] .st-row--second {
+  animation: st-ok 1400ms ease-out;
+}
+.grp[data-refunded] .st-row--second .st-badge--ok {
+  display: none;
+}
+.grp[data-refunded] .st-row--second .st-badge--back {
+  display: inline-block;
+}
+.grp[data-refunded] .st-row--second b {
+  color: #6a7383;
+  text-decoration: line-through;
+}
+@keyframes st-ok {
+  from {
+    background: #c9f5d9;
+  }
+}
+.st-scrim {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(48 49 61 / 42%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms;
+}
+.grp[data-modal] .st-scrim {
+  opacity: 1;
+}
+.st-modal {
+  width: 340px;
+  padding: 20px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 30%);
+  transform: translateY(8px) scale(0.97);
+  transition: transform 360ms var(--ease-bubble);
+}
+.grp[data-modal] .st-modal {
+  transform: none;
+}
+.st-modal h5 {
+  margin: 0;
+  font-size: 18px;
+}
+.st-modal p {
+  margin: 4px 0 12px;
+  color: #6a7383;
+  font-size: 12.5px;
+}
+.st-modal label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.st-input {
+  display: flex;
+  justify-content: space-between;
+  height: 32px;
+  margin-bottom: 10px;
+  padding: 0 10px;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px #d5dbe1;
+  font-size: 13.5px;
+  line-height: 32px;
+}
+.st-input em {
+  color: #6a7383;
+  font-style: normal;
+}
+.st-modal__btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
