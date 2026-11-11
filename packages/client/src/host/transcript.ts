@@ -304,6 +304,8 @@ function foldTranscriptOwnEvent(
         model: prior?.model ?? event.data.model,
         effort: prior?.effort ?? event.data.effort ?? null,
         nodeKind: event.data.kind,
+        canStop: event.data.canStop ?? false,
+        stopping: event.data.stopping ?? false,
         sequence: prior?.sequence ?? event.sequence,
         phaseIndex: prior?.phaseIndex ?? event.data.phaseIndex ?? null,
         phases: prior?.phases ?? [],
@@ -324,6 +326,8 @@ function foldTranscriptOwnEvent(
       if (!prior) return [...entries];
       return upsertEntry(entries, {
         ...prior,
+        ...(event.data.canStop === undefined ? {} : { canStop: event.data.canStop }),
+        ...(event.data.stopping === undefined ? {} : { stopping: event.data.stopping }),
         ...(event.data.model === undefined ? {} : { model: event.data.model }),
         ...(event.data.effort === undefined ? {} : { effort: event.data.effort }),
         ...(event.data.parentNodeId === undefined || prior.parentNodeId !== null

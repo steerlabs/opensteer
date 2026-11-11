@@ -1064,6 +1064,7 @@ export interface RunAttemptTable {
  * which the Run's usage already includes.
  */
 export interface ExecutionNodeTable {
+  stopSupported: Generated<boolean>;
   id: ExecutionNodeId;
   runId: RunId;
   attemptId: RunAttemptId;

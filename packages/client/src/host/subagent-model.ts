@@ -1,5 +1,5 @@
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
-import { requestTitleText, type AssignmentSummary } from "@opensteer/core";
+import { requestTitleText, type AssignmentSummary, type ExecutionNodeView } from "@opensteer/core";
 import type { AssignmentEntry, HostSnapshot, NodeEntry, TranscriptEntry } from "./client.js";
 import { workSummary, type Turn, type WorkEntry } from "./agent-activity-model.js";
 import {
@@ -15,6 +15,7 @@ import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
 export type AgentTone = "working" | "needs-you" | "waiting" | "finished" | "failed" | "stopped";
 export interface AgentCard {
+  readonly stop?: { readonly threadId: string; readonly nodeId: string } | null;
   readonly key: string;
   readonly origin: "subagent" | "task";
   readonly kind: "subagent" | "workflow";
@@ -194,13 +195,17 @@ export function nodeSubagentCard(
               : (previewLine("progress", node.progress) ??
                 previewLine("prompt", node.prompt?.split("\n")[0]));
   return {
+    stop:
+      live && node.status === "running" && node.canStop && !node.stopping
+        ? { threadId, nodeId: node.nodeId }
+        : null,
     key: `node:${node.nodeId}`,
     origin: "subagent",
     kind: node.nodeKind,
     title,
     tone,
-    word: `${!live && isActiveSubagent({ tone }) ? "Last known: " : ""}${words[tone]}`,
-    moving: live && tone === "working",
+    word: `${!live && isActiveSubagent({ tone }) ? "Last known: " : ""}${node.status === "running" && node.stopping ? "Stopping" : words[tone]}`,
+    moving: live && tone === "working" && !node.stopping,
     line,
     modelLabel: model
       ? `${model}${node.effort ? ` · ${node.effort[0]!.toUpperCase()}${node.effort.slice(1)}` : ""}`
@@ -209,7 +214,7 @@ export function nodeSubagentCard(
     endedAt: node.completedAt,
     opens: { kind: "subagent", threadId, nodeId: node.nodeId },
     requestId: tone === "needs-you" ? (answerable?.id ?? null) : null,
-    announcement: `${title} ${tone === "working" ? "is working" : words[tone].toLowerCase()}`,
+    announcement: `${title} ${node.status === "running" && node.stopping ? "is stopping" : tone === "working" ? "is working" : words[tone].toLowerCase()}`,
     workflow,
     task: null,
   };
@@ -486,8 +491,10 @@ export function transcriptNodes(entries: readonly TranscriptEntry[]): readonly N
   return entries.filter((entry): entry is NodeEntry => entry.kind === "node");
 }
 
-export function executionNodeEntry(node: import("@opensteer/core").ExecutionNode): NodeEntry {
+export function executionNodeEntry(node: ExecutionNodeView): NodeEntry {
   return {
+    canStop: node.canStop ?? false,
+    stopping: node.stopping ?? false,
     id: `node:${node.id}`,
     kind: "node",
     nodeId: node.id,

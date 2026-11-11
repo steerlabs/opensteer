@@ -30,6 +30,7 @@ export async function startExecutionNode(
     .insertInto("executionNodes")
     .values({
       attemptId: input.attemptId,
+      stopSupported: node.stopSupported ?? false,
       endedAt: null,
       effort: node.effort ?? null,
       phaseIndex: node.phaseIndex ?? null,
@@ -83,6 +84,7 @@ export async function updateExecutionNode(
     .updateTable("executionNodes")
     .set({
       ...(update.effort === undefined ? {} : { effort: update.effort }),
+      ...(update.stopSupported === undefined ? {} : { stopSupported: update.stopSupported }),
       ...(update.parentNodeId === undefined ? {} : { parentNodeId: update.parentNodeId }),
       ...(update.phaseIndex === undefined ? {} : { phaseIndex: update.phaseIndex }),
       ...(update.phases === undefined

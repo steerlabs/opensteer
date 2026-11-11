@@ -8,6 +8,7 @@ import {
   DelegationModelChoiceSchema,
   EnvironmentIdSchema,
   ExecutionEnvironmentKindSchema,
+  ExecutionNodeViewSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
@@ -486,8 +487,14 @@ export const ThreadQueueOutputSchema = z.object({
     .max(100),
 });
 
+export const SubagentCancelOutputSchema = z.object({
+  subagentId: ExecutionNodeViewSchema.shape.id,
+  status: z.literal("stopping"),
+});
+
 export const ThreadReadOutputSchema = z
   .object({
+    subagent: ExecutionNodeViewSchema.optional(),
     thread: ThreadDetailSchema,
     recentRuns: z
       .array(

@@ -78,7 +78,10 @@ export function useAgentScope(live: boolean): AgentScope | null {
     },
     [scope],
   );
-  return useMemo(() => (scope === null ? null : { live, onOpen }), [live, onOpen, scope]);
+  return useMemo(
+    () => (scope === null ? null : { live, onOpen, hostClient: scope.hostClient }),
+    [live, onOpen, scope],
+  );
 }
 
 /**

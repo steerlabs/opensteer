@@ -380,6 +380,7 @@ const eventDataSchemas = {
    * is a new node with the same `sessionRef`.
    */
   "node.started": z.strictObject({
+    stopSupported: z.boolean().optional(),
     effort: executionNodeEffort.nullable().optional(),
     kind: ExecutionNodeKindSchema,
     model: executionNodeModel.nullable(),
@@ -396,6 +397,7 @@ const eventDataSchemas = {
   }),
   /** What the engine said about a subagent after it was first seen. */
   "node.updated": z.strictObject({
+    stopSupported: z.boolean().optional(),
     effort: executionNodeEffort.optional(),
     model: executionNodeModel.optional(),
     nodeId: ExecutionNodeIdSchema,
@@ -564,8 +566,12 @@ const eventDataViewSchemas = {
     personWaiting: z.boolean().optional(),
     startedBy: MessageAuthorViewSchema.optional(),
   }),
-  "node.started": z.object(eventDataSchemas["node.started"].shape),
-  "node.updated": z.object(eventDataSchemas["node.updated"].shape),
+  "node.started": z
+    .object(eventDataSchemas["node.started"].shape)
+    .extend({ stopping: z.boolean().optional(), canStop: z.boolean().optional() }),
+  "node.updated": z
+    .object(eventDataSchemas["node.updated"].shape)
+    .extend({ stopping: z.boolean().optional(), canStop: z.boolean().optional() }),
   "node.message": z.object(eventDataSchemas["node.message"].shape),
   "node.completed": z.object({
     ...eventDataSchemas["node.completed"].shape,

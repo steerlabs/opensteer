@@ -1,3 +1,4 @@
+import { nodeViewsForOwner, nodeControlEventsForOwner, enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
 import * as voiceStore from "./voice-store.js";
@@ -23,7 +24,7 @@ import {
   type DeploymentShape,
   type EnvironmentId,
   type ExecutionChoice,
-  type ExecutionNode,
+  type ExecutionNodeView,
   type ExecutionPreferences,
   type GrantId,
   type HarnessInstanceId,
@@ -1486,7 +1487,7 @@ export class OpensteerStore {
     readonly runId: RunId;
   }): Promise<{
     readonly attempts: readonly RunAttempt[];
-    readonly nodes: readonly ExecutionNode[];
+    readonly nodes: readonly ExecutionNodeView[];
   } | null> {
     const run = await this.#database
       .selectFrom("runs")
@@ -1496,7 +1497,11 @@ export class OpensteerStore {
     if (!run || !(await this.getThreadForOwner(run.threadId, input.ownerId))) return null;
     return {
       attempts: (await listRunAttempts(this.#database, input.runId)).map(runAttemptFromRow),
-      nodes: (await listRunNodes(this.#database, input.runId)).map(executionNodeFromRow),
+      nodes: await nodeViewsForOwner(
+        this.#database,
+        (await listRunNodes(this.#database, input.runId)).map(executionNodeFromRow),
+        input.ownerId,
+      ),
     };
   }
 
@@ -1696,6 +1701,17 @@ export class OpensteerStore {
     return this.#announceRevokedGrants(
       await threadStore.enqueueAdmittedThreadInput(this.#database, request, this.#executionNow),
     );
+  }
+
+  stopNode(input: import("./node-control.js").NodeStopInput) {
+    return enqueueNodeStop(this.#database, input);
+  }
+
+  nodeControlEventsForOwner<T extends import("@opensteer/core").AgentEventView>(
+    events: readonly T[],
+    ownerId: UserId,
+  ) {
+    return nodeControlEventsForOwner(this.#database, events, ownerId);
   }
 
   async enqueueRunnerControl(input: RunnerControlInput): Promise<{
@@ -2115,7 +2131,17 @@ export class OpensteerStore {
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
   }): Promise<ThreadEventPage | null> {
-    return snapshotStore.threadEventPageForOwner(this.#database, this.notificationState, input);
+    const page = await snapshotStore.threadEventPageForOwner(
+      this.#database,
+      this.notificationState,
+      input,
+    );
+    return page
+      ? {
+          ...page,
+          events: await nodeControlEventsForOwner(this.#database, page.events, input.ownerId),
+        }
+      : null;
   }
 
   async eventsAfter(

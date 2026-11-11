@@ -4880,6 +4880,7 @@ export function migrationProvider() {
         "0175_program_tool_names": programToolNamesMigration,
         "0176_assignment_result_waits": assignmentResultWaitsMigration,
         "0177_task_question_notices": taskQuestionNoticesMigration,
+        "0178_node_stop": nodeStopMigration,
       };
     },
   };
@@ -8039,6 +8040,67 @@ const assignmentResultWaitsMigration: Migration = {
         check (jsonb_typeof(result_waits) = 'array');
       create index delegations_result_message on public.delegations (result_message_id)
         where result_message_id is not null;
+    `.execute(database);
+  },
+};
+
+/**
+ * Stopping one subagent is commanded under the same rule as stopping its Run:
+ * the Run's requester, or an owner of its Workspace. The rest of the check is
+ * unchanged.
+ */
+const nodeStopMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.execution_nodes add column stop_supported boolean not null default false;
+
+      create or replace function public.opensteer_enforce_command_execution_authority()
+      returns trigger
+      language plpgsql
+      as $function$
+      begin
+        if new.type not in (
+          'run.execute',
+          'trigger.execute',
+          'run.steer',
+          'run.restart',
+          'run.interrupt',
+          'node.stop',
+          'request.respond'
+        ) then
+          return new;
+        end if;
+        if new.type in ('run.interrupt', 'node.stop') and exists (
+          select 1
+          from public.runs target_run
+          join public.threads thread on thread.id = target_run.thread_id
+          join public.workspace_memberships membership
+            on membership.workspace_id = thread.workspace_id
+           and membership.user_id = new.requested_by
+           and membership.state = 'active'
+          where target_run.id = new.run_id
+            and thread.id = new.thread_id
+            and thread.environment_id = new.environment_id
+            and (
+              target_run.requested_by = new.requested_by
+              or membership.role = 'owner'
+            )
+        ) then
+          return new;
+        end if;
+        if new.thread_id is null
+           or new.environment_id is null
+           or not exists (
+             select 1 from public.threads thread
+             where thread.id = new.thread_id
+               and thread.environment_id = new.environment_id
+               and public.opensteer_user_can_execute_thread(thread.id, new.requested_by)
+           ) then
+          raise exception 'command requester cannot execute the thread environment';
+        end if;
+        return new;
+      end;
+      $function$;
     `.execute(database);
   },
 };

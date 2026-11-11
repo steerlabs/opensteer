@@ -263,3 +263,37 @@ describe("shared agent contract", () => {
     });
   });
 });
+
+it("offers Stop only from live Host eligibility and says Stopping until it ends", () => {
+  const base = {
+    nodeId: "node-stop",
+    nodeKind: "subagent",
+    kind: "node",
+    id: "node:node-stop",
+    runId: "run",
+    status: "running",
+    title: "Inspect",
+    createdAt: "2026-11-10T00:00:00Z",
+    completedAt: null,
+    model: null,
+    effort: null,
+    parentNodeId: null,
+    originCallId: null,
+    phaseIndex: null,
+    phases: [],
+    progress: null,
+    prompt: null,
+    result: null,
+  } as const;
+  expect(nodeSubagentCard(base, "thread")?.stop).toBeNull();
+  expect(nodeSubagentCard({ ...base, canStop: true }, "thread")?.stop).toEqual({
+    threadId: "thread",
+    nodeId: "node-stop",
+  });
+  const stopping = nodeSubagentCard({ ...base, canStop: true, stopping: true }, "thread")!;
+  expect(stopping.stop).toBeNull();
+  expect(stopping.word).toBe("Stopping");
+  expect(
+    nodeSubagentCard({ ...base, canStop: true, status: "completed" }, "thread")?.stop,
+  ).toBeNull();
+});

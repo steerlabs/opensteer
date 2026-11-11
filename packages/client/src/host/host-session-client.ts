@@ -3551,6 +3551,27 @@ export class HttpHostClient {
     await this.rememberExecution(choice).catch(() => undefined);
   }
 
+  async stopNode(threadId: string, nodeId: string): Promise<void> {
+    const node = this.#snapshot.transcripts[threadId]?.find(
+      (entry) => entry.kind === "node" && entry.nodeId === nodeId,
+    );
+    if (
+      node?.kind !== "node" ||
+      !node.runId ||
+      !node.canStop ||
+      node.stopping ||
+      node.status !== "running"
+    )
+      throw new Error("This subagent cannot be stopped.");
+    await this.dispatch({
+      type: "node.stop",
+      nodeId: ExecutionNodeIdSchema.parse(nodeId),
+      threadId,
+      runId: RunIdSchema.parse(node.runId),
+      idempotencyKey: mutationIdempotencyKey("node-stop"),
+    });
+  }
+
   async stopRun(threadId: string): Promise<void> {
     const thread = this.#snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Thread not found.");

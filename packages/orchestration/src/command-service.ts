@@ -345,6 +345,16 @@ export class CommandService {
     });
   }
 
+  stopNode(input: import("@opensteer/database").NodeStopInput) {
+    return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
+      const result = await this.#store.stopNode(input);
+      for (const event of result.events) this.#onWorkspaceEvent(event);
+      if (!result.wasDuplicate && result.command.environmentId)
+        this.#onExecutionQueued(result.command.environmentId);
+      return result;
+    });
+  }
+
   sendControl(
     input: RunnerControlInput,
   ): Promise<{ readonly command: CommandRow; readonly wasDuplicate: boolean }> {
