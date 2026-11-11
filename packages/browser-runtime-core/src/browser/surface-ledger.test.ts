@@ -993,8 +993,6 @@ it("names the viewer whose input a page edit followed, judged by when the edit h
   try {
     now.mockReturnValue(10_000);
     ledger.recordViewerInput(surfaceId, "viewer");
-    now.mockReturnValue(10_010);
-    ledger.recordAgentCommand(targetId);
     now.mockReturnValue(10_020);
     ledger.recordViewerInput(surfaceId, "viewer");
     // An edit's report can arrive after later input: only when it happened decides.
@@ -1002,18 +1000,25 @@ it("names the viewer whose input a page edit followed, judged by when the edit h
       consumerToken: "viewer",
       native: false,
     });
-    expect(ledger.viewerInputAt(surfaceId, 10_015), "after the agent's command").toBeNull();
     expect(ledger.viewerInputAt(surfaceId, 9_999), "before any input").toBeNull();
     expect(ledger.viewerInputAt(surfaceId, 15_020), "past the activation lifetime").toBeNull();
-    // Input from two sources in one millisecond belongs to neither.
+    // An agent's command does not wait for the viewer's input, so an edit
+    // after one, even with viewer input between, is nobody's for a while.
     now.mockReturnValue(10_030);
     ledger.recordAgentCommand(targetId);
-    ledger.recordViewerInput(surfaceId, "viewer");
-    expect(ledger.viewerInputAt(surfaceId, 10_031)).toBeNull();
-    // Input that names no viewer is nobody's.
     now.mockReturnValue(10_040);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 10_045)).toBeNull();
+    now.mockReturnValue(15_040);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 15_041), "once the agent's command is old").toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
+    // Input that names no viewer is nobody's.
+    now.mockReturnValue(15_050);
     ledger.recordViewerInput(surfaceId, null);
-    expect(ledger.viewerInputAt(surfaceId, 10_041)).toBeNull();
+    expect(ledger.viewerInputAt(surfaceId, 15_051)).toBeNull();
   } finally {
     now.mockRestore();
     await ledger.close();

@@ -2429,9 +2429,9 @@ export class BrowserController {
   }
 
   /**
-   * A password field counts as the person's only while every edit to it came
-   * from one viewer's input, with no agent command between that input and the
-   * edit, judged by when the edit happened.
+   * A password field counts as the person's only while every edit to it
+   * followed one viewer's input, with no agent command on the tab just before
+   * it (`viewerInputAt`).
    */
   private observePersonSave(surfaceId: BrowserSurfaceId, event: PersonSaveObservation): void {
     let authors = this.saveAuthors.get(surfaceId);

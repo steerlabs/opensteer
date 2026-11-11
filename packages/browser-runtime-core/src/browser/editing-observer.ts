@@ -723,7 +723,7 @@ export class PageEditingObserver {
   async close(): Promise<void> {
     this.#closed = true;
     this.#withdrawBindings(() => true);
-    for (const watcher of [...this.#saveWatchers.values()]) watcher.end(false);
+    for (const watcher of this.#saveWatchers.values()) watcher.end(false);
     await Promise.all([...this.#children.values()].map((child) => child.close()));
     await this.#frames.close();
     this.#children.clear();
@@ -983,10 +983,10 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     const eventTarget = (event) => event.composedPath()[0];
     // Never offered: codes, cards and PINs, whatever the page calls the field.
     const saveExcluded = (element) => {
-      const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+      const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase().split(/\\s+/);
       return autocomplete.includes("one-time-code") || autocomplete.some(token => token.startsWith("cc-")) ||
         !!codeGroup(element) ||
-        /otp|totp|2fa|mfa|one.?time|verification|security.?code|auth.?code|passcode|\bpin\b|pin.?code|cvv|cvc|csc|card/i.test(
+        /otp|totp|2fa|mfa|one.?time|verification|security.?code|auth.?code|passcode|\\bpin\\b|pin.?code|cvv|cvc|csc|card/i.test(
           [element.name, element.id, element.getAttribute("aria-label"), element.placeholder].join(" "));
     };
     // A field counts only from a trusted edit into it while empty; a script's
@@ -1041,7 +1041,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
         return field && !field.tainted && field.value === input.value && !saveExcluded(input);
       })) return;
       const usable = (input) => /^(text|email|tel|hidden)$/.test(input.type) && input.value !== "" && !saveFields.has(input) && !saveExcluded(input);
-      const hinted = inputs.find(input => usable(input) && /(^|\s)(username|email)(\s|$)/i.test(input.getAttribute("autocomplete") || ""));
+      const hinted = inputs.find(input => usable(input) && /(^|\\s)(username|email)(\\s|$)/i.test(input.getAttribute("autocomplete") || ""));
       const typed = inputs.filter(input => usable(input) && input.type !== "hidden" && writable(input) &&
         input.compareDocumentPosition(filled[0]) & Node.DOCUMENT_POSITION_FOLLOWING).pop();
       const username = (hinted ?? typed)?.value;

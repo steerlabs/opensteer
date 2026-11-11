@@ -89,6 +89,6 @@ export class PasswordsPersonSaveAuthority {
 
   close(): void {
     this.#closing.abort();
-    for (const transactionId of [...this.#held]) this.cancel(transactionId);
+    for (const transactionId of this.#held) this.cancel(transactionId);
   }
 }

@@ -725,20 +725,24 @@ export class SurfaceLedger {
   /**
    * The viewer whose input a page acted on at `at` (its own clock, which is
    * this machine's): the latest input recorded at or before then, if a
-   * viewer's, recent, and not tied with any other source's. An event is
-   * judged by when it happened, never by when its report arrives.
+   * viewer's and recent. Agent commands do not queue behind a viewer's input,
+   * so one in that window could be what acted: then it is nobody's. An event
+   * is judged by when it happened, never by when its report arrives.
    */
   viewerInputAt(
     surfaceId: BrowserSurfaceId,
     at: number,
   ): { readonly consumerToken: string; readonly native: boolean } | null {
-    const timeline = this.records.get(surfaceId)?.inputTimeline ?? [];
-    const index = timeline.findLastIndex((entry) => entry.at <= at);
-    const input = timeline[index];
-    if (!input?.consumerToken || at - input.at >= userActivationLifespanMs) return null;
-    for (let earlier = index - 1; timeline[earlier]?.at === input.at; earlier--)
-      if (timeline[earlier]!.consumerToken !== input.consumerToken) return null;
-    return { consumerToken: input.consumerToken, native: input.native };
+    const since = at - userActivationLifespanMs;
+    let input: SurfaceRecord["inputTimeline"][number] | undefined;
+    for (const entry of this.records.get(surfaceId)?.inputTimeline ?? []) {
+      if (entry.at > at || entry.at <= since) continue;
+      if (!entry.consumerToken) return null;
+      input = entry;
+    }
+    return input?.consumerToken
+      ? { consumerToken: input.consumerToken, native: input.native }
+      : null;
   }
 
   #recordInput(record: SurfaceRecord, entry: SurfaceRecord["inputTimeline"][number]): void {

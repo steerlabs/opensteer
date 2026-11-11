@@ -141,8 +141,9 @@ a changed password, a different username for a saved one, and a form with two di
 passwords are not offered.
 
 A password counts only from a trusted edit into the field while it was empty, and only while every
-edit to it followed one viewer's input with no agent command between them. Edits are judged by
-when the page made them, because a report can arrive after later input; the
+edit to it followed one viewer's input with no agent command on the tab in the five seconds before
+it: agent commands do not queue behind a viewer's input, so either could be what typed. Edits are
+judged by when the page made them, because a report can arrive after later input; the
 [ledger](../packages/browser-runtime-core/src/browser/surface-ledger.ts) keeps a short timeline for
 that. A script write taints the field. An agent's earlier listener can still change the value after
 the person typed, as it can read it ([Promise and limits](#promise-and-limits)); Save adds at most
