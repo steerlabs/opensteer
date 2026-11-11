@@ -879,3 +879,65 @@ export const insertShapes: readonly GateCase[] = [
     "25 rows",
   ],
 ];
+
+// On a team, the scope settings name other members' topics; every way to reach them is refused.
+export const teamScopeForgeries: readonly GateCase[] = [
+  ["SET LOCAL knowledge.read_topics = '{hidden}'", "statement", "SET LOCAL of the read scope"],
+  ["SET knowledge.write_topics TO '{hidden}'", "statement", "SET of the write scope"],
+  ["RESET knowledge.read_topics", "statement", "RESET of the read scope"],
+  ["SET SESSION AUTHORIZATION DEFAULT", "statement", "back to the session user"],
+  ["SET ROLE NONE", "statement", "role reset"],
+  [
+    "SELECT text FROM facts WHERE set_config('knowledge.read_topics', $1, true) IS NOT NULL",
+    "function",
+    "set_config in a predicate",
+    ["{open,hidden}"],
+  ],
+  [
+    "SELECT * FROM facts f, LATERAL (SELECT set_config('knowledge.read_topics', '{hidden}', true)) s",
+    "function",
+    "set_config in a lateral subquery",
+  ],
+  [
+    "WITH s AS (SELECT pg_catalog.set_config('knowledge.writer_id', 'usr_forged', true)) SELECT * FROM facts, s",
+    "function",
+    "writer forged in a CTE",
+  ],
+  ["SELECT current_setting('knowledge.read_topics', true)", "function", "reading the scope"],
+  ["SELECT pg_backend_pid()", "function", "naming the backend"],
+  ["SELECT * FROM knowledge.fact_log", "relation", "the log behind the views"],
+  ["SELECT * FROM knowledge.topics", "relation", "the topic table"],
+  ["SELECT * FROM knowledge.operations", "relation", "operation receipts"],
+  ["SELECT * FROM team_topic_grants", "relation", "topic lists"],
+  ["SELECT * FROM public.team_members", "relation", "team members"],
+  ["SELECT * FROM team_agent_requests", "relation", "requests"],
+  ["SELECT query FROM pg_catalog.pg_stat_activity", "relation", "other sessions' statements"],
+  ["SELECT * FROM pg_catalog.pg_policies", "relation", "the policies"],
+  ["SELECT * FROM information_schema.role_table_grants", "relation", "grants"],
+  [
+    "SELECT * FROM facts WHERE topic = ANY (SELECT topic FROM knowledge.fact_log)",
+    "relation",
+    "topics through the log",
+  ],
+  [
+    "INSERT INTO facts(topic,thing,property,value,writer_kind) VALUES ('open','a','b','1','human')",
+    "insert",
+    "writer kind supplied",
+  ],
+  [
+    "INSERT INTO facts(topic,thing,property,value,writer_id) VALUES ('open','a','b','1','usr_forged')",
+    "insert",
+    "writer supplied",
+  ],
+  [
+    "INSERT INTO knowledge.fact_log(topic,thing,property,value) VALUES ('hidden','a','b','1')",
+    "relation",
+    "the log written directly",
+  ],
+  [
+    "INSERT INTO facts(topic,thing,property,value) SELECT 'hidden','a','b',value FROM facts",
+    "insert",
+    "INSERT from a SELECT",
+  ],
+  ["SELECT topic, count(*) FROM facts GROUP BY topic", "admit", "counts only what the scope shows"],
+];

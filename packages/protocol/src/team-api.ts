@@ -43,7 +43,12 @@ import {
   TeamSearchPageSchema,
   TeamSidebarSchema,
 } from "./team-chat.js";
-import { TeamFactInputSchema, TeamFactSchema, TeamTopicSchema } from "./team-knowledge.js";
+import {
+  TeamFactInputSchema,
+  TeamFactSchema,
+  TeamTopicSchema,
+  teamKnowledgeLimits,
+} from "./team-knowledge.js";
 import {
   PersonalTeamLinkSchema,
   TeamBinaryUploadMetadataSchema,
@@ -171,7 +176,7 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("team.knowledge.fact.append"),
     operationId: z.uuid(),
-    facts: z.array(TeamFactInputSchema).min(1).max(100),
+    facts: z.array(TeamFactInputSchema).min(1).max(teamKnowledgeLimits.factsPerWrite),
   }),
   z.strictObject({
     type: z.literal("team.agent.request.cancel"),

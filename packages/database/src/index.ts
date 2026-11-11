@@ -70,6 +70,8 @@ export * from "./knowledge-executor.js";
 export * from "./knowledge-store.js";
 export { personalDeploymentOwner } from "./machine-store.js";
 export { knowledgeExecutorRole } from "./knowledge-schema.js";
+export * from "./team-topics-store.js";
+export type { ChannelTopicPort } from "./team-topics-port.js";
 
 export { listEligibleBrowserRunners } from "./browser-home-store.js";
 export * from "./request-agent-response.js";

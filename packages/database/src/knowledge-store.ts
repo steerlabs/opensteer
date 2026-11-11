@@ -1,13 +1,14 @@
-import { createId, OpensteerError, type KnowledgeTopicId, type UserId } from "@opensteer/core";
-import { sql, type Kysely, type Selectable } from "kysely";
+import {
+  OpensteerError,
+  type KnowledgeTopicId,
+  type TeamAgentRequestId,
+  type UserId,
+} from "@opensteer/core";
 import { createHash } from "node:crypto";
 import type { FieldDef, Pool, PoolClient, QueryArrayConfig, QueryArrayResult } from "pg";
 import { z } from "zod";
 import { KnowledgeMessageTooLarge } from "./knowledge-executor.js";
-import type { KnowledgeTables, KnowledgeWriterKind } from "./knowledge-schema.js";
-import type { DatabaseSchema } from "./schema.js";
-
-export type KnowledgeTopic = Selectable<KnowledgeTables["knowledge.topics"]>;
+import type { KnowledgeWriterKind } from "./knowledge-schema.js";
 
 export type KnowledgeJson =
   | string
@@ -17,14 +18,10 @@ export type KnowledgeJson =
   | readonly KnowledgeJson[]
   | { readonly [key: string]: KnowledgeJson };
 
-export interface KnowledgeWriter {
-  readonly kind: KnowledgeWriterKind;
-  readonly id: string;
-  readonly initiatorId: string | null;
-  readonly agentId: string;
-  readonly taskId: string | null;
-  readonly runId: string | null;
-}
+/** A person, or that person's agent answering the named team request. */
+export type KnowledgeWriter =
+  | { readonly kind: "human"; readonly id: UserId; readonly requestId: null }
+  | { readonly kind: "agent"; readonly id: UserId; readonly requestId: TeamAgentRequestId };
 
 export interface KnowledgeFactKey {
   readonly topic: string;
@@ -57,8 +54,6 @@ export interface KnowledgeRunInput {
   readonly writer: KnowledgeWriter;
   readonly statementTimeoutMs?: number;
   readonly lockTimeoutMs?: number;
-  /** Runs inside the write transaction just before COMMIT; a throw rolls the write back. */
-  readonly beforeCommit?: () => Promise<void>;
 }
 
 export interface KnowledgeRows {
@@ -83,10 +78,8 @@ const ReceiptSchema = z.object({
         .array(
           z.object({
             id: z.string(),
-            writerKind: z.enum(["person", "project"]),
+            writerKind: z.enum(["human", "agent"] satisfies KnowledgeWriterKind[]),
             writerId: z.string(),
-            agentId: z.string(),
-            taskId: z.string().nullable(),
             writtenAt: z.string(),
           }),
         )
@@ -111,34 +104,8 @@ const rowBytes = 524_288;
 /** Above the manager's 512 KB encoded result, so this bound only keeps the Host from receiving far more. */
 const resultBytes = 1_048_576;
 
-/** Seeds one open topic for a Personal owner, once, on a knowledge base that has none. */
-export async function ensureKnowledgeGeneralTopic(
-  database: Kysely<DatabaseSchema>,
-  owner: UserId,
-): Promise<void> {
-  await database.transaction().execute(async (transaction) => {
-    // Self-conflicting, so two first calls cannot both find no topic; a fact write's row lock passes.
-    await sql`lock table knowledge.topics in share row exclusive mode`.execute(transaction);
-    await sql`
-      insert into knowledge.topics (id, name, created_by_kind, created_by_id)
-      select ${createId("knowledgeTopic")}, 'General', 'person', ${owner}
-      where not exists (select from knowledge.topics)
-    `.execute(transaction);
-  });
-}
-
-export async function listKnowledgeTopics(
-  database: Kysely<DatabaseSchema>,
-  options: { readonly ids?: readonly KnowledgeTopicId[]; readonly includeArchived?: boolean } = {},
-): Promise<KnowledgeTopic[]> {
-  let query = database.selectFrom("knowledge.topics").selectAll().orderBy("name").orderBy("id");
-  if (options.ids) {
-    if (!options.ids.length) return [];
-    query = query.where("id", "in", options.ids);
-  }
-  if (!options.includeArchived) query = query.where("archivedAt", "is", null);
-  return query.execute();
-}
+/** Callers past the pool's two connections that may wait for one; more are told it is busy. */
+export const knowledgeQueueLimit = 8;
 
 /**
  * Runs one already-validated SELECT or INSERT as the restricted role, scoped to
@@ -158,13 +125,16 @@ export async function runKnowledgeStatement(
   const writable = new Set<string>(input.writeTopicIds);
   if (statement.kind === "insert" && statement.keys.some((key) => !writable.has(key.topic)))
     throw notWritable(insertNothingSaved);
-  const client = await pool.connect().catch(() => {
-    throw new OpensteerError({
+  const busy = () =>
+    new OpensteerError({
       code: "resource_exhausted",
       reason: "knowledge-busy",
       message: "Knowledge is busy; try again shortly.",
       retryable: true,
     });
+  if (pool.waitingCount >= knowledgeQueueLimit) throw busy();
+  const client = await pool.connect().catch(() => {
+    throw busy();
   });
   // A dropped connection fails the running query; the client's own error event has no one else to hear it.
   const dropped = () => undefined;
@@ -200,29 +170,23 @@ async function run(
       set_config('knowledge.write_topics', $2::text[]::text, true),
       set_config('knowledge.writer_kind', $3, true),
       set_config('knowledge.writer_id', $4, true),
-      set_config('knowledge.initiator_id', $5, true),
-      set_config('knowledge.agent_id', $6, true),
-      set_config('knowledge.task_id', $7, true),
-      set_config('knowledge.run_id', $8, true),
-      set_config('knowledge.operation_id', $9, true),
-      set_config('knowledge.only_if_unchanged', $10, true),
-      set_config('knowledge.baseline_supplied', $13, true),
+      set_config('knowledge.request_id', $5, true),
+      set_config('knowledge.operation_id', $6, true),
+      set_config('knowledge.only_if_unchanged', $7, true),
+      set_config('knowledge.baseline_supplied', $10, true),
       set_config('search_path', 'pg_catalog, knowledge, pg_temp', true),
       set_config('standard_conforming_strings', 'on', true),
       set_config('backslash_quote', 'safe_encoding', true),
       set_config('client_encoding', 'UTF8', true),
-      set_config('statement_timeout', $11, true),
-      set_config('lock_timeout', $12, true),
+      set_config('statement_timeout', $8, true),
+      set_config('lock_timeout', $9, true),
       set_config('idle_in_transaction_session_timeout', '5000', true)`,
     values: [
       [...input.readTopicIds],
       [...input.writeTopicIds],
       writer.kind,
       writer.id,
-      writer.initiatorId ?? "",
-      writer.agentId,
-      writer.taskId ?? "",
-      writer.runId ?? "",
+      writer.requestId ?? "",
       statement.kind === "insert" ? statement.operationKey : "",
       statement.kind === "insert" && statement.onlyIfUnchanged ? "true" : "false",
       String(input.statementTimeoutMs ?? 2_000),
@@ -283,7 +247,6 @@ async function run(
   );
   const receipt = ReceiptSchema.parse(completed.rows[0]?.receipt);
   const returning = result.fields.length ? await rows(client, result, names) : null;
-  await input.beforeCommit?.();
   try {
     await client.query("commit");
   } catch {
