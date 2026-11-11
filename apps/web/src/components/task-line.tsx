@@ -38,9 +38,7 @@ function useObservedWorker(entry: AssignmentEntry): void {
   const { hostClient, snapshot } = useShell();
   const assignment = currentAssignment(entry, snapshot.assignments);
   const workerThreadId = assignment.workerThread.id;
-  const observe =
-    assignment.status === "open" ||
-    !snapshot.workspaces.some(({ id }) => id === assignment.workerThread.workspaceId);
+  const observe = assignment.status === "open";
   useEffect(
     () => (observe ? hostClient.observeThread(workerThreadId) : undefined),
     [hostClient, observe, workerThreadId],
@@ -146,7 +144,7 @@ export function DelegationLine({
   snapshot,
 }: {
   delegation: DelegationEntry;
-  snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads" | "workspaceTasks">;
+  snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads">;
 }) {
   const workspace = useOptionalWorkspace();
   const presentation = delegationPresentation(delegation, snapshot);

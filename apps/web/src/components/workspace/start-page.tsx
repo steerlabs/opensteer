@@ -51,7 +51,7 @@ import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
 import { useToastToolbar } from "../toast.js";
-import { TaskMark, AgentOrb } from "./task-mark.js";
+import { TaskMark } from "./task-mark.js";
 import { ProfileAvatar } from "./identity.js";
 import {
   destinationPlaceKey,
@@ -172,8 +172,6 @@ function sameStart(left: HostSnapshot, right: HostSnapshot): boolean {
     left.threads === right.threads &&
     left.tasks === right.tasks &&
     left.activeTasks === right.activeTasks &&
-    left.workspaceTasks === right.workspaceTasks &&
-    left.homeThreadId === right.homeThreadId &&
     left.browserSessions === right.browserSessions &&
     left.browserProfiles === right.browserProfiles &&
     left.browserPlacements === right.browserPlacements &&
@@ -182,8 +180,6 @@ function sameStart(left: HostSnapshot, right: HostSnapshot): boolean {
     left.ownerViewWindowsAvailable === right.ownerViewWindowsAvailable &&
     left.connection === right.connection &&
     left.deploymentShape === right.deploymentShape &&
-    left.homeWorkspaceId === right.homeWorkspaceId &&
-    left.workspaces === right.workspaces &&
     left.deploymentId === right.deploymentId &&
     left.user === right.user
   );
@@ -1076,11 +1072,7 @@ function AppRow({
                   )}
                   {occupant ? (
                     <span className="start-tile__mark">
-                      {occupant.home ? (
-                        <AgentOrb size={16} />
-                      ) : (
-                        <TaskMark size={16} mark={threadMark(occupant.threadId, snapshot)} />
-                      )}
+                      <TaskMark size={16} mark={threadMark(occupant.threadId, snapshot)} />
                     </span>
                   ) : null}
                 </span>

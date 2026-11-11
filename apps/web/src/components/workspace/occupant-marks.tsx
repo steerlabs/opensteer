@@ -5,7 +5,6 @@ import {
   TaskMark,
   TaskBadge,
   TaskState,
-  AgentOrb,
   WorkingRing,
   taskStateWords,
   type TaskMarkSize,
@@ -48,7 +47,6 @@ export const OccupantMarks = memo(function OccupantMarks({
           acting={occupant.acting}
           directory={directory}
           fallbackFocus={fallbackFocus}
-          home={occupant.home}
           key={occupant.threadId}
           onOpen={onOpen}
           placeTitle={placeTitle}
@@ -103,9 +101,7 @@ function OccupantOverflow({
       {anchor ? (
         <Popover anchor={anchor} label={`Tasks at ${placeTitle}`} onClose={() => setAnchor(null)}>
           {occupants.map((occupant) => {
-            const name = occupant.home
-              ? "Opensteer"
-              : (threadInDirectory(occupant.threadId, directory.snapshot)?.title ?? "Task");
+            const name = threadInDirectory(occupant.threadId, directory.snapshot)?.title ?? "Task";
             const state = directory.rows.get(occupant.threadId)?.tone ?? "working";
             return (
               <button
@@ -120,11 +116,7 @@ function OccupantOverflow({
                   onOpen(occupant.threadId);
                 }}
               >
-                {occupant.home ? (
-                  <AgentOrb size={16} />
-                ) : (
-                  <TaskMark size={16} mark={threadMark(occupant.threadId, directory.snapshot)} />
-                )}
+                <TaskMark size={16} mark={threadMark(occupant.threadId, directory.snapshot)} />
                 <span className="picker__label">{name}</span>
                 <TaskState state={state} />
               </button>
@@ -140,7 +132,6 @@ function OccupantMark({
   acting,
   directory,
   fallbackFocus,
-  home,
   onOpen,
   placeTitle,
   size,
@@ -149,7 +140,6 @@ function OccupantMark({
   readonly directory: TaskDirectory;
   readonly fallbackFocus: () => HTMLElement | null;
   readonly acting: boolean;
-  readonly home: boolean;
   readonly onOpen: (threadId: string) => void;
   readonly placeTitle: string;
   readonly size: TaskMarkSize;
@@ -165,9 +155,7 @@ function OccupantMark({
     return () => window.clearTimeout(timer);
   }, [acting]);
   const row = directory.rows.get(threadId);
-  const name = home
-    ? "Opensteer"
-    : (threadInDirectory(threadId, directory.snapshot)?.title ?? "Task");
+  const name = (threadInDirectory(threadId, directory.snapshot)?.title ?? "Task");
   const state = row?.tone ?? "working";
   const words = taskStateWords(state);
   const mark = threadMark(threadId, directory.snapshot);
@@ -186,8 +174,8 @@ function OccupantMark({
       type="button"
     >
       <span className="occupant-mark__mark">
-        {home ? <AgentOrb size={size} /> : <TaskMark size={size} mark={mark} />}
-        {acting || lingering ? <WorkingRing mark={home ? null : mark} settling={!acting} /> : null}
+        <TaskMark size={size} mark={mark} />
+        {acting || lingering ? <WorkingRing mark={mark} settling={!acting} /> : null}
         <TaskBadge state={state} />
       </span>
     </button>

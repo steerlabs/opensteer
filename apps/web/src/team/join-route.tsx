@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { parseTeamLinkOffer, parseTeamPageLink, teamPageUrl } from "@opensteer/protocol";
+import { parseTeamPageLink, teamPageUrl } from "@opensteer/core";
+import { parseTeamLinkOffer } from "@opensteer/protocol";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
 import { useShell } from "../components/app-shell.js";
 import { actionErrorMessage } from "../ui-utils.js";

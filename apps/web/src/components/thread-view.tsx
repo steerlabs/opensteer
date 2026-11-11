@@ -47,7 +47,6 @@ import {
   type ThreadSummary,
   type HostClient,
   type TranscriptEntry,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { useThreadInputQueue } from "@opensteer/client/react";
@@ -88,7 +87,7 @@ import { useBarYield } from "./workspace/bar-yield.js";
 import { RunPage, useRunPage } from "./workspace/run-page.js";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
-import { TaskMark, TaskState, AgentOrb, taskStateWords } from "./workspace/task-mark.js";
+import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
 import { TaskAudienceLine, TaskSourceChip } from "../team/task-source-chip.js";
 

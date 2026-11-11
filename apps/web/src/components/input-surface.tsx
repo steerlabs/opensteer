@@ -100,21 +100,16 @@ export function InputSurface({
   const { hostClient, snapshot, reportActionError } = useShell();
   const { deploymentId } = snapshot;
   const userId = snapshot.user?.id ?? null;
-  const draftKey = composerDraftKeyFor(
-    deploymentId,
-    userId,
-    threadId === snapshot.homeThreadId ? { kind: "chat" } : { kind: "thread", threadId },
-  );
+  const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "thread", threadId });
   const context = useComposerContext({ auto: autoContext, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
-  const workspaceId = snapshot.threads.find((thread) => thread.id === threadId)?.workspaceId;
   // The signed-in deployment and user the Host confirmed are what every kept
   // message and staged file belongs to; until both are known nothing is sent.
   const durable = usePendingSends(
     deploymentId && userId ? { deploymentId, threadId, userId } : null,
   );
   const attachmentTarget =
-    workspaceId && draftKey ? { client: hostClient, scope: draftKey, workspaceId } : null;
+    deploymentId && draftKey ? { client: hostClient, scope: draftKey, deploymentId } : null;
 
   const sendMessage = async (
     body: string,
@@ -136,9 +131,7 @@ export function InputSurface({
   const dock = useRequestDock(threadId, requests ?? noRequests);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const docked = requests !== undefined;
-  const done =
-    snapshot.sharedTaskDoneAvailable === true &&
-    snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null;
+  const done = snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null;
   // A Host that reopens a Done task for its writer keeps the composer; an older one asks first.
   if (done && !snapshot.quietTasksAvailable) {
     return (
@@ -584,7 +577,7 @@ function ActionBody({
   if (surface.denied) {
     return <DeniedRequestBody denied={surface.denied} request={request} />;
   }
-  if (request.kind === "browser.access" || request.kind === "browser.profile.save") {
+  if (request.kind === "browser.access") {
     return <ThreadBrowserRequestAction disabled={disabled} request={request} />;
   }
   if (request.kind === "browser.sign-in") {

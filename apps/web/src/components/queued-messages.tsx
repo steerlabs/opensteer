@@ -5,7 +5,6 @@ import {
   queuedMessages,
   type HostClient,
   type QueuedMessage,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { TranscriptMessage } from "./agent-activity.js";
 import { Icon } from "./icon.js";
@@ -27,7 +26,6 @@ export const QueuedMessages = memo(function QueuedMessages({
   onError,
   queue,
   viewerUserId,
-  workspaces,
 }: {
   readonly client: HostClient;
   readonly disabled: boolean;
@@ -40,7 +38,6 @@ export const QueuedMessages = memo(function QueuedMessages({
   readonly onError: (error: unknown) => void;
   readonly queue: ThreadInputQueue;
   readonly viewerUserId: string | null;
-  readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
@@ -77,7 +74,6 @@ export const QueuedMessages = memo(function QueuedMessages({
           queued
           reveal={null}
           viewerUserId={viewerUserId}
-          workspaces={workspaces}
         />
         <div className="queued__row">
           {item.canSteer ? (

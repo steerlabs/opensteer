@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { HostClient, PlaceItem, PersonalSurfaceDestination } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema, CHAT_THREAD_TITLE } from "@opensteer/core";
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
@@ -154,11 +154,7 @@ function SelectedPlace({
   const pair = useBrowserThreadPair({
     hostClient,
     mark: dockedThread ? (
-      dockedThread === directory.homeThreadId ? (
-        <AgentOrb size={16} />
-      ) : (
-        <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
-      )
+      <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
     ) : null,
     onShow: showBrowserTab,
     shown: shownBrowser,
@@ -555,10 +551,8 @@ function ChatToggle({ directory }: { readonly directory: TaskDirectory }) {
       </button>
     );
   const threadId = conversationAt(pathname);
-  // "/" is Chat even before Chat has a Thread.
-  const home = pathname === "/" || (threadId !== null && threadId === directory.homeThreadId);
   const row = threadId ? directory.rows.get(threadId) : undefined;
-  const title = home ? CHAT_THREAD_TITLE : (row?.title ?? "Conversation");
+  const title = row?.title ?? (pathname === "/" ? "New task" : "Conversation");
   return (
     <button
       aria-controls="workspace-conversation"
@@ -574,9 +568,7 @@ function ChatToggle({ directory }: { readonly directory: TaskDirectory }) {
       title="Show the conversation"
       type="button"
     >
-      {home ? (
-        <AgentOrb size={16} />
-      ) : threadId ? (
+      {threadId ? (
         <span className="task-request-mark">
           <TaskMark size={16} mark={threadMark(threadId, directory.snapshot)} />
           <TaskBadge state={row?.tone ?? "working"} />

@@ -4,10 +4,8 @@ import {
   taskMark,
   taskUnderWay,
   threadMark,
-  threadInDirectory,
 } from "@opensteer/client/host";
 import { TaskIconEditor } from "../task-icon-editor.js";
-import { WorkspaceOrb } from "../workspace-orb.js";
 import { ThreadTitleEditor } from "../thread-title-editor.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -29,11 +27,11 @@ import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskFamilyButton } from "./task-family.js";
 import { sameTaskFamilyGlance, taskFamilyGlance } from "@opensteer/client/host";
-import { TaskBadge, TaskMark, AgentOrb, WorkingRing, taskStateWords } from "./task-mark.js";
+import { TaskBadge, TaskMark, WorkingRing, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
-import { homeThreadKind, useTaskDirectory } from "./task-directory.js";
+import { useTaskDirectory } from "./task-directory.js";
 import { LivePlace } from "./viewfinder.js";
 import { useBarYield } from "./bar-yield.js";
 import { useWorkspace } from "./workspace-context.js";
@@ -75,28 +73,18 @@ export function ConversationHeader({
 }) {
   const { drawer, nav, phone, work } = useWorkspace();
   const directory = useTaskDirectory(hostClient);
-  const homeKind = homeThreadKind(threadId, directory.snapshot);
-  const home = homeKind === "main";
   const voice = directory.snapshot.voiceThreadId === threadId;
   const row = directory.rows.get(threadId);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [changingIcon, setChangingIcon] = useState(false);
-  const canChangeIcon = homeKind === null && directory.snapshot.taskMarksAvailable;
-  const thread = threadInDirectory(threadId, directory.snapshot);
-  const project = directory.snapshot.workspaces.find(
-    (workspace) => workspace.id === thread?.workspaceId && workspace.kind !== "main",
-  );
-  const canRename = useHostSelector(
-    hostClient,
-    (snapshot) => homeThreadKind(threadId, snapshot) === null && snapshot.threadRenameAvailable,
-  );
+  const canChangeIcon = directory.snapshot.taskMarksAvailable;
+  const canRename = useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable);
   const menuRef = useRef<HTMLButtonElement | null>(null);
   const docked = work && !phone;
-  const tone = !home && row ? row.tone : null;
+  const tone = row ? row.tone : null;
   const selectRequester = useCallback(
-    (snapshot: HostSnapshot) =>
-      homeThreadKind(threadId, snapshot) === null ? threadRequester(snapshot, threadId) : null,
+    (snapshot: HostSnapshot) => threadRequester(snapshot, threadId),
     [threadId],
   );
   const requester = useHostSelector(hostClient, selectRequester, sameRequester);
@@ -122,9 +110,8 @@ export function ConversationHeader({
   useEffect(() => {
     onPictureYield?.(yielded >= barRanks.picture);
   }, [onPictureYield, yielded]);
-  const menu = !home || findInMenu;
+  const menu = true;
   const taskMark = threadMark(threadId, directory.snapshot);
-  const projectOrb = homeKind === "project" && project;
   return (
     <header className="conv-header">
       {requester ? (
@@ -136,11 +123,7 @@ export function ConversationHeader({
             to={nav.threadPath(requester.threadId)}
           >
             <Icon name="arrow-left" />
-            {requester.threadId === directory.homeThreadId ? (
-              <AgentOrb size={16} />
-            ) : (
-              <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
-            )}
+            <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
             <span className="conv-header__back-title">{requester.title}</span>
           </AreaLink>
         </nav>
@@ -153,22 +136,13 @@ export function ConversationHeader({
           <SidebarRestoreButton />
         )}
         <span className="conv-header__mark" data-yield={barRanks.mark}>
-          {home ? (
-            <AgentOrb size={20} />
-          ) : voice ? (
+          {voice ? (
             <Icon className="voice-thread-mark" name="waveform" />
-          ) : projectOrb ? (
-            <WorkspaceOrb
-              icon={project.icon}
-              name={project.name}
-              color={project.color}
-              size="small"
-            />
           ) : (
             <TaskMark size={20} mark={taskMark} />
           )}
           {tone === "working" ? (
-            <WorkingRing mark={projectOrb ? null : taskMark} />
+            <WorkingRing mark={taskMark} />
           ) : tone ? (
             <TaskBadge state={tone} />
           ) : null}
@@ -223,17 +197,6 @@ export function ConversationHeader({
             </p>
           ) : null}
         </div>
-        {project && homeKind === null ? (
-          <span className="conv-header__project">
-            <WorkspaceOrb
-              icon={project.icon}
-              name={project.name}
-              size="tiny"
-              color={project.color}
-            />
-            <span>{project.name}</span>
-          </span>
-        ) : null}
         <div className="conv-header__end">
           {/* Only a state that asks something of the reader is said in words; the
               mark shows the rest. */}
@@ -296,35 +259,31 @@ export function ConversationHeader({
       ) : null}
       {menuOpen && menuRef.current ? (
         <ConversationMenu
-          actions={
-            home
-              ? null
-              : (confirming) => (
-                  <TaskActions
-                    key={threadId}
-                    onConfirming={confirming}
-                    onDone={() => setMenuOpen(false)}
-                    onChangeIcon={
-                      canChangeIcon
-                        ? () => {
-                            setMenuOpen(false);
-                            setChangingIcon(true);
-                          }
-                        : null
+          actions={(confirming) => (
+            <TaskActions
+              key={threadId}
+              onConfirming={confirming}
+              onDone={() => setMenuOpen(false)}
+              onChangeIcon={
+                canChangeIcon
+                  ? () => {
+                      setMenuOpen(false);
+                      setChangingIcon(true);
                     }
-                    onRename={
-                      canRename
-                        ? () => {
-                            setMenuOpen(false);
-                            setEditing(true);
-                          }
-                        : null
+                  : null
+              }
+              onRename={
+                canRename
+                  ? () => {
+                      setMenuOpen(false);
+                      setEditing(true);
                     }
-                    threadId={threadId}
-                    title={title}
-                  />
-                )
-          }
+                  : null
+              }
+              threadId={threadId}
+              title={title}
+            />
+          )}
           anchor={menuRef.current}
           label={title}
           view={

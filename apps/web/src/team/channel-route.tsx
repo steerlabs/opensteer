@@ -4,9 +4,12 @@ import {
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   KnowledgeTopicIdSchema,
+  TeamAgentRequestIdSchema,
+  UserIdSchema,
   type TeamChannelId,
 } from "@opensteer/core";
-import { teamPageUrl, type TeamChannel, type TeamFileSchema } from "@opensteer/protocol";
+import { teamPageUrl } from "@opensteer/core";
+import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
 import { readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamTimeline } from "@opensteer/client/team";
 import type { z } from "zod";
@@ -196,7 +199,7 @@ function ChannelScreenFor({
   const docked = selection.kind === "place";
   const channel = channelView(view, timeline?.channel ?? null, channelId);
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
-  const can = timeline?.channel.can ?? entry?.channel.can ?? null;
+  const can = timeline?.channel?.can ?? entry?.channel.can ?? null;
   const go = (path: string, keepPlace = true) =>
     void navigate({ pathname: path, search: keepPlace ? search : "" });
   const params = new URLSearchParams(search);
@@ -212,7 +215,7 @@ function ChannelScreenFor({
   /* ---- Sending ---- */
   const [staged, setStaged] = useState<readonly (StagedFileView & { file: TeamFile | null })[]>([]);
   const uploads = useRef(new Map<string, Promise<TeamFile | null>>());
-  const addFiles = (scopeRoot: string | null) => (files: readonly File[]) => {
+  const addFiles = (files: readonly File[]) => {
     for (const file of files) {
       const id = crypto.randomUUID();
       setStaged((current) => [
@@ -232,7 +235,6 @@ function ChannelScreenFor({
           return null;
         });
       uploads.current.set(id, done);
-      void scopeRoot;
     }
   };
   const send = (threadRootId: string | null) => async (input: TeamSend) => {
@@ -248,7 +250,7 @@ function ChannelScreenFor({
         channelId,
         threadRootId: threadRootId ? TeamMessageIdSchema.parse(threadRootId) : null,
         bodyMarkdown: message.bodyMarkdown,
-        mentions: message.mentions.map((mention) => ({ ...mention, userId: mention.userId as never })),
+        mentions: message.mentions.map((mention) => ({ ...mention, userId: UserIdSchema.parse(mention.userId) })),
         attachmentIds: files.flatMap((file) => (file ? [file.id] : [])),
       });
     } catch (error) {
@@ -347,7 +349,7 @@ function ChannelScreenFor({
         channelId,
         messageId: TeamMessageIdSchema.parse(messageId),
         bodyMarkdown: message.bodyMarkdown,
-        mentions: message.mentions.map((mention) => ({ ...mention, userId: mention.userId as never })),
+        mentions: message.mentions.map((mention) => ({ ...mention, userId: UserIdSchema.parse(mention.userId) })),
       });
     },
     onDelete: (messageId: string) =>
@@ -369,9 +371,9 @@ function ChannelScreenFor({
         }
       : undefined,
     onStop: (requestId: string) =>
-      dispatch({ type: "team.agent.request.cancel", requestId: requestId as never }),
+      dispatch({ type: "team.agent.request.cancel", requestId: TeamAgentRequestIdSchema.parse(requestId) }),
     onCancel: (requestId: string) =>
-      dispatch({ type: "team.agent.request.cancel", requestId: requestId as never }),
+      dispatch({ type: "team.agent.request.cancel", requestId: TeamAgentRequestIdSchema.parse(requestId) }),
     onAnswer: links
       ? (requestId: string) => {
           const root = requestRoot(requestId);
@@ -405,7 +407,7 @@ function ChannelScreenFor({
         autoFocus={rootId !== null}
         key={rootId ?? "channel"}
         me={me}
-        onAddFiles={addFiles(rootId)}
+        onAddFiles={addFiles}
         onConnect={surface === "desktop" ? () => go(`/join?team=${encodeURIComponent(team.teamId)}`) : undefined}
         onRemoveFile={(id) => {
           uploads.current.delete(id);
@@ -485,7 +487,7 @@ function ChannelScreenFor({
         composer={
           agent.kind === "not-linked" && surface !== "desktop" ? (
             <>
-              <AgentUnavailable agent={agent} />
+              <AgentUnavailable kind="not-linked" />
               {composer(null, false)}
             </>
           ) : (
@@ -807,4 +809,3 @@ function ChannelMembersPane({
   );
 }
 
-export { firstName };
