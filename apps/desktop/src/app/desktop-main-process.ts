@@ -9,10 +9,12 @@ export interface DesktopWindowHandle {
 export interface DesktopWindowFactory {
   /**
    * Creates the one app window. Closing it hides it: its page is where the
-   * person's notifications arrive, so it lives as long as the app does and is
-   * destroyed only by quitting.
+   * person's notifications arrive, so it stays alive until quit or a load failure.
    */
-  create(onClosed: () => void, options: { readonly show: boolean }): Promise<DesktopWindowHandle>;
+  create(
+    onClosed: () => void,
+    options: { readonly show: boolean },
+  ): { readonly window: DesktopWindowHandle; readonly loaded: Promise<void> };
 }
 
 export interface DesktopMainServices {
@@ -30,7 +32,7 @@ export class DesktopMainProcess {
   #serviceStartPromise: Promise<void> | undefined;
   #window: DesktopWindowHandle | null = null;
   #windowHidden = false;
-  #windowOpening: Promise<void> | undefined;
+  #windowLoaded: Promise<void> | undefined;
 
   constructor(options: {
     readonly onServiceError?: (error: Error) => void;
@@ -73,8 +75,9 @@ export class DesktopMainProcess {
 
   async activate(): Promise<void> {
     if (!this.#started || this.#stopPromise || this.#windowHidden) return;
-    if (!this.#window || this.#window.isDestroyed()) await this.#openWindow({ show: true });
+    const loaded = this.#openWindow({ show: true });
     this.focus();
+    await loaded;
   }
 
   focus(): void {
@@ -119,29 +122,28 @@ export class DesktopMainProcess {
     }
   }
 
-  async #openWindow(options: { readonly show: boolean }): Promise<void> {
+  #openWindow(options: { readonly show: boolean }): Promise<void> {
     const existing = this.#window;
-    if (existing && !existing.isDestroyed()) return;
-    if (this.#windowOpening) return this.#windowOpening;
-    const opening = (async () => {
-      let created: DesktopWindowHandle | undefined;
-      created = await this.#windows.create(() => {
-        if (this.#window !== created) return;
+    if (existing && !existing.isDestroyed()) return this.#windowLoaded ?? Promise.resolve();
+    const { window, loaded } = this.#windows.create(
+      () => {
+        if (this.#window !== window) return;
         this.#window = null;
+        this.#windowLoaded = undefined;
         this.#onWindowClosed();
-      }, options);
-      if (!this.#started || this.#stopPromise) {
-        created.destroy();
-        return;
+      },
+      { show: options.show && !this.#windowHidden },
+    );
+    this.#window = window;
+    const loading = loaded.catch((error: unknown) => {
+      if (!window.isDestroyed()) window.destroy();
+      if (this.#window === window) {
+        this.#window = null;
+        this.#windowLoaded = undefined;
       }
-      this.#window = created;
-      if (this.#windowHidden) created.hide();
-    })();
-    this.#windowOpening = opening;
-    try {
-      await opening;
-    } finally {
-      this.#windowOpening = undefined;
-    }
+      throw error;
+    });
+    this.#windowLoaded = loading;
+    return loading;
   }
 }

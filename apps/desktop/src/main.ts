@@ -299,6 +299,7 @@ async function runDesktop(
   const uninstallAppProtocol = installDesktopAppProtocol(
     protocol,
     path.join(import.meta.dirname, "web"),
+    (request) => reportEvent("desktop.app-protocol.slow", request),
   );
   const updater = new DesktopUpdater({
     updates: loaded.config.updates,

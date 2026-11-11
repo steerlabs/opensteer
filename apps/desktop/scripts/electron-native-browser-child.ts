@@ -1027,7 +1027,9 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       },
     }),
   );
-  kit.shell = await factory.create(() => undefined, { show: !selection.noSerial });
+  const shell = factory.create(() => undefined, { show: !selection.noSerial });
+  kit.shell = shell.window;
+  await shell.loaded;
   // This geometry matrix also exercises stages below the app's normal minimum.
   // Responsive pane changes are allowed; resizeStage converges on the real stage.
   kit.shell.setMinimumSize(0, 0);

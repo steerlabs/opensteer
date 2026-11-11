@@ -206,10 +206,11 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     this.#onCreated = options.onCreated ?? (() => undefined);
   }
 
-  async create(
+  create(
     onClosed: () => void,
     options: { readonly show: boolean },
-  ): Promise<ElectronAppWindow> {
+  ): { readonly window: ElectronAppWindow; readonly loaded: Promise<void> } {
+    const started = performance.now();
     const window = createElectronAppWindow(
       {
         backgroundColor: "#080808",
@@ -241,9 +242,13 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       event.preventDefault();
       this.#quit();
     });
-    window.webContents.once("did-finish-load", () => {
-      if (options.show && !window.isDestroyed()) window.show();
-    });
+    const reportLoad = (phase: "committed" | "dom-ready" | "finished" | "failed") => {
+      process.stdout.write(
+        `${JSON.stringify({ event: "desktop.window.load", phase, elapsedMs: Math.round(performance.now() - started) })}\n`,
+      );
+    };
+    window.webContents.on("did-navigate", () => reportLoad("committed"));
+    window.webContents.on("dom-ready", () => reportLoad("dom-ready"));
     // Closing hides: the page keeps receiving the person's notifications.
     // Quitting destroys the window, which emits no `close`.
     window.on("close", (event) => {
@@ -251,15 +256,18 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       window.hide();
     });
     window.once("closed", onClosed);
-    try {
-      await window.webContents.loadURL(desktopAppEntryUrl);
-    } catch (error) {
-      window.destroy();
-      throw new Error("The desktop window could not load its bundled application.", {
-        cause: error,
-      });
-    }
-    return window;
+    if (options.show) window.show();
+    const loaded = window.webContents.loadURL(desktopAppEntryUrl).then(
+      () => reportLoad("finished"),
+      (error: unknown) => {
+        reportLoad("failed");
+        window.destroy();
+        throw new Error("The desktop window could not load its bundled application.", {
+          cause: error,
+        });
+      },
+    );
+    return { window, loaded };
   }
 }
 
