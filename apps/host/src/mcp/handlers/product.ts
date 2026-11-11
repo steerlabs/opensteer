@@ -1739,13 +1739,14 @@ export class ProductToolHandlers {
   }
   async thread_wait(call: ToolCall<"thread_wait">) {
     const { caller, input } = call;
-    const assignment = input.assignmentId
-      ? await this.#store.getAssignmentForOwner({
-          assignmentId: input.assignmentId,
-          ownerId: caller.userId,
-        })
+    // A caller waiting on the conversation of a task it assigned is waiting on that task: the
+    // result it is handed must not also return to it by itself.
+    const own = input.threadId ? await this.#assignedTask(caller, input.threadId) : undefined;
+    const assignmentId = input.assignmentId ?? (input.afterMessageId ? undefined : own);
+    const assignment = assignmentId
+      ? await this.#store.getAssignmentForOwner({ assignmentId, ownerId: caller.userId })
       : null;
-    if (input.assignmentId && !assignment) throw forbidden("Assignment is unavailable");
+    if (assignmentId && !assignment) throw forbidden("Assignment is unavailable");
     const threadId = assignment?.workerThreadId ?? input.threadId!;
     await this.#assertWaitTarget(caller, threadId);
     let runId: import("@opensteer/core").RunId | undefined;
@@ -1826,10 +1827,12 @@ export class ProductToolHandlers {
     await withDatabaseTransaction(this.#store.database, (tx) =>
       assertThreadCaller(tx, threadCallerAuthority(caller), { threadId, readOnly: true }),
     );
+    // Watching its own task's messages hands the caller the final reply too, once it has settled.
+    const settled = assignment?.id ?? (result.status === "settled" ? own : undefined);
     const task =
-      assignment && result.status === "settled"
+      settled && result.status === "settled"
         ? await readAssignmentResult(this.#store.database, {
-            assignmentId: assignment.id,
+            assignmentId: settled,
             authority: threadCallerAuthority(caller),
             ...(call.signal ? { signal: call.signal } : {}),
           })
@@ -1847,6 +1850,33 @@ export class ProductToolHandlers {
       items,
       hasMore: result.hasMore === true || items.length < result.messages.length,
     };
+  }
+  /** The newest task on `threadId` that this very caller assigned, if it assigned one. */
+  async #assignedTask(caller: AgentCaller, threadId: Thread["id"]) {
+    if (caller.kind === "connection") return undefined;
+    const authority = threadCallerAuthority(caller);
+    if (authority.kind === "connection") return undefined;
+    const row = await this.#store.database
+      .selectFrom("delegations")
+      .select("id")
+      .where("childThreadId", "=", threadId)
+      .where(
+        authority.kind === "run"
+          ? "parentRunId"
+          : authority.kind === "trigger"
+            ? "parentOccurrenceId"
+            : "parentWatchActivationId",
+        "=",
+        authority.kind === "run"
+          ? authority.scope.runId
+          : authority.kind === "trigger"
+            ? authority.scope.occurrenceId
+            : authority.scope.activationId,
+      )
+      .orderBy("createdAt", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    return row?.id;
   }
   async #assertWaitTarget(caller: AgentCaller, threadId: Thread["id"]) {
     if (caller.kind === "connection") return;

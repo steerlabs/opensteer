@@ -12,8 +12,8 @@ Inspect existing Triggers before creating overlapping work. Reuse the owning Thr
 Visibility follows Thread reach. Control actions require an anchor access mode no higher than yours. Creating, updating, manually running or archiving requires full-access within live reach and Workspace authority. Delegated work inherits its root’s reach. Tell the person when creating a Trigger or changing what it runs. Opensteer owns Main's background memory passes: pause or resume them, never archive or reprogram them.
 
 Programs use the same MCP as Runs with the program tool list. `delegate_task` returns the task;
-programs may observe its `threadId` with `thread_wait`, whose `items` match `thread_read`. Runs
-instead end their turn for continuation. `computer`, `sign_in` and person
+a program or a Run may wait on its `assignmentId` with `thread_wait`, bounded at 100 seconds, or
+observe its `threadId`, whose `items` match `thread_read`. `computer`, `sign_in` and person
 message/show tools are Run-only. Delegate when agent judgment or a Run-only tool is needed.
 Programs cannot approve, grant access, handle sign-in credentials or raise their ceiling.
 

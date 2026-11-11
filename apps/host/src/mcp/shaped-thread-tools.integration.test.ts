@@ -354,6 +354,28 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
   });
 
+  it("hands the result once to a Run that waits on its own task's conversation", async ({
+    storeFixture,
+  }) => {
+    const s = await waitingTask(storeFixture, "wait-own-thread");
+    const pending = s.product.thread_wait({
+      caller: s.caller,
+      input: thread_wait.input.parse({ threadId: s.task.threadId, timeoutMs: 2_000 }),
+      operationKey: randomUUID(),
+      checkLive: s.checkLive,
+    });
+    await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await s.settle();
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    await s.wake();
+    expect(await pending).toMatchObject({
+      status: "settled",
+      task: { result: "42", status: "completed" },
+    });
+    expect(await s.returns()).toEqual([]);
+    expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
+  });
+
   it("leaves automatic return intact after a timeout and reports an empty settled result", async ({
     storeFixture,
   }) => {
