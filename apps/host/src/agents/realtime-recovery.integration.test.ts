@@ -33,7 +33,9 @@ const fakeCodexAppServer = fileURLToPath(
 );
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 const canonicalOrigin = "https://home.connect.opensteer.test";
@@ -45,14 +47,15 @@ const routeOrigin = "https://route.connect.opensteer.test";
  */
 const recoveryBudgetMs = 6_000;
 /** A silence threshold short enough that a quiet socket is questioned within the budget. */
-const quickLiveness = { deadlineMs: 400, idleMs: 400 };
-
+const quickLiveness = {
+  deadlineMs: 400,
+  idleMs: 400,
+};
 interface JourneyStep {
   readonly atMs: number;
   readonly step: string;
   readonly detail?: Record<string, unknown>;
 }
-
 interface SocketRecord {
   readonly path: string;
   readonly openedAtMs: number;
@@ -61,9 +64,10 @@ interface SocketRecord {
   closeReason: string | null;
   silenced: boolean;
   readonly socket: WebSocket;
-  readonly events: { readonly message: (data: string | Uint8Array) => void };
+  readonly events: {
+    readonly message: (data: string | Uint8Array) => void;
+  };
 }
-
 interface ViewerClient {
   activateThread(threadId: string): void;
   dispose(): void;
@@ -71,24 +75,27 @@ interface ViewerClient {
     readonly connection: string;
     readonly transcripts: Record<
       string,
-      readonly { readonly kind: string; readonly messageKind?: string }[]
+      readonly {
+        readonly kind: string;
+        readonly messageKind?: string;
+      }[]
     >;
   };
   load(): Promise<void>;
 }
-
 interface DesktopTransport {
   openWebSocket(
     ownerId: number,
     input: unknown,
     onEvent: (event: { readonly connectionId: string; readonly type: string }) => void,
-  ): Promise<{ readonly connectionId: string }>;
+  ): Promise<{
+    readonly connectionId: string;
+  }>;
   sendWebSocket(ownerId: number, input: unknown): void;
   closeWebSocket(ownerId: number, input: unknown): void;
   request(input: unknown): Promise<unknown>;
   selection(): Promise<unknown>;
 }
-
 interface DesktopApp {
   readonly client: ViewerClient;
   readonly sockets: SocketRecord[];
@@ -107,7 +114,6 @@ interface DesktopApp {
   silenceRealtime(replacements?: number): void;
   realtimeOpens(): number;
 }
-
 interface Scenario {
   readonly name: string;
   /** Why each replaced realtime socket ended, in order: the mechanism that recovered it. */
@@ -118,11 +124,9 @@ interface Scenario {
   /** Runs once the second reply is committed, before the app must draw it. */
   readonly repair?: (app: DesktopApp) => Promise<void>;
 }
-
 integration("Realtime Workspace channel through the Desktop bridge", () => {
   let stack: VerticalStack | undefined;
   const apps: DesktopApp[] = [];
-
   beforeAll(async () => {
     const harnesses = new HarnessRegistry();
     harnesses.registerDriver(
@@ -147,7 +151,6 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
       runTimeoutMs: 15_000,
     });
   }, 120_000);
-
   afterAll(async () => {
     for (const app of apps.splice(0)) {
       app.client.dispose();
@@ -156,7 +159,6 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
     await stack?.close();
     stack = undefined;
   }, 60_000);
-
   it("delivers the next reply after the app's route moves under an open channel", async () => {
     await journey(stack!, apps, {
       closes: ["Deployment changed"],
@@ -164,7 +166,6 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
       name: "route-moved",
     });
   }, 90_000);
-
   it("replays a reply committed while the app's route was gone, once it returns", async () => {
     await journey(stack!, apps, {
       closes: ["Deployment changed"],
@@ -173,7 +174,6 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
       repair: (app) => app.restoreRoute(),
     });
   }, 90_000);
-
   it("replays a reply committed after a frame the app could not read", async () => {
     await journey(stack!, apps, {
       closes: ["Invalid Host protocol frame"],
@@ -181,7 +181,6 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
       name: "unreadable-frame",
     });
   }, 90_000);
-
   it("replays a reply committed while the open channel was silent", async () => {
     await journey(stack!, apps, {
       closes: ["Liveness probe unanswered"],
@@ -190,7 +189,6 @@ integration("Realtime Workspace channel through the Desktop bridge", () => {
       name: "silent-channel",
     });
   }, 90_000);
-
   it("gives up on a replacement that opens but never synchronizes, and backs off to one that does", async () => {
     await journey(stack!, apps, {
       closes: ["Liveness probe unanswered", "Realtime channel silent"],
@@ -215,7 +213,15 @@ async function journey(
   const startedAt = Date.now();
   const steps: JourneyStep[] = [];
   const step = (name: string, detail?: Record<string, unknown>) =>
-    steps.push({ atMs: Date.now() - startedAt, step: name, ...(detail ? { detail } : {}) });
+    steps.push({
+      atMs: Date.now() - startedAt,
+      step: name,
+      ...(detail
+        ? {
+            detail,
+          }
+        : {}),
+    });
   let outcome: "passed" | "failed" = "failed";
   let app: DesktopApp | undefined;
   try {
@@ -223,7 +229,6 @@ async function journey(
       idempotencyKey: `realtime-${scenario.name}`,
       modelSelection,
       title: `Realtime ${scenario.name}`,
-      workspaceId: stack.mainWorkspaceId,
     });
     app = await desktopApp(stack, startedAt, scenario.liveness);
     apps.push(app);
@@ -233,27 +238,28 @@ async function journey(
     await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"), {
       timeout: 15_000,
     });
-    step("synchronized", { realtimeOpens: app.realtimeOpens() });
-
+    step("synchronized", {
+      realtimeOpens: app.realtimeOpens(),
+    });
     await stack.sendMessage({
       text: "First message, before anything breaks.",
       threadId,
-      workspaceId: stack.mainWorkspaceId,
     });
     await vi.waitFor(() => expect(assistantReplies(client, threadId)).toBe(1), {
       timeout: 15_000,
     });
     step("first-reply-visible");
-
     await scenario.fault(app);
-    step("fault-injected", { realtimeOpens: app.realtimeOpens() });
-
+    step("fault-injected", {
+      realtimeOpens: app.realtimeOpens(),
+    });
     await stack.sendMessage({
       text: "Second message, after the channel broke.",
       threadId,
-      workspaceId: stack.mainWorkspaceId,
     });
-    step("second-reply-persisted", { replies: assistantReplies(client, threadId) });
+    step("second-reply-persisted", {
+      replies: assistantReplies(client, threadId),
+    });
     if (scenario.repair) {
       await scenario.repair(app);
       step("repaired");
@@ -272,7 +278,9 @@ async function journey(
     expect(realtime.at(-1)?.closedAtMs).toBeNull();
     outcome = "passed";
   } finally {
-    await mkdir(evidenceDirectory, { recursive: true });
+    await mkdir(evidenceDirectory, {
+      recursive: true,
+    });
     await writeFile(
       join(evidenceDirectory, `${scenario.name}.json`),
       `${JSON.stringify(
@@ -290,7 +298,6 @@ async function journey(
     );
   }
 }
-
 function assistantReplies(client: ViewerClient, threadId: ThreadId): number {
   return (client.getSnapshot().transcripts[threadId] ?? []).filter(
     (entry) => entry.kind === "message" && entry.messageKind === "assistant",
@@ -334,8 +341,12 @@ async function desktopApp(
     import(testSupportPath),
     import(hostClientPath),
   ])) as [
-    { DesktopHostTransport: new (options: unknown) => DesktopTransport },
-    { DesktopAccessProjection: new (options: unknown) => unknown },
+    {
+      DesktopHostTransport: new (options: unknown) => DesktopTransport;
+    },
+    {
+      DesktopAccessProjection: new (options: unknown) => unknown;
+    },
     {
       createDesktopHostFetch: (
         bridge: OpensteerDesktopBridge,
@@ -347,35 +358,59 @@ async function desktopApp(
       ) => (url: string) => unknown;
     },
     {
-      DeploymentCatalogSchema: { parse(value: unknown): unknown };
-      DeploymentConnectionSchema: { parse(value: unknown): Record<string, unknown> };
-      HostTransportError: new (...args: never[]) => Error & { readonly code: string };
+      DeploymentCatalogSchema: {
+        parse(value: unknown): unknown;
+      };
+      DeploymentConnectionSchema: {
+        parse(value: unknown): Record<string, unknown>;
+      };
+      HostTransportError: new (...args: never[]) => Error & {
+        readonly code: string;
+      };
     },
-    { testDiscoveryEnvelope: (input: unknown) => unknown },
-    { HttpHostClient: new (options: Record<string, unknown>) => ViewerClient },
+    {
+      testDiscoveryEnvelope: (input: unknown) => unknown;
+    },
+    {
+      HttpHostClient: new (options: Record<string, unknown>) => ViewerClient;
+    },
   ];
-
   const now = new Date(startedAt).toISOString();
   const deploymentId = createId("deployment");
   const connection = connections.DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
       canonicalOrigin,
       deploymentId,
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+      deploymentShape: {
+        defaultWorkspaceBacking: "local-directory",
+        kind: "server",
+      },
       hostInstanceId: createId("hostInstance"),
-      hostKey: { algorithm: "Ed25519" },
+      hostKey: {
+        algorithm: "Ed25519",
+      },
     }),
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [
-      { kind: "canonical", origin: canonicalOrigin, verifiedAt: now },
-      { kind: "direct", origin: routeOrigin, verifiedAt: now },
+      {
+        kind: "canonical",
+        origin: canonicalOrigin,
+        verifiedAt: now,
+      },
+      {
+        kind: "direct",
+        origin: routeOrigin,
+        verifiedAt: now,
+      },
     ],
     kind: "self-hosted",
     lastUsedAt: null,
     name: "Home",
     reachability: "canonical",
-    source: { kind: "manual" },
+    source: {
+      kind: "manual",
+    },
     updatedAt: now,
   });
   let catalog = connections.DeploymentCatalogSchema.parse({
@@ -384,7 +419,10 @@ async function desktopApp(
     schemaVersion: 4,
     selectedDeploymentId: deploymentId,
     updatedAt: now,
-  }) as { readonly revision: number; readonly deployments: readonly Record<string, unknown>[] };
+  }) as {
+    readonly revision: number;
+    readonly deployments: readonly Record<string, unknown>[];
+  };
   const replaceCatalog = (deployments: readonly Record<string, unknown>[]) => {
     catalog = connections.DeploymentCatalogSchema.parse({
       deployments,
@@ -412,7 +450,6 @@ async function desktopApp(
     },
     subscribe: () => () => undefined,
   };
-
   const sockets: SocketRecord[] = [];
   let silenceReplacements = 0;
   const tunnel = (url: string) => {
@@ -446,7 +483,11 @@ async function desktopApp(
       if (input.request.headers.idempotencyKey)
         headers.set("idempotency-key", input.request.headers.idempotencyKey);
       return fetch(tunnel(input.url), {
-        ...(input.request.body === undefined ? {} : { body: input.request.body }),
+        ...(input.request.body === undefined
+          ? {}
+          : {
+              body: input.request.body,
+            }),
         headers,
         method: input.request.method,
         redirect: "error",
@@ -454,7 +495,9 @@ async function desktopApp(
       });
     },
     openWebSocket: (
-      input: { readonly url: string },
+      input: {
+        readonly url: string;
+      },
       events: {
         readonly close: (code: number, reason: string) => void;
         readonly error: (message: string) => void;
@@ -465,7 +508,10 @@ async function desktopApp(
       const target = tunnel(input.url);
       target.protocol = "ws:";
       const socket = new WebSocket(target, {
-        headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+        headers: {
+          cookie: stack.sessionCookie,
+          origin: stack.hostOrigin.origin,
+        },
       });
       const record: SocketRecord = {
         closeCode: null,
@@ -504,8 +550,9 @@ async function desktopApp(
       };
     },
   };
-
-  const localRuntime = { current: async () => null };
+  const localRuntime = {
+    current: async () => null,
+  };
   const transport = new DesktopHostTransport({
     catalog: catalogStore,
     localRuntime,
@@ -516,7 +563,6 @@ async function desktopApp(
       supervisedDeploymentId: async () => null,
     }),
   });
-
   const ownerId = 1;
   const listeners = new Set<(event: unknown) => void>();
   const toRenderer = (event: unknown) => {
@@ -535,10 +581,18 @@ async function desktopApp(
     hostRequest: (input: unknown) =>
       invoke(async () => {
         try {
-          return { data: await transport.request(input), ok: true };
+          return {
+            data: await transport.request(input),
+            ok: true,
+          };
         } catch (error) {
           if (!(error instanceof connections.HostTransportError)) throw error;
-          return { error: { code: error.code }, ok: false };
+          return {
+            error: {
+              code: error.code,
+            },
+            ok: false,
+          };
         }
       }),
     onHostWebSocketEvent: (listener: (event: unknown) => void) => {
@@ -549,18 +603,20 @@ async function desktopApp(
       invoke(() => transport.openWebSocket(ownerId, input, toRenderer)),
     sendHostWebSocket: (input: unknown) => invoke(() => transport.sendWebSocket(ownerId, input)),
   } as unknown as OpensteerDesktopBridge;
-
   const client = new HttpHostClient({
     baseUrl: new URL(canonicalOrigin),
     fetch: web.createDesktopHostFetch(bridge, canonicalOrigin),
-    ...(liveness ? { realtimeLiveness: liveness } : {}),
+    ...(liveness
+      ? {
+          realtimeLiveness: liveness,
+        }
+      : {}),
     reconnectBaseDelayMs: 20,
     reconnectMaxDelayMs: 200,
     // The person's app polls; the poll must not be what repairs a channel.
     refreshIntervalMs: 60_000,
     webSocketFactory: web.createDesktopHostWebSocketFactory(bridge, canonicalOrigin),
   });
-
   const realtimeSockets = () => sockets.filter((record) => record.path === "/v1/realtime");
   let restoreDeployments: readonly Record<string, unknown>[] | null = null;
   return {
@@ -577,7 +633,9 @@ async function desktopApp(
       restoreDeployments = held;
     },
     moveRoute: async () => {
-      await catalogStore.setPreferredEndpoint({ origin: routeOrigin });
+      await catalogStore.setPreferredEndpoint({
+        origin: routeOrigin,
+      });
       await transport.selection();
     },
     restoreRoute: async () => {

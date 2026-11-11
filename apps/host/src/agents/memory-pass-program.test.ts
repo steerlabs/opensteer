@@ -8,7 +8,6 @@ import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import { expect, it } from "vitest";
 import { TriggerProgramExecutor } from "@opensteer/runner";
 import { memoryPassProgram } from "./memory-pass-program.js";
-
 it.each(["memory-light", "memory-nightly"] as const)(
   "queues %s directly through MCP, treats only the exact managed refusal as success",
   async (role) => {
@@ -41,13 +40,29 @@ it.each(["memory-light", "memory-nightly"] as const)(
             result:
               message.method === "initialize"
                 ? {
-                    capabilities: { tools: {} },
+                    capabilities: {
+                      tools: {},
+                    },
                     protocolVersion: "2025-11-25",
-                    serverInfo: { name: "memory-test", version: "1" },
+                    serverInfo: {
+                      name: "memory-test",
+                      version: "1",
+                    },
                   }
                 : {
-                    content: [{ type: "text", text: errorText ?? "{}" }],
-                    ...(errorText ? { isError: true } : { structuredContent: {} }),
+                    content: [
+                      {
+                        type: "text",
+                        text: errorText ?? "{}",
+                      },
+                    ],
+                    ...(errorText
+                      ? {
+                          isError: true,
+                        }
+                      : {
+                          structuredContent: {},
+                        }),
                   },
           }),
         );
@@ -60,7 +75,10 @@ it.each(["memory-light", "memory-nightly"] as const)(
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("MCP fixture failed to bind");
-      const endpoint = { token: "test", url: `http://127.0.0.1:${address.port}/mcp` };
+      const endpoint = {
+        token: "test",
+        url: `http://127.0.0.1:${address.port}/mcp`,
+      };
       const threadId = createId("thread");
       const workspaceId = createId("workspace");
       const triggerId = createId("trigger");
@@ -79,9 +97,16 @@ it.each(["memory-light", "memory-nightly"] as const)(
           event: {
             id: occurrenceId,
             receivedAt: "2026-11-03T09:30:00Z",
-            source: { kind: "schedule", scheduledFor: "2026-11-03T09:30:00Z" },
+            source: {
+              kind: "schedule",
+              scheduledFor: "2026-11-03T09:30:00Z",
+            },
             payload: null,
-            trigger: { anchorThreadId: threadId, id: triggerId, revisionId, workspaceId },
+            trigger: {
+              anchorThreadId: threadId,
+              id: triggerId,
+              revisionId,
+            },
           },
           executionGeneration: 1,
           mcp: endpoint,
@@ -89,14 +114,12 @@ it.each(["memory-light", "memory-nightly"] as const)(
           program: memoryPassProgram(role),
           revisionId,
           triggerId,
-          workspaceId,
           workspaceAccess: {
             generation: 1,
             kind: "local-directory",
             bindingId: createId("workspaceBinding"),
             ownerEnvironmentId: createId("environment"),
             storageAuthorityId: createId("storageAuthority"),
-            workspaceId,
           },
         });
         const output = await new TriggerProgramExecutor({
@@ -104,10 +127,15 @@ it.each(["memory-light", "memory-nightly"] as const)(
           privateDirectory: join(directory, "private"),
         }).execute({
           context,
-          endpoints: { mcp: endpoint },
+          endpoints: {
+            mcp: endpoint,
+          },
           planLaunch: async () => (launch) => launch,
           signal: AbortSignal.timeout(5_000),
-          workspace: { instructions: undefined, path: directory },
+          workspace: {
+            instructions: undefined,
+            path: directory,
+          },
         });
         expect(output.status).toBe(
           refusal === null || refusal === MANAGED_MEMORY_WAKE_SKIPPED ? "succeeded" : "failed",
@@ -126,7 +154,10 @@ it.each(["memory-light", "memory-nightly"] as const)(
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, {
+        recursive: true,
+        force: true,
+      });
     }
   },
 );

@@ -1,3 +1,5 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   createId,
   MessageAuthorSchema,
@@ -9,11 +11,9 @@ import {
 import { sql, type Kysely } from "kysely";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import type { DatabaseSchema } from "./schema.js";
-import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { jsonValue, systemPrincipalId } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 export interface PersonMessageInput {
   readonly admission: RunToolAdmissionInput;
   readonly message: string;
@@ -23,7 +23,6 @@ export interface PersonMessageResult {
   readonly events: readonly AgentEvent[];
   readonly wasDuplicate: boolean;
 }
-
 export async function publishPersonMessage(
   database: Kysely<DatabaseSchema>,
   input: PersonMessageInput,
@@ -31,31 +30,21 @@ export async function publishPersonMessage(
   const text = PersonMessageSchema.parse(input.message);
   const admission = input.admission;
   if (admission.action !== "person.message")
-    throw new OpensteerError({ code: "bad_request", message: "Invalid notification admission" });
-  return withRequestWorkspaceLocks(
-    database,
-    async () => [admission.workspaceId],
-    async (transaction) => {
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Invalid notification admission",
+    });
+  return withPersonalTransaction(database, async (personalTransaction) => {
+    await (async (transaction) => {
+      await admitRunToolCallInTransaction(transaction, admission);
+    })(personalTransaction);
+    return (async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .select(["requestedBy", "actorPrincipalId"])
         .where("id", "=", admission.runId)
         .executeTakeFirstOrThrow();
-      const recipient = await transaction
-        .selectFrom("workspaceMemberships")
-        .innerJoin("users", "users.id", "workspaceMemberships.userId")
-        .select("users.id")
-        .where("workspaceMemberships.workspaceId", "=", admission.workspaceId)
-        .where("workspaceMemberships.userId", "=", run.requestedBy)
-        .where("workspaceMemberships.state", "=", "active")
-        .where("users.disabledAt", "is", null)
-        .forShare("workspaceMemberships")
-        .executeTakeFirst();
-      if (!recipient)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Notification recipient is unavailable",
-        });
+      await requirePersonalOwner(transaction, run.requestedBy);
       const receipt = await transaction
         .selectFrom("agentControlRequests")
         .select("resultMessageId")
@@ -68,12 +57,15 @@ export async function publishPersonMessage(
           .selectAll()
           .where("id", "=", receipt.resultMessageId)
           .executeTakeFirstOrThrow();
-        return { message: messageFromRow(row), events: [], wasDuplicate: true };
+        return {
+          message: messageFromRow(row),
+          events: [],
+          wasDuplicate: true,
+        };
       }
       const thread = await transaction
         .selectFrom("threads")
-        .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
-        .select(["threads.nextMessageSequence", "workspaces.name as workspaceName"])
+        .select(["threads.nextMessageSequence"])
         .where("threads.id", "=", admission.sourceThreadId)
         .forNoKeyUpdate("threads")
         .executeTakeFirstOrThrow();
@@ -98,39 +90,51 @@ export async function publishPersonMessage(
               displayName: principal.displayName,
               runId: admission.runId,
               threadId: admission.sourceThreadId,
-              workspaceId: admission.workspaceId,
-              workspaceName: thread.workspaceName,
             }),
           ),
-          content: jsonValue([{ type: "text", text }]),
+          content: jsonValue([
+            {
+              type: "text",
+              text,
+            },
+          ]),
           sequence: thread.nextMessageSequence,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
       await transaction
         .updateTable("threads")
-        .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+        .set({
+          nextMessageSequence: sql`next_message_sequence + 1`,
+          updatedAt: new Date(),
+        })
         .where("id", "=", admission.sourceThreadId)
         .executeTakeFirstOrThrow();
       const message = messageFromRow(row);
-      const event = await appendHostWorkspaceEvent(transaction, {
+      const event = await appendHostDeploymentEvent(transaction, {
         type: "message.created",
-        data: { input: null, message, addressedToUserId: run.requestedBy },
+        data: {
+          input: null,
+          message,
+          addressedToUserId: run.requestedBy,
+        },
         environmentId: admission.environmentId,
         runId: admission.runId,
         threadId: admission.sourceThreadId,
-        workspaceId: admission.workspaceId,
       });
       await transaction
         .updateTable("agentControlRequests")
-        .set({ resultMessageId: message.id })
+        .set({
+          resultMessageId: message.id,
+        })
         .where("runId", "=", admission.runId)
         .where("requestId", "=", admission.requestId)
         .executeTakeFirstOrThrow();
-      return { message, events: [event], wasDuplicate: false };
-    },
-    async (transaction) => {
-      await admitRunToolCallInTransaction(transaction, admission);
-    },
-  );
+      return {
+        message,
+        events: [event],
+        wasDuplicate: false,
+      };
+    })(personalTransaction);
+  });
 }

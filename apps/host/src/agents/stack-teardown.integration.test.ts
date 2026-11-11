@@ -2,11 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { HarnessRegistry, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 // PostgreSQL fixtures are configured only by the integration launcher.
 const integration = databaseUrl ? describe : describe.skip;
-
 integration("Vertical stack teardown", () => {
   it("joins engines and a held final save before closing Host and its database", async () => {
     const entered = Promise.withResolvers<void>();

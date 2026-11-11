@@ -1,10 +1,8 @@
 import type { ThreadId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
-
 const passIntervalMs = 60 * 60 * 1_000;
 const pageSize = 100;
-
 interface QuietTasksDependencies {
   readonly store: Pick<OpensteerStore, "listQuietTasks">;
   readonly commands: Pick<CommandService, "setThreadDone">;
@@ -22,11 +20,9 @@ export class QuietTasks {
   readonly #shutdown = new AbortController();
   #timer: NodeJS.Timeout | undefined;
   #pass: Promise<void> | null = null;
-
   constructor(dependencies: QuietTasksDependencies) {
     this.#dependencies = dependencies;
   }
-
   start(): void {
     if (this.#timer || this.#shutdown.signal.aborted) return;
     void this.run();
@@ -41,13 +37,11 @@ export class QuietTasks {
       .finally(() => (this.#pass = null));
     return this.#pass;
   }
-
   async stop(): Promise<void> {
     this.#shutdown.abort();
     clearInterval(this.#timer);
     await this.#pass;
   }
-
   async #movePass(): Promise<void> {
     const { store, commands, onError } = this.#dependencies;
     const now = this.#dependencies.now?.() ?? new Date();
@@ -56,7 +50,11 @@ export class QuietTasks {
       const page = await store.listQuietTasks({
         now,
         limit: pageSize,
-        ...(after ? { after } : {}),
+        ...(after
+          ? {
+              after,
+            }
+          : {}),
       });
       for (const task of page) {
         if (this.#shutdown.signal.aborted) return;

@@ -1,3 +1,4 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { OpensteerError, type AuthenticatedSession } from "@opensteer/core";
@@ -45,14 +46,7 @@ export class PersonalDesktopUpdateStore {
   ): Promise<DesktopUpdateOperation> {
     return this.database.transaction().execute(async (tx) => {
       await this.#lock(tx);
-      const owner = await tx
-        .selectFrom("users")
-        .select("instanceRole")
-        .where("id", "=", session.user.id)
-        .forShare()
-        .executeTakeFirst();
-      if (owner?.instanceRole !== "administrator")
-        throw new OpensteerError({ code: "forbidden", message: "Personal owner access required" });
+      await requirePersonalOwner(tx, session.user.id);
       await requestSettlementActor(tx, session.user.id, session.id);
       const replay = await tx
         .selectFrom("personalDesktopUpdate")

@@ -4,15 +4,12 @@ import {
   type MessageId,
   type RequestId,
   threadAccessModeAtMost,
-  threadReachScope,
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
-
 export const taskQuestionCause = "task-question";
-
 export async function taskQuestionNoticeSource(
   database: Kysely<DatabaseSchema>,
   requestId: RequestId,
@@ -69,10 +66,8 @@ export async function taskQuestionNoticeIsPending(
   const worker = threads.find(({ id }) => id === question.request.originatingThreadId);
   if (!parent || !worker || !threadAccessModeAtMost(worker.accessMode, parent.accessMode))
     return false;
-  const reach = threadReachScope(parent);
   return (
-    !(reach.kind === "workspace" && reach.workspaceId !== worker.workspaceId) &&
-    !(reach.kind === "lineage" && reach.lineageRootThreadId !== worker.lineageRootThreadId) &&
+    (parent.specialistId === null || parent.specialistId === worker.specialistId) &&
     (await threadExecutionIsAvailableToUser(transaction, worker.id, input.requestedBy))
   );
 }

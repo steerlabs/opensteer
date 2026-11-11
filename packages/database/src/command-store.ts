@@ -1,3 +1,5 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
@@ -14,7 +16,7 @@ import {
 import type { z } from "zod";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import {
   revokeRunGrants,
   runHasActiveGrant,
@@ -23,14 +25,12 @@ import {
 } from "./run-grants.js";
 import { pendingReplacementAttempt, type RunAttemptRow } from "./run-attempts.js";
 import {
-  type WorkspaceRow,
   type CommandRow,
   type DatabaseSchema,
   type PendingCommandRow,
   type RunRow,
 } from "./schema.js";
 import {
-  wakeableWorkspaceStatuses,
   type UserId,
   type RunId,
   type ThreadId,
@@ -39,9 +39,9 @@ import {
   type AgentEvent,
   OpensteerError,
   nonTerminalRunStatuses,
-  type WorkspaceId,
   type Request,
   RequestIdSchema,
+  ResolvedRequestSchema,
   RequestSettlementProvenanceSchema,
   RequestAgentAnswererSchema,
   UserIdSchema,
@@ -57,15 +57,12 @@ import { type InsertObject, type Transaction, sql, type Kysely } from "kysely";
 import {
   jsonValue,
   threadExecutionIsAvailableToUser,
-  safeGeneration,
   lockThreadRow,
-  lockWorkspaceRow,
   type ChannelLinks,
   requireBoundedIdentity,
   lockCommandIdempotency,
   findCommandByIdempotency,
   idempotencyConflict,
-  requireActiveWorkspaceMembership,
   principalIdForUser,
   returnRunToQueue,
   safeError,
@@ -83,23 +80,12 @@ import {
   settleStoppedConversationInputs,
 } from "./thread-inbox.js";
 import { projectThreadState } from "./thread-status.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { cancelPending, requestFromRow } from "./request-store.js";
 import { threadInputFromRow, messageFromRow, runFromRow } from "./thread-row-mappers.js";
 import { isDeepStrictEqual } from "node:util";
 import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
-
-/**
- * Workspace statuses whose queued turns stay visible to the execution
- * coordinator. `ready` dispatches; a wakeable status does not dispatch yet, but
- * its storage comes back on demand, so the turn waits in the queue instead of
- * dropping out of the listing.
- */
-const dispatchVisibleWorkspaceStatuses: readonly WorkspaceRow["status"][] = [
-  "ready",
-  ...wakeableWorkspaceStatuses,
-];
 
 export type RunnerControlInput =
   | {
@@ -108,6 +94,7 @@ export type RunnerControlInput =
       readonly runId: RunId;
       readonly threadId: ThreadId;
       readonly type: "run.interrupt";
+      readonly keepQueueRunning?: true;
       readonly authority?: ThreadCallerAuthority;
     }
   | {
@@ -126,7 +113,6 @@ export type RunnerControlInput =
       readonly threadId: ThreadId;
       readonly type: "request.respond";
     };
-
 export interface ClaimedCommand {
   readonly command: CommandRow;
   readonly events: readonly AgentEvent[];
@@ -138,7 +124,6 @@ export interface ClaimedCommand {
   /** External sender revocation cancels that input, not other people sharing its authority. */
   readonly terminalFailureInput?: "seed-input";
 }
-
 async function claimObservedCommand(
   transaction: Transaction<DatabaseSchema>,
   observed: Pick<
@@ -152,15 +137,7 @@ async function claimObservedCommand(
   const run = observed.runId
     ? await transaction
         .selectFrom("runs")
-        .select([
-          "environmentId",
-          "id",
-          "membershipGeneration",
-          "status",
-          "threadId",
-          "runOrdinal",
-          "seedInputId",
-        ])
+        .select(["environmentId", "id", "status", "threadId", "runOrdinal", "seedInputId"])
         .where("id", "=", observed.runId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
@@ -185,7 +162,9 @@ async function claimObservedCommand(
       await transaction
         .updateTable("commands")
         .set({
-          lastError: jsonValue({ message: "The Request response reservation is no longer valid" }),
+          lastError: jsonValue({
+            message: "The Request response reservation is no longer valid",
+          }),
           status: "failed",
           updatedAt: new Date(),
         })
@@ -256,28 +235,11 @@ async function claimObservedCommand(
         transaction,
         observed.threadId,
         observed.requestedBy,
-        observed.type === "run.execute" && run
-          ? safeGeneration(run.membershipGeneration)
-          : undefined,
       )))
       ? "Execution authority for this Thread is no longer available."
       : undefined;
-  let workspaceId: WorkspaceId | null = null;
   if (observed.type === "run.execute") {
     if (!run) throw new Error("Claim Run lock was not established");
-    const thread = await transaction
-      .selectFrom("threads")
-      .select("workspaceId")
-      .where("id", "=", run.threadId)
-      .executeTakeFirstOrThrow();
-    workspaceId = thread.workspaceId;
-    const workspace = await transaction
-      .selectFrom("workspaces")
-      .select("status")
-      .where("id", "=", workspaceId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    if (workspace.status !== "ready") return null;
     await lockThreadRow(transaction, run.threadId);
     const queue = await transaction
       .selectFrom("threads")
@@ -301,12 +263,6 @@ async function claimObservedCommand(
     terminalFailureInput = "seed-input";
   }
   if (observed.type === "run.steer" && run) {
-    const thread = await transaction
-      .selectFrom("threads")
-      .select("workspaceId")
-      .where("id", "=", run.threadId)
-      .executeTakeFirstOrThrow();
-    await lockWorkspaceRow(transaction, thread.workspaceId);
     const steer = await transaction
       .selectFrom("threadInputs")
       .select(["messageId", "runId", "state"])
@@ -331,19 +287,17 @@ async function claimObservedCommand(
       currentThread.inputQueuePaused ||
       currentThread.status === "archived" ||
       !(await runHasActiveGrant(transaction, run.id)) ||
-      !(await threadExecutionIsAvailableToUser(
-        transaction,
-        run.threadId,
-        observed.requestedBy,
-        safeGeneration(run.membershipGeneration),
-      ))
+      !(await threadExecutionIsAvailableToUser(transaction, run.threadId, observed.requestedBy))
     ) {
       terminalFailure =
         "The Run can no longer accept this message under its original execution authority.";
     }
   }
   if (run && observed.type === "run.execute") {
-    await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+    await lockRunProjectionRows(transaction, {
+      runIds: [run.id],
+      threadIds: [run.threadId],
+    });
     if (!terminalFailure && !(await taskQuestionNoticeIsPending(transaction, run.seedInputId))) {
       terminalFailure = "The task question was already answered or withdrawn.";
       terminalFailureInput = "seed-input";
@@ -369,7 +323,7 @@ async function claimObservedCommand(
   // state. Only dispatching the original turn transitions queued -> starting.
   const events: AgentEvent[] = [];
   if (command.type === "run.execute" && !terminalFailure) {
-    if (!run || !workspaceId || run.status !== "queued") {
+    if (!run || run.status !== "queued") {
       throw new Error("Claimed Run state changed");
     }
     events.push(
@@ -385,7 +339,9 @@ async function claimObservedCommand(
     );
     const started = await transaction
       .updateTable("runs")
-      .set({ status: "starting" })
+      .set({
+        status: "starting",
+      })
       .where("id", "=", run.id)
       .where("status", "=", "queued")
       .executeTakeFirst();
@@ -396,13 +352,14 @@ async function claimObservedCommand(
       });
     }
     events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { status: "starting" },
+      await appendHostDeploymentEvent(transaction, {
+        data: {
+          status: "starting",
+        },
         environmentId: run.environmentId,
         runId: run.id,
         threadId: run.threadId,
         type: "run.status",
-        workspaceId,
       }),
     );
     events.push(...(await projectThreadState(transaction, run.threadId)));
@@ -411,11 +368,18 @@ async function claimObservedCommand(
   return {
     command,
     events,
-    ...(terminalFailure ? { terminalFailure } : {}),
-    ...(terminalFailureInput ? { terminalFailureInput } : {}),
+    ...(terminalFailure
+      ? {
+          terminalFailure,
+        }
+      : {}),
+    ...(terminalFailureInput
+      ? {
+          terminalFailureInput,
+        }
+      : {}),
   };
 }
-
 const runnerControlCommandTypes = [
   "node.stop",
   "request.respond",
@@ -423,19 +387,19 @@ const runnerControlCommandTypes = [
   "run.restart",
   "run.steer",
 ] as const;
-
 type RunnerControlCommandType = (typeof runnerControlCommandTypes)[number];
-
 interface SucceededCommand {
   readonly events: readonly AgentEvent[];
   readonly revokedGrants: readonly RevokedRunGrant[];
 }
-
 async function succeedCommandInTransaction(
   transaction: Transaction<DatabaseSchema>,
   commandId: CommandRow["id"],
 ): Promise<SucceededCommand> {
-  const none: SucceededCommand = { events: [], revokedGrants: [] };
+  const none: SucceededCommand = {
+    events: [],
+    revokedGrants: [],
+  };
   const observed = await transaction
     .selectFrom("commands")
     .leftJoin("threads", "threads.id", "commands.threadId")
@@ -445,7 +409,6 @@ async function succeedCommandInTransaction(
       "commands.type",
       "threads.environmentId",
       "threads.id as threadId",
-      "threads.workspaceId",
     ])
     .where("commands.id", "=", commandId)
     .executeTakeFirst();
@@ -459,9 +422,7 @@ async function succeedCommandInTransaction(
       .executeTakeFirst();
     if (!run) return none;
   }
-  if (observed.workspaceId) await lockWorkspaceRow(transaction, observed.workspaceId);
   if (observed.threadId) await lockThreadRow(transaction, observed.threadId);
-
   const responsePayload =
     observed.type === "request.respond" ? requestResponseCommandPayload(observed.payload) : null;
   // An accepted answer can be what lets the Run work again, so its projection
@@ -484,7 +445,6 @@ async function succeedCommandInTransaction(
           .executeTakeFirst()
       : null;
   if (responsePayload && !pending) return none;
-
   const command = await transaction
     .selectFrom("commands")
     .select(["id", "status", "type"])
@@ -495,18 +455,15 @@ async function succeedCommandInTransaction(
   const now = new Date();
   await transaction
     .updateTable("commands")
-    .set({ lastError: null, status: "succeeded", updatedAt: now })
+    .set({
+      lastError: null,
+      status: "succeeded",
+      updatedAt: now,
+    })
     .where("id", "=", commandId)
     .where("status", "in", ["dispatched", "unknown"])
     .execute();
-  if (
-    responsePayload &&
-    pending &&
-    observed.runId &&
-    observed.threadId &&
-    observed.workspaceId &&
-    observed.environmentId
-  ) {
+  if (responsePayload && pending && observed.runId && observed.threadId && observed.environmentId) {
     const request = requestFromRow(pending);
     const resolved = await transaction
       .updateTable("requests")
@@ -533,13 +490,14 @@ async function succeedCommandInTransaction(
     if (!responsePayload.settlementProvenance || !("kind" in responsePayload.settlementProvenance))
       await recordPersonWaited(transaction, observed.runId);
     const events: AgentEvent[] = [
-      await appendHostWorkspaceEvent(transaction, {
-        data: { request: requestFromRow(resolved) },
+      await appendHostDeploymentEvent(transaction, {
+        data: {
+          request: ResolvedRequestSchema.parse(requestFromRow(resolved)),
+        },
         environmentId: observed.environmentId,
         runId: observed.runId,
         threadId: observed.threadId,
         type: "request.resolved",
-        workspaceId: observed.workspaceId,
       }),
     ];
     // The engine has its last answer: the Run is working again, which is
@@ -555,7 +513,9 @@ async function succeedCommandInTransaction(
     if (!stillAsking) {
       const resumed = await transaction
         .updateTable("runs")
-        .set({ status: "running" })
+        .set({
+          status: "running",
+        })
         .where("id", "=", observed.runId)
         .where("status", "=", "waiting")
         .executeTakeFirst();
@@ -567,13 +527,15 @@ async function succeedCommandInTransaction(
       }
     }
     events.push(...(await assignmentActivityEventsForRun(transaction, observed.runId)));
-    return { events, revokedGrants };
+    return {
+      events,
+      revokedGrants,
+    };
   }
   if (
     observed.type !== "run.steer" ||
     !observed.runId ||
     !observed.threadId ||
-    !observed.workspaceId ||
     !observed.environmentId
   )
     return none;
@@ -586,7 +548,11 @@ async function succeedCommandInTransaction(
   if (!steer) return none;
   const inputRow = await transaction
     .updateTable("threadInputs")
-    .set({ deliveredAt: now, state: "delivered", updatedAt: now })
+    .set({
+      deliveredAt: now,
+      state: "delivered",
+      updatedAt: now,
+    })
     .where("messageId", "=", steer.messageId)
     .where("state", "in", ["claimed", "unknown"])
     .returningAll()
@@ -595,26 +561,25 @@ async function succeedCommandInTransaction(
   const input = threadInputFromRow(inputRow);
   return {
     events: [
-      await appendHostWorkspaceEvent(transaction, {
-        data: { input },
+      await appendHostDeploymentEvent(transaction, {
+        data: {
+          input,
+        },
         environmentId: observed.environmentId,
         runId: input.runId,
         threadId: observed.threadId,
         type: "thread-input.updated",
-        workspaceId: observed.workspaceId,
       }),
     ],
     revokedGrants: [],
   };
 }
-
 function requestResponseDispatchConflict(): OpensteerError {
   return new OpensteerError({
     code: "conflict",
     message: "The Request response reservation was cancelled before dispatch",
   });
 }
-
 function deferred<T>(): {
   readonly promise: Promise<T>;
   readonly reject: (reason?: unknown) => void;
@@ -626,16 +591,22 @@ function deferred<T>(): {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
-  return { promise, reject, resolve };
+  return {
+    promise,
+    reject,
+    resolve,
+  };
 }
-
 export function assertRequestResponse(
   request: Request,
   response: RequestResponse,
   allowSecrets: boolean,
 ): void {
   if (request.status !== "pending") {
-    throw new OpensteerError({ code: "conflict", message: "Request is already resolved" });
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Request is already resolved",
+    });
   }
   if (request.presentation.kind !== response.kind) {
     throw new OpensteerError({
@@ -648,13 +619,19 @@ export function assertRequestResponse(
       request.presentation.kind !== "choice" ||
       !request.presentation.options.some((option) => option.id === response.optionId)
     ) {
-      throw new OpensteerError({ code: "bad_request", message: "Unknown Request option" });
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Unknown Request option",
+      });
     }
     return;
   }
   if (response.kind === "external") return;
   if (request.presentation.kind !== "form") {
-    throw new OpensteerError({ code: "bad_request", message: "Request does not accept a form" });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Request does not accept a form",
+    });
   }
   const fields = new Map(request.presentation.fields.map((field) => [field.id, field]));
   if (Object.keys(response.answers).length !== fields.size) {
@@ -666,7 +643,10 @@ export function assertRequestResponse(
   for (const [fieldId, answers] of Object.entries(response.answers)) {
     const field = fields.get(fieldId);
     if (!field) {
-      throw new OpensteerError({ code: "bad_request", message: `Unknown form field ${fieldId}` });
+      throw new OpensteerError({
+        code: "bad_request",
+        message: `Unknown form field ${fieldId}`,
+      });
     }
     if (field.secret && !allowSecrets) {
       throw new OpensteerError({
@@ -697,7 +677,6 @@ export function assertRequestResponse(
     }
   }
 }
-
 function redactSecretRequestAnswers(request: Request, response: RequestResponse): RequestResponse {
   if (request.presentation.kind !== "form" || response.kind !== "form") return response;
   const secretFieldIds = new Set(
@@ -730,8 +709,7 @@ function requestStatusFromValidatedResponse(
 }
 
 /**
- * The admission every Thread turn shares: Workspace readiness, an active
- * membership and execution authority, taken under the documented
+ * The admission every Thread turn shares: personal ownership and execution authority, taken under the documented
  * declared lock order in ./lock-order.ts.
  */
 function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record<string, unknown>> {
@@ -743,7 +721,9 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
         requestedBy: input.requestedBy,
         responseFingerprint: input.sealedResponse.requestFingerprint,
         ...(input.agentResponder
-          ? { agentResponder: AgentRequestResponderSchema.parse(input.agentResponder) }
+          ? {
+              agentResponder: AgentRequestResponderSchema.parse(input.agentResponder),
+            }
           : {}),
         runId: input.runId,
         threadId: input.threadId,
@@ -751,6 +731,7 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
       };
     case "run.interrupt":
       return {
+        ...(input.keepQueueRunning ? { keepQueueRunning: true } : {}),
         idempotencyKey: input.idempotencyKey,
         requestedBy: input.requestedBy,
         runId: input.runId,
@@ -759,7 +740,6 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
       };
   }
 }
-
 function omitRequestResponse(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
   const {
@@ -769,7 +749,6 @@ function omitRequestResponse(payload: unknown): unknown {
   } = payload as Readonly<Record<string, unknown>>;
   return safe;
 }
-
 function requestResponseCommandPayload(payload: unknown): {
   readonly requestId: RequestId;
   readonly requestedBy: UserId;
@@ -778,7 +757,10 @@ function requestResponseCommandPayload(payload: unknown): {
     z.infer<typeof RequestAgentAnswererSchema> | z.infer<typeof RequestSettlementProvenanceSchema>;
 } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new OpensteerError({ code: "internal", message: "Request response command is invalid" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Request response command is invalid",
+    });
   }
   const value = payload as Readonly<Record<string, unknown>>;
   return {
@@ -794,7 +776,6 @@ function requestResponseCommandPayload(payload: unknown): {
     response: RequestResponseSchema.parse(value.response),
   };
 }
-
 function dispatchFailure(publicMessage: string): {
   readonly code: "dispatch_failed";
   readonly message: string;
@@ -809,7 +790,6 @@ function dispatchFailure(publicMessage: string): {
     status: "failed",
   };
 }
-
 export async function enqueueRunnerControl(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -822,25 +802,26 @@ export async function enqueueRunnerControl(
 }> {
   if (input.type === "request.respond") {
     if (input.agentResponder && input.agentResponder.authority.userId !== input.requestedBy)
-      throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Request is unavailable",
+      });
     requireBoundedIdentity(
       input.sealedResponse.requestFingerprint,
       "Request response fingerprint",
       255,
     );
   }
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     enqueueRunnerControlInTransaction(transaction, links, input),
   );
 }
-
 export async function enqueueRunnerControlInTransaction(
   transaction: Transaction<DatabaseSchema>,
   links: ChannelLinks,
   input: RunnerControlInput,
 ) {
   const controlPayload = canonicalRunnerControlInput(input);
-
   await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
   if (input.type === "run.interrupt")
     await lockThreadCaller(transaction, input.authority, [input.runId]);
@@ -861,29 +842,30 @@ export async function enqueueRunnerControlInTransaction(
     ) {
       throw idempotencyConflict(input.idempotencyKey);
     }
-    const existingWorkspace = await transaction
-      .selectFrom("threads")
-      .select("workspaceId")
-      .where("id", "=", input.threadId)
-      .executeTakeFirstOrThrow();
-    await requireActiveWorkspaceMembership(
-      transaction,
-      existingWorkspace.workspaceId,
-      input.requestedBy,
-    );
     if (input.type === "run.interrupt") {
-      await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+      await assertThreadCaller(transaction, input.authority, {
+        threadId: input.threadId,
+      });
     }
     if (input.type === "request.respond" && input.agentResponder)
       await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
-    return { command: existing, events: [], revokedGrants: [], wasDuplicate: true };
+    return {
+      command: existing,
+      events: [],
+      revokedGrants: [],
+      wasDuplicate: true,
+    };
   }
   const thread = await transaction
     .selectFrom("threads")
-    .select(["environmentId", "id", "role", "status", "workspaceId"])
+    .select(["environmentId", "id", "purpose", "status"])
     .where("id", "=", input.threadId)
     .executeTakeFirst();
-  if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+  if (!thread)
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Thread not found",
+    });
   let targetRunStatus: RunRow["status"] | null = null;
   let targetRunBound = false;
   {
@@ -894,49 +876,25 @@ export async function enqueueRunnerControlInTransaction(
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (!run || run.threadId !== input.threadId) {
-      throw new OpensteerError({ code: "not_found", message: "Run not found for thread" });
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Run not found for thread",
+      });
     }
     if (["completed", "failed", "interrupted"].includes(run.status)) {
-      throw new OpensteerError({ code: "conflict", message: "Run is already terminal" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Run is already terminal",
+      });
     }
     targetRunStatus = run.status;
     targetRunBound = run.bindingGeneration !== null;
-    await transaction
-      .selectFrom("workspaces")
-      .select("id")
-      .where(
-        "id",
-        "in",
-        [
-          ...new Set([
-            thread.workspaceId,
-            ...(input.type === "request.respond" && input.agentResponder
-              ? [input.agentResponder.authority.scope.workspaceId]
-              : []),
-          ]),
-        ].sort(),
-      )
-      .orderBy("id", "asc")
-      .forNoKeyUpdate()
-      .execute();
-    const membership = await requireActiveWorkspaceMembership(
-      transaction,
-      thread.workspaceId,
-      input.requestedBy,
-      true,
-    );
-    if (
-      input.type === "run.interrupt" &&
-      run.requestedBy !== input.requestedBy &&
-      membership.role !== "owner"
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Only a Workspace owner may stop another member's Run",
-      });
-    }
+    await requirePersonalOwner(transaction, input.requestedBy);
     if (input.type === "request.respond" && run.status !== "waiting") {
-      throw new OpensteerError({ code: "conflict", message: "Run is not awaiting a Request" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Run is not awaiting a Request",
+      });
     }
     if (input.type === "request.respond" && !(await runHasActiveGrant(transaction, run.id))) {
       throw new OpensteerError({
@@ -946,7 +904,9 @@ export async function enqueueRunnerControlInTransaction(
     }
   }
   if (input.type === "run.interrupt")
-    await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    await assertThreadCaller(transaction, input.authority, {
+      threadId: input.threadId,
+    });
   if (input.type === "request.respond" && input.agentResponder)
     await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
   const controlEvents: AgentEvent[] = [];
@@ -959,7 +919,7 @@ export async function enqueueRunnerControlInTransaction(
     (targetRunStatus === "queued" || (targetRunStatus === "starting" && !targetRunBound));
   if (input.type === "run.interrupt") {
     await lockThreadRow(transaction, thread.id);
-    if (thread.role === "conversation") {
+    if (thread.purpose === "voice") {
       // Stopping a conversation's reply ends that exchange; the conversation
       // stays open, so the person's next message is answered without a Resume.
       await lockRunProjectionRows(transaction, {
@@ -967,7 +927,7 @@ export async function enqueueRunnerControlInTransaction(
         threadIds: [thread.id],
       });
       controlEvents.push(...(await settleStoppedConversationInputs(transaction, input.runId)));
-    } else {
+    } else if (!input.keepQueueRunning) {
       await transaction
         .updateTable("threads")
         .set({
@@ -981,13 +941,14 @@ export async function enqueueRunnerControlInTransaction(
         .where("id", "=", thread.id)
         .execute();
       controlEvents.push(
-        await appendHostWorkspaceEvent(transaction, {
-          data: { paused: true },
+        await appendHostDeploymentEvent(transaction, {
+          data: {
+            paused: true,
+          },
           environmentId: thread.environmentId,
           runId: null,
           threadId: thread.id,
           type: "thread.input-queue-updated",
-          workspaceId: thread.workspaceId,
         }),
       );
     }
@@ -1004,7 +965,9 @@ export async function enqueueRunnerControlInTransaction(
       // With nothing left to answer, the Run is running again until it stops.
       await transaction
         .updateTable("runs")
-        .set({ status: "running" })
+        .set({
+          status: "running",
+        })
         .where("id", "=", input.runId)
         .where("status", "=", "waiting")
         .execute();
@@ -1037,11 +1000,7 @@ export async function enqueueRunnerControlInTransaction(
       });
     }
     const request = requestFromRow(pending);
-    const membership = await requireActiveWorkspaceMembership(
-      transaction,
-      thread.workspaceId,
-      input.requestedBy,
-    );
+    await requirePersonalOwner(transaction, input.requestedBy);
     if (input.agentResponder) assertAgentRequestAnswer(request, input.agentResponder);
     if (
       !input.agentResponder &&
@@ -1052,29 +1011,6 @@ export async function enqueueRunnerControlInTransaction(
         code: "forbidden",
         message: "Only the member this Request targets may answer it",
       });
-    }
-    if (
-      !input.agentResponder &&
-      request.requiredActor === "workspace-owner" &&
-      membership.role !== "owner"
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Only a Workspace owner may answer this Request",
-      });
-    }
-    if (!input.agentResponder && request.requiredActor === "administrator") {
-      const actor = await transaction
-        .selectFrom("users")
-        .select("instanceRole")
-        .where("id", "=", input.requestedBy)
-        .executeTakeFirstOrThrow();
-      if (actor.instanceRole !== "administrator") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only an administrator may answer this Request",
-        });
-      }
     }
     const containsSecrets = hasSecretRequestFields(request);
     assertRequestResponse(request, input.response, containsSecrets);
@@ -1093,7 +1029,10 @@ export async function enqueueRunnerControlInTransaction(
             threadId: input.agentResponder.authority.scope.threadId,
             userId: input.requestedBy,
           }
-        : { kind: "workspace-membership", userId: input.requestedBy },
+        : {
+            kind: "user-session",
+            userId: input.requestedBy,
+          },
     ),
     dispatcherId: null,
     environmentId: thread.environmentId,
@@ -1142,7 +1081,9 @@ export async function enqueueRunnerControlInTransaction(
   if (reservedRequest) {
     const reserved = await transaction
       .updateTable("requests")
-      .set({ responseCommandId: command.id })
+      .set({
+        responseCommandId: command.id,
+      })
       .where("id", "=", reservedRequest.requestId)
       .where("status", "=", "pending")
       .where("responseCommandId", "is", null)
@@ -1165,7 +1106,11 @@ export async function enqueueRunnerControlInTransaction(
     });
     const interruptedCommand = await transaction
       .updateTable("commands")
-      .set({ lastError: null, status: "succeeded", updatedAt: new Date() })
+      .set({
+        lastError: null,
+        status: "succeeded",
+        updatedAt: new Date(),
+      })
       .where("id", "=", command.id)
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -1190,19 +1135,22 @@ export async function enqueueRunnerControlInTransaction(
     );
   if (input.type === "request.respond" && input.agentResponder)
     await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
-  return { command, events: controlEvents, revokedGrants, wasDuplicate: false };
+  return {
+    command,
+    events: controlEvents,
+    revokedGrants,
+    wasDuplicate: false,
+  };
 }
-
 export async function claimNextCommand(
   database: Kysely<DatabaseSchema>,
   environmentId: EnvironmentId,
   dispatcherId: string,
 ): Promise<ClaimedCommand | null> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const candidate = await transaction
       .selectFrom("commands")
       .leftJoin("threads", "threads.id", "commands.threadId")
-      .leftJoin("workspaces", "workspaces.id", "threads.workspaceId")
       .select([
         "commands.environmentId as environmentId",
         "commands.id as id",
@@ -1217,10 +1165,7 @@ export async function claimNextCommand(
       .where((expression) =>
         expression.or([
           expression("commands.type", "!=", "run.execute"),
-          expression.and([
-            expression("workspaces.status", "in", dispatchVisibleWorkspaceStatuses),
-            expression("threads.inputQueuePaused", "=", false),
-          ]),
+          expression("threads.inputQueuePaused", "=", false),
         ]),
       )
       .where((expression) =>
@@ -1270,6 +1215,7 @@ export async function dispatchRequestResponse(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")
         .innerJoin("requests", "requests.responseCommandId", "commands.id")
@@ -1281,7 +1227,6 @@ export async function dispatchRequestResponse(
           "requests.id as requestId",
           "requests.originatingRunId",
           "requests.originatingThreadId",
-          "requests.originatingWorkspaceId",
         ])
         .where("commands.id", "=", commandId)
         .where("commands.type", "=", "request.respond")
@@ -1317,30 +1262,7 @@ export async function dispatchRequestResponse(
       ) {
         throw requestResponseDispatchConflict();
       }
-      const workspaces = await transaction
-        .selectFrom("workspaces")
-        .select(["id", "status"])
-        .where(
-          "id",
-          "in",
-          [
-            ...new Set([
-              observed.originatingWorkspaceId,
-              ...(agentResponder ? [agentResponder.authority.scope.workspaceId] : []),
-            ]),
-          ].sort(),
-        )
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .execute();
-      const workspace = workspaces.find(({ id }) => id === observed.originatingWorkspaceId);
-      if (!workspace || workspace.status !== "ready") throw requestResponseDispatchConflict();
-      const membership = await requireActiveWorkspaceMembership(
-        transaction,
-        observed.originatingWorkspaceId,
-        observed.respondingUserId,
-        true,
-      );
+      await requirePersonalOwner(transaction, observed.respondingUserId);
       if (agentResponder)
         await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
           admitted: true,
@@ -1350,7 +1272,6 @@ export async function dispatchRequestResponse(
         runIds: [observed.runId],
         threadIds: [observed.threadId],
       });
-
       const requestRow = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -1370,7 +1291,6 @@ export async function dispatchRequestResponse(
         requestRow.responseCommandId !== commandId ||
         requestRow.originatingRunId !== observed.runId ||
         requestRow.originatingThreadId !== observed.threadId ||
-        requestRow.originatingWorkspaceId !== observed.originatingWorkspaceId ||
         !command ||
         command.type !== "request.respond" ||
         command.status !== "dispatched" ||
@@ -1379,7 +1299,6 @@ export async function dispatchRequestResponse(
       ) {
         throw requestResponseDispatchConflict();
       }
-
       const request = requestFromRow(requestRow);
       if (agentResponder) assertAgentRequestAnswer(request, agentResponder);
       if (
@@ -1389,22 +1308,6 @@ export async function dispatchRequestResponse(
       ) {
         throw requestResponseDispatchConflict();
       }
-      if (
-        !agentResponder &&
-        request.requiredActor === "workspace-owner" &&
-        membership.role !== "owner"
-      ) {
-        throw requestResponseDispatchConflict();
-      }
-      if (!agentResponder && request.requiredActor === "administrator") {
-        const actor = await transaction
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", command.requestedBy)
-          .executeTakeFirst();
-        if (actor?.instanceRole !== "administrator") throw requestResponseDispatchConflict();
-      }
-
       const accepted = deferred<void>();
       sendPromise = send(async () => {
         accepted.resolve();
@@ -1450,15 +1353,11 @@ export async function dispatchChannelCommand(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")
         .innerJoin("threads", "threads.id", "commands.threadId")
-        .select([
-          "commands.runId",
-          "commands.type",
-          "commands.authoritySource",
-          "threads.workspaceId",
-        ])
+        .select(["commands.runId", "commands.type", "commands.authoritySource"])
         .where("commands.id", "=", commandId)
         .where("commands.status", "=", "dispatched")
         .executeTakeFirst();
@@ -1474,7 +1373,7 @@ export async function dispatchChannelCommand(
       }
       const run = await transaction
         .selectFrom("runs")
-        .select(["status", "threadId", "requestedBy", "membershipGeneration"])
+        .select(["status", "threadId", "requestedBy"])
         .where("id", "=", observed.runId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
@@ -1488,7 +1387,6 @@ export async function dispatchChannelCommand(
           message: "Messaging Run is no longer active",
         });
       }
-      await lockWorkspaceRow(transaction, observed.workspaceId);
       const steer =
         observed.type === "run.steer"
           ? await transaction
@@ -1505,12 +1403,7 @@ export async function dispatchChannelCommand(
             (await channelInputAuthorityIsCurrent(transaction, steer.messageId));
       if (
         !authorized ||
-        !(await threadExecutionIsAvailableToUser(
-          transaction,
-          run.threadId,
-          run.requestedBy,
-          Number(run.membershipGeneration),
-        ))
+        !(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))
       ) {
         throw new OpensteerError({
           code: "forbidden",
@@ -1548,7 +1441,6 @@ export async function dispatchChannelCommand(
     throw error;
   }
 }
-
 export async function listPendingCommands(
   database: Kysely<DatabaseSchema>,
   limit = 500,
@@ -1556,7 +1448,6 @@ export async function listPendingCommands(
   return database
     .selectFrom("commands")
     .leftJoin("threads", "threads.id", "commands.threadId")
-    .leftJoin("workspaces", "workspaces.id", "threads.workspaceId")
     .leftJoin("runs", "runs.id", "commands.runId")
     .selectAll("commands")
     .select("runs.harnessInstanceId as runHarnessInstanceId")
@@ -1564,10 +1455,7 @@ export async function listPendingCommands(
     .where((expression) =>
       expression.or([
         expression("commands.type", "!=", "run.execute"),
-        expression.and([
-          expression("workspaces.status", "in", dispatchVisibleWorkspaceStatuses),
-          expression("threads.inputQueuePaused", "=", false),
-        ]),
+        expression("threads.inputQueuePaused", "=", false),
       ]),
     )
     .where((expression) =>
@@ -1590,13 +1478,12 @@ export async function listPendingCommands(
     .limit(Math.min(Math.max(limit, 1), 20_000))
     .execute();
 }
-
 export async function claimCommand(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   dispatcherId: string,
 ): Promise<ClaimedCommand | null> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
       .select(["environmentId", "id", "payload", "requestedBy", "runId", "threadId", "type"])
@@ -1607,7 +1494,6 @@ export async function claimCommand(
     return claimObservedCommand(transaction, observed, dispatcherId);
   });
 }
-
 export async function loadSteerDispatchInput(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
@@ -1627,7 +1513,10 @@ export async function loadSteerDispatchInput(
     .where("commands.type", "=", "run.steer")
     .executeTakeFirst();
   if (!row?.targetRunId || !row.targetThreadId) {
-    throw new OpensteerError({ code: "not_found", message: "Steer input not found" });
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Steer input not found",
+    });
   }
   const runRow = await database
     .selectFrom("runs")
@@ -1641,14 +1530,13 @@ export async function loadSteerDispatchInput(
     threadId: row.targetThreadId,
   };
 }
-
 export async function retryCommand(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   commandId: CommandRow["id"],
   error: unknown,
 ): Promise<readonly AgentEvent[]> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
       .select(["id", "runId", "type"])
@@ -1673,7 +1561,6 @@ export async function retryCommand(
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow()
       : undefined;
-    let workspaceId: WorkspaceId | null = null;
     if (observed.type === "run.execute") {
       if (!run || run.status !== "starting") {
         throw new OpensteerError({
@@ -1681,11 +1568,6 @@ export async function retryCommand(
           message: "The Run cannot return to queued from its current state",
         });
       }
-      const thread = await transaction
-        .selectFrom("threads")
-        .select("workspaceId")
-        .where("id", "=", run.threadId)
-        .executeTakeFirstOrThrow();
       if (run.voiceSessionId)
         return finalizeRunTransaction(transaction, {
           runId: run.id,
@@ -1695,13 +1577,17 @@ export async function retryCommand(
           status: "interrupted",
           queuedInputCancellation: "seed-input",
         });
-      workspaceId = thread.workspaceId;
-      await lockWorkspaceRow(transaction, workspaceId);
       await lockThreadRow(transaction, run.threadId);
-      await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+      await lockRunProjectionRows(transaction, {
+        runIds: [run.id],
+        threadIds: [run.threadId],
+      });
       // A stop is final: the Run ends rather than going back to its queue.
       if (await runWasStopped(transaction, run.id)) {
-        return endStoppedUnconfirmedRun(transaction, { links, runId: run.id });
+        return endStoppedUnconfirmedRun(transaction, {
+          links,
+          runId: run.id,
+        });
       }
     }
     let retry = transaction
@@ -1720,8 +1606,10 @@ export async function retryCommand(
       : retry.where("runId", "is", null);
     const command = await retry.executeTakeFirst();
     if (command?.type === "run.execute") {
-      if (!run || !workspaceId) throw new Error("Retry Run lock was not established");
-      return returnRunToQueue(transaction, { run, workspaceId });
+      if (!run) throw new Error("Retry Run lock was not established");
+      return returnRunToQueue(transaction, {
+        run,
+      });
     } else if (command?.type === "trigger.execute") {
       await transaction
         .updateTable("triggerOccurrences")
@@ -1739,7 +1627,6 @@ export async function retryCommand(
     return [];
   });
 }
-
 export async function failCommand(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -1757,9 +1644,12 @@ export async function failCommand(
   if (!observed) return [];
   if (observed.type === "node.stop") return failNodeStop(database, commandId, publicMessage);
   if (observed.type === "run.steer") return refuseSteer(database, commandId, publicMessage);
-  const failure = { ...dispatchFailure(publicMessage), code: failureCode };
+  const failure = {
+    ...dispatchFailure(publicMessage),
+    code: failureCode,
+  };
   if (observed.type !== "run.execute" || !observed.runId) {
-    await withDatabaseTransaction(database, async (transaction) => {
+    await withPersonalTransaction(database, async (transaction) => {
       if (observed.type === "trigger.execute") {
         await transaction
           .selectFrom("triggerOccurrences")
@@ -1772,7 +1662,11 @@ export async function failCommand(
       const now = new Date();
       const failed = await transaction
         .updateTable("commands")
-        .set({ lastError: jsonValue(failure), status: "failed", updatedAt: now })
+        .set({
+          lastError: jsonValue(failure),
+          status: "failed",
+          updatedAt: now,
+        })
         .where("id", "=", commandId)
         .where("status", "=", "dispatched")
         .returning("type")
@@ -1780,7 +1674,9 @@ export async function failCommand(
       if (failed?.type === "request.respond") {
         await transaction
           .updateTable("requests")
-          .set({ responseCommandId: null })
+          .set({
+            responseCommandId: null,
+          })
           .where("responseCommandId", "=", commandId)
           .where("status", "=", "pending")
           .execute();
@@ -1801,8 +1697,7 @@ export async function failCommand(
     });
     return [];
   }
-
-  const terminalEvents = await withDatabaseTransaction(database, (transaction) =>
+  const terminalEvents = await withPersonalTransaction(database, (transaction) =>
     finalizeRunTransaction(transaction, {
       completedAt: new Date(),
       expectedCommandId: commandId,
@@ -1816,33 +1711,30 @@ export async function failCommand(
   );
   return terminalEvents;
 }
-
 export async function refuseSteer(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   reason: string,
   reasonCode?: string,
 ): Promise<readonly AgentEvent[]> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     settleSteer(transaction, commandId, "failed", reason, reasonCode),
   );
 }
-
 export async function markSteerUnknown(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
   reason: string,
 ): Promise<readonly AgentEvent[]> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     settleSteer(transaction, commandId, "unknown", reason),
   );
 }
-
 export async function succeedCommand(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
 ): Promise<SucceededCommand> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     succeedCommandInTransaction(transaction, commandId),
   );
 }

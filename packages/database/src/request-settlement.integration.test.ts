@@ -1,10 +1,10 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { createId } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { describeStore } from "./store.integration.test-support.js";
-
 describeStore("human settlement session fence", (it) => {
   it("rolls back domain writes when the session is revoked after provenance is read", async ({
     storeFixture,
@@ -30,21 +30,22 @@ describeStore("human settlement session fence", (it) => {
       })
       .execute();
     const before = await database
-      .selectFrom("workspaces")
-      .select("name")
-      .where("id", "=", fixture.workspace.id)
+      .selectFrom("threads")
+      .select("title")
+      .where("id", "=", fixture.thread.id)
       .executeTakeFirstOrThrow();
-
     await expect(
-      withDatabaseTransaction(database, async (transaction) => {
+      withPersonalTransaction(database, async (transaction) => {
         expect(await readRequestSettlementActor(transaction, fixture.userId, sessionId)).toEqual({
           sessionId,
           deviceLabel: "Test phone",
         });
         await transaction
-          .updateTable("workspaces")
-          .set({ name: "Uncommitted approval" })
-          .where("id", "=", fixture.workspace.id)
+          .updateTable("threads")
+          .set({
+            title: "Uncommitted approval",
+          })
+          .where("id", "=", fixture.thread.id)
           .executeTakeFirstOrThrow();
         await database
           .deleteFrom("authSessions")
@@ -52,12 +53,14 @@ describeStore("human settlement session fence", (it) => {
           .executeTakeFirstOrThrow();
         await requestSettlementActor(transaction, fixture.userId, sessionId);
       }),
-    ).rejects.toMatchObject({ code: "unauthorized" });
+    ).rejects.toMatchObject({
+      code: "unauthorized",
+    });
     expect(
       await database
-        .selectFrom("workspaces")
-        .select("name")
-        .where("id", "=", fixture.workspace.id)
+        .selectFrom("threads")
+        .select("title")
+        .where("id", "=", fixture.thread.id)
         .executeTakeFirstOrThrow(),
     ).toEqual(before);
   });

@@ -1,4 +1,7 @@
-import { withDatabaseTransaction } from "./connection.js";
+import { assertActiveGrant, type ActiveExecutionBindingInput } from "./execution-authority.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import "./connection.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   attachmentMaxBytes,
@@ -9,32 +12,34 @@ import {
   AttachmentNameSchema,
   AttachmentMediaTypeSchema,
   OpensteerError,
+  type TeamSource,
   type ContentPart,
   type MessageId,
   type RunId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { AttachmentTable, DatabaseSchema } from "./schema.js";
-import { requireActiveWorkspaceMembership } from "./store-primitives.js";
-
+import "./store-primitives.js";
 export type AttachmentRow = Selectable<AttachmentTable>;
-export const attachmentWorkspaceRetainedMaxBytes = 2 * 1024 * 1024 * 1024;
-
-const conflict = (message: string) => new OpensteerError({ code: "conflict", message });
-const missing = () => new OpensteerError({ code: "not_found", message: "Attachment not found" });
-
+export const attachmentRetainedMaxBytes = 2 * 1024 * 1024 * 1024;
+const conflict = (message: string) =>
+  new OpensteerError({
+    code: "conflict",
+    message,
+  });
+const missing = () =>
+  new OpensteerError({
+    code: "not_found",
+    message: "Attachment not found",
+  });
 export class AttachmentStore {
   private readonly database: Kysely<DatabaseSchema>;
-
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
   }
-
   async reserve(input: {
-    readonly workspaceId: WorkspaceId;
     readonly uploaderId: UserId;
     readonly name: string;
     readonly mediaType: string;
@@ -54,14 +59,13 @@ export class AttachmentStore {
     const requestFingerprint = createHash("sha256")
       .update(
         JSON.stringify({
-          workspaceId: input.workspaceId,
           name,
           mediaType,
           sizeBytes: input.sizeBytes,
         }),
       )
       .digest("hex");
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
       const reservationKey = JSON.stringify([
         "attachment-upload",
         input.uploaderId,
@@ -70,15 +74,7 @@ export class AttachmentStore {
       await sql`select pg_advisory_xact_lock(hashtextextended(${reservationKey}, 0))`.execute(
         transaction,
       );
-      // Workspace locking serializes the quota check and all reservations in it.
-      const workspace = await transaction
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", input.workspaceId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!workspace) throw missing();
-      await requireActiveWorkspaceMembership(transaction, input.workspaceId, input.uploaderId);
+      await requirePersonalOwner(transaction, input.uploaderId);
       const existing = await transaction
         .selectFrom("attachments")
         .selectAll()
@@ -93,25 +89,22 @@ export class AttachmentStore {
       const aggregate = await transaction
         .selectFrom("attachments")
         .select(({ fn }) => fn.sum<number>("sizeBytes").as("bytes"))
-        .where("workspaceId", "=", input.workspaceId)
         .where("state", "in", ["uploading", "ready"])
         .where("messageId", "is", null)
         .executeTakeFirstOrThrow();
       if (Number(aggregate.bytes ?? 0) + input.sizeBytes > attachmentPendingMaxBytes)
-        throw conflict("Workspace pending attachment quota exceeded");
+        throw conflict("Pending attachment quota exceeded");
       const retained = await transaction
         .selectFrom("attachments")
         .select(({ fn }) => fn.sum<number>("sizeBytes").as("bytes"))
-        .where("workspaceId", "=", input.workspaceId)
         .where("state", "!=", "deleting")
         .executeTakeFirstOrThrow();
-      if (Number(retained.bytes ?? 0) + input.sizeBytes > attachmentWorkspaceRetainedMaxBytes)
-        throw conflict("Workspace attachment storage quota exceeded");
+      if (Number(retained.bytes ?? 0) + input.sizeBytes > attachmentRetainedMaxBytes)
+        throw conflict("Attachment storage quota exceeded");
       return transaction
         .insertInto("attachments")
         .values({
           id: `att_${randomUUID()}`,
-          workspaceId: input.workspaceId,
           uploaderId: input.uploaderId,
           name,
           mediaType,
@@ -132,7 +125,6 @@ export class AttachmentStore {
         .executeTakeFirstOrThrow();
     });
   }
-
   get(attachmentId: string): Promise<AttachmentRow | undefined> {
     return this.database
       .selectFrom("attachments")
@@ -140,21 +132,19 @@ export class AttachmentStore {
       .where("id", "=", attachmentId)
       .executeTakeFirst();
   }
-
   async getForUser(attachmentId: string, userId: UserId): Promise<AttachmentRow> {
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
+      await requirePersonalOwner(transaction, userId);
       const row = await transaction
         .selectFrom("attachments")
         .selectAll()
         .where("id", "=", attachmentId)
         .executeTakeFirst();
       if (!row) throw missing();
-      await requireActiveWorkspaceMembership(transaction, row.workspaceId, userId);
       if (row.uploaderId !== userId && !row.messageId) throw missing();
       return row;
     });
   }
-
   async complete(input: {
     readonly attachmentId: string;
     readonly uploaderId: UserId;
@@ -167,6 +157,7 @@ export class AttachmentStore {
     if (!/^[0-9a-f]{64}$/u.test(input.sha256)) throw conflict("Invalid attachment checksum");
     // Non-retrying: install publishes attachment bytes while this row fence is held.
     return this.database.transaction().execute(async (transaction) => {
+      await lockDeploymentEvents(transaction);
       const row = await transaction
         .selectFrom("attachments")
         .selectAll()
@@ -174,7 +165,6 @@ export class AttachmentStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row || row.uploaderId !== input.uploaderId) throw missing();
-      await requireActiveWorkspaceMembership(transaction, row.workspaceId, input.uploaderId);
       if (row.state === "ready") {
         if (row.sha256 !== input.sha256) throw conflict("Finalized attachment bytes cannot change");
         return row;
@@ -196,12 +186,11 @@ export class AttachmentStore {
         .executeTakeFirstOrThrow();
     });
   }
-
   async discard(input: {
     readonly attachmentId: string;
     readonly uploaderId: UserId;
   }): Promise<AttachmentRow> {
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
       const row = await transaction
         .selectFrom("attachments")
         .selectAll()
@@ -209,18 +198,18 @@ export class AttachmentStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row || row.uploaderId !== input.uploaderId) throw missing();
-      await requireActiveWorkspaceMembership(transaction, row.workspaceId, input.uploaderId);
       if (row.messageId) throw conflict("An accepted message owns this attachment");
       if (row.state === "deleting") return row;
       return transaction
         .updateTable("attachments")
-        .set({ state: "deleting" })
+        .set({
+          state: "deleting",
+        })
         .where("id", "=", row.id)
         .returningAll()
         .executeTakeFirstOrThrow();
     });
   }
-
   async removeDeleting(attachmentId: string): Promise<void> {
     await this.database
       .deleteFrom("attachments")
@@ -228,9 +217,8 @@ export class AttachmentStore {
       .where("state", "=", "deleting")
       .execute();
   }
-
   async expireUnbound(limit: number): Promise<AttachmentRow[]> {
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
       const rows = await transaction
         .selectFrom("attachments")
         .selectAll()
@@ -245,7 +233,9 @@ export class AttachmentStore {
       if (rows.length === 0) return [];
       return transaction
         .updateTable("attachments")
-        .set({ state: "deleting" })
+        .set({
+          state: "deleting",
+        })
         .where(
           "id",
           "in",
@@ -255,7 +245,6 @@ export class AttachmentStore {
         .execute();
     });
   }
-
   listDeleting(limit: number): Promise<AttachmentRow[]> {
     return this.database
       .selectFrom("attachments")
@@ -265,7 +254,63 @@ export class AttachmentStore {
       .limit(limit)
       .execute();
   }
-
+  async bindRunImport(
+    input: ActiveExecutionBindingInput & {
+      readonly attachmentId: string;
+      readonly source?: TeamSource;
+    },
+  ): Promise<AttachmentRow> {
+    return withPersonalTransaction(this.database, async (tx) => {
+      const run = await tx
+        .selectFrom("runs")
+        .select(["threadId", "seedInputId", "teamRequestId"])
+        .where("id", "=", input.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      await assertActiveGrant(tx, input);
+      if (!run?.teamRequestId || !run.seedInputId || run.threadId !== input.threadId)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "No team request owns this file transfer",
+        });
+      const task = await tx
+        .selectFrom("threads")
+        .select(["teamId", "channelId", "threadRootId"])
+        .where("id", "=", input.threadId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      if (
+        input.source &&
+        (input.source.teamId !== task.teamId ||
+          input.source.channelId !== task.channelId ||
+          input.source.threadRootId !== task.threadRootId)
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "File provenance does not match this team task",
+        });
+      const row = await tx
+        .selectFrom("attachments")
+        .selectAll()
+        .where("id", "=", input.attachmentId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.uploaderId !== input.requestedBy ||
+        row.state !== "ready" ||
+        row.messageId !== null ||
+        row.expiresAt <= new Date()
+      )
+        throw conflict("File import is no longer available");
+      return tx
+        .updateTable("attachments")
+        .set({ messageId: run.seedInputId, threadId: run.threadId })
+        .where("id", "=", row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+    });
+  }
   async listForRun(input: {
     readonly after: string | null;
     readonly limit: number;
@@ -294,7 +339,6 @@ export class AttachmentStore {
     if (input.after) query = query.where("attachments.id", ">", input.after);
     return query.execute();
   }
-
   async getForRun(input: {
     readonly attachmentId: string;
     readonly runId: RunId;
@@ -321,7 +365,6 @@ export class AttachmentStore {
     return row;
   }
 }
-
 export async function claimMessageAttachments(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -330,13 +373,15 @@ export async function claimMessageAttachments(
     readonly requestedBy: UserId;
     readonly sourceKind: string;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<void> {
   const parts = input.content.filter((part) => part.type === "artifact");
   if (parts.length === 0) return;
   if (input.sourceKind !== "human")
-    throw new OpensteerError({ code: "forbidden", message: "Attachments require a human upload" });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Attachments require a human upload",
+    });
   if (parts.length > attachmentMessageMaxCount)
     throw conflict("Too many attachments in one message");
   const ids = parts.map((part) => part.artifactId);
@@ -373,7 +418,7 @@ export async function claimMessageAttachments(
   const previousByMessage = new Map(previousInputs.map((row) => [row.messageId, row]));
   for (const part of parts) {
     const row = byId.get(part.artifactId);
-    if (!row || row.uploaderId !== input.requestedBy || row.workspaceId !== input.workspaceId)
+    if (!row || row.uploaderId !== input.requestedBy)
       throw conflict("Attachment is not available for this send");
     if (row.state !== "ready") throw conflict("Attachment is not ready for this send");
     if (row.messageId) {
@@ -406,7 +451,10 @@ export async function claimMessageAttachments(
     throw conflict("Message attachments exceed the size limit");
   await transaction
     .updateTable("attachments")
-    .set({ messageId: input.messageId, threadId: input.threadId })
+    .set({
+      messageId: input.messageId,
+      threadId: input.threadId,
+    })
     .where("id", "in", ids)
     .execute();
 }

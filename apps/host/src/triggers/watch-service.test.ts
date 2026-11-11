@@ -1,4 +1,4 @@
-import { WorkspaceSchema, createId, type EnvironmentId, type WorkspaceId } from "@opensteer/core";
+import { WorkspaceSchema, createId, type EnvironmentId } from "@opensteer/core";
 import type { WatchActivationContext } from "@opensteer/database";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import {
@@ -12,7 +12,6 @@ import { TriggerWatchActivationSchema } from "@opensteer/triggers";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { WatchService, type WatchServiceOptions } from "./watch-service.js";
-
 describe("WatchService", () => {
   it.each([
     {
@@ -20,12 +19,18 @@ describe("WatchService", () => {
       reason:
         "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
     },
-    { capabilities: [] as const, reason: "Update this computer to use Opensteer tools." },
+    {
+      capabilities: [] as const,
+      reason: "Update this computer to use Opensteer tools.",
+    },
   ])(
     "never activates an unsupported Watch and records $reason",
     async ({ capabilities, reason }) => {
       const fixture = watchFixture();
-      const context = { ...fixture.context, toolContractVersion: 3 as const };
+      const context = {
+        ...fixture.context,
+        toolContractVersion: 3 as const,
+      };
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
       );
@@ -36,14 +41,19 @@ describe("WatchService", () => {
         ...options(fixture, {
           reconcileWatches,
           recordWatchUnavailable,
-          identityForEnvironment: () => ({ ...fixture.identity, capabilities: [...capabilities] }),
+          identityForEnvironment: () => ({
+            ...fixture.identity,
+            capabilities: [...capabilities],
+          }),
           reconcileWatchesForRunner: async () => ({
             activations: [context],
             reconcileGeneration: 1,
           }),
         }),
         runnerStore: {
-          getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }),
+          getEnvironment: async () => ({
+            runnerId: fixture.identity.runnerId,
+          }),
           runnerCapabilities: async () => [],
         } as never,
       });
@@ -61,21 +71,26 @@ describe("WatchService", () => {
       }
     },
   );
-
   it("builds the desired set without sending program bodies and applies fenced status", async () => {
     const fixture = watchFixture();
     const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
       async () => undefined,
     );
     const applyWatchStatus = vi.fn(async () => ({
-      activation: { ...fixture.context.activation, desired: "stopped" as const },
+      activation: {
+        ...fixture.context.activation,
+        desired: "stopped" as const,
+      },
       autoPaused: true,
     }));
     const onChanged = vi.fn();
     const service = new WatchService(
-      options(fixture, { applyWatchStatus, onChanged, reconcileWatches }),
+      options(fixture, {
+        applyWatchStatus,
+        onChanged,
+        reconcileWatches,
+      }),
     );
-
     expect(service.runnerRegistered(fixture.identity)).toBeUndefined();
     await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
     const desired = reconcileWatches.mock.calls[0]?.[2];
@@ -84,14 +99,15 @@ describe("WatchService", () => {
         activationId: fixture.context.activation.id,
         capabilities: {
           browserCdp: null,
-          mcp: expect.objectContaining({ token: "control-token" }),
+          mcp: expect.objectContaining({
+            token: "control-token",
+          }),
         },
         executionGeneration: 3,
         revisionId: fixture.context.activation.revisionId,
       }),
     ]);
     expect(desired?.[0]).not.toHaveProperty("program");
-
     await service.applyStatus(fixture.identity, {
       activationId: fixture.context.activation.id,
       executionGeneration: 3,
@@ -111,95 +127,86 @@ describe("WatchService", () => {
         runnerId: fixture.identity.runnerId,
       }),
     );
-    expect(onChanged).toHaveBeenCalledWith(fixture.context.activation.workspaceId);
+    expect(onChanged).toHaveBeenCalledWith();
     await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledTimes(2));
     await service.close();
   });
-
-  it("leaves a not-ready Workspace in starting state and sends an empty desired set", async () => {
-    const fixture = watchFixture("provisioning");
+  it("marks an unavailable anchor folder and sends an empty desired set", async () => {
+    const fixture = watchFixture();
     const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
       async () => undefined,
     );
-    const plan = vi.fn();
-    const service = new WatchService(options(fixture, { plan, reconcileWatches }));
-
-    expect(service.runnerRegistered(fixture.identity)).toBeUndefined();
-    await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
-    expect(plan).not.toHaveBeenCalled();
-    expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
-    await service.close();
+    const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
+      async () => fixture.context.activation,
+    );
+    const assertAvailable = vi.fn<WatchServiceOptions["folders"]["assertAvailable"]>(async () => {
+      throw new Error("The anchor folder is missing");
+    });
+    const service = new WatchService(
+      options(fixture, { assertAvailable, recordWatchUnavailable, reconcileWatches }),
+    );
+    try {
+      service.runnerRegistered(fixture.identity);
+      await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
+      expect(assertAvailable).toHaveBeenCalledWith(fixture.context.location.folder);
+      expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
+      expect(recordWatchUnavailable).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activationId: fixture.context.activation.id,
+          reason: "The anchor folder is missing",
+        }),
+      );
+    } finally {
+      await service.close();
+    }
   });
 
-  it("runs an accessible local watch while recording an unsupported shared watch", async () => {
+  it("runs an available anchor while reporting another task's missing folder", async () => {
     const fixture = watchFixture();
-    const sharedWorkspaceId = createId("workspace");
-    const sharedContext: WatchActivationContext = {
+    const unavailable: WatchActivationContext = {
       ...fixture.context,
-      activation: TriggerWatchActivationSchema.parse({
+      activation: {
         ...fixture.context.activation,
         id: createId("triggerWatchActivation"),
         triggerId: createId("trigger"),
-        workspaceId: sharedWorkspaceId,
-      }),
-      workspace: WorkspaceSchema.parse({
-        ...fixture.context.workspace,
-        backing: {
-          kind: "local-directory",
-          generation: 1,
-          bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: createId("environment"),
-          storageAuthorityId: createId("storageAuthority"),
-        },
-
-        id: sharedWorkspaceId,
-      }),
+        anchorThreadId: createId("thread"),
+      },
+      location: {
+        ...fixture.context.location,
+        folder: { ...fixture.context.location.folder, path: "/tmp/missing-task" },
+      },
     };
     const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
       async () => undefined,
     );
     const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
-      async () => ({
-        ...sharedContext.activation,
-        lastError: "Runner does not support Workspace access",
-        observed: "backoff",
-      }),
+      async () => unavailable.activation,
     );
-    const plan = vi.fn<WatchServiceOptions["workspaceAccess"]["plan"]>(async ({ workspace }) => {
-      if (workspace.id === sharedWorkspaceId || workspace.backing.kind !== "local-directory") {
-        throw new Error("Runner does not support Workspace access");
-      }
-      if (workspace.backing.storageAuthorityId === null) {
-        throw new Error("Workspace predates machine-owned storage");
-      }
-      return {
-        ...workspace.backing,
-        storageAuthorityId: workspace.backing.storageAuthorityId,
-        workspaceId: workspace.id,
-      };
-    });
     const service = new WatchService(
       options(fixture, {
-        plan,
+        assertAvailable: async (folder) => {
+          if (folder.path === unavailable.location.folder.path)
+            throw new Error("The anchor folder is missing");
+        },
         reconcileWatches,
+        recordWatchUnavailable,
         reconcileWatchesForRunner: async () => ({
-          activations: [fixture.context, sharedContext],
+          activations: [fixture.context, unavailable],
           reconcileGeneration: 1,
         }),
-        recordWatchUnavailable,
       }),
     );
-
     try {
       service.runnerRegistered(fixture.identity);
       await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
       expect(reconcileWatches.mock.calls[0]?.[2].map(({ activationId }) => activationId)).toEqual([
         fixture.context.activation.id,
       ]);
+      expect(reconcileWatches.mock.calls[0]?.[2][0]?.location).toEqual(fixture.context.location);
       expect(recordWatchUnavailable).toHaveBeenCalledWith(
         expect.objectContaining({
-          activationId: sharedContext.activation.id,
-          reason: "Runner does not support Workspace access",
+          activationId: unavailable.activation.id,
+          reason: "The anchor folder is missing",
         }),
       );
     } finally {
@@ -218,9 +225,15 @@ describe("WatchService", () => {
       .fn()
       .mockImplementationOnce(async () => {
         await first;
-        return { activations: [fixture.context], reconcileGeneration: 1 };
+        return {
+          activations: [fixture.context],
+          reconcileGeneration: 1,
+        };
       })
-      .mockResolvedValue({ activations: [fixture.context], reconcileGeneration: 2 });
+      .mockResolvedValue({
+        activations: [fixture.context],
+        reconcileGeneration: 2,
+      });
     const service = new WatchService(
       options(fixture, {
         identityForEnvironment: () => identity,
@@ -229,41 +242,50 @@ describe("WatchService", () => {
     );
     service.changed(fixture.context.activation.environmentId);
     const newBootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
-    identity = { ...identity, bootId: newBootId, connectionGeneration: 2 };
+    identity = {
+      ...identity,
+      bootId: newBootId,
+      connectionGeneration: 2,
+    };
     service.changed(fixture.context.activation.environmentId);
     releaseFirst?.();
     await vi.waitFor(() => expect(reconcileWatchesForRunner).toHaveBeenCalledTimes(2));
-
     expect(reconcileWatchesForRunner.mock.calls[1]?.[0]).toMatchObject({
       runnerBootId: newBootId,
     });
     await service.close();
   });
-
   it("retries a failed reconciliation until the desired state converges", async () => {
     vi.useFakeTimers();
     const fixture = watchFixture();
     const reconcileWatchesForRunner = vi
       .fn<WatchServiceOptions["store"]["reconcileWatchesForRunner"]>()
       .mockRejectedValueOnce(new Error("transient database failure"))
-      .mockResolvedValue({ activations: [fixture.context], reconcileGeneration: 2 });
+      .mockResolvedValue({
+        activations: [fixture.context],
+        reconcileGeneration: 2,
+      });
     const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
       async () => undefined,
     );
     const onError = vi.fn();
     const service = new WatchService(
-      options(fixture, { onError, reconcileWatches, reconcileWatchesForRunner }),
+      options(fixture, {
+        onError,
+        reconcileWatches,
+        reconcileWatchesForRunner,
+      }),
     );
-
     try {
       service.changed(fixture.context.activation.environmentId);
       await vi.advanceTimersByTimeAsync(0);
       expect(reconcileWatchesForRunner).toHaveBeenCalledOnce();
       expect(onError).toHaveBeenCalledWith(
-        expect.objectContaining({ message: "transient database failure" }),
+        expect.objectContaining({
+          message: "transient database failure",
+        }),
         fixture.context.activation.environmentId,
       );
-
       await vi.advanceTimersByTimeAsync(4_999);
       expect(reconcileWatchesForRunner).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(1);
@@ -275,7 +297,6 @@ describe("WatchService", () => {
     }
   });
 });
-
 function options(
   fixture: ReturnType<typeof watchFixture>,
   overrides: Partial<WatchServiceOptions> & {
@@ -283,7 +304,7 @@ function options(
     readonly identityForEnvironment?: WatchServiceOptions["runners"]["identityForEnvironment"];
     readonly onChanged?: WatchServiceOptions["onChanged"];
     readonly onError?: WatchServiceOptions["onError"];
-    readonly plan?: WatchServiceOptions["workspaceAccess"]["plan"];
+    readonly assertAvailable?: WatchServiceOptions["folders"]["assertAvailable"];
     readonly reconcileWatches?: WatchServiceOptions["runners"]["reconcileWatches"];
     readonly reconcileWatchesForRunner?: WatchServiceOptions["store"]["reconcileWatchesForRunner"];
     readonly recordWatchUnavailable?: WatchServiceOptions["store"]["recordWatchUnavailable"];
@@ -291,10 +312,20 @@ function options(
 ): WatchServiceOptions {
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
   return {
-    runnerStore: { getEnvironment: vi.fn(), runnerCapabilities: vi.fn() },
-    browser: { hasBrowserProfileAccess: async () => false },
+    runnerStore: {
+      getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }) as never,
+      runnerCapabilities: async () => ["trigger-program-v3"],
+    },
+    browser: {
+      hasBrowserProfiles: async () => false,
+    },
     browserCdpUrl: "wss://host.test/internal/v1/watch-cdp",
-    controlTokens: { issue: () => ({ expiresAt, token: "control-token" }) },
+    controlTokens: {
+      issue: () => ({
+        expiresAt,
+        token: "control-token",
+      }),
+    },
     mcpUrl: "https://host.test/mcp",
     onChanged: overrides.onChanged ?? (() => undefined),
     onError: overrides.onError ?? (() => undefined),
@@ -305,46 +336,43 @@ function options(
     store: {
       applyWatchStatus:
         overrides.applyWatchStatus ??
-        (async () => ({ activation: fixture.context.activation, autoPaused: false })),
+        (async () => ({
+          activation: fixture.context.activation,
+          autoPaused: false,
+        })),
       reconcileWatchesForRunner:
         overrides.reconcileWatchesForRunner ??
-        (async () => ({ activations: [fixture.context], reconcileGeneration: 1 })),
+        (async () => ({
+          activations: [fixture.context],
+          reconcileGeneration: 1,
+        })),
       recordWatchUnavailable:
         overrides.recordWatchUnavailable ??
         (async () => ({
           ...fixture.context.activation,
-          lastError: "Workspace access is unavailable",
+          lastError: "The anchor folder is unavailable",
           observed: "backoff",
         })),
       watchEnvironmentForTrigger: async () => fixture.context.activation.environmentId,
-      watchEnvironmentsForWorkspace: async () => [fixture.context.activation.environmentId],
+      watchEnvironments: async () => [fixture.context.activation.environmentId],
     },
-    watchBrowserTokens: { issue: () => ({ expiresAt, token: "browser-token" }) },
-    workspaceAccess: {
-      plan:
-        overrides.plan ??
-        (async () => ({
-          bindingId: createId("workspaceBinding"),
-          generation: 1,
-          kind: "local-directory" as const,
-          ownerEnvironmentId: fixture.context.activation.environmentId,
-          storageAuthorityId: createId("storageAuthority"),
-          workspaceId: fixture.context.activation.workspaceId,
-        })),
+    watchBrowserTokens: {
+      issue: () => ({
+        expiresAt,
+        token: "browser-token",
+      }),
     },
+    folders: { assertAvailable: overrides.assertAvailable ?? (async () => undefined) },
   };
 }
-
-function watchFixture(status: "provisioning" | "ready" = "ready"): {
+function watchFixture(): {
   readonly context: WatchActivationContext;
   readonly identity: RunnerIdentity;
 } {
   const environmentId: EnvironmentId = createId("environment");
-  const workspaceId: WorkspaceId = createId("workspace");
   const userId = createId("user");
   const triggerId = createId("trigger");
   const revisionId = createId("triggerRevision");
-  const storageAuthorityId = createId("storageAuthority");
   const context: WatchActivationContext = {
     activation: TriggerWatchActivationSchema.parse({
       anchorThreadId: createId("thread"),
@@ -368,31 +396,12 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
       stdoutTail: "",
       triggerId,
       updatedAt: new Date().toISOString(),
-      workspaceId,
     }),
-    membershipGeneration: 2,
-    toolContractVersion: 2,
-    workspace: WorkspaceSchema.parse({
-      backing: {
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        kind: "local-directory",
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId,
-      },
-
-      createdAt: new Date().toISOString(),
-      createdBy: userId,
-      id: workspaceId,
-      homeThreadId: createId("thread"),
-      voiceThreadId: null,
-      icon: null,
-      kind: "main",
-      name: "Main",
-      status,
-      storageIssue: null,
-      updatedAt: new Date().toISOString(),
-    }),
+    toolContractVersion: 3,
+    location: {
+      folder: { computerId: createId("runner"), path: "/tmp/watch-task" },
+      agentHome: { computerId: createId("runner"), path: "/tmp/watch-home" },
+    },
   };
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: context.activation.runnerBootId,
@@ -401,10 +410,9 @@ function watchFixture(status: "provisioning" | "ready" = "ready"): {
       agents: {
         environmentIds: [environmentId],
         harnessDrivers: [],
-        localStorage: { bindings: [], storageAuthorityId, truncated: false },
+
         maxConcurrentRuns: 4,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
       },
     },
     name: "Runner",

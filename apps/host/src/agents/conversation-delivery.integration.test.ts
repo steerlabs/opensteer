@@ -50,37 +50,40 @@ const fakeOpencodeServer = fileURLToPath(
 );
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 interface Journey {
   readonly name: string;
   readonly [fact: string]: unknown;
 }
-
 integration("conversation delivery across Host and Runner", () => {
   let stack: VerticalStack | undefined;
   let captureRoot: string | undefined;
   const journeys: Journey[] = [];
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
-    if (captureRoot) await rm(captureRoot, { force: true, recursive: true });
+    if (captureRoot)
+      await rm(captureRoot, {
+        force: true,
+        recursive: true,
+      });
     captureRoot = undefined;
   }, 60_000);
-
   afterAll(async () => {
     const directory =
       process.env.OPENSTEER_CONVERSATION_DELIVERY_OUTPUT ??
       join(tmpdir(), "opensteer-conversation-delivery", randomUUID());
-    await mkdir(directory, { recursive: true });
+    await mkdir(directory, {
+      recursive: true,
+    });
     const artifact = join(directory, "vertical-journeys.json");
     await writeFile(artifact, JSON.stringify(journeys, null, 2) + "\n");
     console.info(`Conversation delivery journeys: ${artifact}`);
   });
-
   async function codexStack() {
     captureRoot = await mkdtemp(join(tmpdir(), "opensteer-conversation-codex-"));
     const capturePath = join(captureRoot, "codex.jsonl");
@@ -116,43 +119,55 @@ integration("conversation delivery across Host and Runner", () => {
     });
     return stack;
   }
-
   async function chat(active: VerticalStack): Promise<ThreadId> {
     return active.createThread({
       home: true,
       modelSelection,
       title: "Chat",
-      workspaceId: active.mainWorkspaceId,
     });
   }
-
   it("joins a person's Chat message into the reply under way and answers both in one Run", async () => {
     const active = await codexStack();
     const threadId = await chat(active);
-    const first = await active.queueMessage({ text: "[hold] Plan the trip", threadId });
+    const first = await active.queueMessage({
+      text: "[hold] Plan the trip",
+      threadId,
+    });
     const runId = await running(active, first.runId);
-    const follow = await active.queueMessage({ text: "Also book the hotel", threadId });
+    const follow = await active.queueMessage({
+      text: "Also book the hotel",
+      threadId,
+    });
     expect(follow.runId).toBe(runId);
     await settled(active, runId);
     const journey = await record("chat-join", active, threadId, runId);
     expect(journey.runStatus).toBe("completed");
     expect(journey.reply).toContain("Also book the hotel");
-    expect(await inputState(active, follow.messageId)).toMatchObject({ runId, state: "delivered" });
+    expect(await inputState(active, follow.messageId)).toMatchObject({
+      runId,
+      state: "delivered",
+    });
     expect(journey.runs).toHaveLength(1);
   }, 90_000);
-
   it("keeps a work Thread's message in its queue until the person steers it", async () => {
     const active = await codexStack();
     const threadId = await active.createThread({
       modelSelection,
       title: "Task",
-      workspaceId: active.mainWorkspaceId,
     });
-    const first = await active.queueMessage({ text: "[hold] Audit the deploy", threadId });
+    const first = await active.queueMessage({
+      text: "[hold] Audit the deploy",
+      threadId,
+    });
     const runId = await running(active, first.runId);
-    const queued = await active.queueMessage({ text: "Also check the logs", threadId });
+    const queued = await active.queueMessage({
+      text: "Also check the logs",
+      threadId,
+    });
     expect(queued.runId).toBeNull();
-    const view = await active.api["thread.inputQueue.get"]({ threadId });
+    const view = await active.api["thread.inputQueue.get"]({
+      threadId,
+    });
     if (!view.ok) throw new Error(view.error.message);
     expect(view.data.items.map(({ canSteer, message }) => [message.id, canSteer])).toEqual([
       [queued.messageId, true],
@@ -170,21 +185,31 @@ integration("conversation delivery across Host and Runner", () => {
     expect(journey.reply).toContain("Also check the logs");
     expect(journey.runs).toHaveLength(1);
   }, 90_000);
-
   it("gives what the person sends before the reply can start to its first turn", async () => {
     const active = await codexStack();
     // The Runner takes one Run at a time and is busy with a task.
     const task = await active.createThread({
       modelSelection,
       title: "Busy task",
-      workspaceId: active.mainWorkspaceId,
     });
-    const busy = await active.queueMessage({ text: "[hold] Long task", threadId: task });
+    const busy = await active.queueMessage({
+      text: "[hold] Long task",
+      threadId: task,
+    });
     const busyRunId = await running(active, busy.runId);
     const threadId = await chat(active);
-    const a = await active.queueMessage({ text: "Find a flight", threadId });
-    const b = await active.queueMessage({ text: "Aisle seat", threadId });
-    const c = await active.queueMessage({ text: "Under 400 dollars", threadId });
+    const a = await active.queueMessage({
+      text: "Find a flight",
+      threadId,
+    });
+    const b = await active.queueMessage({
+      text: "Aisle seat",
+      threadId,
+    });
+    const c = await active.queueMessage({
+      text: "Under 400 dollars",
+      threadId,
+    });
     if (!a.runId) throw new Error("The first message did not start a reply");
     expect([b.runId, c.runId]).toEqual([null, null]);
     expect((await runStatus(active, a.runId)).status).toBe("queued");
@@ -202,20 +227,27 @@ integration("conversation delivery across Host and Runner", () => {
       });
     expect(journey.runs).toHaveLength(1);
   }, 90_000);
-
   it("hands a message written during an approval to the reply once the person answers it", async () => {
     const active = await codexStack();
     const threadId = await chat(active);
-    const first = await active.queueMessage({ text: "[approve] Run the tests", threadId });
+    const first = await active.queueMessage({
+      text: "[approve] Run the tests",
+      threadId,
+    });
     const runId = first.runId;
     if (!runId) throw new Error("The message did not start a reply");
     await waitFor(
       async () => (await runStatus(active, runId)).status === "waiting",
       "the approval",
     );
-    const follow = await active.queueMessage({ text: "Then summarize the failures", threadId });
+    const follow = await active.queueMessage({
+      text: "Then summarize the failures",
+      threadId,
+    });
     expect(follow.runId).toBeNull();
-    expect(await inputState(active, follow.messageId)).toMatchObject({ state: "pending" });
+    expect(await inputState(active, follow.messageId)).toMatchObject({
+      state: "pending",
+    });
     const request = await active.host.store.database
       .selectFrom("requests")
       .select(["id", "presentation", "status"])
@@ -232,26 +264,37 @@ integration("conversation delivery across Host and Runner", () => {
     const answered = await active.api["commands.dispatch"]({
       idempotencyKey: `answer-${randomUUID()}`,
       requestId: request.id,
-      response: { kind: "choice", optionId: allow.id },
+      response: {
+        kind: "choice",
+        optionId: allow.id,
+      },
       type: "request.respond",
     });
     expect(answered.ok).toBe(true);
     await settled(active, runId);
     const journey = await record("approval-then-follow-up", active, threadId, runId);
     expect(journey.reply).toContain("Then summarize the failures");
-    expect(await inputState(active, follow.messageId)).toMatchObject({ runId, state: "delivered" });
+    expect(await inputState(active, follow.messageId)).toMatchObject({
+      runId,
+      state: "delivered",
+    });
     expect(journey.runs).toHaveLength(1);
   }, 90_000);
-
   it("stops Chat's reply without pausing it, ends the follow-up it had not taken, and answers the next message", async () => {
     const active = await codexStack();
     const threadId = await chat(active);
-    const first = await active.queueMessage({ text: "[hold] Write the report", threadId });
+    const first = await active.queueMessage({
+      text: "[hold] Write the report",
+      threadId,
+    });
     const runId = await running(active, first.runId);
     // The Runner is out of reach: the follow-up is handed to the Run but not
     // yet sent to the Runner when the person presses Stop.
     active.network.block();
-    const follow = await active.queueMessage({ text: "Make it shorter", threadId });
+    const follow = await active.queueMessage({
+      text: "Make it shorter",
+      threadId,
+    });
     expect(follow.runId).toBe(runId);
     await active.interruptRun(threadId, runId);
     expect(await inputState(active, follow.messageId)).toMatchObject({
@@ -267,7 +310,10 @@ integration("conversation delivery across Host and Runner", () => {
     active.network.unblock();
     await settled(active, runId);
     expect((await runStatus(active, runId)).status).toBe("interrupted");
-    const next = await active.queueMessage({ text: "New question", threadId });
+    const next = await active.queueMessage({
+      text: "New question",
+      threadId,
+    });
     if (!next.runId) throw new Error("The next message did not start a reply");
     await settled(active, next.runId);
     const journey = await record("stop-then-send", active, threadId, next.runId);
@@ -276,15 +322,23 @@ integration("conversation delivery across Host and Runner", () => {
     expect(journey.reply).not.toContain("Make it shorter");
     expect(journey.runs).toHaveLength(2);
   }, 120_000);
-
   it("orders two devices' messages into one reply by when the Host took them", async () => {
     const active = await codexStack();
     const threadId = await chat(active);
-    const first = await active.queueMessage({ text: "[hold] Plan the week", threadId });
+    const first = await active.queueMessage({
+      text: "[hold] Plan the week",
+      threadId,
+    });
     const runId = await running(active, first.runId);
     const [phone, laptop] = await Promise.all([
-      active.queueMessage({ text: "[hold] From the phone", threadId }),
-      active.queueMessage({ text: "[hold] From the laptop", threadId }),
+      active.queueMessage({
+        text: "[hold] From the phone",
+        threadId,
+      }),
+      active.queueMessage({
+        text: "[hold] From the laptop",
+        threadId,
+      }),
     ]);
     expect([phone.runId, laptop.runId]).toEqual([runId, runId]);
     await waitFor(
@@ -293,7 +347,10 @@ integration("conversation delivery across Host and Runner", () => {
         (await inputState(active, laptop.messageId)).state === "delivered",
       "both messages to reach the reply",
     );
-    const last = await active.queueMessage({ text: "Wrap up", threadId });
+    const last = await active.queueMessage({
+      text: "Wrap up",
+      threadId,
+    });
     expect(last.runId).toBe(runId);
     await settled(active, runId);
     const journey = await record("two-devices", active, threadId, runId);
@@ -312,7 +369,6 @@ integration("conversation delivery across Host and Runner", () => {
     expect(reply.indexOf(later!)).toBeLessThan(reply.indexOf("Wrap up"));
     expect(journey.runs).toHaveLength(1);
   }, 90_000);
-
   it("keeps a person's message where they sent it as the shared client draws Chat", async () => {
     const active = await codexStack();
     const threadId = await chat(active);
@@ -323,7 +379,9 @@ integration("conversation delivery across Host and Runner", () => {
       const visible = visibleTranscript(
         snapshot.transcripts[threadId] ?? [],
         snapshot.inputQueues[threadId] ?? null,
-        { conversation: true },
+        {
+          conversation: true,
+        },
       )
         .filter((entry) => entry.kind === "message")
         .map((entry) => entry.id);
@@ -340,7 +398,12 @@ integration("conversation delivery across Host and Runner", () => {
       client.activateThread(threadId);
       const send = async (text: string) => {
         const sent = await client.dispatch({
-          content: [{ text, type: "text" }],
+          content: [
+            {
+              text,
+              type: "text",
+            },
+          ],
           idempotencyKey: `client-send-${randomUUID()}`,
           threadId,
           type: "thread.sendMessage",
@@ -362,7 +425,9 @@ integration("conversation delivery across Host and Runner", () => {
         "the approval",
       );
       const waiting = await send("Then summarize the failures");
-      await vi.waitFor(() => expect(frames.at(-1)?.at(-1)).toBe(waiting), { timeout: 10_000 });
+      await vi.waitFor(() => expect(frames.at(-1)?.at(-1)).toBe(waiting), {
+        timeout: 10_000,
+      });
       const request = await active.host.store.database
         .selectFrom("requests")
         .select(["id", "presentation"])
@@ -376,7 +441,10 @@ integration("conversation delivery across Host and Runner", () => {
       await active.api["commands.dispatch"]({
         idempotencyKey: `answer-${randomUUID()}`,
         requestId: request.id,
-        response: { kind: "choice", optionId: allow.id },
+        response: {
+          kind: "choice",
+          optionId: allow.id,
+        },
         type: "request.respond",
       });
       await settled(active, approvalRun);
@@ -390,7 +458,9 @@ integration("conversation delivery across Host and Runner", () => {
             .execute();
           for (const { id } of answers) expect(frames.at(-1)).toContain(id);
         },
-        { timeout: 10_000 },
+        {
+          timeout: 10_000,
+        },
       );
       for (const message of [joined, waiting]) {
         const shown = frames.map((frame) => frame.indexOf(message));
@@ -405,13 +475,17 @@ integration("conversation delivery across Host and Runner", () => {
           for (const id of above) expect(frame.indexOf(id)).toBeLessThan(frame.indexOf(message));
         }
       }
-      journeys.push({ frames, joined, name: "client-visual-stability", waiting });
+      journeys.push({
+        frames,
+        joined,
+        name: "client-visual-stability",
+        waiting,
+      });
     } finally {
       unsubscribe();
       client.dispose();
     }
   }, 120_000);
-
   it("restarts a restart-only engine's reply to take the follow-up, in the same Run", async () => {
     stack = await startVerticalStack({
       catalogTimeoutMs: 30_000,
@@ -445,30 +519,47 @@ integration("conversation delivery across Host and Runner", () => {
         providerId: model.providerId,
       }),
       title: "Chat",
-      workspaceId: active.mainWorkspaceId,
     });
-    const first = await active.queueMessage({ text: "[hold] Draft the launch plan", threadId });
+    const first = await active.queueMessage({
+      text: "[hold] Draft the launch plan",
+      threadId,
+    });
     const runId = await running(active, first.runId);
-    const follow = await active.queueMessage({ text: "Use the blue palette", threadId });
+    const follow = await active.queueMessage({
+      text: "Use the blue palette",
+      threadId,
+    });
     expect(follow.runId).toBe(runId);
     await settled(active, runId);
     const journey = await record("restart-join", active, threadId, runId);
     expect(journey.runStatus).toBe("completed");
     expect(journey.reply).toContain("Use the blue palette");
     expect(journey.attempts).toMatchObject([
-      { outcome: "interrupted", reason: "initial" },
-      { outcome: "completed", reason: "steer_restart" },
+      {
+        outcome: "interrupted",
+        reason: "initial",
+      },
+      {
+        outcome: "completed",
+        reason: "steer_restart",
+      },
     ]);
-    expect(await inputState(active, follow.messageId)).toMatchObject({ runId, state: "delivered" });
+    expect(await inputState(active, follow.messageId)).toMatchObject({
+      runId,
+      state: "delivered",
+    });
     expect(journey.runs).toHaveLength(1);
   }, 120_000);
-
   async function record(
     name: string,
     active: VerticalStack,
     threadId: ThreadId,
     runId: RunId,
-  ): Promise<Journey & { readonly reply: string | null }> {
+  ): Promise<
+    Journey & {
+      readonly reply: string | null;
+    }
+  > {
     const database = active.host.store.database;
     const [inputs, commands, runs, attempts, reply, replyInput] = await Promise.all([
       database
@@ -521,7 +612,11 @@ integration("conversation delivery across Host and Runner", () => {
     const journey = {
       attempts,
       commands,
-      inputs: inputs.map((row) => ({ ...row, text: textOf(row.content), content: undefined })),
+      inputs: inputs.map((row) => ({
+        ...row,
+        text: textOf(row.content),
+        content: undefined,
+      })),
       name,
       reply: reply ? textOf(reply.content) : null,
       replyInput: replyInput ? textOf(replyInput.content) : null,
@@ -532,13 +627,11 @@ integration("conversation delivery across Host and Runner", () => {
     return journey;
   }
 });
-
 async function running(active: VerticalStack, runId: RunId | null): Promise<RunId> {
   if (!runId) throw new Error("The message did not start a Run");
   await waitFor(async () => (await runStatus(active, runId)).status === "running", "the reply");
   return runId;
 }
-
 async function settled(active: VerticalStack, runId: RunId): Promise<void> {
   await waitFor(
     async () =>
@@ -547,7 +640,6 @@ async function settled(active: VerticalStack, runId: RunId): Promise<void> {
     60_000,
   );
 }
-
 function runStatus(active: VerticalStack, runId: RunId) {
   return active.host.store.database
     .selectFrom("runs")
@@ -555,7 +647,6 @@ function runStatus(active: VerticalStack, runId: RunId) {
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
 }
-
 function inputState(active: VerticalStack, messageId: MessageId) {
   return active.host.store.database
     .selectFrom("threadInputs")
@@ -563,7 +654,6 @@ function inputState(active: VerticalStack, messageId: MessageId) {
     .where("messageId", "=", messageId)
     .executeTakeFirstOrThrow();
 }
-
 async function waitFor(check: () => Promise<boolean>, label: string, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (!(await check())) {
@@ -571,7 +661,6 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeoutMs =
     await delay(50);
   }
 }
-
 function textOf(content: unknown): string {
   return Array.isArray(content)
     ? content
@@ -581,16 +670,23 @@ function textOf(content: unknown): string {
         .join("")
     : "";
 }
-
 interface SessionClient {
   activateThread(threadId: string): void;
   activateWorkspace(workspaceId: string): void;
   dispatch(command: {
-    readonly content: readonly { readonly text: string; readonly type: "text" }[];
+    readonly content: readonly {
+      readonly text: string;
+      readonly type: "text";
+    }[];
     readonly idempotencyKey: string;
     readonly threadId: string;
     readonly type: "thread.sendMessage";
-  }): Promise<{ readonly message: { readonly id: string }; readonly type: string }>;
+  }): Promise<{
+    readonly message: {
+      readonly id: string;
+    };
+    readonly type: string;
+  }>;
   dispose(): void;
   load(): Promise<void>;
   getSnapshot(): {
@@ -613,7 +709,10 @@ async function sessionClient(active: VerticalStack): Promise<SessionClient> {
       readonly webSocketFactory: (url: string) => unknown;
     }) => SessionClient;
   };
-  const credentials = { cookie: active.sessionCookie, origin: active.hostOrigin.origin };
+  const credentials = {
+    cookie: active.sessionCookie,
+    origin: active.hostOrigin.origin,
+  };
   return new HttpHostClient({
     baseUrl: active.hostOrigin,
     fetch: (input, init) => {
@@ -627,10 +726,12 @@ async function sessionClient(active: VerticalStack): Promise<SessionClient> {
     reconnectBaseDelayMs: 20,
     reconnectMaxDelayMs: 100,
     refreshIntervalMs: 0,
-    webSocketFactory: (url) => new WebSocket(url, { headers: credentials }),
+    webSocketFactory: (url) =>
+      new WebSocket(url, {
+        headers: credentials,
+      }),
   });
 }
-
 async function waitForRunOf(active: VerticalStack, messageId: MessageId): Promise<RunId> {
   let runId: RunId | null = null;
   await waitFor(async () => {

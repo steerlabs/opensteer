@@ -58,7 +58,7 @@ export async function startVerticalStack(options: VerticalStackOptions): Promise
 export function attachmentReference(attachment: Attachment): ArtifactContentPart {
   return {
     type: "artifact",
-    attachmentId: attachment.id,
+    artifactId: attachment.id,
     name: attachment.name,
     mediaType: attachment.mediaType,
     sizeBytes: attachment.sizeBytes,
@@ -96,4 +96,70 @@ export function waitForRealtimeMessage(
     socket.on("message", receive);
     socket.on("close", closed);
   });
+}
+
+export interface PersonalVerticalRuntime {
+  readonly api: HostApiClient;
+  readonly environmentId: import("@opensteer/core").EnvironmentId;
+  readonly harnessInstanceId: import("@opensteer/core").HarnessInstanceId;
+  readonly sessionCookie: string;
+  readonly hostOrigin: URL;
+  /** Observes the durable input's actual consuming Run, including a completion already committed. */
+  waitForInput(messageId: MessageId, signal: AbortSignal): Promise<VerticalTurn>;
+  restartHost(): Promise<void>;
+  restartRunner(): Promise<void>;
+  close(): Promise<void>;
+}
+
+/** Personal task admission and turn collection; the runtime collaborator owns Host/Runner startup. */
+export function createPersonalVerticalStack(
+  agentHome: TaskFolder,
+  runtime: PersonalVerticalRuntime,
+): VerticalStack {
+  const send = async (input: {
+    readonly text: string;
+    readonly threadId: ThreadId;
+    readonly attachments?: readonly ArtifactContentPart[];
+  }) => {
+    const response = await runtime.api["commands.dispatch"]({
+      type: "thread.sendMessage",
+      idempotencyKey: crypto.randomUUID(),
+      delivery: "queue",
+      threadId: input.threadId,
+      content: [{ type: "text", text: input.text }, ...(input.attachments ?? [])],
+    });
+    if (!response.ok) throw new Error(response.error.message);
+    if (response.data.type !== "thread.sendMessage")
+      throw new Error("Host returned another command's receipt");
+    return { messageId: response.data.message.id, runId: response.data.run?.id ?? null };
+  };
+  return {
+    api: runtime.api,
+    agentHome,
+    sessionCookie: runtime.sessionCookie,
+    hostOrigin: runtime.hostOrigin,
+    async createThread(input) {
+      const response = await runtime.api["commands.dispatch"]({
+        type: "thread.create",
+        idempotencyKey: crypto.randomUUID(),
+        environmentId: runtime.environmentId,
+        harnessInstanceId: runtime.harnessInstanceId,
+        modelSelection: input.modelSelection,
+        folder: input.folder ?? agentHome,
+        title: input.title ?? "Fixture task",
+      });
+      if (!response.ok) throw new Error(response.error.message);
+      if (response.data.type !== "thread.create")
+        throw new Error("Host returned another command's receipt");
+      return response.data.thread.id;
+    },
+    queueMessage: send,
+    async sendMessage(input) {
+      const receipt = await send(input);
+      return runtime.waitForInput(receipt.messageId, AbortSignal.timeout(60_000));
+    },
+    restartHost: () => runtime.restartHost(),
+    restartRunner: () => runtime.restartRunner(),
+    close: () => runtime.close(),
+  };
 }

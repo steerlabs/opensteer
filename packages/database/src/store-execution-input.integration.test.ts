@@ -1,12 +1,6 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
 import type { StoreFixture } from "./store.integration.test-support.js";
 import {
   AgentEventSchema,
-  HarnessIdSchema,
   MessageContentSchema,
   messageContentMaxSerializedBytes,
   ModelSelectionSchema,
@@ -25,11 +19,8 @@ import {
   describeStore,
   testModelSelection,
   testContinuationIdentity,
-  localBacking,
-  enrollTestRunner,
   pendingEvent,
 } from "./store.integration.test-support.js";
-
 describeStore("PostgreSQL store", (it) => {
   it.for(["deactivated-session", "started-run", "runner-restart"])(
     "refuses a replacement conversation with %s evidence",
@@ -37,7 +28,12 @@ describeStore("PostgreSQL store", (it) => {
       const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
       const fixture = await createRunFixture("lost-continuation");
       const first = await enqueueHumanTrigger({
-        content: [{ text: "Start", type: "text" }],
+        content: [
+          {
+            text: "Start",
+            type: "text",
+          },
+        ],
         idempotencyKey: "lost-first",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -47,7 +43,6 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: "lost-lease",
-        membershipGeneration: 1,
         runnerBootId: "lost-boot",
         runnerId: fixture.runnerId,
         threadId: fixture.thread.id,
@@ -82,137 +77,77 @@ describeStore("PostgreSQL store", (it) => {
       if (evidence === "deactivated-session") {
         await database
           .updateTable("providerSessions")
-          .set({ active: false, status: "stopped" })
+          .set({
+            active: false,
+            status: "stopped",
+          })
           .where("id", "=", binding.providerSessionId)
           .execute();
       } else if (evidence === "started-run") {
         // Even a missing/corrupt reference must not erase evidence of execution.
         await database
           .updateTable("providerSessions")
-          .set({ providerSessionReference: null })
+          .set({
+            providerSessionReference: null,
+          })
           .where("id", "=", binding.providerSessionId)
           .execute();
         await database
           .updateTable("runs")
-          .set({ startedAt: new Date() })
+          .set({
+            startedAt: new Date(),
+          })
           .where("id", "=", first.run.id)
           .execute();
       }
       if (evidence === "deactivated-session") {
         await expect(
           store.enqueueThreadInput({
-            content: [{ text: "Continue", type: "text" }],
+            content: [
+              {
+                text: "Continue",
+                type: "text",
+              },
+            ],
             idempotencyKey: "lost-retry",
             policy: "queue",
             requestedBy: fixture.userId,
-            source: { kind: "human" },
+            source: {
+              kind: "human",
+            },
             threadId: fixture.thread.id,
           }),
         ).rejects.toThrow("no selected provider session");
         return;
       }
       const retry = await enqueueHumanTrigger({
-        content: [{ text: "Continue", type: "text" }],
+        content: [
+          {
+            text: "Continue",
+            type: "text",
+          },
+        ],
         idempotencyKey: "lost-retry",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
       await store.claimCommand(retry.command.id, "test");
       await expect(
-        store.acquireExecutionBinding({ ...bindingInput, runId: retry.run.id }),
+        store.acquireExecutionBinding({
+          ...bindingInput,
+          runId: retry.run.id,
+        }),
       ).rejects.toThrow("uncertain native start");
     },
   );
-
-  it("terminalizes every active Run in a Workspace once deletion is requested", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
-    const fixture = await createRunFixture("workspace-deletion-active-run");
-    const turn = await enqueueHumanTrigger({
-      content: [{ text: "Keep working", type: "text" }],
-      idempotencyKey: "workspace-deletion-active-turn",
-      requestedBy: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    await store.claimCommand(turn.command.id, "workspace-deletion-active-dispatcher");
-
-    const recovery = await store.failActiveRunsForWorkspaceDeletion(fixture.workspace.id);
-
-    expect(recovery.terminatedRuns).toEqual([
-      {
-        environmentId: fixture.environmentId,
-        runId: turn.run.id,
-        threadId: fixture.thread.id,
-      },
-    ]);
-    expect(recovery.events).toMatchObject([
-      {
-        data: { code: "workspace_access_revoked", status: "failed" },
-        runId: turn.run.id,
-        workspaceId: fixture.workspace.id,
-      },
-      {
-        data: { input: { cancelReason: "run-ended-before-start", state: "cancelled" } },
-        runId: turn.run.id,
-        type: "thread-input.updated",
-        workspaceId: fixture.workspace.id,
-      },
-      {
-        type: "thread.state-changed",
-        data: { inputQueuePaused: false, pendingRequests: 0, status: "failed" },
-        runId: null,
-        threadId: fixture.thread.id,
-      },
-    ]);
-    await expect(
-      database.selectFrom("runs").select("status").where("id", "=", turn.run.id).executeTakeFirst(),
-    ).resolves.toEqual({ status: "failed" });
-  });
 
   it("serializes simultaneous exact retries for every durable command writer", async ({
     storeFixture,
   }) => {
     const { database, store } = storeFixture;
     const secondHostStore = new OpensteerStore(database);
-    const userId = await store.createUser("Concurrent command owner");
-    const workspaceInput = {
-      backing: {
-        generation: 1,
-        kind: "local-directory" as const,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: userId,
-      idempotencyKey: "concurrent-command-workspace",
-      name: "Concurrent Workspace",
-      status: "ready" as const,
-    };
-    const workspaces = await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        createTestWorkspace(index % 2 === 0 ? store : secondHostStore, workspaceInput),
-      ),
-    );
-    expect(new Set(workspaces.map(({ id }) => id)).size).toBe(1);
-
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: userId,
-      environmentId,
-      name: "Concurrent command runner",
-      runnerId,
-      tokenSuffix: "concurrent_command",
-    });
-    const harness = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
+    const base = await storeFixture.createRunFixture("concurrent-command-base");
+    const { userId, environmentId, harnessInstance: harness } = base;
     const threadInput = {
       createdBy: userId,
       environmentId,
@@ -220,28 +155,39 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "concurrent-command-thread",
       modelSelection: testModelSelection,
       title: "Concurrent Thread",
-      workspaceId: workspaces[0]!.id,
     };
     const threads = await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        (index % 2 === 0 ? store : secondHostStore).createThread(threadInput),
+      Array.from(
+        {
+          length: 8,
+        },
+        (_, index) => (index % 2 === 0 ? store : secondHostStore).createThread(threadInput),
       ),
     );
     expect(threads.filter(({ wasDuplicate }) => !wasDuplicate)).toHaveLength(1);
     expect(new Set(threads.map(({ thread }) => thread.id)).size).toBe(1);
     const threadId = threads[0]!.thread.id;
-
     const messageInput = {
-      content: [{ text: "Run this once", type: "text" as const }],
+      content: [
+        {
+          text: "Run this once",
+          type: "text" as const,
+        },
+      ],
       idempotencyKey: "concurrent-command-message",
       policy: "queue" as const,
       requestedBy: userId,
-      source: { kind: "human" as const },
+      source: {
+        kind: "human" as const,
+      },
       threadId,
     };
     const messages = await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        (index % 2 === 0 ? store : secondHostStore).enqueueThreadInput(messageInput),
+      Array.from(
+        {
+          length: 8,
+        },
+        (_, index) => (index % 2 === 0 ? store : secondHostStore).enqueueThreadInput(messageInput),
       ),
     );
     expect(messages.filter(({ wasDuplicate }) => !wasDuplicate)).toHaveLength(1);
@@ -252,7 +198,9 @@ describeStore("PostgreSQL store", (it) => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("threadId", "=", threadId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "1" });
+    ).resolves.toEqual({
+      count: "1",
+    });
     const controlInput = {
       idempotencyKey: "concurrent-command-stop",
       requestedBy: userId,
@@ -261,8 +209,12 @@ describeStore("PostgreSQL store", (it) => {
       type: "run.interrupt" as const,
     };
     const controls = await Promise.all(
-      Array.from({ length: 8 }, (_, index) =>
-        (index % 2 === 0 ? store : secondHostStore).enqueueRunnerControl(controlInput),
+      Array.from(
+        {
+          length: 8,
+        },
+        (_, index) =>
+          (index % 2 === 0 ? store : secondHostStore).enqueueRunnerControl(controlInput),
       ),
     );
     expect(controls.filter(({ wasDuplicate }) => !wasDuplicate)).toHaveLength(1);
@@ -273,216 +225,9 @@ describeStore("PostgreSQL store", (it) => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("requestedBy", "=", userId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "4" });
-  });
-
-  it("persists a bounded Workspace storage issue and clears it on recovery", async ({
-    storeFixture,
-  }) => {
-    const { store } = storeFixture;
-    const userId = await store.createUser("Workspace storage owner");
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: userId,
-      idempotencyKey: "workspace-storage-issue",
-      name: "Storage recovery",
-      status: "provisioning",
+    ).resolves.toEqual({
+      count: "4",
     });
-    expect(workspace.storageIssue).toBeNull();
-
-    const storageIssueCodes = [
-      "manager-allocation-rejected",
-      "manager-configuration-invalid",
-      "manager-identity-rejected",
-      "manager-protocol-error",
-      "manager-unavailable",
-      "local-directory-inaccessible",
-      "local-directory-missing",
-      "local-directory-replaced",
-      "local-registry-invalid",
-    ] as const;
-    let unavailable = workspace;
-    for (const code of storageIssueCodes) {
-      unavailable = await store.setWorkspaceStorageState({
-        issue: {
-          code,
-          message: `Workspace storage issue: ${code}`,
-          occurredAt: "2026-08-10T00:00:00.000Z",
-          retryable: true,
-        },
-        status: "unavailable",
-        workspaceId: workspace.id,
-      });
-      expect(unavailable.storageIssue?.code).toBe(code);
-    }
-    expect(unavailable).toMatchObject({
-      status: "unavailable",
-      storageIssue: {
-        code: "local-registry-invalid",
-        retryable: true,
-      },
-    });
-
-    const expectedBacking = localBacking(workspace);
-    const ready = await store.setWorkspaceProvisioningResult({
-      backing: {
-        ...expectedBacking,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      expectedBacking,
-      status: "ready",
-      workspaceId: workspace.id,
-    });
-    expect(ready).toMatchObject({ status: "ready", storageIssue: null });
-
-    await expect(
-      store.setWorkspaceProvisioningResult({
-        backing: {
-          generation: expectedBacking.generation + 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-        expectedBacking: ready.backing,
-        status: "ready",
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      store.setWorkspaceProvisioningResult({
-        backing: {
-          generation: expectedBacking.generation,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-        expectedBacking: ready.backing,
-        status: "ready",
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
-  it("holds Workspace deletion for owner recovery and exposes only explicit purge tombstones", async ({
-    storeFixture,
-  }) => {
-    const { store, database } = storeFixture;
-    const ownerId = await store.createUser("Workspace deletion owner");
-    const collaboratorId = await store.createUser("Workspace deletion collaborator");
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: "workspace-deletion-lifecycle",
-      name: "Deletion lifecycle",
-      kind: "project",
-      status: "ready",
-    });
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy: ownerId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role: "collaborator",
-        state: "active",
-        updatedAt: new Date(),
-        userId: collaboratorId,
-        workspaceId: workspace.id,
-      })
-      .executeTakeFirstOrThrow();
-
-    await expect(
-      store.requestWorkspaceDeletion({
-        purgeAfter: new Date(Date.now() + 60_000),
-        requestedBy: collaboratorId,
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-
-    const purgeAfter = new Date(Date.now() + 60_000);
-    const deletion = await store.requestWorkspaceDeletion({
-      purgeAfter,
-      requestedBy: ownerId,
-      workspaceId: workspace.id,
-    });
-    const deleting = deletion.workspace;
-    expect(deleting.status).toBe("deleting");
-    await expect(
-      store.requestWorkspaceDeletion({
-        purgeAfter: new Date(purgeAfter.getTime() + 60_000),
-        requestedBy: ownerId,
-        workspaceId: workspace.id,
-      }),
-    ).resolves.toEqual({ requestEvents: [], workspace: deleting });
-    await expect(store.admitWorkspaceFiles(workspace.id, ownerId)).rejects.toMatchObject({
-      code: "workspace_unavailable",
-    });
-    expect((await store.listWorkspacesForOwner(ownerId)).map(({ id }) => id)).toContain(
-      workspace.id,
-    );
-
-    await expect(
-      store.recoverWorkspaceDeletion({ requestedBy: ownerId, workspaceId: workspace.id }),
-    ).resolves.toMatchObject({ status: "unavailable" });
-
-    await store.requestWorkspaceDeletion({
-      purgeAfter: new Date(Date.now() - 1),
-      requestedBy: ownerId,
-      workspaceId: workspace.id,
-    });
-    await expect(
-      store.recoverWorkspaceDeletion({ requestedBy: ownerId, workspaceId: workspace.id }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      store.listWorkspacesDuePurge({ limit: 10, now: new Date() }),
-    ).resolves.toMatchObject([{ id: workspace.id, status: "deleting" }]);
-    await expect(store.markWorkspaceDeleted({ workspaceId: workspace.id })).resolves.toMatchObject({
-      status: "deleted",
-    });
-    expect(await store.listWorkspacesForOwner(ownerId)).toEqual([]);
-    expect((await store.workspacePageForOwner({ ownerId })).workspaces).toEqual([]);
-    await expect(store.admitWorkspaceFiles(workspace.id, ownerId)).resolves.toBeNull();
-
-    const audit = await database
-      .selectFrom("securityAudit")
-      .select("action")
-      .where("workspaceId", "=", workspace.id)
-      .orderBy("createdAt", "asc")
-      .execute();
-    expect(audit.map(({ action }) => action)).toEqual([
-      "workspace.created",
-      "workspace.deletion_requested",
-      "workspace.deletion_recovered",
-      "workspace.deletion_requested",
-      "workspace.deleted",
-    ]);
   });
 
   it("keeps a Thread-create retry idempotent when the native model id has moved", async ({
@@ -500,17 +245,23 @@ describeStore("PostgreSQL store", (it) => {
         nativeModelId: "openai/gpt-5.6-sol",
       }),
       title: "Through a gateway",
-      workspaceId: fixture.workspace.id,
     };
     const created = await store.createThread(input);
-
     expect(created.wasDuplicate).toBe(false);
     expect(created.thread.modelSelection.nativeModelId).toBe("openai/gpt-5.6-sol");
     // The Host reads the native id off a live catalog, so a retry can carry a
     // different one — or none. That is the same request, not a reused key.
     await expect(
-      store.findThreadCreationByIdempotency({ ...input, modelSelection: testModelSelection }),
-    ).resolves.toMatchObject({ thread: { id: created.thread.id }, wasDuplicate: true });
+      store.findThreadCreationByIdempotency({
+        ...input,
+        modelSelection: testModelSelection,
+      }),
+    ).resolves.toMatchObject({
+      thread: {
+        id: created.thread.id,
+      },
+      wasDuplicate: true,
+    });
     await expect(
       store.createThread({
         ...input,
@@ -519,7 +270,12 @@ describeStore("PostgreSQL store", (it) => {
           nativeModelId: "openai/gpt-5.6-sol:nitro",
         }),
       }),
-    ).resolves.toMatchObject({ thread: { id: created.thread.id }, wasDuplicate: true });
+    ).resolves.toMatchObject({
+      thread: {
+        id: created.thread.id,
+      },
+      wasDuplicate: true,
+    });
     // The canonical pair is still the request, so changing it is a reuse.
     await expect(
       store.createThread({
@@ -529,40 +285,64 @@ describeStore("PostgreSQL store", (it) => {
           modelId: "gpt-5.6-terra",
         }),
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
   });
-
   it("keeps reports passive and admits one queued work item per Run", async ({ storeFixture }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("thread-input-policy");
     const queueRequest = {
-      content: [{ text: "Hold this input", type: "text" as const }],
+      content: [
+        {
+          text: "Hold this input",
+          type: "text" as const,
+        },
+      ],
       idempotencyKey: "thread-input-policy-queue",
       policy: "report" as const,
       requestedBy: fixture.userId,
-      source: { kind: "human" as const },
+      source: {
+        kind: "human" as const,
+      },
       threadId: fixture.thread.id,
     };
     const queued = await store.enqueueThreadInput(queueRequest);
     const reports = [
       queued,
       ...(await Promise.all(
-        Array.from({ length: 7 }, (_, index) =>
-          store.enqueueThreadInput({
-            ...queueRequest,
-            content: [{ text: `Historical report ${index + 2}`, type: "text" }],
-            idempotencyKey: `thread-input-policy-report-${index + 2}`,
-          }),
+        Array.from(
+          {
+            length: 7,
+          },
+          (_, index) =>
+            store.enqueueThreadInput({
+              ...queueRequest,
+              content: [
+                {
+                  text: `Historical report ${index + 2}`,
+                  type: "text",
+                },
+              ],
+              idempotencyKey: `thread-input-policy-report-${index + 2}`,
+            }),
         ),
       )),
     ];
-
     expect(queued).toMatchObject({
       command: null,
       disposition: "pending",
-      input: { policy: "report", runId: null, state: "pending" },
+      input: {
+        policy: "report",
+        runId: null,
+        state: "pending",
+      },
       message: {
-        author: { displayName: "Alex", kind: "human", userId: fixture.userId },
+        author: {
+          displayName: "Alex",
+          kind: "human",
+          userId: fixture.userId,
+        },
         kind: "input",
         runId: null,
       },
@@ -573,8 +353,12 @@ describeStore("PostgreSQL store", (it) => {
     expect(replayed).toMatchObject({
       command: null,
       disposition: "pending",
-      input: { messageId: queued.message.id },
-      message: { id: queued.message.id },
+      input: {
+        messageId: queued.message.id,
+      },
+      message: {
+        id: queued.message.id,
+      },
       run: null,
       wasDuplicate: true,
     });
@@ -583,34 +367,53 @@ describeStore("PostgreSQL store", (it) => {
         ...queueRequest,
         policy: "queue",
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     await expect(
       database
         .selectFrom("causalChains")
         .select(["rootMessageId", "rootOccurrenceId"])
         .where("id", "=", queued.input.causalChainId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ rootMessageId: queued.message.id, rootOccurrenceId: null });
+    ).resolves.toEqual({
+      rootMessageId: queued.message.id,
+      rootOccurrenceId: null,
+    });
     await expect(
       database.deleteFrom("messages").where("id", "=", queued.message.id).execute(),
     ).rejects.toThrow(/causal_chains_root_message_fk/u);
-
     const triggered = await store.enqueueThreadInput({
-      content: [{ text: "Start processing the inbox", type: "text" }],
+      content: [
+        {
+          text: "Start processing the inbox",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-policy-trigger",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     expect(triggered).toMatchObject({
-      command: { type: "run.execute" },
+      command: {
+        type: "run.execute",
+      },
       disposition: "run-queued",
-      input: { policy: "queue", runId: null, state: "pending" },
-      run: { status: "queued", seedInputId: triggered.message.id },
+      input: {
+        policy: "queue",
+        runId: null,
+        state: "pending",
+      },
+      run: {
+        status: "queued",
+        seedInputId: triggered.message.id,
+      },
     });
     if (!triggered.command || !triggered.run) throw new Error("Expected a queued inbox Run");
-
     await store.claimCommand(triggered.command.id, "thread-input-policy-dispatcher");
     const context = await store.loadRunDispatchContext(triggered.command.id);
     expect(context.inputs.map(({ id }) => id)).toEqual([triggered.message.id]);
@@ -624,22 +427,25 @@ describeStore("PostgreSQL store", (it) => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("threadId", "=", fixture.thread.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "1" });
+    ).resolves.toEqual({
+      count: "1",
+    });
     await expect(
       database
         .selectFrom("threadInputs")
         .select(["runId", "state"])
         .where("messageId", "=", triggered.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ runId: triggered.run.id, state: "claimed" });
-
+    ).resolves.toEqual({
+      runId: triggered.run.id,
+      state: "claimed",
+    });
     const runnerBootId = "boot-thread-input-policy";
     const binding = await store.acquireExecutionBinding({
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "thread-input-policy-lease",
-      membershipGeneration: 1,
       runnerBootId,
       runnerId: fixture.runnerId,
       runId: triggered.run.id,
@@ -649,33 +455,40 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
-        data: { status: "running" },
+        data: {
+          status: "running",
+        },
         environmentId: fixture.environmentId,
         ordinal: 0,
         runId: triggered.run.id,
         threadId: fixture.thread.id,
         type: "run.started",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId,
       runnerId: fixture.runnerId,
     });
     const lateReport = await store.enqueueThreadInput({
       ...queueRequest,
-      content: [{ text: "Late passive report", type: "text" }],
+      content: [
+        {
+          text: "Late passive report",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-policy-late-report",
     });
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         environmentId: fixture.environmentId,
         ordinal: 1,
         runId: triggered.run.id,
         threadId: fixture.thread.id,
         type: "run.completed",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId,
       runnerId: fixture.runnerId,
@@ -686,7 +499,10 @@ describeStore("PostgreSQL store", (it) => {
         .select(["runId", "state"])
         .where("messageId", "=", lateReport.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ runId: null, state: "pending" });
+    ).resolves.toEqual({
+      runId: null,
+      state: "pending",
+    });
     await expect(store.recoverThreadWorkQueues()).resolves.toEqual([]);
     await expect(
       database
@@ -694,8 +510,9 @@ describeStore("PostgreSQL store", (it) => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("threadId", "=", fixture.thread.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "1" });
-
+    ).resolves.toEqual({
+      count: "1",
+    });
     const { thread: otherThread } = await store.createThread({
       createdBy: fixture.userId,
       environmentId: fixture.environmentId,
@@ -703,38 +520,54 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "thread-input-policy-cross-thread",
       modelSelection: testModelSelection,
       title: "Cross-thread integrity target",
-      workspaceId: fixture.workspace.id,
     });
     const otherInput = await store.enqueueThreadInput({
-      content: [{ text: "Must remain on the other Thread", type: "text" }],
+      content: [
+        {
+          text: "Must remain on the other Thread",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-policy-cross-thread-input",
       policy: "report",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: otherThread.id,
     });
     await expect(
       database
         .updateTable("messages")
-        .set({ runId: triggered.run.id })
+        .set({
+          runId: triggered.run.id,
+        })
         .where("id", "=", otherInput.message.id)
         .execute(),
     ).rejects.toThrow(/messages_run_thread_fk/u);
     await expect(
       database
         .updateTable("threadInputs")
-        .set({ runId: triggered.run.id, state: "claimed" })
+        .set({
+          runId: triggered.run.id,
+          state: "claimed",
+        })
         .where("messageId", "=", otherInput.message.id)
         .execute(),
     ).rejects.toThrow(/thread_inputs_run_thread_fk/u);
   });
-
   it("delivers a maximum-size report without starving later context", async ({ storeFixture }) => {
     const { createRunFixture, store, enqueueHumanTrigger } = storeFixture;
     const fixture = await createRunFixture("maximum-report-context");
     const content = [
-      { type: "text" as const, text: "x".repeat(256 * 1_024) },
-      { type: "text" as const, text: "" },
+      {
+        type: "text" as const,
+        text: "x".repeat(256 * 1_024),
+      },
+      {
+        type: "text" as const,
+        text: "",
+      },
     ];
     content[1]!.text = "y".repeat(
       messageContentMaxSerializedBytes - Buffer.byteLength(JSON.stringify(content)),
@@ -747,19 +580,33 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "maximum-report-context-large",
       policy: "report",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     const next = await store.enqueueThreadInput({
-      content: [{ type: "text", text: "A later report must remain reachable" }],
+      content: [
+        {
+          type: "text",
+          text: "A later report must remain reachable",
+        },
+      ],
       idempotencyKey: "maximum-report-context-next",
       policy: "report",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     const work = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Use available context" }],
+      content: [
+        {
+          type: "text",
+          text: "Use available context",
+        },
+      ],
       idempotencyKey: "maximum-report-context-work",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -772,7 +619,6 @@ describeStore("PostgreSQL store", (it) => {
     ]);
     expect(context.reports.omittedCount).toBe(0);
   });
-
   it("freezes a bounded report sidecar and retries an unknown report only with real work", async ({
     storeFixture,
   }) => {
@@ -783,11 +629,18 @@ describeStore("PostgreSQL store", (it) => {
     for (let index = 0; index < 51; index += 1) {
       reports.push(
         await store.enqueueThreadInput({
-          content: [{ text: `Passive report ${index}`, type: "text" }],
+          content: [
+            {
+              text: `Passive report ${index}`,
+              type: "text",
+            },
+          ],
           idempotencyKey: `thread-report-sidecar-cap-${index}`,
           policy: "report",
           requestedBy: fixture.userId,
-          source: { kind: "human" },
+          source: {
+            kind: "human",
+          },
           threadId: fixture.thread.id,
         }),
       );
@@ -798,20 +651,31 @@ describeStore("PostgreSQL store", (it) => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("threadId", "=", fixture.thread.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "0" });
-
+    ).resolves.toEqual({
+      count: "0",
+    });
     const work = await store.enqueueThreadInput({
-      content: [{ text: "Process one real task", type: "text" }],
+      content: [
+        {
+          text: "Process one real task",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-report-sidecar-cap-work",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     if (!work.command || !work.run) throw new Error("Expected one queued work Run");
     await database
       .updateTable("threadInputs")
-      .set({ runId: work.run.id, state: "unknown" })
+      .set({
+        runId: work.run.id,
+        state: "unknown",
+      })
       .where("messageId", "=", reports[0]!.message.id)
       .executeTakeFirstOrThrow();
     await store.claimCommand(work.command.id, "thread-report-sidecar-cap-dispatcher");
@@ -821,16 +685,21 @@ describeStore("PostgreSQL store", (it) => {
     expect(context.reports.messages.map(({ id }) => id)).toContain(reports[0]!.message.id);
     expect(context.reports.omittedCount).toBe(1);
     expect(context.reports.throughSequence).not.toBeNull();
-
     const late = await store.enqueueThreadInput({
-      content: [{ text: "Arrived after the frozen snapshot", type: "text" }],
+      content: [
+        {
+          text: "Arrived after the frozen snapshot",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-report-sidecar-cap-late",
       policy: "report",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
-
     await store.retryCommand(work.command.id, new Error("Retry the same native dispatch"));
     await store.claimCommand(work.command.id, "thread-report-sidecar-cap-retry");
     const retry = await store.loadRunDispatchContext(work.command.id);
@@ -842,68 +711,11 @@ describeStore("PostgreSQL store", (it) => {
         .select(["runId", "state"])
         .where("messageId", "=", late.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ runId: null, state: "pending" });
+    ).resolves.toEqual({
+      runId: null,
+      state: "pending",
+    });
   }, 120_000);
-
-  it("repairs a legacy queued Run seeded by a passive report on Host recovery", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database } = storeFixture;
-    const fixture = await createRunFixture("legacy-report-seed-recovery");
-    const report = await store.enqueueThreadInput({
-      content: [{ text: "Historical completion report", type: "text" }],
-      idempotencyKey: "legacy-report-seed-recovery-report",
-      policy: "report",
-      requestedBy: fixture.userId,
-      source: { kind: "human" },
-      threadId: fixture.thread.id,
-    });
-    const work = await store.enqueueThreadInput({
-      content: [{ text: "The actual authorized task", type: "text" }],
-      idempotencyKey: "legacy-report-seed-recovery-work",
-      policy: "queue",
-      requestedBy: fixture.userId,
-      source: { kind: "human" },
-      threadId: fixture.thread.id,
-    });
-    if (!work.run) throw new Error("Expected queued work Run");
-    await database
-      .updateTable("runs")
-      .set({ seedInputId: report.message.id })
-      .where("id", "=", work.run.id)
-      .executeTakeFirstOrThrow();
-    await database
-      .updateTable("threadInputs")
-      .set({ runId: work.run.id, state: "claimed" })
-      .where("messageId", "=", report.message.id)
-      .executeTakeFirstOrThrow();
-
-    const events = await store.recoverThreadWorkQueues();
-    expect(events.map(({ type }) => type)).toEqual([
-      "run.interrupted",
-      "thread-input.updated",
-      "message.placed",
-      "run.queued",
-    ]);
-    await expect(
-      database
-        .selectFrom("threadInputs")
-        .select(["runId", "state"])
-        .where("messageId", "=", report.message.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ runId: work.run.id, state: "unknown" });
-    await expect(
-      database
-        .selectFrom("runs")
-        .select(["seedInputId", "status"])
-        .where("threadId", "=", fixture.thread.id)
-        .orderBy("runOrdinal", "asc")
-        .execute(),
-    ).resolves.toEqual([
-      { seedInputId: report.message.id, status: "interrupted" },
-      { seedInputId: work.message.id, status: "queued" },
-    ]);
-  });
 
   it("drains an incompatible trigger after the FIFO Run ahead of it terminates", async ({
     storeFixture,
@@ -911,19 +723,33 @@ describeStore("PostgreSQL store", (it) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("thread-input-terminal-trigger-drain");
     const first = await store.enqueueThreadInput({
-      content: [{ text: "Run this older independent root first", type: "text" }],
+      content: [
+        {
+          text: "Run this older independent root first",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-terminal-trigger-drain-first",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     const trigger = await store.enqueueThreadInput({
-      content: [{ text: "Then run this incompatible root", type: "text" }],
+      content: [
+        {
+          text: "Then run this incompatible root",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-terminal-trigger-drain-trigger",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     expect(trigger).toMatchObject({
@@ -932,7 +758,6 @@ describeStore("PostgreSQL store", (it) => {
       run: null,
     });
     if (!first.command || !first.run) throw new Error("Expected the FIFO Run");
-
     const claimed = await store.claimCommand(
       first.command.id,
       "thread-input-terminal-trigger-drain-dispatcher",
@@ -944,7 +769,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "thread-input-terminal-trigger-drain-lease",
-      membershipGeneration: 1,
       runnerBootId,
       runnerId: fixture.runnerId,
       runId: first.run.id,
@@ -954,13 +778,14 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
-        data: { status: "running" },
+        data: {
+          status: "running",
+        },
         environmentId: fixture.environmentId,
         ordinal: 0,
         runId: first.run.id,
         threadId: fixture.thread.id,
         type: "run.started",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId,
       runnerId: fixture.runnerId,
@@ -970,13 +795,14 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: binding.bindingGeneration,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         environmentId: fixture.environmentId,
         ordinal: 1,
         runId: first.run.id,
         threadId: fixture.thread.id,
         type: "run.completed",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId,
       runnerId: fixture.runnerId,
@@ -989,7 +815,10 @@ describeStore("PostgreSQL store", (it) => {
         .where("threadId", "=", fixture.thread.id)
         .where("status", "=", "queued")
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "queued", seedInputId: trigger.message.id });
+    ).resolves.toEqual({
+      status: "queued",
+      seedInputId: trigger.message.id,
+    });
   });
 
   /*
@@ -1005,11 +834,18 @@ describeStore("PostgreSQL store", (it) => {
     const fixture = await createRunFixture("stale-session-lease");
     const enqueue = (key: string) =>
       store.enqueueThreadInput({
-        content: [{ text: key, type: "text" }],
+        content: [
+          {
+            text: key,
+            type: "text",
+          },
+        ],
         idempotencyKey: key,
         policy: "queue",
         requestedBy: fixture.userId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.thread.id,
       });
     const first = await enqueue("stale-session-lease-first");
@@ -1021,7 +857,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "stale-session-lease",
-      membershipGeneration: 1,
       runnerBootId,
       runnerId: fixture.runnerId,
       runId: first.run.id,
@@ -1032,30 +867,46 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       runId: first.run.id,
       threadId: fixture.thread.id,
-      workspaceId: fixture.workspace.id,
     };
     for (const [ordinal, type, data] of [
-      [0, "run.started", { status: "running" }],
-      [1, "run.completed", { status: "completed" }],
+      [
+        0,
+        "run.started",
+        {
+          status: "running",
+        },
+      ],
+      [
+        1,
+        "run.completed",
+        {
+          status: "completed",
+        },
+      ],
     ] as const) {
       await store.commitRunnerEvent({
         environmentId: fixture.environmentId,
-        event: pendingEvent({ ...base, data, ordinal, type }),
+        event: pendingEvent({
+          ...base,
+          data,
+          ordinal,
+          type,
+        }),
         runnerBootId,
         runnerId: fixture.runnerId,
       });
     }
     await database
       .updateTable("providerSessions")
-      .set({ leaseExpiresAt: new Date(Date.now() - 60_000) })
+      .set({
+        leaseExpiresAt: new Date(Date.now() - 60_000),
+      })
       .where("id", "=", binding.providerSessionId)
       .execute();
     const next = await enqueue("stale-session-lease-next");
     if (!next.command || !next.run) throw new Error("Expected a second Run");
     await store.claimCommand(next.command.id, "dispatcher");
-
     const swept = await store.recoverRunsWithExpiredExecutionBindings();
-
     expect(swept.terminatedRuns).toEqual([]);
     await expect(
       database
@@ -1063,7 +914,9 @@ describeStore("PostgreSQL store", (it) => {
         .select("status")
         .where("id", "=", next.run.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "starting" });
+    ).resolves.toEqual({
+      status: "starting",
+    });
   });
 
   /*
@@ -1082,19 +935,24 @@ describeStore("PostgreSQL store", (it) => {
     const fixture = await createRunFixture("claimed-unbound-restart");
     const enqueue = (key: string) =>
       store.enqueueThreadInput({
-        content: [{ text: key, type: "text" }],
+        content: [
+          {
+            text: key,
+            type: "text",
+          },
+        ],
         idempotencyKey: key,
         policy: "queue",
         requestedBy: fixture.userId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.thread.id,
       });
     const unbound = await enqueue("claimed-unbound-input");
     if (!unbound.command || !unbound.run) throw new Error("Expected a Run");
     await store.claimCommand(unbound.command.id, "host-before-restart");
-
     const events = await store.recoverCommandsAfterHostRestart();
-
     expect(events).toContainEqual(
       expect.objectContaining({
         data: {
@@ -1123,39 +981,43 @@ describeStore("PostgreSQL store", (it) => {
         .select("status")
         .where("id", "=", unbound.command.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "pending" });
-
+    ).resolves.toEqual({
+      status: "pending",
+    });
     await store.claimCommand(unbound.command.id, "host-after-restart");
     await store.acquireExecutionBinding({
       bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "claimed-bound-lease",
-      membershipGeneration: 1,
       runnerBootId: "boot-claimed-bound",
       runnerId: fixture.runnerId,
       runId: unbound.run.id,
       threadId: fixture.thread.id,
     });
-
     await store.recoverCommandsAfterHostRestart();
-
     await expect(
       database
         .selectFrom("runs")
         .select("status")
         .where("id", "=", unbound.run.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "starting" });
+    ).resolves.toEqual({
+      status: "starting",
+    });
   });
-
   it("holds a starting Run after its replayed session binding commits across Host restarts", async ({
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const fixture = await createRunFixture("replayed-binding-restart");
     const turn = await enqueueHumanTrigger({
-      content: [{ text: "Start", type: "text" }],
+      content: [
+        {
+          text: "Start",
+          type: "text",
+        },
+      ],
       idempotencyKey: "replayed-binding-input",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -1166,7 +1028,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "replayed-binding-lease",
-      membershipGeneration: 1,
       runnerBootId: "replayed-binding-boot",
       runnerId: fixture.runnerId,
       runId: turn.run.id,
@@ -1182,7 +1043,6 @@ describeStore("PostgreSQL store", (it) => {
           runId: turn.run.id,
           terminal: false,
           threadId: fixture.thread.id,
-          workspaceId: fixture.workspace.id,
         },
       ],
       leaseExpiresAt: new Date(Date.now() + 60_000),
@@ -1219,19 +1079,29 @@ describeStore("PostgreSQL store", (it) => {
         .select("status")
         .where("id", "=", turn.command.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "dispatched" });
+    ).resolves.toEqual({
+      status: "dispatched",
+    });
     expect((await store.attachRunnerExecutions(attachment)).results).toEqual([
-      { nextOrdinal: 0, runId: turn.run.id, status: "attached" },
+      {
+        nextOrdinal: 0,
+        runId: turn.run.id,
+        status: "attached",
+      },
     ]);
   });
-
   it.for(["live", "expired"] as const)(
     "requeues a same-boot omission only with a live lease (%s)",
     async (lease, { storeFixture }) => {
       const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
       const fixture = await createRunFixture("omitted-binding");
       const turn = await enqueueHumanTrigger({
-        content: [{ text: "Start", type: "text" }],
+        content: [
+          {
+            text: "Start",
+            type: "text",
+          },
+        ],
         idempotencyKey: "omitted-binding-input",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -1242,7 +1112,6 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: "omitted-binding-lease",
-        membershipGeneration: 1,
         runnerBootId: "omitted-binding-boot",
         runnerId: fixture.runnerId,
         runId: turn.run.id,
@@ -1312,7 +1181,6 @@ describeStore("PostgreSQL store", (it) => {
       });
     },
   );
-
   it.for([null, 0])(
     "ignores a pre-acquire Run with binding generation %s when its session's Runner attaches",
     async (bindingGeneration, { storeFixture }) => {
@@ -1322,19 +1190,25 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           bindingGeneration: fixture.bindingGeneration,
-          data: { status: "completed" },
+          data: {
+            status: "completed",
+          },
           environmentId: fixture.environmentId,
           ordinal: 1,
           runId: fixture.run.id,
           threadId: fixture.thread.id,
           type: "run.completed",
-          workspaceId: fixture.workspace.id,
         }),
         runnerBootId: fixture.runnerBootId,
         runnerId: fixture.runnerId,
       });
       const next = await enqueueHumanTrigger({
-        content: [{ text: "Continue", type: "text" }],
+        content: [
+          {
+            text: "Continue",
+            type: "text",
+          },
+        ],
         idempotencyKey: "pre-acquire-next",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -1343,7 +1217,9 @@ describeStore("PostgreSQL store", (it) => {
       if (bindingGeneration !== null) {
         await database
           .updateTable("runs")
-          .set({ bindingGeneration })
+          .set({
+            bindingGeneration,
+          })
           .where("id", "=", next.run.id)
           .executeTakeFirstOrThrow();
       }
@@ -1361,7 +1237,9 @@ describeStore("PostgreSQL store", (it) => {
           .select("status")
           .where("id", "=", next.run.id)
           .executeTakeFirstOrThrow(),
-      ).resolves.toEqual({ status: "starting" });
+      ).resolves.toEqual({
+        status: "starting",
+      });
       expect(await store.recoverCommandsAfterHostRestart()).toContainEqual(
         expect.objectContaining({
           data: {
@@ -1400,11 +1278,18 @@ describeStore("PostgreSQL store", (it) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("lone-surrogate-answer");
     const work = await store.enqueueThreadInput({
-      content: [{ text: "Write an emoji", type: "text" }],
+      content: [
+        {
+          text: "Write an emoji",
+          type: "text",
+        },
+      ],
       idempotencyKey: "lone-surrogate-answer-input",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     if (!work.command || !work.run) throw new Error("Expected a Run");
@@ -1415,7 +1300,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "lone-surrogate-lease",
-      membershipGeneration: 1,
       runnerBootId,
       runnerId: fixture.runnerId,
       runId: work.run.id,
@@ -1426,7 +1310,6 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       runId: work.run.id,
       threadId: fixture.thread.id,
-      workspaceId: fixture.workspace.id,
     };
     const commit = (event: ReturnType<typeof pendingEvent>) =>
       store.commitRunnerEvent({
@@ -1436,19 +1319,32 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
       });
     await commit(
-      pendingEvent({ ...base, data: { status: "running" }, ordinal: 0, type: "run.started" }),
+      pendingEvent({
+        ...base,
+        data: {
+          status: "running",
+        },
+        ordinal: 0,
+        type: "run.started",
+      }),
     );
     const messageId = createId("message");
     const answer = pendingEvent({
       ...base,
-      data: { content: [{ text: "Here it is: \ud83d", type: "text" }], messageId },
+      data: {
+        content: [
+          {
+            text: "Here it is: \ud83d",
+            type: "text",
+          },
+        ],
+        messageId,
+      },
       ordinal: 1,
       type: "assistant.message",
     });
-
     const committed = await commit(answer);
     const replayed = await commit(answer);
-
     expect(committed.wasDuplicate).toBe(false);
     expect(replayed.wasDuplicate).toBe(true);
     const message = await database
@@ -1456,7 +1352,12 @@ describeStore("PostgreSQL store", (it) => {
       .select("content")
       .where("id", "=", messageId)
       .executeTakeFirstOrThrow();
-    expect(message.content).toEqual([{ text: "Here it is: �", type: "text" }]);
+    expect(message.content).toEqual([
+      {
+        text: "Here it is: �",
+        type: "text",
+      },
+    ]);
   });
 
   /*
@@ -1472,7 +1373,12 @@ describeStore("PostgreSQL store", (it) => {
       const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
       const fixture = await createRunFixture(suffix);
       const work = await enqueueHumanTrigger({
-        content: [{ text: "Record the provider's tool call", type: "text" }],
+        content: [
+          {
+            text: "Record the provider's tool call",
+            type: "text",
+          },
+        ],
         idempotencyKey: `${suffix}-input`,
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -1484,7 +1390,6 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: `${suffix}-lease`,
-        membershipGeneration: 1,
         runnerBootId,
         runnerId: fixture.runnerId,
         runId: work.run.id,
@@ -1495,7 +1400,6 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: fixture.environmentId,
         runId: work.run.id,
         threadId: fixture.thread.id,
-        workspaceId: fixture.workspace.id,
       };
       const commit = (
         event: PendingAgentEvent,
@@ -1504,20 +1408,33 @@ describeStore("PostgreSQL store", (it) => {
         store.commitRunnerEvent({
           environmentId: fixture.environmentId,
           event,
-          ...(integration ? { integration } : {}),
+          ...(integration
+            ? {
+                integration,
+              }
+            : {}),
           runnerBootId,
           runnerId: fixture.runnerId,
         });
       await commit(
-        pendingEvent({ ...base, data: { status: "running" }, ordinal: 0, type: "run.started" }),
+        pendingEvent({
+          ...base,
+          data: {
+            status: "running",
+          },
+          ordinal: 0,
+          type: "run.started",
+        }),
       );
-      return { base, commit };
+      return {
+        base,
+        commit,
+      };
     }
-
     async function storedEvent(storeFixture: StoreFixture, event: AgentEvent) {
       const { database } = storeFixture;
       const row = await database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .selectAll()
         .select(sql<number>`octet_length(data::text)`.as("dataBytes"))
         .where("eventId", "=", event.eventId)
@@ -1530,7 +1447,6 @@ describeStore("PostgreSQL store", (it) => {
       expect(parsed).toEqual(event);
       return row;
     }
-
     it("commits and exactly replays a fitted 600 KiB Codex inline shell command", async ({
       storeFixture,
     }) => {
@@ -1541,7 +1457,11 @@ describeStore("PostgreSQL store", (it) => {
       ).toString("base64");
       const raw = {
         command: `/bin/zsh -lc 'python3 - <<"PY"\nimport base64\nexec(base64.b64decode("${script}"))\nPY'`,
-        commandActions: [{ type: "unknown" }],
+        commandActions: [
+          {
+            type: "unknown",
+          },
+        ],
         cwd: "/workspace/opensteer",
       };
       expect(Buffer.byteLength(JSON.stringify(raw))).toBeGreaterThan(600 * 1_024);
@@ -1552,7 +1472,11 @@ describeStore("PostgreSQL store", (it) => {
       const fitted = z
         .object({
           command: z.string(),
-          commandActions: z.array(z.object({ type: z.string() })),
+          commandActions: z.array(
+            z.object({
+              type: z.string(),
+            }),
+          ),
           cwd: z.string(),
         })
         .parse(args);
@@ -1566,7 +1490,10 @@ describeStore("PostgreSQL store", (it) => {
         data: {
           arguments: args,
           callId: "call-inline-python",
-          tool: { name: "exec_command", namespace: "functions" },
+          tool: {
+            name: "exec_command",
+            namespace: "functions",
+          },
         },
         ordinal: 1,
         type: "tool.started",
@@ -1579,14 +1506,15 @@ describeStore("PostgreSQL store", (it) => {
       expect(replayed.event).toEqual(committed.event);
       expect(
         await database
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .select(sql<number>`count(*)::int`.as("count"))
           .where("runId", "=", base.runId)
           .where("runnerOrdinal", "=", 1)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ count: 1 });
+      ).toEqual({
+        count: 1,
+      });
     });
-
     it("keeps a bulk integration call's operation and persists the Host-resolved subject", async ({
       storeFixture,
     }) => {
@@ -1594,14 +1522,24 @@ describeStore("PostgreSQL store", (it) => {
       const operation = `spreadsheets.values.batchUpdate.${"a".repeat(90)}`;
       const args = createToolArguments({
         arguments: {
-          values: Array.from({ length: 5_000 }, (_, index) => [index, `row-${index}`, "ready"]),
+          values: Array.from(
+            {
+              length: 5_000,
+            },
+            (_, index) => [index, `row-${index}`, "ready"],
+          ),
         },
         operation,
       });
       expect(Buffer.byteLength(JSON.stringify(args))).toBeLessThanOrEqual(
         toolArgumentsMaxSerializedBytes,
       );
-      const fitted = z.object({ arguments: z.string(), operation: z.string() }).parse(args);
+      const fitted = z
+        .object({
+          arguments: z.string(),
+          operation: z.string(),
+        })
+        .parse(args);
       expect(fitted.arguments).toMatch(/\n… \d+ bytes omitted …\n/u);
       expect(fitted.operation).toBe(operation);
       const subject = {
@@ -1609,14 +1547,20 @@ describeStore("PostgreSQL store", (it) => {
         computerApp: null,
         effect: "write" as const,
         integration: "Sheets",
-        operation: { name: "append_rows", title: "Append rows" },
+        operation: {
+          name: "append_rows",
+          title: "Append rows",
+        },
       };
       const event = pendingEvent({
         ...base,
         data: {
           arguments: args,
           callId: "call-bulk-rows",
-          tool: { name: "integration_call", namespace: "opensteer.integrations" },
+          tool: {
+            name: "integration_call",
+            namespace: "opensteer.integrations",
+          },
         },
         ordinal: 1,
         type: "tool.started",
@@ -1631,7 +1575,6 @@ describeStore("PostgreSQL store", (it) => {
       expect(replayed.wasDuplicate).toBe(true);
       expect(replayed.event).toEqual(committed.event);
     });
-
     it.for(["tool.started", "assistant.message"] as const)(
       "commits and replays %s containing NUL as U+FFFD",
       async (type, { storeFixture }) => {
@@ -1646,16 +1589,29 @@ describeStore("PostgreSQL store", (it) => {
             ? pendingEvent({
                 ...base,
                 data: {
-                  arguments: createToolArguments({ command: "a\u0000b" }),
+                  arguments: createToolArguments({
+                    command: "a\u0000b",
+                  }),
                   callId: "call-nul",
-                  tool: { name: "exec_command", namespace: "functions" },
+                  tool: {
+                    name: "exec_command",
+                    namespace: "functions",
+                  },
                 },
                 ordinal: 1,
                 type,
               })
             : pendingEvent({
                 ...base,
-                data: { content: [{ text: "a\u0000b", type: "text" }], messageId },
+                data: {
+                  content: [
+                    {
+                      text: "a\u0000b",
+                      type: "text",
+                    },
+                  ],
+                  messageId,
+                },
                 ordinal: 1,
                 type,
               });
@@ -1664,8 +1620,21 @@ describeStore("PostgreSQL store", (it) => {
         expect(replacement).toBe("a\uFFFDb");
         expect((await storedEvent(storeFixture, committed.event)).data).toEqual(
           type === "tool.started"
-            ? { ...event.data, arguments: { command: replacement } }
-            : { ...event.data, content: [{ text: replacement, type: "text" }] },
+            ? {
+                ...event.data,
+                arguments: {
+                  command: replacement,
+                },
+              }
+            : {
+                ...event.data,
+                content: [
+                  {
+                    text: replacement,
+                    type: "text",
+                  },
+                ],
+              },
         );
         if (type === "assistant.message") {
           expect(
@@ -1674,7 +1643,14 @@ describeStore("PostgreSQL store", (it) => {
               .select("content")
               .where("id", "=", messageId)
               .executeTakeFirstOrThrow(),
-          ).toEqual({ content: [{ text: replacement, type: "text" }] });
+          ).toEqual({
+            content: [
+              {
+                text: replacement,
+                type: "text",
+              },
+            ],
+          });
         }
         const replayed = await commit(event);
         expect(replayed.wasDuplicate).toBe(true);
@@ -1682,18 +1658,24 @@ describeStore("PostgreSQL store", (it) => {
       },
     );
   });
-
   it("stores the Host's subject of an integration call, and keeps a replay a replay", async ({
     storeFixture,
   }) => {
     const { createRunFixture, store, database } = storeFixture;
     const fixture = await createRunFixture("integration-call-subject");
     const work = await store.enqueueThreadInput({
-      content: [{ text: "Open the Opensteer workspace in Slack", type: "text" }],
+      content: [
+        {
+          text: "Open the Opensteer workspace in Slack",
+          type: "text",
+        },
+      ],
       idempotencyKey: "integration-call-subject-input",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     if (!work.command || !work.run) throw new Error("Expected a Run");
@@ -1704,7 +1686,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "integration-call-subject-lease",
-      membershipGeneration: 1,
       runnerBootId,
       runnerId: fixture.runnerId,
       runId: work.run.id,
@@ -1715,13 +1696,14 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       runId: work.run.id,
       threadId: fixture.thread.id,
-      workspaceId: fixture.workspace.id,
     };
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       event: pendingEvent({
         ...base,
-        data: { status: "running" },
+        data: {
+          status: "running",
+        },
         ordinal: 0,
         type: "run.started",
       }),
@@ -1738,12 +1720,23 @@ describeStore("PostgreSQL store", (it) => {
       },
       effect: "write" as const,
       integration: "Computer use",
-      operation: { name: "act", title: "Act" },
+      operation: {
+        name: "act",
+        title: "Act",
+      },
     };
     const reported = {
-      arguments: { arguments: { actions: [] }, toolRef: "igr_x.itl_y.digest" },
+      arguments: {
+        arguments: {
+          actions: [],
+        },
+        toolRef: "igr_x.itl_y.digest",
+      },
       callId: "call-act",
-      tool: { name: "integration_call", namespace: "opensteer" },
+      tool: {
+        name: "integration_call",
+        namespace: "opensteer",
+      },
     };
     // A Runner cannot name the subject itself; its copy is dropped at the
     // boundary and the Host's stands.
@@ -1754,7 +1747,10 @@ describeStore("PostgreSQL store", (it) => {
     };
     const started = pendingEvent({
       ...base,
-      data: { ...reported, integration: forged } as never,
+      data: {
+        ...reported,
+        integration: forged,
+      } as never,
       ordinal: 1,
       type: "tool.started",
     });
@@ -1762,27 +1758,43 @@ describeStore("PostgreSQL store", (it) => {
       store.commitRunnerEvent({
         environmentId: fixture.environmentId,
         event: started,
-        ...(integration ? { integration } : {}),
+        ...(integration
+          ? {
+              integration,
+            }
+          : {}),
         runnerBootId,
         runnerId: fixture.runnerId,
       });
-
     const committed = await commit(subject);
-
     expect(committed.wasDuplicate).toBe(false);
-    expect(committed.event.data).toEqual({ ...reported, integration: subject });
+    expect(committed.event.data).toEqual({
+      ...reported,
+      integration: subject,
+    });
     await expect(
       database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select("data")
         .where("eventId", "=", committed.event.eventId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ data: { ...reported, integration: subject } });
+    ).resolves.toEqual({
+      data: {
+        ...reported,
+        integration: subject,
+      },
+    });
 
     // The same Runner payload again is a replay whatever the Host resolves
     // this time — a subject that is gone, or one that has changed — and it
     // answers with the event as it was first recorded.
-    for (const replayed of [await commit(), await commit({ ...subject, account: "Renamed" })]) {
+    for (const replayed of [
+      await commit(),
+      await commit({
+        ...subject,
+        account: "Renamed",
+      }),
+    ]) {
       expect(replayed.wasDuplicate).toBe(true);
       expect(replayed.event).toEqual(committed.event);
     }
@@ -1790,33 +1802,53 @@ describeStore("PostgreSQL store", (it) => {
       store.commitRunnerEvent({
         environmentId: fixture.environmentId,
         // The same ordinal and moment, with different content.
-        event: { ...started, data: { ...reported, callId: "call-other" } } as PendingAgentEvent,
+        event: {
+          ...started,
+          data: {
+            ...reported,
+            callId: "call-other",
+          },
+        } as PendingAgentEvent,
         integration: subject,
         runnerBootId,
         runnerId: fixture.runnerId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
 
     // Without a subject the Runner's copy is still not stored.
     const unnamed = await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       event: pendingEvent({
         ...base,
-        data: { ...reported, callId: "call-unnamed", integration: forged } as never,
+        data: {
+          ...reported,
+          callId: "call-unnamed",
+          integration: forged,
+        } as never,
         ordinal: 2,
         type: "tool.started",
       }),
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-    expect(unnamed.event.data).toEqual({ ...reported, callId: "call-unnamed" });
-
+    expect(unnamed.event.data).toEqual({
+      ...reported,
+      callId: "call-unnamed",
+    });
     await expect(
       store.commitRunnerEvent({
         environmentId: fixture.environmentId,
         event: pendingEvent({
           ...base,
-          data: { callId: "call-unnamed", isError: false, output: { text: "done" } },
+          data: {
+            callId: "call-unnamed",
+            isError: false,
+            output: {
+              text: "done",
+            },
+          },
           ordinal: 3,
           type: "tool.completed",
         }),
@@ -1831,7 +1863,13 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         ...base,
-        data: { callId: "call-act", isError: false, output: { text: "done" } },
+        data: {
+          callId: "call-act",
+          isError: false,
+          output: {
+            text: "done",
+          },
+        },
         ordinal: 3,
         type: "tool.completed",
       }),
@@ -1840,55 +1878,79 @@ describeStore("PostgreSQL store", (it) => {
     });
     await expect(store.latestNativePlaces(fixture.userId)).resolves.toEqual([
       expect.objectContaining({
-        place: { appKey: "com.tinyspeck.slackmacgap", kind: "app", machineId: fixture.runnerId },
+        place: {
+          appKey: "com.tinyspeck.slackmacgap",
+          kind: "app",
+          machineId: fixture.runnerId,
+        },
         runId: work.run.id,
         threadId: fixture.thread.id,
       }),
     ]);
   });
-
   it("names a Run's requester only for its own Thread and Workspace", async ({ storeFixture }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("run-requester");
     const work = await store.enqueueThreadInput({
-      content: [{ text: "Whose is this?", type: "text" }],
+      content: [
+        {
+          text: "Whose is this?",
+          type: "text",
+        },
+      ],
       idempotencyKey: "run-requester-input",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     if (!work.run) throw new Error("Expected a Run");
     const scope = {
       runId: work.run.id,
       threadId: fixture.thread.id,
-      workspaceId: fixture.workspace.id,
     };
-
     await expect(store.runRequester(scope)).resolves.toBe(fixture.userId);
     await expect(
-      store.runRequester({ ...scope, workspaceId: createId("workspace") }),
+      store.runRequester({
+        ...scope,
+      }),
     ).resolves.toBeNull();
     await expect(
-      store.runRequester({ ...scope, threadId: createId("thread") }),
+      store.runRequester({
+        ...scope,
+        threadId: createId("thread"),
+      }),
     ).resolves.toBeNull();
-    await expect(store.runRequester({ ...scope, runId: createId("run") })).resolves.toBeNull();
+    await expect(
+      store.runRequester({
+        ...scope,
+        runId: createId("run"),
+      }),
+    ).resolves.toBeNull();
   });
-
   it("claims one fixed FIFO batch and preserves typed Host-authored attribution", async ({
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, database, store } = storeFixture;
     const fixture = await createRunFixture("thread-input-batch");
     const source = await enqueueHumanTrigger({
-      content: [{ text: "Coordinate the batch", type: "text" }],
+      content: [
+        {
+          text: "Coordinate the batch",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-batch-source",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
     await database
       .updateTable("runs")
-      .set({ status: "running" })
+      .set({
+        status: "running",
+      })
       .where("id", "=", source.run.id)
       .executeTakeFirstOrThrow();
     const { thread: target } = await store.createThread({
@@ -1898,7 +1960,6 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "thread-input-batch-target",
       modelSelection: testModelSelection,
       title: "Batch target",
-      workspaceId: fixture.workspace.id,
     });
     const agentInput = (
       idempotencyKey: string,
@@ -1906,31 +1967,49 @@ describeStore("PostgreSQL store", (it) => {
       policy: "report" | "queue" | "steer",
     ) =>
       store.enqueueThreadInput({
-        content: [{ text, type: "text" }],
+        content: [
+          {
+            text,
+            type: "text",
+          },
+        ],
         idempotencyKey,
         policy,
         requestedBy: fixture.userId,
-        source: { kind: "agent", runId: source.run.id },
+        source: {
+          kind: "agent",
+          runId: source.run.id,
+        },
         threadId: target.id,
       });
     const first = await agentInput("thread-input-batch-1", "FIRST", "report");
     const second = await agentInput("thread-input-batch-2", "SECOND", "report");
     const wake = await agentInput("thread-input-batch-3", "THIRD", "queue");
     const incompatible = await store.enqueueThreadInput({
-      content: [{ text: "FOURTH", type: "text" }],
+      content: [
+        {
+          text: "FOURTH",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-batch-4",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: target.id,
     });
-
     expect(first.disposition).toBe("pending");
     expect(second.disposition).toBe("pending");
     expect(wake).toMatchObject({
-      command: { type: "run.execute" },
+      command: {
+        type: "run.execute",
+      },
       disposition: "run-queued",
-      run: { seedInputId: wake.message.id },
+      run: {
+        seedInputId: wake.message.id,
+      },
     });
     expect(incompatible).toMatchObject({
       command: null,
@@ -1938,7 +2017,6 @@ describeStore("PostgreSQL store", (it) => {
       run: null,
     });
     if (!wake.command) throw new Error("Expected batch dispatch Command");
-
     await store.claimCommand(wake.command.id, "thread-input-batch-dispatcher");
     const context = await store.loadRunDispatchContext(wake.command.id);
     expect(context.inputs.map(({ id }) => id)).toEqual([wake.message.id]);
@@ -1952,8 +2030,14 @@ describeStore("PostgreSQL store", (it) => {
         runId: author.kind === "agent" ? author.runId : null,
       })),
     ).toEqual([
-      { kind: "agent", runId: source.run.id },
-      { kind: "agent", runId: source.run.id },
+      {
+        kind: "agent",
+        runId: source.run.id,
+      },
+      {
+        kind: "agent",
+        runId: source.run.id,
+      },
     ]);
     await expect(
       database
@@ -1961,60 +2045,74 @@ describeStore("PostgreSQL store", (it) => {
         .select(["runId", "state"])
         .where("messageId", "=", incompatible.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ runId: null, state: "pending" });
+    ).resolves.toEqual({
+      runId: null,
+      state: "pending",
+    });
   });
-
   it("leaves queued inputs pending while active work continues", async ({ storeFixture }) => {
-    const { startRunFixture, store, database } = storeFixture;
+    const { startRunFixture, store } = storeFixture;
     const started = await startRunFixture("thread-input-steer-fifo");
-    const collaboratorId = await store.createUser("Earlier collaborator");
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy: started.userId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role: "collaborator",
-        state: "active",
-        updatedAt: new Date(),
-        userId: collaboratorId,
-        workspaceId: started.workspace.id,
-      })
-      .executeTakeFirstOrThrow();
+    const collaboratorId = started.userId;
+
     const earlier = await store.enqueueThreadInput({
-      content: [{ text: "Earlier collaborator input", type: "text" }],
+      content: [
+        {
+          text: "Earlier collaborator input",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-steer-fifo-earlier",
       policy: "report",
       requestedBy: collaboratorId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: started.thread.id,
     });
-    expect(earlier).toMatchObject({ command: null, disposition: "pending" });
-
+    expect(earlier).toMatchObject({
+      command: null,
+      disposition: "pending",
+    });
     const later = await store.enqueueThreadInput({
-      content: [{ text: "Later owner input", type: "text" }],
+      content: [
+        {
+          text: "Later owner input",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-steer-fifo-later",
       policy: "queue",
       requestedBy: started.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: started.thread.id,
     });
     expect(later).toMatchObject({
       command: null,
       disposition: "pending",
-      input: { runId: null, state: "pending" },
-      message: { runId: null },
+      input: {
+        runId: null,
+        state: "pending",
+      },
+      message: {
+        runId: null,
+      },
     });
-
     const wake = await store.enqueueThreadInput({
-      content: [{ text: "Wake the oldest authority", type: "text" }],
+      content: [
+        {
+          text: "Wake the oldest authority",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-steer-fifo-wake",
       policy: "queue",
       requestedBy: started.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: started.thread.id,
     });
     expect(wake).toMatchObject({
@@ -2023,19 +2121,25 @@ describeStore("PostgreSQL store", (it) => {
       run: null,
     });
   });
-
   it("retries run.execute with the same already-claimed fixed batch", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, database, store } = storeFixture;
     const fixture = await createRunFixture("thread-input-fixed-batch-retry");
     const source = await enqueueHumanTrigger({
-      content: [{ text: "Create a shared input chain", type: "text" }],
+      content: [
+        {
+          text: "Create a shared input chain",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-fixed-batch-retry-source",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
     await database
       .updateTable("runs")
-      .set({ status: "running" })
+      .set({
+        status: "running",
+      })
       .where("id", "=", source.run.id)
       .executeTakeFirstOrThrow();
     const { thread: target } = await store.createThread({
@@ -2045,22 +2149,37 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "thread-input-fixed-batch-retry-target",
       modelSelection: testModelSelection,
       title: "Fixed batch retry target",
-      workspaceId: fixture.workspace.id,
     });
     const first = await store.enqueueThreadInput({
-      content: [{ text: "First fixed input", type: "text" }],
+      content: [
+        {
+          text: "First fixed input",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-fixed-batch-retry-first",
       policy: "report",
       requestedBy: fixture.userId,
-      source: { kind: "agent", runId: source.run.id },
+      source: {
+        kind: "agent",
+        runId: source.run.id,
+      },
       threadId: target.id,
     });
     const wake = await store.enqueueThreadInput({
-      content: [{ text: "Second fixed input", type: "text" }],
+      content: [
+        {
+          text: "Second fixed input",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-input-fixed-batch-retry-wake",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "agent", runId: source.run.id },
+      source: {
+        kind: "agent",
+        runId: source.run.id,
+      },
       threadId: target.id,
     });
     if (!wake.command) throw new Error("Expected fixed batch Run command");
@@ -2068,7 +2187,6 @@ describeStore("PostgreSQL store", (it) => {
     const firstContext = await store.loadRunDispatchContext(wake.command.id);
     expect(firstContext.inputs.map(({ id }) => id)).toEqual([wake.message.id]);
     expect(firstContext.reports.messages.map(({ id }) => id)).toEqual([first.message.id]);
-
     await store.retryCommand(wake.command.id, new Error("Runner unavailable before dispatch"));
     await store.claimCommand(wake.command.id, "fixed-batch-second-dispatcher");
     const retriedContext = await store.loadRunDispatchContext(wake.command.id);
@@ -2076,27 +2194,42 @@ describeStore("PostgreSQL store", (it) => {
       firstContext.inputs.map(({ id }) => id),
     );
   });
-
   it("delivers a steer only after the Runner acknowledges its exact Message", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const started = await startRunFixture("thread-steer-delivered");
     const steered = await store.enqueueThreadInput({
-      content: [{ text: "Use the updated constraint", type: "text" }],
+      content: [
+        {
+          text: "Use the updated constraint",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-steer-delivered",
       policy: "steer",
       requestedBy: started.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: started.thread.id,
     });
-
     expect(steered).toMatchObject({
-      command: { runId: started.run.id, type: "run.steer" },
+      command: {
+        runId: started.run.id,
+        type: "run.steer",
+      },
       disposition: "steering",
-      input: { runId: started.run.id, state: "claimed" },
-      message: { runId: started.run.id },
-      run: { id: started.run.id },
+      input: {
+        runId: started.run.id,
+        state: "claimed",
+      },
+      message: {
+        runId: started.run.id,
+      },
+      run: {
+        id: started.run.id,
+      },
     });
     expect(steered.input.causalChainId).toBe(started.run.causalChainId);
     await expect(
@@ -2105,25 +2238,27 @@ describeStore("PostgreSQL store", (it) => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("rootMessageId", "=", steered.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "0" });
+    ).resolves.toEqual({
+      count: "0",
+    });
     if (!steered.command) throw new Error("Expected steer Command");
     await store.claimCommand(steered.command.id, "thread-steer-delivered-dispatcher");
     const delivered = await store.commitRunnerEvent({
       environmentId: started.environmentId,
       event: pendingEvent({
         bindingGeneration: started.bindingGeneration,
-        data: { messageId: steered.message.id },
+        data: {
+          messageId: steered.message.id,
+        },
         environmentId: started.environmentId,
         ordinal: 1,
         runId: started.run.id,
         threadId: started.thread.id,
         type: "message.injected",
-        workspaceId: started.workspace.id,
       }),
       runnerBootId: started.runnerBootId,
       runnerId: started.runnerId,
     });
-
     expect(delivered.compensatingEvents.map(({ type }) => type)).toEqual(["thread-input.updated"]);
     await expect(
       store.markSteerUnknown(steered.command.id, "Late ambiguous transport result"),
@@ -2134,30 +2269,43 @@ describeStore("PostgreSQL store", (it) => {
         .select(["deliveredAt", "runId", "state"])
         .where("messageId", "=", steered.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({ runId: started.run.id, state: "delivered" });
+    ).resolves.toMatchObject({
+      runId: started.run.id,
+      state: "delivered",
+    });
     await expect(
       database
         .selectFrom("commands")
         .select("status")
         .where("id", "=", steered.command.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "succeeded" });
+    ).resolves.toEqual({
+      status: "succeeded",
+    });
   });
-
   it("terminally cancels a proven-refused strict steer", async ({ storeFixture }) => {
     const { startRunFixture, database, store } = storeFixture;
     const refusedRun = await startRunFixture("thread-steer-refused");
     await database
       .updateTable("causalChains")
-      .set({ usedAutonomousRuns: sql`max_autonomous_runs` })
+      .set({
+        usedAutonomousRuns: sql`max_autonomous_runs`,
+      })
       .where("id", "=", refusedRun.run.causalChainId)
       .executeTakeFirstOrThrow();
     const refused = await store.enqueueThreadInput({
-      content: [{ text: "Retry this after refusal", type: "text" }],
+      content: [
+        {
+          text: "Retry this after refusal",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-steer-refused",
       policy: "steer",
       requestedBy: refusedRun.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: refusedRun.thread.id,
     });
     if (!refused.command) throw new Error("Expected refused steer Command");
@@ -2183,18 +2331,24 @@ describeStore("PostgreSQL store", (it) => {
         .where("status", "in", ["running", "queued"])
         .orderBy("runOrdinal")
         .execute(),
-    ).toEqual([{ runOrdinal: 0, status: "running" }]);
+    ).toEqual([
+      {
+        runOrdinal: 0,
+        status: "running",
+      },
+    ]);
     await store.commitRunnerEvent({
       environmentId: refusedRun.environmentId,
       event: pendingEvent({
         bindingGeneration: refusedRun.bindingGeneration,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         environmentId: refusedRun.environmentId,
         ordinal: 1,
         runId: refusedRun.run.id,
         threadId: refusedRun.thread.id,
         type: "run.completed",
-        workspaceId: refusedRun.workspace.id,
       }),
       runnerBootId: refusedRun.runnerBootId,
       runnerId: refusedRun.runnerId,
@@ -2205,9 +2359,11 @@ describeStore("PostgreSQL store", (it) => {
         .select(["cancelReason", "state"])
         .where("messageId", "=", refused.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ cancelReason: "steer-refused", state: "cancelled" });
+    ).resolves.toEqual({
+      cancelReason: "steer-refused",
+      state: "cancelled",
+    });
   });
-
   it("returns a strict steer refused for a pending Request to the inbox and starts its next Run", async ({
     storeFixture,
   }) => {
@@ -2220,28 +2376,44 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "parked-strict-parent",
       modelSelection: testModelSelection,
       title: "Parent",
-      workspaceId: started.workspace.id,
     });
     const parentTurn = await store.enqueueThreadInput({
-      content: [{ text: "Coordinate the child", type: "text" }],
+      content: [
+        {
+          text: "Coordinate the child",
+          type: "text",
+        },
+      ],
       idempotencyKey: "parked-strict-parent-turn",
       policy: "queue",
       requestedBy: started.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: parent.id,
     });
     if (!parentTurn.run) throw new Error("Expected a parent Run");
     await database
       .updateTable("runs")
-      .set({ status: "running" })
+      .set({
+        status: "running",
+      })
       .where("id", "=", parentTurn.run.id)
       .execute();
     const steered = await store.enqueueThreadInput({
-      content: [{ text: "Use my work account", type: "text" }],
+      content: [
+        {
+          text: "Use my work account",
+          type: "text",
+        },
+      ],
       idempotencyKey: "parked-strict-steer",
       policy: "steer",
       requestedBy: started.userId,
-      source: { kind: "agent", runId: parentTurn.run.id },
+      source: {
+        kind: "agent",
+        runId: parentTurn.run.id,
+      },
       threadId: started.thread.id,
     });
     expect(steered.disposition).toBe("steering");
@@ -2257,7 +2429,10 @@ describeStore("PostgreSQL store", (it) => {
         .select(["state", "runId"])
         .where("messageId", "=", steered.message.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ state: "pending", runId: null });
+    ).toEqual({
+      state: "pending",
+      runId: null,
+    });
     await store.commitRunnerEvent({
       environmentId: started.environmentId,
       runnerBootId: started.runnerBootId,
@@ -2268,9 +2443,10 @@ describeStore("PostgreSQL store", (it) => {
         ordinal: 1,
         runId: started.run.id,
         threadId: started.thread.id,
-        workspaceId: started.workspace.id,
         type: "run.completed",
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
       }),
     });
     const next = await database
@@ -2279,18 +2455,27 @@ describeStore("PostgreSQL store", (it) => {
       .where("threadId", "=", started.thread.id)
       .where("id", "!=", started.run.id)
       .executeTakeFirstOrThrow();
-    expect(next).toMatchObject({ seedInputId: steered.message.id, status: "queued" });
+    expect(next).toMatchObject({
+      seedInputId: steered.message.id,
+      status: "queued",
+    });
   });
-
   it("keeps an ambiguous steer attached without retrying it", async ({ storeFixture }) => {
     const { startRunFixture, store, database } = storeFixture;
     const unknownRun = await startRunFixture("thread-steer-unknown");
     const unknown = await store.enqueueThreadInput({
-      content: [{ text: "Delivery could not be confirmed", type: "text" }],
+      content: [
+        {
+          text: "Delivery could not be confirmed",
+          type: "text",
+        },
+      ],
       idempotencyKey: "thread-steer-unknown",
       policy: "steer",
       requestedBy: unknownRun.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: unknownRun.thread.id,
     });
     if (!unknown.command) throw new Error("Expected unknown steer Command");
@@ -2311,18 +2496,18 @@ describeStore("PostgreSQL store", (it) => {
       state: "unknown",
       steerCommandId: unknown.command.id,
     });
-
     const lateProof = await store.commitRunnerEvent({
       environmentId: unknownRun.environmentId,
       event: pendingEvent({
         bindingGeneration: unknownRun.bindingGeneration,
-        data: { messageId: unknown.message.id },
+        data: {
+          messageId: unknown.message.id,
+        },
         environmentId: unknownRun.environmentId,
         ordinal: 1,
         runId: unknownRun.run.id,
         threadId: unknownRun.thread.id,
         type: "message.injected",
-        workspaceId: unknownRun.workspace.id,
       }),
       runnerBootId: unknownRun.runnerBootId,
       runnerId: unknownRun.runnerId,
@@ -2334,13 +2519,17 @@ describeStore("PostgreSQL store", (it) => {
         .select(["state", "deliveredAt"])
         .where("messageId", "=", unknown.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({ state: "delivered" });
+    ).resolves.toMatchObject({
+      state: "delivered",
+    });
     await expect(
       database
         .selectFrom("commands")
         .select("status")
         .where("id", "=", unknown.command.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "succeeded" });
+    ).resolves.toEqual({
+      status: "succeeded",
+    });
   });
 });

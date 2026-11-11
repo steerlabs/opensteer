@@ -56,33 +56,30 @@ const fakeOpencodeServer = fileURLToPath(
 );
 const selection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 interface Journey {
   readonly engines: number;
   readonly name: string;
   readonly notes: Readonly<Record<string, unknown>>;
   readonly runMs: readonly number[];
 }
-
 integration("Warm engines", () => {
   let stack: VerticalStack | undefined;
   const journeys: Journey[] = [];
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
   });
-
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-warm-"));
     const artifact = join(directory, "warm.json");
     await writeFile(artifact, JSON.stringify(journeys, null, 2) + "\n");
     console.info(`Warm engines artifact: ${artifact}`);
   });
-
   async function start(
     scenario = "vertical",
     engineArguments: readonly string[] = [],
@@ -123,9 +120,12 @@ integration("Warm engines", () => {
     const threadId = await stack.createThread({
       modelSelection: selection,
       title: "Warm journey",
-      workspaceId: stack.mainWorkspaceId,
     });
-    return { active: stack, captureFile, threadId };
+    return {
+      active: stack,
+      captureFile,
+      threadId,
+    };
   }
 
   /**
@@ -144,11 +144,14 @@ integration("Warm engines", () => {
       runIds.map(async (runId, index) => {
         const own = frames.filter((frame) => frame.turnStarts === index + 1);
         const expected = expectedUsage(own, rootThreadId);
-        return { expected, own, recorded: await recordedUsage(active, runId) };
+        return {
+          expected,
+          own,
+          recorded: await recordedUsage(active, runId),
+        };
       }),
     );
   }
-
   async function startOpencode(
     scenario = "zen-free",
     engineArguments: readonly string[] = [],
@@ -191,27 +194,39 @@ integration("Warm engines", () => {
         providerId: model.providerId,
       }),
       title: "Warm OpenCode journey",
-      workspaceId: stack.mainWorkspaceId,
     });
-    return { active: stack, captureFile, threadId };
+    return {
+      active: stack,
+      captureFile,
+      threadId,
+    };
   }
 
   /** A Run on the Thread, start to end, and how long it took. */
   async function run(active: VerticalStack, threadId: ThreadId, text: string) {
     const started = performance.now();
-    const queued = await active.queueMessage({ text, threadId });
+    const queued = await active.queueMessage({
+      text,
+      threadId,
+    });
     const runId = queued.runId!;
     await settled(active, runId);
-    return { ms: Math.round(performance.now() - started), runId };
+    return {
+      ms: Math.round(performance.now() - started),
+      runId,
+    };
   }
-
   it(
     "filters a disabled loose skill through Host dispatch and retires the warm engine",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, threadId } = await start();
       const skillDirectory = join(active.mountedWorkspacePath, "skills", "a6-private-skill");
-      await mkdir(skillDirectory, { recursive: true });
+      await mkdir(skillDirectory, {
+        recursive: true,
+      });
       await writeFile(
         join(skillDirectory, "SKILL.md"),
         "---\nname: a6-private-skill\ndescription: A6 skill sentinel\n---\nUse the sentinel.\n",
@@ -228,7 +243,6 @@ integration("Warm engines", () => {
       const settings = new PluginSettingsStore(active.host.store.database);
       const target = {
         kind: "skill" as const,
-        workspaceId: active.mainWorkspaceId,
         fullName: "a6-private-skill",
       };
       await vi.waitFor(
@@ -238,7 +252,9 @@ integration("Warm engines", () => {
             kind: "skill",
           });
         },
-        { timeout: 5000 },
+        {
+          timeout: 5000,
+        },
       );
       const disableKey = randomUUID();
       await testRpcData(
@@ -274,10 +290,11 @@ integration("Warm engines", () => {
       );
     },
   );
-
   it(
     "serves a Thread's next Run with the engine its last Run left",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       // Each turn after the first begins by restating the thread's reading.
       const { active, captureFile, threadId } = await start("vertical", [
@@ -328,7 +345,6 @@ integration("Warm engines", () => {
       });
     },
   );
-
   it.each([
     ["valid", ["--title-reply=Support migration\nplane"], "plane", "generated", 1],
     ["title only", ["--title-reply=Support migration"], "document", "generated", 1],
@@ -337,7 +353,9 @@ integration("Warm engines", () => {
     ["failed call", ["--title-error"], null, "provisional", 2],
   ] as const)(
     "isolates naming and keeps its engine warm after %s",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async (name, arguments_, icon, iconSource, calls) => {
       const { active, captureFile, threadId } = await start("vertical", [
         "--token-usage",
@@ -358,7 +376,13 @@ integration("Warm engines", () => {
         warn.mock.calls.filter(
           ([message, details]) =>
             message === "Thread naming found no name" &&
-            (details as { threadId?: string } | undefined)?.threadId === threadId,
+            (
+              details as
+                | {
+                    threadId?: string;
+                  }
+                | undefined
+            )?.threadId === threadId,
         ).length;
       const namingSettled = (turns: number) =>
         waitFor(async () => {
@@ -372,7 +396,11 @@ integration("Warm engines", () => {
       await namingSettled(1);
       const second = await run(active, threadId, "Second question");
       await namingSettled(calls);
-      expect(await stored()).toEqual({ title: "Warm journey", icon, iconSource });
+      expect(await stored()).toEqual({
+        title: "Warm journey",
+        icon,
+        iconSource,
+      });
       const capture = await captured(captureFile);
       const naming = capture.flatMap((line) => (line.fakeTitleTurn ? [line.fakeTitleTurn] : []));
       expect(naming).toHaveLength(calls);
@@ -411,15 +439,21 @@ integration("Warm engines", () => {
       journeys.push({
         engines: 1,
         name: `naming: ${name}`,
-        notes: { naming, stored: await stored(), engineStarts: starts, usage },
+        notes: {
+          naming,
+          stored: await stored(),
+          engineStarts: starts,
+          usage,
+        },
         runMs: [first.ms, second.ms],
       });
     },
   );
-
   it(
     "cleans every thread a reused engine's Run used before the next Run",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, threadId } = await start("background-children", [
         `--release-file=${await releasedFile()}`,
@@ -446,15 +480,19 @@ integration("Warm engines", () => {
       journeys.push({
         engines: turnServers(await captured(captureFile)),
         name: "subagent thread cleanup",
-        notes: { cleaned, engineStarts: starts },
+        notes: {
+          cleaned,
+          engineStarts: starts,
+        },
         runMs: [first.ms, second.ms],
       });
     },
   );
-
   it(
     "does not keep an engine whose subagent thread could not be cleaned",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, threadId } = await start("background-children", [
         `--release-file=${await releasedFile()}`,
@@ -479,15 +517,18 @@ integration("Warm engines", () => {
       journeys.push({
         engines,
         name: "subagent thread cleanup failed",
-        notes: { engineStarts: starts },
+        notes: {
+          engineStarts: starts,
+        },
         runMs: [first.ms, second.ms],
       });
     },
   );
-
   it(
     "serves an OpenCode Thread's next Run with the same server",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, threadId } = await startOpencode();
       const first = await run(active, threadId, "First question");
@@ -497,13 +538,19 @@ integration("Warm engines", () => {
       }
       const engines = turnServers(await captured(captureFile));
       expect(engines).toBe(1);
-      journeys.push({ engines, name: "opencode reuse", notes: {}, runMs: [first.ms, second.ms] });
+      journeys.push({
+        engines,
+        name: "opencode reuse",
+        notes: {},
+        runMs: [first.ms, second.ms],
+      });
     },
   );
-
   it(
     "keeps a reused engine's tool session working on its next Run's authority",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, threadId } = await start("mcp-session");
       const first = await run(active, threadId, "First question");
@@ -522,67 +569,92 @@ integration("Warm engines", () => {
       journeys.push({
         engines: 1,
         name: "tool session across Runs",
-        notes: { calls },
+        notes: {
+          calls,
+        },
         runMs: [first.ms, second.ms],
       });
     },
   );
-
-  it("lends an idle engine no authority", { timeout: 120_000 }, async () => {
-    const { active, captureFile, threadId } = await start();
-    const iconSet = await active.api["commands.dispatch"]({
-      type: "thread.icon.set",
-      threadId,
-      icon: "document",
-      idempotencyKey: "idle-authority-icon",
-    });
-    expect(iconSet.ok).toBe(true);
-    const first = await run(active, threadId, "First question");
-    const capture = await readFile(captureFile, "utf8");
-    const token = (await captured(captureFile)).findLast((line) => line.fakeOpensteerTokens)
-      ?.fakeOpensteerTokens?.agentTools;
-    const url = capture.match(/http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools/gu)?.at(-1);
-    if (!token || !url) throw new Error("The engine's proxy was not captured");
-    const idle = await fetch(url, {
-      body: JSON.stringify({ id: 1, jsonrpc: "2.0", method: "tools/list" }),
-      headers: {
-        accept: "application/json, text/event-stream",
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-      },
-      method: "POST",
-    });
-    expect(idle.status).toBe(403);
-    // The next Run gets the same engine, and the proxy carries its authority.
-    const second = await run(active, threadId, "Second question");
-    expect((await runRow(active, second.runId)).status).toBe("completed");
-    expect(turnServers(await captured(captureFile))).toBe(1);
-    journeys.push({
-      engines: 1,
-      name: "idle authority",
-      notes: { idleProxyStatus: idle.status },
-      runMs: [first.ms, second.ms],
-    });
-  });
-
+  it(
+    "lends an idle engine no authority",
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const { active, captureFile, threadId } = await start();
+      const iconSet = await active.api["commands.dispatch"]({
+        type: "thread.icon.set",
+        threadId,
+        icon: "document",
+        idempotencyKey: "idle-authority-icon",
+      });
+      expect(iconSet.ok).toBe(true);
+      const first = await run(active, threadId, "First question");
+      const capture = await readFile(captureFile, "utf8");
+      const token = (await captured(captureFile)).findLast((line) => line.fakeOpensteerTokens)
+        ?.fakeOpensteerTokens?.agentTools;
+      const url = capture.match(/http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools/gu)?.at(-1);
+      if (!token || !url) throw new Error("The engine's proxy was not captured");
+      const idle = await fetch(url, {
+        body: JSON.stringify({
+          id: 1,
+          jsonrpc: "2.0",
+          method: "tools/list",
+        }),
+        headers: {
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        method: "POST",
+      });
+      expect(idle.status).toBe(403);
+      // The next Run gets the same engine, and the proxy carries its authority.
+      const second = await run(active, threadId, "Second question");
+      expect((await runRow(active, second.runId)).status).toBe("completed");
+      expect(turnServers(await captured(captureFile))).toBe(1);
+      journeys.push({
+        engines: 1,
+        name: "idle authority",
+        notes: {
+          idleProxyStatus: idle.status,
+        },
+        runMs: [first.ms, second.ms],
+      });
+    },
+  );
   it(
     "does not keep an engine that granted an answer for the rest of its runtime",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, threadId } = await start("run-scoped-approval");
       await active.updateThreadAccess(threadId, "approval-required");
-      const queued = await active.queueMessage({ text: "Run the tests", threadId });
+      const queued = await active.queueMessage({
+        text: "Run the tests",
+        threadId,
+      });
       const runId = queued.runId!;
       const request = await pendingRequest(active, runId);
       await answer(active, request.id, "allow-run");
       await settled(active, runId);
-      const queuedAgain = await active.queueMessage({ text: "Run them again", threadId });
+      const queuedAgain = await active.queueMessage({
+        text: "Run them again",
+        threadId,
+      });
       const again = await pendingRequest(active, queuedAgain.runId!);
       await answer(active, again.id, "allow-once");
       await settled(active, queuedAgain.runId!);
       const engines = turnServers(await captured(captureFile));
       expect(engines).toBe(2);
-      journeys.push({ engines, name: "run-scoped approval", notes: {}, runMs: [] });
+      journeys.push({
+        engines,
+        name: "run-scoped approval",
+        notes: {},
+        runMs: [],
+      });
     },
   );
 
@@ -592,14 +664,19 @@ integration("Warm engines", () => {
    * driver late — once the Run's turn has been asked for but before it starts.
    */
   it.each([
-    { arrives: "right after the resume", engineArguments: [] },
+    {
+      arrives: "right after the resume",
+      engineArguments: [],
+    },
     {
       arrives: "once the Run has asked for its turn",
       engineArguments: ["--defer-resume-restatement"],
     },
   ])(
     "starts a new engine when the selection changes, counting only the resumed thread's new growth: restatement $arrives",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async ({ arrives, engineArguments }) => {
       const { active, captureFile, threadId } = await start("vertical", [
         "--token-usage",
@@ -610,7 +687,12 @@ integration("Warm engines", () => {
       const first = await run(active, threadId, "First question");
       await active.updateThreadExecution(
         threadId,
-        ModelSelectionSchema.parse({ ...selection, options: { effort: "high" } }),
+        ModelSelectionSchema.parse({
+          ...selection,
+          options: {
+            effort: "high",
+          },
+        }),
       );
       const second = await run(active, threadId, "Second question");
       const capture = await captured(captureFile);
@@ -639,7 +721,6 @@ integration("Warm engines", () => {
       expect(resumed.turnId).not.toBe(answered.turnId);
       expect(resumed.total.totalTokens).toBe(35_257);
       expect(resumed.last.totalTokens).toBe(17_742);
-
       const rootThreadId = await codexThreadOf(active, threadId);
       const expected = [
         expectedUsage([answered], rootThreadId),
@@ -680,42 +761,50 @@ integration("Warm engines", () => {
       });
     },
   );
-
-  it("starts a new engine when the Workspace's skills change", { timeout: 120_000 }, async () => {
-    const { active, captureFile, threadId } = await start();
-    await run(active, threadId, "First question");
-    // An engine reads its skill catalog when it starts.
-    const skill = join(active.mountedWorkspacePath, "skills", "release-notes");
-    await mkdir(skill, { recursive: true });
-    await writeFile(
-      join(skill, "SKILL.md"),
-      "---\nname: release-notes\ndescription: Write release notes.\n---\nList what changed.\n",
-    );
-    const second = await run(active, threadId, "Second question");
-    expect((await runRow(active, second.runId)).status).toBe("completed");
-    expect(await engineStart(active, second.runId)).toBe("cold");
-    // Editing a skill changes what the engine read too.
-    await writeFile(
-      join(skill, "SKILL.md"),
-      "---\nname: release-notes\ndescription: Write release notes for a release.\n---\nList what changed.\n",
-    );
-    const third = await run(active, threadId, "Third question");
-    expect(await engineStart(active, third.runId)).toBe("cold");
-    const fourth = await run(active, threadId, "Fourth question");
-    expect(await engineStart(active, fourth.runId)).toBe("warm");
-    const engines = turnServers(await captured(captureFile));
-    expect(engines).toBe(3);
-    journeys.push({
-      engines,
-      name: "workspace skills change",
-      notes: {},
-      runMs: [second.ms, third.ms, fourth.ms],
-    });
-  });
-
+  it(
+    "starts a new engine when the Workspace's skills change",
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const { active, captureFile, threadId } = await start();
+      await run(active, threadId, "First question");
+      // An engine reads its skill catalog when it starts.
+      const skill = join(active.mountedWorkspacePath, "skills", "release-notes");
+      await mkdir(skill, {
+        recursive: true,
+      });
+      await writeFile(
+        join(skill, "SKILL.md"),
+        "---\nname: release-notes\ndescription: Write release notes.\n---\nList what changed.\n",
+      );
+      const second = await run(active, threadId, "Second question");
+      expect((await runRow(active, second.runId)).status).toBe("completed");
+      expect(await engineStart(active, second.runId)).toBe("cold");
+      // Editing a skill changes what the engine read too.
+      await writeFile(
+        join(skill, "SKILL.md"),
+        "---\nname: release-notes\ndescription: Write release notes for a release.\n---\nList what changed.\n",
+      );
+      const third = await run(active, threadId, "Third question");
+      expect(await engineStart(active, third.runId)).toBe("cold");
+      const fourth = await run(active, threadId, "Fourth question");
+      expect(await engineStart(active, fourth.runId)).toBe("warm");
+      const engines = turnServers(await captured(captureFile));
+      expect(engines).toBe(3);
+      journeys.push({
+        engines,
+        name: "workspace skills change",
+        notes: {},
+        runMs: [second.ms, third.ms, fourth.ms],
+      });
+    },
+  );
   it(
     "frees a stopped Run's conversation at once though its engine never finished the turn",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       // The engine acknowledges the interrupt and never ends the turn; waiting
       // for it would hold the conversation for this long.
@@ -724,24 +813,35 @@ integration("Warm engines", () => {
       const { active, captureFile, threadId } = await start(
         "long-stream-held",
         ["--ignore-interrupt", `--release-file=${releaseFile}`],
-        { requestTimeoutMs },
+        {
+          requestTimeoutMs,
+        },
       );
       const turnPids = async () =>
         (await captured(captureFile)).flatMap((line) => (line.fakeTurn ? [line.fakeTurn.pid] : []));
-      const stopped = (await active.queueMessage({ text: "Write at length", threadId })).runId!;
+      const stopped = (
+        await active.queueMessage({
+          text: "Write at length",
+          threadId,
+        })
+      ).runId!;
       await waitFor(
         async () =>
           (await runRow(active, stopped)).status === "running" && (await turnPids()).length === 1,
         "the held turn",
       );
-
       const stoppedAt = performance.now();
       await active.interruptRun(threadId, stopped);
       await settled(active, stopped);
       expect((await runRow(active, stopped)).status).toBe("interrupted");
       // The next message reaches the same conversation in a new engine.
       await active.resumeThreadInputQueue(threadId);
-      const next = (await active.queueMessage({ text: "Again", threadId })).runId!;
+      const next = (
+        await active.queueMessage({
+          text: "Again",
+          threadId,
+        })
+      ).runId!;
       await waitFor(
         async () =>
           (await turnPids()).length === 2 ||
@@ -765,15 +865,19 @@ integration("Warm engines", () => {
       journeys.push({
         engines: turnServers(await captured(captureFile)),
         name: "stop of an engine that never finishes the turn",
-        notes: { nextRunCompletedAfterStopMs: nextMs, requestTimeoutMs },
+        notes: {
+          nextRunCompletedAfterStopMs: nextMs,
+          requestTimeoutMs,
+        },
         runMs: [nextMs],
       });
     },
   );
-
   it(
     "frees a stopped OpenCode Run's conversation at once though its server never settled the turn",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       // The server takes the abort and would settle the turn only this late;
       // waiting for it would hold the conversation for the driver's whole budget.
@@ -781,18 +885,28 @@ integration("Warm engines", () => {
       const { active, threadId } = await startOpencode(
         "steer-restart",
         ["--abort-delay-ms=600000"],
-        { interruptTimeoutMs },
+        {
+          interruptTimeoutMs,
+        },
       );
-      const stopped = (await active.queueMessage({ text: "[hold] Draft the plan", threadId }))
-        .runId!;
+      const stopped = (
+        await active.queueMessage({
+          text: "[hold] Draft the plan",
+          threadId,
+        })
+      ).runId!;
       await waitFor(async () => (await runRow(active, stopped)).status === "running", "the turn");
-
       const stoppedAt = performance.now();
       await active.interruptRun(threadId, stopped);
       await settled(active, stopped);
       expect((await runRow(active, stopped)).status).toBe("interrupted");
       await active.resumeThreadInputQueue(threadId);
-      const next = (await active.queueMessage({ text: "Again", threadId })).runId!;
+      const next = (
+        await active.queueMessage({
+          text: "Again",
+          threadId,
+        })
+      ).runId!;
       await settled(active, next);
       const nextMs = Math.round(performance.now() - stoppedAt);
       const failure = await active.host.store.database
@@ -806,55 +920,87 @@ integration("Warm engines", () => {
       journeys.push({
         engines: 2,
         name: "stop of an OpenCode server that never settles the turn",
-        notes: { interruptTimeoutMs, nextRunCompletedAfterStopMs: nextMs },
+        notes: {
+          interruptTimeoutMs,
+          nextRunCompletedAfterStopMs: nextMs,
+        },
         runMs: [nextMs],
       });
     },
   );
-
-  it("ends the engine of a stopped Run", { timeout: 120_000 }, async () => {
-    const { active, captureFile, threadId } = await start("vertical", ["--hold-second-turn"]);
-    await run(active, threadId, "First question");
-    const kept = (await captured(captureFile)).find((line) => line.fakeTurn)?.fakeTurn?.pid;
-    if (kept === undefined) throw new Error("The engine's process was not captured");
-    const queued = await active.queueMessage({ text: "Second question", threadId });
-    const runId = queued.runId!;
-    await waitFor(
-      async () => (await captured(captureFile)).filter((line) => line.fakeTurn).length === 2,
-      "the second turn",
-    );
-    await active.interruptRun(threadId, runId);
-    await settled(active, runId);
-    expect((await runRow(active, runId)).status).toBe("interrupted");
-    // Whatever the stopped turn left is gone with its engine, before the Thread runs again.
-    expect(alive(kept)).toBe(false);
-    await active.resumeThreadInputQueue(threadId);
-    const third = await run(active, threadId, "Third question");
-    expect((await runRow(active, third.runId)).status).toBe("completed");
-    const engines = turnServers(await captured(captureFile));
-    expect(engines).toBe(2);
-    expect(await engineStart(active, third.runId)).toBe("cold");
-    journeys.push({ engines, name: "stop", notes: {}, runMs: [third.ms] });
-  });
-
-  it("ends its idle engines when the Runner shuts down", { timeout: 120_000 }, async () => {
-    const { active, captureFile, threadId } = await start();
-    await run(active, threadId, "First question");
-    const pid = (await captured(captureFile)).find((line) => line.fakeTurn)?.fakeTurn?.pid;
-    if (pid === undefined) throw new Error("The engine's process was not captured");
-    expect(alive(pid)).toBe(true);
-    const closing = performance.now();
-    await active.close();
-    stack = undefined;
-    const closeMs = Math.round(performance.now() - closing);
-    expect(alive(pid)).toBe(false);
-    journeys.push({ engines: 1, name: "shutdown", notes: { closeMs }, runMs: [] });
-  });
+  it(
+    "ends the engine of a stopped Run",
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const { active, captureFile, threadId } = await start("vertical", ["--hold-second-turn"]);
+      await run(active, threadId, "First question");
+      const kept = (await captured(captureFile)).find((line) => line.fakeTurn)?.fakeTurn?.pid;
+      if (kept === undefined) throw new Error("The engine's process was not captured");
+      const queued = await active.queueMessage({
+        text: "Second question",
+        threadId,
+      });
+      const runId = queued.runId!;
+      await waitFor(
+        async () => (await captured(captureFile)).filter((line) => line.fakeTurn).length === 2,
+        "the second turn",
+      );
+      await active.interruptRun(threadId, runId);
+      await settled(active, runId);
+      expect((await runRow(active, runId)).status).toBe("interrupted");
+      // Whatever the stopped turn left is gone with its engine, before the Thread runs again.
+      expect(alive(kept)).toBe(false);
+      await active.resumeThreadInputQueue(threadId);
+      const third = await run(active, threadId, "Third question");
+      expect((await runRow(active, third.runId)).status).toBe("completed");
+      const engines = turnServers(await captured(captureFile));
+      expect(engines).toBe(2);
+      expect(await engineStart(active, third.runId)).toBe("cold");
+      journeys.push({
+        engines,
+        name: "stop",
+        notes: {},
+        runMs: [third.ms],
+      });
+    },
+  );
+  it(
+    "ends its idle engines when the Runner shuts down",
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const { active, captureFile, threadId } = await start();
+      await run(active, threadId, "First question");
+      const pid = (await captured(captureFile)).find((line) => line.fakeTurn)?.fakeTurn?.pid;
+      if (pid === undefined) throw new Error("The engine's process was not captured");
+      expect(alive(pid)).toBe(true);
+      const closing = performance.now();
+      await active.close();
+      stack = undefined;
+      const closeMs = Math.round(performance.now() - closing);
+      expect(alive(pid)).toBe(false);
+      journeys.push({
+        engines: 1,
+        name: "shutdown",
+        notes: {
+          closeMs,
+        },
+        runMs: [],
+      });
+    },
+  );
 });
 
 /** What the fake engines recorded: each turn's process, its token, each cleanup. */
 interface Captured {
-  readonly params?: { readonly additionalContext?: { readonly opensteer_skills?: unknown } };
+  readonly params?: {
+    readonly additionalContext?: {
+      readonly opensteer_skills?: unknown;
+    };
+  };
   readonly backgroundTerminalsCleaned?: string;
   /** A request the driver sent the app server. */
   readonly method?: string;
@@ -864,10 +1010,19 @@ interface Captured {
     readonly pid: number;
     readonly sessionId?: string;
   };
-  readonly fakeOpensteerTokens?: { readonly agentTools: string };
-  readonly fakeTurn?: { readonly pid: number };
-  readonly fakeTitleTurn?: { readonly pid: number; readonly threadId: string };
-  readonly usageFrame?: { readonly threadId: string };
+  readonly fakeOpensteerTokens?: {
+    readonly agentTools: string;
+  };
+  readonly fakeTurn?: {
+    readonly pid: number;
+  };
+  readonly fakeTitleTurn?: {
+    readonly pid: number;
+    readonly threadId: string;
+  };
+  readonly usageFrame?: {
+    readonly threadId: string;
+  };
   /** OpenCode's record of a prompt and the server that took it. */
   readonly kind?: string;
   readonly pid?: number;
@@ -882,7 +1037,6 @@ function turnServers(capture: readonly Captured[]): number {
     }),
   ).size;
 }
-
 async function captured(file: string): Promise<Captured[]> {
   const text = await readFile(file, "utf8").catch(() => "");
   return parseCaptureJsonl<Captured>(text);
@@ -894,7 +1048,6 @@ async function releasedFile(): Promise<string> {
   await writeFile(file, "");
   return file;
 }
-
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -903,9 +1056,12 @@ function alive(pid: number): boolean {
     return false;
   }
 }
-
 async function pendingRequest(active: VerticalStack, runId: RunId) {
-  let found: { readonly id: string } | undefined;
+  let found:
+    | {
+        readonly id: string;
+      }
+    | undefined;
   await waitFor(async () => {
     found = await active.host.store.database
       .selectFrom("requests")
@@ -917,7 +1073,6 @@ async function pendingRequest(active: VerticalStack, runId: RunId) {
   }, "a pending Request");
   return found!;
 }
-
 async function answer(active: VerticalStack, requestId: string, optionId: string) {
   const key = `respond-${randomUUID()}`;
   await testRpcData(
@@ -926,7 +1081,10 @@ async function answer(active: VerticalStack, requestId: string, optionId: string
     {
       idempotencyKey: key,
       requestId,
-      response: { kind: "choice", optionId },
+      response: {
+        kind: "choice",
+        optionId,
+      },
       type: "request.respond",
     },
     {
@@ -939,7 +1097,6 @@ async function answer(active: VerticalStack, requestId: string, optionId: string
     },
   );
 }
-
 async function settled(active: VerticalStack, runId: RunId) {
   await waitFor(
     async () =>
@@ -947,17 +1104,19 @@ async function settled(active: VerticalStack, runId: RunId) {
     "the Run to end",
   ).catch(async (error: unknown) => {
     const events = await active.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select("type")
       .where("runId", "=", runId)
       .orderBy("sequence", "asc")
       .execute();
     throw new Error(
-      `${String(error)}\n${JSON.stringify({ events: events.map(({ type }) => type), run: await runRow(active, runId) })}`,
+      `${String(error)}\n${JSON.stringify({
+        events: events.map(({ type }) => type),
+        run: await runRow(active, runId),
+      })}`,
     );
   });
 }
-
 async function waitFor(check: () => Promise<boolean>, label: string, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -969,11 +1128,12 @@ async function waitFor(check: () => Promise<boolean>, label: string, timeoutMs =
 
 /** How the Run's engine started, as its execution details report it. */
 async function engineStart(active: VerticalStack, runId: RunId) {
-  const listed = await active.api["run.attempts.list"]({ runId });
+  const listed = await active.api["run.attempts.list"]({
+    runId,
+  });
   if (!listed.ok) throw new Error(listed.error.message);
   return listed.data.attempts.at(-1)?.engineStart ?? null;
 }
-
 function runRow(active: VerticalStack, runId: RunId) {
   return active.host.store.database
     .selectFrom("runs")

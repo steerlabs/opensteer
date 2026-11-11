@@ -1,15 +1,13 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   HarnessIdSchema,
   ModelSelectionSchema,
@@ -27,24 +25,19 @@ import {
 } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
-import {
-  OpensteerStore,
-  TriggerStore,
-  admitWatchControlRequest,
-  createDatabase,
-  programToolNamesMigration,
-} from "./index.js";
-import { withDatabaseTransaction } from "./connection.js";
+import { OpensteerStore, TriggerStore, admitWatchControlRequest, createDatabase } from "./index.js";
+import "./connection.js";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue } from "./store-primitives.js";
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 integration.sequential("Trigger failure auto-pause", () => {
   async function createTestFixture() {
     const clone = await cloneTestDatabase("host");
@@ -55,13 +48,16 @@ integration.sequential("Trigger failure auto-pause", () => {
         connectionString: databaseUrl,
         maxConnections: 4,
       });
-      return { database, close: () => database.destroy() };
+      return {
+        database,
+        close: () => database.destroy(),
+      };
     });
     const store = new OpensteerStore(database);
     const triggers = new TriggerStore(database);
     async function stagedTriggerEdge(
       firstTable:
-        "trigger_occurrences" | "triggers" | "execution_environments" | "runs" | "workspaces",
+        "trigger_occurrences" | "triggers" | "execution_environments" | "runs" | "threads",
       firstId: string,
       secondTable: "triggers" | "trigger_watch_activations" | "trigger_occurrences",
       secondId: string,
@@ -85,7 +81,9 @@ integration.sequential("Trigger failure auto-pause", () => {
         await expect
           .poll(async () =>
             (
-              await sql<{ query: string }>`
+              await sql<{
+                query: string;
+              }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-trigger-failure-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -102,14 +100,22 @@ integration.sequential("Trigger failure auto-pause", () => {
       }
     }
     async function markRunning(
-      fixture: { readonly runnerId: ReturnType<typeof createId<"runner">> },
+      fixture: {
+        readonly runnerId: ReturnType<typeof createId<"runner">>;
+      },
       runId: ReturnType<typeof createId<"run">>,
-      set: { readonly createdAt?: Date } = {},
+      set: {
+        readonly createdAt?: Date;
+      } = {},
     ) {
       // Bound as a dispatch binds it: the Run's session names the Runner holding it.
       const run = await database
         .updateTable("runs")
-        .set({ ...set, bindingGeneration: 1, status: "running" })
+        .set({
+          ...set,
+          bindingGeneration: 1,
+          status: "running",
+        })
         .where("id", "=", runId)
         .returning("providerSessionId")
         .executeTakeFirstOrThrow();
@@ -125,7 +131,7 @@ integration.sequential("Trigger failure auto-pause", () => {
         })
         .where("id", "=", run.providerSessionId!)
         .executeTakeFirstOrThrow();
-      await withDatabaseTransaction(database, (transaction) =>
+      await withPersonalTransaction(database, (transaction) =>
         issueRunGrant(transaction, {
           bindingGeneration: 1,
           modelSelection,
@@ -136,38 +142,13 @@ integration.sequential("Trigger failure auto-pause", () => {
       );
     }
     async function createFixture(suffix: string) {
-      const userId = await store.createUser(`Trigger owner ${suffix}`);
-      const runnerId = createId("runner");
-      const environmentId = createId("environment");
-      if (!(await store.getDeployment())) {
-        await store.ensureDeployment({
-          canonicalOrigin: "https://test-host.invalid",
-          hostInstanceId: createId("hostInstance"),
-          deploymentShape: {
-            defaultWorkspaceBacking: "local-directory",
-            kind: "server" as const,
-          },
-        });
-      }
-      await enrollRunner({ environmentId, runnerId, suffix, userId });
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: userId,
-        idempotencyKey: `workspace-${suffix}`,
-        name: `Workspace ${suffix}`,
-        status: "ready",
-      });
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      const { userId, runnerId, environmentId } = personal;
+      await enrollRunner({ environmentId, runnerId, suffix, userId: userId });
       const harness = await store.createHarnessInstance({
-        config: { model: "test" },
+        config: {
+          model: "test",
+        },
         driverKind: HarnessIdSchema.parse("native"),
         environmentId,
         name: "Native",
@@ -181,7 +162,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         idempotencyKey: `thread-${suffix}`,
         modelSelection,
         title: `Thread ${suffix}`,
-        workspaceId: workspace.id,
       });
       return {
         environmentId,
@@ -189,7 +169,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         runnerId,
         threadId: thread.id,
         userId,
-        workspaceId: workspace.id,
       };
     }
     async function enrollRunner(input: {
@@ -198,12 +177,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       readonly suffix: string;
       readonly userId: ReturnType<typeof createId<"user">>;
     }) {
-      const pair = generateKeyPairSync("ed25519");
-      const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
-      const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-      const enrollmentTokenHash = `sha256:${createHash("sha256")
-        .update(`trigger-failure-${input.suffix}`, "utf8")
-        .digest("base64url")}`;
       const descriptor: RunnerDescriptor = {
         bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
         capabilities: ["filesystem"],
@@ -228,10 +201,9 @@ integration.sequential("Trigger failure auto-pause", () => {
                 ],
               },
             ],
-            localStorage: null,
+
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
           },
         },
         name: "Trigger test Runner",
@@ -239,24 +211,14 @@ integration.sequential("Trigger failure auto-pause", () => {
         runnerKind: "main",
         runtimeVersion: "test",
       };
-      await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
-        createdBy: input.userId,
-        expiresAt: new Date(Date.now() + 60_000),
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: `trigger-runner-${input.suffix}`,
-        mainEnrollmentPurpose: "initial",
-        name: descriptor.name,
-        requestFingerprint: `sha256:trigger-runner-${input.suffix}`,
-        runnerKind: "main",
-        tokenHash: enrollmentTokenHash,
-      });
-      await store.enrollRunnerConnection({
-        descriptor,
-        enrollmentTokenHash,
-        publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-        publicKeyPem,
-      });
+      await database
+        .updateTable("runners")
+        .set({
+          capabilities: jsonValue(descriptor.capabilities),
+          moduleDescriptors: descriptor.modules,
+        })
+        .where("id", "=", input.runnerId)
+        .execute();
     }
     function createScheduleTrigger(
       fixture: Awaited<ReturnType<typeof createFixture>>,
@@ -269,13 +231,17 @@ integration.sequential("Trigger failure auto-pause", () => {
         idempotencyKey: `schedule-${suffix}`,
         name: `Schedule ${suffix}`,
         program: {
-          toolContractVersion: 2,
+          toolContractVersion: 3,
           language: "javascript",
           source: "export default async () => null",
         },
         source: {
           kind: "schedule",
-          schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+          schedule: {
+            expression: "0 9 * * *",
+            kind: "cron",
+            timezone: "UTC",
+          },
         },
       });
     }
@@ -290,15 +256,17 @@ integration.sequential("Trigger failure auto-pause", () => {
         idempotencyKey: `watch-${suffix}`,
         name: `Watch ${suffix}`,
         program: {
-          toolContractVersion: 2,
+          toolContractVersion: 3,
           language: "javascript",
           source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
         },
-        source: { kind: "watch" },
+        source: {
+          kind: "watch",
+        },
       });
     }
     async function detail(triggerId: TriggerId, userId: ReturnType<typeof createId<"user">>) {
-      const value = await triggers.getForOwner(triggerId, userId, 25, { kind: "user" });
+      const value = await triggers.getForOwner(triggerId, userId, 25);
       if (!value) throw new Error("Expected Trigger detail");
       return value;
     }
@@ -347,7 +315,12 @@ integration.sequential("Trigger failure auto-pause", () => {
           error: status === "failed" ? "Program failed" : null,
           exitCode: status === "failed" ? 1 : 0,
           occurrenceId: occurrence.id,
-          result: status === "succeeded" ? { ok: true } : null,
+          result:
+            status === "succeeded"
+              ? {
+                  ok: true,
+                }
+              : null,
           status,
           stderr: status === "failed" ? "failure\n" : "",
           stdout: status === "succeeded" ? "success\n" : "",
@@ -356,7 +329,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         runnerId: fixture.runnerId,
       });
     }
-
     return Object.freeze({
       database,
       store,
@@ -375,50 +347,15 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
   }
   type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
-  const it = baseIt.extend<{ storeFixture: StoreFixture }>({
+  const it = baseIt.extend<{
+    storeFixture: StoreFixture;
+  }>({
     storeFixture: async ({ task }, use) => {
       const started = performance.now();
       const fixture = await createTestFixture();
       recordTestDatabaseSetup(task, started);
       await use(fixture);
     },
-  });
-
-  it("renames the tools a saved program calls, and leaves longer names that contain one", async ({
-    storeFixture,
-  }) => {
-    const { createFixture, createScheduleTrigger, database } = storeFixture;
-    const fixture = await createFixture("program-tool-names");
-    const created = await createScheduleTrigger(fixture, "program-tool-names");
-    const source = [
-      'await opensteer.callTool("thread_message", { threadId: "home", delivery: "queue", message });',
-      "await opensteer.callTool('thread_delegate', { task });",
-      'await opensteer.callTool("request_list", {});',
-      'await opensteer.callTool("integration_call", { operation: "pull_request_list" });',
-    ].join("\n");
-    await database
-      .updateTable("triggerRevisions")
-      .set({ program: jsonValue({ language: "javascript", source, toolContractVersion: 2 }) })
-      .where("id", "=", created.revision.id)
-      .execute();
-
-    await programToolNamesMigration.up(database);
-
-    const revision = await database
-      .selectFrom("triggerRevisions")
-      .select("program")
-      .where("id", "=", created.revision.id)
-      .executeTakeFirstOrThrow();
-    expect(revision.program).toEqual({
-      language: "javascript",
-      source: [
-        'await opensteer.callTool("thread_send", { threadId: "home", delivery: "queue", message });',
-        "await opensteer.callTool('delegate_task', { task });",
-        'await opensteer.callTool("pending_request", {});',
-        'await opensteer.callTool("integration_call", { operation: "pull_request_list" });',
-      ].join("\n"),
-      toolContractVersion: 2,
-    });
   });
 
   it("orders occurrence completion before its Trigger fence", async ({ storeFixture }) => {
@@ -453,7 +390,9 @@ integration.sequential("Trigger failure auto-pause", () => {
             error: null,
             exitCode: 0,
             occurrenceId: occurrence.id,
-            result: { ok: true },
+            result: {
+              ok: true,
+            },
             status: "succeeded",
             stderr: "",
             stdout: "",
@@ -464,7 +403,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "succeeded",
     });
   });
-
   it("fences the target Run before an Occurrence input source", async ({ storeFixture }) => {
     const {
       createFixture,
@@ -476,11 +414,18 @@ integration.sequential("Trigger failure auto-pause", () => {
     } = storeFixture;
     const fixture = await createFixture("input-occurrence-order");
     const queued = await store.enqueueThreadInput({
-      content: [{ text: "Existing work", type: "text" }],
+      content: [
+        {
+          text: "Existing work",
+          type: "text",
+        },
+      ],
       idempotencyKey: "input-occurrence-work",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.threadId,
     });
     if (!queued.run) throw new Error("Expected Run");
@@ -499,17 +444,24 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     await stagedTriggerEdge("runs", queued.run.id, "trigger_occurrences", occurrence.id, () =>
       store.enqueueThreadInput({
-        content: [{ text: "Observed change", type: "text" }],
+        content: [
+          {
+            text: "Observed change",
+            type: "text",
+          },
+        ],
         idempotencyKey: "input-occurrence-observation",
         policy: "steer",
         requestedBy: fixture.userId,
-        source: { kind: "trigger", occurrenceId: occurrence.id },
+        source: {
+          kind: "trigger",
+          occurrenceId: occurrence.id,
+        },
         threadId: fixture.threadId,
       }),
     );
   });
-
-  it("fences the Workspace before an admitted Watch input source", async ({ storeFixture }) => {
+  it("fences the anchor task before an admitted Watch input source", async ({ storeFixture }) => {
     const { createFixture, createWatchTrigger, triggers, stagedTriggerEdge, store } = storeFixture;
     const fixture = await createFixture("input-watch-order");
     const created = await createWatchTrigger(fixture, "input-watch-order");
@@ -522,8 +474,8 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     const activation = snapshot.activations[0]!.activation;
     await stagedTriggerEdge(
-      "workspaces",
-      fixture.workspaceId,
+      "threads",
+      fixture.threadId,
       "trigger_watch_activations",
       activation.id,
       () =>
@@ -537,17 +489,20 @@ integration.sequential("Trigger failure auto-pause", () => {
               createdBy: fixture.userId,
               environmentId: fixture.environmentId,
               executionGeneration: activation.executionGeneration,
-              membershipGeneration: 1,
               observationId: "input-watch",
               requestFingerprint: "a".repeat(64),
               requestId: "input-watch",
               revisionId: created.revision.id,
               triggerId: created.trigger.id,
-              workspaceId: fixture.workspaceId,
             },
           },
           input: {
-            content: [{ text: "Watch observation", type: "text" }],
+            content: [
+              {
+                text: "Watch observation",
+                type: "text",
+              },
+            ],
             idempotencyKey: "input-watch",
             policy: "queue",
             requestedBy: fixture.userId,
@@ -562,60 +517,6 @@ integration.sequential("Trigger failure auto-pause", () => {
           },
         }),
     );
-  });
-
-  it("fences revocation Occurrences before their Trigger mutations", async ({ storeFixture }) => {
-    const { createFixture, createScheduleTrigger, triggers, store, database, stagedTriggerEdge } =
-      storeFixture;
-    const fixture = await createFixture("revocation-occurrence-order");
-    const created = await createScheduleTrigger(fixture, "revocation-occurrence-order");
-    const occurrence = await triggers.enqueueManual({
-      actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
-    });
-    const replacement = await store.createUser("Replacement owner");
-    const membership = await database
-      .selectFrom("workspaceMemberships")
-      .selectAll()
-      .where("workspaceId", "=", fixture.workspaceId)
-      .where("userId", "=", fixture.userId)
-      .executeTakeFirstOrThrow();
-    await database
-      .insertInto("workspaceMemberships")
-      .values({ ...membership, id: createId("workspaceMembership"), userId: replacement })
-      .execute();
-    const revoked = await database
-      .updateTable("workspaceMemberships")
-      .set({
-        state: "revoked",
-        generation: sql`generation + 1`,
-        revokedAt: new Date(),
-        revokedBy: replacement,
-        updatedAt: new Date(),
-      })
-      .where("id", "=", membership.id)
-      .returning("generation")
-      .executeTakeFirstOrThrow();
-    await stagedTriggerEdge(
-      "trigger_occurrences",
-      occurrence.id,
-      "triggers",
-      created.trigger.id,
-      () =>
-        triggers.revokeForMembershipRevocation({
-          membershipGeneration: Number(revoked.generation),
-          userId: fixture.userId,
-          workspaceId: fixture.workspaceId,
-        }),
-    );
-    expect(
-      await database
-        .selectFrom("triggers")
-        .select("status")
-        .where("id", "=", created.trigger.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "archived" });
   });
 
   it("orders cancellation occurrences before their Trigger fence", async ({ storeFixture }) => {
@@ -643,7 +544,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "canceled",
     });
   });
-
   it("orders watch status after its Trigger fence", async ({ storeFixture }) => {
     const { createFixture, createWatchTrigger, triggers, stagedTriggerEdge, detail } = storeFixture;
     const fixture = await createFixture("watch-trigger-order");
@@ -682,7 +582,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       restartCount: 1,
     });
   });
-
   it("orders watch revision capacity before Trigger and activation fences", async ({
     storeFixture,
   }) => {
@@ -701,7 +600,7 @@ integration.sequential("Trigger failure auto-pause", () => {
           ownerId: fixture.userId,
           triggerId: created.trigger.id,
           program: {
-            toolContractVersion: 2,
+            toolContractVersion: 3,
             language: "javascript",
             source: "export default async () => new Promise(() => {})",
           },
@@ -711,14 +610,12 @@ integration.sequential("Trigger failure auto-pause", () => {
       created.revision.id,
     );
   });
-
   it("pauses an active schedule after three current-Revision failures", async ({
     storeFixture,
   }) => {
     const { createFixture, createScheduleTrigger, failManual, detail } = storeFixture;
     const fixture = await createFixture("three-failures");
     const created = await createScheduleTrigger(fixture, "three-failures");
-
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
@@ -726,7 +623,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       pauseReason: null,
       status: "active",
     });
-
     await failManual(fixture, created.trigger.id, "third");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       consecutiveFailures: 3,
@@ -735,7 +631,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "paused",
     });
   });
-
   it("resets the consecutive count when a success interrupts failures", async ({
     storeFixture,
   }) => {
@@ -743,7 +638,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       storeFixture;
     const fixture = await createFixture("success-reset");
     const created = await createScheduleTrigger(fixture, "success-reset");
-
     await failManual(fixture, created.trigger.id, "first");
     const canceled = await triggers.enqueueManual({
       actorThreadId: null,
@@ -758,7 +652,6 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect((await detail(created.trigger.id, fixture.userId)).trigger.consecutiveFailures).toBe(1);
     await succeedManual(fixture, created.trigger.id, "success");
     expect((await detail(created.trigger.id, fixture.userId)).trigger.consecutiveFailures).toBe(0);
-
     await failManual(fixture, created.trigger.id, "second-series-1");
     await failManual(fixture, created.trigger.id, "second-series-2");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
@@ -766,7 +659,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "active",
     });
   });
-
   it("does not count a failed occurrence pinned to a stale Revision", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, triggers, complete, detail } = storeFixture;
     const fixture = await createFixture("stale-revision");
@@ -781,68 +673,17 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => 'new'",
       },
       triggerId: created.trigger.id,
     });
-
     await complete(fixture, occurrence, "failed", "stale-failure");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       consecutiveFailures: 0,
       status: "active",
     });
-  });
-
-  it("keeps a legacy create fingerprint stable after later Trigger edits", async ({
-    storeFixture,
-  }) => {
-    const { createFixture, triggers } = storeFixture;
-    const fixture = await createFixture("legacy-create-retry");
-    const original = {
-      actorThreadId: null,
-      anchorThreadId: fixture.threadId,
-      createdBy: fixture.userId,
-      idempotencyKey: "legacy-create-retry",
-      name: "Legacy schedule",
-      program: {
-        language: "javascript" as const,
-        source: "export default async () => null",
-        toolContractVersion: 1 as const,
-      },
-      source: {
-        kind: "schedule" as const,
-        schedule: { expression: "0 9 * * *", kind: "cron" as const, timezone: "UTC" },
-      },
-    };
-    const created = await triggers.create(original);
-    await triggers.update({
-      actorThreadId: null,
-      expectedRevisionId: created.revision.id,
-      name: "Renamed later",
-      ownerId: fixture.userId,
-      program: {
-        language: "javascript",
-        source: "export default async () => 'changed'",
-        toolContractVersion: 1,
-      },
-      triggerId: created.trigger.id,
-    });
-
-    await expect(triggers.create(original)).resolves.toMatchObject({
-      trigger: { id: created.trigger.id },
-      wasDuplicate: true,
-    });
-    await expect(
-      triggers.create({ ...original, name: "Altered create payload" }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      triggers.create({
-        ...original,
-        program: { ...original.program, toolContractVersion: 2 },
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
   });
 
   it("allows a manual run while paused and resets the count after success", async ({
@@ -855,7 +696,6 @@ integration.sequential("Trigger failure auto-pause", () => {
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
     await failManual(fixture, created.trigger.id, "third");
-
     await succeedManual(fixture, created.trigger.id, "repair-check");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       consecutiveFailures: 0,
@@ -863,7 +703,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "paused",
     });
   });
-
   it("counts an in-flight failure without changing an already paused Trigger", async ({
     storeFixture,
   }) => {
@@ -881,14 +720,12 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "paused",
       triggerId: created.trigger.id,
     });
-
     await complete(fixture, occurrence, "failed", "already-paused");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       consecutiveFailures: 1,
       pauseReason: null,
       status: "paused",
     });
-
     const archived = await createScheduleTrigger(fixture, "already-archived");
     const archivedOccurrence = await triggers.enqueueManual({
       actorThreadId: null,
@@ -908,7 +745,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "archived",
     });
   });
-
   it("clears the auto-pause reason and recomputes a schedule when resumed", async ({
     storeFixture,
   }) => {
@@ -918,7 +754,6 @@ integration.sequential("Trigger failure auto-pause", () => {
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
     await failManual(fixture, created.trigger.id, "third");
-
     const resumed = await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -931,7 +766,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "active",
     });
     expect(Date.parse(resumed.nextFireAt ?? "")).toBeGreaterThan(Date.now());
-
     const pausedManually = await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -947,13 +781,11 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect(archived.pauseReason).toBeNull();
   });
-
   it("resets failures on a program update but not a name-only update", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, failManual, triggers } = storeFixture;
     const fixture = await createFixture("revision-reset");
     const created = await createScheduleTrigger(fixture, "revision-reset");
     await failManual(fixture, created.trigger.id, "first");
-
     const renamed = await triggers.update({
       actorThreadId: null,
       expectedRevisionId: created.revision.id,
@@ -962,20 +794,18 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(renamed.trigger.consecutiveFailures).toBe(1);
-
     const repaired = await triggers.update({
       actorThreadId: null,
       expectedRevisionId: renamed.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => 'fixed'",
       },
       triggerId: created.trigger.id,
     });
     expect(repaired.trigger.consecutiveFailures).toBe(0);
-
     await failManual(fixture, created.trigger.id, "after-program-update");
     const rescheduled = await triggers.update({
       actorThreadId: null,
@@ -983,13 +813,16 @@ integration.sequential("Trigger failure auto-pause", () => {
       ownerId: fixture.userId,
       source: {
         kind: "schedule",
-        schedule: { expression: "30 9 * * *", kind: "cron", timezone: "UTC" },
+        schedule: {
+          expression: "30 9 * * *",
+          kind: "cron",
+          timezone: "UTC",
+        },
       },
       triggerId: created.trigger.id,
     });
     expect(rescheduled.trigger.consecutiveFailures).toBe(0);
   });
-
   it("refuses webhook ingress while auto-paused", async ({ storeFixture }) => {
     const { createFixture, triggers, failManual } = storeFixture;
     const fixture = await createFixture("paused-webhook");
@@ -1000,18 +833,19 @@ integration.sequential("Trigger failure auto-pause", () => {
       idempotencyKey: "paused-webhook",
       name: "Paused webhook",
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => null",
       },
-      source: { kind: "webhook" },
+      source: {
+        kind: "webhook",
+      },
       webhookRouteKey: "wh_paused_webhook_123456789012345678",
       webhookSecretHash: "a".repeat(64),
     });
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
     await failManual(fixture, created.trigger.id, "third");
-
     await expect(
       triggers.enqueueWebhook({
         headers: {},
@@ -1019,9 +853,11 @@ integration.sequential("Trigger failure auto-pause", () => {
         payload: null,
         routeKey: created.trigger.webhookRouteKey ?? "",
       }),
-    ).rejects.toMatchObject({ code: "conflict", message: "Webhook Trigger is not active" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Webhook Trigger is not active",
+    });
   });
-
   it("does not reset the count when a stale-Revision occurrence succeeds", async ({
     storeFixture,
   }) => {
@@ -1039,7 +875,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => 'new'",
       },
@@ -1047,14 +883,12 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
-
     await complete(fixture, stale, "succeeded", "stale-success");
     expect((await detail(created.trigger.id, fixture.userId)).trigger).toMatchObject({
       consecutiveFailures: 2,
       status: "active",
     });
   });
-
   it("treats a repeated status as a no-op that keeps the reason and the count", async ({
     storeFixture,
   }) => {
@@ -1069,7 +903,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       triggerId: created.trigger.id,
     });
     expect(stillActive.consecutiveFailures).toBe(1);
-
     await failManual(fixture, created.trigger.id, "second");
     await failManual(fixture, created.trigger.id, "third");
     const stillPaused = await triggers.setStatus({
@@ -1084,7 +917,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "paused",
     });
   });
-
   it("rejects an update that changes nothing", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, triggers, detail } = storeFixture;
     const fixture = await createFixture("empty-update");
@@ -1096,12 +928,13 @@ integration.sequential("Trigger failure auto-pause", () => {
         ownerId: fixture.userId,
         triggerId: created.trigger.id,
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     expect((await detail(created.trigger.id, fixture.userId)).revision.id).toBe(
       created.revision.id,
     );
   });
-
   it("counts concurrent completions exactly once each and pauses once", async ({
     storeFixture,
   }) => {
@@ -1117,7 +950,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         }),
       ),
     );
-
     await Promise.all(
       occurrences.map((occurrence, index) =>
         complete(fixture, occurrence, "failed", `concurrent-${index}`),
@@ -1130,7 +962,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "paused",
     });
   });
-
   it("tracks failures independently for each Trigger", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, failManual, detail } = storeFixture;
     const fixture = await createFixture("per-trigger");
@@ -1139,7 +970,6 @@ integration.sequential("Trigger failure auto-pause", () => {
     await failManual(fixture, failing.trigger.id, "first");
     await failManual(fixture, failing.trigger.id, "second");
     await failManual(fixture, failing.trigger.id, "third");
-
     expect((await detail(failing.trigger.id, fixture.userId)).trigger.status).toBe("paused");
     expect((await detail(unaffected.trigger.id, fixture.userId)).trigger).toMatchObject({
       consecutiveFailures: 0,
@@ -1147,7 +977,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       status: "active",
     });
   });
-
   it("reads downstream Runs separately from the Trigger program outcome", async ({
     storeFixture,
   }) => {
@@ -1168,19 +997,35 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
     const first = await store.enqueueThreadInput({
-      content: [{ text: "Summarize the inbox", type: "text" }],
+      content: [
+        {
+          text: "Summarize the inbox",
+          type: "text",
+        },
+      ],
       idempotencyKey: "downstream-first",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "trigger", occurrenceId: occurrence.id },
+      source: {
+        kind: "trigger",
+        occurrenceId: occurrence.id,
+      },
       threadId: fixture.threadId,
     });
     const second = await store.enqueueThreadInput({
-      content: [{ text: "Check the calendar", type: "text" }],
+      content: [
+        {
+          text: "Check the calendar",
+          type: "text",
+        },
+      ],
       idempotencyKey: "downstream-second",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "trigger", occurrenceId: occurrence.id },
+      source: {
+        kind: "trigger",
+        occurrenceId: occurrence.id,
+      },
       threadId: fixture.threadId,
     });
     if (!first.run) throw new Error("Expected the first downstream Run");
@@ -1192,7 +1037,9 @@ integration.sequential("Trigger failure auto-pause", () => {
         error: null,
         exitCode: 0,
         occurrenceId: occurrence.id,
-        result: { queued: true },
+        result: {
+          queued: true,
+        },
         status: "succeeded",
         stderr: "",
         stdout: "",
@@ -1200,19 +1047,20 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerBootId,
       runnerId: fixture.runnerId,
     });
-
     const value = await detail(created.trigger.id, fixture.userId);
     expect(value.occurrences[0]?.status).toBe("succeeded");
     expect(value.downstreamRunsTruncated).toBe(false);
     expect(value.downstreamRuns).toEqual([
       expect.objectContaining({
         occurrenceId: occurrence.id,
-        run: expect.objectContaining({ id: first.run.id, status: "queued" }),
+        run: expect.objectContaining({
+          id: first.run.id,
+          status: "queued",
+        }),
         threadTitle: "Thread downstream-runs",
       }),
     ]);
   });
-
   it("associates a Trigger message that steers a Run from another causal chain", async ({
     storeFixture,
   }) => {
@@ -1220,11 +1068,18 @@ integration.sequential("Trigger failure auto-pause", () => {
       storeFixture;
     const fixture = await createFixture("steered-downstream-run");
     const older = await store.enqueueThreadInput({
-      content: [{ text: "Start older existing work", type: "text" }],
+      content: [
+        {
+          text: "Start older existing work",
+          type: "text",
+        },
+      ],
       idempotencyKey: "steered-downstream-older",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.threadId,
     });
     if (!older.run) throw new Error("Expected the older existing Run");
@@ -1235,27 +1090,41 @@ integration.sequential("Trigger failure auto-pause", () => {
       idempotencyKey: "steered-downstream-newer-thread",
       modelSelection,
       title: "Newer target Thread",
-      workspaceId: fixture.workspaceId,
     });
     const newer = await store.enqueueThreadInput({
-      content: [{ text: "Start newer existing work", type: "text" }],
+      content: [
+        {
+          text: "Start newer existing work",
+          type: "text",
+        },
+      ],
       idempotencyKey: "steered-downstream-newer",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: newerThread.thread.id,
     });
     if (!newer.run) throw new Error("Expected the newer existing Run");
-    await markRunning(fixture, older.run.id, { createdAt: new Date("2020-01-01T00:00:00.000Z") });
+    await markRunning(fixture, older.run.id, {
+      createdAt: new Date("2020-01-01T00:00:00.000Z"),
+    });
     await markRunning(fixture, newer.run.id);
     await database
       .updateTable("threadInputs")
-      .set({ runId: older.run.id, state: "claimed" })
+      .set({
+        runId: older.run.id,
+        state: "claimed",
+      })
       .where("messageId", "=", older.message.id)
       .executeTakeFirstOrThrow();
     await database
       .updateTable("threadInputs")
-      .set({ runId: newer.run.id, state: "claimed" })
+      .set({
+        runId: newer.run.id,
+        state: "claimed",
+      })
       .where("messageId", "=", newer.message.id)
       .executeTakeFirstOrThrow();
     const created = await createScheduleTrigger(fixture, "steered-downstream-run");
@@ -1273,31 +1142,55 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
     const olderSteer = await store.enqueueThreadInput({
-      content: [{ text: "One update for the older Run", type: "text" }],
+      content: [
+        {
+          text: "One update for the older Run",
+          type: "text",
+        },
+      ],
       idempotencyKey: "steered-downstream-older-input",
       policy: "steer",
       requestedBy: fixture.userId,
-      source: { kind: "trigger", occurrenceId: occurrence.id },
+      source: {
+        kind: "trigger",
+        occurrenceId: occurrence.id,
+      },
       threadId: fixture.threadId,
     });
     await database
       .updateTable("threadInputs")
-      .set({ deliveredAt: new Date(), runId: older.run.id, state: "delivered" })
+      .set({
+        deliveredAt: new Date(),
+        runId: older.run.id,
+        state: "delivered",
+      })
       .where("messageId", "=", olderSteer.message.id)
       .executeTakeFirstOrThrow();
     const steered = await store.enqueueThreadInput({
-      content: [{ text: "Trigger update", type: "text" }],
+      content: [
+        {
+          text: "Trigger update",
+          type: "text",
+        },
+      ],
       idempotencyKey: "steered-downstream-input-0",
       policy: "steer",
       requestedBy: fixture.userId,
-      source: { kind: "trigger", occurrenceId: occurrence.id },
+      source: {
+        kind: "trigger",
+        occurrenceId: occurrence.id,
+      },
       threadId: newerThread.thread.id,
     });
     const occurrenceChainId = steered.input.causalChainId;
     expect(olderSteer.input.causalChainId).toBe(occurrenceChainId);
     const templateInput = await database
       .updateTable("threadInputs")
-      .set({ deliveredAt: new Date(), runId: newer.run.id, state: "delivered" })
+      .set({
+        deliveredAt: new Date(),
+        runId: newer.run.id,
+        state: "delivered",
+      })
       .where("messageId", "=", steered.message.id)
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -1308,14 +1201,21 @@ integration.sequential("Trigger failure auto-pause", () => {
       .executeTakeFirstOrThrow();
     // Exercise distinct-Run pagination with 105 receipts, without repeating
     // admission: both target Runs already received a real Trigger steer.
-    const extra = Array.from({ length: 104 }, (_, index) => ({
-      messageId: createId("message"),
-      sequence: (BigInt(templateMessage.sequence) + BigInt(index) + 1n).toString(),
-    }));
+    const extra = Array.from(
+      {
+        length: 104,
+      },
+      (_, index) => ({
+        messageId: createId("message"),
+        sequence: (BigInt(templateMessage.sequence) + BigInt(index) + 1n).toString(),
+      }),
+    );
     await database.transaction().execute(async (transaction) => {
       await transaction
         .updateTable("threads")
-        .set({ nextMessageSequence: (BigInt(templateMessage.sequence) + 105n).toString() })
+        .set({
+          nextMessageSequence: (BigInt(templateMessage.sequence) + 105n).toString(),
+        })
         .where("id", "=", newerThread.thread.id)
         .execute();
       await transaction
@@ -1355,12 +1255,10 @@ integration.sequential("Trigger failure auto-pause", () => {
       expect(receipt.state).toBe("delivered");
     }
     expect(occurrenceChainId).not.toBe(newer.run.causalChainId);
-
     const value = await detail(created.trigger.id, fixture.userId);
     expect(value.downstreamRuns.map(({ run }) => run.id)).toEqual([newer.run.id, older.run.id]);
     expect(value.downstreamRunsTruncated).toBe(false);
   });
-
   it("caps more than 100 distinct downstream Runs and reports truncation", async ({
     storeFixture,
   }) => {
@@ -1382,21 +1280,36 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
     const existing = await store.enqueueThreadInput({
-      content: [{ text: "Existing work 0", type: "text" }],
+      content: [
+        {
+          text: "Existing work 0",
+          type: "text",
+        },
+      ],
       idempotencyKey: "downstream-cap-existing-0",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.threadId,
     });
     if (!existing.run) throw new Error("Expected a distinct existing Run");
     const runIds = [existing.run.id];
     const steered = await store.enqueueThreadInput({
-      content: [{ text: "Trigger update 0", type: "text" }],
+      content: [
+        {
+          text: "Trigger update 0",
+          type: "text",
+        },
+      ],
       idempotencyKey: "downstream-cap-steer-0",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "trigger", occurrenceId: occurrence.id },
+      source: {
+        kind: "trigger",
+        occurrenceId: occurrence.id,
+      },
       threadId: fixture.threadId,
     });
     await database
@@ -1411,20 +1324,28 @@ integration.sequential("Trigger failure auto-pause", () => {
       .execute();
     await database
       .updateTable("threadInputs")
-      .set({ deliveredAt: new Date(), runId: existing.run.id, state: "delivered" })
+      .set({
+        deliveredAt: new Date(),
+        runId: existing.run.id,
+        state: "delivered",
+      })
       .where("messageId", "=", existing.message.id)
       .execute();
     await database
       .updateTable("runs")
-      .set({ completedAt: new Date(), status: "completed" })
+      .set({
+        completedAt: new Date(),
+        status: "completed",
+      })
       .where("id", "=", existing.run.id)
       .executeTakeFirstOrThrow();
     await database
       .updateTable("threads")
-      .set({ status: "idle" })
+      .set({
+        status: "idle",
+      })
       .where("id", "=", fixture.threadId)
       .executeTakeFirstOrThrow();
-
     const templateRun = await database
       .selectFrom("runs")
       .selectAll()
@@ -1455,16 +1376,21 @@ integration.sequential("Trigger failure auto-pause", () => {
       .executeTakeFirstOrThrow();
     // This boundary is the detail query's distinct-Run cap, not 202 admissions.
     // Keep real admitted rows as templates and grow the relational fixture in bulk.
-    const extra = Array.from({ length: 100 }, (_, index) => ({
-      createdAt: new Date(templateRun.createdAt.getTime() + index + 1),
-      runOrdinal: templateRun.runOrdinal + index + 1,
-      causalChainId: createId("causalChain"),
-      runId: createId("run"),
-      humanId: createId("message"),
-      triggerId: createId("message"),
-      humanSequence: (BigInt(triggerMessage.sequence) + BigInt(index * 2) + 1n).toString(),
-      triggerSequence: (BigInt(triggerMessage.sequence) + BigInt(index * 2) + 2n).toString(),
-    }));
+    const extra = Array.from(
+      {
+        length: 100,
+      },
+      (_, index) => ({
+        createdAt: new Date(templateRun.createdAt.getTime() + index + 1),
+        runOrdinal: templateRun.runOrdinal + index + 1,
+        causalChainId: createId("causalChain"),
+        runId: createId("run"),
+        humanId: createId("message"),
+        triggerId: createId("message"),
+        humanSequence: (BigInt(triggerMessage.sequence) + BigInt(index * 2) + 1n).toString(),
+        triggerSequence: (BigInt(triggerMessage.sequence) + BigInt(index * 2) + 2n).toString(),
+      }),
+    );
     await database.transaction().execute(async (transaction) => {
       await transaction
         .updateTable("threads")
@@ -1553,7 +1479,6 @@ integration.sequential("Trigger failure auto-pause", () => {
         where message_id in (fixture."humanId", fixture."triggerId")`.execute(transaction);
     });
     runIds.push(...extra.map(({ runId }) => runId));
-
     const value = await detail(created.trigger.id, fixture.userId);
     expect(value.downstreamRuns).toHaveLength(100);
     expect(new Set(value.downstreamRuns.map(({ run }) => run.id)).size).toBe(100);
@@ -1566,7 +1491,6 @@ integration.sequential("Trigger failure auto-pause", () => {
     expect(value.downstreamRunsTruncated).toBe(true);
     expect(runIds).toHaveLength(101);
   });
-
   it("reconciles watch desired state without creating an Occurrence or command", async ({
     storeFixture,
   }) => {
@@ -1579,21 +1503,25 @@ integration.sequential("Trigger failure auto-pause", () => {
     const created = await createWatchTrigger(fixture, "watch-reconcile");
     const initial = await detail(created.trigger.id, fixture.userId);
     expect(initial.occurrences).toEqual([]);
-    expect(initial.activation).toMatchObject({ desired: "active", executionGeneration: 0 });
+    expect(initial.activation).toMatchObject({
+      desired: "active",
+      executionGeneration: 0,
+    });
     expect(
       await database
         .selectFrom("triggerOccurrences")
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("triggerId", "=", created.trigger.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ count: "0" });
+    ).toEqual({
+      count: "0",
+    });
     expect(
       await database
         .selectFrom("commands")
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .executeTakeFirstOrThrow(),
     ).toEqual(commandsBefore);
-
     const bootOne = `watch-boot-one-${randomUUID()}`;
     const first = await triggers.reconcileWatchesForRunner({
       environmentId: fixture.environmentId,
@@ -1639,7 +1567,9 @@ integration.sequential("Trigger failure auto-pause", () => {
         stderrTail: "stale\n",
         stdoutTail: "",
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     const restarted = await triggers.reconcileWatchesForRunner({
       environmentId: fixture.environmentId,
       leaseExpiresAt: new Date(Date.now() + 120_000),
@@ -1652,7 +1582,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       observed: "starting",
       restartCount: 0,
     });
-
     await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -1666,14 +1595,13 @@ integration.sequential("Trigger failure auto-pause", () => {
         createdBy: fixture.userId,
         environmentId: fixture.environmentId,
         executionGeneration: 2,
-        membershipGeneration: 1,
         revisionId: created.revision.id,
         triggerId: created.trigger.id,
-        workspaceId: fixture.workspaceId,
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
-
   it("stops old watch activations for revision, pause, archive, and resume transitions", async ({
     storeFixture,
   }) => {
@@ -1686,7 +1614,7 @@ integration.sequential("Trigger failure auto-pause", () => {
       expectedRevisionId: created.revision.id,
       ownerId: fixture.userId,
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
       },
@@ -1701,8 +1629,10 @@ integration.sequential("Trigger failure auto-pause", () => {
         .select(["desired", "observed"])
         .where("id", "=", firstActivation.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ desired: "stopped", observed: "stopped" });
-
+    ).toEqual({
+      desired: "stopped",
+      observed: "stopped",
+    });
     await triggers.setStatus({
       actorThreadId: null,
       ownerId: fixture.userId,
@@ -1727,21 +1657,19 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect((await detail(created.trigger.id, fixture.userId)).activation?.desired).toBe("stopped");
   });
-
   it("stops a Runner's watch activations atomically with revocation", async ({ storeFixture }) => {
     const { createFixture, createWatchTrigger, store, detail } = storeFixture;
     const fixture = await createFixture("watch-runner-revocation");
     const created = await createWatchTrigger(fixture, "watch-runner-revocation");
-
-    await store.revokeRunner(fixture.runnerId, fixture.userId, { allowDeployment: true });
-
+    await store.revokeRunner(fixture.runnerId, fixture.userId, {
+      allowDeployment: true,
+    });
     expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
       desired: "stopped",
       leaseExpiresAt: null,
       observed: "stopped",
     });
   });
-
   it("records a Workspace access failure on the fenced watch activation", async ({
     storeFixture,
   }) => {
@@ -1757,7 +1685,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerId: fixture.runnerId,
     });
     const activation = snapshot.activations[0]!.activation;
-
     await triggers.recordWatchUnavailable({
       activationId: activation.id,
       executionGeneration: activation.executionGeneration,
@@ -1766,7 +1693,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       runnerConnectionGeneration: 1,
       runnerId: fixture.runnerId,
     });
-
     expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
       healthySince: null,
       lastError: "Runner does not support storage Workspace access",
@@ -1782,9 +1708,10 @@ integration.sequential("Trigger failure auto-pause", () => {
         runnerConnectionGeneration: 2,
         runnerId: fixture.runnerId,
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
-
   it("resets a healthy watch failure window and auto-pauses the next crash loop", async ({
     storeFixture,
   }) => {
@@ -1836,7 +1763,6 @@ integration.sequential("Trigger failure auto-pause", () => {
       observed: "stopped",
     });
   });
-
   it("deduplicates observations and enforces an activation-local rolling limit", async ({
     storeFixture,
   }) => {
@@ -1866,19 +1792,25 @@ integration.sequential("Trigger failure auto-pause", () => {
       createdBy: fixture.userId,
       environmentId: fixture.environmentId,
       executionGeneration: activation.executionGeneration,
-      membershipGeneration: 1,
       observationId,
       requestFingerprint: "a".repeat(64),
       requestId,
       revisionId: activation.revisionId,
       triggerId: activation.triggerId,
-      workspaceId: fixture.workspaceId,
     });
     const firstRequest = request(firstActivation, "stable-1", "request-1");
     const firstInput = await store.enqueueAdmittedThreadInput({
-      admission: { kind: "watch", request: firstRequest },
+      admission: {
+        kind: "watch",
+        request: firstRequest,
+      },
       input: {
-        content: [{ text: "One filesystem observation", type: "text" }],
+        content: [
+          {
+            text: "One filesystem observation",
+            type: "text",
+          },
+        ],
         idempotencyKey: `watch:${firstActivation.id}:stable-1:message`,
         policy: "queue",
         requestedBy: fixture.userId,
@@ -1893,9 +1825,20 @@ integration.sequential("Trigger failure auto-pause", () => {
       },
     });
     const duplicateInput = await store.enqueueAdmittedThreadInput({
-      admission: { kind: "watch", request: { ...firstRequest, requestId: "request-2" } },
+      admission: {
+        kind: "watch",
+        request: {
+          ...firstRequest,
+          requestId: "request-2",
+        },
+      },
       input: {
-        content: [{ text: "One filesystem observation", type: "text" }],
+        content: [
+          {
+            text: "One filesystem observation",
+            type: "text",
+          },
+        ],
         idempotencyKey: `watch:${firstActivation.id}:stable-1:message`,
         policy: "queue",
         requestedBy: fixture.userId,
@@ -1924,14 +1867,17 @@ integration.sequential("Trigger failure auto-pause", () => {
       ),
     ).rejects.toMatchObject({
       code: "resource_exhausted",
-      details: { limit: WATCH_OBSERVATIONS_PER_HOUR },
+      details: {
+        limit: WATCH_OBSERVATIONS_PER_HOUR,
+      },
     });
     const secondActivation = activations.get(second.trigger.id)!;
     await expect(
       admitWatchControlRequest(database, request(secondActivation, "independent", "other-watch")),
-    ).resolves.toEqual({ wasDuplicate: false });
+    ).resolves.toEqual({
+      wasDuplicate: false,
+    });
   });
-
   it("enforces the active watch limit per environment", async ({ storeFixture }) => {
     const { createFixture, createWatchTrigger } = storeFixture;
     const fixture = await createFixture("watch-limit");
@@ -1940,7 +1886,9 @@ integration.sequential("Trigger failure auto-pause", () => {
     }
     await expect(createWatchTrigger(fixture, "watch-limit-overflow")).rejects.toMatchObject({
       code: "resource_exhausted",
-      details: { limit: MAX_ACTIVE_WATCHES_PER_ENVIRONMENT },
+      details: {
+        limit: MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
+      },
     });
   });
 

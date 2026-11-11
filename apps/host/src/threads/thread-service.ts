@@ -1,6 +1,7 @@
+import type { FolderAdmissionService } from "./folder-admission-service.js";
+import { personalSettings } from "@opensteer/database";
 import {
   threadAccessModeAtMost,
-  CHAT_THREAD_TITLE,
   DEFAULT_THREAD_ACCESS_MODE,
   isPlaceContentPart,
   OpensteerError,
@@ -31,12 +32,22 @@ import { threadCallerAuthority, messageSource } from "../mcp/operations.js";
 import { write as assertThreadAccess } from "../mcp/tool-access.js";
 import type { PlaceContextService } from "../computer-use/place-context-service.js";
 import type { BrowserService } from "../browser/browser-service.js";
-
-type ThreadActor = { readonly kind: "person"; readonly userId: UserId } | AgentCaller;
-type Command<K extends HostApiCommand["type"]> = Extract<HostApiCommand, { readonly type: K }>;
+type ThreadActor =
+  | {
+      readonly kind: "person";
+      readonly userId: UserId;
+    }
+  | AgentCaller;
+type Command<K extends HostApiCommand["type"]> = Extract<
+  HostApiCommand,
+  {
+    readonly type: K;
+  }
+>;
 export class ThreadService {
   readonly options: {
     readonly store: OpensteerStore;
+    readonly folders: Pick<FolderAdmissionService, "admit">;
     readonly commands: CommandService;
     readonly runners: Pick<
       RunnerRegistry,
@@ -54,7 +65,11 @@ export class ThreadService {
   }
   async assertTarget(actor: ThreadActor, threadId: ThreadId) {
     const thread = await this.options.store.getThreadForOwner(threadId, actor.userId);
-    if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+    if (!thread)
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Thread not found",
+      });
     if (actor.kind !== "person") assertThreadAccess(actor, [thread]);
     return thread;
   }
@@ -79,11 +94,18 @@ export class ThreadService {
       ? await this.options.store.getThreadForOwner(command.parentThreadId, actor.userId)
       : null;
     if (command.parentThreadId && !parent) {
-      throw new OpensteerError({ code: "not_found", message: "Parent thread not found" });
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Parent thread not found",
+      });
     }
     const input = {
       ...selection,
-      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person"
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
       accessMode:
         command.accessMode ??
         (actor.kind === "person"
@@ -94,35 +116,28 @@ export class ThreadService {
       harnessInstanceId: command.harnessInstanceId,
       idempotencyKey: command.idempotencyKey,
       modelSelection: command.modelSelection,
-      ...(command.parentThreadId ? { parentThreadId: command.parentThreadId } : {}),
-      ...(command.home ? { home: true } : {}),
-      ...(command.generateTitle ? { generateTitle: true as const } : {}),
-      title: command.home ? CHAT_THREAD_TITLE : command.title,
-      workspaceId: command.workspaceId,
+      ...(command.parentThreadId
+        ? {
+            parentThreadId: command.parentThreadId,
+          }
+        : {}),
+      ...(command.generateTitle
+        ? {
+            generateTitle: true as const,
+          }
+        : {}),
+      folder: command.folder ?? (await personalSettings(this.options.store.database)).agentHome,
+      title: command.title,
     } as const;
-    const workspace = await this.options.store.getWorkspaceForOwner(
-      command.workspaceId,
-      actor.userId,
-    );
-    if (!workspace) {
-      throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-    }
-    if (command.home) {
-      if (workspace.createdBy !== actor.userId || command.parentThreadId)
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Chat must be an owner’s root conversation",
-        });
-      if (workspace.homeThreadId) {
-        const existingHome = await this.options.commands.createThread(input);
-        return { ...existingHome, type: command.type };
-      }
-    }
     const existing = await this.options.store.findThreadCreationByIdempotency(input);
     if (existing) {
       if (actor.kind !== "person") await this.options.commands.createThread(input);
-      return { ...existing, type: command.type };
+      return {
+        ...existing,
+        type: command.type,
+      };
     }
+    const folder = await this.options.folders.admit(input.folder);
     const harness = await this.options.store.getHarnessInstance(command.harnessInstanceId);
     if (!harness?.enabled || harness.environmentId !== command.environmentId) {
       throw new OpensteerError({
@@ -162,6 +177,8 @@ export class ThreadService {
     );
     const created = await this.options.commands.createThread({
       ...input,
+      folder,
+      requestedFolder: input.folder,
       modelSelection: storedModelSelection(command.modelSelection, available.model),
     });
     return {
@@ -181,23 +198,32 @@ export class ThreadService {
           !(await this.options.store.hasAcceptedThreadInput(actor.userId, command.idempotencyKey))
         ) {
           const thread = await this.options.store.getThreadForOwner(command.threadId, actor.userId);
-          if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+          if (!thread)
+            throw new OpensteerError({
+              code: "not_found",
+              message: "Thread not found",
+            });
           await this.options.placeContext.assertIncludable({
             ownerId: actor.userId,
             parts: command.content,
             threadId: thread.id,
-            workspaceId: thread.workspaceId,
           });
         }
         const result = await this.sendInput(actor, {
-          ...(command.quotedMessageId ? { quotedMessageId: command.quotedMessageId } : {}),
+          ...(command.quotedMessageId
+            ? {
+                quotedMessageId: command.quotedMessageId,
+              }
+            : {}),
           content: command.content,
           idempotencyKey: command.idempotencyKey,
           policy: command.delivery ?? "queue",
           requestedBy: actor.userId,
           source:
             actor.kind === "person"
-              ? { kind: "human" }
+              ? {
+                  kind: "human",
+                }
               : messageSource(actor, command.idempotencyKey),
           threadId: command.threadId,
           validateNewAttachmentInput: (selection) => {
@@ -205,7 +231,11 @@ export class ThreadService {
               content: command.content,
               ...selection,
             });
-            if (failure) throw new OpensteerError({ code: "conflict", message: failure });
+            if (failure)
+              throw new OpensteerError({
+                code: "conflict",
+                message: failure,
+              });
           },
         });
         // The message's transaction credited its pages to the conversation.
@@ -235,7 +265,10 @@ export class ThreadService {
     }
     const harness = await this.options.store.getHarnessInstance(command.harnessInstanceId);
     if (!harness?.enabled || harness.environmentId !== thread.environmentId) {
-      throw new OpensteerError({ code: "conflict", message: "AI engine is unavailable" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "AI engine is unavailable",
+      });
     }
     // The Thread keeps its access mode across an engine change, so the
     // engine it lands on must be one that can keep that promise.
@@ -251,8 +284,16 @@ export class ThreadService {
     );
     return {
       ...(await this.options.commands.updateThreadExecutionSelection({
-        ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
-        ...(command.continuation ? { continuation: command.continuation } : {}),
+        ...(actor.kind === "person"
+          ? {}
+          : {
+              authority: threadCallerAuthority(actor),
+            }),
+        ...(command.continuation
+          ? {
+              continuation: command.continuation,
+            }
+          : {}),
         idempotencyKey: command.idempotencyKey,
         continuationIdentity: available.catalog.continuationIdentity,
         harnessInstanceId: command.harnessInstanceId,
@@ -263,7 +304,6 @@ export class ThreadService {
       type: command.type,
     };
   }
-
   async sendInput(
     actor: ThreadActor,
     input: EnqueueThreadInputRequest,
@@ -272,10 +312,17 @@ export class ThreadService {
     if (actor.kind !== "person") await this.assertTarget(actor, input.threadId);
     const request = {
       ...input,
-      ...(actor.kind === "person" || admission ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person" || admission
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
     };
     return admission
-      ? this.options.commands.enqueueAdmittedThreadInput({ input: request, admission })
+      ? this.options.commands.enqueueAdmittedThreadInput({
+          input: request,
+          admission,
+        })
       : this.options.commands.enqueueThreadInput(request);
   }
   async resume(actor: ThreadActor, command: Command<"thread.inputQueue.resume">) {
@@ -283,41 +330,73 @@ export class ThreadService {
     const result = await this.options.commands.resumeThreadInputQueue({
       ...command,
       requestedBy: actor.userId,
-      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person"
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
     });
-    return { thread: result.thread, asOfSequence: result.asOfSequence };
+    return {
+      thread: result.thread,
+      asOfSequence: result.asOfSequence,
+    };
   }
   async steer(actor: ThreadActor, command: Command<"thread.input.steer">) {
     await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.steerThreadInput({
       ...command,
       requestedBy: actor.userId,
-      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person"
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
     });
-    return { input: result.input };
+    return {
+      input: result.input,
+    };
   }
   async cancel(actor: ThreadActor, command: Command<"thread.input.cancel">) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     const result = await this.options.commands.cancelThreadInput({
       ...command,
       requestedBy: actor.userId,
-      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person"
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
     });
-    return { input: result.input };
+    return {
+      input: result.input,
+    };
   }
   async move(actor: ThreadActor, command: Command<"thread.input.move">) {
     if (actor.kind !== "person") await this.assertTarget(actor, command.threadId);
     await this.options.commands.moveThreadInput({
       ...command,
       requestedBy: actor.userId,
-      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person"
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
     });
     return {};
   }
   async write(
     actor: AgentCaller,
-    command: { threadId: ThreadId; idempotencyKey: string } & (
-      { action: "rename"; title: string } | { action: "done" | "reopen" }
+    command: {
+      threadId: ThreadId;
+      idempotencyKey: string;
+    } & (
+      | {
+          action: "rename";
+          title: string;
+        }
+      | {
+          action: "done" | "reopen";
+        }
     ),
   ) {
     await this.assertTarget(actor, command.threadId);
@@ -329,11 +408,17 @@ export class ThreadService {
     switch (command.action) {
       case "rename":
         return {
-          ...(await this.options.commands.renameThread({ ...input, title: command.title })),
+          ...(await this.options.commands.renameThread({
+            ...input,
+            title: command.title,
+          })),
           doneWhenRunEnds: false,
         };
       default:
-        return this.options.commands.setThreadDone({ ...input, done: command.action === "done" });
+        return this.options.commands.setThreadDone({
+          ...input,
+          done: command.action === "done",
+        });
     }
   }
   async interrupt(actor: ThreadActor, command: Command<"run.interrupt">) {
@@ -341,13 +426,24 @@ export class ThreadService {
     const result = await this.options.commands.sendControl({
       ...command,
       requestedBy: actor.userId,
-      ...(actor.kind === "person" ? {} : { authority: threadCallerAuthority(actor) }),
+      ...(actor.kind === "person"
+        ? {}
+        : {
+            authority: threadCallerAuthority(actor),
+          }),
     });
-    return { wasDuplicate: result.wasDuplicate };
+    return {
+      wasDuplicate: result.wasDuplicate,
+    };
   }
 }
 interface AvailableModelSelection {
-  readonly catalog: Extract<HarnessInstanceCatalog, { readonly status: "ready" }>;
+  readonly catalog: Extract<
+    HarnessInstanceCatalog,
+    {
+      readonly status: "ready";
+    }
+  >;
   readonly model: HarnessModelDescriptor;
 }
 
@@ -406,7 +502,13 @@ export function assertModelSelectionAvailable(
     });
   }
   if (match.kind === "option-unavailable") {
-    throw new OpensteerError({ code: "conflict", message: modelOptionUnavailableMessage(match) });
+    throw new OpensteerError({
+      code: "conflict",
+      message: modelOptionUnavailableMessage(match),
+    });
   }
-  return { catalog, model: match.model };
+  return {
+    catalog,
+    model: match.model,
+  };
 }

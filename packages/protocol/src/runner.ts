@@ -137,6 +137,7 @@ export const executionLeaseMsSchema = z.number().int().min(10_000).max(3_600_000
 const capabilityTokenSchema = z.string().min(1).max(4_096);
 
 export const RunExecutionContextSchema = z.strictObject({
+  personalContext: z.boolean(),
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),
   /** Scoped to files already admitted to this provider session and this frozen Run. */

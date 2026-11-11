@@ -9,7 +9,6 @@ import { build } from "esbuild";
 import type { HostApiClient } from "@opensteer/protocol";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { HostClient } from "@opensteer/client/host";
-
 const execFile = promisify(execFileCallback);
 
 /**
@@ -18,14 +17,19 @@ const execFile = promisify(execFileCallback);
  * so the workflow fetches this one commit before integration tests run.
  */
 export const previousPublicRelease = "e4dd721c5f9b2bdac124c59d2c0c11bb676ccaac";
-
 export const browserHomesPublicRelease = "d51e99853ddae55cf44fb22a62b681a05456ce7c";
 
 /** The shelves a released client draws a task list on. */
 interface ReleasedTaskList {
-  readonly working: readonly { threadId: string }[];
-  readonly ready: readonly { threadId: string }[];
-  readonly done: readonly { threadId: string }[];
+  readonly working: readonly {
+    threadId: string;
+  }[];
+  readonly ready: readonly {
+    threadId: string;
+  }[];
+  readonly done: readonly {
+    threadId: string;
+  }[];
 }
 
 /** Build actual released source, never current schemas disguised as a baseline. */
@@ -54,13 +58,22 @@ export async function releasedClientReader(revision: string) {
     ]);
     await execFile("tar", ["-xf", archive, "-C", directory]);
     await symlink(join(root, "node_modules"), join(directory, "node_modules"));
-    const packages = new Map<string, { directory: string; exports: Record<string, string> }>();
+    const packages = new Map<
+      string,
+      {
+        directory: string;
+        exports: Record<string, string>;
+      }
+    >();
     for (const name of await readdir(join(directory, "packages"))) {
       const packageDirectory = join(directory, "packages", name);
       // Swift packages such as macos-signing have no npm manifest to resolve.
       if (!existsSync(join(packageDirectory, "package.json"))) continue;
       const manifest = JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8"));
-      packages.set(manifest.name, { directory: packageDirectory, exports: manifest.exports });
+      packages.set(manifest.name, {
+        directory: packageDirectory,
+        exports: manifest.exports,
+      });
       await symlink(
         join(root, "packages", name, "node_modules"),
         join(packageDirectory, "node_modules"),
@@ -85,22 +98,30 @@ export async function releasedClientReader(revision: string) {
         {
           name: "released-workspace",
           setup(builder) {
-            builder.onResolve({ filter: /^@opensteer\// }, ({ path }) => {
-              const [scope, name, ...rest] = path.split("/");
-              const pkg = packages.get(`${scope}/${name}`);
-              if (!pkg) throw new Error(`Missing released package ${path}`);
-              const key = rest.length ? `./${rest.join("/")}` : ".";
-              let target = pkg.exports[key];
-              if (!target) {
-                const wildcard = Object.keys(pkg.exports).find(
-                  (candidate) => candidate.endsWith("*") && key.startsWith(candidate.slice(0, -1)),
-                );
-                if (wildcard)
-                  target = pkg.exports[wildcard]!.replace("*", key.slice(wildcard.length - 1));
-              }
-              if (!target) throw new Error(`Missing released export ${path}`);
-              return { path: resolve(pkg.directory, target) };
-            });
+            builder.onResolve(
+              {
+                filter: /^@opensteer\//,
+              },
+              ({ path }) => {
+                const [scope, name, ...rest] = path.split("/");
+                const pkg = packages.get(`${scope}/${name}`);
+                if (!pkg) throw new Error(`Missing released package ${path}`);
+                const key = rest.length ? `./${rest.join("/")}` : ".";
+                let target = pkg.exports[key];
+                if (!target) {
+                  const wildcard = Object.keys(pkg.exports).find(
+                    (candidate) =>
+                      candidate.endsWith("*") && key.startsWith(candidate.slice(0, -1)),
+                  );
+                  if (wildcard)
+                    target = pkg.exports[wildcard]!.replace("*", key.slice(wildcard.length - 1));
+                }
+                if (!target) throw new Error(`Missing released export ${path}`);
+                return {
+                  path: resolve(pkg.directory, target),
+                };
+              },
+            );
           },
         },
       ],
@@ -113,32 +134,72 @@ export async function releasedClientReader(revision: string) {
         webSocketFactory: (url: string) => unknown;
         refreshIntervalMs: number;
       }) => HostClient;
-      hostApi: Record<keyof HostApiClient, { success: { parse(value: unknown): unknown } }>;
-      heldThread(snapshot: unknown, threadId: string): { doneAt: string | null } | null;
+      hostApi: Record<
+        keyof HostApiClient,
+        {
+          success: {
+            parse(value: unknown): unknown;
+          };
+        }
+      >;
+      heldThread(
+        snapshot: unknown,
+        threadId: string,
+      ): {
+        doneAt: string | null;
+      } | null;
       taskList(snapshot: unknown): ReleasedTaskList;
       workspaceTaskList(snapshot: unknown, workspaceId: string): ReleasedTaskList;
       mergeThreadReadState(previous: unknown, incoming: unknown): unknown;
       hostApiCompatibility(descriptor: unknown): string;
       knownHostCapabilities(advertised: readonly string[]): readonly HostCapability[];
-      RequestViewSchema: { parse(value: unknown): unknown };
-      RunnerCapabilitySchema: { safeParse(value: unknown): { success: boolean } };
-      RunAgentToolsPlanSchema: { safeParse(value: unknown): { success: boolean } };
-      HostDescriptorSchema: {
-        parse(value: unknown): { apiVersion: number; capabilities: readonly string[] };
+      RequestViewSchema: {
+        parse(value: unknown): unknown;
       };
-      ThreadViewSchema: { parse(value: unknown): unknown };
-      ThreadReadStateSchema: { parse(value: unknown): unknown };
-      HostToClientMessageSchema: { parse(value: unknown): unknown };
-      ClientToHostMessageSchema: { parse(value: unknown): unknown };
+      RunnerCapabilitySchema: {
+        safeParse(value: unknown): {
+          success: boolean;
+        };
+      };
+      RunAgentToolsPlanSchema: {
+        safeParse(value: unknown): {
+          success: boolean;
+        };
+      };
+      HostDescriptorSchema: {
+        parse(value: unknown): {
+          apiVersion: number;
+          capabilities: readonly string[];
+        };
+      };
+      ThreadViewSchema: {
+        parse(value: unknown): unknown;
+      };
+      ThreadReadStateSchema: {
+        parse(value: unknown): unknown;
+      };
+      HostToClientMessageSchema: {
+        parse(value: unknown): unknown;
+      };
+      ClientToHostMessageSchema: {
+        parse(value: unknown): unknown;
+      };
     };
     return {
       sourceRevision,
       hostRevision,
       reader,
-      close: () => rm(directory, { recursive: true, force: true }),
+      close: () =>
+        rm(directory, {
+          recursive: true,
+          force: true,
+        }),
     };
   } catch (error) {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, {
+      recursive: true,
+      force: true,
+    });
     throw error;
   }
 }

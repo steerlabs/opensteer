@@ -25,7 +25,14 @@
     "./team-notices": "./src/team-notices-store.ts",
     "./team-outbox": "./src/team-outbox-store.ts",
     "./team-requests": "./src/team-requests-store.ts",
-    "./test-support/team-knowledge": "./src/team-knowledge.test-support.ts"
+    "./test-support/team-knowledge": "./src/team-knowledge.test-support.ts",
+    "./connection": "./src/connection.ts",
+    "./personal-team-run-store": "./src/personal-team-run-store.ts",
+    "./attachment-store": "./src/attachment-store.ts",
+    "./task-admission-store": "./src/task-admission-store.ts",
+    "./test-support/personal-run": "./src/personal-run-fixture.test-support.ts",
+    "./personal-settings-store": "./src/personal-settings-store.ts",
+    "./command-delivery": "./src/command-delivery.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

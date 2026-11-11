@@ -1,8 +1,8 @@
-import { withDatabaseTransaction } from "./connection.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import "./connection.js";
 import {
   agentDelegationMaxDepth,
   threadAccessModeAtMost,
-  threadInReach,
   OpensteerError,
   type EnvironmentId,
   type RunId,
@@ -13,16 +13,13 @@ import {
   type TriggerRevisionId,
   type TriggerWatchActivationId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { type Kysely, type Transaction } from "kysely";
 import { assertActiveGrant } from "./execution-authority.js";
 import { WATCH_OBSERVATIONS_PER_HOUR } from "@opensteer/triggers";
 import { assertActiveTriggerExecutionBinding, assertActiveWatchBinding } from "./trigger-store.js";
 import type { DatabaseSchema } from "./schema.js";
-
 export const runToolMaxDelegationDepth = agentDelegationMaxDepth;
-
 export type RunToolAction =
   | "assignment.cancel"
   | "machine.full-disk-access.request"
@@ -46,23 +43,16 @@ export type RunToolAction =
   | "thread.write"
   | "trigger.read"
   | "trigger.write"
-  | "project.create"
-  | "environment.list"
-  | "project.list";
-
+  | "environment.list";
 export type RunToolActionClass = Exclude<RunToolAction, "person.message">;
-
 type TriggerControlAction = RunToolAction;
-
 export type TriggerControlActionClass = RunToolActionClass;
-
 export interface RunToolAdmissionInput {
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
   readonly action: RunToolAction;
   readonly bindingGeneration: number;
   readonly environmentId: EnvironmentId;
-  readonly membershipGeneration: number;
   readonly requestedBy: UserId;
   readonly requestFingerprint: string;
   readonly requestId: string;
@@ -70,14 +60,11 @@ export interface RunToolAdmissionInput {
   readonly runnerBootId: string;
   readonly runnerId: RunnerId;
   readonly sourceThreadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
-
 export interface RunToolAdmissionResult {
   readonly actionClass: RunToolActionClass;
   readonly wasDuplicate: boolean;
 }
-
 export interface TriggerControlAdmissionInput {
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
@@ -91,14 +78,11 @@ export interface TriggerControlAdmissionInput {
   readonly runnerBootId: string;
   readonly runnerId: RunnerId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
-
 export interface TriggerControlAdmissionResult {
   readonly actionClass: TriggerControlActionClass;
   readonly wasDuplicate: boolean;
 }
-
 export interface WatchControlAdmissionInput {
   readonly accessMode?: import("@opensteer/core").ThreadAccessMode;
   readonly targetThreadIds?: readonly ThreadId[];
@@ -108,19 +92,15 @@ export interface WatchControlAdmissionInput {
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
-  readonly membershipGeneration: number;
   readonly observationId: string;
   readonly requestFingerprint: string;
   readonly requestId: string;
   readonly revisionId: TriggerRevisionId;
   readonly triggerId: TriggerId;
-  readonly workspaceId: WorkspaceId;
 }
-
 export interface WatchControlAdmissionResult {
   readonly wasDuplicate: boolean;
 }
-
 const actionClasses: Readonly<Record<RunToolAction, RunToolActionClass>> = {
   "assignment.cancel": "assignment.cancel",
   "machine.full-disk-access.request": "machine.full-disk-access.request",
@@ -144,17 +124,14 @@ const actionClasses: Readonly<Record<RunToolAction, RunToolActionClass>> = {
   "thread.write": "thread.write",
   "trigger.read": "trigger.read",
   "trigger.write": "trigger.write",
-  "project.create": "project.create",
-  "project.list": "project.list",
   "environment.list": "environment.list",
 };
-
 export async function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
   input: RunToolAdmissionInput,
   executionNow: () => number = Date.now,
 ): Promise<RunToolAdmissionResult> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     admitRunToolCallInTransaction(transaction, input, "admit", executionNow),
   );
 }
@@ -165,7 +142,6 @@ export async function admitRunToolCall(
  * work; the mutation still admits with `admit` once its lock order allows.
  */
 export type AdmissionMode = "admit" | "check";
-
 export async function admitRunToolCallInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: RunToolAdmissionInput,
@@ -184,7 +160,10 @@ export async function admitRunToolCallInTransaction(
       .$if(mode === "admit", (query) => query.forNoKeyUpdate())
       .executeTakeFirst();
     if (!run) {
-      throw new OpensteerError({ code: "not_found", message: "The calling Run was not found" });
+      throw new OpensteerError({
+        code: "not_found",
+        message: "The calling Run was not found",
+      });
     }
     if (run.threadId !== input.sourceThreadId) {
       throw new OpensteerError({
@@ -208,17 +187,14 @@ export async function admitRunToolCallInTransaction(
       {
         bindingGeneration: input.bindingGeneration,
         environmentId: input.environmentId,
-        membershipGeneration: input.membershipGeneration,
         requestedBy: input.requestedBy,
         runId: input.runId,
         runnerBootId: input.runnerBootId,
         runnerId: input.runnerId,
         threadId: input.sourceThreadId,
-        workspaceId: input.workspaceId,
       },
       executionNow,
     );
-
     await assertOperationTargets(transaction, input.sourceThreadId, input);
     const existing = await transaction
       .selectFrom("agentControlRequests")
@@ -240,9 +216,11 @@ export async function admitRunToolCallInTransaction(
         wasDuplicate: true,
       };
     }
-
-    if (mode === "check") return { actionClass, wasDuplicate: false };
-
+    if (mode === "check")
+      return {
+        actionClass,
+        wasDuplicate: false,
+      };
     await transaction
       .insertInto("agentControlRequests")
       .values({
@@ -268,11 +246,10 @@ export async function admitTriggerControlRequest(
   database: Kysely<DatabaseSchema>,
   input: TriggerControlAdmissionInput,
 ): Promise<TriggerControlAdmissionResult> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     admitTriggerControlRequestInTransaction(transaction, input),
   );
 }
-
 export async function admitTriggerControlRequestInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: TriggerControlAdmissionInput,
@@ -303,9 +280,7 @@ export async function admitTriggerControlRequestInTransaction(
       runnerBootId: input.runnerBootId,
       runnerId: input.runnerId,
       threadId: input.threadId,
-      workspaceId: input.workspaceId,
     });
-
     await assertOperationTargets(transaction, input.threadId, input);
     const existing = await transaction
       .selectFrom("triggerControlRequests")
@@ -321,11 +296,16 @@ export async function admitTriggerControlRequestInTransaction(
       ) {
         throw triggerRequestIdConflict(input.requestId);
       }
-      return { actionClass, wasDuplicate: true };
+      return {
+        actionClass,
+        wasDuplicate: true,
+      };
     }
-
-    if (mode === "check") return { actionClass, wasDuplicate: false };
-
+    if (mode === "check")
+      return {
+        actionClass,
+        wasDuplicate: false,
+      };
     await transaction
       .insertInto("triggerControlRequests")
       .values({
@@ -336,19 +316,20 @@ export async function admitTriggerControlRequestInTransaction(
         requestId: input.requestId,
       })
       .executeTakeFirstOrThrow();
-    return { actionClass, wasDuplicate: false };
+    return {
+      actionClass,
+      wasDuplicate: false,
+    };
   }
 }
-
 export async function admitWatchControlRequest(
   database: Kysely<DatabaseSchema>,
   input: WatchControlAdmissionInput,
 ): Promise<WatchControlAdmissionResult> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     admitWatchControlRequestInTransaction(transaction, input),
   );
 }
-
 export async function admitWatchControlRequestInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: WatchControlAdmissionInput,
@@ -364,7 +345,10 @@ export async function admitWatchControlRequestInTransaction(
     .$if(mode === "admit", (query) => query.forNoKeyUpdate())
     .executeTakeFirst();
   if (!activation) {
-    throw new OpensteerError({ code: "not_found", message: "Watch activation not found" });
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Watch activation not found",
+    });
   }
   await assertActiveWatchBinding(transaction, input);
   await assertOperationTargets(transaction, input.anchorThreadId, input);
@@ -381,11 +365,15 @@ export async function admitWatchControlRequestInTransaction(
     ) {
       throw new OpensteerError({
         code: "conflict",
-        details: { observationId: input.observationId },
+        details: {
+          observationId: input.observationId,
+        },
         message: "Watch observation ID was already used with different input",
       });
     }
-    return { wasDuplicate: true };
+    return {
+      wasDuplicate: true,
+    };
   }
   const window = await transaction
     .selectFrom("watchControlRequests")
@@ -396,11 +384,16 @@ export async function admitWatchControlRequestInTransaction(
   if (safeCount(window.count) >= WATCH_OBSERVATIONS_PER_HOUR) {
     throw new OpensteerError({
       code: "resource_exhausted",
-      details: { limit: WATCH_OBSERVATIONS_PER_HOUR },
+      details: {
+        limit: WATCH_OBSERVATIONS_PER_HOUR,
+      },
       message: `Watch observation limit of ${WATCH_OBSERVATIONS_PER_HOUR} per hour was reached for this activation`,
     });
   }
-  if (mode === "check") return { wasDuplicate: false };
+  if (mode === "check")
+    return {
+      wasDuplicate: false,
+    };
   await transaction
     .insertInto("watchControlRequests")
     .values({
@@ -411,33 +404,38 @@ export async function admitWatchControlRequestInTransaction(
       requestId: input.requestId,
     })
     .executeTakeFirstOrThrow();
-  return { wasDuplicate: false };
+  return {
+    wasDuplicate: false,
+  };
 }
-
 function safeCount(value: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new OpensteerError({ code: "internal", message: "Invalid admission count" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Invalid admission count",
+    });
   }
   return parsed;
 }
-
 function requestIdConflict(requestId: string): OpensteerError {
   return new OpensteerError({
     code: "conflict",
-    details: { requestId },
+    details: {
+      requestId,
+    },
     message: "Tool request ID was already used with different input",
   });
 }
-
 function triggerRequestIdConflict(requestId: string): OpensteerError {
   return new OpensteerError({
     code: "conflict",
-    details: { requestId },
+    details: {
+      requestId,
+    },
     message: "Trigger-control request ID was already used with different input",
   });
 }
-
 async function assertOperationTargets(
   transaction: Transaction<DatabaseSchema>,
   sourceThreadId: ThreadId,
@@ -453,7 +451,10 @@ async function assertOperationTargets(
     .where("id", "=", sourceThreadId)
     .executeTakeFirstOrThrow();
   if (!threadAccessModeAtMost(input.accessMode, source.accessMode))
-    throw new OpensteerError({ code: "forbidden", message: "Caller access mode was reduced" });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Caller access mode was reduced",
+    });
   for (const id of input.targetThreadIds ?? []) {
     const target = await transaction
       .selectFrom("threads")
@@ -461,13 +462,13 @@ async function assertOperationTargets(
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
     if (
-      !threadInReach(source, target) ||
+      (source.specialistId !== null && target.specialistId !== source.specialistId) ||
       !threadAccessModeAtMost(target.accessMode, input.accessMode) ||
       !threadAccessModeAtMost(target.accessMode, source.accessMode)
     )
       throw new OpensteerError({
         code: "forbidden",
-        message: "Target Thread exceeds the caller's live reach or access mode",
+        message: "Target task exceeds the caller's specialist or access limits",
       });
   }
 }

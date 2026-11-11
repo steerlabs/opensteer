@@ -7,7 +7,6 @@ import {
 import { Client, type QueryConfig, type QueryResult, type QueryResultRow } from "pg";
 import { knowledgeExecutorRolePrefix } from "./knowledge-schema.js";
 import { advisoryLockResource, databaseLockRank } from "./lock-order.js";
-
 type Token = {
   readonly text: string;
   readonly start: number;
@@ -88,17 +87,30 @@ function lex(sql: string): Token[] {
     const word = identifier.exec(sql)?.[0];
     if (word) {
       i += word.length;
-      result.push({ text: word.toLowerCase(), start, end: i, depth });
+      result.push({
+        text: word.toLowerCase(),
+        start,
+        end: i,
+        depth,
+      });
       continue;
     }
     if (sql[i] === ")") depth--;
-    result.push({ text: sql[i]!, start, end: ++i, depth });
+    result.push({
+      text: sql[i]!,
+      start,
+      end: ++i,
+      depth,
+    });
     if (sql[start] === "(") depth++;
   }
   return result;
 }
 const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
-type Target = { table: string; alias: string };
+type Target = {
+  table: string;
+  alias: string;
+};
 const reserved = new Set([
   "where",
   "set",
@@ -254,7 +266,6 @@ function classify(sql: string): {
     ts,
   };
 }
-
 export type RowLockMode = "KEY SHARE" | "SHARE" | "NO KEY UPDATE" | "UPDATE";
 const modeStrength: Record<RowLockMode, number> = {
   "KEY SHARE": 0,
@@ -374,10 +385,14 @@ const nativeQuery =
   (Object.getOwnPropertyDescriptor(Client.prototype, nativeQueryKey)?.value as
     typeof Client.prototype.query | undefined) ?? Client.prototype.query;
 if (!Object.hasOwn(Client.prototype, nativeQueryKey))
-  Object.defineProperty(Client.prototype, nativeQueryKey, { value: nativeQuery });
+  Object.defineProperty(Client.prototype, nativeQueryKey, {
+    value: nativeQuery,
+  });
 export const recordedLockOrderViolations: string[] = [];
-export const recordedTransactionConflicts: { readonly code: string; readonly statement: string }[] =
-  [];
+export const recordedTransactionConflicts: {
+  readonly code: string;
+  readonly statement: string;
+}[] = [];
 
 /** For a test that causes conflicts on purpose: claims them so the suite does not fail it. */
 export function takeTransactionConflicts(): readonly {
@@ -397,7 +412,12 @@ function violation(message: string, prior: Held | undefined, current: Held): voi
   if (process.env.OPENSTEER_LOCK_ORDER_TRACE) {
     appendFileSync(
       process.env.OPENSTEER_LOCK_ORDER_TRACE,
-      JSON.stringify({ type: "violation", message, prior, current }) + "\n",
+      JSON.stringify({
+        type: "violation",
+        message,
+        prior,
+        current,
+      }) + "\n",
     );
   }
   if (!lockOrderRecordOnly()) throw error;
@@ -502,7 +522,15 @@ function acquire(
 async function relationCatalog(
   client: Client,
   names: readonly string[],
-): Promise<Map<string, { readonly present: boolean; readonly keys: string[] }>> {
+): Promise<
+  Map<
+    string,
+    {
+      readonly present: boolean;
+      readonly keys: string[];
+    }
+  >
+> {
   const result = await raw(client, {
     text: `select t.name, to_regclass(t.name) is not null as present,
       array(select a.attname::text from pg_index i join pg_attribute a on a.attrelid=i.indrelid and a.attnum=any(i.indkey) where i.indrelid=to_regclass(t.name) and i.indisprimary order by array_position(i.indkey,a.attnum)) as keys
@@ -512,7 +540,10 @@ async function relationCatalog(
   return new Map(
     result.rows.map((row) => [
       String(row.name),
-      { present: Boolean(row.present), keys: (row.keys as string[]).map(String) },
+      {
+        present: Boolean(row.present),
+        keys: (row.keys as string[]).map(String),
+      },
     ]),
   );
 }
@@ -608,7 +639,12 @@ async function functionLocks(client: Client, fingerprint: string): Promise<Funct
       ...new Set([...(triggers.get(table) ?? []), ...(functions.get(procedure) ?? [])]),
     ]);
   }
-  const locks = { functions, triggers, deferredTables: [...deferredTables], orderedDeferredTables };
+  const locks = {
+    functions,
+    triggers,
+    deferredTables: [...deferredTables],
+    orderedDeferredTables,
+  };
   if (functionLockCache.size >= 64) functionLockCache.clear();
   functionLockCache.set(String(row.fingerprint), locks);
   return locks;
@@ -638,7 +674,11 @@ function sessionState(client: Client): State {
     triggers: new Map(),
     deferredTables: [],
     orderedDeferredTables: new Set(),
-    ...(high ? { high } : {}),
+    ...(high
+      ? {
+          high,
+        }
+      : {}),
   };
 }
 async function trackAdvisories(
@@ -654,7 +694,11 @@ async function trackAdvisories(
     return;
   }
   const expressions: string[] = [];
-  const kinds: { mode: RowLockMode; session: boolean; release: boolean }[] = [];
+  const kinds: {
+    mode: RowLockMode;
+    session: boolean;
+    release: boolean;
+  }[] = [];
   for (let i = 0; i < ts.length; i++) {
     const name = ts[i]!.text;
     if (
@@ -680,7 +724,11 @@ async function trackAdvisories(
   if (!expressions.length) return;
   const resolved = await raw(client, {
     text: `select jsonb_build_array(${expressions.join(",")}) as identities`,
-    ...(config.values === undefined ? {} : { values: config.values }),
+    ...(config.values === undefined
+      ? {}
+      : {
+          values: config.values,
+        }),
   });
   const identities = resolved.rows[0]!.identities as [string, number][];
   for (const [index, [value, seed]] of identities.entries()) {
@@ -731,10 +779,11 @@ class StatementOrigin {
   readonly #prepare = Error.prepareStackTrace;
   #stack: string | undefined;
   #fromMigration: boolean | undefined;
-
   constructor() {
     const limit = Error.stackTraceLimit;
-    const holder: { stack?: NodeJS.CallSite[] } = {};
+    const holder: {
+      stack?: NodeJS.CallSite[];
+    } = {};
     Error.stackTraceLimit = 40;
     Error.prepareStackTrace = (_error, frames) => frames;
     try {
@@ -747,14 +796,12 @@ class StatementOrigin {
       Error.stackTraceLimit = limit;
     }
   }
-
   get fromMigration(): boolean {
     this.#fromMigration ??= this.#frames.some((frame) =>
       migrationCaller.test(frame.getFileName() || frame.getScriptNameOrSourceURL() || ""),
     );
     return this.#fromMigration;
   }
-
   get stack(): string {
     if (this.#stack === undefined) {
       const limit = Error.stackTraceLimit;
@@ -802,7 +849,16 @@ async function checked(
     if (parts.length > 1 && !config.values?.length) {
       const results: QueryResult<QueryResultRow>[] = [];
       for (const part of parts)
-        results.push(await checked(client, { ...config, text: part }, origin));
+        results.push(
+          await checked(
+            client,
+            {
+              ...config,
+              text: part,
+            },
+            origin,
+          ),
+        );
       // pg's simple-query protocol returns one result per statement. This
       // driver-boundary shape is preserved for the adapter's raw SQL batches.
       return results as unknown as QueryResult<QueryResultRow>;
@@ -859,7 +915,13 @@ async function checked(
   if (op === "commit" || (op === "rollback" && !/rollback\s+to/iu.test(sql))) {
     try {
       if (op === "commit" && !state.migration && state.deferredTables.length)
-        await checked(client, { text: "set constraints all immediate" }, origin);
+        await checked(
+          client,
+          {
+            text: "set constraints all immediate",
+          },
+          origin,
+        );
       return await raw(client, config);
     } finally {
       states.delete(client);
@@ -876,33 +938,42 @@ async function checked(
   const classification = classify(sql);
   const flushingDeferred = /^set\s+constraints\s+all\s+immediate\s*;?$/iu.test(sql);
   if (flushingDeferred)
-    for (const table of state.deferredTables) classification.targets.push({ table, alias: table });
+    for (const table of state.deferredTables)
+      classification.targets.push({
+        table,
+        alias: table,
+      });
   for (let i = 0; i < classification.ts.length; i++) {
     const token = classification.ts[i]!;
     if (classification.ts[i + 1]?.text !== "(") continue;
     for (const table of state.functions.get(token.text) ?? []) {
       if (!classification.targets.some((target) => target.table === table))
-        classification.targets.push({ table, alias: table });
+        classification.targets.push({
+          table,
+          alias: table,
+        });
     }
   }
   if (!classification.targets.length) return raw(client, config);
   const tables = [...new Set(classification.targets.map((t) => t.table))];
   // A mutation's trigger targets join only while they still exist; the first
   // table to name a target places it.
-  const triggered: { readonly table: string; readonly target: string }[] = [];
+  const triggered: {
+    readonly table: string;
+    readonly target: string;
+  }[] = [];
   for (const table of classification.mutation ? tables : [])
     for (const target of state.triggers.get(table) ?? [])
       if (!tables.includes(target) && !triggered.some((entry) => entry.target === target))
-        triggered.push({ table, target });
+        triggered.push({
+          table,
+          target,
+        });
   const catalog = await relationCatalog(client, [
     ...tables,
     ...triggered.map((entry) => entry.target),
   ]);
-  for (const { table, target } of triggered)
-    if (catalog.get(target)!.present) {
-      if (table === "workspace_memberships") tables.unshift(target);
-      else tables.push(target);
-    }
+  for (const { target } of triggered) if (catalog.get(target)!.present) tables.push(target);
   const keys = tables.map((table) => catalog.get(table)!.keys);
   // Every table's snapshot and the transaction ID come from one statement, in
   // that order, so the statement below is bracketed by two round trips.
@@ -932,7 +1003,10 @@ async function checked(
       keyExpression(mutation.alias, keys[tables.indexOf(mutation.table)]!) +
       " as __opensteer_lock_key";
   }
-  const result = await raw(client, { ...config, text: statement });
+  const result = await raw(client, {
+    ...config,
+    text: statement,
+  });
   const observed = await raw(client, {
     text: tables
       .map((table, index) => {
@@ -1032,7 +1106,14 @@ export function installLockOrderChecker(): void {
   ) {
     const config =
       typeof input === "string"
-        ? { text: input, ...(Array.isArray(values) ? { values } : {}) }
+        ? {
+            text: input,
+            ...(Array.isArray(values)
+              ? {
+                  values,
+                }
+              : {}),
+          }
         : input;
     const cb = typeof values === "function" ? values : callback;
     // Read per statement, so a test can opt in or out for its own scope. Off still
@@ -1053,7 +1134,10 @@ export function installLockOrderChecker(): void {
           "code" in error &&
           (error.code === "40P01" || error.code === "40001")
         ) {
-          recordedTransactionConflicts.push({ code: error.code, statement: config.text });
+          recordedTransactionConflicts.push({
+            code: error.code,
+            statement: config.text,
+          });
         }
         throw error;
       });

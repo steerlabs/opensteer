@@ -4,7 +4,6 @@ import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { createHash } from "node:crypto";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
-
 export function requestRevision(request: Request): string {
   return createHash("sha256")
     .update(
@@ -20,11 +19,6 @@ export function requestRevision(request: Request): string {
     .digest("base64url");
 }
 
-/**
- * Workspace events are stamped with the environment the work ran in, and a
- * Request's origin is the only thing that knows it: a Run carries it directly,
- * a Trigger Occurrence carries its own.
- */
 export async function requestOriginEnvironment(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   request: Pick<Request, "originatingOccurrenceId" | "originatingRunId">,
@@ -47,7 +41,6 @@ export async function requestOriginEnvironment(
     .executeTakeFirstOrThrow();
   return occurrence.environmentId;
 }
-
 export function requestFromRow(row: RequestRow): Request {
   return RequestSchema.parse({
     callId: row.callId,
@@ -56,11 +49,14 @@ export function requestFromRow(row: RequestRow): Request {
     id: row.id,
     kind: row.kind,
     mode: row.mode,
-    ...(row.originatingNodeId ? { originatingNodeId: row.originatingNodeId } : {}),
+    ...(row.originatingNodeId
+      ? {
+          originatingNodeId: row.originatingNodeId,
+        }
+      : {}),
     originatingOccurrenceId: row.originatingOccurrenceId,
     originatingRunId: row.originatingRunId,
     originatingThreadId: row.originatingThreadId,
-    originatingWorkspaceId: row.originatingWorkspaceId,
     payload: row.payload,
     presentation: row.presentation,
     requestedBy: row.requestedBy,
@@ -70,10 +66,8 @@ export function requestFromRow(row: RequestRow): Request {
     settlementProvenance: row.settlementProvenance ?? null,
     response: row.response,
     status: row.status,
-    targetWorkspaceId: row.targetWorkspaceId,
   });
 }
-
 export function requestInsert(request: Request) {
   return {
     callId: request.callId,
@@ -86,7 +80,6 @@ export function requestInsert(request: Request) {
     originatingOccurrenceId: request.originatingOccurrenceId,
     originatingRunId: request.originatingRunId,
     originatingThreadId: request.originatingThreadId,
-    originatingWorkspaceId: request.originatingWorkspaceId,
     payload: jsonValue(request.payload),
     presentation: jsonValue(request.presentation),
     requestedBy: request.requestedBy,
@@ -98,6 +91,5 @@ export function requestInsert(request: Request) {
       : null,
     response: request.response ? jsonValue(request.response) : null,
     status: request.status,
-    targetWorkspaceId: request.targetWorkspaceId,
   };
 }

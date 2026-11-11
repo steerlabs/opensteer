@@ -1,4 +1,7 @@
-import { withDatabaseTransaction } from "./connection.js";
+import { runAllowsPersonalContext } from "./run-personal-context.js";
+import { personalSettings } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
 import { type CommandRow, type ProviderSessionTable, type DatabaseSchema } from "./schema.js";
@@ -11,7 +14,6 @@ import {
   type Message,
   type Run,
   type Thread,
-  type Workspace,
   OpensteerError,
   ThreadExecutionBindingSchema,
   type RunId,
@@ -27,7 +29,6 @@ import {
   type GrantId,
   ProviderContinuationIdentitySchema,
   sameProviderContinuationIdentity,
-  type WorkspaceId,
   type EnvironmentId,
   type ProviderSessionId,
 } from "@opensteer/core";
@@ -41,8 +42,6 @@ import {
   jsonValue,
   boundedWindowLimit,
   boundedWindowBytes,
-  safeGeneration,
-  lockWorkspaceRow,
   threadExecutionIsAvailableToUser,
 } from "./store-primitives.js";
 import {
@@ -56,9 +55,9 @@ import {
 import { readRunThreadState } from "./run-thread-state.js";
 import { type DurableWindowReadOptions } from "./snapshot-store.js";
 import { newestMessageWindow } from "./message-window.js";
-import { workspaceFromRow } from "./store-primitives.js";
+
 import { channelRunAuthorityIsCurrent } from "./channel-execution.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   assertActiveExecutionBinding as assertActiveExecutionBindingInStore,
   assertActiveGrant as assertActiveGrantInStore,
@@ -70,7 +69,11 @@ import {
  * anything the sending model wrote.
  */
 export interface RunDispatchContext {
-  readonly voiceCall?: { readonly sessionId: string; readonly admittedAt: string };
+  readonly personalContext: boolean;
+  readonly voiceCall?: {
+    readonly sessionId: string;
+    readonly admittedAt: string;
+  };
   readonly command: CommandRow;
   readonly executionBinding: ThreadExecutionBinding | null;
   readonly providerSessionStateLayout: "thread" | "session";
@@ -88,14 +91,12 @@ export interface RunDispatchContext {
     readonly omittedCount: number;
     readonly throughSequence: string | null;
   };
-  readonly membershipGeneration: number;
   /** The ordinal the execution's first event takes. */
   readonly firstOrdinal: number;
   readonly run: Run;
   readonly thread: Thread;
-  readonly workspace: Workspace;
+  readonly location: import("@opensteer/protocol").PersonalExecutionLocation;
 }
-
 function executionBindingFromRow(row: {
   readonly bindingGeneration: ProviderSessionTable["bindingGeneration"];
   readonly createdAt: Date;
@@ -139,61 +140,50 @@ export async function renewActiveExecutionBindings(
   },
   executionNow: () => number = Date.now,
 ): Promise<readonly RunId[]> {
-  if (input.activeRunIds.length === 0) return [];
-  // A lease that ran out stays out: the Runner has already stopped the Run on
-  // its own deadline, and the Host's sweep is about to settle it.
-  const renewed = await database
-    .updateTable("providerSessions")
-    .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
-    .where("active", "=", true)
-    .where("runnerId", "=", input.runnerId)
-    .where("runnerBootId", "=", input.runnerBootId)
-    .where("leaseExpiresAt", ">", new Date(executionNow()))
-    .where(
-      sql<boolean>`exists (
-          select 1
-          from runs run
-          join threads thread on thread.id = run.thread_id
-          join workspace_memberships membership
-            on membership.workspace_id = thread.workspace_id
-           and membership.user_id = run.requested_by
-          where run.id in (${sql.join(input.activeRunIds)})
-            and run.provider_session_id = provider_sessions.id
-            and run.binding_generation = provider_sessions.binding_generation
-            and run.status in ('starting', 'running', 'waiting')
-            and run.harness_instance_id = provider_sessions.harness_instance_id
-            and run.environment_id = thread.environment_id
-            and membership.state = 'active'
-            and membership.generation = run.membership_generation
-            and opensteer_user_can_execute_environment(
-              run.environment_id,
-              run.requested_by
-            )
-        )`,
-    )
-    .returning(["bindingGeneration", "id"])
-    .execute();
-  if (renewed.length === 0) return [];
-  const runs = await database
-    .selectFrom("runs")
-    .select(["bindingGeneration", "id", "providerSessionId"])
-    .where("id", "in", input.activeRunIds)
-    .where("status", "in", ["starting", "running", "waiting"])
-    .where(
-      "providerSessionId",
-      "in",
-      renewed.map((session) => session.id),
-    )
-    .execute();
-  return runs
-    .filter((run) =>
-      renewed.some(
-        (session) =>
-          session.id === run.providerSessionId &&
-          session.bindingGeneration === run.bindingGeneration,
-      ),
-    )
-    .map((run) => run.id);
+  if (!input.activeRunIds.length) return [];
+  return withPersonalTransaction(database, async (transaction) => {
+    const runs = await transaction
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
+      .innerJoin("users", "users.id", "personalSettings.ownerId")
+      .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+      .innerJoin("executionEnvironments", "executionEnvironments.id", "runs.environmentId")
+      .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
+      .select(["runs.id", "runs.providerSessionId"])
+      .where("runs.id", "in", [...input.activeRunIds])
+      .where("runs.status", "in", ["starting", "running", "waiting"])
+      .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration")
+      .whereRef("threads.folderComputerId", "=", "personalSettings.agentHomeComputerId")
+      .whereRef("executionEnvironments.runnerId", "=", "personalSettings.agentHomeComputerId")
+      .where("runners.revokedAt", "is", null)
+      .where("users.disabledAt", "is", null)
+      .where("providerSessions.active", "=", true)
+      .where("providerSessions.runnerId", "=", input.runnerId)
+      .where("providerSessions.runnerBootId", "=", input.runnerBootId)
+      .where("providerSessions.leaseExpiresAt", ">", new Date(executionNow()))
+      .orderBy("runs.id")
+      .forNoKeyUpdate("runs")
+      .execute();
+    const sessionIds = runs
+      .flatMap((run) => (run.providerSessionId ? [run.providerSessionId] : []))
+      .sort();
+    if (sessionIds.length) {
+      await transaction
+        .selectFrom("providerSessions")
+        .select("id")
+        .where("id", "in", sessionIds)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      await transaction
+        .updateTable("providerSessions")
+        .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+        .where("id", "in", sessionIds)
+        .execute();
+    }
+    return runs.map((run) => run.id);
+  });
 }
 
 /** Whether a Run still has authority to dispatch work to an auxiliary runtime. */
@@ -209,7 +199,6 @@ export async function isRunActive(
     .executeTakeFirst();
   return row !== undefined;
 }
-
 export async function finalizeRunInitialContext(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -217,17 +206,23 @@ export async function finalizeRunInitialContext(
     readonly messageIds: readonly MessageId[];
   },
 ): Promise<
-  (NonNullable<RunDispatchContext["initialContext"]> & { readonly finalized: true }) | null
+  | (NonNullable<RunDispatchContext["initialContext"]> & {
+      readonly finalized: true;
+    })
+  | null
 > {
   const selectedIds = MessageIdSchema.array().max(runHistoryMaxMessages).parse(input.messageIds);
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const observed = await transaction
       .selectFrom("commands")
       .select(["id", "runId", "threadId", "type"])
       .where("id", "=", input.commandId)
       .executeTakeFirst();
     if (observed?.type !== "run.execute" || !observed.runId || !observed.threadId) {
-      throw new OpensteerError({ code: "conflict", message: "Run command is unavailable" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Run command is unavailable",
+      });
     }
     // Runner terminalization takes the Run lock first. Re-read the Command
     // after that lock so a retry cannot finalize an older dispatch attempt.
@@ -288,7 +283,9 @@ export async function finalizeRunInitialContext(
       }
       await transaction
         .updateTable("runs")
-        .set({ initialContext: jsonValue(finalized) })
+        .set({
+          initialContext: jsonValue(finalized),
+        })
         .where("id", "=", run.id)
         .executeTakeFirstOrThrow();
     }
@@ -319,11 +316,13 @@ export async function finalizeRunInitialContext(
 /** What a Run's engine cannot see in its own history about its Thread. */
 export function loadRunThreadState(
   database: Kysely<DatabaseSchema>,
-  input: { readonly runId: RunId; readonly viewerId: UserId },
+  input: {
+    readonly runId: RunId;
+    readonly viewerId: UserId;
+  },
 ) {
   return readRunThreadState(database, input);
 }
-
 export async function loadRunDispatchContext(
   database: Kysely<DatabaseSchema>,
   commandId: CommandRow["id"],
@@ -337,7 +336,10 @@ export async function loadRunDispatchContext(
     .where("id", "=", commandId)
     .executeTakeFirst();
   if (!command?.runId || !command.threadId) {
-    throw new OpensteerError({ code: "not_found", message: "Run command not found" });
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Run command not found",
+    });
   }
   const runRow = await database
     .selectFrom("runs")
@@ -450,18 +452,20 @@ export async function loadRunDispatchContext(
       .executeTakeFirst(),
   ]);
   if (inputRows.length === 0) {
-    throw new OpensteerError({ code: "conflict", message: "Run has no claimed input batch" });
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Run has no claimed input batch",
+    });
   }
   if (!bindingRow) {
-    throw new OpensteerError({ code: "conflict", message: "Run has no exact provider session" });
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Run has no exact provider session",
+    });
   }
   const firstSequence = inputRows[0]!.sequence;
-  const [workspaceRow, historyRowsDesc] = await Promise.all([
-    database
-      .selectFrom("workspaces")
-      .selectAll()
-      .where("id", "=", threadRow.workspaceId)
-      .executeTakeFirstOrThrow(),
+  const [settings, historyRowsDesc] = await Promise.all([
+    personalSettings(database),
     database
       .selectFrom("messages")
       .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
@@ -493,6 +497,7 @@ export async function loadRunDispatchContext(
         ? executionBindingFromRow(bindingRow)
         : null,
     providerSessionStateLayout: bindingRow.stateLayout,
+    personalContext: await runAllowsPersonalContext(database, runRow.id),
     history: historyWindow.items,
     initialContext: initialContext
       ? {
@@ -509,13 +514,16 @@ export async function loadRunDispatchContext(
     },
     inputs: messagesFromRows(inputRows),
     reports: !includeContext
-      ? { messages: [], omittedCount: 0, throughSequence: null }
+      ? {
+          messages: [],
+          omittedCount: 0,
+          throughSequence: null,
+        }
       : {
           messages: reports,
           omittedCount: runRow.reportContext.omittedCount,
           throughSequence: runRow.reportContext.throughSequence,
         },
-    membershipGeneration: safeGeneration(runRow.membershipGeneration),
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
     ...(runRow.voiceSessionId
@@ -527,10 +535,12 @@ export async function loadRunDispatchContext(
         }
       : {}),
     thread: threadFromRow(threadRow),
-    workspace: workspaceFromRow(workspaceRow),
+    location: {
+      folder: { computerId: threadRow.folderComputerId, path: threadRow.folderPath },
+      agentHome: settings.agentHome,
+    },
   };
 }
-
 export async function acquireExecutionBinding(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -538,7 +548,6 @@ export async function acquireExecutionBinding(
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
-    readonly membershipGeneration: number;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly runId: RunId;
@@ -551,7 +560,7 @@ export async function acquireExecutionBinding(
     readonly revokedGrants: readonly RevokedRunGrant[];
   }
 > {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const continuationIdentity = ProviderContinuationIdentitySchema.parse(
       input.continuationIdentity,
     );
@@ -563,19 +572,24 @@ export async function acquireExecutionBinding(
         "runs.harnessInstanceId",
         "runs.modelSelection",
         "runs.providerSessionId",
-        "runs.membershipGeneration",
         "runs.requestedBy",
         "runs.status",
         "runs.threadId",
         "runs.runOrdinal",
-        "threads.workspaceId",
       ])
       .where("runs.id", "=", input.runId)
       .forNoKeyUpdate("runs")
       .executeTakeFirst();
-    if (!run) throw new OpensteerError({ code: "not_found", message: "Run not found" });
+    if (!run)
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Run not found",
+      });
     if (run.threadId !== input.threadId) {
-      throw new OpensteerError({ code: "conflict", message: "Run does not match thread" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Run does not match thread",
+      });
     }
     if (run.status !== "starting") {
       throw new OpensteerError({
@@ -583,21 +597,7 @@ export async function acquireExecutionBinding(
         message: "Run is not awaiting an execution binding",
       });
     }
-    if (safeGeneration(run.membershipGeneration) !== input.membershipGeneration) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Run membership generation does not match its dispatch capability",
-      });
-    }
-    await lockWorkspaceRow(transaction, run.workspaceId);
-    if (
-      !(await threadExecutionIsAvailableToUser(
-        transaction,
-        run.threadId,
-        run.requestedBy,
-        input.membershipGeneration,
-      ))
-    ) {
+    if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run execution authority is no longer active",
@@ -617,7 +617,10 @@ export async function acquireExecutionBinding(
       .forShare()
       .executeTakeFirst();
     if (!harness?.enabled) {
-      throw new OpensteerError({ code: "conflict", message: "AI engine is unavailable" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "AI engine is unavailable",
+      });
     }
     if (!(await channelRunAuthorityIsCurrent(transaction, input.runId))) {
       throw new OpensteerError({
@@ -633,14 +636,17 @@ export async function acquireExecutionBinding(
         "threads.environmentId",
         "threads.id as threadId",
         "threads.harnessInstanceId",
-        "threads.workspaceId",
         "executionEnvironments.runnerId",
         "harnessInstances.driverKind",
       ])
       .where("threads.id", "=", input.threadId)
       .forNoKeyUpdate("threads")
       .executeTakeFirst();
-    if (!thread) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+    if (!thread)
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Thread not found",
+      });
     if (thread.runnerId !== input.runnerId) {
       throw new OpensteerError({
         code: "conflict",
@@ -714,9 +720,9 @@ export async function acquireExecutionBinding(
             eb.not(
               eb.exists(
                 eb
-                  .selectFrom("workspaceEvents")
+                  .selectFrom("deploymentEvents")
                   .select("eventId")
-                  .whereRef("workspaceEvents.runId", "=", "runs.id")
+                  .whereRef("deploymentEvents.runId", "=", "runs.id")
                   .where("runnerOrdinal", "is not", null)
                   .where("type", "in", ["run.failed", "run.interrupted"]),
               ),
@@ -784,17 +790,21 @@ export async function acquireExecutionBinding(
     if (!session.continuationIdentity) {
       await transaction
         .updateTable("providerSessions")
-        .set({ continuationIdentity: jsonValue(continuationIdentity), updatedAt: new Date() })
+        .set({
+          continuationIdentity: jsonValue(continuationIdentity),
+          updatedAt: new Date(),
+        })
         .where("id", "=", session.id)
         .where("continuationIdentity", "is", null)
         .executeTakeFirstOrThrow();
-      continuationEvent = await appendHostWorkspaceEvent(transaction, {
-        data: { continuationIdentity },
+      continuationEvent = await appendHostDeploymentEvent(transaction, {
+        data: {
+          continuationIdentity,
+        },
         environmentId: thread.environmentId,
         runId: input.runId,
         threadId: thread.threadId,
         type: "thread.continuation-established",
-        workspaceId: thread.workspaceId,
       });
     }
     const row = await transaction
@@ -813,7 +823,9 @@ export async function acquireExecutionBinding(
       .executeTakeFirstOrThrow();
     await transaction
       .updateTable("runs")
-      .set({ bindingGeneration: row.bindingGeneration })
+      .set({
+        bindingGeneration: row.bindingGeneration,
+      })
       .where("id", "=", input.runId)
       .executeTakeFirstOrThrow();
     const { grantId, revokedGrants } = await issueRunGrant(transaction, {
@@ -827,11 +839,14 @@ export async function acquireExecutionBinding(
       ...executionBindingFromRow(row),
       grantId,
       revokedGrants,
-      ...(continuationEvent ? { continuationEvent } : {}),
+      ...(continuationEvent
+        ? {
+            continuationEvent,
+          }
+        : {}),
     };
   });
 }
-
 export async function renewExecutionBinding(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -854,7 +869,10 @@ export async function renewExecutionBinding(
   if (!run?.providerSessionId || run.threadId !== input.threadId) return false;
   const result = await database
     .updateTable("providerSessions")
-    .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: new Date() })
+    .set({
+      leaseExpiresAt: input.leaseExpiresAt,
+      updatedAt: new Date(),
+    })
     .where("active", "=", true)
     .where("threadId", "=", input.threadId)
     .where("id", "=", run.providerSessionId)
@@ -867,16 +885,11 @@ export async function renewExecutionBinding(
   return result.numUpdatedRows === 1n;
 }
 
-/**
- * Who a Run acts for, when it is that Thread's in that Workspace: the person
- * whose integration grants its gateway calls use. Null for any other Run.
- */
 export async function runRequester(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly runId: RunId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<UserId | null> {
   const row = await database
@@ -885,31 +898,26 @@ export async function runRequester(
     .select("runs.requestedBy")
     .where("runs.id", "=", input.runId)
     .where("runs.threadId", "=", input.threadId)
-    .where("threads.workspaceId", "=", input.workspaceId)
     .executeTakeFirst();
   return row?.requestedBy ?? null;
 }
-
 export async function assertActiveExecutionBinding(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly bindingGeneration: number;
     readonly environmentId: EnvironmentId;
-    readonly membershipGeneration: number;
     readonly requestedBy: UserId;
     readonly runId: RunId;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   },
   executionNow: () => number = Date.now,
 ): Promise<void> {
-  await withDatabaseTransaction(database, (transaction) =>
+  await withPersonalTransaction(database, (transaction) =>
     assertActiveExecutionBindingInStore(transaction, input, executionNow),
   );
 }
-
 export async function assertActiveGrant(
   database: Kysely<DatabaseSchema>,
   input: Parameters<typeof assertActiveExecutionBinding>[1] & {
@@ -917,11 +925,10 @@ export async function assertActiveGrant(
   },
   executionNow: () => number = Date.now,
 ): Promise<void> {
-  await withDatabaseTransaction(database, (transaction) =>
+  await withPersonalTransaction(database, (transaction) =>
     assertActiveGrantInStore(transaction, input, executionNow),
   );
 }
-
 export async function bindProviderSession(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -936,18 +943,11 @@ export async function bindProviderSession(
     readonly threadId: ThreadId;
   },
 ): Promise<void> {
-  await withDatabaseTransaction(database, async (transaction) => {
+  await withPersonalTransaction(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
-      .select([
-        "runs.membershipGeneration",
-        "runs.providerSessionId",
-        "runs.requestedBy",
-        "runs.status",
-        "runs.threadId",
-        "threads.workspaceId",
-      ])
+      .select(["runs.providerSessionId", "runs.requestedBy", "runs.status", "runs.threadId"])
       .where("runs.id", "=", input.runId)
       .forNoKeyUpdate("runs")
       .executeTakeFirst();
@@ -962,15 +962,7 @@ export async function bindProviderSession(
         message: "Provider session run does not match thread",
       });
     }
-    await lockWorkspaceRow(transaction, run.workspaceId);
-    if (
-      !(await threadExecutionIsAvailableToUser(
-        transaction,
-        run.threadId,
-        run.requestedBy,
-        safeGeneration(run.membershipGeneration),
-      ))
-    ) {
+    if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run execution authority is no longer active",
@@ -1002,12 +994,17 @@ export async function bindProviderSession(
       )
       .executeTakeFirst();
     if (result.numUpdatedRows !== 1n) {
-      throw new OpensteerError({ code: "conflict", message: "Stale provider session binding" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Stale provider session binding",
+      });
     }
     if (input.engineStart) {
       await transaction
         .updateTable("runAttempts")
-        .set({ engineStart: input.engineStart })
+        .set({
+          engineStart: input.engineStart,
+        })
         .where("runId", "=", input.runId)
         .where("bindingGeneration", "=", input.bindingGeneration)
         .execute();
@@ -1027,13 +1024,11 @@ export async function runCapabilityScope(
   readonly specialistId?: string;
   readonly environmentId: EnvironmentId;
   readonly grantId: GrantId;
-  readonly membershipGeneration: number;
   readonly requestedBy: UserId;
   readonly runId: RunId;
   readonly runnerBootId: string;
   readonly runnerId: RunnerId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 } | null> {
   const row = await database
     .selectFrom("runs")
@@ -1050,27 +1045,27 @@ export async function runCapabilityScope(
       "grants.runnerBootId",
       "grants.runnerId",
       "runs.environmentId",
-      "runs.membershipGeneration",
       "runs.requestedBy",
       "runs.threadId",
       "threads.specialistId",
-      "threads.workspaceId",
     ])
     .where("runs.id", "=", runId)
     .executeTakeFirst();
   if (!row) return null;
   return {
     bindingGeneration: row.bindingGeneration,
-    ...(row.specialistId ? { specialistId: row.specialistId } : {}),
+    ...(row.specialistId
+      ? {
+          specialistId: row.specialistId,
+        }
+      : {}),
     environmentId: row.environmentId,
     grantId: row.grantId,
-    membershipGeneration: safeGeneration(row.membershipGeneration),
     requestedBy: row.requestedBy,
     runId,
     runnerBootId: row.runnerBootId,
     runnerId: row.runnerId,
     threadId: row.threadId,
-    workspaceId: row.workspaceId,
   };
 }
 
@@ -1082,12 +1077,6 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     .where("id", "=", threadId)
     .executeTakeFirst();
   if (!thread || thread.status === "archived") return null;
-  const workspace = await database
-    .selectFrom("workspaces")
-    .select("homeThreadId")
-    .where("id", "=", thread.workspaceId)
-    .executeTakeFirst();
-  if (!workspace || workspace.homeThreadId === threadId) return null;
   const run = await database
     .selectFrom("runs")
     .selectAll()
@@ -1095,15 +1084,7 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     .orderBy("runOrdinal", "asc")
     .limit(1)
     .executeTakeFirst();
-  if (
-    !run ||
-    !(await threadExecutionIsAvailableToUser(
-      database,
-      threadId,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
-    ))
-  )
+  if (!run || !(await threadExecutionIsAvailableToUser(database, threadId, run.requestedBy)))
     return null;
   const firstAuthored =
     thread.titleSource === "provisional" || thread.iconSource === "provisional"
@@ -1145,14 +1126,12 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
   const request = titleText
     .slice(0, surrogateSafeCut(titleText, threadTitleRequestMaxLength))
     .trimEnd();
-
   if (!request || !firstAuthored) return null;
   return {
     threadId,
     sourceMessageId: firstAuthored.id,
     principalId: run.actorPrincipalId,
     requestedBy: run.requestedBy,
-    membershipGeneration: safeGeneration(run.membershipGeneration),
     environmentId: run.environmentId,
     harnessInstanceId: run.harnessInstanceId,
     modelSelection: run.modelSelection,
@@ -1160,7 +1139,6 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     icon: thread.iconSource === "provisional",
   };
 }
-
 export async function listThreadNamingCandidates(
   database: Kysely<DatabaseSchema>,
   limit = 100,

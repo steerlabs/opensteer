@@ -17,7 +17,10 @@ import type { DatabaseSchema } from "./schema.js";
  */
 export async function readRunThreadState(
   database: Kysely<DatabaseSchema>,
-  input: { readonly runId: RunId; readonly viewerId: UserId },
+  input: {
+    readonly runId: RunId;
+    readonly viewerId: UserId;
+  },
 ): Promise<RunThreadState> {
   const run = await database
     .selectFrom("runs")
@@ -56,15 +59,8 @@ export async function readRunThreadState(
   const parentVisible = earlierTask
     ? await database
         .selectFrom("threads")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
         .select("threads.id")
         .where("threads.id", "=", earlierTask.parentThreadId)
-        .where("workspaceMemberships.userId", "=", input.viewerId)
-        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst()
     : undefined;
   return RunThreadStateSchema.parse({
@@ -96,13 +92,11 @@ export async function readRunThreadState(
         : null,
   });
 }
-
 function bounded(text: string): string {
   return text.length > runThreadStateFailureMaxChars
     ? `${text.slice(0, runThreadStateFailureMaxChars - 1)}…`
     : text;
 }
-
 function required(value: Date | null, subject: "Run" | "task"): Date {
   if (value === null) {
     throw new OpensteerError({

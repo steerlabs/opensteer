@@ -6,6 +6,7 @@ import {
 import {
   compareSequence,
   nodeDetailEventNodeId,
+  type DeploymentId,
   type ExecutionNodeId,
   OpensteerError,
   zeroSequence,
@@ -13,22 +14,19 @@ import {
   type AuthSessionId,
   type Sequence,
   type UserId,
-  type WorkspaceId,
   type ThreadId,
   type ThreadReadState,
-  type WorkspaceNotificationPreference,
 } from "@opensteer/core";
-import { OpensteerStore } from "@opensteer/database";
+import type { OpensteerStore } from "@opensteer/database";
+import { requirePersonalOwner } from "@opensteer/database/personal-settings-store";
 import { type HostToClientMessage } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";
-
 export interface RealtimeSink {
   readonly id: string;
   send(message: HostToClientMessage): Promise<void>;
   close(code: number, reason: string): void;
 }
-
 interface RealtimeHubOptions {
   /** How long a hole in published delivery may wait before it is read from the store. */
   readonly gapFillDelayMs?: number;
@@ -39,7 +37,7 @@ interface RealtimeHubOptions {
    */
   readonly gapFillTimeoutMs?: number;
   /** Open streams sent to a subscriber when it goes live. */
-  readonly liveRuns?: Pick<LiveRunRegistry, "workspaceFrames">;
+  readonly liveRuns?: Pick<LiveRunRegistry, "deploymentFrames">;
   readonly maxBufferedBytes?: number;
   readonly maxBufferedEvents?: number;
   /** Live progress one subscriber may hold or have in flight before it drops some. */
@@ -49,23 +47,21 @@ interface RealtimeHubOptions {
   readonly maxWireBytes?: number;
   readonly store: OpensteerStore;
 }
-
 type SubscriberState = "synchronizing" | "live" | "closed";
 
 /**
- * Browser catalogs follow the viewer; usage and Triggers follow the Workspace.
+ * Browser catalogs follow the viewer; usage and Triggers follow the Deployment.
  * During synchronization, keep each lineage's newest revision, merge usage
  * thread IDs, and collapse broad invalidations until the event backlog drains.
  */
-type WorkspaceNotice = Extract<
+type DeploymentNotice = Extract<
   HostToClientMessage,
   {
     readonly type:
       "host.browser-sessions-changed" | "host.browser-usage-changed" | "host.triggers-changed";
   }
 >;
-
-function isWorkspaceNotice(message: HostToClientMessage): message is WorkspaceNotice {
+function isDeploymentNotice(message: HostToClientMessage): message is DeploymentNotice {
   return (
     message.type === "host.browser-sessions-changed" ||
     message.type === "host.browser-usage-changed" ||
@@ -75,21 +71,23 @@ function isWorkspaceNotice(message: HostToClientMessage): message is WorkspaceNo
 
 /** The most conversations one usage notice names; more go in further notices. */
 const usageNoticeThreadLimit = 100;
-
-function mergeWorkspaceNotices(
-  held: WorkspaceNotice | undefined,
-  next: WorkspaceNotice,
-): WorkspaceNotice {
+function mergeDeploymentNotices(
+  held: DeploymentNotice | undefined,
+  next: DeploymentNotice,
+): DeploymentNotice {
   if (held?.type !== "host.browser-usage-changed" || next.type !== "host.browser-usage-changed") {
     return next;
   }
-  return { ...next, threadIds: [...new Set([...held.threadIds, ...next.threadIds])] };
+  return {
+    ...next,
+    threadIds: [...new Set([...held.threadIds, ...next.threadIds])],
+  };
 }
 
 /** One notice as it goes on the wire, split where it names too many conversations. */
-function wireNotices(notice: WorkspaceNotice): readonly WorkspaceNotice[] {
+function wireNotices(notice: DeploymentNotice): readonly DeploymentNotice[] {
   if (notice.type !== "host.browser-usage-changed") return [notice];
-  const notices: WorkspaceNotice[] = [];
+  const notices: DeploymentNotice[] = [];
   for (let index = 0; index < notice.threadIds.length; index += usageNoticeThreadLimit) {
     notices.push({
       ...notice,
@@ -105,7 +103,6 @@ export interface RealtimeFillWindow {
   readonly hasMore: boolean;
   readonly scannedThrough: Sequence;
 }
-
 interface SubscriberOptions {
   readonly personShow: boolean;
   readonly placeEvents: boolean;
@@ -122,11 +119,10 @@ interface SubscriberOptions {
   readonly onClose: () => void;
   readonly sink: RealtimeSink;
   readonly userId: UserId;
-  readonly workspaceId: WorkspaceId;
 }
 
 /**
- * One client's view of one Workspace's durable stream, plus the live progress
+ * One client's view of one Deployment's durable stream, plus the live progress
  * that rides on it.
  *
  * Durable events reach the sink strictly in sequence order. Publications come
@@ -139,17 +135,22 @@ interface SubscriberOptions {
  *
  * Live progress is sent only once every durable event it follows has been
  * handed to the sink. It is never buffered across synchronization: a
- * subscriber that goes live sends the Workspace's open streams whole instead.
+ * subscriber that goes live sends the Deployment's open streams whole instead.
  */
 class Subscriber {
   readonly sink: RealtimeSink;
-  readonly workspaceId: WorkspaceId;
   readonly userId: UserId;
   readonly #options: SubscriberOptions;
   readonly #syncBuffer: AgentEvent[] = [];
-  readonly #syncNotices = new Map<string, WorkspaceNotice>();
+  readonly #syncNotices = new Map<string, DeploymentNotice>();
   readonly #syncViewerMessages: HostToClientMessage[] = [];
-  readonly #pending = new Map<string, { readonly bytes: number; readonly event: AgentEvent }>();
+  readonly #pending = new Map<
+    string,
+    {
+      readonly bytes: number;
+      readonly event: AgentEvent;
+    }
+  >();
   readonly #pendingLive: {
     readonly bytes: number;
     readonly frame: LiveFrame;
@@ -178,7 +179,6 @@ class Subscriber {
    */
   #visibleThrough: Sequence;
   #handedThrough: Sequence;
-
   #send(message: HostToClientMessage): Promise<void> {
     switch (message.type) {
       case "host.events": {
@@ -193,7 +193,7 @@ class Subscriber {
         const visible = events.at(-1);
         if (last) this.#handedThrough = last.sequence;
         if (visible) this.#visibleThrough = visible.sequence;
-        if (events.length === 0) return Promise.resolve();
+
         return this.sink.send({
           ...message,
           events: this.#options.toolOutputs ? events.map(previewToolOutput) : events,
@@ -207,12 +207,21 @@ class Subscriber {
             item.nodeId === this.#watchedNodeId,
         );
         if (items.length === 0) return Promise.resolve();
-        message = { ...message, progress: { ...message.progress, items } };
+        message = {
+          ...message,
+          progress: {
+            ...message.progress,
+            items,
+          },
+        };
         if (
           compareSequence(message.afterSequence, this.#visibleThrough) > 0 &&
           compareSequence(message.afterSequence, this.#handedThrough) <= 0
         )
-          return this.sink.send({ ...message, afterSequence: this.#visibleThrough });
+          return this.sink.send({
+            ...message,
+            afterSequence: this.#visibleThrough,
+          });
         return this.sink.send(message);
       }
       case "host.synchronized":
@@ -223,7 +232,6 @@ class Subscriber {
         return this.sink.send(message);
     }
   }
-
   constructor(options: SubscriberOptions) {
     this.#options = options;
     this.#queuedThrough = options.cursor;
@@ -231,7 +239,6 @@ class Subscriber {
     this.#handedThrough = options.cursor;
     this.sink = options.sink;
     this.userId = options.userId;
-    this.workspaceId = options.workspaceId;
   }
 
   /**
@@ -256,7 +263,6 @@ class Subscriber {
         await this.#send({
           type: "host.node-watched",
           nodeId,
-          workspaceId: this.workspaceId,
           sequence: this.#handedThrough,
         });
         if (nodeId === null || !streams) return;
@@ -267,13 +273,28 @@ class Subscriber {
             (item) => item.stream === "tool" && item.nodeId === nodeId,
           );
           if (items.length > 0)
-            this.#offerLiveFrame({ ...frame, progress: { ...frame.progress, items } }, true);
+            this.#offerLiveFrame(
+              {
+                ...frame,
+                progress: {
+                  ...frame.progress,
+                  items,
+                },
+              },
+              true,
+            );
         }
       })
       .catch(() => this.#failDelivery());
   }
-
-  async show(message: Extract<HostToClientMessage, { type: "host.show" }>): Promise<boolean> {
+  async show(
+    message: Extract<
+      HostToClientMessage,
+      {
+        type: "host.show";
+      }
+    >,
+  ): Promise<boolean> {
     // Never buffer navigation across synchronization or a reconnect.
     if (!this.acceptsPersonShow) return false;
     try {
@@ -283,11 +304,9 @@ class Subscriber {
       return false;
     }
   }
-
   get acceptsPersonShow(): boolean {
     return this.#state === "live" && this.#options.personShow;
   }
-
   offer(event: AgentEvent): void {
     if (this.#state === "closed" || compareSequence(event.sequence, this.#queuedThrough) <= 0) {
       return;
@@ -308,7 +327,6 @@ class Subscriber {
     if (!this.#hold(event)) return;
     this.#drain();
   }
-
   offerLive(frame: LiveFrame): void {
     // A synchronizing subscriber is sent every open stream whole when it goes
     // live, which supersedes any progress it would have buffered meanwhile.
@@ -332,10 +350,13 @@ class Subscriber {
       // the next append names an offset the reader lacks, and it rereads.
       return;
     }
-    this.#pendingLive.push({ bytes, frame, replacement });
+    this.#pendingLive.push({
+      bytes,
+      frame,
+      replacement,
+    });
     this.#pendingLiveBytes += bytes;
   }
-
   async synchronize(
     messages: readonly HostToClientMessage[],
     cursor: Sequence,
@@ -352,7 +373,11 @@ class Subscriber {
       const batch = this.#takeContiguous();
       if (batch.length > 0) {
         for (const events of boundedEventBatches(batch, this.#options.maxWireBytes)) {
-          await this.#send({ events, type: "host.events" });
+          await this.#send({
+            events,
+            type: "host.events",
+            throughSequence: events.at(-1)!.sequence,
+          });
         }
         continue;
       }
@@ -370,7 +395,6 @@ class Subscriber {
       }
       this.#sendTail = this.#send({
         type: "host.synchronized",
-        workspaceId: this.workspaceId,
         sequence: this.#queuedThrough,
       });
       // Going live and reading the open streams happen in one synchronous
@@ -383,7 +407,6 @@ class Subscriber {
       return;
     }
   }
-
   resync(reason: "cursor-ahead" | "cursor-expired" | "slow-consumer" | "buffer-overflow"): void {
     if (this.#state === "closed") return;
     this.#state = "closed";
@@ -392,35 +415,27 @@ class Subscriber {
       .send({
         reason,
         type: "host.resync-required",
-        workspaceId: this.workspaceId,
       })
       .finally(() => this.sink.close(4009, "resync required"));
     this.#options.onClose();
   }
-
   close(): void {
     if (this.#state === "closed") return;
     this.#state = "closed";
     this.#clearGapTimer();
     this.#options.onClose();
   }
-
   #failDelivery(): void {
     if (this.#state === "closed") return;
     this.close();
-    this.sink.close(1011, "Workspace delivery failed");
+    this.sink.close(1011, "Deployment delivery failed");
   }
-
   enqueueMessage(message: HostToClientMessage): void {
     if (this.#state === "synchronizing") {
-      if (isWorkspaceNotice(message)) {
+      if (isDeploymentNotice(message)) {
         const key = message.type;
-        this.#syncNotices.set(key, mergeWorkspaceNotices(this.#syncNotices.get(key), message));
-      } else if (
-        message.type === "host.read-states" ||
-        message.type === "host.read-markers" ||
-        message.type === "host.notification-preferences"
-      ) {
+        this.#syncNotices.set(key, mergeDeploymentNotices(this.#syncNotices.get(key), message));
+      } else if (message.type === "host.read-states" || message.type === "host.read-markers") {
         const bytes = Buffer.byteLength(JSON.stringify(message));
         if (
           this.#viewerBufferedBytes + bytes > this.#options.maxBufferedBytes ||
@@ -451,7 +466,10 @@ class Subscriber {
       this.resync(this.#state === "synchronizing" ? "buffer-overflow" : "slow-consumer");
       return false;
     }
-    this.#pending.set(event.sequence, { bytes, event });
+    this.#pending.set(event.sequence, {
+      bytes,
+      event,
+    });
     this.#pendingBytes += bytes;
     return true;
   }
@@ -482,7 +500,6 @@ class Subscriber {
       this.#queuedThrough = next;
     }
   }
-
   #drain(): void {
     if (this.#state !== "live") return;
     const batch = this.#takeContiguous();
@@ -490,7 +507,6 @@ class Subscriber {
     this.#releaseLive();
     this.#scheduleGapFill();
   }
-
   #sendEvents(events: readonly AgentEvent[]): void {
     const bytes = events.reduce((total, event) => total + eventBytes(event), 0);
     if (
@@ -506,7 +522,11 @@ class Subscriber {
       .then(async () => {
         if (this.#state === "closed") return;
         for (const batch of boundedEventBatches(events, this.#options.maxWireBytes)) {
-          await this.#send({ events: batch, type: "host.events" });
+          await this.#send({
+            events: batch,
+            type: "host.events",
+            throughSequence: batch.at(-1)!.sequence,
+          });
         }
       })
       .catch(() => this.#failDelivery())
@@ -530,7 +550,6 @@ class Subscriber {
       }
     }
   }
-
   #sendLive(frame: LiveFrame, bytes: number, replacement = false): void {
     if (!replacement && this.#liveInFlightBytes + bytes > this.#options.maxLiveBytes) return;
     this.#liveInFlightBytes += bytes;
@@ -541,7 +560,6 @@ class Subscriber {
               afterSequence: frame.afterSequence,
               progress: frame.progress,
               type: "host.live",
-              workspaceId: this.workspaceId,
             })
           : undefined,
       )
@@ -550,7 +568,6 @@ class Subscriber {
         this.#liveInFlightBytes -= bytes;
       });
   }
-
   #scheduleGapFill(): void {
     if (this.#pending.size === 0) {
       this.#clearGapTimer();
@@ -563,12 +580,10 @@ class Subscriber {
     }, this.#options.gapFillDelayMs);
     this.#gapTimer.unref?.();
   }
-
   #clearGapTimer(): void {
     if (this.#gapTimer) clearTimeout(this.#gapTimer);
     this.#gapTimer = undefined;
   }
-
   async #fillGap(): Promise<void> {
     if (this.#state !== "live" || this.#pending.size === 0) return;
     this.#filling = true;
@@ -586,7 +601,9 @@ class Subscriber {
         const window = await withTimeout(
           this.#options.fill(from, through),
           this.#options.gapFillTimeoutMs,
-          { timeoutError: () => new Error("The Workspace event read timed out.") },
+          {
+            timeoutError: () => new Error("The Deployment event read timed out."),
+          },
         );
         const fresh = window.events.filter(
           (event) =>
@@ -619,19 +636,15 @@ class Subscriber {
     this.#drain();
   }
 }
-
 function nextSequence(sequence: Sequence): Sequence {
   return String(BigInt(sequence) + 1n) as Sequence;
 }
-
 function previousSequence(sequence: Sequence): Sequence {
   return String(BigInt(sequence) - 1n) as Sequence;
 }
-
 function liveFrameBytes(frame: LiveFrame): number {
   return Buffer.byteLength(JSON.stringify(frame), "utf8");
 }
-
 export class RealtimeHub {
   readonly #observers = new Set<(change: AgentEvent | HostToClientMessage) => void>();
   observe(listener: (change: AgentEvent | HostToClientMessage) => void): () => void {
@@ -640,38 +653,42 @@ export class RealtimeHub {
       this.#observers.delete(listener);
     };
   }
-
   readonly bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
   readonly #store: OpensteerStore;
   readonly #gapFillDelayMs: number;
   readonly #gapFillTimeoutMs: number;
-  readonly #liveRuns: Pick<LiveRunRegistry, "workspaceFrames"> | undefined;
+  readonly #liveRuns: Pick<LiveRunRegistry, "deploymentFrames"> | undefined;
   readonly #maxLiveBytes: number;
   readonly #maxBufferedBytes: number;
   readonly #maxBufferedEvents: number;
   readonly #maxReplayEvents: number;
   readonly #maxReplayBytes: number;
   readonly #maxWireBytes: number;
-  readonly #subscribers = new Map<WorkspaceId, Set<Subscriber>>();
+  readonly #subscribers = new Set<Subscriber>();
   readonly #readStateRefreshes = new Map<
     string,
-    { workspaceId: WorkspaceId; userId: UserId; threadIds: Set<ThreadId> }
+    {
+      userId: UserId;
+      threadIds: Set<ThreadId>;
+    }
   >();
   /**
-   * Every authenticated client socket, whatever Workspace it is watching.
+   * Every authenticated client socket, whatever Deployment it is watching.
    *
-   * Some notifications are about a machine rather than a Workspace, and the
-   * people entitled to them are usually not members of the Workspace whose Run
-   * caused them. Those cannot ride the Workspace broadcast without either
-   * leaking to that Workspace's members or never reaching their audience, so
+   * Some notifications are about a machine rather than a Deployment, and the
+   * people entitled to them are usually not members of the Deployment whose Run
+   * caused them. Those cannot ride the Deployment broadcast without either
+   * leaking to that Deployment's members or never reaching their audience, so
    * the connection itself is addressable.
    */
   readonly #connections = new Map<UserId, Set<RealtimeSink>>();
   readonly #sessionConnections = new Map<
     AuthSessionId,
-    { readonly sinks: Set<RealtimeSink>; readonly userId: UserId }
+    {
+      readonly sinks: Set<RealtimeSink>;
+      readonly userId: UserId;
+    }
   >();
-
   constructor(options: RealtimeHubOptions) {
     this.#store = options.store;
     this.#gapFillDelayMs = options.gapFillDelayMs ?? 100;
@@ -684,34 +701,31 @@ export class RealtimeHub {
     this.#maxReplayBytes = options.maxReplayBytes ?? 8 * 1_024 * 1_024;
     this.#maxWireBytes = options.maxWireBytes ?? 960 * 1_024;
   }
-
   async subscribe(input: {
     readonly afterSequence: Sequence;
+    readonly deploymentId: DeploymentId;
     readonly snapshotMessages?: "omit";
     readonly placeEvents?: "include";
     readonly toolOutputs?: "preview";
     readonly personShow?: "accept";
     readonly sink: RealtimeSink;
     readonly userId: UserId;
-    readonly workspaceId: WorkspaceId;
   }): Promise<() => void> {
     let subscriber!: Subscriber;
     const remove = () => {
-      const set = this.#subscribers.get(input.workspaceId);
-      set?.delete(subscriber);
-      if (set?.size === 0) this.#subscribers.delete(input.workspaceId);
+      this.#subscribers.delete(subscriber);
     };
     subscriber = new Subscriber({
       cursor: input.afterSequence,
       fill: (after, through) =>
-        this.#store.eventsAfterWindow(input.workspaceId, after, {
+        this.#store.eventsAfterWindow(after, {
           maxBytes: this.#maxWireBytes,
           maxItems: 250,
           throughSequence: through,
         }),
       gapFillDelayMs: this.#gapFillDelayMs,
       gapFillTimeoutMs: this.#gapFillTimeoutMs,
-      liveFrames: () => this.#liveRuns?.workspaceFrames(input.workspaceId) ?? [],
+      liveFrames: () => this.#liveRuns?.deploymentFrames() ?? [],
       maxBufferedBytes: this.#maxBufferedBytes,
       maxBufferedEvents: this.#maxBufferedEvents,
       maxLiveBytes: this.#maxLiveBytes,
@@ -722,36 +736,42 @@ export class RealtimeHub {
       toolOutputs: input.toolOutputs === "preview",
       personShow: input.personShow === "accept",
       userId: input.userId,
-      workspaceId: input.workspaceId,
     });
-    const set = this.#subscribers.get(input.workspaceId) ?? new Set<Subscriber>();
-    set.add(subscriber);
-    this.#subscribers.set(input.workspaceId, set);
-
+    this.#subscribers.add(subscriber);
     try {
-      const membership = await this.#store.workspaceMembershipForUser(
-        input.workspaceId,
-        input.userId,
-      );
-      if (!membership || membership.state !== "active") {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Workspace realtime subscription is not authorized",
-        });
+      await requirePersonalOwner(this.#store.database, input.userId);
+      const identity = await this.#store.database
+        .selectFrom("deploymentEventState")
+        .select("deploymentId")
+        .executeTakeFirstOrThrow();
+      if (input.deploymentId !== identity.deploymentId) {
+        subscriber.resync("cursor-expired");
+        return remove;
       }
       const messages: HostToClientMessage[] = [];
       let cursor: Sequence;
       if (compareSequence(input.afterSequence, zeroSequence) === 0) {
-        const snapshot = await this.#store.workspaceSnapshot(input.workspaceId, {
+        const snapshot = await this.#store.deploymentSnapshot({
           listedOnly: true,
-          ...(input.placeEvents === "include" ? { placeEvents: "include" } : {}),
-          ...(input.snapshotMessages === "omit" ? { omitMessages: true } : {}),
+          ...(input.placeEvents === "include"
+            ? {
+                placeEvents: "include",
+              }
+            : {}),
+          ...(input.snapshotMessages === "omit"
+            ? {
+                omitMessages: true,
+              }
+            : {}),
           viewerId: input.userId,
         });
-        messages.push({ snapshot, type: "host.snapshot" });
+        messages.push({
+          snapshot,
+          type: "host.snapshot",
+        });
         cursor = snapshot.sequence;
       } else {
-        const head = await this.#store.workspaceHead(input.workspaceId);
+        const head = await this.#store.deploymentHead();
         if (compareSequence(input.afterSequence, head) > 0) {
           subscriber.resync("cursor-ahead");
           return remove;
@@ -760,7 +780,7 @@ export class RealtimeHub {
         let replayBytes = 0;
         let replayEvents = 0;
         while (compareSequence(cursor, head) < 0) {
-          const window = await this.#store.eventsAfterWindow(input.workspaceId, cursor, {
+          const window = await this.#store.eventsAfterWindow(cursor, {
             maxBytes: this.#maxWireBytes,
             maxItems: Math.min(250, this.#maxReplayEvents - replayEvents + 1),
             throughSequence: head,
@@ -779,7 +799,11 @@ export class RealtimeHub {
           }
           if (window.events.length > 0) {
             for (const events of boundedEventBatches(window.events, this.#maxWireBytes)) {
-              messages.push({ events, type: "host.events" });
+              messages.push({
+                events,
+                type: "host.events",
+                throughSequence: events.at(-1)!.sequence,
+              });
             }
           }
           cursor = window.scannedThrough;
@@ -795,14 +819,16 @@ export class RealtimeHub {
         let afterThreadId: ThreadId | undefined;
         do {
           const page = await this.#store.notificationState.readMarkerPage({
-            workspaceId: input.workspaceId,
             userId: input.userId,
-            ...(afterThreadId ? { afterThreadId } : {}),
+            ...(afterThreadId
+              ? {
+                  afterThreadId,
+                }
+              : {}),
           });
           if (page.markers.length)
             await input.sink.send({
               type: "host.read-markers",
-              workspaceId: input.workspaceId,
               markers: [...page.markers],
             });
           afterThreadId = page.nextAfterThreadId ?? undefined;
@@ -821,23 +847,9 @@ export class RealtimeHub {
           for (let index = 0; index < states.length; index += 100)
             await input.sink.send({
               type: "host.read-states",
-              workspaceId: input.workspaceId,
               states: states.slice(index, index + 100),
             });
         }
-        let afterWorkspaceId: WorkspaceId | undefined;
-        do {
-          const page = await this.#store.notificationState.workspacePreferencePage({
-            userId: input.userId,
-            ...(afterWorkspaceId ? { afterWorkspaceId } : {}),
-          });
-          if (page.preferences.length)
-            await input.sink.send({
-              type: "host.notification-preferences",
-              preferences: [...page.preferences],
-            });
-          afterWorkspaceId = page.nextAfterWorkspaceId ?? undefined;
-        } while (afterWorkspaceId);
       });
       return () => subscriber.close();
     } catch (error) {
@@ -845,13 +857,8 @@ export class RealtimeHub {
       throw error;
     }
   }
-
-  watchNode(input: {
-    readonly sinkId: string;
-    readonly workspaceId: WorkspaceId;
-    readonly nodeId: ExecutionNodeId | null;
-  }): void {
-    const subscriber = [...(this.#subscribers.get(input.workspaceId) ?? [])].find(
+  watchNode(input: { readonly sinkId: string; readonly nodeId: ExecutionNodeId | null }): void {
+    const subscriber = [...this.#subscribers].find(
       (subscriber) => subscriber.sink.id === input.sinkId,
     );
     if (!subscriber)
@@ -864,8 +871,8 @@ export class RealtimeHub {
 
   /**
    * Notes an authenticated client socket for the life of that socket. It is
-   * independent of any Workspace subscription, because the messages addressed
-   * this way are not about a Workspace.
+   * independent of any Deployment subscription, because the messages addressed
+   * this way are not about a Deployment.
    */
   registerConnection(userId: UserId, sessionId: AuthSessionId, sink: RealtimeSink): () => void {
     const sinks = this.#connections.get(userId) ?? new Set<RealtimeSink>();
@@ -889,7 +896,6 @@ export class RealtimeHub {
       if (currentSession?.sinks.size === 0) this.#sessionConnections.delete(sessionId);
     };
   }
-
   closeSession(sessionId: AuthSessionId): void {
     const sinks = this.#sessionConnections.get(sessionId);
     if (!sinks) return;
@@ -897,10 +903,8 @@ export class RealtimeHub {
     const userSinks = this.#connections.get(sinks.userId);
     for (const sink of sinks.sinks) {
       userSinks?.delete(sink);
-      for (const subscribers of this.#subscribers.values()) {
-        for (const subscriber of subscribers) {
-          if (subscriber.sink === sink) subscriber.close();
-        }
+      for (const subscriber of this.#subscribers) {
+        if (subscriber.sink === sink) subscriber.close();
       }
       sink.close(4003, "Session ended");
     }
@@ -946,44 +950,54 @@ export class RealtimeHub {
       for (const sink of sinks) void sink.send(message).catch(() => undefined);
     }
   }
-
   publish(event: AgentEvent): void {
     for (const observer of this.#observers) observer(event);
-    for (const subscriber of this.#subscribers.get(event.workspaceId) ?? []) {
+    for (const subscriber of this.#subscribers) {
       subscriber.offer(event);
-      if (changesReadState(event.type))
-        this.#refreshReadStates(event.workspaceId, subscriber.userId, event.threadId);
+      if (changesReadState(event.type)) this.#refreshReadStates(subscriber.userId, event.threadId);
     }
     // Whom a Request waits on can be someone following none of this
-    // Workspace's Threads — the person whose task handed the work out — so
+    // Deployment's Threads — the person whose task handed the work out — so
     // every client rereads its own list instead of hoping it was subscribed.
-    if (changesWaitingRequests(event.type)) this.broadcast({ type: "host.requests-changed" });
-    // A task list spans every Workspace its reader belongs to, so it is reread
-    // whole on every client; the reread is where membership is asked.
-    if (changesTasks(event)) this.broadcast({ type: "host.tasks-changed" });
+    if (changesWaitingRequests(event.type))
+      this.broadcast({
+        type: "host.requests-changed",
+      });
+    // A task list spans every Deployment its reader belongs to, so it is reread
+
+    if (changesTasks(event))
+      this.broadcast({
+        type: "host.tasks-changed",
+      });
   }
 
-  /** Forwards one Run's live progress to the Workspace's subscribers. */
+  /** Forwards one Run's live progress to the Deployment's subscribers. */
   publishLive(frame: LiveFrame): void {
-    for (const subscriber of this.#subscribers.get(frame.progress.workspaceId) ?? []) {
+    for (const subscriber of this.#subscribers) {
       subscriber.offerLive(frame);
     }
   }
-
-  publishReadState(userId: UserId, workspaceId: WorkspaceId, state: ThreadReadState): void {
-    for (const subscriber of this.#subscribers.get(workspaceId) ?? []) {
+  publishReadState(userId: UserId, state: ThreadReadState): void {
+    for (const subscriber of this.#subscribers) {
       if (subscriber.userId === userId)
-        subscriber.enqueueMessage({ type: "host.read-states", workspaceId, states: [state] });
+        subscriber.enqueueMessage({
+          type: "host.read-states",
+          states: [state],
+        });
     }
   }
-
   async showToPerson(
     userId: UserId,
-    message: Extract<HostToClientMessage, { type: "host.show" }>,
+    message: Extract<
+      HostToClientMessage,
+      {
+        type: "host.show";
+      }
+    >,
   ): Promise<number> {
     const sinks = new Set<RealtimeSink>();
     const deliveries: Promise<boolean>[] = [];
-    for (const subscriber of this.#subscribers.get(message.workspaceId) ?? []) {
+    for (const subscriber of this.#subscribers) {
       if (
         subscriber.userId !== userId ||
         !subscriber.acceptsPersonShow ||
@@ -996,47 +1010,42 @@ export class RealtimeHub {
     return (await Promise.all(deliveries)).filter(Boolean).length;
   }
 
-  /** This reader's task placement or Workspace membership changed. */
   publishViewerTasksChanged(userId: UserId): void {
-    this.#sendViewerMessage(userId, { type: "host.tasks-changed" });
+    this.#sendViewerMessage(userId, {
+      type: "host.tasks-changed",
+    });
   }
-
   publishConnectionsChanged(userId: UserId): void {
-    const message = { type: "host.connections-changed" } as const;
+    const message = {
+      type: "host.connections-changed",
+    } as const;
     for (const observer of this.#observers) observer(message);
     this.#sendViewerMessage(userId, message);
   }
-
-  publishNotificationPreference(userId: UserId, preference: WorkspaceNotificationPreference): void {
-    this.#sendViewerMessage(userId, {
-      type: "host.notification-preferences",
-      preferences: [preference],
-    });
-  }
-
   #sendViewerMessage(userId: UserId, message: HostToClientMessage): void {
     for (const sink of this.#connections.get(userId) ?? []) {
       let queued = false;
-      for (const subscribers of this.#subscribers.values())
-        for (const subscriber of subscribers) {
-          if (subscriber.sink === sink) {
-            subscriber.enqueueMessage(message);
-            queued = true;
-          }
+      for (const subscriber of this.#subscribers) {
+        if (subscriber.sink === sink) {
+          subscriber.enqueueMessage(message);
+          queued = true;
         }
+      }
       if (!queued)
         void sink.send(message).catch(() => sink.close(1011, "Viewer state delivery failed"));
     }
   }
-
-  #refreshReadStates(workspaceId: WorkspaceId, userId: UserId, threadId: ThreadId): void {
-    const key = `${workspaceId}:${userId}`;
+  #refreshReadStates(userId: UserId, threadId: ThreadId): void {
+    const key = userId;
     const existing = this.#readStateRefreshes.get(key);
     if (existing) {
       existing.threadIds.add(threadId);
       return;
     }
-    const refresh = { workspaceId, userId, threadIds: new Set([threadId]) };
+    const refresh = {
+      userId,
+      threadIds: new Set([threadId]),
+    };
     this.#readStateRefreshes.set(key, refresh);
     // One read for a burst of published changes and a viewer, shared by all
     // their devices. Token deltas never enter this queue.
@@ -1044,10 +1053,12 @@ export class RealtimeHub {
       void this.#flushReadStates(key, refresh);
     });
   }
-
   async #flushReadStates(
     key: string,
-    refresh: { workspaceId: WorkspaceId; userId: UserId; threadIds: Set<ThreadId> },
+    refresh: {
+      userId: UserId;
+      threadIds: Set<ThreadId>;
+    },
   ): Promise<void> {
     try {
       while (refresh.threadIds.size) {
@@ -1057,11 +1068,10 @@ export class RealtimeHub {
           userId: refresh.userId,
           threadIds: ids,
         });
-        for (const subscriber of this.#subscribers.get(refresh.workspaceId) ?? []) {
+        for (const subscriber of this.#subscribers) {
           if (subscriber.userId === refresh.userId)
             subscriber.enqueueMessage({
               type: "host.read-states",
-              workspaceId: refresh.workspaceId,
               states: [...states],
             });
         }
@@ -1069,19 +1079,18 @@ export class RealtimeHub {
     } catch {
       // A failed projection must reconnect and re-establish its authoritative
       // snapshot; keeping a synchronized stream would silently lose the update.
-      for (const subscriber of this.#subscribers.get(refresh.workspaceId) ?? [])
+      for (const subscriber of this.#subscribers)
         if (subscriber.userId === refresh.userId) subscriber.resync("cursor-expired");
     } finally {
       this.#readStateRefreshes.delete(key);
     }
   }
-
-  publishTriggersChanged(workspaceId: WorkspaceId): void {
-    this.#publishWorkspaceNotice({ type: "host.triggers-changed", workspaceId });
+  publishTriggersChanged(): void {
+    this.#publishDeploymentNotice({
+      type: "host.triggers-changed",
+    });
   }
-
   publishBrowserSessionsChanged(
-    workspaceId: WorkspaceId,
     viewerUserIds: readonly UserId[],
     source: BootstrapNoticeSource = "unspecified",
   ): void {
@@ -1089,47 +1098,41 @@ export class RealtimeHub {
     for (const userId of viewerUserIds) {
       this.#sendViewerMessage(userId, {
         type: "host.browser-sessions-changed",
-        workspaceId,
       });
     }
   }
 
   /**
-   * These conversations' visible browser usage changed. Their Workspace's
+   * These conversations' visible browser usage changed. Their Deployment's
    * subscribers reread usage only for the conversations they show.
    */
-  publishBrowserUsageChanged(workspaceId: WorkspaceId, threadIds: readonly ThreadId[]): void {
+  publishBrowserUsageChanged(threadIds: readonly ThreadId[]): void {
     if (threadIds.length === 0) return;
     for (const notice of wireNotices({
       threadIds: [...new Set(threadIds)],
       type: "host.browser-usage-changed",
-      workspaceId,
     })) {
-      this.#publishWorkspaceNotice(notice);
+      this.#publishDeploymentNotice(notice);
     }
   }
-
-  #publishWorkspaceNotice(notice: WorkspaceNotice): void {
+  #publishDeploymentNotice(notice: DeploymentNotice): void {
     for (const observer of this.#observers) observer(notice);
-    for (const subscriber of this.#subscribers.get(notice.workspaceId) ?? []) {
+    for (const subscriber of this.#subscribers) {
       subscriber.enqueueMessage(notice);
     }
   }
-
-  closeUserWorkspace(userId: UserId, workspaceId: WorkspaceId): void {
-    for (const subscriber of this.#subscribers.get(workspaceId) ?? []) {
+  closeUser(userId: UserId): void {
+    for (const subscriber of this.#subscribers) {
       if (subscriber.userId === userId) {
-        subscriber.sink.close(4003, "Workspace access revoked");
+        subscriber.sink.close(4003, "Deployment access revoked");
         subscriber.close();
       }
     }
   }
 }
-
 function eventBytes(event: AgentEvent): number {
   return Buffer.byteLength(JSON.stringify(event), "utf8");
 }
-
 function boundedEventBatches(events: readonly AgentEvent[], maxWireBytes: number): AgentEvent[][] {
   const batches: AgentEvent[][] = [];
   let batch: AgentEvent[] = [];
@@ -1150,9 +1153,12 @@ function boundedEventBatches(events: readonly AgentEvent[], maxWireBytes: number
   if (batch.length > 0) batches.push(batch);
   return batches;
 }
-
 const hostEventsEnvelopeBytes = Buffer.byteLength(
-  JSON.stringify({ events: [], type: "host.events" }),
+  JSON.stringify({
+    events: [],
+    type: "host.events",
+    throughSequence: zeroSequence,
+  }),
   "utf8",
 );
 
@@ -1190,7 +1196,6 @@ function changesTasks(event: AgentEvent): boolean {
       return changesReadState(event.type);
   }
 }
-
 function changesReadState(type: AgentEvent["type"]): boolean {
   return (
     type === "message.created" ||

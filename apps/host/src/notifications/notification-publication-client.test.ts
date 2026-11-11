@@ -8,7 +8,6 @@ import {
   NotificationPublicationClient,
   type NotificationPublicationTarget,
 } from "./notification-publication-client.js";
-
 const deploymentId = createId("deployment");
 const hostInstanceId = createId("hostInstance");
 const accountId = `acct_${crypto.randomUUID()}`;
@@ -16,7 +15,6 @@ const target: NotificationPublicationTarget = {
   controlApiOrigin: new URL("https://accounts.opensteer.invalid"),
   hostCredential: `osc_${"a".repeat(43)}`,
 };
-
 function entry(overrides: Partial<NotificationPublication> = {}): NotificationPublication {
   return {
     title: "Private title",
@@ -32,18 +30,24 @@ function entry(overrides: Partial<NotificationPublication> = {}): NotificationPu
     sequence: "42",
     threadId: createId("thread"),
     userId: createId("user"),
-    workspaceId: createId("workspace"),
     ...overrides,
   };
 }
-
 function acknowledgement(notificationId: string): Response {
-  return new Response(JSON.stringify({ accepted: true, deliveries: 1, notificationId }), {
-    headers: { "content-type": "application/json" },
-    status: 202,
-  });
+  return new Response(
+    JSON.stringify({
+      accepted: true,
+      deliveries: 1,
+      notificationId,
+    }),
+    {
+      headers: {
+        "content-type": "application/json",
+      },
+      status: 202,
+    },
+  );
 }
-
 function clientAnswering(response: () => Response): NotificationPublicationClient {
   return new NotificationPublicationClient({
     deploymentId,
@@ -52,7 +56,6 @@ function clientAnswering(response: () => Response): NotificationPublicationClien
     target: async () => target,
   });
 }
-
 describe("NotificationPublicationClient", () => {
   it("seals each recipient installation's decided text with the publication routing bytes", async () => {
     const published = entry();
@@ -118,15 +121,24 @@ describe("NotificationPublicationClient", () => {
             "utf8",
           ),
         ),
-      ).toEqual({ version: 1, title: published.title, body: published.body });
+      ).toEqual({
+        version: 1,
+        title: published.title,
+        body: published.body,
+      });
     }
     expect(
-      HostNotificationPublicationSchema.safeParse({ ...publication, expiresAt: "invalid" }).success,
+      HostNotificationPublicationSchema.safeParse({
+        ...publication,
+        expiresAt: "invalid",
+      }).success,
     ).toBe(false);
     const first = publication.previews![0]!;
     expect(
-      HostNotificationPublicationSchema.safeParse({ ...publication, previews: [first, first] })
-        .success,
+      HostNotificationPublicationSchema.safeParse({
+        ...publication,
+        previews: [first, first],
+      }).success,
     ).toBe(false);
     expect(
       HostNotificationPublicationSchema.safeParse({
@@ -141,7 +153,6 @@ describe("NotificationPublicationClient", () => {
       }).success,
     ).toBe(false);
   });
-
   it("falls back to the generic alert when an Account without previews rejects them", async () => {
     const published = entry();
     const bodies: Record<string, unknown>[] = [];
@@ -164,7 +175,9 @@ describe("NotificationPublicationClient", () => {
         bodies.push(body);
         // The Account before sealed previews parsed publications strictly.
         return "previews" in body
-          ? new Response("", { status: 400 })
+          ? new Response("", {
+              status: 400,
+            })
           : acknowledgement(published.id);
       },
     });
@@ -174,14 +187,15 @@ describe("NotificationPublicationClient", () => {
         recipientAccountIds: [accountId],
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ status: "published" });
+    ).resolves.toEqual({
+      status: "published",
+    });
     expect(bodies).toHaveLength(2);
     expect(bodies[1]).not.toHaveProperty("previews");
     expect(bodies[1]).toEqual(
       Object.fromEntries(Object.entries(bodies[0]!).filter(([key]) => key !== "previews")),
     );
   });
-
   it("posts identifiers and the audience to the Account, and nothing else", async () => {
     const published = entry({
       kind: "reply-published",
@@ -189,23 +203,29 @@ describe("NotificationPublicationClient", () => {
       requestId: null,
       runId: createId("run"),
     });
-    const calls: { readonly body: string; readonly init: RequestInit; readonly url: string }[] = [];
+    const calls: {
+      readonly body: string;
+      readonly init: RequestInit;
+      readonly url: string;
+    }[] = [];
     const client = new NotificationPublicationClient({
       deploymentId,
       fetch: async (input, init) => {
-        calls.push({ body: String(init?.body ?? ""), init: init ?? {}, url: input.toString() });
+        calls.push({
+          body: String(init?.body ?? ""),
+          init: init ?? {},
+          url: input.toString(),
+        });
         return acknowledgement(published.id);
       },
       hostInstanceId,
       target: async () => target,
     });
-
     await client.publish({
       entry: published,
       recipientAccountIds: [accountId],
       signal: new AbortController().signal,
     });
-
     expect(calls[0]?.url).toBe("https://accounts.opensteer.invalid/v1/host/notifications");
     expect(calls[0]?.init.method).toBe("POST");
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe(
@@ -227,10 +247,8 @@ describe("NotificationPublicationClient", () => {
       schemaVersion: 1,
       sequence: "42",
       threadId: published.threadId,
-      workspaceId: published.workspaceId,
     });
   });
-
   it("omits the message for a notification that names none", async () => {
     const published = entry();
     let body: unknown;
@@ -243,20 +261,25 @@ describe("NotificationPublicationClient", () => {
       hostInstanceId,
       target: async () => target,
     });
-
     await client.publish({
       entry: published,
       recipientAccountIds: [accountId],
       signal: new AbortController().signal,
     });
-
     expect(body).not.toHaveProperty("messageId");
-    expect(body).toMatchObject({ kind: "request-opened", requestId: published.requestId });
+    expect(body).toMatchObject({
+      kind: "request-opened",
+      requestId: published.requestId,
+    });
   });
-
   it.each([400, 401, 403, 404, 409, 302])("does not retry HTTP %i", async (status) => {
     await expect(
-      clientAnswering(() => new Response("", { status })).publish({
+      clientAnswering(
+        () =>
+          new Response("", {
+            status,
+          }),
+      ).publish({
         entry: entry(),
         recipientAccountIds: [accountId],
         signal: new AbortController().signal,
@@ -268,7 +291,12 @@ describe("NotificationPublicationClient", () => {
   });
   it.each([429, 500, 503])("retries HTTP %i", async (status) => {
     await expect(
-      clientAnswering(() => new Response("", { status })).publish({
+      clientAnswering(
+        () =>
+          new Response("", {
+            status,
+          }),
+      ).publish({
         entry: entry(),
         recipientAccountIds: [accountId],
         signal: new AbortController().signal,
@@ -293,7 +321,16 @@ describe("NotificationPublicationClient", () => {
   it("warns when the Account has no push configured", async () => {
     const client = clientAnswering(
       () =>
-        new Response(JSON.stringify({ error: { reason: "push-not-configured" } }), { status: 404 }),
+        new Response(
+          JSON.stringify({
+            error: {
+              reason: "push-not-configured",
+            },
+          }),
+          {
+            status: 404,
+          },
+        ),
     );
     await expect(
       client.publish({
@@ -301,7 +338,9 @@ describe("NotificationPublicationClient", () => {
         recipientAccountIds: [accountId],
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ status: "push-not-configured" });
+    ).resolves.toEqual({
+      status: "push-not-configured",
+    });
   });
   it("quietly skips a Host with no Account channel", async () => {
     const client = new NotificationPublicationClient({
@@ -318,6 +357,8 @@ describe("NotificationPublicationClient", () => {
         recipientAccountIds: [accountId],
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ status: "no-target" });
+    ).resolves.toEqual({
+      status: "no-target",
+    });
   });
 });

@@ -1,10 +1,10 @@
-import { withDatabaseTransaction } from "./connection.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import "./connection.js";
 import { randomBytes } from "node:crypto";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-// The projection carries membership only — which Account subjects this Host
 // currently exposes. The Host's signed identity document is not part of this
 // payload: the Host publishes it separately on every start, so nothing here has
 // to be versioned or requeued when the discovery document format changes.
@@ -19,14 +19,11 @@ export interface AccountDirectoryProjection {
   readonly providerId: string;
   readonly userId: UserId;
 }
-
 export class AccountDirectoryStore {
   readonly #database: Kysely<DatabaseSchema>;
-
   constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
   }
-
   async configureProvider(input: {
     readonly issuer: string;
     readonly providerId: string;
@@ -36,7 +33,7 @@ export class AccountDirectoryStore {
     if (!providerId || providerId.length > 512) {
       throw new TypeError("Account directory provider ID is invalid");
     }
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withPersonalTransaction(this.#database, async (transaction) => {
       await sql`select pg_advisory_xact_lock(hashtextextended('opensteer:account-directory-provider', 0))`.execute(
         transaction,
       );
@@ -68,11 +65,9 @@ export class AccountDirectoryStore {
       `.execute(transaction);
     });
   }
-
   async refreshUser(userId: UserId): Promise<void> {
     await sql`select opensteer_refresh_account_directory_user(${userId})`.execute(this.#database);
   }
-
   async claimPending(
     input: {
       readonly limit?: number;
@@ -83,7 +78,7 @@ export class AccountDirectoryStore {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new TypeError("Account directory claim limit must be between 1 and 100");
     }
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       // `nextAttemptAt` is written by PostgreSQL triggers. Compare it with the
       // database clock as well, avoiding a process/DB clock skew window in
       // which newly committed projections appear not to be ready.
@@ -149,12 +144,16 @@ export class AccountDirectoryStore {
             "userId",
           ])
           .executeTakeFirstOrThrow();
-        claimed.push(projectionFromRow({ ...updated, leaseToken }));
+        claimed.push(
+          projectionFromRow({
+            ...updated,
+            leaseToken,
+          }),
+        );
       }
       return claimed;
     });
   }
-
   async complete(input: {
     readonly accountId: string;
     readonly generation: number;
@@ -178,7 +177,6 @@ export class AccountDirectoryStore {
       .executeTakeFirst();
     return result.numUpdatedRows === 1n;
   }
-
   async fail(input: {
     readonly accountId: string;
     readonly error: string;
@@ -206,7 +204,6 @@ export class AccountDirectoryStore {
     return result.numUpdatedRows === 1n;
   }
 }
-
 function normalizedIssuer(value: string): string {
   const url = new URL(value);
   if (
@@ -220,7 +217,6 @@ function normalizedIssuer(value: string): string {
   }
   return url.toString().replace(/\/$/u, "");
 }
-
 function projectionFromRow(row: {
   readonly accountId: string;
   readonly attempts: number;
@@ -233,11 +229,21 @@ function projectionFromRow(row: {
 }): AccountDirectoryProjection {
   const generation = Number(row.generation);
   if (!Number.isSafeInteger(generation) || generation < 1) {
-    throw new OpensteerError({ code: "internal", message: "Directory generation is invalid" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Directory generation is invalid",
+    });
   }
   if (!Number.isSafeInteger(row.attempts) || row.attempts < 1) {
-    throw new OpensteerError({ code: "internal", message: "Directory attempts are invalid" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Directory attempts are invalid",
+    });
   }
   const { updatedAt, ...projection } = row;
-  return { ...projection, generation, observedAt: updatedAt.toISOString() };
+  return {
+    ...projection,
+    generation,
+    observedAt: updatedAt.toISOString(),
+  };
 }

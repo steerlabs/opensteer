@@ -1,23 +1,21 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import * as commandStore from "./command-store.js";
 import { resendableControlCommandTypes } from "./command-delivery.js";
 import {
   type EnvironmentId,
   type RunId,
   type ThreadId,
-  type WorkspaceId,
   type Sequence,
   type AgentEvent,
   type RunFailure,
   type RunnerId,
-  type UserId,
   createId,
   OpensteerError,
-  nonTerminalRunStatuses,
 } from "@opensteer/core";
 import { type Kysely, type Transaction, sql } from "kysely";
 import {
@@ -28,22 +26,19 @@ import {
 } from "./schema.js";
 import {
   type ChannelLinks,
-  lockWorkspaceRow,
   lockThreadRow,
   jsonValue,
   principalIdForUser,
   returnRunToQueue,
   threadExecutionIsAvailableToUser,
-  safeGeneration,
 } from "./store-primitives.js";
 import { endStoppedUnconfirmedRun, finalizeRunTransaction } from "./run-finalization.js";
 import { revokeRunGrants, runWasStopped, type RevokedRunGrant } from "./run-grants.js";
 import { cancelPending } from "./request-store.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";
-import { ensureQueuedRun, settlePausedConversation } from "./thread-inbox.js";
+import { ensureQueuedRun } from "./thread-inbox.js";
 import { projectThreadState } from "./thread-status.js";
-
 export interface RecoveredRunTarget {
   readonly environmentId: EnvironmentId;
   readonly runId: RunId;
@@ -57,21 +52,25 @@ export interface AnnouncedExecution {
   readonly nextOrdinal: number;
   readonly runId: RunId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
-
 export interface ResumedExecution {
   readonly afterSequence: Sequence;
   readonly runId: RunId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
 
 /** Whether an announced Run continues on its Runner's new connection. */
 export type ExecutionAttachment =
-  | { readonly nextOrdinal: number; readonly runId: RunId; readonly status: "attached" }
-  | { readonly reason: string; readonly runId: RunId; readonly status: "revoked" };
-
+  | {
+      readonly nextOrdinal: number;
+      readonly runId: RunId;
+      readonly status: "attached";
+    }
+  | {
+      readonly reason: string;
+      readonly runId: RunId;
+      readonly status: "revoked";
+    };
 export interface RunRecoveryOutcome {
   readonly revokedGrants?: readonly RevokedRunGrant[];
   readonly events: readonly AgentEvent[];
@@ -84,103 +83,45 @@ const executingRunStatuses = ["starting", "running", "waiting"] as const;
 
 /** Provider-session states of a binding a Runner may still be executing under. */
 const boundSessionStatuses = ["starting", "ready", "running"] as const;
-
-type AbandonedRunRecovery =
-  | {
-      readonly activeRunIds: readonly RunId[];
-      readonly code: "runner_disconnected";
-      readonly kind: "runner-disconnect";
-      readonly message: string;
-      readonly runnerBootId: string;
-      readonly runnerId: RunnerId;
-    }
-  | {
-      readonly code: "workspace_access_revoked";
-      readonly kind: "membership-revocation";
-      readonly membershipGenerationCutoff?: number;
-      readonly message: string;
-      readonly userId: UserId;
-      readonly workspaceId: WorkspaceId;
-    }
-  | {
-      readonly code: "workspace_access_revoked";
-      readonly kind: "workspace-deletion";
-      readonly message: string;
-      readonly workspaceId: WorkspaceId;
-    };
-
+type AbandonedRunRecovery = {
+  readonly activeRunIds: readonly RunId[];
+  readonly code: "runner_disconnected";
+  readonly kind: "runner-disconnect";
+  readonly message: string;
+  readonly runnerBootId: string;
+  readonly runnerId: RunnerId;
+};
 async function recoverAbandonedRuns(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   recovery: AbandonedRunRecovery,
 ): Promise<RunRecoveryOutcome> {
-  const activeStatuses =
-    recovery.kind === "membership-revocation" || recovery.kind === "workspace-deletion"
-      ? nonTerminalRunStatuses
-      : (["starting", "running", "waiting"] as const);
+  const activeStatuses = ["starting", "running", "waiting"] as const;
   const sessionStatuses = ["starting", "ready", "running"] as const;
   // Command status is a delivery receipt, not execution liveness. A Runner can
   // accept the execute command (making it succeeded) and then disappear while
   // the Run remains active; recovery is therefore fenced by the Run and its
   // exact provider-session binding instead of a stale command-state proxy.
-  const candidates =
-    recovery.kind === "membership-revocation"
-      ? await database
-          .selectFrom("runs")
-          .innerJoin("threads", "threads.id", "runs.threadId")
-          .select("runs.id")
-          .distinct()
-          .where("runs.status", "in", activeStatuses)
-          .where("runs.requestedBy", "=", recovery.userId)
-          .$if(recovery.membershipGenerationCutoff !== undefined, (query) =>
-            query.where(
-              "runs.membershipGeneration",
-              "<=",
-              String(recovery.membershipGenerationCutoff!),
-            ),
-          )
-          .where("threads.workspaceId", "=", recovery.workspaceId)
-          .orderBy("runs.id", "asc")
-          .execute()
-      : recovery.kind === "workspace-deletion"
-        ? await database
-            .selectFrom("runs")
-            .innerJoin("threads", "threads.id", "runs.threadId")
-            .select("runs.id")
-            .distinct()
-            .where("runs.status", "in", activeStatuses)
-            .where("threads.workspaceId", "=", recovery.workspaceId)
-            .orderBy("runs.id", "asc")
-            .execute()
-        : recovery.kind === "runner-disconnect"
-          ? await database
-              .selectFrom("runs")
-              .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
-              .select("runs.id")
-              .distinct()
-              .where("runs.status", "in", activeStatuses)
-              .where("runs.id", "in", recovery.activeRunIds)
-              .where("providerSessions.active", "=", true)
-              .where("providerSessions.runnerId", "=", recovery.runnerId)
-              .where("providerSessions.runnerBootId", "=", recovery.runnerBootId)
-              .where("providerSessions.status", "in", sessionStatuses)
-              .orderBy("runs.id", "asc")
-              .execute()
-          : await database
-              .selectFrom("runs")
-              .select("runs.id")
-              .distinct()
-              .where("runs.status", "in", activeStatuses)
-              .orderBy("runs.id", "asc")
-              .execute();
+  const candidates = await database
+    .selectFrom("runs")
+    .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
+    .select("runs.id")
+    .distinct()
+    .where("runs.status", "in", activeStatuses)
+    .where("runs.id", "in", [...recovery.activeRunIds])
+    .where("providerSessions.active", "=", true)
+    .where("providerSessions.runnerId", "=", recovery.runnerId)
+    .where("providerSessions.runnerBootId", "=", recovery.runnerBootId)
+    .where("providerSessions.status", "in", sessionStatuses)
+    .orderBy("runs.id")
+    .execute();
   const events: AgentEvent[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
   for (const candidate of candidates) {
-    const recovered = await withDatabaseTransaction(database, async (transaction) => {
+    const recovered = await withPersonalTransaction(database, async (transaction) => {
       // Runner events and recovery both lock the Run first. Whichever terminal
       // outcome wins that lock is the only one projected or published. Recover
-      // one Run per transaction so unrelated Runs in one workspace cannot form
-      // a Run-lock/workspace-sequence deadlock with terminal Runner events.
+
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -190,7 +131,6 @@ async function recoverAbandonedRuns(
           "runs.providerSessionId",
           "runs.status",
           "runs.threadId",
-          "threads.workspaceId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
@@ -199,7 +139,6 @@ async function recoverAbandonedRuns(
       if (!run || !new Set<string>(activeStatuses).has(run.status)) {
         return null;
       }
-      await lockWorkspaceRow(transaction, run.workspaceId);
       await lockThreadRow(transaction, run.threadId);
       const session = await transaction
         .selectFrom("providerSessions")
@@ -228,16 +167,17 @@ async function recoverAbandonedRuns(
         failure,
         links,
         source: "host",
-        queuedInputCancellation:
-          recovery.kind === "membership-revocation" || recovery.kind === "workspace-deletion"
-            ? "authority-cohort"
-            : "seed-input",
+        queuedInputCancellation: "seed-input",
         runId: run.id,
         status: "failed",
       });
       return {
         events,
-        target: { environmentId: run.environmentId, runId: run.id, threadId: run.threadId },
+        target: {
+          environmentId: run.environmentId,
+          runId: run.id,
+          threadId: run.threadId,
+        },
       };
     });
     if (recovered) {
@@ -245,9 +185,11 @@ async function recoverAbandonedRuns(
       terminatedRuns.push(recovered.target);
     }
   }
-  return { events, terminatedRuns };
+  return {
+    events,
+    terminatedRuns,
+  };
 }
-
 export async function failActiveRunsForRunnerDisconnect(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -257,7 +199,11 @@ export async function failActiveRunsForRunnerDisconnect(
     readonly runnerId: RunnerId;
   },
 ): Promise<RunRecoveryOutcome> {
-  if (input.activeRunIds.length === 0) return { events: [], terminatedRuns: [] };
+  if (input.activeRunIds.length === 0)
+    return {
+      events: [],
+      terminatedRuns: [],
+    };
   return recoverAbandonedRuns(database, links, {
     activeRunIds: input.activeRunIds,
     code: "runner_disconnected",
@@ -285,16 +231,15 @@ export async function failRunForRefusedRunnerEvent(
     readonly runnerId: RunnerId;
   },
 ): Promise<readonly AgentEvent[]> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
-      .select(["runs.providerSessionId", "runs.status", "runs.threadId", "threads.workspaceId"])
+      .select(["runs.providerSessionId", "runs.status", "runs.threadId"])
       .where("runs.id", "=", input.runId)
       .forNoKeyUpdate("runs")
       .executeTakeFirst();
     if (!run || !["starting", "running", "waiting"].includes(run.status)) return [];
-    await lockWorkspaceRow(transaction, run.workspaceId);
     await lockThreadRow(transaction, run.threadId);
     const session = await transaction
       .selectFrom("providerSessions")
@@ -330,7 +275,6 @@ export async function failRunForRefusedRunnerEvent(
     });
   });
 }
-
 export async function recoverThreadWorkQueues(
   database: Kysely<DatabaseSchema>,
 ): Promise<readonly AgentEvent[]> {
@@ -345,7 +289,7 @@ export async function recoverThreadWorkQueues(
   const events: AgentEvent[] = [];
   for (const candidate of obsolete) {
     events.push(
-      ...(await withDatabaseTransaction(database, async (transaction) => {
+      ...(await withPersonalTransaction(database, async (transaction) => {
         const run = await transaction
           .selectFrom("runs")
           .selectAll()
@@ -353,19 +297,19 @@ export async function recoverThreadWorkQueues(
           .forNoKeyUpdate()
           .executeTakeFirstOrThrow();
         if (run.status !== "queued") return [];
-        const observed = await transaction
-          .selectFrom("threads")
-          .select("workspaceId")
-          .where("id", "=", run.threadId)
-          .executeTakeFirstOrThrow();
-        await lockWorkspaceRow(transaction, observed.workspaceId);
         await lockThreadRow(transaction, run.threadId);
-        await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+        await lockRunProjectionRows(transaction, {
+          runIds: [run.id],
+          threadIds: [run.threadId],
+        });
         const now = new Date();
         await recordPersonWaited(transaction, run.id);
         await transaction
           .updateTable("runs")
-          .set({ status: "interrupted", completedAt: now })
+          .set({
+            status: "interrupted",
+            completedAt: now,
+          })
           .where("id", "=", run.id)
           .execute();
         await transaction
@@ -389,32 +333,39 @@ export async function recoverThreadWorkQueues(
         if (seedMessage.kind !== "run-result" && seedMessage.kind !== "continuation") {
           await transaction
             .updateTable("causalChains")
-            .set({ usedAutonomousRuns: sql`greatest(used_autonomous_runs - 1, 0)` })
+            .set({
+              usedAutonomousRuns: sql`greatest(used_autonomous_runs - 1, 0)`,
+            })
             .where("id", "=", run.causalChainId)
             .execute();
         }
-        const event = await appendHostWorkspaceEvent(transaction, {
-          data: { status: "interrupted" },
+        const event = await appendHostDeploymentEvent(transaction, {
+          data: {
+            status: "interrupted",
+          },
           environmentId: run.environmentId,
           runId: run.id,
           threadId: run.threadId,
           type: "run.interrupted",
-          workspaceId: observed.workspaceId,
         });
-        const membership = await transaction
-          .selectFrom("workspaceMemberships")
-          .select(["generation", "state"])
-          .where("workspaceId", "=", observed.workspaceId)
-          .where("userId", "=", run.requestedBy)
-          .executeTakeFirst();
-        const reportAuthorityCurrent =
-          membership?.state === "active" && membership.generation === run.membershipGeneration;
+        const reportAuthorityCurrent = await threadExecutionIsAvailableToUser(
+          transaction,
+          run.threadId,
+          run.requestedBy,
+        );
         const unconfirmedReports = await transaction
           .updateTable("threadInputs")
           .set(
             reportAuthorityCurrent
-              ? { state: "unknown", updatedAt: now }
-              : { cancelReason: "membership-changed", state: "cancelled", updatedAt: now },
+              ? {
+                  state: "unknown",
+                  updatedAt: now,
+                }
+              : {
+                  cancelReason: "owner-unavailable",
+                  state: "cancelled",
+                  updatedAt: now,
+                },
           )
           .where("runId", "=", run.id)
           .where("policy", "=", "report")
@@ -424,13 +375,14 @@ export async function recoverThreadWorkQueues(
         const receiptEvents: AgentEvent[] = [];
         for (const report of unconfirmedReports) {
           receiptEvents.push(
-            await appendHostWorkspaceEvent(transaction, {
-              data: { input: threadInputFromRow(report) },
+            await appendHostDeploymentEvent(transaction, {
+              data: {
+                input: threadInputFromRow(report),
+              },
               environmentId: run.environmentId,
               runId: run.id,
               threadId: run.threadId,
               type: "thread-input.updated",
-              workspaceId: observed.workspaceId,
             }),
           );
         }
@@ -445,21 +397,6 @@ export async function recoverThreadWorkQueues(
       })),
     );
   }
-  // An earlier Host paused a conversation on Stop; nothing pauses one now.
-  const pausedConversations = await database
-    .selectFrom("threads")
-    .select("id")
-    .where("role", "=", "conversation")
-    .where("inputQueuePaused", "=", true)
-    .orderBy("id", "asc")
-    .execute();
-  for (const { id } of pausedConversations) {
-    events.push(
-      ...(await withDatabaseTransaction(database, (transaction) =>
-        settlePausedConversation(transaction, id),
-      )),
-    );
-  }
   // Pending work is itself the durable wake obligation. Reports are absent
   // from this view, including when a Host restarts with a large backlog.
   const pending = await database
@@ -470,13 +407,7 @@ export async function recoverThreadWorkQueues(
     .execute();
   for (const { threadId } of pending) {
     events.push(
-      ...(await withDatabaseTransaction(database, async (transaction) => {
-        const observed = await transaction
-          .selectFrom("threads")
-          .select("workspaceId")
-          .where("id", "=", threadId)
-          .executeTakeFirstOrThrow();
-        await lockWorkspaceRow(transaction, observed.workspaceId);
+      ...(await withPersonalTransaction(database, async (transaction) => {
         await lockThreadRow(transaction, threadId);
         const thread = await transaction
           .selectFrom("threads")
@@ -502,7 +433,11 @@ export async function recoverCommandsAfterHostRestart(
 ): Promise<readonly AgentEvent[]> {
   await database
     .updateTable("commands")
-    .set({ dispatcherId: null, status: "pending", updatedAt: new Date() })
+    .set({
+      dispatcherId: null,
+      status: "pending",
+      updatedAt: new Date(),
+    })
     .where("status", "=", "dispatched")
     .where("type", "in", resendableControlCommandTypes)
     .execute();
@@ -534,7 +469,7 @@ export async function recoverCommandsAfterHostRestart(
     .orderBy("id", "asc")
     .execute();
   for (const { id } of claimed) {
-    const requeued = await withDatabaseTransaction(database, async (transaction) => {
+    const requeued = await withPersonalTransaction(database, async (transaction) => {
       const command = await transaction
         .selectFrom("commands")
         .select("runId")
@@ -551,14 +486,12 @@ export async function recoverCommandsAfterHostRestart(
           "runs.providerSessionId",
           "runs.status",
           "runs.threadId",
-          "threads.workspaceId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", command.runId)
         .forNoKeyUpdate("runs")
         .executeTakeFirst();
       if (run?.status !== "starting") return null;
-      await lockWorkspaceRow(transaction, run.workspaceId);
       await lockThreadRow(transaction, run.threadId);
       const session = await transaction
         .selectFrom("providerSessions")
@@ -583,14 +516,22 @@ export async function recoverCommandsAfterHostRestart(
           queuedInputCancellation: "seed-input",
         });
       if (await runWasStopped(transaction, run.id)) {
-        return endStoppedUnconfirmedRun(transaction, { links, runId: run.id });
+        return endStoppedUnconfirmedRun(transaction, {
+          links,
+          runId: run.id,
+        });
       }
-      await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+      await lockRunProjectionRows(transaction, {
+        runIds: [run.id],
+        threadIds: [run.threadId],
+      });
       const returned = await transaction
         .updateTable("commands")
         .set({
           dispatcherId: null,
-          lastError: jsonValue({ message: "The Host restarted before dispatching this Run" }),
+          lastError: jsonValue({
+            message: "The Host restarted before dispatching this Run",
+          }),
           status: "pending",
           updatedAt: new Date(),
         })
@@ -598,7 +539,9 @@ export async function recoverCommandsAfterHostRestart(
         .where("status", "=", "dispatched")
         .executeTakeFirst();
       if (returned.numUpdatedRows !== 1n) return null;
-      return returnRunToQueue(transaction, { run, workspaceId: run.workspaceId });
+      return returnRunToQueue(transaction, {
+        run,
+      });
     });
     if (requeued) events.push(...requeued);
   }
@@ -633,7 +576,7 @@ export async function attachRunnerExecutions(
 ): Promise<{
   readonly revokedGrants: readonly RevokedRunGrant[];
   readonly events: readonly AgentEvent[];
-  /** Each attached Run, with the sequence its Workspace had reached. */
+
   readonly resumed: readonly ResumedExecution[];
   readonly results: readonly ExecutionAttachment[];
 }> {
@@ -643,24 +586,26 @@ export async function attachRunnerExecutions(
   const resumed: ResumedExecution[] = [];
   const results: ExecutionAttachment[] = [];
   for (const execution of input.executions) {
-    const settled = await withDatabaseTransaction(database, async (transaction) => {
+    const settled = await withPersonalTransaction(database, async (transaction) => {
       const revoked = (reason: string, terminal: readonly AgentEvent[] = []) => ({
         events: terminal,
         revokedGrants: [] as readonly RevokedRunGrant[],
-        result: { reason, runId: execution.runId, status: "revoked" as const },
+        result: {
+          reason,
+          runId: execution.runId,
+          status: "revoked" as const,
+        },
       });
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
         .select([
           "runs.environmentId",
-          "runs.membershipGeneration",
           "runs.nextRunnerOrdinal",
           "runs.providerSessionId",
           "runs.requestedBy",
           "runs.status",
           "runs.threadId",
-          "threads.workspaceId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", execution.runId)
@@ -669,7 +614,6 @@ export async function attachRunnerExecutions(
       if (
         !run ||
         run.threadId !== execution.threadId ||
-        run.workspaceId !== execution.workspaceId ||
         run.environmentId !== execution.environmentId
       ) {
         return revoked("The Host has no such Run");
@@ -677,7 +621,6 @@ export async function attachRunnerExecutions(
       if (!executingRunStatuses.includes(run.status as (typeof executingRunStatuses)[number])) {
         return revoked("The Run has ended");
       }
-      await lockWorkspaceRow(transaction, run.workspaceId);
       await lockThreadRow(transaction, run.threadId);
       const session = await transaction
         .selectFrom("providerSessions")
@@ -705,7 +648,12 @@ export async function attachRunnerExecutions(
         finalizeRunTransaction(transaction, {
           requestCancellationReason: "process-lost",
           completedAt: now,
-          failure: { code, message, retryable: false, status: "failed" },
+          failure: {
+            code,
+            message,
+            retryable: false,
+            status: "failed",
+          },
           links,
           source: "host",
           queuedInputCancellation: "seed-input",
@@ -729,19 +677,12 @@ export async function attachRunnerExecutions(
           revokedGrants: recovered.revokedGrants,
         };
       }
-      if (
-        !(await threadExecutionIsAvailableToUser(
-          transaction,
-          run.threadId,
-          run.requestedBy,
-          safeGeneration(run.membershipGeneration),
-        ))
-      ) {
+      if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
         return revoked(
           "The Run's execution authority ended",
           await fail(
-            "workspace_access_revoked",
-            "Workspace access was revoked before the Run reached a terminal event",
+            "owner_unavailable",
+            "Personal execution authority ended before the Run reached a terminal event",
           ),
         );
       }
@@ -755,20 +696,21 @@ export async function attachRunnerExecutions(
       }
       await transaction
         .updateTable("providerSessions")
-        .set({ leaseExpiresAt: input.leaseExpiresAt, updatedAt: now })
+        .set({
+          leaseExpiresAt: input.leaseExpiresAt,
+          updatedAt: now,
+        })
         .where("id", "=", run.providerSessionId)
         .executeTakeFirstOrThrow();
-      const workspace = await transaction
-        .selectFrom("workspaces")
-        .select("eventSequence")
-        .where("id", "=", run.workspaceId)
+      const state = await transaction
+        .selectFrom("deploymentEventState")
+        .select("sequence")
         .executeTakeFirstOrThrow();
       return {
         resumed: {
-          afterSequence: workspace.eventSequence as Sequence,
+          afterSequence: state.sequence as Sequence,
           runId: execution.runId,
           threadId: run.threadId,
-          workspaceId: run.workspaceId,
         },
         events: [],
         revokedGrants: [],
@@ -797,9 +739,13 @@ export async function attachRunnerExecutions(
   );
   events.push(...lost.events);
   revokedGrants.push(...lost.revokedGrants);
-  return { events, resumed, results, revokedGrants };
+  return {
+    events,
+    resumed,
+    results,
+    revokedGrants,
+  };
 }
-
 async function recoverLostExecutions(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -827,7 +773,7 @@ async function recoverLostExecutions(
   const events: AgentEvent[] = [];
   const revokedGrants: RevokedRunGrant[] = [];
   for (const candidate of candidates) {
-    const recovered = await withDatabaseTransaction(database, async (transaction) => {
+    const recovered = await withPersonalTransaction(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -838,7 +784,6 @@ async function recoverLostExecutions(
           "runs.providerSessionId",
           "runs.status",
           "runs.threadId",
-          "threads.workspaceId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
@@ -848,9 +793,11 @@ async function recoverLostExecutions(
         !run ||
         !executingRunStatuses.includes(run.status as (typeof executingRunStatuses)[number])
       ) {
-        return { events: [], revokedGrants: [] };
+        return {
+          events: [],
+          revokedGrants: [],
+        };
       }
-      await lockWorkspaceRow(transaction, run.workspaceId);
       await lockThreadRow(transaction, run.threadId);
       const session = await transaction
         .selectFrom("providerSessions")
@@ -872,7 +819,10 @@ async function recoverLostExecutions(
         run.bindingGeneration !== session.bindingGeneration ||
         !boundSessionStatuses.includes(session.status as (typeof boundSessionStatuses)[number])
       ) {
-        return { events: [], revokedGrants: [] };
+        return {
+          events: [],
+          revokedGrants: [],
+        };
       }
       const now = new Date(executionNow());
       const recovery = lostExecutionRecovery({
@@ -897,7 +847,10 @@ async function recoverLostExecutions(
           .executeTakeFirst();
         if (unconfirmed && (await runWasStopped(transaction, run.id))) {
           return {
-            events: await endStoppedUnconfirmedRun(transaction, { links, runId: run.id }),
+            events: await endStoppedUnconfirmedRun(transaction, {
+              links,
+              runId: run.id,
+            }),
             revokedGrants: [],
           };
         }
@@ -916,14 +869,18 @@ async function recoverLostExecutions(
             .updateTable("commands")
             .set({
               dispatcherId: null,
-              lastError: jsonValue({ message: "The Runner did not receive this Run" }),
+              lastError: jsonValue({
+                message: "The Runner did not receive this Run",
+              }),
               status: "pending",
               updatedAt: new Date(),
             })
             .where("id", "=", unconfirmed.id)
             .executeTakeFirstOrThrow();
           return {
-            events: await returnRunToQueue(transaction, { run, workspaceId: run.workspaceId }),
+            events: await returnRunToQueue(transaction, {
+              run,
+            }),
             revokedGrants: [],
           };
         }
@@ -939,7 +896,10 @@ async function recoverLostExecutions(
     events.push(...recovered.events);
     revokedGrants.push(...recovered.revokedGrants);
   }
-  return { events, revokedGrants };
+  return {
+    events,
+    revokedGrants,
+  };
 }
 
 /**
@@ -955,7 +915,10 @@ export async function restartExecutionLeases(
 ): Promise<void> {
   await database
     .updateTable("providerSessions")
-    .set({ leaseExpiresAt, updatedAt: new Date() })
+    .set({
+      leaseExpiresAt,
+      updatedAt: new Date(),
+    })
     .where("active", "=", true)
     .where("runnerId", "is not", null)
     .where("leaseExpiresAt", "<", leaseExpiresAt)
@@ -1004,7 +967,7 @@ export async function stopRunsPastBackgroundDeadline(
     .orderBy("id", "asc")
     .execute();
   for (const candidate of candidates) {
-    const stopped = await withDatabaseTransaction(database, async (transaction) => {
+    const stopped = await withPersonalTransaction(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1017,7 +980,6 @@ export async function stopRunsPastBackgroundDeadline(
           "runs.requestedBy",
           "runs.status",
           "runs.threadId",
-          "threads.workspaceId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
@@ -1038,14 +1000,16 @@ export async function stopRunsPastBackgroundDeadline(
         run,
         links,
         now,
-        { kind: "background-deadline", runId: run.id },
+        {
+          kind: "background-deadline",
+          runId: run.id,
+        },
         `background-deadline:${run.id}`,
       );
     });
     if (stopped) onStopped(stopped);
   }
 }
-
 export async function stopHeldRun(
   database: Kysely<DatabaseSchema>,
   claims: Parameters<typeof assertActiveGrant>[1],
@@ -1053,7 +1017,7 @@ export async function stopHeldRun(
   links: ChannelLinks,
   executionNow: () => number = Date.now,
 ): Promise<BackgroundDeadlineStop | null> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1065,7 +1029,6 @@ export async function stopHeldRun(
         "runs.requestedBy",
         "runs.status",
         "runs.threadId",
-        "threads.workspaceId",
         "runs.voiceSessionId",
       ])
       .where("runs.id", "=", claims.runId)
@@ -1084,24 +1047,26 @@ export async function stopHeldRun(
       run,
       links,
       new Date(executionNow()),
-      { kind: "request-hold", runId: run.id, reason },
+      {
+        kind: "request-hold",
+        runId: run.id,
+        reason,
+      },
       `request-hold:${run.id}:${claims.bindingGeneration}`,
     );
   });
 }
-
 async function stopRunWithoutPausing(
   transaction: Transaction<DatabaseSchema>,
   run: Pick<
     RunRow,
     "bindingGeneration" | "environmentId" | "id" | "requestedBy" | "status" | "threadId"
-  > & { readonly workspaceId: WorkspaceId },
+  > & {},
   links: ChannelLinks,
   now: Date,
   authoritySource: Readonly<Record<string, unknown>>,
   idempotencyKey: string,
 ): Promise<BackgroundDeadlineStop> {
-  await lockWorkspaceRow(transaction, run.workspaceId);
   await lockThreadRow(transaction, run.threadId);
   if (run.status === "queued" || (run.status === "starting" && run.bindingGeneration === null)) {
     return {
@@ -1126,7 +1091,9 @@ async function stopRunWithoutPausing(
   ];
   await transaction
     .updateTable("runs")
-    .set({ status: "running" })
+    .set({
+      status: "running",
+    })
     .where("id", "=", run.id)
     .where("status", "=", "waiting")
     .execute();
@@ -1141,7 +1108,11 @@ async function stopRunWithoutPausing(
       id: createId("command"),
       idempotencyKey: idempotencyKey,
       lastError: null,
-      payload: jsonValue({ runId: run.id, threadId: run.threadId, type: "run.interrupt" }),
+      payload: jsonValue({
+        runId: run.id,
+        threadId: run.threadId,
+        type: "run.interrupt",
+      }),
       requestedBy: run.requestedBy,
       runId: run.id,
       status: "pending",
@@ -1156,7 +1127,6 @@ async function stopRunWithoutPausing(
     revokedGrants: await revokeRunGrants(transaction, [run.id], "stopped"),
   };
 }
-
 export async function recoverRunsWithExpiredExecutionBindings(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -1180,7 +1150,7 @@ export async function recoverRunsWithExpiredExecutionBindings(
   const revokedGrants: RevokedRunGrant[] = [];
   const terminatedRuns: RecoveredRunTarget[] = [];
   for (const candidate of candidates) {
-    const terminal = await withDatabaseTransaction(database, async (transaction) => {
+    const terminal = await withPersonalTransaction(database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -1191,7 +1161,6 @@ export async function recoverRunsWithExpiredExecutionBindings(
           "runs.providerSessionId",
           "runs.status",
           "runs.threadId",
-          "threads.workspaceId",
           "runs.voiceSessionId",
         ])
         .where("runs.id", "=", candidate.id)
@@ -1199,7 +1168,6 @@ export async function recoverRunsWithExpiredExecutionBindings(
         .executeTakeFirst();
       if (!run || !["starting", "running", "waiting"].includes(run.status)) return null;
       if (run.bindingGeneration === null) return null;
-      await lockWorkspaceRow(transaction, run.workspaceId);
       await lockThreadRow(transaction, run.threadId);
       const expired = await transaction
         .selectFrom("providerSessions")
@@ -1223,7 +1191,11 @@ export async function recoverRunsWithExpiredExecutionBindings(
       });
       return {
         ...recovered,
-        target: { environmentId: run.environmentId, runId: run.id, threadId: run.threadId },
+        target: {
+          environmentId: run.environmentId,
+          runId: run.id,
+          threadId: run.threadId,
+        },
       };
     });
     if (terminal) {
@@ -1233,54 +1205,11 @@ export async function recoverRunsWithExpiredExecutionBindings(
       if (terminal.status === "terminal") terminatedRuns.push(terminal.target);
     }
   }
-  return { events, terminatedRuns, revokedGrants };
-}
-
-export async function failActiveRunsForMembershipRevocation(
-  database: Kysely<DatabaseSchema>,
-  links: ChannelLinks,
-  input: {
-    readonly userId: UserId;
-    readonly workspaceId: WorkspaceId;
-  },
-): Promise<RunRecoveryOutcome> {
-  return recoverAbandonedRuns(database, links, {
-    code: "workspace_access_revoked",
-    kind: "membership-revocation",
-    message: "Workspace access was revoked before the Run reached a terminal event",
-    userId: input.userId,
-    workspaceId: input.workspaceId,
-  });
-}
-
-export async function failActiveRunsForAccessRevocation(
-  database: Kysely<DatabaseSchema>,
-  links: ChannelLinks,
-  input: {
-    readonly userId: UserId;
-    readonly workspaceId: WorkspaceId;
-    readonly membershipGenerationCutoff: number;
-  },
-): Promise<RunRecoveryOutcome> {
-  return recoverAbandonedRuns(database, links, {
-    code: "workspace_access_revoked",
-    kind: "membership-revocation",
-    message: "Workspace access was revoked before the Run reached a terminal event",
-    ...input,
-  });
-}
-
-export async function failActiveRunsForWorkspaceDeletion(
-  database: Kysely<DatabaseSchema>,
-  links: ChannelLinks,
-  workspaceId: WorkspaceId,
-): Promise<RunRecoveryOutcome> {
-  return recoverAbandonedRuns(database, links, {
-    code: "workspace_access_revoked",
-    kind: "workspace-deletion",
-    message: "Workspace deletion was requested before the Run reached a terminal event",
-    workspaceId,
-  });
+  return {
+    events,
+    terminatedRuns,
+    revokedGrants,
+  };
 }
 
 function lostExecutionRecovery(facts: {
@@ -1288,7 +1217,10 @@ function lostExecutionRecovery(facts: {
   readonly restarted: boolean;
   readonly runStatus: RunRow["status"];
   readonly sessionStatus: ProviderSessionTable["status"];
-}): { readonly mayRequeue: boolean; readonly failure: RunFailure } {
+}): {
+  readonly mayRequeue: boolean;
+  readonly failure: RunFailure;
+} {
   return {
     mayRequeue:
       !facts.expired &&

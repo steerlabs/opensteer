@@ -12,7 +12,6 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import { reconcileHarnessCatalogs, type HarnessCatalogInspector } from "./harness-catalogs.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 import { startEngineInspectionStack } from "./engine-inspection.test-support.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const fixture = fileURLToPath(
@@ -21,16 +20,18 @@ const fixture = fileURLToPath(
     import.meta.url,
   ),
 );
-
 integration("engine inspection sign-in lifecycle", () => {
   let stack: VerticalStack | undefined;
   let scratch: string | undefined;
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
-    if (scratch) await rm(scratch, { recursive: true, force: true });
+    if (scratch)
+      await rm(scratch, {
+        recursive: true,
+        force: true,
+      });
   }, 60_000);
-
   it("keeps external sign-in required stable without probes and discovers authentication on refresh", async () => {
     scratch = await mkdtemp(join(tmpdir(), "opensteer-engine-inspection-"));
     const state = join(scratch, "scenario");
@@ -49,7 +50,10 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     await chmod(executable, 0o700);
     const registry = new HarnessRegistry();
     registry.registerDriver(
-      new CursorHarnessDriver({ executable, nodeExecutable: process.execPath }),
+      new CursorHarnessDriver({
+        executable,
+        nodeExecutable: process.execPath,
+      }),
     );
     const inspectionErrors: string[] = [];
     stack = await startVerticalStack({
@@ -72,7 +76,10 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
       runTimeoutMs: 10_000,
     });
     const active = stack;
-    const headers = { cookie: active.sessionCookie, origin: active.hostOrigin.origin };
+    const headers = {
+      cookie: active.sessionCookie,
+      origin: active.hostOrigin.origin,
+    };
     const refresh = () =>
       testRpcData(
         active.hostOrigin,
@@ -81,10 +88,19 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
           environmentId: active.environmentId,
           harnessInstanceId: active.harnessInstanceId,
         },
-        { headers },
+        {
+          headers,
+        },
       );
     const read = async () => {
-      const bootstrap = await testRpcData(active.hostOrigin, "bootstrap.get", {}, { headers });
+      const bootstrap = await testRpcData(
+        active.hostOrigin,
+        "bootstrap.get",
+        {},
+        {
+          headers,
+        },
+      );
       const catalog = bootstrap.environments
         .flatMap((environment) => environment.harnessCatalogs)
         .find((candidate) => candidate.harnessInstanceId === active.harnessInstanceId);
@@ -92,7 +108,10 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
         (candidate) => candidate.harnessInstanceId === active.harnessInstanceId,
       );
       if (!catalog || !placement) throw new Error("Engine state missing from bootstrap");
-      return { catalog, placement };
+      return {
+        catalog,
+        placement,
+      };
     };
     const observations = [await read()];
     // The status command still says signed in, but model discovery loses auth.
@@ -156,7 +175,9 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     const artifactDirectory =
       process.env.OPENSTEER_ENGINE_INSPECTION_ARTIFACT_DIR ??
       (await mkdtemp(join(tmpdir(), "opensteer-engine-inspection-evidence-")));
-    await mkdir(artifactDirectory, { recursive: true });
+    await mkdir(artifactDirectory, {
+      recursive: true,
+    });
     await writeFile(
       join(artifactDirectory, "inspection.json"),
       JSON.stringify(
@@ -175,7 +196,6 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
     );
     console.info(`Engine inspection evidence: ${artifactDirectory}/inspection.json`);
   }, 60_000);
-
   it.each(["refresh", "reconnect"] as const)(
     "recovers an invalidated sign-in answer after the first %s capture fails, without another action",
     async (invalidation) => {
@@ -210,7 +230,11 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
         // Exercise reconnection while its replacement capture is still unready.
         // A process restart now waits for readiness and would hide the empty-store assertion.
         active.network.drop();
-        await expect.poll(() => capture.mock.calls.length, { timeout: 10_000 }).toBeGreaterThan(0);
+        await expect
+          .poll(() => capture.mock.calls.length, {
+            timeout: 10_000,
+          })
+          .toBeGreaterThan(0);
       }
       // The superseded answer must be gone even though its replacement failed.
       expect(await read()).toEqual([]);
@@ -234,7 +258,9 @@ await import(${JSON.stringify(new URL(fixture, "file:").href)});
       const artifactDirectory =
         process.env.OPENSTEER_ENGINE_INSPECTION_ARTIFACT_DIR ??
         (await mkdtemp(join(tmpdir(), "opensteer-engine-recapture-evidence-")));
-      await mkdir(artifactDirectory, { recursive: true });
+      await mkdir(artifactDirectory, {
+        recursive: true,
+      });
       await writeFile(
         join(artifactDirectory, `recapture-${invalidation}.json`),
         JSON.stringify(

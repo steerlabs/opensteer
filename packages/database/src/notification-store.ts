@@ -1,6 +1,8 @@
-import { deploymentPolicy } from "@opensteer/core";
+import { personalSettings } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+
 import { isPlaceContentPart } from "@opensteer/core";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import { createHash } from "node:crypto";
 import {
   placeContentLabel,
@@ -22,12 +24,10 @@ import {
   type NotificationView,
   type Request,
   type RequestId,
-  type RequestPayload,
   type RequestRequiredActor,
   type RunId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Transaction } from "kysely";
@@ -49,7 +49,6 @@ export interface NotificationPublication {
   readonly sequence: string;
   readonly threadId: ThreadId;
   readonly userId: UserId;
-  readonly workspaceId: WorkspaceId;
 }
 
 /** A notification as it was decided, for the recipient's connected clients. */
@@ -58,65 +57,21 @@ export interface DecidedNotification {
   readonly view: NotificationView;
 }
 
-/** One active member of the Workspace an event happened in. */
-export interface NotificationAudienceMember {
-  readonly instanceRole: "administrator" | "user";
-  readonly role: "collaborator" | "owner";
-  readonly userId: UserId;
-}
-
 export interface NotificationStoreOptions {
   readonly now?: () => Date;
 }
 
-/**
- * Who may answer this Request, restricted to people who can actually open the
- * Thread it belongs to. The rules are the ones `request.respond` enforces:
- * a `requester` Request is that person's alone, a `workspace-owner` Request is
- * any active owner's, and an `administrator` Request is any instance
- * administrator's. A preinstall integration access Request is still the
- * requester's consent decision, but it also reaches Workspace administrators
- * because one of them must perform the installation before consent can finish.
- *
- * Active Workspace membership bounds all three. An administrator who is not a
- * member cannot read the Thread — `listWorkspaceMembers` answers "Workspace not
- * found" — so notifying them would deliver a link that opens onto nothing.
- */
 export function requestNotificationAudience(input: {
-  readonly members: readonly NotificationAudienceMember[];
-  readonly payload: RequestPayload;
+  readonly ownerId: UserId;
   readonly requestedBy: UserId;
   readonly requiredActor: RequestRequiredActor;
 }): readonly UserId[] {
-  switch (input.requiredActor) {
-    case "requester": {
-      const requester = input.members.some((member) => member.userId === input.requestedBy)
-        ? [input.requestedBy]
-        : [];
-      if (input.payload.kind !== "integration.access" || input.payload.installationId !== null) {
-        return requester;
-      }
-      return [
-        ...new Set([
-          ...requester,
-          ...input.members
-            .filter((member) => member.instanceRole === "administrator")
-            .map(({ userId }) => userId),
-        ]),
-      ];
-    }
-    case "workspace-owner":
-      return input.members.filter((member) => member.role === "owner").map(({ userId }) => userId);
-    case "administrator":
-      return input.members
-        .filter((member) => member.instanceRole === "administrator")
-        .map(({ userId }) => userId);
-  }
+  return input.requestedBy === input.ownerId ? [input.ownerId] : [];
 }
 
 /**
  * Whether an event can become a notification. It reads only what the event
- * carries; the current Workspace facts decide the rest.
+ * carries; the current personal owner facts decide the rest.
  */
 export function mayNotify(event: AgentEvent): boolean {
   switch (event.type) {
@@ -146,19 +101,17 @@ export const replyPushGraceMilliseconds = 5_000;
 export class NotificationStore {
   readonly #database: Kysely<DatabaseSchema>;
   readonly #now: () => Date;
-
   constructor(database: Kysely<DatabaseSchema>, options: NotificationStoreOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
   }
-
   async decide(event: AgentEvent): Promise<readonly DecidedNotification[]> {
     if (
       !mayNotify(event) ||
       Date.parse(event.createdAt) + notificationPushWindowMilliseconds <= this.#now().getTime()
     )
       return [];
-    return withDatabaseTransaction(this.#database, async (transaction) =>
+    return withPersonalTransaction(this.#database, async (transaction) =>
       (await candidatesFor(transaction, event)).map((candidate) => {
         const subjectId =
           candidate.kind === "reply-published"
@@ -167,7 +120,10 @@ export class NotificationStore {
               ? candidate.requestId
               : candidate.runId;
         if (!subjectId)
-          throw new OpensteerError({ code: "internal", message: "Notification lacks a subject" });
+          throw new OpensteerError({
+            code: "internal",
+            message: "Notification lacks a subject",
+          });
         const digest = createHash("sha256")
           .update(`${candidate.userId}|${candidate.kind}|${subjectId}`)
           .digest();
@@ -186,7 +142,6 @@ export class NotificationStore {
             id,
             occurredAt: event.createdAt,
             threadId: event.threadId,
-            workspaceId: event.workspaceId,
           }),
         };
       }),
@@ -196,25 +151,17 @@ export class NotificationStore {
   /**
    * Why a notification is no longer worth waking a phone for, or `null` while
    * it still is. The same facts the event decision used are read again,
-   * because a reply can be read, a Request answered, a Workspace muted or a
-   * membership ended while the publication waited.
+   * because a reply can be read or a Request answered while publication waited.
    */
   async publicationSkipReason(entry: NotificationPublication): Promise<string | null> {
     if (entry.expiresAt.getTime() <= this.#now().getTime()) {
       return "Notification expired before it could be published";
     }
     const recipient = await this.#database
-      .selectFrom("workspaceMemberships")
-      .innerJoin("users", "users.id", "workspaceMemberships.userId")
-      .leftJoin("agentNotificationMutes", (join) =>
-        join
-          .onRef("agentNotificationMutes.workspaceId", "=", "workspaceMemberships.workspaceId")
-          .onRef("agentNotificationMutes.userId", "=", "workspaceMemberships.userId"),
-      )
-      .select("agentNotificationMutes.muted")
-      .where("workspaceMemberships.workspaceId", "=", entry.workspaceId)
-      .where("workspaceMemberships.userId", "=", entry.userId)
-      .where("workspaceMemberships.state", "=", "active")
+      .selectFrom("personalSettings")
+      .innerJoin("users", "users.id", "personalSettings.ownerId")
+      .select("users.id")
+      .where("personalSettings.ownerId", "=", entry.userId)
       .where("users.disabledAt", "is", null)
       .executeTakeFirst();
     if (!recipient) return "Recipient can no longer open this Thread";
@@ -231,7 +178,6 @@ export class NotificationStore {
           : "Request was answered before the notification was published";
       }
       case "reply-published": {
-        if (recipient.muted) return "Workspace was muted before publication";
         if (!entry.messageId) return "Notification names no reply";
         const read = await this.#database
           .selectFrom("messages")
@@ -247,7 +193,7 @@ export class NotificationStore {
         return read ? "Reply was read before publication" : null;
       }
       case "run-failed":
-        return recipient.muted ? "Workspace was muted before publication" : null;
+        return null;
     }
   }
 
@@ -256,12 +202,11 @@ export class NotificationStore {
    * of publication because a person can link or lose one at any time.
    */
   async accountSubjects(userId: UserId): Promise<readonly string[]> {
-    return withDatabaseTransaction(this.#database, (transaction) =>
+    return withPersonalTransaction(this.#database, (transaction) =>
       accountSubjectsForUsers(transaction, [userId]),
     );
   }
 }
-
 interface NotificationCandidate {
   readonly body: string;
   readonly kind: NotificationKind;
@@ -301,10 +246,14 @@ async function candidatesFor(
       return [];
   }
 }
-
 async function requestCandidates(
   transaction: Transaction<DatabaseSchema>,
-  event: Extract<AgentEvent, { readonly type: "request.opened" }>,
+  event: Extract<
+    AgentEvent,
+    {
+      readonly type: "request.opened";
+    }
+  >,
 ): Promise<readonly NotificationCandidate[]> {
   const parsed = RequestSchema.safeParse(event.data.request);
   if (!parsed.success) return [];
@@ -316,10 +265,9 @@ async function requestCandidates(
     .where("id", "=", request.id)
     .executeTakeFirst();
   if (current?.status !== "pending") return [];
-  const members = await activeMembers(transaction, event.workspaceId);
+  const { ownerId } = await personalSettings(transaction);
   const userIds = requestNotificationAudience({
-    members,
-    payload: request.payload,
+    ownerId,
     requestedBy: request.requestedBy,
     requiredActor: request.requiredActor,
   });
@@ -348,7 +296,7 @@ async function replyCandidates(
 ): Promise<readonly NotificationCandidate[]> {
   const addressed = event.type === "message.created" ? event.data.addressedToUserId : undefined;
   const recipient = await personAnswered(transaction, event, addressed);
-  if (!recipient || recipient.muted) return [];
+  if (!recipient) return [];
   const reply = await transaction
     .selectFrom("messages")
     .leftJoin("threadReadMarkers", (join) =>
@@ -392,14 +340,13 @@ async function replyCandidates(
     },
   ];
 }
-
 async function failureCandidates(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
   body: string,
 ): Promise<readonly NotificationCandidate[]> {
   const recipient = await personAnswered(transaction, event);
-  if (!recipient || recipient.muted) return [];
+  if (!recipient) return [];
   return [
     {
       body,
@@ -438,38 +385,29 @@ async function interruptionCandidates(
 
 /**
  * The person a Run answers, if it answers one directly and they can still
- * open its Thread: Chat or work a person started or joined. Assigned results
+ * open its Thread: work a person started or joined. Assigned results
  * return to the assigner; channel Runs answer where they were asked.
  */
 async function personAnswered(
   transaction: Transaction<DatabaseSchema>,
   event: AgentEvent,
   addressedToUserId?: UserId,
-): Promise<{ readonly muted: boolean; readonly title: string; readonly userId: UserId } | null> {
+): Promise<{
+  readonly title: string;
+  readonly userId: UserId;
+} | null> {
   if (!event.runId) return null;
   const run = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
-    .innerJoin("workspaceMemberships", (join) =>
-      join
-        .onRef("workspaceMemberships.workspaceId", "=", "threads.workspaceId")
-        .onRef("workspaceMemberships.userId", "=", "runs.requestedBy"),
-    )
     .innerJoin("users", "users.id", "runs.requestedBy")
-    .leftJoin("agentNotificationMutes", (join) =>
-      join
-        .onRef("agentNotificationMutes.workspaceId", "=", "threads.workspaceId")
-        .onRef("agentNotificationMutes.userId", "=", "runs.requestedBy"),
-    )
     .select([
-      "workspaces.homeThreadId",
-      "workspaces.voiceThreadId",
       "runs.personWaited",
       "runs.assignmentId",
       "runs.replyTarget",
       "runs.requestedBy",
-      "agentNotificationMutes.muted",
+      "threads.parentThreadId",
+      "threads.purpose",
     ])
     .select(
       sql<boolean>`exists (select 1 from messages input where
@@ -478,16 +416,13 @@ async function personAnswered(
     )
     .where("runs.id", "=", event.runId)
     .where("runs.threadId", "=", event.threadId)
-    .where("threads.workspaceId", "=", event.workspaceId)
-    .where("workspaceMemberships.state", "=", "active")
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();
   if (
     !run ||
-    (run.homeThreadId !== event.threadId &&
-      run.voiceThreadId !== event.threadId &&
-      !run.personWaited &&
-      !run.personInput) ||
+    (!run.personWaited &&
+      !run.personInput &&
+      (run.parentThreadId !== null || run.purpose === "background-job")) ||
     (addressedToUserId
       ? run.requestedBy !== addressedToUserId
       : run.assignmentId !== null || run.replyTarget !== null)
@@ -495,22 +430,23 @@ async function personAnswered(
     return null;
   const title = await threadTitle(transaction, event.threadId);
   if (!title) return null;
-  return { muted: run.muted === true, title, userId: run.requestedBy };
+  return {
+    title,
+    userId: run.requestedBy,
+  };
 }
 
-/** "Opensteer" for the person's Chat; the Thread's own title anywhere else. */
+/** Notifications use the task's own title. */
 async function threadTitle(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
 ): Promise<string | null> {
   const thread = await transaction
     .selectFrom("threads")
-    .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
-    .select(["threads.title", "workspaces.kind", "workspaces.homeThreadId"])
+    .select(["threads.title"])
     .where("threads.id", "=", threadId)
     .executeTakeFirst();
   if (!thread) return null;
-  if (thread.kind === "main" && thread.homeThreadId === threadId) return "Opensteer";
   return plainTextExcerpt(thread.title, notificationTitleMaxCharacters) ?? "Opensteer";
 }
 
@@ -522,7 +458,6 @@ function replyMessageIdOf(event: AgentEvent): MessageId | null {
   }
   return null;
 }
-
 function failureBody(message: string): string {
   const summary = plainTextExcerpt(
     message,
@@ -549,25 +484,6 @@ function replyBody(content: readonly ContentPart[]): string | null {
   const files = content.filter((part) => part.type === "artifact").length;
   if (files === 0) return null;
   return files === 1 ? "Sent a file" : `Sent ${files} files`;
-}
-
-async function activeMembers(
-  transaction: Transaction<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-): Promise<readonly NotificationAudienceMember[]> {
-  return transaction
-    .selectFrom("workspaceMemberships")
-    .innerJoin("users", "users.id", "workspaceMemberships.userId")
-    .select([
-      "users.instanceRole as instanceRole",
-      "workspaceMemberships.role as role",
-      "workspaceMemberships.userId as userId",
-    ])
-    .where("workspaceMemberships.workspaceId", "=", workspaceId)
-    .where("workspaceMemberships.state", "=", "active")
-    .where("users.disabledAt", "is", null)
-    .limit(1_000)
-    .execute();
 }
 
 /**
@@ -608,35 +524,17 @@ export async function accountSubjectsForUsers(
   return [...subjects];
 }
 
-/**
- * A Personal Deployment's Account identity, and whose it is.
- *
- * The link belongs to the Personal owner, who is the Host's single
- * administrator. Mapping any other user to the link would hand somebody else's
- * phone a Deployment they merely have membership in, so the administrator is
- * checked rather than assumed even though a Personal Host has one user.
- */
 async function personalLinkSubjectForOwner(
   transaction: Transaction<DatabaseSchema>,
   userIds: readonly UserId[],
   issuer?: string,
 ): Promise<string | null> {
-  const deployment = await transaction
-    .selectFrom("deployments")
-    .select("deploymentShape")
-    .where("singletonKey", "=", "primary")
-    .executeTakeFirst();
-  if (
-    !deployment ||
-    deploymentPolicy(deployment.deploymentShape).integrationAccountBinding !== "personal-link"
-  )
-    return null;
   const owner = await transaction
-    .selectFrom("users")
-    .select("id")
-    .where("id", "in", [...userIds])
-    .where("instanceRole", "=", "administrator")
-    .where("disabledAt", "is", null)
+    .selectFrom("personalSettings")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
+    .select("ownerId")
+    .where("ownerId", "in", [...userIds])
+    .where("users.disabledAt", "is", null)
     .executeTakeFirst();
   if (!owner) return null;
   const link = await transaction
