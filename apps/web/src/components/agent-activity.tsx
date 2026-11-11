@@ -51,7 +51,7 @@ import {
   workRows,
   traceWindow,
   workSummary,
-  workspaceMonogram,
+  folderMonogram,
   messageAuthorName,
   messageFoldLines,
   turnFolds,
@@ -81,7 +81,6 @@ import {
   type WorkEntry,
   type WorkRow,
   type WorkSummary,
-  type WorkspaceSummary,
   type HostClient,
 } from "@opensteer/client/host";
 import {
@@ -118,8 +117,7 @@ import {
 } from "./surface-chips.js";
 import { MessageFold } from "./message-fold.js";
 import { useToast } from "./toast.js";
-import { WorkspaceOrb } from "./workspace-orb.js";
-import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
+import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
@@ -178,15 +176,11 @@ const QuietSteps = createContext(false);
 type TaskRenderer = (entries: readonly AssignmentEntry[]) => ReactNode;
 const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 /** The reader's Home: a message from it leads to Home itself, not to a Thread page. */
-const HomeThread = createContext<string | null>(null);
 /** Every browser this reader can see, which a Run's pages are looked up in. */
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
 const TranscriptBrowsers = createContext<readonly BrowserSessionSummary[]>([]);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
-const Speakers = createContext<{
-  readonly threadId: string | null;
-  readonly workspaces: readonly WorkspaceSummary[];
-}>({ threadId: null, workspaces: [] });
+const Speakers = createContext<{ readonly threadId: string | null }>({ threadId: null });
 
 /**
  * The reader's Macs, and the client that stops one. Given, a live turn at work
@@ -211,7 +205,6 @@ const noReader: SubagentReader = {
   assignments: {},
   connection: "connected",
   environments: [],
-  homeThreadId: null,
   network: "online",
   requests: {},
   threads: [],
@@ -246,7 +239,6 @@ function useAgentSource(
   }, [cache, entries, live, source, threadId]);
 }
 
-const noWorkspaces: readonly WorkspaceSummary[] = [];
 const noWaitingRequests: readonly WaitingRequest[] = [];
 const noAssignments: Readonly<Record<string, AssignmentSummary>> = {};
 const noBrowserUses: readonly BrowserSessionUseSummary[] = [];
@@ -269,7 +261,6 @@ export function AgentTranscript({
   assignments = noAssignments,
   browserSessions = noBrowsers,
   browserUses = noBrowserUses,
-  homeThreadId = null,
   activityOwner = null,
   onOpenActivity,
   onReply,
@@ -284,7 +275,6 @@ export function AgentTranscript({
   renderPasswordsSuggestion,
   subagentReader = null,
   viewerUserId = null,
-  workspaces = noWorkspaces,
 }: {
   /** What the Thread is doing, which decides the line under its transcript. */
   activity?: ThreadActivity;
@@ -304,7 +294,6 @@ export function AgentTranscript({
   assignments?: Readonly<Record<string, AssignmentSummary>>;
   browserSessions?: readonly BrowserSessionSummary[];
   browserUses?: readonly BrowserSessionUseSummary[];
-  homeThreadId?: string | null;
   /**
    * Given, each reply in a conversation that did anything on the way offers
    * its Activity, opened from the control the reader pressed.
@@ -342,7 +331,6 @@ export function AgentTranscript({
    */
   subagentReader?: SubagentReader | null;
   viewerUserId?: string | null;
-  workspaces?: readonly WorkspaceSummary[];
 }) {
   const groups = useMemo(
     () => groupTranscriptEntries(entries, { inputQueuePaused, startHold, assignments }),
@@ -396,7 +384,7 @@ export function AgentTranscript({
     live && !(requestShown && activity === "waiting_for_you")
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
-  const speakers = useMemo(() => ({ threadId, workspaces }), [threadId, workspaces]);
+  const speakers = useMemo(() => ({ threadId }), [threadId]);
   const agents = useAgentSource(subagentReader, entries, threadId, live);
   const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
@@ -416,73 +404,66 @@ export function AgentTranscript({
                       <ActivityOpenedFrom value={activityOwner}>
                         <ActivityAnchor value={onActivityAnchor}>
                           <TaskViews value={renderTask}>
-                            <HomeThread value={homeThreadId}>
-                              <TranscriptHostClientContext value={attachmentReader}>
-                                <ReaderComputers value={computers}>
-                                  <TranscriptBrowserUses value={browserUses}>
-                                    <TranscriptBrowsers value={browserSessions}>
-                                      <Speakers value={speakers}>
-                                        {rows.map(({ group, key }, index) => (
-                                          <Fragment key={key}>
-                                            {places?.[index]?.time ? (
-                                              <p className="transcript__time">
-                                                {places[index].time}
-                                              </p>
-                                            ) : null}
-                                            <div
-                                              className="transcript__row"
-                                              data-continued={
-                                                places?.[index]?.continued || undefined
-                                              }
-                                              data-joined={places?.[index]?.joined || undefined}
-                                              data-transcript-row={key}
-                                            >
-                                              {group.kind === "app" ? (
-                                                <AppCard entry={group.entry} />
-                                              ) : group.kind === "turn" ? (
-                                                <TurnView
-                                                  turn={group.turn}
-                                                  turnKey={group.key}
-                                                  reveal={revealMessage}
-                                                />
-                                              ) : group.kind === "delegation" ? (
-                                                <DelegationNotice delegation={group.entry} />
-                                              ) : group.kind === "assignment" ? (
-                                                renderTask?.([group.entry])
-                                              ) : (
-                                                <TranscriptMessage
-                                                  joinedRun={group.joinedRun === true}
-                                                  reveal={
-                                                    revealMessage?.id === group.entry.id
-                                                      ? revealMessage
-                                                      : null
-                                                  }
-                                                  message={group.entry}
-                                                  viewerUserId={viewerUserId}
-                                                  workspaces={workspaces}
-                                                />
-                                              )}
-                                            </div>
-                                          </Fragment>
-                                        ))}
-                                        {indicator === null ? null : indicator.kind === "typing" ? (
-                                          // No turn has begun, so there is no Activity to open yet.
-                                          <div className="turn turn--conversation">
-                                            <Typing />
+                            <TranscriptHostClientContext value={attachmentReader}>
+                              <ReaderComputers value={computers}>
+                                <TranscriptBrowserUses value={browserUses}>
+                                  <TranscriptBrowsers value={browserSessions}>
+                                    <Speakers value={speakers}>
+                                      {rows.map(({ group, key }, index) => (
+                                        <Fragment key={key}>
+                                          {places?.[index]?.time ? (
+                                            <p className="transcript__time">{places[index].time}</p>
+                                          ) : null}
+                                          <div
+                                            className="transcript__row"
+                                            data-continued={places?.[index]?.continued || undefined}
+                                            data-joined={places?.[index]?.joined || undefined}
+                                            data-transcript-row={key}
+                                          >
+                                            {group.kind === "app" ? (
+                                              <AppCard entry={group.entry} />
+                                            ) : group.kind === "turn" ? (
+                                              <TurnView
+                                                turn={group.turn}
+                                                turnKey={group.key}
+                                                reveal={revealMessage}
+                                              />
+                                            ) : group.kind === "delegation" ? (
+                                              <DelegationNotice delegation={group.entry} />
+                                            ) : group.kind === "assignment" ? (
+                                              renderTask?.([group.entry])
+                                            ) : (
+                                              <TranscriptMessage
+                                                joinedRun={group.joinedRun === true}
+                                                reveal={
+                                                  revealMessage?.id === group.entry.id
+                                                    ? revealMessage
+                                                    : null
+                                                }
+                                                message={group.entry}
+                                                viewerUserId={viewerUserId}
+                                              />
+                                            )}
                                           </div>
-                                        ) : (
-                                          <WorkingIndicator label={indicator.label} />
-                                        )}
-                                        {passwordsOffer === null
-                                          ? null
-                                          : renderPasswordsSuggestion?.(passwordsOffer)}
-                                        {queued}
-                                      </Speakers>
-                                    </TranscriptBrowsers>
-                                  </TranscriptBrowserUses>
-                                </ReaderComputers>
-                              </TranscriptHostClientContext>
-                            </HomeThread>
+                                        </Fragment>
+                                      ))}
+                                      {indicator === null ? null : indicator.kind === "typing" ? (
+                                        // No turn has begun, so there is no Activity to open yet.
+                                        <div className="turn turn--conversation">
+                                          <Typing />
+                                        </div>
+                                      ) : (
+                                        <WorkingIndicator label={indicator.label} />
+                                      )}
+                                      {passwordsOffer === null
+                                        ? null
+                                        : renderPasswordsSuggestion?.(passwordsOffer)}
+                                      {queued}
+                                    </Speakers>
+                                  </TranscriptBrowsers>
+                                </TranscriptBrowserUses>
+                              </ReaderComputers>
+                            </TranscriptHostClientContext>
                           </TaskViews>
                         </ActivityAnchor>
                       </ActivityOpenedFrom>
@@ -554,29 +535,19 @@ function TurnView({
  * because the header above them already names the task.
  */
 function AgentByline({ author }: { author: MessageEntry["author"] | null }) {
-  const homeThreadId = useContext(HomeThread);
   const reader = useContext(TranscriptHostClientContext);
-  const { threadId: transcriptThreadId, workspaces } = useContext(Speakers);
+  const { threadId: transcriptThreadId } = useContext(Speakers);
   const agent = author?.kind === "agent" ? author : null;
   const threadId = agent?.threadId ?? transcriptThreadId;
-  if (author?.kind === "platform" || threadId === null || threadId === homeThreadId) {
+  if (author?.kind === "platform" || threadId === null) {
     return (
       <span className="msg--assistant__author">
-        <ChatOrb size={16} />
+        <AgentOrb size={16} />
         Opensteer
       </span>
     );
   }
   if (agent === null || agent.threadId === transcriptThreadId) return null;
-  const project = workspaces.find(({ id, kind }) => id === agent.workspaceId && kind !== "main");
-  if (project) {
-    return (
-      <span className="msg--assistant__author">
-        <WorkspaceOrb icon={project.icon} name={project.name} size="tiny" color={project.color} />
-        {agent.displayName}
-      </span>
-    );
-  }
   return (
     <span className="msg--assistant__author">
       {reader ? (
@@ -2080,7 +2051,6 @@ export function TranscriptMessage({
   joinedRun = false,
   queued = false,
   viewerUserId,
-  workspaces,
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
@@ -2088,7 +2058,6 @@ export function TranscriptMessage({
   joinedRun?: boolean;
   queued?: boolean;
   viewerUserId: string | null;
-  workspaces: readonly WorkspaceSummary[];
 }) {
   const conversation = useContext(ConversationMode);
   if (message.messageKind === "assistant") {
@@ -2141,7 +2110,6 @@ export function TranscriptMessage({
       reveal={reveal}
       steered={steered}
       viewerUserId={viewerUserId}
-      workspaces={workspaces}
     />
   );
 }
@@ -2282,7 +2250,7 @@ function RecoveryNote({
     if (reveal !== null) setOpen(true);
   }, [reveal]);
   const bodyId = useId();
-  const name = messageAuthorName(author, message.messageKind, useContext(HomeThread));
+  const name = messageAuthorName(author);
   return (
     <div className="update-line" data-message-id={message.id}>
       <div className="update-line__head">
@@ -2320,16 +2288,14 @@ function RecoveryNote({
 }
 
 function TurnSource({ source }: { source: NonNullable<Turn["source"]> }) {
-  const { workspaces } = useContext(Speakers);
-  const home = useContext(HomeThread);
   if (source.author.kind === "human") return null;
   const from = source.task
     ? {
         glyph: "message" as const,
         name: source.task.workerThread.title,
-        href: `/threads/${source.task.workerThread.id}`,
+        href: `/tasks/${source.task.workerThread.id}`,
       }
-    : updateSource(source.author, "input", workspaces, home);
+    : updateSource(source.author);
   const content = (
     <>
       <Icon name={from.glyph} /> {from.name} ·{" "}
@@ -2345,25 +2311,15 @@ function TurnSource({ source }: { source: NonNullable<Turn["source"]> }) {
 }
 
 /** Who an update came from, and where the reader can follow it. */
-function updateSource(
-  author: UpdateAuthor,
-  kind: MessageEntry["messageKind"],
-  workspaces: readonly WorkspaceSummary[],
-  homeThreadId: string | null,
-): { glyph: "bolt" | "message"; href: string | null; name: string } {
-  const name = messageAuthorName(author, kind, homeThreadId);
+function updateSource(author: UpdateAuthor): {
+  glyph: "bolt" | "message";
+  href: string | null;
+  name: string;
+} {
+  const name = messageAuthorName(author);
   switch (author.kind) {
     case "agent":
-      if (author.threadId === homeThreadId) return { glyph: "message", href: "/", name };
-      return {
-        glyph: "message",
-        // Only a Thread the reader can open is a link: one behind a Workspace
-        // they are not in is named and left at that.
-        href: workspaces.some(({ id }) => id === author.workspaceId)
-          ? `/threads/${author.threadId}`
-          : null,
-        name,
-      };
+      return { glyph: "message", href: `/tasks/${author.threadId}`, name };
     case "trigger":
     case "watch":
       return { glyph: "bolt", href: automationPath(author.triggerId), name };
@@ -2385,14 +2341,12 @@ function InputMessage({
   reveal,
   steered,
   viewerUserId,
-  workspaces,
 }: {
   message: MessageEntry;
   reveal: { readonly id: string } | null;
   queued: boolean;
   steered: boolean;
   viewerUserId: string | null;
-  workspaces: readonly WorkspaceSummary[];
 }) {
   const conversation = useContext(ConversationMode);
   const [open, setOpen] = useState(reveal !== null);
@@ -2401,7 +2355,7 @@ function InputMessage({
   }, [reveal]);
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
   const body = preview.truncated && !open ? preview.text : message.body;
-  const source = inputSource(message, workspaces, useContext(HomeThread));
+  const source = inputSource(message);
   const sender = (
     <>
       {source.glyph}
@@ -2470,27 +2424,22 @@ function InputMessage({
  * Who sent a message, as the reader knows them, and where they are: Chat, a
  * task or an automation by its own mark and name, a person by theirs.
  */
-function inputSource(
-  message: MessageEntry,
-  workspaces: readonly WorkspaceSummary[],
-  homeThreadId: string | null,
-): { glyph: ReactNode; href: string | null; markdown: boolean; name: string } {
+function inputSource(message: MessageEntry): {
+  glyph: ReactNode;
+  href: string | null;
+  markdown: boolean;
+  name: string;
+} {
   const { author } = message;
-  const name = messageAuthorName(author, message.messageKind, homeThreadId);
+  const name = messageAuthorName(author);
   switch (author.kind) {
-    case "agent": {
-      if (author.threadId === homeThreadId)
-        return { glyph: <ChatOrb size={16} />, href: "/", markdown: true, name };
-      const workspace = workspaces.find(({ id }) => id === author.workspaceId);
+    case "agent":
       return {
-        glyph: <SenderTaskMark threadId={author.threadId} workspace={workspace ?? null} />,
-        // Only a Thread the reader can open is a link: someone else's task,
-        // behind a Workspace they are not in, is named and left at that.
-        href: workspace ? `/threads/${author.threadId}` : null,
+        glyph: <SenderTaskMark threadId={author.threadId} />,
+        href: `/tasks/${author.threadId}`,
         markdown: true,
         name,
       };
-    }
     case "trigger":
     case "watch":
       return {
@@ -2509,7 +2458,7 @@ function inputSource(
       return {
         glyph: (
           <span aria-hidden className="input-card__glyph">
-            <span>{workspaceMonogram(author.displayName)}</span>
+            <span>{folderMonogram(author.displayName)}</span>
           </span>
         ),
         href: null,
@@ -2522,19 +2471,11 @@ function inputSource(
   }
 }
 
-/** The sending task's own mark, as the sidebar shows it; a Workspace's orb where it cannot be read. */
-function SenderTaskMark({
-  threadId,
-  workspace,
-}: {
-  readonly threadId: string;
-  readonly workspace: WorkspaceSummary | null;
-}) {
+/** The sending task's own mark, as the sidebar shows it. */
+function SenderTaskMark({ threadId }: { readonly threadId: string }) {
   const reader = useContext(TranscriptHostClientContext);
   if (reader) return <BylineTaskMark reader={reader} threadId={threadId} />;
-  return workspace ? (
-    <WorkspaceOrb icon={workspace.icon} name={workspace.name} size="tiny" color={workspace.color} />
-  ) : (
+  return (
     <span aria-hidden className="input-card__glyph">
       <Icon name="workspace" />
     </span>

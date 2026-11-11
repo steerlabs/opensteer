@@ -280,7 +280,7 @@ export function desktopPreviewBridge(
 
   const bridge = {
     downloads: desktopPreviewDownloads(),
-    onWorkspaceTabCommand: () => () => undefined,
+    onPersonalTabCommand: () => () => undefined,
     getLocalVisibility: async () => true,
     onLocalVisibilityChanged: () => () => undefined,
 

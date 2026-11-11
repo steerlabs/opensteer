@@ -17,9 +17,8 @@ import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
-  useContext,
 } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import type { BrowserTabGroupColor } from "@opensteer/protocol";
 import type { BrowserTabStrip } from "@opensteer/client/host";
 import type {
@@ -38,23 +37,16 @@ import {
   tabFilterEmptyWords,
   type TabFilter,
   describeHostConnection,
-  doneDays,
-  doneTaskList,
-  groupTasksByProject,
   listedRowThreadId,
-  quietlyMoved,
-  quietSeenScope,
-  requestsWaitingOn,
-  taskRowLabel,
+  liveTasks,
+  taskList,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
   type PlaceDescriptor,
   type TaskRow,
 } from "@opensteer/client/host";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
-  VoiceContext,
   useBrowserGroups,
   useHostSelector,
   usePlace,
@@ -83,9 +75,8 @@ import {
   composerDrafts,
   useComposerDraftIndex,
   type ComposerDraftTarget,
-  type TaskDraftRow,
 } from "./composer-drafts.js";
-import { TaskMark, TaskState, ChatOrb, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
+import { TaskMark, TaskState, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
 import {
   ProfileAvatar,
   browserWords,
@@ -97,11 +88,9 @@ import { PlaceMark } from "./workspace/place-mark.js";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
-import {
-  homeThreadKind,
-  useTaskDirectory,
-  type TaskDirectory,
-} from "./workspace/task-directory.js";
+import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
+import { useTeams } from "../team/team-attachments.js";
+import type { SegmentBadge } from "./team/team-sidebar.js";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -111,6 +100,7 @@ import {
 import {
   destinationPlaceKey,
   setupPath,
+  taskAt,
   type WorkspaceNavigation,
 } from "./workspace/navigation.js";
 import { revealInList, useScrollEdges, useWholeRows } from "./workspace/scroll-edges.js";
@@ -118,7 +108,6 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
-import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import { TabFilterControl } from "./workspace/tab-filter.js";
@@ -128,13 +117,7 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { useDesktopPlaces } from "../desktop/places-context.js";
 import { PlaceMenuPlaces } from "./places/place-menu.js";
 import { PlaceAccountFooter, SignOutDialog } from "./places/place-account.js";
-import {
-  FolderMoreRow,
-  ProjectChatRow,
-  ProjectFolderHeader,
-  folderRowLimit,
-  useClosedProjects,
-} from "./sidebar-projects.js";
+import { TeamSideFor, TeamSwitch } from "../team/team-sidebar-sections.js";
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -146,16 +129,14 @@ export interface SidebarProps {
   mobile?: boolean;
   onCloseMobile: () => void;
   onLoadEarlierTasks: () => Promise<void>;
-  /** Null when the Host does not let this person create a project. */
-  onNewProject: (() => void) | null;
   onNewTab: () => void;
   onSetTaskDone: (threadId: string, done: boolean) => void;
   onToggleCollapsed: () => void;
 }
 
 /**
- * The one navigator: Chat, the tasks, the places open now, and a menu
- * for everything else. A task row changes only the conversation; a tab row
+ * The one navigator: New task, Needs you and Voice, the tasks by folder, each
+ * team, the places open now, and a menu for everything else. A task row changes only the conversation; a tab row
  * only the middle; a mark on a tab both, as one step.
  */
 export function Sidebar({
@@ -168,7 +149,6 @@ export function Sidebar({
   mobile = false,
   onCloseMobile,
   onLoadEarlierTasks,
-  onNewProject,
   onNewTab,
   onSetTaskDone,
   onToggleCollapsed,
@@ -176,7 +156,6 @@ export function Sidebar({
   const workspace = useWorkspace();
   const { nav } = workspace;
   const { pathname } = useLocation();
-  const [searchParams] = useSearchParams();
   const snapshot = useTaskSnapshot(hostClient);
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
@@ -285,47 +264,19 @@ export function Sidebar({
   const [tasksShare, commitTasksShare] = useTasksShare();
   useWholeRows(listsRef, !collapsed);
   const { openDrawer } = workspace;
-  const openThreadId =
-    pathname === "/"
-      ? snapshot.homeThreadId
-      : pathname.startsWith("/threads/")
-        ? decodeURIComponent(pathname.slice("/threads/".length).split("/")[0]!)
-        : null;
+  const openThreadId = taskAt(pathname);
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const directory = useTaskDirectory(hostClient, openRowThreadId);
-  const { list, homeThreadId } = directory;
-  const workspaces = directory.snapshot.workspaces;
-  // Main's tasks lead; each Project's work under way follows in its own folder.
-  const grouping = useMemo(() => groupTasksByProject({ workspaces }, list), [list, workspaces]);
-  const mainTasks = grouping.main;
-  const [closedProjects, toggleProject] = useClosedProjects();
-  const openProjectId = pathname.startsWith("/workspaces/")
-    ? decodeURIComponent(pathname.slice("/workspaces/".length).split("/")[0] ?? "")
-    : null;
+  const { list } = directory;
+  // A handful in order of urgency; everything else is one click away in All tasks.
+  const live = useMemo(() => {
+    const rows = liveTasks(list, openRowThreadId);
+    const needs = rows.filter((row) => row.tone === "needs-you").length;
+    return rows.slice(0, Math.max(liveRowLimit, needs));
+  }, [list, openRowThreadId]);
+  const openCount = list.working.length + list.ready.length;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const doneShelf = useRef<HTMLLIElement | null>(null);
-  // Done takes the place of Tasks while it is open, at the height Tasks had,
-  // so Tabs below never move.
-  const tasksSection = useRef<HTMLElement | null>(null);
-  const [doneView, setDoneView] = useState<{ readonly height: number } | null>(null);
-  const quietTasks = directory.snapshot.quietTasksAvailable === true;
-  useEffect(() => {
-    if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
-  }, [hostClient, quietTasks, userId]);
-  const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
-  const doneRows = doneList?.rows ?? mainTasks.done;
-  const doneCount = doneList?.total ?? mainTasks.done.length;
-  const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
-  const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
-  const openDone = () => {
-    setDoneView({ height: tasksSection.current?.getBoundingClientRect().height ?? 0 });
-    markQuietSeen(moved);
-  };
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
-  useEffect(() => {
-    if (doneActive && doneShelf.current) revealInList(doneShelf.current);
-  }, [doneActive, openRowThreadId]);
+  const [side, setSide] = useSidebarSide(deploymentId, userId);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -443,16 +394,18 @@ export function Sidebar({
     },
     [onCloseMobile],
   );
-  const needsYou = directory.attention;
-  const openNeedsYou = () => {
-    const first = needsYou[0];
-    if (!first) return;
+  const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
+  const openAllTasks = (filter?: string) => {
     onCloseMobile();
-    nav.openConversation(nav.threadPath(first.threadId), { focusRequest: first.requestId });
+    nav.openConversation(filter ? `/tasks?filter=${filter}` : "/tasks");
   };
   const newTask = () => {
     onCloseMobile();
-    nav.openConversation("/new");
+    nav.openConversation("/");
+  };
+  const openVoice = () => {
+    onCloseMobile();
+    nav.openConversation("/voice");
   };
   const discardDraft = (target: ComposerDraftTarget) => {
     if (!deploymentId || !userId) return;
@@ -470,20 +423,7 @@ export function Sidebar({
       },
     });
   };
-  const discardTaskDraft = (row: TaskDraftRow, open: boolean) => {
-    // An open draft's composer goes first, so it cannot write the draft back.
-    if (open) nav.openConversation("/new");
-    discardDraft({ kind: "task", draftId: row.draftId });
-  };
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
-  const loadEarlier = () => {
-    if (loadingEarlier) return;
-    setLoadingEarlier(true);
-    void (doneView && quietTasks ? hostClient.loadEarlierDoneTasks() : onLoadEarlierTasks())
-      .catch(() => undefined)
-      .finally(() => setLoadingEarlier(false));
-  };
-
   // Put away, the sidebar is gone entirely; the restore control in the
   // conversation's or the place's head (with the count) and ⌘\ bring it back.
   if (collapsed)
@@ -498,58 +438,12 @@ export function Sidebar({
 
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
-  const rows = [...mainTasks.working, ...mainTasks.ready];
-  const days = doneView ? doneDays(doneRows, Date.now()) : [];
-  const doneMore = doneList?.hasMore ?? list.hasMore;
-  // A draft whose project is gone stays reachable, among Main's.
-  const projectIds = new Set(grouping.folders.map((folder) => folder.workspace.id));
-  const inProject = (draft: TaskDraftRow) =>
-    draft.workspaceId !== null && projectIds.has(draft.workspaceId);
-  const mainDrafts = drafts.tasks.filter((draft) => !inProject(draft));
-  const folders = grouping.folders.map((folder) => {
-    const open = !closedProjects.has(folder.workspace.id);
-    const shown = open ? folder.rows.slice(0, folderRowLimit) : [];
-    const folderDrafts = drafts.tasks.filter((draft) => draft.workspaceId === folder.workspace.id);
-    return {
-      folder,
-      folderDrafts,
-      open,
-      shown,
-      more: open ? folder.rows.length - shown.length : 0,
-      hidden: (folder.chat ? 1 : 0) + folder.rows.length + folderDrafts.length,
-      holdsOpenRow:
-        openRowThreadId !== null &&
-        (folder.chat?.threadId === openRowThreadId ||
-          folder.rows.some((row) => row.threadId === openRowThreadId)),
-    };
-  });
-  const doneLine = doneCount > 0 || moved.length > 0;
-  const rowKeys = doneView
-    ? [
-        ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
-        ...(doneMore ? ["show-more"] : []),
-      ]
-    : [
-        ...mainDrafts.map((draft) => `draft:${draft.draftId}`),
-        ...rows.map((row) => row.threadId),
-        ...(list.hasMore ? ["show-more"] : []),
-        ...(doneLine ? ["done-shelf"] : []),
-        ...(folders.length > 0 ? ["projects-head"] : []),
-        ...folders.flatMap(({ folder, folderDrafts, open, shown, more }) => [
-          `folder:${folder.workspace.id}`,
-          ...(open && folder.chat ? [folder.chat.threadId] : []),
-          ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
-          ...shown.map((row) => row.threadId),
-          ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
-        ]),
-      ];
-  const hasTasksSection = doneView !== null || rowKeys.length > 0;
-  const taskRow = (row: TaskRow, nested = false) => (
+  const rowKeys = [...live.map((row) => row.threadId), "all-tasks"];
+  const taskRow = (row: TaskRow) => (
     <TaskRowItem
       hostClient={hostClient}
       ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
       key={row.threadId}
-      nested={nested}
       onDiscardDraft={discardDraft}
       onNavigate={onCloseMobile}
       onSetDone={onSetTaskDone}
@@ -559,25 +453,6 @@ export function Sidebar({
       workspace={workspace}
     />
   );
-  const draftRow = (draft: TaskDraftRow, nested = false) => {
-    const path = inProject(draft)
-      ? `/workspaces/${encodeURIComponent(draft.workspaceId ?? "")}`
-      : "/new";
-    const open = pathname === path && searchParams.get("draft") === draft.draftId;
-    return (
-      <DraftRowItem
-        draft={draft}
-        key={`draft:${draft.draftId}`}
-        nav={nav}
-        nested={nested}
-        onDiscard={() => discardTaskDraft(draft, open)}
-        onNavigate={onCloseMobile}
-        open={open}
-        path={path}
-        work={workspace.work}
-      />
-    );
-  };
   const startPageOpen = workspace.selection.kind === "launcher";
   // The order the tab list shows; a change slides its rows to their new places.
   const motionSignature = [
@@ -597,7 +472,7 @@ export function Sidebar({
   };
   const tabRow = (slot: PlaceDescriptor, index: number, groupColor?: BrowserTabGroupColor) => (
     <TabRowItem
-      sort={slot.workspaceTab ? sort.handle : null}
+      sort={slot.personalTab ? sort.handle : null}
       groupColor={groupColor}
       onEditGroup={editGroup}
       active={slot.key === shownPlaceKey}
@@ -728,9 +603,11 @@ export function Sidebar({
       ref={sidebarRef}
     >
       <div className="sidebar__header">
+        <h1 className="sidebar__title">Opensteer</h1>
+        <VoiceButton onOpen={openVoice} />
         <button
           aria-expanded={searching}
-          aria-label="Search tasks and tabs"
+          aria-label="Search"
           className="icon-btn"
           onClick={openSearch}
           ref={searchButtonRef}
@@ -738,6 +615,15 @@ export function Sidebar({
           type="button"
         >
           <Icon name="search" />
+        </button>
+        <button
+          aria-label="New task"
+          className="icon-btn"
+          onClick={newTask}
+          title="New task · ⌘N"
+          type="button"
+        >
+          <Icon name="plus" />
         </button>
         {mobileOpen ? (
           <button
@@ -761,6 +647,12 @@ export function Sidebar({
           </button>
         )}
       </div>
+      <TasksBadgeSwitch
+        hostClient={hostClient}
+        onNavigate={onCloseMobile}
+        onSide={setSide}
+        side={side}
+      />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -781,250 +673,69 @@ export function Sidebar({
         shownPlaceKey={shownPlaceKey}
         sources={searchSources}
       >
-        <ChatRow
-          ask={homeThreadId ? (directory.attentionByThread.get(homeThreadId) ?? null) : null}
-          onNavigate={onCloseMobile}
-          open={openRowThreadId !== null && openRowThreadId === homeThreadId}
-          row={list.chat}
-          unsent={drafts.chat}
-          workspace={workspace}
-        />
-        <VoiceRow
-          asked={
-            snapshot.voiceThreadId !== null &&
-            requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0
-          }
-          onNavigate={onCloseMobile}
-          open={openThreadId !== null && openThreadId === snapshot.voiceThreadId}
-          threadId={snapshot.voiceThreadId}
-          workspace={workspace}
-        />
-        {/* No tasks yet, no heading: ⌘N and Chat are the ways to start
-                  one, and the heading arrives with the first. */}
-        {!hasTasksSection ? null : (
-          <section
-            aria-labelledby="sidebar-tasks"
-            className="side-section side-section--tasks"
-            onKeyDown={(event) => {
-              if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(null);
-            }}
-            ref={tasksSection}
-            style={
-              doneView?.height
-                ? {
-                    flex: "none",
-                    height: doneView.height,
-                    maxHeight: doneView.height,
-                    minHeight: 0,
-                  }
-                : sectionFloor(rowKeys.length)
-            }
-          >
-            {doneView ? (
-              <div className="side-head side-head--done">
-                <button
-                  aria-label="Back to Tasks"
-                  className="icon-btn icon-btn--small side-head__back"
-                  onClick={() => setDoneView(null)}
-                  title="Back to Tasks · Esc"
-                  type="button"
-                >
-                  <Icon name="chevron-left" />
-                </button>
-                <h2 className="side-head__title" id="sidebar-tasks">
-                  Done
-                </h2>
-                <span className="side-head__count">{doneCount}</span>
-              </div>
-            ) : (
+        <section
+          aria-labelledby={side === "tasks" ? "sidebar-tasks" : undefined}
+          aria-label={side === "tasks" ? undefined : "Team"}
+          className="side-section side-section--tasks"
+          style={sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)}
+        >
+          {side === "tasks" ? (
+            <>
               <div className="side-head">
                 <h2 className="side-head__title" id="sidebar-tasks">
                   Tasks
                 </h2>
-                {needsYou.length > 0 ? (
+                {needsYouCount > 0 ? (
                   <button
-                    aria-label={`${needsYou.length} ${needsYou.length === 1 ? "task needs" : "tasks need"} you. Open the first`}
+                    aria-label={`${needsYouCount} need you. Show them`}
                     className="side-needs"
-                    onClick={openNeedsYou}
-                    title="Open the first task that needs you"
+                    onClick={() => openAllTasks("needs-you")}
+                    title="Needs you"
                     type="button"
                   >
                     <span aria-hidden className="side-needs__bang">
                       !
                     </span>
-                    <span aria-hidden>{needsYou.length}</span>
+                    <span aria-hidden>{needsYouCount}</span>
                   </button>
                 ) : null}
-                <button
-                  aria-label="New task"
-                  className="icon-btn icon-btn--small side-head__action"
-                  onClick={newTask}
-                  title="New task · ⌘N"
-                  type="button"
-                >
-                  <Icon name="plus" />
-                </button>
               </div>
-            )}
-            <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
-              <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
-                {/* One keyed run, so a row that moves keeps its element and focus,
-                    and slides to its new place. */}
-                {doneView
-                  ? [
-                      ...days.flatMap((day) => [
-                        <li
-                          className="side-day"
-                          data-motion-key={`day:${day.id}`}
-                          key={`day:${day.id}`}
-                        >
-                          <h3 className="side-day__title">{day.title}</h3>
-                        </li>,
-                        ...day.rows.map((row) => taskRow(row)),
-                      ]),
-                      ...(days.length === 0
-                        ? [
-                            <li
-                              className="sidebar__empty"
-                              data-motion-key="done-empty"
-                              key="done-empty"
-                            >
-                              Nothing in Done yet.
-                            </li>,
-                          ]
-                        : []),
-                      ...(doneMore
-                        ? [
-                            <li data-motion-key="show-more" key="show-more">
-                              <button
-                                className="sidebar__more"
-                                disabled={loadingEarlier}
-                                onClick={loadEarlier}
-                                type="button"
-                              >
-                                {loadingEarlier ? "Loading…" : "Show more"}
-                              </button>
-                            </li>,
-                          ]
-                        : []),
-                    ]
-                  : [
-                      ...mainDrafts.map((draft) => draftRow(draft)),
-                      ...rows.map((row) => taskRow(row)),
-                      ...(list.hasMore
-                        ? [
-                            <li data-motion-key="show-more" key="show-more">
-                              <button
-                                className="sidebar__more"
-                                disabled={loadingEarlier}
-                                onClick={loadEarlier}
-                                type="button"
-                              >
-                                {loadingEarlier ? "Loading…" : "Show more"}
-                              </button>
-                            </li>,
-                          ]
-                        : []),
-                      ...(doneLine
-                        ? [
-                            <DoneLine
-                              active={doneActive}
-                              count={doneCount}
-                              hostClient={hostClient}
-                              key="done-shelf"
-                              lineRef={doneShelf}
-                              moved={moved}
-                              onOpen={openDone}
-                              onOpenTask={openTask}
-                              onSeen={markQuietSeen}
-                              quietTaskDays={directory.snapshot.quietTaskDays}
-                            />,
-                          ]
-                        : []),
-                      ...(folders.length > 0
-                        ? [
-                            <li
-                              className="side-subhead"
-                              data-motion-key="projects-head"
-                              key="projects-head"
-                            >
-                              <h3 className="side-subhead__title">
-                                <Link
-                                  className="side-subhead__link"
-                                  onClick={(event) => {
-                                    onCloseMobile();
-                                    openConversationRow(event, nav, "/projects");
-                                  }}
-                                  title="All projects"
-                                  to={nav.conversationHref("/projects")}
-                                >
-                                  Projects
-                                </Link>
-                              </h3>
-                              {onNewProject ? (
-                                <button
-                                  aria-label="New project"
-                                  className="icon-btn icon-btn--small side-head__action"
-                                  onClick={() => {
-                                    onCloseMobile();
-                                    onNewProject();
-                                  }}
-                                  title="New project"
-                                  type="button"
-                                >
-                                  <Icon name="plus" />
-                                </button>
-                              ) : null}
-                            </li>,
-                          ]
-                        : []),
-                      ...folders.flatMap(
-                        ({ folder, folderDrafts, open, shown, more, hidden, holdsOpenRow }) => [
-                          <ProjectFolderHeader
-                            current={openProjectId === folder.workspace.id}
-                            folder={folder}
-                            hiddenCount={hidden}
-                            holdsOpenRow={holdsOpenRow}
-                            key={`folder:${folder.workspace.id}`}
-                            nav={nav}
-                            onNavigate={onCloseMobile}
-                            onToggle={toggleProject}
-                            open={open}
-                          />,
-                          ...(open && folder.chat
-                            ? [
-                                <ProjectChatRow
-                                  key={folder.chat.threadId}
-                                  nav={nav}
-                                  onNavigate={onCloseMobile}
-                                  open={folder.chat.threadId === openRowThreadId}
-                                  row={folder.chat}
-                                  unsent={drafts.replies.has(folder.chat.threadId)}
-                                  work={workspace.work}
-                                />,
-                              ]
-                            : []),
-                          ...(open ? folderDrafts.map((draft) => draftRow(draft, true)) : []),
-                          ...shown.map((row) => taskRow(row, true)),
-                          ...(more > 0
-                            ? [
-                                <FolderMoreRow
-                                  count={more}
-                                  key={`more:${folder.workspace.id}`}
-                                  nav={nav}
-                                  onNavigate={onCloseMobile}
-                                  workspaceId={folder.workspace.id}
-                                />,
-                              ]
-                            : []),
-                        ],
-                      ),
-                    ]}
-              </RowMotion>
-            </SideList>
-          </section>
-        )}
-        {hasTasksSection ? <SideSplit onCommit={commitTasksShare} share={tasksShare} /> : null}
+              <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
+                <RowMotion
+                  snap={false}
+                  list={tasksList}
+                  signature={rowKeys.join(",")}
+                  lifted={false}
+                >
+                  {[
+                    ...live.map((row) => taskRow(row)),
+                    <li className="side-task side-all" data-motion-key="all-tasks" key="all-tasks">
+                      <Link
+                        aria-current={pathname === "/tasks" ? "page" : undefined}
+                        className="side-task__main"
+                        onClick={(event) => {
+                          onCloseMobile();
+                          openConversationRow(event, nav, "/tasks");
+                        }}
+                        to={nav.conversationHref("/tasks")}
+                      >
+                        <Icon name="list" />
+                        <span className="side-task__text">All tasks</span>
+                        {openCount > 0 ? (
+                          <span className="side-all__count">{openCount}</span>
+                        ) : null}
+                        <Icon className="side-all__chevron" name="chevron-right" />
+                      </Link>
+                    </li>,
+                  ]}
+                </RowMotion>
+              </SideList>
+            </>
+          ) : (
+            <TeamSideFor onNavigate={onCloseMobile} teamId={side} />
+          )}
+        </section>
+        <SideSplit onCommit={commitTasksShare} share={tasksShare} />
         <section
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
@@ -1202,110 +913,79 @@ function SideList({
   );
 }
 
-/* ---- Chat ---- */
+const selectSince = ({ since }: VoiceSnapshot) => since;
 
-function ChatRow({
-  ask,
-  onNavigate,
-  open,
-  row,
-  unsent,
-  workspace,
-}: {
-  readonly ask: { readonly title: string } | null;
-  readonly onNavigate: () => void;
-  readonly open: boolean;
-  readonly row: TaskRow | null;
-  /** Words are waiting here, unsent. */
-  readonly unsent: boolean;
-  readonly workspace: WorkspaceState;
-}) {
-  // Its state in words, for the row's name; the orb and its mark say it to the eye.
-  const named = row === null ? CHAT_THREAD_TITLE : taskRowLabel(row, { chat: true });
-  const label = unsent ? `${named}, unsent draft` : named;
-  const classes = ["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""];
+/** Voice, in the header: its clock while a call is live. */
+function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
+  const since = useVoiceValue(selectSince);
   return (
-    <div className={classes.filter(Boolean).join(" ")} data-voice-row="chat">
-      <Link
-        aria-current={open ? "page" : undefined}
-        aria-label={label}
-        className="side-home__main"
-        onClick={(event) => {
-          onNavigate();
-          openConversationRow(event, workspace.nav, "/");
-        }}
-        title={ask?.title}
-        to={workspace.nav.conversationHref("/")}
-      >
-        <ChatOrb size={20} />
-        <span className="side-home__title">{CHAT_THREAD_TITLE}</span>
-        {unsent ? <UnsentMark /> : null}
-        {row === null ? null : row.tone === "needs-you" ? (
-          <span aria-hidden className="side-bang">
-            !
-          </span>
-        ) : row.tone === "working" ? (
-          <span aria-hidden className="spinner side-home__spinner" />
-        ) : row.unread ? (
-          <span aria-hidden className="task-row__unread" />
-        ) : null}
-      </Link>
-    </div>
+    <button
+      aria-label={since !== null ? "Voice, call live" : "Voice"}
+      className={since !== null ? "icon-btn sidebar__voice is-live" : "icon-btn sidebar__voice"}
+      onClick={onOpen}
+      title="Voice"
+      type="button"
+    >
+      <Icon name="waveform" />
+      {since !== null ? <VoiceClock /> : null}
+    </button>
   );
 }
 
-const selectSince = ({ since }: VoiceSnapshot) => since;
-const selectOffered = ({ available, phase }: VoiceSnapshot) => available || phase !== "idle";
+/** Live tasks the sidebar lists before "All tasks": more only when more need the person. */
+const liveRowLimit = 5;
 
-/** The way to the person's Voice Thread, which shows a live call wherever they are. */
-function VoiceRow({
-  asked,
-  onNavigate,
-  open,
-  threadId,
-  workspace,
-}: {
-  readonly asked: boolean;
-  readonly onNavigate: () => void;
-  readonly open: boolean;
-  readonly threadId: string | null;
-  readonly workspace: WorkspaceState;
-}) {
-  const controller = useContext(VoiceContext);
-  const since = useVoiceValue(selectSince);
-  const offered = useVoiceValue(selectOffered);
-  // A Thread that exists holds history and Requests, whether or not a call can start.
-  if (threadId === null && (!controller || !offered)) return null;
-  const go = async () => {
-    const id = threadId ?? (await controller?.openThread());
-    if (!id) return;
-    onNavigate();
-    workspace.nav.openConversation(`/threads/${encodeURIComponent(id)}`);
-  };
-  return (
-    <div
-      className={["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <button
-        aria-current={open ? "page" : undefined}
-        className="side-home__main"
-        onClick={() => void go()}
-        type="button"
-      >
-        <Icon className="voice-thread-mark" name="waveform" />
-        <span className="side-home__title">Voice</span>
-        {since !== null ? (
-          <VoiceClock />
-        ) : asked ? (
-          <span aria-hidden className="side-bang">
-            !
-          </span>
-        ) : null}
-      </button>
-    </div>
+/** Which side of the switch this person last chose here; the app never changes it itself. */
+function useSidebarSide(
+  deploymentId: string | null,
+  userId: string | null,
+): readonly [string, (side: string) => void] {
+  const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
+  const [side, setSide] = useState(() => {
+    try {
+      return localStorage.getItem(key) ?? "tasks";
+    } catch {
+      return "tasks";
+    }
+  });
+  const { teams } = useTeams();
+  const choose = useCallback(
+    (next: string) => {
+      setSide(next);
+      try {
+        localStorage.setItem(key, next);
+      } catch {
+        // The choice still holds for this window.
+      }
+    },
+    [key],
   );
+  // A team that is gone leaves its side; Tasks is what remains.
+  return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
+}
+
+const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {
+  const needs = snapshot.needsYou?.count ?? 0;
+  if (needs > 0) return { kind: "needs-you", count: needs };
+  return taskList(snapshot).ready.some((row) => row.unread) ? { kind: "new" } : null;
+};
+const sameBadge = (left: SegmentBadge, right: SegmentBadge) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+/** The switch, with the Tasks badge read here so it never redraws the lists. */
+function TasksBadgeSwitch({
+  hostClient,
+  onNavigate,
+  onSide,
+  side,
+}: {
+  readonly hostClient: HostClient;
+  readonly onNavigate: () => void;
+  readonly onSide: (side: string) => void;
+  readonly side: string;
+}) {
+  const badge = useHostSelector(hostClient, selectTasksBadge, sameBadge);
+  return <TeamSwitch onNavigate={onNavigate} onSide={onSide} side={side} tasksBadge={badge} />;
 }
 
 /**
@@ -1334,76 +1014,9 @@ function openConversationRow(
 
 /* ---- Tasks ---- */
 
-/** A task not started yet: its first words, and the way to throw it away. */
-function DraftRowItem({
-  draft,
-  nav,
-  nested,
-  onDiscard,
-  onNavigate,
-  open,
-  path,
-  work,
-}: {
-  readonly draft: TaskDraftRow;
-  readonly nav: WorkspaceNavigation;
-  readonly nested: boolean;
-  readonly onDiscard: () => void;
-  readonly onNavigate: () => void;
-  readonly open: boolean;
-  readonly path: string;
-  readonly work: boolean;
-}) {
-  const classes = [
-    "side-task",
-    "side-task--draft",
-    nested ? "side-task--nested" : "",
-    open ? (work ? "is-open" : "is-filled") : "",
-    draft.refused ? "is-refused" : "",
-  ];
-  const state = draft.refused ? "Not started" : "Draft";
-  return (
-    <li
-      className={classes.filter(Boolean).join(" ")}
-      data-draft-id={draft.draftId}
-      data-motion-key={`draft:${draft.draftId}`}
-    >
-      <Link
-        aria-current={open ? "page" : undefined}
-        aria-label={`${state}: ${draft.title}`}
-        className="side-task__main"
-        onClick={(event) => {
-          onNavigate();
-          openConversationRow(event, nav, path, draft.draftId);
-        }}
-        title={draft.title}
-        to={nav.conversationHref(`${path}?draft=${encodeURIComponent(draft.draftId)}`)}
-      >
-        <span aria-hidden className="side-draft-mark">
-          <Icon name={draft.refused ? "alert-circle" : "pencil"} />
-        </span>
-        <span className="side-task__text">
-          <span className="side-task__title">{draft.title}</span>
-        </span>
-        <span className="side-draft-state">{state}</span>
-      </Link>
-      <button
-        aria-label={`Discard draft: ${draft.title}`}
-        className="side-row-action"
-        onClick={onDiscard}
-        title="Discard draft"
-        type="button"
-      >
-        <Icon name="close" />
-      </button>
-    </li>
-  );
-}
-
 const TaskRowItem = memo(function TaskRowItem({
   hostClient,
   ask,
-  nested,
   onDiscardDraft,
   onNavigate,
   onSetDone,
@@ -1414,8 +1027,6 @@ const TaskRowItem = memo(function TaskRowItem({
 }: {
   readonly hostClient: HostClient;
   readonly ask: string | null;
-  /** Inside a Project's folder. */
-  readonly nested: boolean;
   readonly onDiscardDraft: (target: ComposerDraftTarget) => void;
   readonly onNavigate: () => void;
   readonly onSetDone: (threadId: string, done: boolean) => void;
@@ -1427,16 +1038,10 @@ const TaskRowItem = memo(function TaskRowItem({
 }) {
   const { highlight, nav, work } = workspace;
   const threadId = row.threadId;
-  const canRename = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.threadRenameAvailable && homeThreadKind(threadId, snapshot) === null,
-  );
+  const canRename = useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable);
   const [editing, setEditing] = useState(false);
   const [changingIcon, setChangingIcon] = useState(false);
-  const canChangeIcon = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.taskMarksAvailable && homeThreadKind(threadId, snapshot) === null,
-  );
+  const canChangeIcon = useHostSelector(hostClient, (snapshot) => snapshot.taskMarksAvailable);
   const [menuAt, setMenuAt] = useState<{ readonly x: number; readonly y: number } | null>(null);
 
   const matches = useCallback((value: Highlight) => value.threadIds.includes(threadId), [threadId]);
@@ -1444,7 +1049,6 @@ const TaskRowItem = memo(function TaskRowItem({
   const needsYou = row.tone === "needs-you" && ask !== null;
   const classes = [
     "side-task",
-    nested ? "side-task--nested" : "",
     `side-task--${row.tone}`,
     open ? (work ? "is-open" : "is-filled") : "",
     lit ? "is-match" : "",
@@ -2094,7 +1698,7 @@ function SidebarFooter({
 /** The tab list's saved web tabs and group headers, as drag-and-drop sees them. */
 function sortRowsOf(strip: BrowserTabStrip<PlaceDescriptor>): SortRow[] {
   const tab = (place: PlaceDescriptor, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
-    place.workspaceTab && place.destination.kind === "browser" && place.destination.tabId
+    place.personalTab && place.destination.kind === "browser" && place.destination.tabId
       ? [
           {
             kind: "tab",

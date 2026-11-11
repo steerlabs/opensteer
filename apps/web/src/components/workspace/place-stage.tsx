@@ -3,8 +3,8 @@ import { browserPlaceUnavailableReason, threadMark } from "@opensteer/client/hos
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import type { ReactNode } from "react";
-import type { HostClient, PlaceItem, WorkspaceSurfaceDestination } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema, CHAT_THREAD_TITLE } from "@opensteer/core";
+import type { HostClient, PlaceItem, PersonalSurfaceDestination } from "@opensteer/client/host";
+import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { useHostSelector, usePhoneTabView, usePlaceList } from "@opensteer/client/react";
 import { usePageVisible } from "../../ui-utils.js";
 import { PlaceBrowserView, type BrowserChromeSignIn } from "../browser/browser-view.js";
@@ -13,7 +13,7 @@ import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
-import { TaskMark, TaskBadge, ChatOrb } from "./task-mark.js";
+import { TaskMark, TaskBadge, AgentOrb } from "./task-mark.js";
 import { AppTab, AppTabGone } from "./app-tab.js";
 import { useBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";
@@ -142,8 +142,7 @@ function SelectedPlace({
     selection.kind === "place" && selection.destination.kind === "browser" && selectedTab
       ? { sessionId: selection.destination.sessionId, tabId: selectedTab }
       : null;
-  const dockedThread =
-    !phone && dock.open ? conversationAt(pathname, directory.homeThreadId) : null;
+  const dockedThread = !phone && dock.open ? conversationAt(pathname) : null;
   const showBrowserTab = useCallback(
     (
       destination: { readonly sessionId: string; readonly tabId: string },
@@ -154,11 +153,7 @@ function SelectedPlace({
   const pair = useBrowserThreadPair({
     hostClient,
     mark: dockedThread ? (
-      dockedThread === directory.homeThreadId ? (
-        <ChatOrb size={16} />
-      ) : (
-        <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
-      )
+      <TaskMark mark={threadMark(dockedThread, directory.snapshot)} size={16} />
     ) : null,
     onShow: showBrowserTab,
     shown: shownBrowser,
@@ -179,7 +174,7 @@ function SelectedPlace({
   );
   const [retry, setRetry] = useState(0);
   const opening = useMemo(() => crypto.randomUUID(), [nav.placeOpening, retry, selectedTab]);
-  const durable = live?.workspaceTab;
+  const durable = live?.personalTab;
   const rowState = durable?.state;
   const currentSessionId = live?.destination.kind === "browser" ? live.destination.sessionId : null;
   const placement = placements.find((value) => value.runnerId === live?.device?.machineId);
@@ -189,7 +184,7 @@ function SelectedPlace({
     durable?.unavailableReason,
     placement?.unavailableReason,
   );
-  const activate = hostClient.activateWorkspaceTab;
+  const activate = hostClient.activatePersonalTab;
   useLayoutEffect(() => {
     if (rowState === "live") {
       if (
@@ -423,7 +418,7 @@ function PhoneTab({
   place,
   trailing,
 }: {
-  readonly destination: Extract<WorkspaceSurfaceDestination, { kind: "phone" }>;
+  readonly destination: Extract<PersonalSurfaceDestination, { kind: "phone" }>;
   readonly hostClient: HostClient;
   readonly hostConnected: boolean;
   readonly inFront: boolean;
@@ -554,11 +549,9 @@ function ChatToggle({ directory }: { readonly directory: TaskDirectory }) {
         <Icon name="panel" />
       </button>
     );
-  const threadId = conversationAt(pathname, directory.homeThreadId);
-  // "/" is Chat even before Chat has a Thread.
-  const home = pathname === "/" || (threadId !== null && threadId === directory.homeThreadId);
+  const threadId = conversationAt(pathname);
   const row = threadId ? directory.rows.get(threadId) : undefined;
-  const title = home ? CHAT_THREAD_TITLE : (row?.title ?? "Conversation");
+  const title = row?.title ?? (pathname === "/" ? "New task" : "Conversation");
   return (
     <button
       aria-controls="workspace-conversation"
@@ -574,9 +567,7 @@ function ChatToggle({ directory }: { readonly directory: TaskDirectory }) {
       title="Show the conversation"
       type="button"
     >
-      {home ? (
-        <ChatOrb size={16} />
-      ) : threadId ? (
+      {threadId ? (
         <span className="task-request-mark">
           <TaskMark size={16} mark={threadMark(threadId, directory.snapshot)} />
           <TaskBadge state={row?.tone ?? "working"} />

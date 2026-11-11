@@ -14,7 +14,6 @@ type FoundMessage = ThreadMessagePage["messages"][number];
 interface ThreadFindProps {
   readonly client: HostClient;
   /** The reader's Chat: a result that came from it says so. */
-  readonly homeThreadId: string | null;
   /** Closes the panel and returns the keyboard where it came from. */
   readonly onClose: () => void;
   /**
@@ -30,7 +29,7 @@ interface ThreadFindProps {
  * Find in conversation: a Host-side query over this Thread's messages, with
  * every result addressed by its exact source id.
  */
-export function ThreadFind({ client, homeThreadId, onClose, onJump, threadId }: ThreadFindProps) {
+export function ThreadFind({ client, onClose, onJump, threadId }: ThreadFindProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly FoundMessage[] | null>(null);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
@@ -172,7 +171,7 @@ export function ThreadFind({ client, homeThreadId, onClose, onJump, threadId }: 
               >
                 <span className="thread-find__result-head">
                   <span className="thread-find__result-author">
-                    {messageAuthorName(message.author, message.kind, homeThreadId)}
+                    {messageAuthorName(message.author)}
                   </span>
                   <time dateTime={message.createdAt}>{formatRelativeTime(message.createdAt)}</time>
                 </span>

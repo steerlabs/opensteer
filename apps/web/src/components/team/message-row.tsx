@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
-import { ChatOrb, WorkingRing } from "../workspace/task-mark.js";
+import { AgentOrb, WorkingRing } from "../workspace/task-mark.js";
 import { AgentWorkFooter } from "./agent-status-card.js";
 import { MessageBody, MessageFiles } from "./message-body.js";
 import { AuthorAvatar, FaceStack } from "./team-marks.js";
@@ -185,7 +185,7 @@ export const MessageRow = memo(function MessageRow({
               title="Ask my agent about this · opens the thread"
               type="button"
             >
-              <ChatOrb size={16} />
+              <AgentOrb size={16} />
               Ask my agent
             </button>
           ) : null}

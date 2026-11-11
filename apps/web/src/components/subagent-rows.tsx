@@ -269,7 +269,7 @@ export const AgentRow = memo(function AgentRow({
   const taskPath =
     card.opens?.kind === "thread"
       ? (workspace?.nav.threadPath(card.opens.threadId) ??
-        `/threads/${encodeURIComponent(card.opens.threadId)}`)
+        `/tasks/${encodeURIComponent(card.opens.threadId)}`)
       : null;
   return (
     <div

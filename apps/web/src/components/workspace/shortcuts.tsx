@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
-import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
+import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 import { desktopBridge } from "../../desktop/desktop-bridge.js";
 import { useLocation } from "react-router";
 import { taskList, type HostClient } from "@opensteer/client/host";
 import { placeList } from "@opensteer/client/host";
 import { actionErrorMessage, fromLivePage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
-import { destinationPlaceKey } from "./navigation.js";
+import { destinationPlaceKey, taskAt } from "./navigation.js";
 import { useTabCloser } from "./tab-closer.js";
 import { tabOrder } from "./tab-order.js";
 import { useToast } from "../toast.js";
@@ -44,7 +44,7 @@ export function useWorkspaceShortcuts({
   state.current = { nav, onNewTab, onShowShortcuts, pathname, requestClose, selection, startPage };
 
   useEffect(() => {
-    const execute = (command: DesktopWorkspaceTabCommand) => {
+    const execute = (command: DesktopPersonalTabCommand) => {
       const { nav, onNewTab, requestClose, selection, startPage } = state.current;
       const places = tabOrder(
         placeList(hostClient.getSnapshot()),
@@ -57,13 +57,9 @@ export function useWorkspaceShortcuts({
           onNewTab();
           return;
         case "reopen-closed-tab": {
-          if (
-            !hostClient.getSnapshot().workspaceTabReopenAvailable ||
-            !hostClient.reopenWorkspaceTab
-          )
-            return;
+          if (!hostClient.getSnapshot().tabReopenAvailable || !hostClient.reopenPersonalTab) return;
           const show = nav.beginPlaceOperation();
-          void hostClient.reopenWorkspaceTab().then(
+          void hostClient.reopenPersonalTab().then(
             (result) =>
               show({
                 kind: "browser",
@@ -107,7 +103,7 @@ export function useWorkspaceShortcuts({
         }
       }
     };
-    const nativeCommands = desktop ? desktopBridge()?.onWorkspaceTabCommand?.(execute) : undefined;
+    const nativeCommands = desktop ? desktopBridge()?.onPersonalTabCommand?.(execute) : undefined;
     const handle = (event: KeyboardEvent) => {
       // The menu consumes native tab chords before they reach Chromium. The
       // DOM path is for hosts without native accelerators and runs before a
@@ -141,16 +137,10 @@ export function useWorkspaceShortcuts({
       if (command && event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
         const list = taskList(snapshot);
         const order = [
-          ...(list.chat ? [list.chat.threadId] : []),
           ...list.working.map((row) => row.threadId),
           ...list.ready.map((row) => row.threadId),
         ];
-        const open =
-          pathname === "/"
-            ? snapshot.homeThreadId
-            : pathname.startsWith("/threads/")
-              ? decodeURIComponent(pathname.slice("/threads/".length).split("/")[0]!)
-              : null;
+        const open = taskAt(pathname);
         const at = open ? order.indexOf(open) : -1;
         const next = order[at + (event.key === "ArrowUp" ? -1 : 1)];
         if (next === undefined) return;
@@ -173,7 +163,7 @@ export function useWorkspaceShortcuts({
   }, [desktop, hostClient, toast]);
 }
 
-export function workspaceTabKey(event: KeyboardEvent): DesktopWorkspaceTabCommand | null {
+export function workspaceTabKey(event: KeyboardEvent): DesktopPersonalTabCommand | null {
   const command = event.metaKey || event.ctrlKey;
   if (
     command &&

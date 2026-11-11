@@ -18,13 +18,15 @@ export function configureDesktopPermissions(
     if (permission === "usb") return usbDevices?.permitsRequest(origin) ?? false;
     return (
       (permission === "clipboard-sanitized-write" ||
+        // Team messages notify from the renderer's own team sockets.
+        permission === "notifications" ||
         (permission === "media" && details.mediaType === "audio")) &&
       policy.isAppOrigin(origin) &&
       ownPage(contents, details.isMainFrame, details.requestingUrl ?? "")
     );
   });
   session.setPermissionRequestHandler((contents, permission, callback, details) => {
-    if (permission === "clipboard-sanitized-write") {
+    if (permission === "clipboard-sanitized-write" || permission === "notifications") {
       callback(
         ownPage(contents, details.isMainFrame, details.requestingUrl) &&
           policy.isAppOrigin(new URL("/", details.requestingUrl).href) &&

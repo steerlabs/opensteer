@@ -1,4 +1,4 @@
-import type { WorkspaceTabLineage } from "@opensteer/client/host";
+import type { PersonalTabLineage } from "@opensteer/client/host";
 import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { readFileSync } from "node:fs";
@@ -18,7 +18,7 @@ import {
   ThreadIdSchema,
   WorkspaceIdSchema,
 } from "@opensteer/core";
-import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
+import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
 
@@ -47,7 +47,7 @@ describe("personal browser tab groups", () => {
         const held = projections.get(snapshot);
         if (held) return held;
         const saved: HostSnapshot = seedBrowserSnapshot(
-          { ...snapshot, workspaceTabRestoreVersion: 1 } as HostSnapshot,
+          { ...snapshot, tabRestoreVersion: 1 } as HostSnapshot,
           snapshot.browserSessions.map(
             (session) =>
               ({
@@ -72,7 +72,7 @@ describe("personal browser tab groups", () => {
                   sessionId: session.id,
                   state: "live",
                 })),
-              }) as unknown as WorkspaceTabLineage,
+              }) as unknown as PersonalTabLineage,
           ),
         );
         const keyed = seedBrowserSnapshot(saved);
@@ -278,12 +278,12 @@ describe("personal browser tab groups", () => {
     }
   });
   it("native tab commands follow the visible strip", async () => {
-    let receive: ((command: DesktopWorkspaceTabCommand) => void) | null = null;
+    let receive: ((command: DesktopPersonalTabCommand) => void) | null = null;
     vi.stubGlobal("opensteerDesktop", {
       getLocalVisibility: async () => true,
       onLocalVisibilityChanged: () => () => undefined,
       setBadgeCount: vi.fn(async () => undefined),
-      onWorkspaceTabCommand: (listener: typeof receive) => {
+      onPersonalTabCommand: (listener: typeof receive) => {
         receive = listener;
         return () => {
           receive = null;
@@ -373,7 +373,7 @@ describe("personal browser tab groups", () => {
     );
     expect(header().getAttribute("aria-label")).toBe("Visible, 1 tabs");
     expect(element(".side-tab-group__count").textContent).toBe("1");
-    const close = vi.spyOn(client, "closeWorkspaceTabs");
+    const close = vi.spyOn(client, "closePersonalTabs");
     await edit();
     await click(action("Close group"));
     const confirmation = document.querySelector('[role="dialog"] .btn--danger');
@@ -391,7 +391,7 @@ describe("personal browser tab groups", () => {
               ...snapshot,
               browserSessions: snapshot.browserSessions.map((session) => ({
                 ...session,
-                workspaceTabRestoreVersion: undefined,
+                tabRestoreVersion: undefined,
               })),
               browserTabGroups: {
                 revision: 1,
@@ -413,7 +413,7 @@ describe("personal browser tab groups", () => {
       return "/";
     });
     const live = placeList(client.getSnapshot()).find((place) => place.kind === "browser")!;
-    expect(live.workspaceTab).toBeUndefined();
+    expect(live.personalTab).toBeUndefined();
     expect(client.getSnapshot().browserTabGroups).toBeDefined();
     await menu(live);
     const labels = [...document.querySelectorAll('[role="menuitem"]')].map((item) =>
@@ -434,7 +434,7 @@ describe("personal browser tab groups", () => {
     });
     await settle();
     const before = placeList(client.getSnapshot());
-    const close = vi.spyOn(client, "closeWorkspaceTabs");
+    const close = vi.spyOn(client, "closePersonalTabs");
     await edit();
     await click(action("Close group"));
     const confirmation = document.querySelector('[role="dialog"] .btn--danger');

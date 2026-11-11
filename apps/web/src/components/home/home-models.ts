@@ -38,6 +38,8 @@ export interface TaskRowView {
   /** What it asks of the person, when it needs them. */
   readonly ask: string | null;
   readonly source: TaskSourceView | null;
+  /** Where it works, for a task no team thread started: "~/code/opensteer". */
+  readonly folder?: string | null | undefined;
   /** Home's longer line: "Working · reading the order history". */
   readonly status: string | null;
   readonly updatedAt: string;

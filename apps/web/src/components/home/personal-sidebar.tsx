@@ -1,7 +1,7 @@
 import { memo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
-import { ChatOrb, TaskMark, TaskState } from "../workspace/task-mark.js";
+import { AgentOrb, TaskMark, TaskState } from "../workspace/task-mark.js";
 import { TeamTile } from "../team/team-marks.js";
 import { channelLabel } from "../team/team-models.js";
 import type { FolderGroupView, TaskRowView, TaskSourceView } from "./home-models.js";
@@ -80,7 +80,7 @@ export function PersonalTopRows({
           open={open === "new-task"}
           title="New task · ⌘N"
         >
-          <ChatOrb size={20} />
+          <AgentOrb size={20} />
           <span className="side-home__title">New task</span>
           <kbd className="side-key">⌘N</kbd>
         </RowLink>

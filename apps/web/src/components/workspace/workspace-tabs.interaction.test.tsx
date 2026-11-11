@@ -15,7 +15,7 @@ import {
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
-import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
+import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
 import { placeSuccessor } from "./place-succession.js";
@@ -86,7 +86,7 @@ describe("workspace tab commands", () => {
     expect(new URLSearchParams(history.at(-1)!.search).has("browserTab")).toBe(false);
   });
 
-  let receive: ((command: DesktopWorkspaceTabCommand) => void) | null = null;
+  let receive: ((command: DesktopPersonalTabCommand) => void) | null = null;
   function nativeMenu() {
     const unsubscribe = vi.fn(() => {
       receive = null;
@@ -95,14 +95,14 @@ describe("workspace tab commands", () => {
       getLocalVisibility: async () => true,
       onLocalVisibilityChanged: () => () => undefined,
       setBadgeCount: vi.fn(async () => undefined),
-      onWorkspaceTabCommand: (listener: typeof receive) => {
+      onPersonalTabCommand: (listener: typeof receive) => {
         receive = listener;
         return unsubscribe;
       },
     });
     return unsubscribe;
   }
-  async function command(value: DesktopWorkspaceTabCommand) {
+  async function command(value: DesktopPersonalTabCommand) {
     expect(receive).not.toBeNull();
     // act flushes the command's React updates; the following assertions observe its result.
     await act(async () => receive?.(value));

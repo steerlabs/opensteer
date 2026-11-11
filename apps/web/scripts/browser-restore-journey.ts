@@ -330,7 +330,7 @@ try {
       );
       const snapshot = client.getSnapshot();
       const store = client.browserTabs;
-      const group = store.group(store.groupForTab(snapshot.activatingWorkspaceTabs![0]!)!)!;
+      const group = store.group(store.groupForTab(snapshot.activatingPersonalTabs![0]!)!)!;
       const label = snapshot.browserPlacements.find(
         (placement) => placement.runnerId === group.placement.runnerId,
       )!.label;
@@ -360,7 +360,7 @@ try {
     await page.waitForFunction(
       () =>
         (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot()
-          .activatingWorkspaceTabs?.length === 0,
+          .activatingPersonalTabs?.length === 0,
     );
     const observed = {
       ...(await state()),
@@ -390,7 +390,7 @@ try {
     const pending = await page.evaluate(
       () =>
         (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot()
-          .activatingWorkspaceTabs,
+          .activatingPersonalTabs,
     );
     const observed = { ...(await state()), pending };
     expectThat(
@@ -413,7 +413,7 @@ try {
         window,
         "oldActivation",
         client
-          .activateWorkspaceTab(client.getSnapshot().activatingWorkspaceTabs![0]!)
+          .activatePersonalTab(client.getSnapshot().activatingPersonalTabs![0]!)
           .then((outcome) => {
             Reflect.set(window, "oldActivationOutcome", outcome);
           }),
@@ -424,7 +424,7 @@ try {
     const observed = await page.evaluate(() => {
       const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
       return {
-        pending: snapshot.activatingWorkspaceTabs,
+        pending: snapshot.activatingPersonalTabs,
         oldOutcome: Reflect.get(window, "oldActivationOutcome"),
         sessions: snapshot.browserSessions.map((session) => session.id),
       };

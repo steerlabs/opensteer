@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   parseNavigationInput,
   phonePlaceKey,
-  type WorkspaceSurfaceDestination as SurfaceDestination,
+  type PersonalSurfaceDestination as SurfaceDestination,
 } from "@opensteer/client/host";
 import { AppIdSchema } from "@opensteer/core";
 
@@ -374,6 +374,17 @@ export function isSettingsPath(pathname: string): boolean {
  */
 export const setupPath = "/get-started";
 
+/** A task's address. */
+export function taskPath(threadId: string): string {
+  return `/tasks/${encodeURIComponent(threadId)}`;
+}
+
+/** The task a path shows, if it shows one. */
+export function taskAt(pathname: string): string | null {
+  const match = /^\/tasks\/([^/]+)/u.exec(pathname);
+  return match ? decodeURIComponent(match[1]!) : null;
+}
+
 export function isSetupPath(pathname: string): boolean {
   return pathname === setupPath;
 }
@@ -394,7 +405,7 @@ export interface WorkspaceNavigation {
   ) => void;
   /** Back from Settings to the conversation and place left for it, or Home if opened there. */
   readonly leaveSettings: () => void;
-  /** The path of a conversation: Chat at the root, a task under /threads. */
+  /** The path of a task: under /tasks. */
   readonly threadPath: (threadId: string) => string;
   /** Task row, task line, the menu under a name: the conversation only. */
   readonly openConversation: (
@@ -464,10 +475,7 @@ interface Address {
   readonly search: string;
 }
 
-export function useWorkspaceNavigation(
-  scope: PlaceMemoryScope,
-  homeThreadId: string | null,
-): WorkspaceNavigation {
+export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNavigation {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
@@ -526,11 +534,7 @@ export function useWorkspaceNavigation(
     [deploymentId, go, userId],
   );
 
-  const threadPath = useCallback(
-    (threadId: string) =>
-      threadId === homeThreadId ? "/" : `/threads/${encodeURIComponent(threadId)}`,
-    [homeThreadId],
-  );
+  const threadPath = useCallback((threadId: string) => taskPath(threadId), []);
   const conversationHref = useCallback((to: string): To => areaAddress(to, search), [search]);
   const openPage = useCallback<WorkspaceNavigation["openPage"]>(
     (to, options) => {

@@ -634,7 +634,7 @@ export function ThreadIntegrationAction({
         bridge: desktopBridge(),
         client: hostClient,
         onStarted: tracking.started,
-        returnPath: `/threads/${encodeURIComponent(threadId)}`,
+        returnPath: `/tasks/${encodeURIComponent(threadId)}`,
         begin: async (returnPath, finish) => {
           const next = await prepare();
           const nextCard = connectCard({
@@ -944,7 +944,7 @@ export function ThreadIntegrationAction({
         const started = await connectOperations.beginAuthorization({
           applicationSource: source,
           definitionId: plan.definition!.id,
-          returnPath: `/threads/${encodeURIComponent(threadId)}`,
+          returnPath: `/tasks/${encodeURIComponent(threadId)}`,
           ...(returnRoute ? { returnRoute } : {}),
         });
         await handOffAuthorization(started);
@@ -957,7 +957,7 @@ export function ThreadIntegrationAction({
           bridge,
           client: hostClient,
           onStarted: tracking.started,
-          returnPath: `/threads/${encodeURIComponent(threadId)}`,
+          returnPath: `/tasks/${encodeURIComponent(threadId)}`,
           ...(returnRoute ? { returnRoute } : {}),
           begin: async (returnPath, finish) => {
             const result = await hostClient.dispatch({

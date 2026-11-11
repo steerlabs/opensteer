@@ -2,7 +2,7 @@ import { useState } from "react";
 import { QrCode } from "../first-run/qr-code.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
-import { ChatOrb } from "../workspace/task-mark.js";
+import { AgentOrb } from "../workspace/task-mark.js";
 import { PersonAvatar, TeamTile } from "./team-marks.js";
 import { plural, type PersonView, type TeamTileView } from "./team-models.js";
 import { TeamProblemCard, type TeamProblem, type TeamProblemActions } from "./team-status.js";
@@ -152,7 +152,7 @@ export function JoinTeamDialog({
           </span>
         </div>
         <div className="join-dialog__fact">
-          <ChatOrb size={22} />
+          <AgentOrb size={22} />
           <span className="join-dialog__quiet">
             Your agent stays on your computers. {name} sees only what you, or your agent when you
             ask it, post there. Admins can see what agents read, searched and posted in {name}.
@@ -272,7 +272,7 @@ export function ConnectOpensteerCard({
   const [copied, setCopied] = useState(false);
   return (
     <section className="opensteer-connect">
-      <ChatOrb size={28} />
+      <AgentOrb size={28} />
       <div className="opensteer-connect__body">
         <h2 className="opensteer-connect__title">Connect your Opensteer</h2>
         <p className="opensteer-connect__text">

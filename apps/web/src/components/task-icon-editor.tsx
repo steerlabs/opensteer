@@ -2,7 +2,7 @@ import { useState } from "react";
 import { mutationIdempotencyKey, threadMark, type HostClient } from "@opensteer/client/host";
 import { useTaskSnapshot } from "./task-rows.js";
 import { Popover } from "./popover.js";
-import { WorkspaceIconPicker } from "./workspace-icon-picker.js";
+import { TaskIconPicker } from "./task-icon-picker.js";
 
 export function TaskIconEditor({
   anchor,
@@ -21,9 +21,7 @@ export function TaskIconEditor({
   return (
     <Popover anchor={anchor} label="Task icon" role="dialog" onClose={onClose}>
       <div aria-busy={saving}>
-        <WorkspaceIconPicker
-          task
-          name=""
+        <TaskIconPicker
           color={mark.color}
           value={mark.icon}
           onChange={(icon) => {

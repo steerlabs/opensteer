@@ -25,7 +25,7 @@ import { TaskMark } from "./workspace/task-mark.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 
 function taskHref(assignment: AssignmentSummary): string {
-  return `/threads/${assignment.workerThread.id}`;
+  return `/tasks/${assignment.workerThread.id}`;
 }
 
 /**
@@ -38,9 +38,7 @@ function useObservedWorker(entry: AssignmentEntry): void {
   const { hostClient, snapshot } = useShell();
   const assignment = currentAssignment(entry, snapshot.assignments);
   const workerThreadId = assignment.workerThread.id;
-  const observe =
-    assignment.status === "open" ||
-    !snapshot.workspaces.some(({ id }) => id === assignment.workerThread.workspaceId);
+  const observe = assignment.status === "open";
   useEffect(
     () => (observe ? hostClient.observeThread(workerThreadId) : undefined),
     [hostClient, observe, workerThreadId],
@@ -146,7 +144,7 @@ export function DelegationLine({
   snapshot,
 }: {
   delegation: DelegationEntry;
-  snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads" | "workspaceTasks">;
+  snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads">;
 }) {
   const workspace = useOptionalWorkspace();
   const presentation = delegationPresentation(delegation, snapshot);
@@ -165,7 +163,7 @@ export function DelegationLine({
         mark={threadMark(childThreadId, snapshot)}
         presentation={presentation}
         title={title}
-        to={workspace ? workspace.nav.threadPath(childThreadId) : `/threads/${childThreadId}`}
+        to={workspace ? workspace.nav.threadPath(childThreadId) : `/tasks/${childThreadId}`}
         tooltip={summary}
       />
     </div>

@@ -2,7 +2,7 @@
 import { act } from "react";
 import { expect, it, vi } from "vitest";
 import type {
-  DesktopWorkspaceTabCommand,
+  DesktopPersonalTabCommand,
   OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import { placeList } from "@opensteer/client/host";
@@ -18,9 +18,9 @@ import {
 } from "./workspace.interaction.test-support.js";
 import { tabOrder } from "./tab-order.js";
 
-let execute: ((command: DesktopWorkspaceTabCommand) => void) | undefined;
+let execute: ((command: DesktopPersonalTabCommand) => void) | undefined;
 const bridge = {
-  onWorkspaceTabCommand: (listener: typeof execute) => {
+  onPersonalTabCommand: (listener: typeof execute) => {
     execute = listener;
     return () => {
       execute = undefined;
@@ -36,7 +36,7 @@ vi.mock("../../desktop/desktop-bridge.js", async (original) => ({
   ...(await original<typeof import("../../desktop/desktop-bridge.js")>()),
   desktopBridge: () => bridge,
 }));
-async function command(value: DesktopWorkspaceTabCommand) {
+async function command(value: DesktopPersonalTabCommand) {
   expect(execute).toBeDefined();
   await act(async () => execute!(value));
   await settle();

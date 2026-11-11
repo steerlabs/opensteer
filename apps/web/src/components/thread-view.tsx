@@ -47,7 +47,6 @@ import {
   type ThreadSummary,
   type HostClient,
   type TranscriptEntry,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { useThreadInputQueue } from "@opensteer/client/react";
@@ -84,39 +83,28 @@ import { ThreadFind } from "./thread-find.js";
 import { BrandMark } from "./brand.js";
 import { useVisualViewportKeyboardInset } from "./visual-viewport-keyboard.js";
 import { ConversationHeader } from "./workspace/conversation-header.js";
-import { WorkspaceOrb } from "./workspace-orb.js";
 import { useBarYield } from "./workspace/bar-yield.js";
 import { RunPage, useRunPage } from "./workspace/run-page.js";
 import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
-import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
-import { homeThreadKind, useTaskDirectory } from "./workspace/task-directory.js";
+import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
+import { useTaskDirectory } from "./workspace/task-directory.js";
+import { TaskAudienceLine, TaskSourceChip } from "../team/task-source-chip.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
-  const { snapshot } = useShell();
-  const location = useLocation();
-  if (threadId && homeThreadKind(threadId, snapshot) === "main")
-    return <Navigate replace to={{ ...location, pathname: "/" }} state={location.state} />;
   return <ThreadSurface threadId={threadId ?? null} />;
 }
 
-/**
- * One conversation, wherever it is reached from. Home and a focused task are
- * the same surface: the only difference is what the breadcrumb calls it and
- * that Home never offers to hand a quote anywhere else.
- */
+/** One task, wherever it is reached from: a row, a link, Voice. */
 export function ThreadSurface({ threadId }: { readonly threadId: string | null }) {
   const { hostClient, placements, snapshot } = useShell();
   const thread = snapshot.threads.find((candidate) => candidate.id === threadId) ?? null;
-  const workspace = thread
-    ? (snapshot.workspaces.find((candidate) => candidate.id === thread.workspaceId) ?? null)
-    : null;
   useEffect(() => {
     if (threadId) hostClient.activateThread(threadId);
   }, [hostClient, threadId, thread?.id]);
 
-  if (!thread || !workspace) {
+  if (!thread) {
     if (threadId && snapshot.threadLookups[threadId] === "missing")
       return <Navigate replace to="/" />;
     if (threadId && snapshot.threadLookups[threadId] === "failed")
@@ -145,7 +133,6 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
   return (
     <ThreadView
       key={`${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`}
-      home={homeThreadKind(thread.id, snapshot) === "main"}
       requests={snapshot.requests[thread.id] ?? []}
       canLoadEarlier={snapshot.transcriptWindows[thread.id]?.hasMore ?? false}
       entries={snapshot.transcripts[thread.id] ?? []}
@@ -160,7 +147,6 @@ export function ThreadSurface({ threadId }: { readonly threadId: string | null }
           (thread.id !== snapshot.voiceThreadId || placement.driverKind === "codex"),
       )}
       thread={thread}
-      workspace={workspace}
     />
   );
 }
@@ -171,10 +157,7 @@ interface ThreadViewProps {
   entries: TranscriptEntry[];
   environmentStatus: EnvironmentStatus;
   executionPlacements: ThreadPlacementOption[];
-  /** Whether this is the Home conversation, which owns quotes from elsewhere. */
-  home?: boolean;
   thread: ThreadSummary;
-  workspace: WorkspaceSummary;
 }
 
 /** Where each conversation was left, by deployment, user and Thread. */
@@ -192,10 +175,8 @@ function ThreadView({
   entries,
   environmentStatus,
   executionPlacements,
-  home = false,
   requests,
   thread,
-  workspace,
 }: ThreadViewProps) {
   const { nav, phone, selection, work } = useWorkspace();
   // A subagent opened from this conversation: in its column, or beside it when it stands alone and wide.
@@ -210,9 +191,7 @@ function ThreadView({
   const phoneStage = phone && work;
   const keyboardInset = useVisualViewportKeyboardInset();
   const {
-    clearHomeHandoff,
     executionPreferences,
-    homeHandoff,
     hostClient,
     openHarnessAuthentication,
     refreshHarnessCatalog,
@@ -337,7 +316,7 @@ function ThreadView({
     });
     return () => cancelAnimationFrame(frame);
   }, [dockedRequests, focusTarget, openRequest, openRequestId, requests]);
-  const conversational = thread.role === "conversation";
+  const conversational = thread.purpose === "voice";
   // In work, a message waiting behind the current turn stands unsent at the
   // conversation's foot until a Run takes it. In a conversation the reply under
   // way takes it, so the reader's own waiting words are a sent bubble there.
@@ -799,26 +778,13 @@ function ThreadView({
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
   const replyWith = (message: MessageEntry) => {
-    const quote = quoteFromMessage(message, snapshot.homeThreadId);
+    const quote = quoteFromMessage(message);
     setRestoredDraft((current) => ({
       composer: composerKey,
       restore: { key: (current?.restore.key ?? 0) + 1, quote, text: "" },
     }));
     requestAnimationFrame(() => composerInputRef.current?.focus());
   };
-
-  // A request handed over from elsewhere lands in Chat's composer, focused and
-  // unsent. It is taken once, so returning here later starts from this
-  // conversation's own draft.
-  useEffect(() => {
-    if (!home || !homeHandoff) return;
-    setRestoredDraft((current) => ({
-      composer: composerKey,
-      restore: { key: (current?.restore.key ?? 0) + 1, text: homeHandoff.text },
-    }));
-    clearHomeHandoff();
-    requestAnimationFrame(() => composerInputRef.current?.focus());
-  }, [clearHomeHandoff, composerKey, home, homeHandoff]);
 
   const canRespond = canRespondToRequests(snapshot);
   const connection = describeHostConnection(snapshot);
@@ -827,14 +793,11 @@ function ThreadView({
   const startHold = live
     ? threadStartHold({ environments: snapshot.environments, runQueue: snapshot.runQueue, thread })
     : null;
-  const composerPlaceholder = home
-    ? "Ask Opensteer…"
+  const composerPlaceholder = thread.teamOrigin
+    ? "Message your agent privately"
     : threadComposerPlaceholder(conversation.length === 0);
-  // The field names whom it writes to: Opensteer, or the task by its name.
-  const recipient = useMemo(
-    () => (home ? { lead: "Ask", name: "Opensteer" } : { lead: "Reply to", name: thread.title }),
-    [home, thread.title],
-  );
+  // The field names whom it writes to: the task by its name.
+  const recipient = useMemo(() => ({ lead: "Reply to", name: thread.title }), [thread.title]);
   const connectionLabel =
     connection.tone !== "green"
       ? connection.label
@@ -909,10 +872,7 @@ function ThreadView({
       (placement) => placement.harnessInstanceId === thread.harnessInstanceId,
     ) ?? null;
 
-  const title =
-    !home && workspace.homeThreadId === thread.id
-      ? workspace.name
-      : conversationName(thread.id, thread.title, snapshot.homeThreadId);
+  const title = conversationName(thread.title);
   // Under the name only when the task is not plainly working, and only what is known.
   const waitingReason = useMemo(
     () => (thread.status === "waiting" ? taskWaitingReason(snapshot, thread.id) : null),
@@ -1015,7 +975,6 @@ function ThreadView({
           className={[
             "thread",
             pushed ? "thread--pushed" : "",
-            home ? "thread--home" : "",
             phoneStage
               ? `thread--sheet ${sheetOpen ? "thread--sheet-open" : "thread--sheet-closed"}`
               : "",
@@ -1026,7 +985,6 @@ function ThreadView({
         >
           {phoneStage ? (
             <ConversationSheetHandle
-              home={home}
               hostClient={hostClient}
               onToggle={setSheetOpen}
               open={sheetOpen}
@@ -1047,11 +1005,11 @@ function ThreadView({
             title={title}
             titleRef={headerTitleRef}
           />
+          {thread.teamOrigin ? <TaskSourceChip origin={thread.teamOrigin} /> : null}
 
           {finding ? (
             <ThreadFind
               client={hostClient}
-              homeThreadId={snapshot.homeThreadId}
               onClose={() => setFinding(false)}
               onJump={jumpToMessage}
               threadId={thread.id}
@@ -1119,7 +1077,7 @@ function ThreadView({
                     </button>
                   ) : null}
                   {conversation.length === 0 && historyState === undefined ? (
-                    <EmptyThread home={home} voice={voiceThread} />
+                    <EmptyThread voice={voiceThread} />
                   ) : null}
                   <AgentTranscript
                     revealMessage={revealMessage}
@@ -1139,7 +1097,7 @@ function ThreadView({
                     inputQueuePaused={thread.inputQueuePaused}
                     renderPasswordsSuggestion={renderPasswordsSuggestion}
                     queued={
-                      inputQueue && thread.role === "work" ? (
+                      inputQueue && !conversational ? (
                         <QueuedMessages
                           client={hostClient}
                           disabled={!canRespond || thread.status === "archived"}
@@ -1147,11 +1105,9 @@ function ThreadView({
                           onError={reportActionError}
                           queue={inputQueue}
                           viewerUserId={snapshot.user?.id ?? null}
-                          workspaces={snapshot.workspaces}
                         />
                       ) : null
                     }
-                    homeThreadId={snapshot.homeThreadId}
                     {...(conversational
                       ? {
                           activityOwner:
@@ -1175,7 +1131,6 @@ function ThreadView({
                     subagentReader={snapshot}
                     threadId={thread.id}
                     viewerUserId={snapshot.user?.id ?? null}
-                    workspaces={snapshot.workspaces}
                   />
                 </div>
               </div>
@@ -1287,10 +1242,13 @@ function ThreadView({
                 }
               />
             ) : null}
+            {thread.teamOrigin && !voiceThread ? (
+              <TaskAudienceLine origin={thread.teamOrigin} />
+            ) : null}
             {voiceThread ? null : (
               <InputSurface
-                autoContext={home}
-                voice={home}
+                autoContext={false}
+                voice={false}
                 variant={conversational ? "conversation" : "work"}
                 key={composerKey}
                 composerHidden={dock.composerHidden}
@@ -1418,7 +1376,7 @@ function useAnchoredMessageId(): [string | null, () => void] {
  * authorization; the excerpt and attribution are there so they know what they
  * are about to ask about.
  */
-function quoteFromMessage(message: MessageEntry, homeThreadId: string | null): ComposerQuote {
+function quoteFromMessage(message: MessageEntry): ComposerQuote {
   // A message of places alone is quoted by their names.
   const text = (
     message.body ||
@@ -1427,7 +1385,7 @@ function quoteFromMessage(message: MessageEntry, homeThreadId: string | null): C
     .replaceAll(/\s+/gu, " ")
     .trim();
   return {
-    attribution: messageAuthorName(message.author, message.messageKind, homeThreadId),
+    attribution: messageAuthorName(message.author),
     excerpt: text.length > 160 ? `${text.slice(0, 159)}…` : text,
     messageId: message.id,
   };
@@ -1492,7 +1450,6 @@ export function usageLimitAlternative(
  * conversation alone.
  */
 function ConversationSheetHandle({
-  home,
   hostClient,
   onToggle,
   open,
@@ -1500,7 +1457,6 @@ function ConversationSheetHandle({
   threadId,
   title,
 }: {
-  readonly home: boolean;
   readonly hostClient: HostClient;
   readonly onToggle: (open: boolean) => void;
   readonly open: boolean;
@@ -1511,9 +1467,6 @@ function ConversationSheetHandle({
 }) {
   const { nav } = useWorkspace();
   const directory = useTaskDirectory(hostClient);
-  const projectHome = directory.snapshot.workspaces.find(
-    (workspace) => workspace.homeThreadId === threadId && workspace.kind === "project",
-  );
   const tone = directory.rows.get(threadId)?.tone ?? "working";
   const start = useRef<number | null>(null);
   const dragged = useRef(false);
@@ -1548,18 +1501,7 @@ function ConversationSheetHandle({
       >
         <span aria-hidden className="thread__sheet-grip" />
         <span aria-hidden className="thread__sheet-mark" data-yield={2}>
-          {home ? (
-            <ChatOrb size={20} />
-          ) : projectHome ? (
-            <WorkspaceOrb
-              icon={projectHome.icon}
-              name={projectHome.name}
-              color={projectHome.color}
-              size="small"
-            />
-          ) : (
-            <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
-          )}
+          <TaskMark size={20} mark={threadMark(threadId, directory.snapshot)} />
         </span>
         <span className="thread__sheet-name" data-yield-name>
           {title}
@@ -1594,13 +1536,7 @@ function ConversationSheetHandle({
 
 /* ---- Empty state ---- */
 
-function EmptyThread({
-  home = false,
-  voice = false,
-}: {
-  readonly home?: boolean;
-  readonly voice?: boolean;
-}) {
+function EmptyThread({ voice = false }: { readonly voice?: boolean }) {
   return (
     <div className="hero__inner">
       <BrandMark large />
@@ -1608,9 +1544,7 @@ function EmptyThread({
       <p className="hero__subtitle">
         {voice
           ? "Say what you need. It gets on with it, starts tasks for bigger work, and tells you when it needs you."
-          : home
-            ? "Ask here. Updates from your tasks will arrive here too."
-            : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
+          : "Describe the outcome you want. Your agent works in this task’s folder and checks in when it needs you."}
       </p>
     </div>
   );

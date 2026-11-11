@@ -28,5 +28,5 @@ export function useStartTask(): (text: string) => void {
 /** Where a task opens, from pages that may stand outside a workspace. */
 export function useThreadPath(): (threadId: string) => string {
   const nav = useOptionalWorkspace()?.nav;
-  return nav?.threadPath ?? ((threadId) => `/threads/${encodeURIComponent(threadId)}`);
+  return nav?.threadPath ?? ((threadId) => `/tasks/${encodeURIComponent(threadId)}`);
 }

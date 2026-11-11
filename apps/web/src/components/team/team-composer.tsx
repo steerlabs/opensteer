@@ -11,7 +11,7 @@ import {
 import { attachmentDetail } from "../attachments/attachment-parts.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
-import { ChatOrb } from "../workspace/task-mark.js";
+import { AgentOrb } from "../workspace/task-mark.js";
 import { PeopleOnlyBadge, PersonAvatar } from "./team-marks.js";
 import {
   agentName,
@@ -37,8 +37,8 @@ const pickerLimit = 7;
 
 /**
  * The team composer: words, files, @ mentions and the viewer's own agent.
- * "Ask my agent" is one state with three ways in — the pill, "My agent" in
- * the @ list, and ⌘⇧Enter — and while it is on the message goes to the
+ * "Ask my agent" is one state with two ways in — the pill, or "My agent" in
+ * the @ list — and while it is on the message goes to the
  * thread and asks the viewer's agent. Nobody else's agent can be woken from
  * here; naming one is a reference.
  */
@@ -178,11 +178,6 @@ export function TeamComposer({
         setMention(null);
         return;
       }
-    }
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && event.shiftKey) {
-      event.preventDefault();
-      send(true);
-      return;
     }
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
@@ -345,10 +340,10 @@ export function TeamComposer({
               className={toAgent ? "ask-pill ask-pill--on" : "ask-pill"}
               onClick={() => (toAgent ? setToAgent(false) : askAgent())}
               ref={pill}
-              title={toAgent ? "Don’t ask my agent" : "Ask my agent · ⌘⇧↵"}
+              title={toAgent ? "Don’t ask my agent" : "Ask my agent"}
               type="button"
             >
-              <ChatOrb size={16} />
+              <AgentOrb size={16} />
               {toAgent ? "To my agent" : "Ask my agent"}
               {toAgent ? <Icon className="ask-pill__off" name="close" /> : null}
             </button>
@@ -476,7 +471,7 @@ function MentionList({
         if (item.kind === "my-agent")
           return (
             <div key="my-agent" {...common}>
-              <ChatOrb size={20} />
+              <AgentOrb size={20} />
               <span className="at-list__text">
                 <span className="at-list__name">My agent</span>
                 <span className="at-list__detail">
@@ -625,7 +620,7 @@ export function AgentUnavailable({
 }) {
   return (
     <div className="agent-unavailable">
-      <ChatOrb size={28} />
+      <AgentOrb size={28} />
       {kind === "not-linked" ? (
         <>
           <p className="agent-unavailable__title">Connect your Opensteer</p>
@@ -662,7 +657,7 @@ export function AskAgentHint({
 }) {
   return (
     <p className="ask-hint">
-      <ChatOrb size={16} />
+      <AgentOrb size={16} />
       <span>
         Ask your agent in any channel with <b>Ask my agent</b> or{" "}
         <span className="mention mention--agent">

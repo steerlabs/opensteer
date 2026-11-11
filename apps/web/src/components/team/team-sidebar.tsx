@@ -2,141 +2,295 @@ import { useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { ChannelGlyph, TeamTile } from "./team-marks.js";
-import type { ChannelRowView, TeamSidebarView } from "./team-models.js";
+import type { ChannelRowView, TeamSidebarView, TeamTileView } from "./team-models.js";
 
-export interface TeamSectionActions {
+export interface TeamSideActions {
   readonly onOpenChannel: (channelId: string) => void;
   /** Gives rows real addresses, so a modified click opens a new window. */
   readonly hrefFor?: ((channelId: string) => string) | undefined;
   readonly onNewChannel?: (() => void) | undefined;
   readonly onNewMessage?: (() => void) | undefined;
   readonly onBrowseChannels?: (() => void) | undefined;
-  readonly onInvite?: (() => void) | undefined;
-  readonly onKnowledge?: (() => void) | undefined;
-  readonly onSearch?: (() => void) | undefined;
-  readonly onMarkAllRead?: (() => void) | undefined;
-  readonly onNotifications?: (() => void) | undefined;
-  readonly onSettings?: (() => void) | undefined;
-  readonly onLeave?: (() => void) | undefined;
   readonly onMoreDms?: (() => void) | undefined;
   readonly onRemoveFromSidebar?: (() => void) | undefined;
   readonly onRetry?: (() => void) | undefined;
-  readonly onUpdate?: (() => void) | undefined;
+}
+
+export interface TeamMenuActions {
+  readonly onKnowledge?: (() => void) | undefined;
+  readonly onInvite?: (() => void) | undefined;
+  readonly onSettings?: (() => void) | undefined;
+  readonly onLeave?: (() => void) | undefined;
+}
+
+/** What a segment says while the reader is on the other side. */
+export type SegmentBadge =
+  | { readonly kind: "needs-you"; readonly count: number }
+  | { readonly kind: "new" }
+  | { readonly kind: "mentions"; readonly count: number }
+  | null;
+
+export interface SwitchSegment {
+  readonly id: string;
+  readonly label: string;
+  readonly tile?: TeamTileView | undefined;
+  readonly badge: SegmentBadge;
+  /** A team's menu, opened by the ⌄ on its segment while it is chosen. */
+  readonly menu?: TeamMenuActions | undefined;
 }
 
 /**
- * One team in the sidebar: its head, its channels, then its direct messages.
- * Unread is weight, not a number; only mentions of the reader are counted.
- * Folded, the head still says how many mentions it hides.
+ * Tasks and each team the computer joined, one segment each. Both sides
+ * always keep their badge, and only the person ever changes the side.
  */
-export function TeamSection({
+export function SidebarSwitch({
+  active,
+  onSelect,
+  segments,
+}: {
+  readonly active: string;
+  readonly onSelect: (id: string) => void;
+  readonly segments: readonly SwitchSegment[];
+}) {
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const anchors = useRef(new Map<string, HTMLButtonElement>());
+  return (
+    <div aria-label="Tasks or a team" className="segmented side-switch" role="radiogroup">
+      {segments.map((segment) => {
+        const chosen = segment.id === active;
+        const menu = segment.menu;
+        return (
+          <div className="side-switch__segment" key={segment.id}>
+            <button
+              aria-checked={chosen}
+              className="segmented__option side-switch__option"
+              data-value={segment.id}
+              onClick={() => onSelect(segment.id)}
+              role="radio"
+              tabIndex={chosen ? 0 : -1}
+              title={segment.label}
+              type="button"
+            >
+              {segment.tile ? <TeamTile size={14} tile={segment.tile} /> : null}
+              <span className="side-switch__label">{segment.label}</span>
+              <Badge badge={segment.badge} />
+            </button>
+            {chosen && menu ? (
+              <button
+                aria-expanded={menuFor === segment.id}
+                aria-haspopup="menu"
+                aria-label={`${segment.label} menu`}
+                className="side-switch__menu"
+                onClick={() => setMenuFor(menuFor === segment.id ? null : segment.id)}
+                ref={(element) => {
+                  if (element) anchors.current.set(segment.id, element);
+                }}
+                type="button"
+              >
+                <Icon name="chevron-down" />
+              </button>
+            ) : null}
+            {menuFor === segment.id && menu && anchors.current.get(segment.id) ? (
+              <TeamMenu
+                actions={menu}
+                anchor={anchors.current.get(segment.id)!}
+                name={segment.label}
+                onClose={() => setMenuFor(null)}
+              />
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Badge({ badge }: { readonly badge: SegmentBadge }) {
+  if (!badge) return null;
+  if (badge.kind === "new")
+    return <span aria-label="new result" className="task-row__unread" role="img" />;
+  if (badge.count === 0) return null;
+  return badge.kind === "needs-you" ? (
+    <span aria-label={`${badge.count} need you`} className="side-needs side-needs--inline">
+      <span aria-hidden className="side-needs__bang">
+        !
+      </span>
+    </span>
+  ) : (
+    <span aria-label={`${badge.count} mentions`} className="mention-count">
+      {badge.count}
+    </span>
+  );
+}
+
+function TeamMenu({
   actions,
-  folded,
-  onToggleFold,
+  anchor,
+  name,
+  onClose,
+}: {
+  readonly actions: TeamMenuActions;
+  readonly anchor: HTMLElement;
+  readonly name: string;
+  readonly onClose: () => void;
+}) {
+  const item = (label: string, run: (() => void) | undefined, danger = false) =>
+    run ? (
+      <button
+        className={danger ? "picker__row picker__row--danger" : "picker__row"}
+        key={label}
+        onClick={() => {
+          onClose();
+          run();
+        }}
+        role="menuitem"
+        type="button"
+      >
+        {label}
+      </button>
+    ) : null;
+  return (
+    <Popover anchor={anchor} below label={`${name} menu`} onClose={onClose}>
+      {item("Knowledge", actions.onKnowledge)}
+      {item("Invite people", actions.onInvite)}
+      {item("Team settings", actions.onSettings)}
+      {actions.onLeave ? <hr className="picker__divider" /> : null}
+      {item(`Leave ${name}`, actions.onLeave, true)}
+    </Popover>
+  );
+}
+
+/**
+ * The team's side: its channels, then its direct messages, each under a
+ * label with its own +. Unread is weight; only mentions of the reader count.
+ */
+export function TeamSide({
+  actions,
   openChannelId = null,
   team,
 }: {
-  readonly actions: TeamSectionActions;
-  readonly folded: boolean;
-  readonly onToggleFold: () => void;
+  readonly actions: TeamSideActions;
   readonly openChannelId?: string | null;
   readonly team: TeamSidebarView;
 }) {
   const name = team.tile.name;
-  const headingId = `team-${team.id}`;
-  if (team.connection === "removed" || team.connection === "left") {
+  if (team.connection === "removed" || team.connection === "left")
     return (
-      <section aria-labelledby={headingId} className="team-section team-section--gone">
-        <div className="team-left">
-          <TeamTile tile={team.tile} />
-          <div className="team-left__text">
-            <h2 className="team-left__title" id={headingId}>
-              {team.connection === "removed" ? `You’re no longer in ${name}` : `You left ${name}`}
-            </h2>
-            <p className="team-left__detail">Tasks it started stay in your list.</p>
-          </div>
-          {actions.onRemoveFromSidebar ? (
-            <button
-              className="btn btn--small btn--ghost"
-              onClick={actions.onRemoveFromSidebar}
-              type="button"
-            >
-              Remove
+      <div className="team-left">
+        <TeamTile tile={team.tile} />
+        <div className="team-left__text">
+          <p className="team-left__title">
+            {team.connection === "removed" ? `You’re no longer in ${name}` : `You left ${name}`}
+          </p>
+          <p className="team-left__detail">Tasks it started stay in your list.</p>
+        </div>
+        {actions.onRemoveFromSidebar ? (
+          <button
+            className="btn btn--small btn--ghost"
+            onClick={actions.onRemoveFromSidebar}
+            type="button"
+          >
+            Remove
+          </button>
+        ) : null}
+      </div>
+    );
+  const problem =
+    team.connection === "offline"
+      ? `Can’t reach ${name} right now.`
+      : team.connection === "update-app"
+        ? `Update Opensteer to keep using ${name}.`
+        : team.connection === "update-server"
+          ? `${name}’s server needs an update. It updates itself.`
+          : null;
+  return (
+    <div className={problem ? "team-side team-side--dim" : "team-side"}>
+      {problem ? (
+        <p className="team-side__problem" role="status">
+          {problem}
+          {team.connection === "offline" && actions.onRetry ? (
+            <button className="link-button" onClick={actions.onRetry} type="button">
+              Try again
             </button>
           ) : null}
-        </div>
-      </section>
-    );
-  }
-  const mentions = [...team.channels, ...team.dms].reduce((sum, row) => sum + row.mentions, 0);
-  const unreachable = team.connection === "offline" || team.connection === "reconnecting";
-  const badge =
-    team.connection === "offline"
-      ? "Offline"
-      : team.connection === "update-app" || team.connection === "update-server"
-        ? "Update"
-        : null;
-  return (
-    <section
-      aria-labelledby={headingId}
-      className={["team-section", unreachable || badge ? "team-section--dim" : ""]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <div className="team-head">
-        <button
-          aria-expanded={!folded}
-          className="team-head__main"
-          onClick={onToggleFold}
-          title={folded ? `Show ${name}` : `Fold ${name}`}
-          type="button"
-        >
-          <TeamTile tile={team.tile} />
-          <h2 className="team-head__title" id={headingId}>
-            {name}
-          </h2>
-          {badge ? (
-            <span className="team-head__badge" title={badgeTitle(team.connection, name)}>
-              {badge}
-            </span>
-          ) : null}
-          {folded && mentions > 0 ? (
-            <span aria-label={`${mentions} mentions`} className="mention-count">
-              {mentions}
-            </span>
-          ) : null}
-          {folded ? <Icon className="team-head__chevron" name="chevron-right" /> : null}
-        </button>
-        {folded ? null : <TeamMenus actions={actions} name={name} />}
-      </div>
-      {folded ? null : (
-        <ul aria-label={`${name} channels`} className="team-rows">
-          {team.channels.map((row) => (
-            <ChannelRow actions={actions} key={row.id} open={row.id === openChannelId} row={row} />
-          ))}
-          {team.dms.length > 0 || actions.onNewMessage ? (
-            <li className="team-rows__subhead">Direct messages</li>
-          ) : null}
-          {team.dms.map((row) => (
-            <ChannelRow actions={actions} key={row.id} open={row.id === openChannelId} row={row} />
-          ))}
-          {team.moreDms > 0 && actions.onMoreDms ? (
-            <li>
-              <button className="team-rows__more" onClick={actions.onMoreDms} type="button">
-                {team.moreDms} more
-              </button>
-            </li>
-          ) : null}
-        </ul>
-      )}
-    </section>
+        </p>
+      ) : null}
+      <SideLabel
+        label="Channels"
+        menu={[
+          ["Browse channels", actions.onBrowseChannels],
+          ["New channel", actions.onNewChannel],
+        ]}
+      />
+      <ul aria-label={`${name} channels`} className="team-rows">
+        {team.channels.map((row) => (
+          <ChannelRow actions={actions} key={row.id} open={row.id === openChannelId} row={row} />
+        ))}
+      </ul>
+      <SideLabel label="Direct messages" menu={[["New message", actions.onNewMessage]]} />
+      <ul aria-label={`${name} direct messages`} className="team-rows">
+        {team.dms.map((row) => (
+          <ChannelRow actions={actions} key={row.id} open={row.id === openChannelId} row={row} />
+        ))}
+        {team.moreDms > 0 && actions.onMoreDms ? (
+          <li>
+            <button className="team-rows__more" onClick={actions.onMoreDms} type="button">
+              {team.moreDms} more
+            </button>
+          </li>
+        ) : null}
+      </ul>
+    </div>
   );
 }
 
-function badgeTitle(connection: TeamSidebarView["connection"], name: string): string {
-  if (connection === "offline") return `Can’t reach ${name} right now`;
-  if (connection === "update-app") return `Update Opensteer to keep using ${name}`;
-  return `${name}’s server needs an update. It updates itself; try again shortly.`;
+function SideLabel({
+  label,
+  menu,
+}: {
+  readonly label: string;
+  readonly menu: readonly (readonly [string, (() => void) | undefined])[];
+}) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement | null>(null);
+  const items = menu.filter((entry): entry is readonly [string, () => void] => !!entry[1]);
+  return (
+    <div className="side-head">
+      <h3 className="side-head__title">{label}</h3>
+      {items.length > 0 ? (
+        <button
+          aria-expanded={items.length > 1 ? open : undefined}
+          aria-haspopup={items.length > 1 ? "menu" : undefined}
+          aria-label={items.length > 1 ? `Add to ${label}` : items[0]![0]}
+          className="icon-btn icon-btn--small side-head__action"
+          onClick={() => (items.length > 1 ? setOpen((value) => !value) : items[0]![1]())}
+          ref={anchor}
+          title={items.map(([name]) => name).join(" · ")}
+          type="button"
+        >
+          <Icon name="plus" />
+        </button>
+      ) : null}
+      {open && anchor.current ? (
+        <Popover anchor={anchor.current} below label={label} onClose={() => setOpen(false)}>
+          {items.map(([name, run]) => (
+            <button
+              className="picker__row"
+              key={name}
+              onClick={() => {
+                setOpen(false);
+                run();
+              }}
+              role="menuitem"
+              type="button"
+            >
+              {name}
+            </button>
+          ))}
+        </Popover>
+      ) : null}
+    </div>
+  );
 }
 
 function ChannelRow({
@@ -144,7 +298,7 @@ function ChannelRow({
   open,
   row,
 }: {
-  readonly actions: TeamSectionActions;
+  readonly actions: TeamSideActions;
   readonly open: boolean;
   readonly row: ChannelRowView;
 }) {
@@ -211,78 +365,5 @@ function ChannelRow({
         </button>
       )}
     </li>
-  );
-}
-
-function TeamMenus({
-  actions,
-  name,
-}: {
-  readonly actions: TeamSectionActions;
-  readonly name: string;
-}) {
-  const [open, setOpen] = useState<"add" | "more" | null>(null);
-  const add = useRef<HTMLButtonElement | null>(null);
-  const more = useRef<HTMLButtonElement | null>(null);
-  const item = (label: string, run: (() => void) | undefined, danger = false) =>
-    run ? (
-      <button
-        className={danger ? "picker__row picker__row--danger" : "picker__row"}
-        key={label}
-        onClick={() => {
-          setOpen(null);
-          run();
-        }}
-        role="menuitem"
-        type="button"
-      >
-        {label}
-      </button>
-    ) : null;
-  return (
-    <>
-      <button
-        aria-expanded={open === "add"}
-        aria-haspopup="menu"
-        aria-label={`Add to ${name}`}
-        className="side-row-action team-head__action"
-        onClick={() => setOpen(open === "add" ? null : "add")}
-        ref={add}
-        title="New channel, message or invite"
-        type="button"
-      >
-        <Icon name="plus" />
-      </button>
-      <button
-        aria-expanded={open === "more"}
-        aria-haspopup="menu"
-        aria-label={`${name} menu`}
-        className="side-row-action team-head__action"
-        onClick={() => setOpen(open === "more" ? null : "more")}
-        ref={more}
-        title={`${name} menu`}
-        type="button"
-      >
-        <Icon name="more" />
-      </button>
-      {open === "add" && add.current ? (
-        <Popover anchor={add.current} below label={`Add to ${name}`} onClose={() => setOpen(null)}>
-          {item("New channel", actions.onNewChannel)}
-          {item("New message", actions.onNewMessage)}
-          {item("Browse channels", actions.onBrowseChannels)}
-          {item("Invite people", actions.onInvite)}
-        </Popover>
-      ) : null}
-      {open === "more" && more.current ? (
-        <Popover anchor={more.current} below label={`${name} menu`} onClose={() => setOpen(null)}>
-          {item("Knowledge", actions.onKnowledge)}
-          {item(`Search ${name}`, actions.onSearch)}
-          {item("Mark all read", actions.onMarkAllRead)}
-          {item("Notifications", actions.onNotifications)}
-          {item("Team settings", actions.onSettings)}
-          {item(`Leave ${name}`, actions.onLeave, true)}
-        </Popover>
-      ) : null}
-    </>
   );
 }

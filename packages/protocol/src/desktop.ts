@@ -1129,13 +1129,18 @@ const DesktopHostBinaryChunkSchema = z
   .refine((bytes) => bytes.byteLength <= 256 * 1_024);
 
 /** A bounded byte stream over IPC, scoped to the renderer that opened it. */
+const teamFileReadPath = /^\/v1\/team\/files\/[A-Za-z0-9_-]{1,128}\/(?:preview|original)$/u;
+const teamFileUploadPath = /^\/v1\/team\/files\/upload\/[A-Za-z0-9_-]{1,128}$/u;
 export const DesktopHostBinaryOpenInputSchema = z
   .strictObject({
+    /** A joined team's own Host, pinned; absent, the selected Deployment. */
+    expectedDeploymentId: DeploymentIdSchema.optional(),
     body: boundedUtf8String(0, 1 * 1_024 * 1_024).optional(),
     headers: z.strictObject({
       accept: DesktopAcceptHeaderSchema.optional(),
       apiVersion: DesktopApiVersionSchema.optional(),
       contentType: z.enum(["application/json", "application/octet-stream"]).optional(),
+      teamUpload: z.string().min(1).max(2048).optional(),
     }),
     method: z.enum(["GET", "POST"]),
     path: DesktopHostPathSchema,
@@ -1143,14 +1148,18 @@ export const DesktopHostBinaryOpenInputSchema = z
   })
   .refine(
     (input) =>
-      input.method === "GET"
-        ? input.body === undefined && input.path.startsWith("/v1/rpc/attachment.content?input=")
-        : input.path.startsWith("/v1/rpc/attachment.upload?input=")
+      (input.headers.teamUpload === undefined || teamFileUploadPath.test(input.path)) &&
+      (input.method === "GET"
+        ? input.body === undefined &&
+          (input.path.startsWith("/v1/rpc/attachment.content?input=") ||
+            teamFileReadPath.test(input.path))
+        : input.path.startsWith("/v1/rpc/attachment.upload?input=") ||
+            teamFileUploadPath.test(input.path)
           ? input.body === undefined && input.headers.contentType === "application/octet-stream"
           : input.path === "/v1/rpc/folder.files.preview" &&
             input.body !== undefined &&
-            input.headers.contentType === "application/json",
-    "Binary Host transfer must use an attachment or file preview route",
+            input.headers.contentType === "application/json"),
+    "Binary Host transfer must use an attachment, file preview or team file route",
   );
 export type DesktopHostBinaryOpenInput = z.infer<typeof DesktopHostBinaryOpenInputSchema>;
 export const DesktopHostBinaryOpenResultSchema = z.strictObject({
@@ -1192,6 +1201,8 @@ export const DesktopHostBinaryReadResponseSchema = desktopHostResultSchema(
 );
 
 export const DesktopOpenHostWebSocketInputSchema = z.strictObject({
+  /** A joined team's own Host, pinned; absent, the selected Deployment. */
+  expectedDeploymentId: DeploymentIdSchema.optional(),
   path: DesktopHostPathSchema,
 });
 export type DesktopOpenHostWebSocketInput = z.infer<typeof DesktopOpenHostWebSocketInputSchema>;

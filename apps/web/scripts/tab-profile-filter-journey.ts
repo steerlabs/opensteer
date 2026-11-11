@@ -173,7 +173,7 @@ try {
           .structure()
           .filter((tab) => store.group(tab.groupId)!.profileId?.endsWith("000000000002"))
           .map((tab) => tab.tabId);
-        await client.closeWorkspaceTabs(ids);
+        await client.closePersonalTabs(ids);
       });
       await page.waitForTimeout(250);
       const remaining = await rows(page);
@@ -218,9 +218,9 @@ try {
       await page.evaluate(
         async (ids) => {
           const client = Reflect.get(window, "opensteerMock") as {
-            closeWorkspaceTabs(ids: string[]): Promise<unknown>;
+            closePersonalTabs(ids: string[]): Promise<unknown>;
           };
-          await client.closeWorkspaceTabs(ids);
+          await client.closePersonalTabs(ids);
         },
         otherTabs.map((tab) => tab.key.split(":").at(-1)!),
       );

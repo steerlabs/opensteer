@@ -1,5 +1,7 @@
 import type { HostApiClient } from "@opensteer/protocol";
 import { unwrapRpcResult } from "./host-session-client.js";
+import type { HostClient } from "./client.js";
+import { isThreadUnread } from "./thread-read-state.js";
 import {
   DeploymentIdSchema,
   TeamChannelIdSchema,
@@ -46,4 +48,23 @@ export class PersonalTeamLinks {
       }),
     ).taskId;
   }
+}
+
+/**
+ * Reading your agent's reply in its team thread reads its task: the local
+ * task bound to that thread is marked read through what it last published.
+ */
+export async function readTeamReply(
+  client: Pick<HostClient, "getSnapshot" | "markThreadRead" | "rpc">,
+  origin: { readonly teamId: string; readonly channelId: string; readonly threadRootId: string },
+): Promise<void> {
+  const taskId = await new PersonalTeamLinks(client.rpc).task(
+    origin.teamId,
+    origin.channelId,
+    origin.threadRootId,
+  );
+  if (!taskId) return;
+  const state = client.getSnapshot().threadReadStates[taskId];
+  if (!state?.unreadSequence || !isThreadUnread(state)) return;
+  await client.markThreadRead(taskId, state.unreadSequence);
 }

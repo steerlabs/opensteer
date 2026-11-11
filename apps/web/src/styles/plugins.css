@@ -1,0 +1,113 @@
+/* Settings → Plugins and the specialists they bring. */
+
+/* A specialist: what it is and runs on, then each thing it asks to use, why,
+   and what is left to decide about it. */
+.specialist + .specialist {
+  margin-top: var(--space-10);
+}
+
+.specialist__footnote {
+  margin: 0;
+  padding: var(--space-10) var(--space-16) var(--space-12);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+/* ---- Settings → Plugins ---- */
+.plugin-install__skipped {
+  margin: var(--space-4) 0 0;
+  padding-left: var(--space-16);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+}
+
+.plugin-row + .plugin-row {
+  border-top: 1px solid var(--line);
+}
+
+/* Where it is on: one line under the plugin, opening to a switch per place. */
+.plugin-row__where {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  min-width: 0;
+  margin-top: calc(var(--space-8) * -1);
+  padding: 0 var(--space-16) var(--space-12) calc(var(--space-16) + 34px + var(--space-12));
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.plugin-row__where:hover {
+  color: var(--text);
+}
+
+.plugin-row__where > .icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+}
+
+.plugin-row__source {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted-dim);
+  font: var(--text-sm) / 1.4 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+}
+
+.plugin-row__places {
+  margin: 0 var(--space-16) var(--space-12) calc(var(--space-16) + 34px + var(--space-12));
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.plugin-row__places > li + li {
+  border-top: 1px solid var(--line);
+}
+
+.plugin-row__place {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-8) var(--space-12);
+  cursor: pointer;
+}
+
+.plugin-row__place-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plugin-row__error {
+  padding: 0 var(--space-16) var(--space-12);
+}
+
+@media (max-width: 680px) {
+  .plugin-row__where,
+  .plugin-row__places {
+    padding-left: var(--space-16);
+    margin-left: var(--space-16);
+  }
+
+  .plugin-row__where {
+    margin-left: 0;
+  }
+
+  .plugin-row__source {
+    display: none;
+  }
+}

@@ -9,7 +9,7 @@ import {
   type TaskTone,
 } from "@opensteer/client/host";
 import { Icon } from "../icon.js";
-import { WorkspaceIconGlyph } from "../workspace-orb.js";
+import { IconGlyph } from "../icon-glyph.js";
 
 export type TaskMarkSize = 16 | 20 | 22;
 
@@ -36,12 +36,12 @@ export const TaskMark = memo(function TaskMark({
       data-color={mark.color ?? "neutral"}
       style={paint ? { background: paint.wash, color: paint.glyph } : undefined}
     >
-      <WorkspaceIconGlyph icon={mark.icon ?? defaultTaskSymbol} />
+      <IconGlyph icon={mark.icon ?? defaultTaskSymbol} />
     </span>
   );
 });
 
-export const ChatOrb = memo(function ChatOrb({ size }: { readonly size: TaskMarkSize | 28 }) {
+export const AgentOrb = memo(function AgentOrb({ size }: { readonly size: TaskMarkSize | 28 }) {
   return (
     <span aria-hidden="true" className="chat-orb" style={{ width: size, height: size }}>
       <img alt="" decoding="async" draggable={false} src="/opensteer.png" />

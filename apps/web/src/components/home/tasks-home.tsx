@@ -1,8 +1,8 @@
-import type { ReactNode } from "react";
-import { Icon } from "../icon.js";
+import { useRef, type ReactNode } from "react";
 import { TaskMark, TaskState } from "../workspace/task-mark.js";
+import { useWindowedRows } from "../workspace/windowed-rows.js";
 import { age } from "../team/team-time.js";
-import type { FolderGroupView, NeedsYouItemView, TaskRowView } from "./home-models.js";
+import type { NeedsYouItemView, TaskRowView } from "./home-models.js";
 import { NeedsYouCard, type NeedsYouActions } from "./needs-you.js";
 import { TaskSource } from "./personal-sidebar.js";
 
@@ -14,43 +14,28 @@ export const firstRunSuggestions = [
   "Set up a small website for my photos in a new folder",
 ] as const;
 
-const needsYouPreview = 2;
-
-export interface TasksHomeActions extends NeedsYouActions {
-  readonly onOpenNeedsYou: () => void;
-  readonly onNewTaskIn: (folderId: string) => void;
-  readonly onOpenDone: () => void;
-  readonly onSuggestion: (text: string) => void;
-  readonly onConnectAccount?: (() => void) | undefined;
-  readonly taskHref?: ((taskId: string) => string) | undefined;
-}
-
 /**
- * The landing screen on every surface: what should your agent do, the
- * composer that starts it, what waits on you, then every task by folder with
- * Agent home first. Any ask becomes a task with its own title.
+ * Home: what should your agent do, and the composer that starts it. The live
+ * tasks are in the sidebar; everything else is on All tasks.
  */
 export function TasksHome({
-  actions,
   composer,
-  doneCount,
-  folders,
+  firstRun,
   header,
   needsAccount = false,
-  needsYou,
+  onConnectAccount,
+  onSuggestion,
 }: {
-  readonly actions: TasksHomeActions;
   /** The new-task composer, its folder chip in the leading slot. */
   readonly composer: ReactNode;
-  readonly doneCount: number;
-  readonly folders: readonly FolderGroupView[];
+  /** No task yet: a line about where the agent works, and a few asks to start from. */
+  readonly firstRun: boolean;
   readonly header?: ReactNode;
   /** No AI account is connected yet. */
   readonly needsAccount?: boolean;
-  readonly needsYou: readonly NeedsYouItemView[];
+  readonly onConnectAccount?: (() => void) | undefined;
+  readonly onSuggestion: (text: string) => void;
 }) {
-  const tasks = folders.reduce((sum, group) => sum + group.tasks.length, 0);
-  const firstRun = tasks === 0 && doneCount === 0 && needsYou.length === 0;
   return (
     <div className={firstRun ? "thread tasks-home tasks-home--first" : "thread tasks-home"}>
       {header}
@@ -64,11 +49,7 @@ export function TasksHome({
                 {needsAccount ? (
                   <>
                     {" "}
-                    <button
-                      className="tasks-home__link"
-                      onClick={actions.onConnectAccount}
-                      type="button"
-                    >
+                    <button className="tasks-home__link" onClick={onConnectAccount} type="button">
                       Connect an AI account
                     </button>{" "}
                     to start.
@@ -84,7 +65,7 @@ export function TasksHome({
                 <button
                   className="hero__suggestion"
                   key={text}
-                  onClick={() => actions.onSuggestion(text)}
+                  onClick={() => onSuggestion(text)}
                   type="button"
                 >
                   {text}
@@ -92,117 +73,153 @@ export function TasksHome({
               ))}
             </div>
           ) : null}
-          {needsYou.length > 0 ? (
-            <section aria-labelledby="home-needs-you" className="home-section">
-              <header className="home-section__head">
-                <h2 className="home-section__title" id="home-needs-you">
-                  Needs you <span className="home-section__count">{needsYou.length}</span>
-                </h2>
-                <button
-                  className="home-section__more"
-                  onClick={actions.onOpenNeedsYou}
-                  type="button"
-                >
-                  See all
-                </button>
-              </header>
-              <ul className="home-needs">
-                {needsYou.slice(0, needsYouPreview).map((item) => (
-                  <li key={item.id}>
-                    <NeedsYouCard actions={actions} compact item={item} />
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
-          {folders.map((group) => (
-            <FolderSection actions={actions} group={group} key={group.folder.id} />
-          ))}
-          {doneCount > 0 ? (
-            <button className="home-done" onClick={actions.onOpenDone} type="button">
-              <Icon name="check-circle" />
-              Done
-              <span className="home-done__count">{doneCount}</span>
-            </button>
-          ) : null}
-          {!firstRun && tasks === 0 ? (
-            <p className="home-quiet">Tasks you start show up here, by the folder they work in.</p>
-          ) : null}
         </div>
       </div>
     </div>
   );
 }
 
-function FolderSection({
+export type AllTasksFilterView = "all" | "needs-you" | "running" | "unread" | "read" | "done";
+
+const filterWords: readonly (readonly [AllTasksFilterView, string])[] = [
+  ["all", "All"],
+  ["needs-you", "Needs you"],
+  ["running", "Running"],
+  ["unread", "Unread"],
+  ["read", "Read"],
+  ["done", "Done"],
+];
+
+const emptyWords: Readonly<Record<AllTasksFilterView, string>> = {
+  all: "Tasks you start show up here.",
+  "needs-you": "Nothing needs you",
+  running: "Nothing is running.",
+  unread: "No new results.",
+  read: "No read results waiting to be marked Done.",
+  done: "Nothing in Done yet.",
+};
+
+export interface AllTasksActions extends NeedsYouActions {
+  readonly onFilter: (filter: AllTasksFilterView) => void;
+  readonly taskHref?: ((taskId: string) => string) | undefined;
+  readonly onLoadMore?: (() => void) | undefined;
+}
+
+/**
+ * Every task, open until it is Done, with a chip per question a person asks
+ * of the list. Needs you shows each ask with its controls.
+ */
+export function AllTasksPage({
   actions,
-  group,
+  counts,
+  filter,
+  header,
+  loadingMore = false,
+  needsYou,
+  pending = null,
+  rows,
 }: {
-  readonly actions: TasksHomeActions;
-  readonly group: FolderGroupView;
+  readonly actions: AllTasksActions;
+  readonly counts: Readonly<Partial<Record<AllTasksFilterView, number>>>;
+  readonly filter: AllTasksFilterView;
+  readonly header?: ReactNode;
+  readonly loadingMore?: boolean;
+  readonly needsYou: readonly NeedsYouItemView[];
+  /** The ask whose answer is on its way. */
+  readonly pending?: string | null;
+  readonly rows: readonly TaskRowView[];
 }) {
-  const { folder } = group;
-  if (group.tasks.length === 0) return null;
+  const list = useRef<HTMLUListElement | null>(null);
+  const keys = rows.map((row) => row.id);
+  const plan = useWindowedRows({ list, keys, estimate: () => 52, pinned: [], all: false });
   return (
-    <section aria-label={folder.label} className="home-section home-folder">
-      <header className="home-section__head">
-        <h2 className="home-folder__title">
-          <Icon name={folder.agentHome ? "home" : "folder"} />
-          <span className="home-folder__name">{folder.label}</span>
-          <span className="home-folder__detail">
-            {folder.path} · {folder.computerName}
-          </span>
-        </h2>
+    <div className="thread all-tasks">
+      {header}
+      <div aria-label="Filter tasks" className="all-tasks__chips" role="group">
+        {filterWords.map(([value, label]) => (
+          <button
+            aria-pressed={filter === value}
+            className={value === "needs-you" ? "chip chip--needs" : "chip"}
+            key={value}
+            onClick={() => actions.onFilter(value)}
+            type="button"
+          >
+            {label}
+            {counts[value] ? <span className="chip__count">{counts[value]}</span> : null}
+          </button>
+        ))}
+      </div>
+      {filter === "needs-you" ? (
+        needsYou.length === 0 ? (
+          <p className="all-tasks__empty">{emptyWords[filter]}</p>
+        ) : (
+          <ul aria-label="Needs you" className="needs-you-list all-tasks__list">
+            {needsYou.map((item) => (
+              <li key={item.id}>
+                <NeedsYouCard actions={actions} item={item} pending={pending === item.id} />
+              </li>
+            ))}
+          </ul>
+        )
+      ) : rows.length === 0 ? (
+        <p className="all-tasks__empty">{emptyWords[filter]}</p>
+      ) : (
+        <ul aria-label="Tasks" className="home-tasks all-tasks__list" ref={list}>
+          {plan.map((item) => {
+            if ("spacer" in item)
+              return (
+                <li aria-hidden key={`spacer:${item.spacer}`} style={{ height: item.spacer }} />
+              );
+            const row = rows[item.index]!;
+            return (
+              <li data-motion-key={row.id} key={row.id}>
+                <AllTasksRow actions={actions} task={row} />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {actions.onLoadMore ? (
         <button
-          aria-label={`New task in ${folder.label}`}
-          className="icon-btn icon-btn--small"
-          onClick={() => actions.onNewTaskIn(folder.id)}
-          title={`New task in ${folder.label}`}
+          className="sidebar__more"
+          disabled={loadingMore}
+          onClick={actions.onLoadMore}
           type="button"
         >
-          <Icon name="plus" />
+          {loadingMore ? "Loading…" : "Show more"}
         </button>
-      </header>
-      <ul className="home-tasks">
-        {group.tasks.map((task) => (
-          <li key={task.id}>
-            <HomeTaskRow actions={actions} task={task} />
-          </li>
-        ))}
-        {group.more > 0 ? (
-          <li className="home-tasks__more">{group.more} more in the sidebar</li>
-        ) : null}
-      </ul>
-    </section>
+      ) : null}
+    </div>
   );
 }
 
-/** Home's task row says more than the sidebar's: the source, whose thread, and the live status. */
-function HomeTaskRow({
+/** A task on All tasks: where it came from or works, what it is doing, and when. */
+function AllTasksRow({
   actions,
   task,
 }: {
-  readonly actions: TasksHomeActions;
+  readonly actions: AllTasksActions;
   readonly task: TaskRowView;
 }) {
   const href = actions.taskHref?.(task.id);
   const needs = task.tone === "needs-you" && task.ask;
-  const line = (
-    <span className="home-task__line">
-      {task.source ? <TaskSource source={task.source} thread /> : null}
-      {needs ? (
-        <span className="home-task__ask">{task.ask}</span>
-      ) : task.status ? (
-        <span className="home-task__status">{task.status}</span>
-      ) : null}
-    </span>
-  );
   const body = (
     <>
       <TaskMark mark={task.mark} size={22} />
       <span className="home-task__text">
         <span className="home-task__title">{task.title}</span>
-        {line}
+        <span className="home-task__line">
+          {task.source ? (
+            <TaskSource source={task.source} thread />
+          ) : task.folder ? (
+            <span className="home-task__folder">{task.folder}</span>
+          ) : null}
+          {needs ? (
+            <span className="home-task__ask">{task.ask}</span>
+          ) : task.status ? (
+            <span className="home-task__status">{task.status}</span>
+          ) : null}
+        </span>
       </span>
       <TaskState state={task.tone} unread={task.unread} />
       <time className="home-task__age" dateTime={task.updatedAt}>

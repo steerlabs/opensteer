@@ -171,7 +171,7 @@ export function PlaceBrowserView({
   // Asleep, restoring or not yet started: selecting it wakes it, and nothing is retained meanwhile.
   const dormant = row
     ? row.state !== "live"
-    : !!place?.workspaceTab && place.workspaceTab.state !== "live";
+    : !!place?.personalTab && place.personalTab.state !== "live";
   const sessionReady = !dormant && session?.state === "ready";
   const mode = useBrowserPresentationMode(hostClient, sessionId, sessionReady);
   const native = mode.mode === "native";
