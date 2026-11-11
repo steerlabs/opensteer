@@ -1185,6 +1185,78 @@ describeStore("shaped agent Thread tools", (it) => {
     ).toBe("running");
   });
 
+  it("keeps a Workspace owner's subagent stop through a Host restart and a retry", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("node-stop-kept");
+    const nodeId = createId("executionNode");
+    let ordinal = 1;
+    const emit = (event: Pick<PendingAgentEvent, "type" | "data">) =>
+      storeFixture.store.commitRunnerEvent({
+        environmentId: f.environmentId,
+        runnerId: f.runnerId,
+        runnerBootId: f.runnerBootId,
+        event: pendingEvent({
+          ...event,
+          bindingGeneration: f.bindingGeneration,
+          environmentId: f.environmentId,
+          runId: f.run.id,
+          threadId: f.thread.id,
+          workspaceId: f.workspace.id,
+          ordinal: ordinal++,
+        }),
+      });
+    await emit({
+      type: "node.started",
+      data: {
+        nodeId,
+        kind: "subagent",
+        stopSupported: true,
+        model: null,
+        nativeRef: "child-task",
+        sessionRef: null,
+        originCallId: null,
+        parentNodeId: null,
+        title: "Inspect parser",
+        prompt: null,
+      },
+    });
+    const owner = await share(storeFixture, f);
+    await storeFixture.database
+      .updateTable("workspaceMemberships")
+      .set({ role: "owner" })
+      .where("workspaceId", "=", f.workspace.id)
+      .where("userId", "=", owner)
+      .execute();
+    const stop = () =>
+      storeFixture.store.stopNode({
+        nodeId,
+        runId: f.run.id,
+        threadId: f.thread.id,
+        requestedBy: owner,
+        idempotencyKey: "owner-stops-child",
+      });
+    const first = await stop();
+    expect(first.wasDuplicate).toBe(false);
+    const status = async () =>
+      (
+        await storeFixture.database
+          .selectFrom("commands")
+          .select("status")
+          .where("id", "=", first.command.id)
+          .executeTakeFirstOrThrow()
+      ).status;
+    await storeFixture.store.claimCommand(first.command.id, "host-before-restart");
+    expect(await status()).toBe("dispatched");
+    await storeFixture.store.recoverCommandsAfterHostRestart();
+    expect(await status()).toBe("pending");
+    await emit({
+      type: "node.completed",
+      data: { nodeId, status: "interrupted", result: null, usage: null },
+    });
+    expect(await stop()).toMatchObject({ wasDuplicate: true, command: { id: first.command.id } });
+  });
+
   it("waits in a Run, reads the result and withdraws its unclaimed automatic return", async ({
     storeFixture,
   }) => {

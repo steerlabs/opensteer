@@ -210,6 +210,10 @@ vi.mock("./task-status.js", () => ({
   TaskStateIndicator: () => null,
   TaskStatus: ({ word }: { readonly word: string }) => <span>{word}</span>,
 }));
+vi.mock("./subagent-stop.js", () => ({
+  SubagentStop: ({ children }: { children: (onStop: () => void) => ReactNode }) =>
+    children(() => undefined),
+}));
 vi.mock("./thread-menu.js", () => ({
   ThreadMenu: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
 }));

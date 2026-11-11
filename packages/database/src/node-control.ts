@@ -11,7 +11,6 @@ import {
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { createId } from "@opensteer/core";
-import { isDeepStrictEqual } from "node:util";
 import { withDatabaseTransaction } from "./connection.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import {
@@ -35,11 +34,7 @@ import {
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
-import {
-  lockWorkspaceRow,
-  requireActiveWorkspaceMembership,
-  threadExecutionIsAvailableToUser,
-} from "./store-primitives.js";
+import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-primitives.js";
 import { runHasActiveGrant } from "./run-grants.js";
 
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
@@ -139,8 +134,7 @@ export async function assertNodeStop(
     attempt.endedAt !== null ||
     attempt.bindingGeneration !== run.bindingGeneration ||
     (bindingGeneration !== undefined && run.bindingGeneration !== bindingGeneration) ||
-    !(await runHasActiveGrant(transaction, run.id)) ||
-    !(await threadExecutionIsAvailableToUser(transaction, run.threadId, input.requestedBy))
+    !(await runHasActiveGrant(transaction, run.id))
   )
     throw new OpensteerError({
       code: "conflict",
@@ -157,6 +151,25 @@ export async function assertNodeStop(
 export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: NodeStopInput) {
   return withDatabaseTransaction(database, async (tx) => {
     await lockCommandIdempotency(tx, input.requestedBy, input.idempotencyKey);
+    await lockThreadCaller(tx, input.authority, [input.runId]);
+    // A replay answers as it first did, even once the subagent has ended.
+    const existing = await findCommandByIdempotency(tx, input.requestedBy, input.idempotencyKey);
+    if (existing) {
+      const sent = z
+        .object({ nodeId: ExecutionNodeIdSchema, runId: RunIdSchema, threadId: ThreadIdSchema })
+        .safeParse(existing.payload);
+      if (
+        existing.type !== "node.stop" ||
+        !sent.success ||
+        sent.data.nodeId !== input.nodeId ||
+        sent.data.runId !== input.runId ||
+        sent.data.threadId !== input.threadId
+      )
+        throw idempotencyConflict(input.idempotencyKey);
+      if (!(await reachableNode(tx, input.nodeId, input.requestedBy)))
+        throw new OpensteerError({ code: "not_found", message: "Subagent is unavailable" });
+      return { command: existing, events: [], wasDuplicate: true };
+    }
     const { node, run, bindingGeneration } = await assertNodeStop(tx, input);
     const payload = {
       type: "node.stop",
@@ -166,12 +179,6 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       bindingGeneration,
       ...(input.authority ? { authority: NodeStopAuthoritySchema.parse(input.authority) } : {}),
     };
-    const existing = await findCommandByIdempotency(tx, input.requestedBy, input.idempotencyKey);
-    if (existing) {
-      if (existing.type !== "node.stop" || !isDeepStrictEqual(existing.payload, payload))
-        throw idempotencyConflict(input.idempotencyKey);
-      return { command: existing, events: [], wasDuplicate: true };
-    }
     const principalId = await principalIdForUser(tx, input.requestedBy);
     const command = await tx
       .insertInto("commands")
