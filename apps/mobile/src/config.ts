@@ -8,7 +8,17 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_HOME: z.literal("absent").optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
-    .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
+    .enum([
+      "admin",
+      "admin-stale",
+      "admin-empty",
+      "member",
+      "member-empty",
+      "guest",
+      "suspended",
+      "removed",
+      "fresh",
+    ])
     .optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(["away", "needs-update", "no-browser"]).optional(),
 });

@@ -1,10 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { mockTeamScenarios } from "@opensteer/client/mock";
 import { readMobileConfiguration } from "./config.js";
 
 const distribution = { development: false };
 const developmentBundle = { development: true };
 
 describe("readMobileConfiguration", () => {
+  it("opens every team scenario the shared mock serves", () => {
+    for (const team of mockTeamScenarios.filter((scenario) => scenario !== "absent"))
+      expect(
+        readMobileConfiguration(
+          { EXPO_PUBLIC_OPENSTEER_MOCK: "1", EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: team },
+          developmentBundle,
+        ).mockTeam,
+      ).toBe(team);
+  });
+
   it("refuses an Account origin that is not one", () => {
     expect(() =>
       readMobileConfiguration(
