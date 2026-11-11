@@ -158,6 +158,7 @@ export class PersonalDataReset {
             deployments,
             selectedDeploymentId,
             revision: state.revision + 1,
+            updatedAt: new Date().toISOString(),
           }),
         ),
       );
