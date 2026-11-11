@@ -1,3 +1,4 @@
+import { ProjectRequestStore, projectRequestActivityFact } from "./project-request-store.js";
 import { checkAccess } from "./access-store.js";
 import type { ProjectHomeChatPort } from "./team-project-store.js";
 import { readProjectThreadActivity } from "./agent-thread-history.js";
@@ -583,19 +584,72 @@ export class ProjectWorkStore {
     );
     if (!page)
       throw new OpensteerError({ code: "forbidden", message: "Thread is outside this Project" });
-    if (
-      page.items.some(
-        (item) =>
-          item.type === "request.opened" ||
-          item.type === "request.resolved" ||
-          item.type === "request.cancelled",
-      )
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        reason: "project-request-activity-unavailable",
-        message: "Project Request activity requires Q's audience-aware reader",
-      });
+    const requestEvents = page.items.flatMap((item) => {
+      if (item.type === "thread.execution-updated" && item.data.requestFact)
+        return [
+          {
+            sequence: item.sequence,
+            requestId: item.data.requestFact.requestId,
+            runId: item.data.requestFact.runId,
+            type: item.data.requestFact.type === "opened" ? "request.opened" : "request.resolved",
+          },
+        ];
+      if (item.type === "request.opened" || item.type === "request.resolved")
+        return [
+          {
+            sequence: item.sequence,
+            requestId: item.data.request.id,
+            runId: item.runId,
+            type: item.type,
+          },
+        ];
+      if (item.type === "request.cancelled")
+        return [
+          {
+            sequence: item.sequence,
+            requestId: item.data.requestId,
+            runId: item.runId,
+            type: item.type,
+          },
+        ];
+      return [];
+    });
+    const requestActivity = new Map<
+      string,
+      ReturnType<typeof projectRequestActivityFact> & { type: string; runId: RunId | null }
+    >();
+    if (requestEvents.length) {
+      const facts = (
+        await new ProjectRequestStore(this.database).activityFacts(
+          binding,
+          {
+            threadId: input.threadId,
+            requestIds: [...new Set(requestEvents.map((event) => event.requestId))],
+          },
+          this.dependencies.runnerIsAttached,
+        )
+      ).get(input.threadId);
+      const byId = new Map(
+        [...(facts?.requestWaits.items ?? []), ...(facts?.requestOutcomes ?? [])].map((fact) => [
+          fact.requestId,
+          fact,
+        ]),
+      );
+      for (const event of requestEvents) {
+        const fact = byId.get(event.requestId);
+        if (!fact)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "project-request-activity-unavailable",
+            message: "Request activity has no supported stored Project fact",
+          });
+        requestActivity.set(event.sequence, {
+          ...projectRequestActivityFact(fact),
+          type: event.type,
+          runId: event.runId,
+        });
+      }
+    }
     const ids = [...page.requesters.keys()];
     const runs = ids.length
       ? await this.database
@@ -607,7 +661,11 @@ export class ProjectWorkStore {
           .execute()
       : [];
     await assertActiveProjectBinding(this.database, binding, this.dependencies);
-    return { ...page, runPrincipals: new Map(runs.map((run) => [run.id, run.actorPrincipalId])) };
+    return {
+      ...page,
+      requestActivity,
+      runPrincipals: new Map(runs.map((run) => [run.id, run.actorPrincipalId])),
+    };
   }
 
   async projectThreads(
