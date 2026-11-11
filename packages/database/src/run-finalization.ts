@@ -15,6 +15,8 @@ import {
   type AgentEvent,
   type RequestCancellationReason,
   type RunId,
+  type ThreadId,
+  type WorkspaceId,
   type RunFailure,
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
@@ -531,6 +533,7 @@ export interface ProjectRunFinalization {
   readonly completedAt: Date;
   readonly failure?: RunFailure | undefined;
   readonly stopReason?: "authority-revoked" | "no-eligible-manager";
+  readonly deferAttemptCleanup?: boolean;
 }
 
 /** The caller reserves the complete projection prefix before Q cancellation or late person fences. */
@@ -575,6 +578,14 @@ export async function finalizeProjectRunTransaction(
       reason: "channel-not-supported",
       message: "Project work does not route channel replies",
     });
+  const derivedThreads = input.stopReason
+    ? await transaction
+        .selectFrom("threadInputs")
+        .select("threadId")
+        .where(sql<string>`authority_source->>'parentRunId'`, "=", run.id)
+        .where("state", "in", ["pending", "claimed", "unknown"])
+        .execute()
+    : [];
   await lockWorkspaceRow(transaction, run.workspaceId);
   const assignment = run.assignmentId
     ? await transaction
@@ -584,7 +595,11 @@ export async function finalizeProjectRunTransaction(
         .executeTakeFirst()
     : null;
   const threadIds = [
-    ...new Set([run.threadId, ...(assignment ? [assignment.parentThreadId] : [])]),
+    ...new Set([
+      run.threadId,
+      ...(assignment ? [assignment.parentThreadId] : []),
+      ...derivedThreads.map((row) => row.threadId),
+    ]),
   ];
   const threads = await transaction
     .selectFrom("threads")
@@ -801,6 +816,190 @@ export async function finalizeProjectRunTransaction(
       idempotencyKey: `terminal:${run.id}:${original.binding.bindingGeneration}`,
       control: { kind: "run.interrupt" },
     });
-  await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
+  if (!input.deferAttemptCleanup)
+    await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
   return events;
+}
+
+/** Authority writers finish late-ranked engine projections through the durable interrupt worker. */
+export async function finishTerminalProjectRunTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  runId: RunId,
+): Promise<void> {
+  const run = await transaction
+    .selectFrom("runs")
+    .select(["status", "completedAt"])
+    .where("id", "=", runId)
+    .executeTakeFirst();
+  if (
+    !run ||
+    (run.status !== "completed" && run.status !== "failed" && run.status !== "interrupted")
+  )
+    return;
+  await endLiveExecutionNodes(transaction, { runId, endedAt: run.completedAt ?? new Date() });
+  await endOpenAttempts(transaction, runId, run.status);
+}
+
+export interface ProjectRequestStopPort {
+  stop(
+    transaction: Transaction<DatabaseSchema>,
+    input: {
+      readonly runIds: readonly RunId[];
+      readonly reason: "authority-revoked" | "no-eligible-manager";
+      readonly requestEvents: readonly AgentEvent[];
+    },
+  ): Promise<void>;
+}
+
+/** Collect into the authority mutation's publication batch, which its owner publishes only after commit. */
+export class ProjectWorkStopStore implements ProjectRequestStopPort {
+  readonly collectEvents: (
+    transaction: Transaction<DatabaseSchema>,
+    events: readonly AgentEvent[],
+  ) => void;
+  constructor(collectEvents: ProjectWorkStopStore["collectEvents"]) {
+    this.collectEvents = collectEvents;
+  }
+
+  async stop(
+    transaction: Transaction<DatabaseSchema>,
+    input: Parameters<ProjectRequestStopPort["stop"]>[1],
+  ): Promise<void> {
+    const events = [...input.requestEvents];
+    for (const runId of [...new Set(input.runIds)].sort()) {
+      events.push(
+        ...(await finalizeProjectRunTransaction(transaction, {
+          runId,
+          source: "host",
+          status: "failed",
+          completedAt: new Date(),
+          stopReason: input.reason,
+          deferAttemptCleanup: true,
+          failure: {
+            code:
+              input.reason === "authority-revoked"
+                ? "workspace_access_revoked"
+                : "no_eligible_manager",
+            message:
+              input.reason === "authority-revoked"
+                ? "The captured Project work origin lost authority"
+                : "The planned final Project has no eligible manager",
+            retryable: false,
+            status: "failed",
+          },
+        })),
+      );
+    }
+    this.collectEvents(transaction, events);
+  }
+}
+
+/** Reserve before Request cancellation or user fences; rediscover growth before calling this prefix. */
+export async function reserveProjectWorkStop(
+  transaction: Transaction<DatabaseSchema>,
+  input: {
+    readonly runIds: readonly RunId[];
+    readonly workspaceIds?: readonly WorkspaceId[];
+    readonly threadIds?: readonly ThreadId[];
+  },
+): Promise<void> {
+  if (!input.runIds.length && !input.threadIds?.length) return;
+  const runs = input.runIds.length
+    ? await transaction
+        .selectFrom("runs")
+        .innerJoin("threads", "threads.id", "runs.threadId")
+        .innerJoin("principals", "principals.id", "runs.actorPrincipalId")
+        .select([
+          "runs.id",
+          "runs.threadId",
+          "runs.assignmentId",
+          "threads.workspaceId",
+          "principals.kind as principalKind",
+          "principals.workspaceId as principalWorkspaceId",
+        ])
+        .where("runs.id", "in", [...input.runIds])
+        .orderBy("runs.id")
+        .forNoKeyUpdate("runs")
+        .execute()
+    : [];
+  if (
+    runs.some(
+      (row) => row.principalKind !== "project" || row.principalWorkspaceId !== row.workspaceId,
+    )
+  )
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Work cancellation scope includes a non-Project Run",
+    });
+  const assignments = runs.flatMap((row) => (row.assignmentId ? [row.assignmentId] : []));
+  const parents = assignments.length
+    ? await transaction
+        .selectFrom("delegations")
+        .select("parentThreadId")
+        .where("id", "in", assignments)
+        .execute()
+    : [];
+  const derived = runs.length
+    ? await transaction
+        .selectFrom("threadInputs")
+        .select("threadId")
+        .where(
+          sql<string>`authority_source->>'parentRunId'`,
+          "in",
+          runs.map((row) => row.id),
+        )
+        .where("state", "in", ["pending", "claimed", "unknown"])
+        .execute()
+    : [];
+  const threadIds = [
+    ...new Set([
+      ...runs.map((row) => row.threadId),
+      ...parents.map((row) => row.parentThreadId),
+      ...derived.map((row) => row.threadId),
+      ...(input.threadIds ?? []),
+    ]),
+  ].sort();
+  const threads = threadIds.length
+    ? await transaction
+        .selectFrom("threads")
+        .select(["id", "workspaceId"])
+        .where("id", "in", threadIds)
+        .execute()
+    : [];
+  const workspaceIds = [
+    ...new Set([...runs.map((row) => row.workspaceId), ...(input.workspaceIds ?? [])]),
+  ].sort();
+  if (
+    threads.length !== threadIds.length ||
+    threads.some((row) => !workspaceIds.includes(row.workspaceId))
+  )
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Work cancellation reservation needs its complete Workspace scope",
+    });
+  if (workspaceIds.length)
+    await transaction
+      .selectFrom("workspaces")
+      .select("id")
+      .where("id", "in", workspaceIds)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  if (threadIds.length)
+    await transaction
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "in", threadIds)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
+  await lockRunProjectionRows(transaction, { runIds: runs.map((row) => row.id), threadIds });
+  if (threadIds.length)
+    await transaction
+      .selectFrom("threadStatePending")
+      .select("threadId")
+      .where("threadId", "in", threadIds)
+      .orderBy("threadId")
+      .forNoKeyUpdate()
+      .execute();
 }

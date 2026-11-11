@@ -1,3 +1,5 @@
+import { finishTerminalProjectRunTransaction } from "./run-finalization.js";
+import { currentRunAttempt, recordAttemptDispatch } from "./run-attempts.js";
 import {
   ProjectRunnerToHostMessageSchema,
   RunnerConnectionFenceSchema,
@@ -529,6 +531,14 @@ export class ProjectBindingStore {
             .where("disabledAt", "is", null)
             .forShare()
             .executeTakeFirstOrThrow();
+        const attempt = await currentRunAttempt(transaction, run.id);
+        await recordAttemptDispatch(transaction, {
+          attemptId: attempt.id,
+          bindingGeneration: generation,
+          modelSelection: snapshot.modelSelection,
+          runnerBootId: request.runnerBootId,
+          runnerId: request.runnerId,
+        });
         const { grantId } = await issueRunGrant(transaction, {
           runId: run.id,
           bindingGeneration: generation,
@@ -723,115 +733,124 @@ export class ProjectControlDeliveryStore {
     z.string().min(1).max(255).parse(dispatcherId);
     await assertProjectAuthority(this.database);
     return withDatabaseTransaction(this.database, async (transaction) => {
-      const observed = await transaction
-        .selectFrom("commands")
-        .selectAll()
-        .where("id", "=", commandId)
-        .where("type", "=", "run.control.project")
-        .executeTakeFirst();
-      if (!observed) return { state: "absent" as const };
-      const stored = StoredProjectControlSchema.parse(observed.payload);
-      const run = await transaction
-        .selectFrom("runs")
-        .select(["id", "status"])
-        .where("id", "=", stored.binding.runId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      await lockWorkspaceRow(transaction, stored.binding.workspaceId);
-      const request =
-        stored.control.kind === "request.resolve"
-          ? await transaction
-              .selectFrom("requests")
-              .select("id")
-              .where("id", "=", stored.control.requestId)
-              .where("originatingRunId", "=", stored.binding.runId)
-              .forNoKeyUpdate()
-              .executeTakeFirst()
-          : null;
-      const command = await transaction
-        .selectFrom("commands")
-        .selectAll()
-        .where("id", "=", commandId)
-        .forNoKeyUpdate()
-        .executeTakeFirst();
-      if (!command) return { state: "absent" as const };
-      if (["succeeded", "failed"].includes(command.status))
-        return { state: "settled" as const, status: command.status };
-      if (command.status === "unknown")
-        return { state: "uncertain" as const, binding: stored.binding, control: stored.control };
-      const dispose = async (reason: string) => {
+      const outcome = await (async () => {
+        const observed = await transaction
+          .selectFrom("commands")
+          .selectAll()
+          .where("id", "=", commandId)
+          .where("type", "=", "run.control.project")
+          .executeTakeFirst();
+        if (!observed) return { state: "absent" as const };
+        const stored = StoredProjectControlSchema.parse(observed.payload);
+        const run = await transaction
+          .selectFrom("runs")
+          .select(["id", "status"])
+          .where("id", "=", stored.binding.runId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        await lockWorkspaceRow(transaction, stored.binding.workspaceId);
+        const request =
+          stored.control.kind === "request.resolve"
+            ? await transaction
+                .selectFrom("requests")
+                .select("id")
+                .where("id", "=", stored.control.requestId)
+                .where("originatingRunId", "=", stored.binding.runId)
+                .forNoKeyUpdate()
+                .executeTakeFirst()
+            : null;
+        const command = await transaction
+          .selectFrom("commands")
+          .selectAll()
+          .where("id", "=", commandId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (!command) return { state: "absent" as const };
+        if (["succeeded", "failed"].includes(command.status))
+          return { state: "settled" as const, status: command.status };
+        if (command.status === "unknown")
+          return { state: "uncertain" as const, binding: stored.binding, control: stored.control };
+        const dispose = async (reason: string) => {
+          await transaction
+            .updateTable("commands")
+            .set({
+              status: "failed",
+              lastError: jsonValue({ code: "project_control_unavailable", message: reason }),
+              updatedAt: new Date(),
+            })
+            .where("id", "=", commandId)
+            .execute();
+          return {
+            state: "disposed" as const,
+            reason,
+            binding: stored.binding,
+            control: stored.control,
+          };
+        };
+        if (stored.control.kind === "request.resolve" && !request)
+          return dispose("The original Project Request is unavailable");
+        const durable = await readProjectRunBinding(transaction, {
+          runId: stored.binding.runId,
+          grantId: stored.binding.grantId,
+        });
+        if (!run || !durable || !isDeepStrictEqual(durable.binding, stored.binding))
+          return dispose("The original Project control binding is unavailable");
+        if (
+          stored.control.kind !== "run.interrupt" &&
+          ["completed", "failed", "interrupted"].includes(run.status)
+        )
+          return dispose("The Project Run ended before this control could be delivered");
+        if (
+          durable.row.bindingGeneration !== stored.binding.bindingGeneration ||
+          durable.row.sessionGeneration !== stored.binding.bindingGeneration
+        )
+          return dispose("The original Project binding was replaced before delivery");
+        const attachedBoot = this.dependencies.currentRunnerBootId(stored.binding.runnerId);
+        if (attachedBoot === null) return { state: "offline" as const, binding: stored.binding };
+        if (attachedBoot !== stored.binding.runnerBootId)
+          return dispose("A different Runner boot replaced the Project control's original address");
+        const stopping =
+          stored.control.kind === "run.interrupt" || stored.control.kind === "request.refuse";
+        if (!stopping) {
+          try {
+            await assertActiveProjectBinding(transaction, stored.binding, {
+              runnerIsAttached: (id, boot) => this.dependencies.currentRunnerBootId(id) === boot,
+            });
+          } catch (error) {
+            if (!(error instanceof OpensteerError)) throw error;
+            return dispose(error.message);
+          }
+          const thread = await transaction
+            .selectFrom("threads")
+            .select("status")
+            .where("id", "=", stored.binding.threadId)
+            .executeTakeFirst();
+          if (thread?.status === "archived") return dispose("The Project Thread was archived");
+          if (
+            stored.control.kind === "request.resolve" &&
+            !(await this.dependencies.canContinue(transaction, stored.control.requestId))
+          )
+            return dispose("The original Project Request continuation is no longer permitted");
+        }
         await transaction
           .updateTable("commands")
-          .set({
-            status: "failed",
-            lastError: jsonValue({ code: "project_control_unavailable", message: reason }),
+          .set((eb) => ({
+            status: "dispatched",
+            dispatcherId,
+            attempts: eb("attempts", "+", 1),
             updatedAt: new Date(),
-          })
-          .where("id", "=", commandId)
+          }))
+          .where("id", "=", command.id)
           .execute();
-        return {
-          state: "disposed" as const,
-          reason,
-          binding: stored.binding,
-          control: stored.control,
-        };
-      };
-      if (stored.control.kind === "request.resolve" && !request)
-        return dispose("The original Project Request is unavailable");
-      const durable = await readProjectRunBinding(transaction, {
-        runId: stored.binding.runId,
-        grantId: stored.binding.grantId,
-      });
-      if (!run || !durable || !isDeepStrictEqual(durable.binding, stored.binding))
-        return dispose("The original Project control binding is unavailable");
-      if (
-        stored.control.kind !== "run.interrupt" &&
-        ["completed", "failed", "interrupted"].includes(run.status)
-      )
-        return dispose("The Project Run ended before this control could be delivered");
-      if (
-        durable.row.bindingGeneration !== stored.binding.bindingGeneration ||
-        durable.row.sessionGeneration !== stored.binding.bindingGeneration
-      )
-        return dispose("The original Project binding was replaced before delivery");
-      const attachedBoot = this.dependencies.currentRunnerBootId(stored.binding.runnerId);
-      if (attachedBoot === null) return { state: "offline" as const, binding: stored.binding };
-      if (attachedBoot !== stored.binding.runnerBootId)
-        return dispose("A different Runner boot replaced the Project control's original address");
-      const stopping =
-        stored.control.kind === "run.interrupt" || stored.control.kind === "request.refuse";
-      if (!stopping) {
-        try {
-          await assertActiveProjectBinding(transaction, stored.binding, {
-            runnerIsAttached: (id, boot) => this.dependencies.currentRunnerBootId(id) === boot,
-          });
-        } catch (error) {
-          if (!(error instanceof OpensteerError)) throw error;
-          return dispose(error.message);
-        }
-        const thread = await transaction
-          .selectFrom("threads")
-          .select("status")
-          .where("id", "=", stored.binding.threadId)
-          .executeTakeFirst();
-        if (thread?.status === "archived") return dispose("The Project Thread was archived");
-        if (
-          stored.control.kind === "request.resolve" &&
-          !(await this.dependencies.canContinue(transaction, stored.control.requestId))
-        )
-          return dispose("The original Project Request continuation is no longer permitted");
-      }
-      await transaction
-        .updateTable("commands")
-        .set((eb) => ({
-          status: "dispatched",
-          dispatcherId,
-          attempts: eb("attempts", "+", 1),
-          updatedAt: new Date(),
-        }))
-        .where("id", "=", command.id)
-        .execute();
-      return { state: "ready" as const, commandId: command.id, ...stored };
+        return { state: "ready" as const, commandId: command.id, ...stored };
+      })();
+      const command = await transaction
+        .selectFrom("commands")
+        .select("runId")
+        .where("id", "=", commandId)
+        .executeTakeFirst();
+      if (command?.runId) await finishTerminalProjectRunTransaction(transaction, command.runId);
+      return outcome;
     });
   }
 

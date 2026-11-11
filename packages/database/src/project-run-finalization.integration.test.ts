@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 import { prepareProjectAdmission, projectWatchWorkSource } from "./project-work.test-support.js";
-import { finalizeProjectRunTransaction } from "./run-finalization.js";
+import {
+  finalizeProjectRunTransaction,
+  reserveProjectWorkStop,
+  ProjectWorkStopStore,
+} from "./run-finalization.js";
 import { ProjectBindingStore, ProjectControlDeliveryStore } from "./project-execution-store.js";
 import { readProjectRunBinding, assertActiveProjectBinding } from "./execution-authority.js";
 
@@ -38,23 +42,21 @@ describeStore("Project Run terminalization", (it) => {
       idempotencyKey: "new-incarnation",
     });
     if (!next.runId) throw new Error("New incarnation did not queue its Run");
-    const events = await database
-      .transaction()
-      .execute((transaction) =>
-        finalizeProjectRunTransaction(transaction, {
-          runId: prepared.run.id,
-          source: "host",
+    const events = await database.transaction().execute((transaction) =>
+      finalizeProjectRunTransaction(transaction, {
+        runId: prepared.run.id,
+        source: "host",
+        status: "failed",
+        failure: {
+          code: "workspace_access_revoked",
+          message: "The original root lost authority",
+          retryable: false,
           status: "failed",
-          failure: {
-            code: "workspace_access_revoked",
-            message: "The original root lost authority",
-            retryable: false,
-            status: "failed",
-          },
-          stopReason: "authority-revoked",
-          completedAt: new Date(),
-        }),
-      );
+        },
+        stopReason: "authority-revoked",
+        completedAt: new Date(),
+      }),
+    );
     expect(events.filter((event) => event.type === "run.failed")).toHaveLength(1);
     expect(
       await database
@@ -106,16 +108,14 @@ describeStore("Project Run terminalization", (it) => {
       control: { kind: "run.interrupt" },
     });
     expect(
-      await database
-        .transaction()
-        .execute((transaction) =>
-          finalizeProjectRunTransaction(transaction, {
-            runId: prepared.run.id,
-            source: "host",
-            status: "interrupted",
-            completedAt: new Date(),
-          }),
-        ),
+      await database.transaction().execute((transaction) =>
+        finalizeProjectRunTransaction(transaction, {
+          runId: prepared.run.id,
+          source: "host",
+          status: "interrupted",
+          completedAt: new Date(),
+        }),
+      ),
     ).toEqual([]);
   });
 
@@ -164,10 +164,31 @@ describeStore("Project Run terminalization", (it) => {
       stopReason: "no-eligible-manager" as const,
       completedAt: new Date(),
     };
+    const collected = new WeakMap<object, readonly import("@opensteer/core").AgentEvent[]>();
+    const stopper = new ProjectWorkStopStore((transaction, events) =>
+      collected.set(transaction, events),
+    );
+    const stopWaitingWork = async (
+      transaction: import("kysely").Transaction<import("./schema.js").DatabaseSchema>,
+    ) => {
+      await reserveProjectWorkStop(transaction, { runIds: [stop.runId] });
+      await stopper.stop(transaction, {
+        runIds: [stop.runId],
+        reason: "no-eligible-manager",
+        requestEvents: [],
+      });
+      // The writer applies its already planned user state after work cancellation.
+      await transaction
+        .updateTable("users")
+        .set({ memberState: "suspended" })
+        .where("id", "=", project.userId)
+        .execute();
+      return collected.get(transaction) ?? [];
+    };
     const abort = new Error("Authority mutation aborted");
     await expect(
       database.transaction().execute(async (transaction) => {
-        await finalizeProjectRunTransaction(transaction, stop);
+        await stopWaitingWork(transaction);
         throw abort;
       }),
     ).rejects.toBe(abort);
@@ -187,9 +208,7 @@ describeStore("Project Run terminalization", (it) => {
         .where("type", "=", "run.control.project")
         .execute(),
     ).toEqual([]);
-    const events = await database
-      .transaction()
-      .execute((transaction) => finalizeProjectRunTransaction(transaction, stop));
+    const events = await database.transaction().execute(stopWaitingWork);
     expect(events.some((event) => event.type === "run.failed")).toBe(true);
     expect(
       (
@@ -199,7 +218,7 @@ describeStore("Project Run terminalization", (it) => {
           .where("id", "=", project.userId)
           .executeTakeFirstOrThrow()
       ).memberState,
-    ).toBe("active");
+    ).toBe("suspended");
     expect(
       await database
         .selectFrom("workspaceMemberships")
@@ -225,5 +244,34 @@ describeStore("Project Run terminalization", (it) => {
       requestedBy: null,
       payload: { binding: bound.binding, control: { kind: "run.interrupt" } },
     });
+    const attempt = await database
+      .selectFrom("runAttempts")
+      .selectAll()
+      .where("runId", "=", admitted.runId)
+      .executeTakeFirstOrThrow();
+    expect(attempt).toMatchObject({
+      bindingGeneration: bound.binding.bindingGeneration,
+      endedAt: null,
+    });
+    const interrupt = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", admitted.runId)
+      .where("type", "=", "run.control.project")
+      .executeTakeFirstOrThrow();
+    expect(
+      await new ProjectControlDeliveryStore(database, {
+        currentRunnerBootId: () => null,
+        currentPeerIsProjectCapable: () => false,
+        canContinue: async () => false,
+      }).claim(interrupt.id, "offline-cleanup"),
+    ).toMatchObject({ state: "offline" });
+    expect(
+      await database
+        .selectFrom("runAttempts")
+        .select(["endedAt", "outcome"])
+        .where("id", "=", attempt.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ endedAt: expect.any(Date), outcome: "failed" });
   });
 });
