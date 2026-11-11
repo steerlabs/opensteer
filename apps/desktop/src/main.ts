@@ -1367,7 +1367,7 @@ async function runDesktop(
 
   desktopSupervisorReady = true;
   if (!shutdown.requested) void desktopSupervisor.connect();
-  await mainProcess.start({
+  const starting = mainProcess.start({
     openWindow: shouldOpenDesktopWindowAtLaunch({
       arguments: process.argv,
       wasOpenedAtLogin:
@@ -1375,6 +1375,7 @@ async function runDesktop(
     }),
   });
   if (webLinks.pending || mcpAuthorizationLinks.pending) mainProcess.focus();
+  await starting;
 
   function handleAsyncFatal(error: unknown): void {
     if (shutdown.requested || fatal) return;

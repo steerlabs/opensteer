@@ -247,8 +247,16 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
         `${JSON.stringify({ event: "desktop.window.load", phase, elapsedMs: Math.round(performance.now() - started) })}\n`,
       );
     };
-    window.webContents.on("did-navigate", () => reportLoad("committed"));
-    window.webContents.on("dom-ready", () => reportLoad("dom-ready"));
+    // Only the launch load is timed: the page reloads itself later.
+    const committed = () => reportLoad("committed");
+    const domReady = () => reportLoad("dom-ready");
+    window.webContents.once("did-navigate", committed);
+    window.webContents.once("dom-ready", domReady);
+    const settle = (phase: "finished" | "failed") => {
+      window.webContents.off("did-navigate", committed);
+      window.webContents.off("dom-ready", domReady);
+      reportLoad(phase);
+    };
     // Closing hides: the page keeps receiving the person's notifications.
     // Quitting destroys the window, which emits no `close`.
     window.on("close", (event) => {
@@ -258,10 +266,10 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     window.once("closed", onClosed);
     if (options.show) window.show();
     const loaded = window.webContents.loadURL(desktopAppEntryUrl).then(
-      () => reportLoad("finished"),
+      () => settle("finished"),
       (error: unknown) => {
-        reportLoad("failed");
-        window.destroy();
+        settle("failed");
+        if (!window.isDestroyed()) window.destroy();
         throw new Error("The desktop window could not load its bundled application.", {
           cause: error,
         });

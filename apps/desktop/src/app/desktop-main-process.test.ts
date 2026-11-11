@@ -146,12 +146,12 @@ describe("DesktopMainProcess", () => {
     await main.stop();
   });
 
-  it("does not start optional services if the first window cannot load", async () => {
+  it("does not start optional services if the first window cannot load or the app stops first", async () => {
     const services = {
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
     };
-    const main = new DesktopMainProcess({
+    const failing = new DesktopMainProcess({
       services,
       windows: {
         create: () => ({
@@ -160,9 +160,23 @@ describe("DesktopMainProcess", () => {
         }),
       },
     });
-    await expect(main.start()).rejects.toThrow("Host page failed");
+    await expect(failing.start()).rejects.toThrow("Host page failed");
     expect(services.start).not.toHaveBeenCalled();
     expect(services.stop).not.toHaveBeenCalled();
+
+    let finishLoading!: () => void;
+    const loaded = new Promise<void>((resolve) => {
+      finishLoading = resolve;
+    });
+    const stopping = new DesktopMainProcess({
+      services,
+      windows: { create: () => ({ window: new TestWindow([]), loaded }) },
+    });
+    const starting = stopping.start();
+    const stopped = stopping.stop();
+    finishLoading();
+    await Promise.all([starting, stopped]);
+    expect(services.start).not.toHaveBeenCalled();
   });
 
   it("clears a failed loading window and allows the next activation to recreate it", async () => {

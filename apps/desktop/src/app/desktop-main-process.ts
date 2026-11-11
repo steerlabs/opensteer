@@ -58,6 +58,7 @@ export class DesktopMainProcess {
       this.#started = false;
       throw error;
     }
+    if (!this.#started || this.#stopPromise) return;
     let starting: Promise<void>;
     try {
       starting = this.#services.start();
