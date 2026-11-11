@@ -83,7 +83,7 @@ export function runningNow(
     card.tone === "needs-you" ||
     card.children.some(needs) ||
     (card.workflow?.phases.some((phase) => phase.members.some(needs)) ?? false);
-  for (const card of tops.toSorted(
+  for (const card of [...tops].sort(
     (left, right) =>
       Number(needs(right)) - Number(needs(left)) || left.startedAt.localeCompare(right.startedAt),
   ))
@@ -138,7 +138,7 @@ export function runningNow(
     ? null
     : (rows
         .filter((row) => row.card.moving && row.card.detail[0]?.tone === "live")
-        .toSorted((left, right) => right.card.startedAt.localeCompare(left.card.startedAt))
+        .sort((left, right) => right.card.startedAt.localeCompare(left.card.startedAt))
         .map((row) => ({ key: row.card.key, text: row.card.detail[0]!.text }))[0] ?? null);
   const lead =
     rows.find((row) => row.card.tone === "needs-you")?.card ??
@@ -154,6 +154,32 @@ export function runningNow(
     lead,
     name: `Running now: ${[count, ...detail.map((phrase) => phrase.text)].join(", ")}`,
   };
+}
+
+/**
+ * Whether two Running now models say the same thing. They are rebuilt on
+ * every change a screen hears; rows built through one `SubagentCache` keep
+ * their identity while unchanged, so this compares them by reference.
+ */
+export function sameRunningNow(left: RunningNow | null, right: RunningNow | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return (
+    left.count === right.count &&
+    left.name === right.name &&
+    left.newest?.text === right.newest?.text &&
+    left.newest?.key === right.newest?.key &&
+    left.lead === right.lead &&
+    left.commands.length === right.commands.length &&
+    left.commands.every((command, index) => command.key === right.commands[index]?.key) &&
+    left.rows.length === right.rows.length &&
+    left.rows.every(
+      (row, index) =>
+        row.card === right.rows[index]?.card &&
+        row.depth === right.rows[index]?.depth &&
+        row.within === right.rows[index]?.within,
+    )
+  );
 }
 
 /** Who asked a question: the subagent, and the subagent or workflow it runs inside. */

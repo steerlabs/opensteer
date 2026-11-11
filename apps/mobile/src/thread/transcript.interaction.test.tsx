@@ -32,7 +32,7 @@ import {
   type TranscriptSurfaces,
 } from "./surface-chips.js";
 import { TranscriptGroupRow, replyActivityKeys } from "./transcript.js";
-import { AgentMemoryContext } from "./agent-cards.js";
+import { AgentMemoryContext } from "./subagent-rows.js";
 import { TaskScopeContext } from "./task-line.js";
 import { AppCard } from "./app-card.js";
 import { TranscriptHostClientContext } from "./attachment-views.js";
@@ -173,6 +173,9 @@ vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { name: string }) => <i data-symbol={name} />,
 }));
 vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
+vi.mock("./settings/engine-mark.js", () => ({
+  EngineMark: ({ driverKind }: { driverKind: string }) => <i data-engine={driverKind} />,
+}));
 vi.mock("../ui/workspace-mark.js", () => ({
   WorkspaceMark: () => null,
   WorkspaceIconGlyph: () => null,
@@ -736,8 +739,8 @@ describe("a turn's subagents", () => {
   const cards = (container: HTMLElement) =>
     [...container.querySelectorAll("button[aria-label]")]
       .map((button) => button.getAttribute("aria-label")!)
-      .filter((label) => label.includes(", subagent, "))
-      .map((label) => label.split(",")[0]);
+      .filter((label) => label.startsWith("Subagent "))
+      .map((label) => label.slice("Subagent ".length).split(",")[0]);
 
   // Failure: adjacent subagents read as loose cards, one started later joins a
   // group a step stands between, a live one disappears into the folded turn or
@@ -754,7 +757,9 @@ describe("a turn's subagents", () => {
     const answer = { ...note, id: "answer", body: "The final answer." };
     draw([run, note, mapper, reader, command, tests]);
     const head = container.querySelector('button[aria-label^="2 subagents"]')!;
-    expect(head.getAttribute("aria-label")).toBe("2 subagents · 1 working · 1 finished");
+    expect(head.getAttribute("aria-label")).toBe(
+      "2 subagents: 1 working, 1 finished. Hide subagents",
+    );
     expect(head.getAttribute("aria-expanded")).toBe("true");
     expect(cards(container)).toEqual(["Map the parser", "Read the protocol", "Check the tests"]);
     const text = container.textContent!;
@@ -765,7 +770,7 @@ describe("a turn's subagents", () => {
     press(
       container,
       container
-        .querySelector('button[aria-label^="Check the tests,"]')!
+        .querySelector('button[aria-label^="Subagent Check the tests,"]')!
         .getAttribute("aria-label")!,
     );
     expect(onOpenSubagent).toHaveBeenCalledWith(threadId, tests.nodeId);

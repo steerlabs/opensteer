@@ -1,29 +1,35 @@
 import {
   canRespondToRequests,
+  conversationName,
   deriveSurface,
-  formatDuration,
   showsHostLive,
   subagentDetail,
+  subagentFooter,
+  subagentSiblings,
   transcriptNodes,
   type AgentCard,
   type HostClient,
   type HostSnapshot,
   type NodeDetailSnapshot,
   type SubagentDetail,
+  type SubagentSiblings,
   type SurfaceModel,
 } from "@opensteer/client/host";
+import { harnessCatalogEntry } from "@opensteer/core";
 import { useHostSelector } from "@opensteer/client/react";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
   StackActions,
   useIsFocused,
-  useNavigationState,
   useNavigation,
+  useNavigationState,
   type StaticScreenProps,
 } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useCallback, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   View,
@@ -32,21 +38,37 @@ import {
 } from "react-native";
 import Animated from "react-native-reanimated";
 import { Markdown } from "../markdown/markdown.js";
-import { barHeight, color, headerFontScaleLimit, material, radius, space } from "../theme.js";
-import { WorkflowCard, dotProps, useClock, type AgentScope } from "../thread/agent-cards.js";
-import { SubagentStop } from "../thread/subagent-stop.js";
+import {
+  barHeight,
+  color,
+  headerFontScaleLimit,
+  material,
+  radius,
+  space,
+  touchTarget,
+  type,
+} from "../theme.js";
 import { samePlain } from "../thread/agent-select.js";
 import { barOverContentOptions } from "../thread/around-button.js";
 import { AnswerPill } from "../thread/answer-pill.js";
 import { ComposerDockLayout } from "../thread/composer-dock.js";
 import { useNodeWatch } from "../thread/node-watch.js";
+import { AgentEngine, AgentMark, threadEngine } from "../thread/agent-mark.js";
+import {
+  AgentScopeProvider,
+  AgentsLive,
+  Elapsed,
+  WorkflowPhases,
+  type AgentScope,
+} from "../thread/subagent-rows.js";
+import { SubagentStop } from "../thread/subagent-stop.js";
 import { SubagentSteps } from "../thread/transcript.js";
 import { QuestionCard } from "../thread/waiting-questions.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useLiquidGlass } from "../ui/glass.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { appear } from "../ui/motion.js";
-import { AppText, StatusDot } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { Screen, useGutter, useReadingColumn } from "../ui/screen.js";
 import { useContentInsets } from "../ui/pane.js";
 import { Symbol } from "../ui/symbol.js";
@@ -59,15 +81,12 @@ export type SubagentScreenProps = StaticScreenProps<{
 }>;
 
 /**
- * A subagent's own conversation, read-only: what its parent asked of it, what
- * it said, thought and ran, the subagents it started, and what it returned.
- * Its steps are watched from the Host only while this screen is in front of
- * the reader with the app open; the header and prompt draw at once from the
- * card the parent already holds.
- *
- * Where a composer would be, it says the subagent runs on its own and leads
- * back to its parent; while it waits on the reader, that bar is the question
- * itself, answered here as it would be in the parent.
+ * A subagent, opened: who started it, what it was asked, what it found and
+ * its own steps, with the subagents beside it one hop away. Where a composer
+ * would be, it says it can be watched, not messaged, with Stop where its
+ * engine allows one; while it waits on the reader, its question stands there
+ * too. The header draws at once from what the conversation already holds;
+ * its steps are watched from the Host only while this screen is in front.
  */
 export function SubagentScreen(props: SubagentScreenProps): ReactNode {
   const { deploymentId, nodeId, threadId } = props.route.params;
@@ -99,6 +118,20 @@ function loadingSnapshot(threadId: string, nodeId: string): NodeDetailSnapshot {
   };
 }
 
+const selectUser = (snapshot: HostSnapshot) => snapshot.user;
+
+function sameSiblings(left: SubagentSiblings | null, right: SubagentSiblings | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.index === right.index &&
+      left.total === right.total &&
+      left.previous === right.previous &&
+      left.next === right.next)
+  );
+}
+
 function AttachedSubagent(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
@@ -125,6 +158,18 @@ function AttachedSubagent(props: {
     (focused || ownStepOpen) && foreground,
   );
   const snapshot = watched.snapshot;
+  // Out of reach of the conversation's computer, everything here is what was last known.
+  const live = useHostSelector(
+    hostClient,
+    useCallback(
+      (host: HostSnapshot) => {
+        const thread = host.threads.find(({ id }) => id === threadId);
+        const environment = host.environments.find(({ id }) => id === thread?.environmentId);
+        return showsHostLive(host) && environment?.status === "connected";
+      },
+      [threadId],
+    ),
+  );
   const select = useCallback(
     (host: HostSnapshot): SubagentDetail | null => {
       const summary =
@@ -132,12 +177,37 @@ function AttachedSubagent(props: {
         snapshot?.node ??
         null;
       if (summary === null || summary.nodeKind === "task") return null;
-      return subagentDetail(snapshot ?? loadingSnapshot(threadId, nodeId), summary, host);
+      return subagentDetail(
+        snapshot ?? loadingSnapshot(threadId, nodeId),
+        summary,
+        live ? host : { ...host, connection: "offline" },
+      );
     },
-    [nodeId, snapshot, threadId],
+    [live, nodeId, snapshot, threadId],
   );
   const detail = useHostSelector(hostClient, select, samePlain);
-  const live = useHostSelector(hostClient, showsHostLive);
+  const siblings = useHostSelector(
+    hostClient,
+    useCallback(
+      (host: HostSnapshot) => subagentSiblings(host, threadId, nodeId),
+      [nodeId, threadId],
+    ),
+    sameSiblings,
+  );
+  const engine = useHostSelector(
+    hostClient,
+    useCallback((host: HostSnapshot) => threadEngine(host, threadId), [threadId]),
+  );
+  const threadTitle = useHostSelector(
+    hostClient,
+    useCallback(
+      (host: HostSnapshot) => {
+        const thread = host.threads.find(({ id }) => id === threadId);
+        return thread ? conversationName(thread.id, thread.title, host.homeThreadId) : null;
+      },
+      [threadId],
+    ),
+  );
   const state: SubagentDetail["state"] | "absent" =
     detail === null
       ? watched.unreachable || (snapshot !== null && snapshot.status !== "loading")
@@ -147,38 +217,69 @@ function AttachedSubagent(props: {
         ? "missing"
         : detail.state;
 
-  const openParent = useCallback(() => {
-    const parentNodeId = detail?.parent.nodeId ?? null;
-    const state = navigation.getState();
-    const below = state?.routes[state.index - 1];
-    const params = isRecord(below?.params) ? below.params : null;
-    const home = hostClient.getSnapshot().homeThreadId === threadId;
-    const belowIsParent =
-      params?.["deploymentId"] === deploymentId &&
-      (parentNodeId === null
-        ? (below?.name === "Thread" && params["threadId"] === threadId) ||
-          (below?.name === "Home" && home)
-        : below?.name === "Subagent" && params["nodeId"] === parentNodeId);
-    if (belowIsParent) {
-      navigation.goBack();
-      return;
-    }
-    if (parentNodeId !== null) {
+  // A workflow's members report to the conversation; a subagent's own, to it.
+  const parentNodeId = useHostSelector(
+    hostClient,
+    useCallback(
+      (host: HostSnapshot) => {
+        const parent = detail?.parent.nodeId;
+        return parent !== undefined &&
+          transcriptNodes(host.transcripts[threadId] ?? []).some(
+            (node) => node.nodeId === parent && node.nodeKind !== "workflow",
+          )
+          ? parent
+          : null;
+      },
+      [detail?.parent.nodeId, threadId],
+    ),
+  );
+  const reportsTo =
+    parentNodeId !== null && detail !== null
+      ? detail.parent.title
+      : (threadTitle ?? detail?.parent.title ?? "this conversation");
+
+  /**
+   * Goes to the conversation (null) or a subagent above this one: back down
+   * the stack when it is already there, else in this screen's place.
+   */
+  const openAncestor = useCallback(
+    (target: string | null) => {
+      const stack = navigation.getState();
+      const routes = stack?.routes ?? [];
+      const home = hostClient.getSnapshot().homeThreadId === threadId;
+      const index = routes.findLastIndex((route, at) => {
+        if (at >= (stack?.index ?? 0)) return false;
+        const params = isRecord(route.params) ? route.params : null;
+        if (params?.["deploymentId"] !== deploymentId) return false;
+        return target === null
+          ? (route.name === "Thread" && params["threadId"] === threadId) ||
+              (route.name === "Home" && home)
+          : route.name === "Subagent" && params["nodeId"] === target;
+      });
+      if (index >= 0 && stack) {
+        navigation.dispatch(StackActions.pop(stack.index - index));
+        return;
+      }
       navigation.dispatch(
-        StackActions.replace("Subagent", { deploymentId, nodeId: parentNodeId, threadId }),
+        target !== null
+          ? StackActions.replace("Subagent", { deploymentId, nodeId: target, threadId })
+          : home
+            ? StackActions.popTo("Home", { deploymentId })
+            : StackActions.replace("Thread", { deploymentId, threadId }),
       );
-      return;
-    }
-    navigation.dispatch(
-      home
-        ? StackActions.popTo("Home", { deploymentId })
-        : StackActions.replace("Thread", { deploymentId, threadId }),
-    );
-  }, [deploymentId, detail?.parent.nodeId, hostClient, navigation, threadId]);
+    },
+    [deploymentId, hostClient, navigation, threadId],
+  );
+  const hop = useCallback(
+    (target: string) =>
+      navigation.dispatch(
+        StackActions.replace("Subagent", { deploymentId, nodeId: target, threadId }),
+      ),
+    [deploymentId, navigation, threadId],
+  );
 
   const agentScope = useMemo<AgentScope>(
     () => ({
-      live,
       hostClient,
       onOpen: (card: AgentCard) => {
         if (card.opens === null) return;
@@ -193,7 +294,7 @@ function AttachedSubagent(props: {
         );
       },
     }),
-    [deploymentId, hostClient, live, navigation],
+    [deploymentId, hostClient, navigation],
   );
   const openStep = useCallback(
     (entryId: string) =>
@@ -203,22 +304,28 @@ function AttachedSubagent(props: {
 
   const glass = useLiquidGlass();
   const card = detail?.card ?? null;
+  const noun = card?.noun ?? "Subagent";
+  const title = card?.title ?? null;
+  const shownHop = siblings !== null && siblings.total > 1 ? siblings : null;
   useLayoutEffect(() => {
     navigation.setOptions({
       ...barOverContentOptions(glass),
       headerTransparent: true,
-      headerRight: () => (card ? <SubagentStop card={card} hostClient={hostClient} /> : null),
-      headerTitle: () =>
-        card === null ? (
-          <AppText maxFontSizeMultiplier={headerFontScaleLimit} numberOfLines={1} role="title">
-            Subagent
-          </AppText>
-        ) : (
-          <SubagentHeading card={card} live={live} />
-        ),
-      title: card?.title ?? "Subagent",
+      // iOS leads with the way back, titled with where it goes; Android names what this is.
+      headerTitle:
+        Platform.OS === "ios"
+          ? () => null
+          : () => (
+              <AppText maxFontSizeMultiplier={headerFontScaleLimit} numberOfLines={1} role="title">
+                {noun}
+              </AppText>
+            ),
+      headerRight: () =>
+        shownHop === null ? null : <SiblingHop noun={noun} onHop={hop} siblings={shownHop} />,
+      // What the back control of a screen opened from this one says.
+      title: title ?? noun,
     });
-  }, [card, glass, hostClient, live, navigation]);
+  }, [glass, hop, navigation, noun, shownHop, title]);
 
   const question = useHostSelector(
     hostClient,
@@ -242,128 +349,186 @@ function AttachedSubagent(props: {
   if (state === "missing")
     return (
       <Screen>
-        <View style={styles.missing}>
+        <View accessibilityRole="alert" style={styles.missing}>
           <AppText role="title">This subagent can't be shown</AppText>
-          <AnswerPill label="Open parent" onPress={openParent} tone="secondary" />
+          <AppText role="secondary" style={styles.center} tone="muted">
+            It's no longer part of this conversation.
+          </AppText>
+          <AnswerPill
+            label={`Back to ${threadTitle ?? "the conversation"}`}
+            onPress={() => openAncestor(null)}
+            tone="secondary"
+          />
         </View>
       </Screen>
     );
   return (
-    <Screen edgeToEdge>
-      <ComposerDockLayout
-        avoidKeyboard
-        dock={
-          surface !== null && user !== null ? (
-            <QuestionCard
-              canRespond={canRespond}
-              deploymentId={deploymentId}
-              drafts={drafts}
-              hostClient={hostClient}
-              subagentTitle={null}
-              surface={surface}
-              userId={user.id}
-            />
-          ) : (
-            <ReadOnlyBar onOpenParent={openParent} />
-          )
-        }
-      >
-        {(clearance) => (
-          <Body
-            agentScope={agentScope}
-            clearance={clearance}
-            detail={detail}
-            onLoadEarlier={() => void watched.watch?.loadOlder()}
-            onOpenStep={openStep}
-            onRetry={() => watched.watch?.retry()}
-            state={state}
-          />
-        )}
-      </ComposerDockLayout>
-    </Screen>
+    <AgentsLive value={live}>
+      <AgentEngine value={engine}>
+        <AgentScopeProvider value={agentScope}>
+          <Screen edgeToEdge>
+            <ComposerDockLayout
+              avoidKeyboard
+              dock={
+                <>
+                  {surface !== null && user !== null ? (
+                    <QuestionCard
+                      asker={false}
+                      canRespond={canRespond}
+                      deploymentId={deploymentId}
+                      drafts={drafts}
+                      hostClient={hostClient}
+                      surface={surface}
+                      userId={user.id}
+                    />
+                  ) : null}
+                  {card === null ? null : (
+                    <WatchFooter
+                      card={card}
+                      engine={engine}
+                      hostClient={hostClient}
+                      reportsTo={reportsTo}
+                    />
+                  )}
+                </>
+              }
+            >
+              {(clearance) => (
+                <Body
+                  agentScope={agentScope}
+                  clearance={clearance}
+                  detail={detail}
+                  live={live}
+                  onLoadEarlier={() => void watched.watch?.loadOlder()}
+                  onOpenAncestor={openAncestor}
+                  onOpenStep={openStep}
+                  onRetry={() => watched.watch?.retry()}
+                  rootTitle={threadTitle ?? detail?.parent.title ?? "Conversation"}
+                  state={state}
+                />
+              )}
+            </ComposerDockLayout>
+          </Screen>
+        </AgentScopeProvider>
+      </AgentEngine>
+    </AgentsLive>
   );
 }
 
-const selectUser = (snapshot: HostSnapshot) => snapshot.user;
-
-/** The bar's title and, under it, where the subagent stands, how long, on what model. */
-function SubagentHeading(props: { readonly card: AgentCard; readonly live: boolean }): ReactNode {
-  const { card } = props;
-  const now = useClock(props.live && card.endedAt === null);
-  const time = formatDuration(
-    Math.max(
-      0,
-      (card.endedAt === null ? now : Date.parse(card.endedAt)) - Date.parse(card.startedAt),
-    ),
-  );
+/** "‹ 2 of 3 ›": the subagents started beside this one, a hop away in this screen's place. */
+function SiblingHop(props: {
+  readonly noun: string;
+  readonly onHop: (nodeId: string) => void;
+  readonly siblings: SubagentSiblings;
+}): ReactNode {
+  const { siblings } = props;
+  const noun = props.noun.toLowerCase();
   return (
-    <View accessibilityRole="header" style={styles.heading}>
-      <AppText maxFontSizeMultiplier={headerFontScaleLimit} numberOfLines={1} role="title">
-        {card.title}
-      </AppText>
-      <View style={styles.subtitle}>
-        <StatusDot live={card.moving} size={6} {...dotProps(card.tone)} />
+    <View style={styles.hop}>
+      <HopButton
+        icon="chevron.left"
+        label={`Previous ${noun}`}
+        onPress={siblings.previous === null ? null : () => props.onHop(siblings.previous!)}
+      />
+      <View
+        accessibilityLabel={`${siblings.index + 1} of ${siblings.total}`}
+        accessibilityLiveRegion="polite"
+        accessible
+      >
         <AppText
           maxFontSizeMultiplier={headerFontScaleLimit}
-          numberOfLines={1}
-          role="caption"
-          style={styles.subtitleWords}
+          role="secondary"
+          style={styles.hopCount}
           tone="muted"
         >
-          <AppText
-            maxFontSizeMultiplier={headerFontScaleLimit}
-            role="caption"
-            style={card.tone === "needs-you" ? styles.amber : undefined}
-            tone="soft"
-          >
-            {card.word}
-          </AppText>
-          {[time, card.modelLabel].filter(Boolean).map((part) => ` · ${part}`)}
+          {`${siblings.index + 1}/${siblings.total}`}
         </AppText>
       </View>
+      <HopButton
+        icon="chevron.right"
+        label={`Next ${noun}`}
+        onPress={siblings.next === null ? null : () => props.onHop(siblings.next!)}
+      />
     </View>
   );
 }
 
-/** Where the composer would be: the reader watches a subagent, and its parent steers it. */
-function ReadOnlyBar(props: { readonly onOpenParent: () => void }): ReactNode {
+function HopButton(props: {
+  readonly icon: "chevron.left" | "chevron.right";
+  readonly label: string;
+  readonly onPress: (() => void) | null;
+}): ReactNode {
+  const disabled = props.onPress === null;
+  return (
+    <Pressable
+      accessibilityLabel={props.label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={props.onPress ?? undefined}
+      style={({ pressed }) => [styles.hopButton, pressed && styles.pressed]}
+    >
+      <Symbol
+        name={props.icon}
+        size={15}
+        tint={disabled ? color.lineControl : color.textSoft}
+        weight="semibold"
+      />
+    </Pressable>
+  );
+}
+
+/**
+ * In the composer's place: it can be watched, not messaged, and who it
+ * reports to. Stop stands beside it where its engine allows; where it can't,
+ * one plain sentence says why.
+ */
+function WatchFooter(props: {
+  readonly card: AgentCard;
+  readonly engine: string | null;
+  readonly hostClient: HostClient;
+  readonly reportsTo: string;
+}): ReactNode {
+  const { card } = props;
+  const footer = subagentFooter(
+    card,
+    props.reportsTo,
+    props.engine === null ? null : (harnessCatalogEntry(props.engine)?.label ?? null),
+  );
+  const noun = card.kind === "workflow" ? "workflow" : "subagent";
   const narrow = useWindowDimensions().width < 340;
   return (
     <View style={styles.bar}>
-      <View
-        accessibilityLabel="Runs on its own. You can't message a subagent. Its parent decides what it does."
-        accessible
-        style={styles.barWords}
-      >
-        <View style={styles.barTitle}>
-          <Symbol name="eye" size={14} tint={color.muted} />
-          <AppText role="secondaryMedium" tone="soft">
-            Runs on its own
-          </AppText>
-        </View>
-        {narrow ? null : (
-          <AppText role="caption" tone="muted">
-            You can't message a subagent. Its parent decides what it does.
-          </AppText>
-        )}
-      </View>
-      <AnswerPill label="Open parent" onPress={props.onOpenParent} tone="secondary" />
+      {narrow ? null : <Symbol name="eye" size={14} tint={color.muted} />}
+      <AppText role="caption" style={styles.barWords} tone="muted">
+        {`A ${noun} reports to `}
+        <AppText role="caption" style={styles.strong} tone="soft">
+          {footer.reportsTo}
+        </AppText>
+        {". You can watch it, not message it."}
+        {footer.noStop === null ? null : ` ${footer.noStop}`}
+      </AppText>
+      <SubagentStop card={card} hostClient={props.hostClient} look="button" />
     </View>
   );
 }
 
 /**
- * The prompt, then the steps as they page in and stream, then the result.
- * Like the transcript it follows the newest step only while the reader is at
- * the end, and an earlier page arriving above keeps their place.
+ * Its lineage, title and one line of where it stands; what it was asked; its
+ * result once settled; then its own steps as they page in and stream. Like
+ * the transcript it follows the newest step only while the reader is at the
+ * end, and an earlier page arriving above keeps their place.
  */
 function Body(props: {
   readonly agentScope: AgentScope;
   readonly clearance: number;
   readonly detail: SubagentDetail | null;
+  readonly live: boolean;
   readonly onLoadEarlier: () => void;
+  readonly onOpenAncestor: (nodeId: string | null) => void;
   readonly onOpenStep: (entryId: string) => void;
   readonly onRetry: () => void;
+  readonly rootTitle: string;
   readonly state: SubagentDetail["state"] | "absent";
 }): ReactNode {
   const { detail, state } = props;
@@ -372,8 +537,9 @@ function Body(props: {
   const insets = useContentInsets();
   const column = useReadingColumn();
   const list = useRef<ScrollViewInstance>(null);
-  const atEnd = useRef(true);
+  const atEnd = useRef(false);
   const card = detail?.card ?? null;
+  const settled = card !== null && card.endedAt !== null;
   return (
     <ScrollView
       contentContainerStyle={[
@@ -394,99 +560,291 @@ function Body(props: {
       onScroll={({ nativeEvent }) => {
         const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
         atEnd.current =
+          contentOffset.y > 0 &&
           contentOffset.y + layoutMeasurement.height >= contentSize.height - space[48];
       }}
       ref={list}
       scrollEventThrottle={32}
       scrollIndicatorInsets={{ bottom: props.clearance, top: headerHeight }}
     >
-      {detail?.prompt ? (
-        <View style={styles.prompt}>
-          <AppText numberOfLines={1} role="caption" tone="muted">
-            From {detail.parent.title}
-          </AppText>
-          <View style={styles.promptBubble}>
-            <Markdown text={detail.prompt} />
-          </View>
-        </View>
-      ) : null}
-      {card?.workflow ? (
-        <WorkflowCard card={card} phasesOnly scope={props.agentScope} workflow={card.workflow} />
-      ) : null}
-      {state === "loading" || state === "absent" ? (
-        <View
-          accessibilityLabel="Loading this subagent's steps"
-          accessibilityRole="progressbar"
-          accessible
-          style={styles.skeleton}
-        >
-          {[68, 84, 54].map((width) => (
-            <View key={width} style={[styles.skeletonLine, { width: `${width}%` }]} />
-          ))}
-        </View>
-      ) : state === "summary-only" || state === "unavailable" ? (
-        <Note
-          detail={
-            state === "summary-only"
-              ? "This subagent's steps weren't recorded."
-              : "Update Opensteer on this computer to see a subagent's steps."
-          }
-          title="Only a summary is available."
-        />
-      ) : state === "error" ? (
-        <Note title="Couldn't load this subagent's steps.">
-          <View style={styles.retry}>
-            <AnswerPill label="Try again" onPress={props.onRetry} tone="secondary" />
-          </View>
-        </Note>
-      ) : null}
-      {state === "ready" && detail !== null ? (
+      {detail === null || card === null ? (
+        <Skeleton label="Loading this subagent" />
+      ) : (
         <>
-          {detail.hasEarlier ? (
-            <AnswerPill
-              busy={detail.loadingEarlier}
-              label="Show earlier steps"
-              onPress={props.onLoadEarlier}
-              tone="secondary"
+          {detail.lineage.length > 0 ? (
+            <Lineage
+              lineage={detail.lineage}
+              onOpen={props.onOpenAncestor}
+              rootTitle={props.rootTitle}
             />
           ) : null}
-          <SubagentSteps
-            active={detail.card.endedAt === null}
-            agentScope={props.agentScope}
-            entries={detail.entries}
-            onOpenStep={props.onOpenStep}
-          />
+          <View style={styles.heading}>
+            <View accessibilityRole="header">
+              <AppText role="displaySmall">{card.title}</AppText>
+            </View>
+            <Meta card={card} />
+          </View>
+          {detail.prompt ? (
+            <Section title="Asked to">
+              <Fold text={detail.prompt} />
+            </Section>
+          ) : null}
+          {card.workflow ? (
+            <Section title="Phases">
+              <View>
+                <WorkflowPhases card={card} />
+              </View>
+            </Section>
+          ) : null}
+          {settled && (detail.result || card.tone !== "finished") ? (
+            <Section title={card.tone === "finished" ? "Result" : "What happened"}>
+              <Outcome card={card} result={detail.result} />
+            </Section>
+          ) : null}
+          {card.workflow ? null : (
+            <Section title="Steps">
+              <Steps
+                agentScope={props.agentScope}
+                detail={detail}
+                live={props.live}
+                onLoadEarlier={props.onLoadEarlier}
+                onOpenStep={props.onOpenStep}
+                onRetry={props.onRetry}
+                settled={settled}
+                state={state}
+              />
+            </Section>
+          )}
         </>
-      ) : null}
-      {detail?.result && state !== "loading" && state !== "error" ? (
-        <Animated.View entering={appear} style={styles.result}>
-          <AppText role="caption" style={styles.eyebrow} tone="muted">
-            Result
-          </AppText>
-          <Markdown text={detail.result} />
-        </Animated.View>
-      ) : null}
+      )}
     </ScrollView>
   );
 }
 
-function Note(props: {
-  readonly children?: ReactNode;
-  readonly detail?: string;
-  readonly title: string;
+/** "Fix checkout on mobile › Trace the payment flow": who started it, each a way back up. */
+function Lineage(props: {
+  readonly lineage: SubagentDetail["lineage"];
+  readonly onOpen: (nodeId: string | null) => void;
+  readonly rootTitle: string;
 }): ReactNode {
+  const steps = [{ nodeId: null, title: props.rootTitle }, ...props.lineage];
   return (
-    <View style={styles.note}>
-      <Symbol name="exclamationmark.circle" size={14} tint={color.muted} />
-      <View style={styles.noteWords}>
-        <AppText role="secondaryMedium" tone="soft">
+    <View style={styles.path}>
+      {steps.map((step, index) => (
+        <View key={step.nodeId ?? "root"} style={styles.pathStep}>
+          {index === 0 ? null : <Symbol name="chevron.right" size={9} tint={color.mutedDim} />}
+          <Pressable
+            accessibilityLabel={index === 0 ? `Started by ${step.title}` : step.title}
+            accessibilityRole="link"
+            hitSlop={{ bottom: space[12], top: space[12] }}
+            onPress={() => props.onOpen(step.nodeId)}
+            style={({ pressed }) => [styles.pathLink, pressed && styles.pressed]}
+          >
+            <AppText numberOfLines={1} role="caption" tone="muted">
+              {step.title}
+            </AppText>
+          </Pressable>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** Where it stands, how long, what it is and on what model, in one line. */
+function Meta(props: { readonly card: AgentCard }): ReactNode {
+  const { card } = props;
+  return (
+    <View style={styles.meta}>
+      <AgentMark card={card} />
+      <AppText role="caption" style={[styles.word, toneInk(card)]} tone="soft">
+        {card.word}
+      </AppText>
+      <Elapsed endedAt={card.endedAt} startedAt={card.startedAt} style={styles.metaTime} />
+      <AppText role="caption" tone="muted">
+        {["", card.noun, card.modelLabel].filter((part) => part !== null).join(" · ")}
+      </AppText>
+    </View>
+  );
+}
+
+function toneInk(card: AgentCard) {
+  return card.tone === "needs-you"
+    ? styles.attention
+    : card.tone === "failed"
+      ? styles.failed
+      : undefined;
+}
+
+function Section(props: { readonly children: ReactNode; readonly title: string }): ReactNode {
+  return (
+    <View style={styles.section}>
+      <View accessibilityRole="header">
+        <AppText role="caption" style={styles.eyebrow} tone="muted">
           {props.title}
         </AppText>
-        {props.detail === undefined ? null : (
-          <AppText role="caption" tone="muted">
-            {props.detail}
+      </View>
+      {props.children}
+    </View>
+  );
+}
+
+/** What it was asked, three lines at first; the rest one tap away. */
+function Fold(props: { readonly text: string }): ReactNode {
+  const { fontScale } = useWindowDimensions();
+  const [open, setOpen] = useState(false);
+  const [height, setHeight] = useState<number | null>(null);
+  const fold = 3 * type.secondary.lineHeight * fontScale;
+  const overflowing = height !== null && height > fold + 1;
+  return (
+    <View>
+      <View style={open ? undefined : [styles.fold, { maxHeight: fold }]}>
+        <View onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
+          <AppText role="secondary" selectable tone="soft">
+            {props.text}
           </AppText>
-        )}
+        </View>
+      </View>
+      {overflowing ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          onPress={() => setOpen(!open)}
+          style={styles.foldToggle}
+        >
+          <AppText role="secondaryMedium" tone="ember">
+            {open ? "Show less" : "Show more"}
+          </AppText>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function Outcome(props: { readonly card: AgentCard; readonly result: string | null }): ReactNode {
+  const { card, result } = props;
+  if (card.tone === "finished" && result)
+    return (
+      <Animated.View entering={appear}>
+        <Markdown text={result} />
+      </Animated.View>
+    );
+  return (
+    <AppText role="secondary" tone="soft">
+      {card.detail.map((phrase, index) => (
+        <AppText
+          key={index}
+          role="secondary"
+          style={phrase.tone === "failed" ? styles.failed : undefined}
+          tone="soft"
+        >
+          {`${index > 0 ? " " : ""}${phrase.text}.`}
+        </AppText>
+      ))}
+    </AppText>
+  );
+}
+
+function Steps(props: {
+  readonly agentScope: AgentScope;
+  readonly detail: SubagentDetail;
+  readonly live: boolean;
+  readonly onLoadEarlier: () => void;
+  readonly onOpenStep: (entryId: string) => void;
+  readonly onRetry: () => void;
+  readonly settled: boolean;
+  readonly state: SubagentDetail["state"] | "absent";
+}): ReactNode {
+  const { detail, state } = props;
+  const now = detail.card.moving ? detail.card.detail[0] : undefined;
+  switch (state) {
+    case "loading":
+    case "absent":
+      return <Skeleton label="Loading this subagent's steps" />;
+    case "error":
+      return (
+        <Note title="Couldn't load its steps.">
+          <View style={styles.retry}>
+            <AnswerPill label="Try again" onPress={props.onRetry} tone="secondary" />
+          </View>
+        </Note>
+      );
+    case "summary-only":
+    case "unavailable":
+      return (
+        <Note
+          title={
+            state === "unavailable"
+              ? "Update Opensteer on this computer to see a subagent's steps."
+              : "Only its summary was recorded."
+          }
+        />
+      );
+    case "ready":
+    case "missing":
+      return (
+        <>
+          {detail.hasEarlier || detail.loadingEarlier ? (
+            <View style={styles.earlier}>
+              <AnswerPill
+                busy={detail.loadingEarlier}
+                label="Show earlier steps"
+                onPress={props.onLoadEarlier}
+                tone="secondary"
+              />
+            </View>
+          ) : null}
+          <SubagentSteps
+            active={!props.settled}
+            agentScope={props.agentScope}
+            entries={detail.entries}
+            live={props.live}
+            onOpenStep={props.onOpenStep}
+          />
+          {now === undefined ? null : (
+            <Animated.View
+              accessibilityLabel={`Subagent status: ${now.text}`}
+              entering={appear}
+              key={now.text}
+              style={styles.now}
+            >
+              <AppText role="secondaryMedium" tone="soft">
+                {now.text}
+              </AppText>
+            </Animated.View>
+          )}
+          {detail.entries.length === 0 && !props.settled && now === undefined ? (
+            <AppText role="secondary" tone="muted">
+              Nothing to show yet.
+            </AppText>
+          ) : null}
+        </>
+      );
+  }
+}
+
+function Skeleton(props: { readonly label: string }): ReactNode {
+  return (
+    <View
+      accessibilityLabel={props.label}
+      accessibilityRole="progressbar"
+      accessible
+      style={styles.skeleton}
+    >
+      {[68, 84, 54].map((width) => (
+        <View key={width} style={[styles.skeletonLine, { width: `${width}%` }]} />
+      ))}
+    </View>
+  );
+}
+
+function Note(props: { readonly children?: ReactNode; readonly title: string }): ReactNode {
+  return (
+    <View style={styles.note}>
+      <Symbol name="eye" size={14} tint={color.muted} />
+      <View style={styles.noteWords}>
+        <AppText role="secondary" tone="muted">
+          {props.title}
+        </AppText>
         {props.children}
       </View>
     </View>
@@ -494,27 +852,7 @@ function Note(props: {
 }
 
 const styles = StyleSheet.create({
-  amber: { color: color.amber },
-  heading: { alignItems: "center", maxWidth: "100%" },
-  subtitle: { alignItems: "center", flexDirection: "row", gap: space[4], maxWidth: "100%" },
-  subtitleWords: { flexShrink: 1 },
-  body: { gap: space[8] },
-  prompt: { alignItems: "flex-end", alignSelf: "flex-end", gap: space[4], maxWidth: "82%" },
-  promptBubble: {
-    ...material.plate,
-    borderBottomEndRadius: radius.xs,
-    borderCurve: "continuous",
-    borderRadius: radius.xl,
-    paddingHorizontal: space[16] - 1,
-    paddingVertical: space[12] - 1,
-  },
-  skeleton: { gap: space[12], paddingVertical: space[8] },
-  skeletonLine: { ...material.quiet, borderRadius: radius.xs, height: 12 },
-  note: { flexDirection: "row", gap: space[8], paddingVertical: space[8] },
-  noteWords: { flex: 1, gap: space[2] },
-  retry: { alignItems: "flex-start", paddingTop: space[8] },
-  result: { gap: space[4], paddingTop: space[8] },
-  eyebrow: { fontWeight: "700", letterSpacing: 0.8, textTransform: "uppercase" },
+  attention: { color: color.amber },
   bar: {
     ...material.float,
     alignItems: "center",
@@ -525,10 +863,28 @@ const styles = StyleSheet.create({
     minHeight: barHeight,
     paddingLeft: space[16],
     paddingRight: space[8],
-    paddingVertical: space[10],
+    paddingVertical: space[6],
   },
-  barWords: { flex: 1, gap: space[2] },
-  barTitle: { alignItems: "center", flexDirection: "row", gap: space[8] },
+  barWords: { flex: 1 },
+  body: { gap: space[16] },
+  center: { textAlign: "center" },
+  earlier: { alignItems: "flex-start", paddingBottom: space[4] },
+  eyebrow: { fontWeight: "700", letterSpacing: 0.6, textTransform: "uppercase" },
+  failed: { color: color.red },
+  fold: { overflow: "scroll" },
+  foldToggle: { justifyContent: "center", minHeight: touchTarget },
+  heading: { gap: space[6] },
+  hop: { alignItems: "center", flexDirection: "row" },
+  hopButton: {
+    alignItems: "center",
+    borderRadius: radius.full,
+    height: touchTarget,
+    justifyContent: "center",
+    width: 36,
+  },
+  hopCount: { fontVariant: ["tabular-nums"], minWidth: space[28], textAlign: "center" },
+  meta: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[6] },
+  metaTime: { alignSelf: "center", paddingTop: 0 },
   missing: {
     alignItems: "center",
     flex: 1,
@@ -536,4 +892,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     padding: space[24],
   },
+  note: { flexDirection: "row", gap: space[8], paddingVertical: space[4] },
+  noteWords: { flex: 1, gap: space[4] },
+  now: { paddingTop: space[4] },
+  path: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[4] },
+  pathLink: { maxWidth: 220 },
+  pathStep: { alignItems: "center", flexDirection: "row", gap: space[4] },
+  pressed: { opacity: 0.6 },
+  retry: { alignItems: "flex-start", paddingTop: space[4] },
+  section: { gap: space[6] },
+  skeleton: { gap: space[12], paddingVertical: space[8] },
+  skeletonLine: { ...material.quiet, borderRadius: radius.xs, height: 12 },
+  strong: { fontWeight: "500" },
+  word: { fontWeight: "600" },
 });

@@ -11,7 +11,10 @@ import {
 } from "react";
 import {
   agentCardLabel,
+  agentDot,
   agentPhaseLabel,
+  agentsCompact,
+  compactAgentPhrases,
   assignmentPresentation,
   assignmentSubagentCard,
   currentAssignment,
@@ -19,6 +22,7 @@ import {
   formatDuration,
   subagentGroup,
   type AgentCard,
+  type AgentDot,
   type AgentGroup,
   type AgentPhrase,
   type AssignmentEntry,
@@ -171,27 +175,6 @@ function isOffscreen(element: HTMLElement): boolean {
 
 /* ---- The mark: the engine's glyph, quiet like every trace icon, with one status dot ---- */
 
-type Dot = "working" | "needs" | "waiting" | "failed" | "stopped" | "last-known" | null;
-
-export function agentDot(card: AgentCard): Dot {
-  if (card.lastKnown) return "last-known";
-  if (card.stopping) return "waiting";
-  switch (card.tone) {
-    case "working":
-      return "working";
-    case "needs-you":
-      return "needs";
-    case "waiting":
-      return "waiting";
-    case "failed":
-      return "failed";
-    case "stopped":
-      return "stopped";
-    case "finished":
-      return null;
-  }
-}
-
 export function AgentMark({ card }: { card: AgentCard }) {
   const engine = useContext(AgentEngine);
   const dot = agentDot(card);
@@ -212,7 +195,7 @@ export function AgentMark({ card }: { card: AgentCard }) {
 }
 
 /** The conversation engine's mark with one status dot, for a subagent known only by name. */
-export function EngineDotMark({ dot }: { dot: Exclude<Dot, null> }) {
+export function EngineDotMark({ dot }: { dot: AgentDot }) {
   const engine = useContext(AgentEngine);
   return (
     <span aria-hidden className="agent-mark" data-dot={dot}>
@@ -317,7 +300,7 @@ export const AgentRow = memo(function AgentRow({
             <span className="agent-step__text agent-step__text--one">
               <span className="trace-step__label agent-step__title">{card.title}</span>
               <span className="trace-step__detail agent-step__inline">
-                <AgentPhrases phrases={compactPhrases(card)} />
+                <AgentPhrases phrases={compactAgentPhrases(card)} />
               </span>
             </span>
           ) : (
@@ -350,7 +333,7 @@ export const AgentRow = memo(function AgentRow({
       {children.length > 0 ? (
         <div className="trace-step__lines trace-step__lines--timeline agent-step__lines">
           {children.map((child) => (
-            <AgentRow card={child} compact={children.length >= 30} key={child.key} />
+            <AgentRow card={child} compact={agentsCompact(children.length)} key={child.key} />
           ))}
         </div>
       ) : null}
@@ -437,16 +420,6 @@ function TaskMore({
       ) : null}
     </>
   );
-}
-
-/** A compact row says only where it stands, unless it is working and has said what on. */
-function compactPhrases(card: AgentCard): readonly AgentPhrase[] {
-  const [first] = card.detail;
-  if (card.tone === "working" && first?.tone === "live") return [first];
-  if (card.tone === "finished") return card.detail;
-  if (card.tone === "needs-you") return [{ text: "Needs you", tone: "attention" }];
-  if (card.tone === "failed") return [{ text: "Couldn't finish", tone: "failed" }];
-  return [{ text: card.word, tone: "quiet" }];
 }
 
 /** A disclosure row on the trace: a group, a workflow or a phase. */
@@ -637,7 +610,7 @@ function PhaseRow({
       open={open}
     >
       {phase.members.map((member) => (
-        <AgentRow card={member} compact={phase.members.length >= 30} key={member.key} />
+        <AgentRow card={member} compact={agentsCompact(phase.members.length)} key={member.key} />
       ))}
     </FoldRow>
   );

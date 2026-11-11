@@ -5,6 +5,9 @@ import { groupTranscriptEntries, type Turn } from "./agent-activity-model.js";
 import type { HostSnapshot, NodeEntry, TranscriptEntry } from "./client.js";
 import {
   agentCardLabel,
+  agentDot,
+  agentsCompact,
+  compactAgentPhrases,
   noteSubagentStop,
   SubagentCache,
   subagentTurnModel,
@@ -14,6 +17,7 @@ import {
 import {
   requestAsker,
   runningNow,
+  sameRunningNow,
   subagentFooter,
   subagentLineage,
   subagentSiblings,
@@ -166,6 +170,35 @@ describe("subagent rows", () => {
     expect(words(card().detail)).toBe("Stopped · Stopped by you");
   });
 
+  // Failure: a screen colours a finished row as live, or a compact row repeats
+  // a question it should only point at.
+  it("wears one status dot by state, and says where a compact row stands in one phrase", () => {
+    const { snapshot, threadId, turns } = scene("finished");
+    const cards = subagentTurnModel(turns.at(-1)!, threadId, snapshot).groups[0]!.cards;
+    expect(cards.map((card) => `${card.tone}:${agentDot(card)}`)).toEqual([
+      "finished:null",
+      "finished:null",
+      "stopped:stopped",
+      "failed:failed",
+      "finished:null",
+    ]);
+    expect(agentDot({ ...cards[0]!, tone: "working", lastKnown: true })).toBe("last-known");
+    expect(agentDot({ ...cards[0]!, tone: "working", stopping: true })).toBe("waiting");
+    expect(cards.map((card) => words(compactAgentPhrases(card)))).toEqual([
+      words(cards[0]!.detail),
+      words(cards[1]!.detail),
+      "Stopped",
+      "Couldn't finish",
+      words(cards[4]!.detail),
+    ]);
+    const needs = scene("needs");
+    const asking = subagentTurnModel(needs.turns.at(-1)!, needs.threadId, needs.snapshot).groups[0]!
+      .cards[1]!;
+    expect(compactAgentPhrases(asking)).toEqual([{ text: "Needs you", tone: "attention" }]);
+    expect(agentsCompact(29)).toBe(false);
+    expect(agentsCompact(30)).toBe(true);
+  });
+
   it("counts a settled turn's subagents on its fold and keeps a running one outside it", () => {
     const { snapshot, threadId, turns } = scene("folded-one-running");
     const model = subagentTurnModel(turns.at(-1)!, threadId, snapshot, {
@@ -227,6 +260,29 @@ describe("running now", () => {
     // The newest real progress, never a prompt.
     expect(now.newest?.text).toBe("Comparing touch-action in cart.css and checkout.css");
     expect(now.name).toBe("Running now: 2 subagents working");
+  });
+
+  // Failure: a screen redraws Running now for a change it does not show, or
+  // misses one it does.
+  it("reads as unchanged until something it shows changes", () => {
+    const { snapshot, threadId, entries, node } = scene("three");
+    const cache = new SubagentCache();
+    const read = (list: readonly TranscriptEntry[]) =>
+      runningNow(
+        { ...snapshot, transcripts: { ...snapshot.transcripts, [threadId]: [...list] } },
+        threadId,
+        cache,
+      );
+    const before = read(entries);
+    expect(sameRunningNow(before, read(entries))).toBe(true);
+    const moving = node("Trace the payment flow");
+    const progressed = entries.map((entry) =>
+      entry === moving ? { ...moving, progress: "Reading the confirm handler" } : entry,
+    );
+    const after = read(progressed);
+    expect(sameRunningNow(before, after)).toBe(false);
+    expect(after!.rows[1]!.card).toBe(before!.rows[1]!.card);
+    expect(sameRunningNow(after, null)).toBe(false);
   });
 
   it("puts whoever needs the person first, nested ones under their parent", () => {

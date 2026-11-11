@@ -12,6 +12,7 @@ import {
 import {
   agentCardLabel,
   runningNow,
+  sameRunningNow,
   SubagentCache,
   type HostSnapshot,
   type RunningNow as RunningNowModel,
@@ -50,7 +51,7 @@ export const RunningNow = memo(function RunningNow({
       runningNow(reachable ? snapshot : { ...snapshot, connection: "offline" }, threadId, cache),
     [cache, reachable, threadId],
   );
-  const live = useHostSelector(hostClient, select, sameRunning);
+  const live = useHostSelector(hostClient, select, sameRunningNow);
   // The last thing that ran stays drawn for a moment while the line leaves.
   const [leaving, setLeaving] = useState<RunningNowModel | null>(null);
   const shown = useRef<RunningNowModel | null>(null);
@@ -195,27 +196,6 @@ function RunningList({ id, model }: { id: string; model: RunningNowModel }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-/** Running now is rebuilt on every change it hears; it holds plain data, so equal contents are equal. */
-function sameRunning(left: RunningNowModel | null, right: RunningNowModel | null): boolean {
-  if (left === right) return true;
-  if (!left || !right) return false;
-  return (
-    left.count === right.count &&
-    left.name === right.name &&
-    left.newest?.text === right.newest?.text &&
-    left.newest?.key === right.newest?.key &&
-    left.lead === right.lead &&
-    left.commands.length === right.commands.length &&
-    left.rows.length === right.rows.length &&
-    left.rows.every(
-      (row, index) =>
-        row.card === right.rows[index]?.card &&
-        row.depth === right.rows[index]?.depth &&
-        row.within === right.rows[index]?.within,
-    )
   );
 }
 

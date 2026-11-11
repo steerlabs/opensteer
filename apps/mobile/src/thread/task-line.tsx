@@ -7,6 +7,7 @@ import {
   delegationPresentation,
   subagentGroup,
   subagentTurnModel,
+  SubagentCache,
   taskRowNote,
   threadMark,
   type AgentCard,
@@ -40,12 +41,14 @@ import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
 import {
-  AgentCardRow,
-  AgentGroupView,
+  AgentGroupRow,
   AgentMemoryContext,
+  AgentScopeProvider,
+  AgentStep,
+  AgentsLive,
   type AgentScope,
-} from "./agent-cards.js";
-import { heldSelector, samePlain } from "./agent-select.js";
+} from "./subagent-rows.js";
+import { heldSelector } from "./agent-select.js";
 
 /** What task and subagent cards need from the pane that owns the Host client. */
 export interface TaskScope {
@@ -65,32 +68,37 @@ export const TaskScopeContext = createContext<TaskScope | null>(null);
 const selectSnapshot = (snapshot: HostSnapshot): HostSnapshot => snapshot;
 
 /**
- * Where a card goes: a task opens its conversation, a subagent or workflow
+ * Where a row goes: a task opens its conversation, a subagent or workflow
  * its own view. Null outside a pane that holds the Host.
  */
-export function useAgentScope(live: boolean): AgentScope | null {
+export function useAgentScope(): AgentScope | null {
   const scope = useContext(TaskScopeContext);
-  const onOpen = useCallback(
-    (card: AgentCard) => {
-      if (scope === null || card.opens === null) return;
-      if (card.opens.kind === "thread") scope.onViewWork(card.opens.threadId);
-      else scope.onOpenSubagent(card.opens.threadId, card.opens.nodeId);
-    },
-    [scope],
-  );
   return useMemo(
-    () => (scope === null ? null : { live, onOpen, hostClient: scope.hostClient }),
-    [live, onOpen, scope],
+    () =>
+      scope === null
+        ? null
+        : {
+            hostClient: scope.hostClient,
+            onOpen: (card: AgentCard) => {
+              if (card.opens === null) return;
+              if (card.opens.kind === "thread") scope.onViewWork(card.opens.threadId);
+              else scope.onOpenSubagent(card.opens.threadId, card.opens.nodeId);
+            },
+          },
+    [scope],
   );
 }
 
 /**
  * A turn's helpers as the subagent model draws them, read from the Host so a
- * memoized transcript row still moves as they do. Folded, the cards still at
+ * memoized transcript row still moves as they do. Folded, the ones still at
  * work are kept outside the fold, and stay kept for as long as the pane is.
+ * One subagent's progress leaves every other row the same object, so only
+ * its row draws again.
  */
 export function useTurnAgents(scope: TaskScope, turn: Turn, folded: boolean): TurnAgents | null {
   const memory = useContext(AgentMemoryContext);
+  const cache = useMemo(() => new SubagentCache(), []);
   const select = useMemo(() => {
     const own: Turn = { ...turn, assignments: [] };
     const drawn = turn.work.some((entry) => entry.kind === "node" && entry.nodeKind !== "task");
@@ -101,11 +109,11 @@ export function useTurnAgents(scope: TaskScope, turn: Turn, folded: boolean): Tu
           ? [`node:${entry.nodeId}`]
           : [],
       );
-      const agents = subagentTurnModel(own, scope.threadId, snapshot, { folded, keptKeys });
+      const agents = subagentTurnModel(own, scope.threadId, snapshot, { folded, keptKeys }, cache);
       if (folded) for (const key of agents.keptKeys) memory.set(`kept:${key}`, true);
       return agents;
     });
-  }, [folded, memory, scope.threadId, turn]);
+  }, [cache, folded, memory, scope.threadId, turn]);
   return useHostSelector(scope.hostClient, select, sameTurnAgents);
 }
 
@@ -115,13 +123,14 @@ function sameTurnAgents(left: TurnAgents | null, right: TurnAgents | null): bool
   if (left === null || right === null) return left === right;
   return (
     left.foldLabel === right.foldLabel &&
-    samePlain(left.keptOutside, right.keptOutside) &&
+    left.keptOutside === right.keptOutside &&
     left.rows.length === right.rows.length &&
     left.rows.every((row, index) => {
       const other = right.rows[index];
       if (other === undefined || other.kind !== row.kind) return false;
       if (row.kind === "work") return other.kind === "work" && row.entry === other.entry;
-      return samePlain(row, other);
+      if (row.kind === "agents") return other.kind === "agents" && row.group === other.group;
+      return other.kind === "workflow" && row.card === other.card;
     })
   );
 }
@@ -138,14 +147,16 @@ export function TaskCards(props: {
   readonly live: boolean;
 }): ReactNode {
   const scope = useContext(TaskScopeContext);
-  const agents = useAgentScope(props.live);
+  const agents = useAgentScope();
   if (scope === null || agents === null || props.entries.length === 0) return null;
   return (
     <>
       {props.entries.map((entry) => (
         <ObservedWorker entry={entry} key={entry.id} scope={scope} />
       ))}
-      <HeldTaskCards agents={agents} entries={props.entries} scope={scope} />
+      <AgentsLive value={props.live}>
+        <HeldTaskCards agents={agents} entries={props.entries} scope={scope} />
+      </AgentsLive>
     </>
   );
 }
@@ -156,18 +167,26 @@ function HeldTaskCards(props: {
   readonly scope: TaskScope;
 }): ReactNode {
   const { agents, entries, scope } = props;
+  const cache = useMemo(() => new SubagentCache(), []);
   const select = useMemo(
     () =>
       heldSelector((snapshot) =>
-        subagentGroup(
-          entries.map((entry) =>
-            assignmentSubagentCard(currentAssignment(entry, snapshot.assignments), snapshot),
+        cache.keep(
+          "tasks",
+          subagentGroup(
+            entries.map((entry) =>
+              assignmentSubagentCard(
+                currentAssignment(entry, snapshot.assignments),
+                snapshot,
+                cache,
+              ),
+            ),
           ),
         ),
       ),
-    [entries],
+    [cache, entries],
   );
-  const group = useHostSelector(scope.hostClient, select, samePlain);
+  const group = useHostSelector(scope.hostClient, select);
   const byId = useMemo(
     () => new Map<string, AssignmentEntry>(entries.map((entry) => [entry.assignment.id, entry])),
     [entries],
@@ -175,18 +194,22 @@ function HeldTaskCards(props: {
   const withTasks = useMemo<AgentScope>(
     () => ({
       ...agents,
-      renderTask: (card) => {
+      renderTask: (card, row) => {
         const entry = card.task === null ? undefined : byId.get(card.task.assignmentId);
         return entry === undefined ? (
-          <AgentCardRow card={card} live={agents.live} onOpen={agents.onOpen} />
+          <AgentStep {...row} card={card} />
         ) : (
-          <TaskCardRow agents={agents} card={card} entry={entry} scope={scope} />
+          <TaskCardRow {...row} card={card} entry={entry} scope={scope} />
         );
       },
     }),
     [agents, byId, scope],
   );
-  return <AgentGroupView group={group} scope={withTasks} />;
+  return (
+    <AgentScopeProvider value={withTasks}>
+      <AgentGroupRow group={group} />
+    </AgentScopeProvider>
+  );
 }
 
 /**
@@ -249,10 +272,11 @@ function ObservedWorker(props: { readonly entry: AssignmentEntry; readonly scope
   return null;
 }
 
-/** A task's card, with the menu its line always had: open it, or stop it after asking. */
+/** A task's row, with the menu its line always had: open it, or stop it after asking. */
 function TaskCardRow(props: {
-  readonly agents: AgentScope;
   readonly card: AgentCard;
+  readonly compact?: boolean;
+  readonly noun?: boolean;
   readonly entry: AssignmentEntry;
   readonly scope: TaskScope;
 }): ReactNode {
@@ -300,12 +324,12 @@ function TaskCardRow(props: {
         shouldOpenOnLongPress
         style={styles.menu}
       >
-        <AgentCardRow
+        <AgentStep
           accessibilityActions={canStop ? stopAction : noActions}
           card={card}
-          live={props.agents.live}
+          compact={props.compact === true}
+          noun={props.noun === true}
           onAccessibilityAction={onAccessibilityAction}
-          onOpen={props.agents.onOpen}
           owner={taskOwner(assignment, snapshot)}
         />
       </MenuView>

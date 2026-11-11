@@ -138,6 +138,41 @@ export function subagentPreview(text: string | null | undefined): string | null 
 export function isActiveSubagent(card: Pick<AgentCard, "tone">): boolean {
   return card.tone === "working" || card.tone === "waiting" || card.tone === "needs-you";
 }
+/** The one status dot a row's mark wears; a finished one wears none. */
+export type AgentDot = "working" | "needs" | "waiting" | "failed" | "stopped" | "last-known";
+export function agentDot(
+  card: Pick<AgentCard, "lastKnown" | "stopping" | "tone">,
+): AgentDot | null {
+  if (card.lastKnown) return "last-known";
+  if (card.stopping) return "waiting";
+  switch (card.tone) {
+    case "working":
+      return "working";
+    case "needs-you":
+      return "needs";
+    case "waiting":
+      return "waiting";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+    case "finished":
+      return null;
+  }
+}
+/** Thirty or more side by side list as one line each. */
+export function agentsCompact(count: number): boolean {
+  return count >= 30;
+}
+/** A compact row says only where it stands, unless it is working and has said what on. */
+export function compactAgentPhrases(card: AgentCard): readonly AgentPhrase[] {
+  const [first] = card.detail;
+  if (card.tone === "working" && first?.tone === "live") return [first];
+  if (card.tone === "finished") return card.detail;
+  if (card.tone === "needs-you") return [{ text: "Needs you", tone: "attention" }];
+  if (card.tone === "failed") return [{ text: "Couldn't finish", tone: "failed" }];
+  return [{ text: card.word, tone: "quiet" }];
+}
 function countLabel(count: number, noun: "subagent" | "task"): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -183,7 +218,7 @@ export function subagentGroup(cards: readonly AgentCard[]): AgentGroup {
       cards.find(isActiveSubagent) ??
       cards.find((card) => card.tone === "failed") ??
       first,
-    compact: cards.length >= 30,
+    compact: agentsCompact(cards.length),
     name: `${label}: ${detail.map((phrase) => phrase.text).join(", ")}`,
     live,
     startedAt: cards.map((card) => card.startedAt).sort()[0]!,
