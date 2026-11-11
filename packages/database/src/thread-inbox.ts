@@ -4274,6 +4274,13 @@ async function assignmentResultReader(
   return { assignment, assigner };
 }
 
+/**
+ * How long a hold outlives its wait's own deadline: the waiter still has to
+ * recheck its authority and read the result after the wait resolves. The wait
+ * releases its hold when it ends; this bounds only a waiter that never does.
+ */
+const assignmentResultWaitGraceMs = 30_000;
+
 export function beginAssignmentResultWait(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -4298,7 +4305,8 @@ export function beginAssignmentResultWait(
             {
               id,
               authority: input.authority,
-              expiresAt: now + Math.min(100_000, Math.max(1, input.timeoutMs)),
+              expiresAt:
+                now + Math.min(100_000, Math.max(1, input.timeoutMs)) + assignmentResultWaitGraceMs,
             },
           ]),
         })

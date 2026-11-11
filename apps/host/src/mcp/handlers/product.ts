@@ -1752,9 +1752,11 @@ export class ProductToolHandlers {
     if (assignmentId && !assignment) throw forbidden("Assignment is unavailable");
     const threadId = assignment?.workerThreadId ?? input.threadId!;
     await this.#assertWaitTarget(caller, threadId);
-    const waitId = assignment
+    // Watching its own task's messages holds that task's return too: it reads the result at the end.
+    const held = assignment?.id ?? own;
+    const waitId = held
       ? await beginAssignmentResultWait(this.#store.database, {
-          assignmentId: assignment.id,
+          assignmentId: held,
           authority: threadCallerAuthority(caller),
           timeoutMs: input.timeoutMs,
           ...(call.signal ? { signal: call.signal } : {}),
@@ -1863,9 +1865,9 @@ export class ProductToolHandlers {
         hasMore: result.hasMore === true || items.length < result.messages.length,
       };
     } finally {
-      if (assignment && waitId) {
+      if (held && waitId) {
         const events = await withoutDatabaseOperationSignal(() =>
-          endAssignmentResultWait(this.#store.database, { assignmentId: assignment.id, waitId }),
+          endAssignmentResultWait(this.#store.database, { assignmentId: held, waitId }),
         );
         for (const event of events) this.#onWorkspaceEvent(event);
       }

@@ -380,6 +380,36 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
   });
 
+  it("holds its task's return while a Run watches that task's messages", async ({
+    storeFixture,
+  }) => {
+    const s = await waitingTask(storeFixture, "wait-own-messages");
+    await s.startWorker();
+    const seed = await storeFixture.database
+      .selectFrom("messages")
+      .select("id")
+      .where("threadId", "=", s.task.threadId)
+      .orderBy("createdAt", "asc")
+      .executeTakeFirstOrThrow();
+    const pending = s.product.thread_wait({
+      caller: s.caller,
+      input: thread_wait.input.parse({
+        threadId: s.task.threadId,
+        afterMessageId: seed.id,
+        timeoutMs: 2_000,
+      }),
+      operationKey: randomUUID(),
+      checkLive: s.checkLive,
+    });
+    await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await s.settle();
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    // Nothing is queued for the assigner while its own wait can still hand it the result.
+    expect(await s.returns()).toEqual([]);
+    await s.wake();
+    await pending;
+  });
+
   it("leaves automatic return intact after a timeout and reports an empty settled result", async ({
     storeFixture,
   }) => {
