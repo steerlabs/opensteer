@@ -1158,6 +1158,7 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 export interface HostClient {
+  readonly browserTabs: import("./browser-tab-store.js").BrowserTabStore;
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;

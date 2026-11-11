@@ -113,7 +113,10 @@ export function mockBrowserRows(snapshot: HostSnapshot) {
 export class MockBrowserStream {
   readonly #groups = new MockRows<BrowserGroupRow>();
   readonly #tabs = new Map<string, MockRows<BrowserTabRow>>();
-  readonly #store = new BrowserTabStore(() => {});
+  readonly #store: BrowserTabStore;
+  constructor(store: BrowserTabStore) {
+    this.#store = store;
+  }
   readonly #derive = new BrowserSnapshotDerivation();
   publish(
     snapshot: HostSnapshot,
