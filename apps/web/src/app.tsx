@@ -43,6 +43,7 @@ import {
   type HostClient,
   type InitialOwnerClaimInput,
   type PasswordSignInInput,
+  awaitsFirstWorkspace,
   isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
@@ -526,7 +527,7 @@ export function App({
   // Main is created by the Host on first sign-in rather than by a form, so an
   // empty list means it is still being written, not that there is nothing to
   // show. This is a brief moment on a first run and none at all afterwards.
-  if (snapshot.workspaces.length === 0) {
+  if (awaitsFirstWorkspace(snapshot)) {
     if (continuingSetup && !loadError) {
       return <SetupOpening />;
     }

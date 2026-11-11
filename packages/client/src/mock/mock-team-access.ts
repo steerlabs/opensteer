@@ -694,12 +694,13 @@ export class MockTeamAccess {
     };
   }
 
+  /** Nothing runs without the computer, so its state is reported before a Project's own. */
   #runtime(project: Project): RuntimeState {
-    if (project.runtime !== "ready") return { state: "unavailable", reason: project.runtime };
     if (this.#computer === null || this.#computer.state === "offline")
       return { state: "unavailable", reason: "computer-offline" };
     if (this.#computer.state === "update-required")
       return { state: "unavailable", reason: "runner-update-required" };
+    if (project.runtime !== "ready") return { state: "unavailable", reason: project.runtime };
     return { state: "ready" };
   }
 

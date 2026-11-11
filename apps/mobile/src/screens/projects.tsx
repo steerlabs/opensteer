@@ -2,6 +2,7 @@ import {
   canRespondToRequests,
   folderSignalWords,
   groupTasksByProject,
+  awaitsFirstWorkspace,
   isTeamPlace,
   projectStatusLabel,
   runtimeRowLabel,
@@ -132,7 +133,7 @@ function ProjectDirectory(props: {
       canCreate: canRespondToRequests(snapshot),
       hasMore: snapshot.workspaceWindow.hasMore,
       // A Personal place always has Main; a team place may truly have no Projects.
-      loaded: snapshot.workspaces.length > 0 || (team && snapshot.deploymentId !== null),
+      loaded: !awaitsFirstWorkspace(snapshot),
       projects: groupTasksByProject(snapshot, taskList(snapshot)).folders,
     }),
     [snapshot, team, teamAllowsCreate],

@@ -41,6 +41,8 @@ export function OtherProjects(props: {
       </View>
     );
   const others = list.items.filter(({ myLevel }) => myLevel === null);
+  // A team with no Projects at all has nothing to list here.
+  if (list.first && list.items.length === 0) return null;
   return (
     <View style={styles.section}>
       <TeamSection

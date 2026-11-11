@@ -8,3 +8,15 @@ import type { HostSnapshot } from "./client.js";
 export function isTeamPlace(snapshot: Pick<HostSnapshot, "teamAdministrationAvailable">): boolean {
   return snapshot.teamAdministrationAvailable === true;
 }
+
+/**
+ * Whether the place's Workspaces are still being made. A Personal place always
+ * has Main, so none yet means wait; a team place may truly have no Projects
+ * once its Host has said who it is.
+ */
+export function awaitsFirstWorkspace(
+  snapshot: Pick<HostSnapshot, "teamAdministrationAvailable" | "workspaces" | "deploymentId">,
+): boolean {
+  if (snapshot.workspaces.length > 0) return false;
+  return !(isTeamPlace(snapshot) && snapshot.deploymentId !== null);
+}

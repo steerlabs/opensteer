@@ -676,3 +676,9 @@
   margin-bottom: var(--space-4);
   color: var(--text);
 }
+
+.card__row.team-computer__connect {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { mockTeamScenarios } from "../mock/mock-team-access.js";
-import { isTeamPlace } from "./team-place.js";
+import { awaitsFirstWorkspace, isTeamPlace } from "./team-place.js";
 
 describe("which shell a place gets", () => {
   it.each(["seeded", "first-run", "busy"] as const)(
@@ -14,6 +14,15 @@ describe("which shell a place gets", () => {
       host.dispose();
     },
   );
+
+  it("waits for Main on a Personal place, and not for Projects a team place may not have", () => {
+    const empty = { workspaces: [], deploymentId: "dep_00000000-0000-4000-8000-0000000000e1" };
+    expect(awaitsFirstWorkspace({ ...empty, teamAdministrationAvailable: false })).toBe(true);
+    expect(awaitsFirstWorkspace({ ...empty, teamAdministrationAvailable: true })).toBe(false);
+    expect(
+      awaitsFirstWorkspace({ ...empty, deploymentId: null, teamAdministrationAvailable: true }),
+    ).toBe(true);
+  });
 
   it("takes the team path only when the Host offers team administration", () => {
     expect(isTeamPlace({})).toBe(false);
@@ -33,6 +42,8 @@ describe("which shell a place gets", () => {
       expect(snapshot.workspaces.length > 0).toBe(
         ["admin", "admin-stale", "member", "guest"].includes(team),
       );
+      // A team with no Projects for this person still opens.
+      expect(awaitsFirstWorkspace(snapshot)).toBe(false);
       host.dispose();
     },
   );
