@@ -78,6 +78,7 @@ export type {
   ProjectRuntimeSnapshot,
 } from "./project-work-store.js";
 export {
+  ProjectControlDeliveryStore,
   ProjectBindingStore,
   ProjectExecutionStore,
   StoredProjectControlSchema,
