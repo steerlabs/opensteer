@@ -76,6 +76,20 @@ describeStore("Project Requests", (it) => {
       .execute();
     const event = proposal(fixture.binding);
     await database.transaction().execute((tx) => requests.propose(tx, event));
+    const activity = await fixture.work.projectActivity(fixture.binding, {
+      threadId: fixture.thread.id,
+      limit: 50,
+    });
+    expect([...activity.requestActivity.values()]).toEqual([
+      {
+        title: "Approval",
+        status: "pending",
+        text: "Waiting for Alex",
+        runId: fixture.run.id,
+        type: "request.opened",
+      },
+    ]);
+    expect(JSON.stringify([...activity.requestActivity.values()])).not.toContain("Run command?");
     const read = (userId = member) =>
       requests.threadFacts({ threadIds: [fixture.thread.id], userId });
     const facts = (await read()).get(fixture.thread.id)!;
@@ -91,6 +105,13 @@ describeStore("Project Requests", (it) => {
     });
     expect(await read(fixture.userId)).toEqual(await read());
     expect(await read(outsider)).toEqual(new Map());
+    const snapshot = await legacy.workspaceSnapshot(fixture.workspace.id, { viewerId: member });
+    expect(snapshot.pendingRequests).toEqual([]);
+    expect(snapshot.pendingRequestWindow.totalItems).toBe(0);
+    expect(
+      snapshot.threads.find((thread) => thread.id === fixture.thread.id)?.requestWaits,
+    ).toEqual(facts.requestWaits);
+    expect(JSON.stringify(snapshot)).not.toContain("Run command?");
     await expect(
       database.transaction().execute((tx) =>
         requests.detail(tx, {
@@ -114,6 +135,15 @@ describeStore("Project Requests", (it) => {
       .execute();
     const ended = (await read()).get(fixture.thread.id)!;
     expect(ended.requestWaits).toEqual({ total: 0, items: [] });
+    const settledActivity = await fixture.work.projectActivity(fixture.binding, {
+      threadId: fixture.thread.id,
+      limit: 50,
+    });
+    expect(
+      [...settledActivity.requestActivity.values()].every(
+        (item) => item.text === "Answered by Renamed",
+      ),
+    ).toBe(true);
     expect(ended.requestOutcomes).toEqual([
       {
         requestId: event.data.request.id,
@@ -128,6 +158,12 @@ describeStore("Project Requests", (it) => {
     ).rejects.toMatchObject({ code: "23001" });
     const second = proposal(fixture.binding);
     second.data.request.callId = "second";
+    second.data.request = {
+      ...second.data.request,
+      kind: "harness.input",
+      requestClass: "question",
+      payload: { kind: "harness.input" },
+    };
     await database.transaction().execute((tx) => requests.propose(tx, second));
     const row = await database
       .selectFrom("requests")
@@ -149,6 +185,7 @@ describeStore("Project Requests", (it) => {
     expect(bounded.requestWaits.total).toBe(36);
     expect(bounded.requestWaits.items).toHaveLength(32);
     expect(bounded.requestWaits.items[0]!.requestId).toBe(second.data.request.id);
+    expect(bounded.requestWaits.items.every((item) => item.class === "question")).toBe(true);
     expect(JSON.stringify(bounded)).not.toContain("Run command?");
     await database.transaction().execute(async (tx) => {
       await reserveProjectWorkStop(tx, { runIds: [fixture.run.id] });
@@ -165,6 +202,26 @@ describeStore("Project Requests", (it) => {
       cancelled.requestOutcomes.every(
         (item) => item.status === "cancelled" && item.cancelledFor?.name === "Renamed",
       ),
+    ).toBe(true);
+    await database
+      .updateTable("users")
+      .set({ memberState: "removed", authorityGeneration: "2" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    expect((await read()).get(fixture.thread.id)?.requestOutcomes).toEqual(
+      cancelled.requestOutcomes,
+    );
+    await database
+      .updateTable("users")
+      .set({ memberState: "active", authorityGeneration: "3", displayName: "Rejoined" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    expect(
+      (await read())
+        .get(fixture.thread.id)
+        ?.requestOutcomes.every(
+          (item) => item.status === "cancelled" && item.cancelledFor?.name === "Rejoined",
+        ),
     ).toBe(true);
     let queries = 0;
     const observed = database.withPlugin({
@@ -680,7 +737,23 @@ describeStore("Unattended Project Requests", (it) => {
       },
     });
     if (result.state !== "ready") throw new Error("Expected manager Request");
-    expect(result.events).toEqual([]);
+    expect(result.events).toMatchObject([
+      { type: "thread.execution-updated", threadId: fixture.thread.id },
+    ]);
+    expect(JSON.stringify(result.events)).not.toContain("Run command?");
+    const activity = await fixture.work.projectActivity(fixture.binding, {
+      threadId: fixture.thread.id,
+      limit: 50,
+    });
+    expect([...activity.requestActivity.values()]).toEqual([
+      {
+        title: "Approval",
+        status: "pending",
+        text: "Waiting for managers",
+        runId: fixture.run.id,
+        type: "request.opened",
+      },
+    ]);
     const outsider = await storeFixture.store.createUser("Administrator");
     await database
       .updateTable("users")
@@ -977,6 +1050,19 @@ describeStore("Unattended Project Requests", (it) => {
         },
       }),
     ).toEqual({ runIds: [], events: [] });
+    expect(
+      (await requests.threadFacts({ threadIds: [fixture.thread.id], userId: fixture.userId })).get(
+        fixture.thread.id,
+      )?.requestOutcomes,
+    ).toEqual([
+      {
+        requestId: event.data.request.id,
+        class: "approval",
+        status: "cancelled",
+        at: expect.any(String),
+        reason: "no-eligible-manager",
+      },
+    ]);
     await expect(
       sql`update requests set status = 'pending', cancellation_reason = null, resolved_at = null
       where id = ${event.data.request.id}`.execute(database),
@@ -1137,13 +1223,19 @@ describeStore("Unattended Project Requests", (it) => {
         environmentId: fixture.environmentId,
         data: { requestId: first.data.request.id, reason: "source-closed" },
       });
-      expect(events).toHaveLength(1);
+      expect(events.map((event) => event.type)).toEqual([
+        "request.cancelled",
+        "thread.execution-updated",
+      ]);
       const remaining = await requests.cancelRun(tx, {
         runId: fixture.run.id,
         reason: "run-ended",
         resolvedAt: new Date(),
       });
-      expect(remaining).toHaveLength(1);
+      expect(remaining.map((event) => event.type)).toEqual([
+        "request.cancelled",
+        "thread.execution-updated",
+      ]);
       expect(
         await requests.cancelRun(tx, {
           runId: fixture.run.id,
