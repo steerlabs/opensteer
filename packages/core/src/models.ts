@@ -251,6 +251,7 @@ export function workspaceWakesOnDemand(status: Workspace["status"]): boolean {
 
 // The wire contract stays limited to the capabilities every Runner actually advertises.
 export const RunnerCapabilitySchema = z.enum([
+  "project-authority-v1",
   "background-text-v1",
   "settings-plugin-policy-v1",
   "assignments-v1",
