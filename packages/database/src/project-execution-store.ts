@@ -127,18 +127,44 @@ export class ProjectExecutionStore implements ProjectRequestControlPort {
 
   async enqueue(
     transaction: Transaction<DatabaseSchema>,
+    input: Parameters<ProjectRequestControlPort["enqueue"]>[1],
+  ): Promise<{ readonly created: boolean }> {
+    const result = await this.enqueueCommand(transaction, input);
+    return { created: result.created };
+  }
+
+  async enqueueCommand(
+    transaction: Transaction<DatabaseSchema>,
     input: {
       readonly binding: ProjectRunBinding;
       readonly idempotencyKey: string;
       readonly control: ProjectRunControl;
     },
-  ): Promise<{ readonly created: boolean }> {
+  ): Promise<{
+    readonly created: boolean;
+    readonly commandId: import("@opensteer/core").CommandId;
+  }> {
     const binding = ProjectRunBindingSchema.parse(input.binding);
     const control = ProjectRunControlSchema.parse(input.control);
     const prior = await this.find(transaction, { binding, idempotencyKey: input.idempotencyKey });
     if (prior) {
       if (!isDeepStrictEqual(prior, control)) controlConflict();
-      return { created: false };
+      return {
+        created: false,
+        commandId: (
+          await transaction
+            .selectFrom("commands")
+            .select("id")
+            .where("type", "=", "run.control.project")
+            .where(
+              "actorPrincipalId",
+              "=",
+              PrincipalIdSchema.parse(binding.authority.principal.principalId),
+            )
+            .where("idempotencyKey", "=", controlIdentity(binding, input.idempotencyKey))
+            .executeTakeFirstOrThrow()
+        ).id,
+      };
     }
     const run = await transaction
       .selectFrom("runs")
@@ -244,10 +270,25 @@ export class ProjectExecutionStore implements ProjectRequestControlPort {
       .onConflict((conflict) => conflict.doNothing())
       .returning("id")
       .executeTakeFirst();
-    if (inserted) return { created: true };
+    if (inserted) return { created: true, commandId: inserted.id };
     const winner = await this.find(transaction, { binding, idempotencyKey: input.idempotencyKey });
     if (!winner || !isDeepStrictEqual(winner, control)) controlConflict();
-    return { created: false };
+    return {
+      created: false,
+      commandId: (
+        await transaction
+          .selectFrom("commands")
+          .select("id")
+          .where("type", "=", "run.control.project")
+          .where(
+            "actorPrincipalId",
+            "=",
+            PrincipalIdSchema.parse(binding.authority.principal.principalId),
+          )
+          .where("idempotencyKey", "=", controlIdentity(binding, input.idempotencyKey))
+          .executeTakeFirstOrThrow()
+      ).id,
+    };
   }
 }
 
@@ -950,6 +991,39 @@ export class ProjectControlDeliveryStore {
         })
         .where("id", "=", command.id)
         .execute();
+      if (stored.control.kind === "run.steer") {
+        const receipt = await transaction
+          .updateTable("threadInputs")
+          .set(
+            frame.result.status === "accepted"
+              ? { state: "delivered", deliveredAt: new Date(), updatedAt: new Date() }
+              : frame.result.status === "uncertain"
+                ? { state: "unknown", updatedAt: new Date() }
+                : {
+                    state: "cancelled",
+                    cancelReason: "steer-not-delivered",
+                    updatedAt: new Date(),
+                  },
+          )
+          .where("steerCommandId", "=", command.id)
+          .where("runId", "=", run.id)
+          .where("state", "in", ["claimed", "unknown"])
+          .returningAll()
+          .executeTakeFirst();
+        const events = receipt
+          ? [
+              await appendHostWorkspaceEvent(transaction, {
+                type: "thread-input.updated",
+                data: { input: threadInputFromRow(receipt) },
+                environmentId: stored.binding.environmentId,
+                workspaceId: stored.binding.workspaceId,
+                threadId: stored.binding.threadId,
+                runId: stored.binding.runId,
+              }),
+            ]
+          : [];
+        return { state: "recorded" as const, replayed: false, events };
+      }
       return { state: "recorded" as const, replayed: false };
     });
   }

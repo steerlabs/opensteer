@@ -1,10 +1,11 @@
+import { RunnerConnectionFenceSchema } from "@opensteer/protocol";
 import {
   prepareProjectAdmission,
   bindProjectRun,
   projectWatchWorkSource,
 } from "./project-work.test-support.js";
 import { readProjectRunThreadState } from "./run-thread-state.js";
-import { ProjectBindingStore } from "./project-execution-store.js";
+import { ProjectBindingStore, ProjectControlDeliveryStore } from "./project-execution-store.js";
 import { loadProjectRunDispatchContext } from "./execution-store.js";
 import { settleAssignmentAfterRun } from "./assignment-store.js";
 import { assertActiveProjectBinding, readProjectRunBinding } from "./execution-authority.js";
@@ -347,6 +348,79 @@ describeStore("Project work admission", (it) => {
     ).rejects.toMatchObject({
       reason: "binding-recovery-required",
     });
+    await expect(
+      store.admitProjectWork({
+        threadId: prepared.thread.id,
+        origin: { ...origin, userId: otherUser },
+        source: { kind: "human" },
+        content: [{ type: "text", text: "Other person's steer" }],
+        policy: "steer",
+        idempotencyKey: "other-steer",
+      }),
+    ).rejects.toMatchObject({ reason: "steer-exchange-mismatch" });
+    const steering = {
+      threadId: prepared.thread.id,
+      origin,
+      source: { kind: "human" as const },
+      content: [{ type: "text" as const, text: "Take this direction" }],
+      policy: "steer" as const,
+      idempotencyKey: "same-root-steer",
+    };
+    const steered = await store.admitProjectWork(steering);
+    expect(steered).toMatchObject({
+      runId: first.runId,
+      input: { policy: "steer", state: "claimed" },
+    });
+    expect(await store.admitProjectWork(steering)).toMatchObject({
+      commandId: steered.commandId,
+      runId: first.runId,
+      wasDuplicate: true,
+    });
+    if (!steered.commandId) throw new Error("Steer did not persist a control");
+    const deliveries = new ProjectControlDeliveryStore(database, {
+      currentRunnerBootId: () => runnerBootId,
+      currentPeerIsProjectCapable: () => true,
+      canContinue: async () => true,
+    });
+    const control = await deliveries.claim(steered.commandId, "steer-delivery");
+    if (control.state !== "ready") throw new Error("Steer was not deliverable");
+    expect(control).toMatchObject({
+      binding: bound.binding,
+      control: { kind: "run.steer", input: { messageId: steered.input.messageId } },
+    });
+    const peer = RunnerConnectionFenceSchema.parse({
+      runnerId: project.runnerId,
+      bootId: runnerBootId,
+      connectionId: `rcn_${randomUUID()}`,
+      connectionLeaseId: `rls_${randomUUID()}`,
+      connectionGeneration: 1,
+    });
+    const receipt = await deliveries.recordResult(peer, {
+      ...peer,
+      type: "runner.project.control-result",
+      commandId: control.commandId,
+      correlationId: control.correlationId,
+      binding: control.binding,
+      result: { status: "accepted" },
+    });
+    expect(receipt).toMatchObject({ state: "recorded", replayed: false });
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select("state")
+        .where("messageId", "=", steered.input.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "delivered" });
+    expect(
+      await deliveries.recordResult(peer, {
+        ...peer,
+        type: "runner.project.control-result",
+        commandId: control.commandId,
+        correlationId: control.correlationId,
+        binding: control.binding,
+        result: { status: "accepted" },
+      }),
+    ).toMatchObject({ replayed: true });
     const later = await admit("after-freeze");
     expect(later.runId).not.toBe(first.runId);
     expect(
@@ -525,25 +599,44 @@ describeStore("Project work admission", (it) => {
         incarnation: activation.executionGeneration,
       },
     });
-    const fakeBinding = ProjectRunBindingSchema.parse({
-      authority: {
-        version: 1,
-        principal: {
-          kind: "project",
-          principalId: project.principalId,
-          workspaceId: project.workspace.id,
-        },
-        origin: null,
+    if (!first.commandId) throw new Error("Unattended work has no execute command");
+    const bound = await new ProjectBindingStore(database, { runnerIsAttached: () => true }).acquire(
+      {
+        commandId: first.commandId,
+        runnerId: project.runnerId,
+        runnerBootId: `rbt_${randomUUID()}`,
+        leaseTokenHash: "unattended-steer",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+        dispatcherId: "unattended-steer",
       },
-      runId: run.id,
-      threadId: run.threadId,
-      workspaceId: project.workspace.id,
-      environmentId: project.environmentId,
-      grantId: createId("grant"),
-      bindingGeneration: 1,
-      runnerId: project.runnerId,
-      runnerBootId: "boot-unattended",
+    );
+    await expect(
+      store.admitProjectWork({
+        ...input,
+        source: { ...source, observationId: "two" },
+        policy: "steer",
+        idempotencyKey: "wrong-occurrence",
+      }),
+    ).rejects.toMatchObject({ reason: "steer-exchange-mismatch" });
+    expect(
+      await store.admitProjectWork({
+        ...input,
+        policy: "steer",
+        idempotencyKey: "same-occurrence",
+      }),
+    ).toMatchObject({
+      runId: first.runId,
+      input: { policy: "steer", state: "claimed" },
     });
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select("requestedBy")
+        .where("runId", "=", first.runId)
+        .where("policy", "=", "steer")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ requestedBy: null });
+    const fakeBinding = bound.binding;
     const before = await database.selectFrom("threads").select("id").execute();
     await expect(
       store.delegateProjectWork({

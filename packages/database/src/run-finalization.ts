@@ -667,8 +667,20 @@ export async function finalizeProjectRunTransaction(
     .orderBy("messageId")
     .execute();
   for (const receipt of receipts) {
+    const steerCommand = receipt.steerCommandId
+      ? await transaction
+          .selectFrom("commands")
+          .select("status")
+          .where("id", "=", receipt.steerCommandId)
+          .executeTakeFirst()
+      : null;
     const reportUnknown =
-      sourceCurrent && receipt.policy === "report" && receipt.state !== "pending";
+      sourceCurrent &&
+      ((receipt.policy === "report" && receipt.state !== "pending") ||
+        (receipt.policy === "steer" &&
+          (receipt.state === "unknown" ||
+            (steerCommand &&
+              ["dispatched", "unknown", "succeeded"].includes(steerCommand.status)))));
     const updated = await transaction
       .updateTable("threadInputs")
       .set(

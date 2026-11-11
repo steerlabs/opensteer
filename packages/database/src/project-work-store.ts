@@ -1,3 +1,5 @@
+import { ProjectExecutionStore } from "./project-execution-store.js";
+import { HarnessInputSchema } from "@opensteer/protocol";
 import {
   projectOriginFromRow,
   projectWorkIsCurrent,
@@ -1448,8 +1450,18 @@ export class ProjectWorkStore {
     if (assignment && assignment.parentRunId !== parent?.id)
       admissionUnavailable("assignment-source-mismatch");
     await lockWorkspaceRow(transaction, observed.workspaceId);
-    const inheritedRuntime =
-      source.kind === "platform" && parent
+    const steerTarget =
+      policy === "steer"
+        ? observedRuns.find(
+            (run) =>
+              run.threadId === input.threadId &&
+              ["starting", "running", "waiting"].includes(run.status),
+          )
+        : undefined;
+    if (policy === "steer" && !steerTarget) admissionUnavailable("no-active-project-exchange");
+    const inheritedRuntime = steerTarget
+      ? ProjectRuntimeSnapshotSchema.safeParse(steerTarget.authoritySource.projectRuntime)
+      : source.kind === "platform" && parent
         ? ProjectRuntimeSnapshotSchema.safeParse(parent.authoritySource.projectRuntime)
         : null;
     if (inheritedRuntime && !inheritedRuntime.success)
@@ -1662,7 +1674,27 @@ export class ProjectWorkStore {
         wasDuplicate: true,
       };
     }
-    if (policy === "steer") admissionUnavailable("steering-not-supported");
+    let steerBinding: import("@opensteer/core").ProjectRunBinding | null = null;
+    if (policy === "steer") {
+      if (
+        !steerTarget ||
+        projectExchangeKey(projectExchangeFromRow(steerTarget, thread.workspaceId)) !== exchangeKey
+      )
+        admissionUnavailable("steer-exchange-mismatch");
+      const grant = await transaction
+        .selectFrom("grants")
+        .select("id")
+        .where("runId", "=", steerTarget.id)
+        .where("bindingGeneration", "=", steerTarget.bindingGeneration)
+        .where("status", "=", "active")
+        .executeTakeFirst();
+      const original = grant
+        ? await readProjectRunBinding(transaction, { runId: steerTarget.id, grantId: grant.id })
+        : null;
+      if (!original) admissionUnavailable("steer-binding-unavailable");
+      await assertActiveProjectBinding(transaction, original.binding, this.dependencies);
+      steerBinding = original.binding;
+    }
     await assertThreadInputCapacity(
       transaction,
       thread.id,
@@ -1693,11 +1725,12 @@ export class ProjectWorkStore {
         .execute();
     const messageId = createId("message");
     const causalChainId =
+      steerTarget?.causalChainId ??
       assignment?.causalChainId ??
       (sameAssignmentRoot ? openAssignment.causalChainId : null) ??
       parent?.causalChainId ??
       createId("causalChain");
-    if (!parent && !sameAssignmentRoot)
+    if (!steerTarget && !parent && !sameAssignmentRoot)
       await transaction
         .insertInto("causalChains")
         .values({
@@ -1725,7 +1758,7 @@ export class ProjectWorkStore {
       .values({
         id: messageId,
         threadId: thread.id,
-        runId: null,
+        runId: steerBinding?.runId ?? null,
         sequence: thread.nextMessageSequence,
         actorPrincipalId: senderPrincipalId,
         kind: source.kind === "platform" ? "continuation" : "input",
@@ -1735,6 +1768,22 @@ export class ProjectWorkStore {
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    const steer = steerBinding
+      ? await new ProjectExecutionStore().enqueueCommand(transaction, {
+          binding: steerBinding,
+          idempotencyKey: `steer:${messageId}`,
+          control: {
+            kind: "run.steer",
+            input: HarnessInputSchema.parse({
+              author: message.author,
+              content: message.content,
+              createdAt: message.createdAt.toISOString(),
+              kind: message.kind,
+              messageId: message.id,
+            }),
+          },
+        })
+      : null;
     const receipt = await transaction
       .insertInto("threadInputs")
       .values({
@@ -1746,13 +1795,13 @@ export class ProjectWorkStore {
         cancelReason: null,
         deliveredAt: null,
         idempotencyKey,
-        policy: policy === "report" ? "report" : "queue",
+        policy,
         queueRank: thread.nextMessageSequence,
         replyTarget: replyTarget ? jsonValue(replyTarget) : null,
         requestFingerprint: fingerprint,
-        runId: null,
-        state: "pending",
-        steerCommandId: null,
+        runId: steerBinding?.runId ?? null,
+        state: steerBinding ? "claimed" : "pending",
+        steerCommandId: steer?.commandId ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -1763,14 +1812,14 @@ export class ProjectWorkStore {
       data: { message: messageFromRow(message), input: threadInputFromRow(receipt) },
       environmentId: thread.environmentId,
       threadId: thread.id,
-      runId: null,
+      runId: steerBinding?.runId ?? null,
       workspaceId: thread.workspaceId,
     });
     const events: AgentEvent[] = [messageEvent];
-    let runId: RunId | null = null;
-    let commandId: CommandId | null = null;
+    let runId: RunId | null = steerBinding?.runId ?? null;
+    let commandId: CommandId | null = steer?.commandId ?? null;
     const queued = currentRuns.find((run) => run.status === "queued");
-    if (policy !== "report" && !queued) {
+    if (!steerBinding && policy !== "report" && !queued) {
       const queued = await queueProjectRun(transaction, thread, receipt, snapshot);
       runId = queued.run.id;
       commandId = queued.commandId;

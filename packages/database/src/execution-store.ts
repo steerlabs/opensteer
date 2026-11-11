@@ -494,6 +494,9 @@ async function loadStoredRunDispatchContext(
             .innerJoin("threadInputs", "threadInputs.messageId", "messages.id")
             .selectAll("messages")
             .where("messages.runId", "=", command.runId)
+            .$if(command.type === "run.execute.project", (query) =>
+              query.where("threadInputs.steerCommandId", "is", null),
+            )
             .where("threadInputs.policy", "!=", "report")
             .where("messages.kind", "in", ["input", "run-result", "continuation"])
             .orderBy("sequence", "asc")
