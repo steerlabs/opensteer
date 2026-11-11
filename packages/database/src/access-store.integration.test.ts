@@ -400,11 +400,11 @@ describeStore("dormant Project access", (it) => {
       );
       for (const original of originalObjects)
         expect(upgradedObjects.get(original.name), original.name).toBe(original.definition);
-      const detail = await new Migrator({
+      const released = await new Migrator({
         db: database,
         provider: { getMigrations: async () => migrations },
-      }).migrateTo("0173_node_detail");
-      if (detail.error) throw detail.error;
+      }).migrateTo("0177_task_question_notices");
+      if (released.error) throw released.error;
       const beforeCutover = (await legacyObjects(database)).rows;
       await migrateToLatest(database);
       const cutoverObjects = new Map(

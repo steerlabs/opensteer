@@ -1,4 +1,5 @@
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
+import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { agentTools, requestToolNames } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
@@ -334,11 +335,13 @@ describe("Codex app-server harness", () => {
   it.each([
     ["host_only_tool"],
     ["thread_read", "integration_call", "computer"],
-    ["thread_read", ...requestToolNames],
+    ["thread_read", "thread_wait", ...requestToolNames],
+    ["thread_wait"],
     [...requestToolNames],
   ])("enables exactly the Host plan %j", async (...tools) => {
     const fixture = await setup("happy");
     expect(fixture.adapter.capabilities.longRequestHold).toBe(true);
+    expect(heldToolCallTimeoutMs).toBeGreaterThan(threadWaitMaxMs);
     try {
       const session = await fixture.adapter.startSession({
         ...fixture.context,
@@ -349,7 +352,9 @@ describe("Codex app-server harness", () => {
         const threadStart = captured.find((message) => message.method === "thread/start");
         const config =
           (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
-        const directTools = tools.filter((tool) => requestToolNames.some((name) => name === tool));
+        const directTools = tools.filter(
+          (tool) => tool === "thread_wait" || requestToolNames.some((name) => name === tool),
+        );
         expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
           tools.filter((tool) => !directTools.includes(tool)),
         );

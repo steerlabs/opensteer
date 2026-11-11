@@ -1161,7 +1161,8 @@ export const AssignmentSchema = z
     if (
       assignment.returnStatus === "delivered" &&
       assignment.returnMessageId === null &&
-      assignment.resultText !== ""
+      assignment.resultText !== "" &&
+      assignment.returnReason !== "read-by-assigner"
     ) {
       context.addIssue({
         code: "custom",

@@ -27,7 +27,13 @@ import {
 } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
-import { OpensteerStore, TriggerStore, admitWatchControlRequest, createDatabase } from "./index.js";
+import {
+  OpensteerStore,
+  TriggerStore,
+  admitWatchControlRequest,
+  createDatabase,
+  programToolNamesMigration,
+} from "./index.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue } from "./store-primitives.js";
@@ -410,6 +416,43 @@ integration.sequential("Trigger failure auto-pause", () => {
     const result = await detail(created.trigger.id, fixture.userId);
     expect(result.activation?.id).toBe(stored.id);
     expect(result.activation).not.toHaveProperty("createdByPrincipalId");
+  });
+
+  it("renames the tools a saved program calls, and leaves longer names that contain one", async ({
+    storeFixture,
+  }) => {
+    const { createFixture, createScheduleTrigger, database } = storeFixture;
+    const fixture = await createFixture("program-tool-names");
+    const created = await createScheduleTrigger(fixture, "program-tool-names");
+    const source = [
+      'await opensteer.callTool("thread_message", { threadId: "home", delivery: "queue", message });',
+      "await opensteer.callTool('thread_delegate', { task });",
+      'await opensteer.callTool("request_list", {});',
+      'await opensteer.callTool("integration_call", { operation: "pull_request_list" });',
+    ].join("\n");
+    await database
+      .updateTable("triggerRevisions")
+      .set({ program: jsonValue({ language: "javascript", source, toolContractVersion: 2 }) })
+      .where("id", "=", created.revision.id)
+      .execute();
+
+    await programToolNamesMigration.up(database);
+
+    const revision = await database
+      .selectFrom("triggerRevisions")
+      .select("program")
+      .where("id", "=", created.revision.id)
+      .executeTakeFirstOrThrow();
+    expect(revision.program).toEqual({
+      language: "javascript",
+      source: [
+        'await opensteer.callTool("thread_send", { threadId: "home", delivery: "queue", message });',
+        "await opensteer.callTool('delegate_task', { task });",
+        'await opensteer.callTool("pending_request", {});',
+        'await opensteer.callTool("integration_call", { operation: "pull_request_list" });',
+      ].join("\n"),
+      toolContractVersion: 2,
+    });
   });
 
   it("orders occurrence completion before its Trigger fence", async ({ storeFixture }) => {

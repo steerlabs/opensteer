@@ -13,4 +13,4 @@ Programs can overlap and share Workspace state. Use `event.id` as an idempotency
 
 Inspect enough Occurrences to establish the outcome, including terminal result, stdout and stderr. `trigger_read` action `get` accepts `occurrenceLimit` from 1 to 100, default 25.
 
-Before delegating with a named engine or model in a version 3 program, call `environment_list` with `query` for the canonical provider/model pair and options. Focus `harnessInstanceId` and follow `modelsNextCursor` with `cursor` for more matching models. Follow `harnessesNextCursor` with `harnessCursor` and `environmentsNextCursor` with `environmentCursor` to enumerate the directory.
+Before delegating with a named engine or model in a version 3 program, call `orchestrator_capabilities` with `query` for the canonical provider/model pair and options. Focus `harnessInstanceId` and follow `modelsNextCursor` with `cursor` for more matching models. Follow `harnessesNextCursor` with `harnessCursor` to enumerate the directory.

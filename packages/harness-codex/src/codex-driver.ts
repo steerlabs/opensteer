@@ -3919,7 +3919,7 @@ async function codexSkillRules(
 }
 
 function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
-  const requestTools = new Set<string>(requestToolNames);
+  const requestTools = new Set<string>([...requestToolNames, "thread_wait"]);
   const directTools = tools.filter((tool) => requestTools.has(tool));
   return new Map([
     ["opensteer", tools.filter((tool) => !requestTools.has(tool))],

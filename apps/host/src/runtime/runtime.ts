@@ -13,7 +13,7 @@ import {
 } from "../agents/harness-catalogs.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
-import { AgentConnectionStore } from "@opensteer/database";
+import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac, randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
@@ -24,6 +24,7 @@ import {
 } from "@opensteer/access/host";
 import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
 import { createPluginChangeNotices, type PluginChangeNotices } from "./plugin-change-notices.js";
+import { TaskQuestionNotices } from "../threads/task-question-notices.js";
 import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
 import {
   harnessDriverLabel,
@@ -462,6 +463,7 @@ export async function createHostRuntime(
   let threadStateDrain: Promise<void> | undefined;
   let threadStateStopped = false;
   let unsubscribePlaceMembership: (() => void) | undefined;
+  let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
   let knowledge: KnowledgeManager | undefined;
   try {
@@ -470,6 +472,7 @@ export async function createHostRuntime(
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
+    await recoverAssignmentResultWaits(database);
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
     const storeDependencies = {
@@ -1392,6 +1395,7 @@ export async function createHostRuntime(
     };
     let observeIntegrationInput: ((event: AgentEvent) => void) | undefined;
     const publishWorkspaceEvent = (event: AgentEvent): void => {
+      taskQuestions?.observe(event);
       observeIntegrationInput?.(event);
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
@@ -2271,6 +2275,13 @@ export async function createHostRuntime(
         ),
     });
     const productHandlers = new ProductToolHandlers({
+      requestResponseVault: integrationVault,
+      questionNotices: (taskQuestions = new TaskQuestionNotices({
+        database,
+        publish: publishWorkspaceEvent,
+        wake: () => coordinator.wake(),
+        onError: (error) => app.log.warn({ err: error }, "Task question notice failed"),
+      })),
       threads: threadService,
       memoryPasses,
       realtime,
@@ -2773,6 +2784,7 @@ export async function createHostRuntime(
     reportWorkspaceStorageHealth(await workspaces.reconcile());
     await memoryPasses.reconcileMissing();
     void naming.reconcile().catch(reportThreadNamingError);
+    await taskQuestions.reconcile();
     coordinator.start();
     continuations.start();
     automationFailures.start();
@@ -2941,6 +2953,7 @@ export async function createHostRuntime(
         await step("thread naming", () => naming!.stop());
         await step("quiet tasks", () => quietTasks.stop());
         await step("coordinator", () => coordinator.stop());
+        await step("task questions", () => taskQuestions?.close());
         await step("security effects", () => securityEffects.close());
         files.close();
         await step("HTTP server", () => app.close());
@@ -2961,6 +2974,7 @@ export async function createHostRuntime(
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
     };
   } catch (error) {
+    await taskQuestions?.close();
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();
     unsubscribePlaceMembership?.();

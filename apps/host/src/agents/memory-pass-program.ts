@@ -13,7 +13,7 @@ export function memoryPassProgram(role: TriggerSystemRole): TriggerProgram {
     toolContractVersion: 3,
     source: `export default async function ({ event, opensteer }) {
   try {
-    await opensteer.callTool("thread_message", {
+    await opensteer.callTool("thread_send", {
       delivery: "queue",
       threadId: event.trigger.anchorThreadId,
       message: ${JSON.stringify(`${label} pass due (`)} + (event.source.scheduledFor ?? event.receivedAt) + ${JSON.stringify(`). Load opensteer:memory and follow its ${reference} reference.`)},

@@ -74,7 +74,7 @@ export const mockNightlyTriggerId = "trg_00000000-0000-4000-8000-000000000001";
 const reminderProgram: TriggerProgram = {
   language: "typescript",
   source: `export default async function ({ opensteer }) {
-  await opensteer.callTool("thread_message", {
+  await opensteer.callTool("thread_send", {
     delivery: "queue",
     message: "Reminder: it's time.",
     threadId: "home",
@@ -89,7 +89,7 @@ const watchProgram: TriggerProgram = {
 
 export default async function ({ opensteer }) {
   watch(process.env.HOME + "/Downloads", (_event, name) => {
-    void opensteer.callTool("thread_message", {
+    void opensteer.callTool("thread_send", {
       delivery: "queue",
       message: \`New download: \${name}\`,
       observationId: name,
@@ -214,7 +214,7 @@ export function seedMockAutomations(input: {
       occurrences: [
         {
           at: minutes(-95),
-          error: "thread_message failed: Opensteer was not reachable from this computer.",
+          error: "thread_send failed: Opensteer was not reachable from this computer.",
           source: "schedule",
           status: "failed",
         },

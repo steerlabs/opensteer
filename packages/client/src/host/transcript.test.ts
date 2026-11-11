@@ -423,6 +423,21 @@ describe("foldTranscriptEvent", () => {
     expect(fold([event("request.resolved", { request: fulfilled })])).toEqual([
       expect.objectContaining({ outcome: "Fulfilled · Publish", requestId: pending.id }),
     ]);
+    const agentAnswer: Request = {
+      ...fulfilled,
+      kind: "harness.input",
+      payload: { kind: "harness.input" },
+      resolvedBy: null,
+      settlementProvenance: {
+        kind: "agent",
+        runId: createId("run"),
+        threadId: createId("thread"),
+        title: "Research lead",
+      },
+    };
+    expect(fold([event("request.resolved", { request: agentAnswer })])).toEqual([
+      expect.objectContaining({ outcome: "Answered by Research lead", requestId: pending.id }),
+    ]);
 
     const withdrawn: Request = {
       ...pending,

@@ -170,7 +170,7 @@ describe("delegationPlacement on another machine", () => {
     ).rejects.toMatchObject({
       code: "bad_request",
       message:
-        "Build machine has no enabled native AI engine on native. Name another engine with harnessInstanceId; environment_list names the engines each environment can run.",
+        "Build machine has no enabled native AI engine on native. Name another engine with harnessInstanceId; orchestrator_capabilities lists the engines a task there can run.",
     });
   });
 

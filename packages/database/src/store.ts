@@ -1173,6 +1173,7 @@ export class OpensteerStore {
     userId: UserId,
     options: {
       readonly includeDisabled?: boolean;
+      readonly environmentId?: EnvironmentId;
       readonly afterId?: HarnessInstanceId;
       readonly id?: HarnessInstanceId;
       readonly limit?: number;

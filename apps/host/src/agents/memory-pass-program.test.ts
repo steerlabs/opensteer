@@ -115,7 +115,7 @@ it.each(["memory-light", "memory-nightly"] as const)(
       }
       expect(calls).toHaveLength(4);
       expect(calls[0]).toEqual({
-        name: "thread_message",
+        name: "thread_send",
         arguments: {
           delivery: "queue",
           threadId,

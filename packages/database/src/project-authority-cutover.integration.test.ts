@@ -186,7 +186,7 @@ describeStore("additive Project authority preparation", (it) => {
                 relname: "agent_connections",
                 mode: "ShareRowExclusiveLock",
               });
-              console.info("0174 held migration locks", locks);
+              console.info("0178 held migration locks", locks);
             },
           },
         }),

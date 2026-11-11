@@ -11,7 +11,7 @@ import {
 } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
-import { lockCommandIdempotency } from "./store-primitives.js";
+import { lockCommandIdempotency, threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import type { DatabaseSchema } from "./schema.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import {
@@ -36,6 +36,7 @@ export async function lockThreadCaller(
   tx: Transaction<DatabaseSchema>,
   caller: ThreadCallerAuthority | undefined,
   targetRunIds: readonly RunId[] = [],
+  admitted = false,
 ): Promise<void> {
   if (!caller) return;
   if (caller.kind === "connection") {
@@ -57,7 +58,7 @@ export async function lockThreadCaller(
       .orderBy("id", "asc")
       .forNoKeyUpdate()
       .execute();
-  await assertThreadCaller(tx, caller);
+  await assertThreadCaller(tx, caller, admitted ? { admitted } : undefined);
 }
 
 /** Live authority and target ceilings, rechecked within the mutation transaction. */
@@ -70,6 +71,8 @@ export async function assertThreadCaller(
     readonly threadId?: ThreadId;
     readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly accessMode?: ThreadAccessMode;
+    /** Work admitted while its Run was live outlives that Run; its person's authority must not. */
+    readonly admitted?: boolean;
   },
 ): Promise<void> {
   if (!caller) return;
@@ -117,7 +120,16 @@ export async function assertThreadCaller(
     let sourceId: ThreadId;
     if (caller.kind === "run") {
       const s = caller.scope;
-      await assertActiveGrant(tx, s);
+      if (!target?.admitted) await assertActiveGrant(tx, s);
+      else if (
+        !(await threadExecutionIsAvailableToUser(
+          tx,
+          s.threadId,
+          s.requestedBy,
+          s.membershipGeneration,
+        ))
+      )
+        throw forbidden("Run tool authority has ended");
       sourceId = s.threadId;
     } else if (caller.kind === "trigger") {
       await assertActiveTriggerExecutionBinding(tx, caller.scope);

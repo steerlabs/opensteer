@@ -1,7 +1,7 @@
 import {
   thread_read,
   thread_list,
-  thread_delegate,
+  delegate_task,
   thread_update,
   thread_interrupt,
   task_cancel,
@@ -10,6 +10,7 @@ import {
   ThreadReadOutputSchema,
   ThreadListOutputSchema,
   TaskSchema,
+  OrchestratorCapabilitiesSchema,
   ThreadMessageOutputSchema,
   ThreadUpdateOutputSchema,
   ThreadInterruptOutputSchema,
@@ -22,17 +23,11 @@ import {
   BrowserAccessSuggestionSchema,
   BrowserProfileGrantIdSchema,
   BrowserProfileIdSchema,
-  DelegationModelChoiceSchema,
   EnvironmentIdSchema,
-  ExecutionEnvironmentKindSchema,
-  HarnessIdSchema,
   HarnessInstanceIdSchema,
   MarkColorSchema,
   MessageContentSchema,
   MessageIdSchema,
-  ModelIdSchema,
-  ModelProviderIdSchema,
-  ModelSelectionSchema,
   PersonMessageSchema,
   PersonShowTargetSchema,
   RequestIdSchema,
@@ -42,7 +37,6 @@ import {
   RequestStatusSchema,
   ThreadIdSchema,
   ThreadInputPolicySchema,
-  WorkspaceBackingKindSchema,
   WorkspaceIconNameSchema,
   WorkspaceIdSchema,
   WorkspaceKindSchema,
@@ -144,7 +138,7 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
 
   thread_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
   thread_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
-  thread_delegate.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
+  delegate_task.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
   task_cancel.input.safeExtend({ ...requestBase, type: z.literal("task.cancel") }),
   z.strictObject({
     ...requestBase,
@@ -271,9 +265,7 @@ export const ProductToolRequestSchema = ProductToolRequestUnionSchema.refine(
         ? request.workspaceId === undefined
         : request.workspaceId !== undefined || request.specialist !== undefined) &&
         (request.threadId === undefined ||
-          (request.environmentId === undefined &&
-            request.harnessInstanceId === undefined &&
-            request.model === undefined))),
+          (request.harnessInstanceId === undefined && request.model === undefined))),
     "Choose one destination; reuse of a Thread cannot change its execution placement",
   )
   .refine(
@@ -286,94 +278,6 @@ export const ProductToolRequestSchema = ProductToolRequestUnionSchema.refine(
 const responseBase = {
   requestId: z.uuid(),
 } as const;
-
-/**
- * How many of an engine profile's models an agent is shown to choose among,
- * and how many across one inspection, so the largest reply stays bounded.
- */
-const agentHarnessModelsShown = 20;
-
-const AgentModelSummarySchema = z.strictObject({
-  modelId: ModelIdSchema,
-  providerId: ModelProviderIdSchema,
-});
-
-const HarnessSummarySchema = z.strictObject({
-  lightModel: DelegationModelChoiceSchema.optional(),
-  driverKind: HarnessIdSchema,
-  enabled: z.boolean(),
-  environmentId: EnvironmentIdSchema,
-  id: HarnessInstanceIdSchema,
-  /** The models this engine profile offers, as its latest catalog reports them. */
-  models: z.array(AgentModelSummarySchema).max(agentHarnessModelsShown),
-  modelsOmitted: z.number().int().nonnegative(),
-  modelsNextCursor: z.string().min(1).max(2_048).optional(),
-  name: z.string().min(1).max(120),
-});
-
-const EnvironmentSummarySchema = z.strictObject({
-  compatibleHarnessInstanceIds: z.array(HarnessInstanceIdSchema).max(64),
-  connected: z.boolean(),
-  id: EnvironmentIdSchema,
-  kind: ExecutionEnvironmentKindSchema,
-  name: z.string().min(1).max(120),
-  // An agent choosing where a new Workspace should live needs to know which
-  // machines can hold a directory of their own and which cannot.
-  workspaceBackings: z.array(WorkspaceBackingKindSchema).max(2),
-});
-
-const EnvironmentModelOptionSchema = z.union([
-  z.strictObject({
-    id: z.string().min(1).max(100),
-    values: z.array(z.string().max(255)).min(1).max(32),
-    default: z.string().max(255).optional(),
-  }),
-  z.strictObject({
-    id: z.string().min(1).max(100),
-    values: z.tuple([z.literal(false), z.literal(true)]),
-    default: z.boolean().optional(),
-  }),
-]);
-const EnvironmentHarnessSummarySchema = HarnessSummarySchema.extend({
-  models: z
-    .array(
-      AgentModelSummarySchema.extend({
-        displayName: z.string().min(1).max(120).optional(),
-        options: z.array(EnvironmentModelOptionSchema).min(1).max(16).optional(),
-      }),
-    )
-    .max(8),
-  status: z.enum([
-    "disabled",
-    "disconnected",
-    "unreported",
-    "ready",
-    "authentication-required",
-    "preparing",
-    "unavailable",
-    "error",
-  ]),
-  detail: z.string().min(1).max(500).optional(),
-});
-const DelegationDefaultSchema = z.strictObject({
-  environmentId: EnvironmentIdSchema,
-  harnessInstanceId: HarnessInstanceIdSchema,
-  model: z.strictObject({
-    modelId: ModelIdSchema,
-    options: ModelSelectionSchema.shape.options,
-    providerId: ModelProviderIdSchema,
-  }),
-});
-const EnvironmentDiscoverySchema = z.strictObject({
-  delegationDefault: DelegationDefaultSchema,
-  environments: z.array(EnvironmentSummarySchema).max(64),
-  environmentsNextCursor: EnvironmentIdSchema.optional(),
-  harnesses: z
-    .array(EnvironmentHarnessSummarySchema)
-    .max(64)
-    .refine((rows) => rows.reduce((count, row) => count + row.models.length, 0) <= 40),
-  harnessesNextCursor: HarnessInstanceIdSchema.optional(),
-});
 
 const WorkspaceSummarySchema = z.strictObject({
   id: WorkspaceIdSchema,
@@ -406,7 +310,7 @@ const RequestCreationResultSchema = z.strictObject({
 });
 
 const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
-  EnvironmentDiscoverySchema.extend({
+  OrchestratorCapabilitiesSchema.extend({
     ...responseBase,
     type: z.literal("environment.list.result"),
   }),
@@ -668,6 +572,10 @@ export class ProductToolsTestClient {
     if (request.type === "browser.sign-in")
       throw new Error("This agent operation has been removed");
     let name: string = request.type.replaceAll(".", "_").replaceAll("-", "_");
+    if (request.type === "thread.delegate") name = "delegate_task";
+    if (request.type === "thread.message") name = "thread_send";
+    if (request.type === "request.list") name = "pending_request";
+    if (request.type === "environment.list") name = "orchestrator_capabilities";
     const { type: _type, requestId, ...rest } = request;
     let input: Record<string, unknown> = rest;
     if (request.type === "thread.update" || request.type === "thread.interrupt")
@@ -680,7 +588,7 @@ export class ProductToolsTestClient {
         throw new OpensteerError({
           code: "bad_request",
           message:
-            "A message from an agent cannot include a place reference. Forward selected references with thread_delegate places",
+            "A message from an agent cannot include a place reference. Forward selected references with delegate_task places",
         });
       input = {
         ...rest,

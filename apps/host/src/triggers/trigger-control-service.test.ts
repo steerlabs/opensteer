@@ -91,12 +91,7 @@ describe("TriggerControlService", () => {
         executionGeneration: 1,
         occurrenceId,
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        requestId: mcpToolCallId(
-          `trigger:${occurrenceId}`,
-          requestId,
-          "operation",
-          "thread_message",
-        ),
+        requestId: mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_send"),
         requestedBy: ownerId,
         runnerId,
         threadId,
@@ -105,7 +100,7 @@ describe("TriggerControlService", () => {
     );
     expect(enqueueThreadInput).toHaveBeenCalledWith(
       expect.objectContaining({
-        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_message")}:message`,
+        idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_send")}:message`,
         policy: "queue",
         source: { kind: "trigger", occurrenceId },
       }),
@@ -185,7 +180,6 @@ describe("TriggerControlService", () => {
 
     await expect(
       service.handle("trigger-token", {
-        environmentId: targetEnvironmentId,
         harnessInstanceId: selectedHarnessId,
         requestId: crypto.randomUUID(),
         task: "Run this elsewhere",
