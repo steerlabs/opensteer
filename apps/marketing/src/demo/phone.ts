@@ -1,5 +1,5 @@
 import { find, icon, restart } from "../dom.js";
-import { AGENTS, type AgentId, engineOf, ORDER } from "./agents.js";
+import { AGENTS, type AgentId, ORDER } from "./agents.js";
 
 export type Status = "idle" | "working" | "needs" | "done" | "stopped";
 
@@ -23,45 +23,49 @@ export interface RequestView {
   readonly answer: string;
 }
 
-const STATUS_WORD: Record<Status, string> = {
-  idle: "Watching",
-  working: "Working",
+/** What a task row says after its title. A working row shows a spinner instead. */
+const ROW_STATE: Record<Status, string> = {
+  idle: "",
+  working: "",
   needs: "Needs you",
-  done: "Done",
-  stopped: "Stopped",
+  done: "now",
+  stopped: "Couldn’t finish",
 };
-
-const FACE_ID = `<svg viewBox="0 0 40 40" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="fid-scan" d="M4 13V9a5 5 0 0 1 5-5h4M27 4h4a5 5 0 0 1 5 5v4M36 27v4a5 5 0 0 1-5 5h-4M13 36H9a5 5 0 0 1-5-5v-4"/><path class="fid-scan fid-face" d="M14 15v3M26 15v3M20 15v6h-1.5M14.5 25.5c3 2.6 8 2.6 11 0"/><path class="fid-ok" d="M12.5 20.5l5.2 5.2 10-11"/></svg>`;
+const isActive = (status: Status): boolean => status === "working" || status === "needs";
 
 const STATUS_BAR = `<div class="ip-status"><b>9:41</b><span><svg viewBox="0 0 15 11"><path d="M1 8.5h2v2H1zM5 6.5h2v4H5zM9 4h2v6.5H9zM13 1h2v9.5h-2z" fill="currentColor"/></svg><svg viewBox="0 0 16 16"><use href="#m-wifi"/></svg><svg viewBox="0 0 25 12"><use href="#m-batt"/></svg></span></div>`;
 
-const ready = (title: string, when: string): string =>
-  `<div class="ip-row ip-row--ready"><span class="tmark">${icon("i-check")}</span><span class="ip-row__title">${title}</span><time>${when}</time></div>`;
+const nav = (glyph: string, label: string): string => `<div class="ip-nav">${glyph}${label}</div>`;
+const finished = (glyph: string, title: string, when: string): string =>
+  `<div class="ip-row ip-row--past"><span class="tmark">${icon(glyph)}</span><span class="ip-row__title">${title}</span><span class="ip-row__state">${when}</span></div>`;
 
 /** The Opensteer app: its task list, and one task with a live view of the Mac. */
 export const PHONE = `<div class="iphone" data-view="list">
   <div class="ip-screen">
-    <div class="ip-island">${FACE_ID}</div>
+    <div class="ip-island"></div>
     ${STATUS_BAR}
     <div class="ip-list">
       <div class="ip-dhead"><b>Opensteer</b>${icon("m-search")}</div>
-      <div class="ip-nav"><span class="orb"></span>Chat</div>
-      <div class="ip-nav">${icon("m-compose")}New task</div>
-      <div class="ip-nav">${icon("m-folder")}Projects</div>
-      <div class="ip-nav">${icon("i-clock")}Automations</div>
+      ${nav(`<span class="orb"></span>`, "Chat")}
+      ${nav(icon("i-mic"), "Voice")}
+      ${nav(icon("m-compose"), "New task")}
+      ${nav(icon("m-folder"), "Projects")}
+      ${nav(icon("i-clock"), "Automations")}
+      <div class="ip-sep"></div>
       <div class="ip-group">Working <span data-part="count"></span></div>
-      <div data-part="rows"></div>
+      <div data-part="working"></div>
       <div class="ip-group">Ready</div>
-      ${ready("October invoices paid", "Mon")}
-      ${ready("Board deck numbers", "Fri")}
+      <div data-part="ready"></div>
+      ${finished("t-doc", "October invoices paid", "Mon")}
+      ${finished("t-chart", "Board deck numbers", "Fri")}
     </div>
     <div class="ip-task">
-      <div class="ip-head"><button class="ip-back" type="button" aria-label="Back to your tasks">${icon("m-chevl")}</button><div class="ip-cap"><span class="ip-cap__title"><span class="tmark" data-part="mark"></span><b data-part="title"></b></span><span class="ip-cap__state" data-part="state"><i class="pip"></i><span></span></span></div></div>
+      <div class="ip-head"><button class="ip-back" type="button" aria-label="Back to your tasks">${icon("m-chevl")}</button><div class="ip-cap" data-part="capsule"><span class="tmark" data-part="mark"></span><b data-part="title"></b><i class="pip"></i></div></div>
       <div class="ip-live"><div class="mirror"></div><span class="ip-live__chip"><i></i>Your MacBook</span></div>
       <span class="ip-grab"></span>
       <div class="ip-feed" data-part="feed"></div>
       <div class="ip-req" data-state="open"><b></b><p></p><div class="ip-req__btns"><button type="button" data-answer="deny">Don’t Allow</button><button type="button" data-answer="allow">Allow</button></div><div class="ip-req__done">${icon("i-check")}<span></span></div></div>
-      <div class="ip-composer"><span class="ip-plus">${icon("m-plus")}</span><span class="ip-text"></span><span class="ip-btn">${icon("i-mic")}</span><span class="ip-btn ip-btn--send">${icon("i-up")}</span></div>
+      <div class="ip-composer"><span class="ip-btn">${icon("m-plus")}</span><span class="ip-text"></span><span class="ip-btn">${icon("i-mic")}</span><span class="ip-btn ip-btn--send">${icon("i-up")}</span></div>
     </div>
     <button class="ip-notif" type="button">${icon("d-os")}<div><b></b><span></span></div><time>now</time></button>
     <span class="ip-finger"></span>
@@ -92,39 +96,42 @@ export interface Phone {
   showBanner(from: string, text: string | null): void;
   compose(text: string): void;
   tap(target: Element): void;
-  face(state: "off" | "scan" | "ok"): void;
 }
 
 export function createPhone(el: HTMLElement, events: PhoneEvents): Phone {
   const screen = find(el, ".ip-screen");
   const part = (name: string): HTMLElement => find(el, `[data-part="${name}"]`);
+  const screens = { list: find(el, ".ip-list"), task: find(el, ".ip-task") };
+  const back = find<HTMLButtonElement>(el, ".ip-back");
   const banner = find<HTMLButtonElement>(el, ".ip-notif");
   const request = find(el, ".ip-req");
+  const live = find(el, ".ip-live");
   const feed = part("feed");
   const finger = find(el, ".ip-finger");
-  const island = find(el, ".ip-island");
   const text = find(el, ".ip-text");
   const rows = new Map<AgentId, HTMLButtonElement>();
   for (const id of ORDER) {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "ip-row";
+    row.hidden = true;
     row.style.setProperty("--ac", AGENTS[id].color);
-    row.innerHTML = `<span class="tmark"></span><span class="ip-row__title"></span><span class="ip-row__state"></span><i class="ip-row__spin"></i>`;
+    row.innerHTML = `<span class="tmark">${icon(AGENTS[id].glyph)}</span><span class="ip-row__title"></span><span class="ip-row__state"></span><i class="ip-row__spin"></i>`;
     row.addEventListener("click", () => events.pick(id));
-    part("rows").appendChild(row);
+    part("working").appendChild(row);
     rows.set(id, row);
   }
-  find(el, ".ip-back").addEventListener("click", events.back);
+  back.addEventListener("click", events.back);
   banner.addEventListener("click", events.banner);
   request.addEventListener("click", (event) => {
     const answer = (event.target as Element).closest<HTMLElement>("[data-answer]")?.dataset.answer;
     if (answer === "allow" || answer === "deny") events.answer(answer);
   });
   let shown = "";
+  let watched: AgentId = ORDER[0] ?? "support";
   return {
     el,
-    live: find(el, ".ip-live"),
+    live,
     mirror: find(el, ".mirror"),
     banner,
     request,
@@ -132,29 +139,36 @@ export function createPhone(el: HTMLElement, events: PhoneEvents): Phone {
     composer: find(el, ".ip-composer"),
     send: find(el, ".ip-btn--send"),
     setView(view) {
+      const leaving = view === "list" ? screens.task : screens.list;
+      const hadFocus = leaving.contains(document.activeElement);
       el.dataset.view = view;
+      screens.list.inert = view !== "list";
+      screens.task.inert = view !== "task";
+      if (hadFocus) (view === "task" ? back : rows.get(watched))?.focus({ preventScroll: true });
     },
     showRows(tasks) {
       for (const task of tasks) {
         const row = rows.get(task.id);
         if (!row) continue;
+        const shelf = part(isActive(task.status) ? "working" : "ready");
+        if (row.parentElement !== shelf) {
+          const later = ORDER.slice(ORDER.indexOf(task.id) + 1).map((id) => rows.get(id));
+          shelf.insertBefore(row, later.find((other) => other?.parentElement === shelf) ?? null);
+        }
         row.hidden = task.status === "idle";
         row.dataset.state = task.status;
-        find(row, ".tmark").innerHTML = icon(engineOf(task.id).mark);
         find(row, ".ip-row__title").textContent = task.title;
-        find(row, ".ip-row__state").textContent =
-          task.status === "working" ? "" : STATUS_WORD[task.status];
+        find(row, ".ip-row__state").textContent = ROW_STATE[task.status];
       }
-      const busy = tasks.filter((task) => task.status === "working" || task.status === "needs");
-      part("count").textContent = String(busy.length);
+      part("count").textContent = String(tasks.filter((task) => isActive(task.status)).length);
     },
     showTask(task) {
+      watched = task.id;
       el.style.setProperty("--ac", AGENTS[task.id].color);
-      part("mark").innerHTML = icon(engineOf(task.id).mark);
+      part("mark").innerHTML = icon(AGENTS[task.id].glyph);
       part("title").textContent = task.status === "idle" ? AGENTS[task.id].name : task.title;
-      const state = part("state");
-      state.dataset.state = task.status;
-      find(state, "span").textContent = STATUS_WORD[task.status];
+      part("capsule").dataset.state = task.status;
+      live.toggleAttribute("data-acting", task.status === "working");
       const key = `${task.id}:${task.feed.length}`;
       if (key === shown) return;
       const grew = shown.startsWith(`${task.id}:`) ? Number(shown.split(":")[1]) : task.feed.length;
@@ -194,10 +208,6 @@ export function createPhone(el: HTMLElement, events: PhoneEvents): Phone {
       finger.style.left = `${(at.left - frame.left + at.width / 2) / scale}px`;
       finger.style.top = `${(at.top - frame.top + at.height / 2) / scale}px`;
       restart(finger, "is-tap");
-    },
-    face(state) {
-      island.classList.toggle("is-face", state !== "off");
-      island.classList.toggle("is-ok", state === "ok");
     },
   };
 }

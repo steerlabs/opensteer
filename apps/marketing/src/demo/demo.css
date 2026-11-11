@@ -2,9 +2,9 @@
    A phone at 1.3 stands in front of a MacBook at 0.9. */
 .scene-wrap {
   position: relative;
-  width: 100%;
+  width: min(100%, max(880px, (100svh - 372px) * 1200 / 720));
+  margin-inline: auto;
   aspect-ratio: 1200 / 720;
-  max-width: 100%;
 }
 .scene {
   --mac-font:
@@ -488,8 +488,14 @@
   filter: brightness(0.8);
   cursor: pointer;
 }
-.grp:not([data-slot="main"]):hover {
+.grp:not([data-slot="main"]):hover,
+.grp:focus-visible {
   filter: none;
+}
+.grp:focus-visible {
+  outline: 4px solid var(--ac);
+  outline-offset: 6px;
+  border-radius: 14px;
 }
 .grp[data-slot="main"] .win.is-front {
   box-shadow:
@@ -753,10 +759,6 @@
   border-radius: 12px;
   background: #000;
   transform: translateX(-50%);
-  transition:
-    width 420ms var(--ease-bubble),
-    height 420ms var(--ease-bubble),
-    border-radius 420ms;
 }
 .ip-island::after {
   content: "";
@@ -767,49 +769,6 @@
   height: 7px;
   border-radius: 50%;
   background: radial-gradient(circle at 35% 35%, #2b3653, #07080d 65%);
-  transition: opacity 200ms;
-}
-.ip-island svg {
-  width: 40px;
-  height: 40px;
-  opacity: 0;
-  transition: opacity 250ms 120ms;
-}
-.ip-island.is-face {
-  width: 86px;
-  height: 86px;
-  border-radius: 28px;
-}
-.ip-island.is-face::after {
-  opacity: 0;
-}
-.ip-island.is-face svg {
-  opacity: 1;
-}
-.ip-island .fid-scan {
-  stroke: #fff;
-  animation: scan 900ms ease-in-out infinite;
-}
-.ip-island .fid-ok {
-  stroke: #34d15c;
-  stroke-dasharray: 30;
-  stroke-dashoffset: 30;
-  transition: stroke-dashoffset 320ms ease-out;
-}
-.ip-island.is-ok .fid-ok {
-  stroke-dashoffset: 0;
-}
-.ip-island.is-ok .fid-scan {
-  stroke: #34d15c;
-  animation: none;
-}
-.ip-island.is-ok .fid-face {
-  opacity: 0;
-}
-@keyframes scan {
-  50% {
-    opacity: 0.35;
-  }
 }
 .ip-status {
   position: absolute;
@@ -909,6 +868,10 @@
   pointer-events: auto;
   transform: none;
 }
+/* On a task the banner lands under the header, so the task being watched keeps its name. */
+.iphone[data-view="task"] .ip-notif {
+  top: 78px;
+}
 .ip-notif svg {
   width: 30px;
   height: 30px;
@@ -980,17 +943,17 @@
 .tmark {
   display: grid;
   place-items: center;
-  width: 15px;
-  height: 15px;
-  border-radius: 4.5px;
+  width: 14px;
+  height: 14px;
+  border-radius: 4.2px;
   flex: none;
   background: color-mix(in srgb, var(--ac) 18%, #1d1d1d);
   box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--ac) 45%, transparent);
   color: var(--ac);
 }
 .tmark svg {
-  width: 9px;
-  height: 9px;
+  width: 9.8px;
+  height: 9.8px;
 }
 
 .ip-list {
@@ -1000,12 +963,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 34px;
+  height: 30.8px;
   padding: 0 9px;
   flex: none;
 }
 .ip-dhead b {
-  font-size: 12.5px;
+  font-size: 11.9px;
   font-weight: 600;
 }
 .ip-dhead svg {
@@ -1016,8 +979,8 @@
 .ip-nav {
   display: flex;
   align-items: center;
-  gap: 9px;
-  height: 30px;
+  gap: 8.4px;
+  height: 30.8px;
   padding: 0 8px;
   color: var(--text-soft);
   flex: none;
@@ -1031,10 +994,16 @@
   width: 14px;
   height: 14px;
 }
+.ip-sep {
+  height: 0.7px;
+  margin: 4px 8px 0;
+  background: rgb(255 255 255 / 7%);
+  flex: none;
+}
 .ip-group {
   padding: 11px 9px 3px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 9.1px;
   font-weight: 600;
   flex: none;
 }
@@ -1046,16 +1015,19 @@
 .ip-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8.4px;
   width: 100%;
-  min-height: 31px;
+  min-height: 30.8px;
   padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 8.5px;
+  border: 0.7px solid transparent;
+  border-radius: 8.4px;
   background: none;
   color: var(--text-soft);
   font: inherit;
   text-align: left;
+}
+.ip-row[hidden] {
+  display: none;
 }
 button.ip-row {
   cursor: pointer;
@@ -1072,21 +1044,22 @@ button.ip-row:hover {
   text-overflow: ellipsis;
 }
 .ip-row__state {
+  color: #898581;
+  font-size: 9.1px;
+  white-space: nowrap;
+}
+.ip-row__state:empty {
   display: none;
-  color: var(--muted);
-  font-size: 9px;
 }
-.ip-row[data-state="done"] {
+.ip-row[data-state="done"],
+.ip-row--past {
   color: var(--muted);
-}
-.ip-row[data-state="done"] .ip-row__state,
-.ip-row[data-state="stopped"] .ip-row__state {
-  display: block;
 }
 .ip-row[data-state="stopped"] .ip-row__state {
   color: var(--red);
 }
 .ip-row[data-state="needs"] {
+  margin-block: 1.4px;
   border-color: rgb(230 190 176 / 26%);
   background: #141414;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
@@ -1096,8 +1069,7 @@ button.ip-row:hover {
   font-weight: 600;
 }
 .ip-row[data-state="needs"] .ip-row__state {
-  display: block;
-  padding: 1.5px 6px;
+  padding: 1.4px 5.6px;
   border-radius: 999px;
   background: var(--amber);
   color: #1a1408;
@@ -1121,17 +1093,10 @@ button.ip-row:hover {
     transform: rotate(360deg);
   }
 }
-.ip-row--ready {
-  color: var(--muted);
-}
-.ip-row--ready .tmark {
+.ip-row--past .tmark {
   background: #1d1d1d;
   box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 12%);
   color: var(--muted);
-}
-.ip-row--ready time {
-  color: #898581;
-  font-size: 9px;
 }
 
 .ip-head {
@@ -1140,7 +1105,7 @@ button.ip-row:hover {
   align-items: center;
   justify-content: center;
   height: 36px;
-  padding: 0 30px;
+  padding: 0 27px;
   flex: none;
 }
 .ip-back {
@@ -1163,48 +1128,43 @@ button.ip-row:hover {
 }
 .ip-cap {
   display: flex;
-  flex-direction: column;
   align-items: center;
+  gap: 4.2px;
   min-width: 0;
   max-width: 100%;
+  height: 25.2px;
+  padding: 0 7px 0 5px;
+  border: 0.7px solid rgb(255 255 255 / 12%);
+  border-radius: 999px;
+  background: linear-gradient(rgb(255 255 255 / 6%), rgb(255 255 255 / 0%)), rgb(23 23 23 / 60%);
+  box-shadow: inset 0 0.7px 0 rgb(255 255 255 / 9%);
 }
-.ip-cap__title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-}
-.ip-cap__title b {
+.ip-cap b {
   overflow: hidden;
-  font-size: 12px;
+  font-size: 11.9px;
   font-weight: 600;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.ip-cap__state {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 9px;
-  white-space: nowrap;
-}
-.ip-cap__state[data-state="needs"] {
-  color: var(--amber-text);
-}
-.ip-cap__state .pip {
-  width: 4.5px;
-  height: 4.5px;
+.ip-cap .pip {
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
 }
 .ip-live {
   position: relative;
   height: 156px;
   margin: 2px 7px 0;
-  border-radius: 9px;
+  border-radius: 8.4px;
   overflow: hidden;
   background: #000;
-  box-shadow: 0 0 0 1.5px var(--green);
+  box-shadow: 0 0 0 0.7px rgb(255 255 255 / 18%);
   flex: none;
+  transition: box-shadow 300ms;
+}
+/* The app rings a place green only while the agent is acting in it. */
+.ip-live[data-acting] {
+  box-shadow: 0 0 0 1.05px var(--green);
 }
 .mirror {
   position: absolute;
@@ -1247,6 +1207,9 @@ button.ip-row:hover {
   width: 5px;
   height: 5px;
   border-radius: 50%;
+  background: var(--muted);
+}
+.ip-live[data-acting] .ip-live__chip i {
   background: var(--green);
   animation: livedot 1.4s ease-in-out infinite;
 }
@@ -1293,13 +1256,13 @@ button.ip-row:hover {
 }
 .ip-said {
   align-self: flex-end;
-  max-width: 72%;
-  padding: 6px 10px;
-  border-radius: 14px 14px 4.5px 14px;
+  max-width: 70%;
+  padding: 7px 9.8px;
+  border-radius: 14px 14px 4.2px 14px;
   background: var(--ember);
   color: var(--ink-on-ember);
-  font-size: 11.5px;
-  line-height: 1.25;
+  font-size: 11.9px;
+  line-height: 14px;
 }
 .ip-step.is-new,
 .ip-said.is-new {
@@ -1310,10 +1273,10 @@ button.ip-row:hover {
 .ip-req {
   max-height: 0;
   margin: 0 8px;
-  padding: 0 11px;
+  padding: 0 9.1px;
   overflow: hidden;
-  border: 1px solid transparent;
-  border-radius: 17px;
+  border: 0.7px solid transparent;
+  border-radius: 16.8px;
   background: #141414;
   opacity: 0;
   flex: none;
@@ -1327,7 +1290,7 @@ button.ip-row:hover {
 .ip-req.is-on {
   max-height: 130px;
   margin-bottom: 6px;
-  padding: 9px 11px 10px;
+  padding: 6.3px 9.1px 5px;
   border-color: rgb(230 190 176 / 26%);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 7%),
@@ -1336,36 +1299,48 @@ button.ip-row:hover {
 }
 .ip-req b {
   display: block;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 14.7px;
 }
 .ip-req p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 9.5px;
-  line-height: 1.4;
+  margin: 1px 0 0;
+  color: var(--text-soft);
+  font-size: 9.1px;
+  line-height: 12.6px;
 }
 .ip-req__btns {
   display: flex;
   justify-content: flex-end;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 5.6px;
+  margin-top: 4px;
 }
+/* The pill paints 23.8 tall inside a 30.8 target, as the app's answer pills do. */
 .ip-req__btns button {
-  height: 25px;
-  min-width: 50px;
-  padding: 0 11px;
-  border: 1px solid rgb(255 255 255 / 34%);
+  position: relative;
+  height: 23.8px;
+  min-width: 47.6px;
+  margin-block: 3.5px;
+  padding: 0 9.1px;
+  border: 0.7px solid rgb(255 255 255 / 34%);
   border-radius: 999px;
-  background: #141414;
+  background: linear-gradient(rgb(255 255 255 / 3.5%), rgb(255 255 255 / 0%)), #141414;
+  box-shadow: inset 0 0.7px 0 rgb(255 255 255 / 7%);
   color: var(--text);
-  font: 600 10.5px var(--mac-font);
+  font: 500 10.5px var(--mac-font);
   cursor: pointer;
+}
+.ip-req__btns button::before {
+  content: "";
+  position: absolute;
+  inset: -4.2px -0.7px;
 }
 .ip-req__btns button[data-answer="allow"] {
   border-color: transparent;
   background: var(--ember);
+  box-shadow: none;
   color: var(--ink-on-ember);
+  font-weight: 600;
 }
 .ip-req.is-on[data-state="open"] button[data-answer="allow"] {
   animation: askpulse 1.5s var(--ease-out) infinite;
@@ -1383,8 +1358,8 @@ button.ip-row:hover {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 25px;
-  margin-top: 8px;
+  height: 23.8px;
+  margin: 7.5px 0 3.5px;
   border: 1px solid var(--green-line);
   border-radius: 999px;
   background: var(--green-wash);
@@ -1415,31 +1390,18 @@ button.ip-row:hover {
 .ip-composer {
   display: flex;
   align-items: center;
-  gap: 4px;
-  min-height: 34px;
+  min-height: 33.6px;
   margin: 0 8px 4px;
-  padding: 0 5px 0 4px;
-  border: 1px solid rgb(255 255 255 / 12%);
-  border-radius: 17px;
+  padding: 0 4.9px 0 1.4px;
+  border: 0.7px solid rgb(255 255 255 / 12%);
+  border-radius: 16.8px;
   background: rgb(23 23 23 / 60%);
   flex: none;
-}
-.ip-plus {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  color: var(--text-soft);
-  flex: none;
-}
-.ip-plus svg {
-  width: 14px;
-  height: 14px;
 }
 .ip-text {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: 11.9px;
   line-height: 1.35;
 }
 .ip-text:empty::before {
@@ -1449,19 +1411,25 @@ button.ip-row:hover {
 .ip-btn {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  color: var(--muted);
+  width: 30.8px;
+  height: 30.8px;
+  color: var(--text-soft);
   flex: none;
 }
 .ip-btn svg {
-  width: 13px;
-  height: 13px;
+  width: 14.7px;
+  height: 14.7px;
 }
 .ip-btn--send {
+  width: 23.8px;
+  height: 23.8px;
+  border-radius: 50%;
   background: var(--ember);
   color: var(--ink-on-ember);
+}
+.ip-btn--send svg {
+  width: 11.9px;
+  height: 11.9px;
 }
 
 /* Callouts */
@@ -1675,19 +1643,22 @@ button.ip-row:hover {
   }
 }
 
-@media (max-width: 640px) {
-  /* On a phone the stage crops to the handset; its live view carries the Mac. */
+@media (max-width: 900px) {
+  /* Below a laptop the stage is the handset alone, at most 1.25x; its live view carries the Mac. */
   .scene-wrap {
+    width: min(100%, 362px);
     aspect-ratio: 376 / 700;
-    max-width: 376px;
-    margin-inline: auto;
     overflow: hidden;
   }
   .view {
     -webkit-mask-image: none;
     mask-image: none;
   }
-  .beam {
+  .rig,
+  .floor,
+  .beam,
+  .note--caption svg,
+  .note--caption .note__dot {
     display: none;
   }
 }

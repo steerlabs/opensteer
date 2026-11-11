@@ -2,6 +2,7 @@ import "./demo.css";
 import { clamp, find, icon, reducedMotion, restart } from "../dom.js";
 import { AGENTS, type AgentId, ENGINES, engineOf, ORDER } from "./agents.js";
 import { createClock } from "./clock.js";
+import { DESKTOP, LIVE, MAIN_SLOT } from "./geometry.js";
 import { desktop, group, macbook } from "./desktop.js";
 import { createPhone, PHONE } from "./phone.js";
 import { createRunner, type Env, type Runner, type Scene } from "./scene.js";
@@ -13,19 +14,19 @@ import { createStage, STAGE } from "./stage.js";
 const SCENES: Record<AgentId, Scene> = { support, engineer, sales };
 /** The agent whose story the phone follows by itself until the visitor takes over. */
 const FOLLOWED: AgentId = "support";
-/** Where the main slot puts a group on the desktop, and the piece of desktop the phone's live view frames. */
-const MAIN = [20, 38] as const;
-const FRAME = { width: 452, height: 312 };
-const DESKTOP = { width: 1040, height: 676 };
 
 export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
   const groups = ORDER.map((id) => group(id, SCENES[id].windows)).join("");
   root.innerHTML = `${STAGE.replace("<!--mac-->", macbook(desktop(groups))).replace("<!--phone-->", PHONE)}<div class="tabs" role="group" aria-label="Pick an agent to watch"></div>`;
   const wrap = find(root, ".scene-wrap");
-  const stage = createStage(wrap);
   const clock = createClock();
   const macDesk = find(root, ".mb-display .desk");
   const region = find(macDesk, ".vp");
+  const stage = createStage(wrap, {
+    live: find(root, ".ip-live"),
+    region,
+    later: (ms, run) => clock.at(ms, run, "stage"),
+  });
 
   let watched: AgentId = FOLLOWED;
   let view: "list" | "task" = "list";
@@ -50,6 +51,7 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     pick: (id) => select(id, true),
     back() {
       following = false;
+      runners[watched].leave();
       view = "list";
       stage.clearLabels();
       ORDER.forEach((id) => {
@@ -123,6 +125,7 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     update: render,
     openTask: (id) => select(id, false),
     showList() {
+      runners[watched].leave();
       view = "list";
       render();
     },
@@ -179,10 +182,13 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
         .join("");
     });
     const [x, y] = runners[watched].point;
-    const cx = clamp(MAIN[0] + x, FRAME.width / 2, DESKTOP.width - FRAME.width / 2);
-    const cy = clamp(MAIN[1] + y, FRAME.height / 2, DESKTOP.height - FRAME.height / 2);
-    mirrorDesk.style.transform = `translate(${(FRAME.width / 2 - cx) / 2}px, ${(FRAME.height / 2 - cy) / 2}px) scale(0.5)`;
-    region.style.transform = `translate(${cx - FRAME.width / 2}px, ${cy - FRAME.height / 2}px)`;
+    const cx = clamp(MAIN_SLOT[0] + x, LIVE.width / 2, DESKTOP.width - LIVE.width / 2);
+    const cy = clamp(MAIN_SLOT[1] + y, LIVE.height / 2, DESKTOP.height - LIVE.height / 2);
+    const left = (LIVE.width / 2 - cx) * LIVE.scale;
+    const top = (LIVE.height / 2 - cy) * LIVE.scale;
+    mirrorDesk.style.transform = `translate(${left}px, ${top}px) scale(${LIVE.scale})`;
+    region.style.transform = `translate(${cx - LIVE.width / 2}px, ${cy - LIVE.height / 2}px)`;
+    stage.runBeam(visible && !clock.paused && view === "task");
   }
 
   function select(id: AgentId, byVisitor: boolean): void {
@@ -190,12 +196,22 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
       following = id === FOLLOWED;
       stage.clearLabels();
     }
+    if (id !== watched) runners[watched].leave();
     watched = id;
     view = "task";
     const parked = ORDER.filter((other) => other !== id);
     root.querySelectorAll<HTMLElement>(".grp").forEach((el) => {
       const agent = el.dataset.agent as AgentId;
       el.dataset.slot = agent === id ? "main" : parked.indexOf(agent) === 0 ? "a" : "b";
+      if (!macDesk.contains(el)) return;
+      /* A parked group is a button that brings its agent forward. */
+      if (agent === id) {
+        ["role", "tabindex", "aria-label"].forEach((name) => el.removeAttribute(name));
+      } else {
+        el.setAttribute("role", "button");
+        el.tabIndex = 0;
+        el.setAttribute("aria-label", `Watch ${AGENTS[agent].name}`);
+      }
     });
     phone.compose("");
     render();
@@ -219,13 +235,23 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     }
     pause.innerHTML = icon(clock.paused ? "i-play" : "i-pause");
     pause.setAttribute("aria-label", clock.paused ? "Play the demo" : "Pause the demo");
+    stage.runBeam(visible && !clock.paused && view === "task");
   }
 
+  const parkedAt = (target: EventTarget | null): AgentId | undefined => {
+    const parked = (target as Element).closest<HTMLElement>('.grp:not([data-slot="main"])');
+    return parked?.dataset.agent as AgentId | undefined;
+  };
   macDesk.addEventListener("click", (event) => {
-    const parked = (event.target as Element).closest<HTMLElement>('.grp:not([data-slot="main"])');
-    if (parked) select(parked.dataset.agent as AgentId, true);
+    const id = parkedAt(event.target);
+    if (id) select(id, true);
   });
-  stage.beam(phone.live, region, () => visible && view === "task");
+  macDesk.addEventListener("keydown", (event) => {
+    const id = event.key === "Enter" || event.key === " " ? parkedAt(event.target) : undefined;
+    if (!id) return;
+    event.preventDefault();
+    select(id, true);
+  });
 
   select(FOLLOWED, false);
   view = "list";

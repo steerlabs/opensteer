@@ -2,6 +2,7 @@ import { find, reducedMotion, restart } from "../dom.js";
 import type { AgentId } from "./agents.js";
 import type { Clock } from "./clock.js";
 import type { FeedItem, Phone, RequestView, Status, TaskView } from "./phone.js";
+import { GROUP } from "./geometry.js";
 import type { Point, Side, Stage } from "./stage.js";
 
 export interface Request {
@@ -95,10 +96,11 @@ export interface Runner {
   answer(answer: "allow" | "deny"): void;
   /** The visitor just opened this agent: a waiting request gets a few seconds, then allows itself. */
   arrive(): void;
+  /** The visitor stopped watching this agent: a waiting request goes back to waiting for them. */
+  leave(): void;
   dismissBanner(): void;
 }
 
-const GROUP_WIDTH = 700;
 const PHONE_PARTS = ["live", "request", "composer", "banner"] as const;
 
 export function createRunner(scene: Scene, env: Env): Runner {
@@ -120,8 +122,9 @@ export function createRunner(scene: Scene, env: Env): Runner {
   let status: Status = "idle";
   let request: (Request & { state: RequestView["state"] }) | null = null;
   let banner: string | null = null;
-  let facing = false;
-  let point: Point = [GROUP_WIDTH / 2, 200];
+  /** Bumped whenever the visitor arrives or leaves, so an auto-answer armed before that never fires. */
+  let visit = 0;
+  let point: Point = [GROUP.width / 2, 200];
   let progress: Animation | null = null;
 
   const at = (ms: number, run: () => void): void => clock.at(ms, run, id);
@@ -134,7 +137,7 @@ export function createRunner(scene: Scene, env: Env): Runner {
   const inGroup = (el: Element, fx: number, fy: number): Point => {
     const at = el.getBoundingClientRect();
     const frame = mac.getBoundingClientRect();
-    const scale = frame.width / GROUP_WIDTH;
+    const scale = frame.width / GROUP.width;
     return [
       (at.left - frame.left + at.width * fx) / scale,
       (at.top - frame.top + at.height * fy) / scale,
@@ -169,7 +172,6 @@ export function createRunner(scene: Scene, env: Env): Runner {
 
   function settle(answer: "allow" | "deny"): void {
     if (!request) return;
-    facing = false;
     request.state = answer === "allow" ? "allowed" : "denied";
     env.update();
     if (answer === "allow" && request.spark) stage.spark(phone.allow, onMac(request.spark));
@@ -182,16 +184,18 @@ export function createRunner(scene: Scene, env: Env): Runner {
       else answered?.onDeny();
     });
   }
-  function allowWithFaceId(): void {
-    if (request?.state !== "open" || facing || !env.watching(id)) return;
-    if (reducedMotion) return settle("allow");
-    facing = true;
-    phone.tap(phone.allow);
-    phone.face("scan");
-    at(850, () => phone.face("ok"));
-    at(1500, () => {
-      phone.face("off");
-      settle("allow");
+  /** Nothing is allowed behind the visitor's back: the tap only lands while they are on this task. */
+  function allowAfter(ms: number): void {
+    const asked = request;
+    const armed = ++visit;
+    const stillTheirs = (): boolean =>
+      request === asked && asked?.state === "open" && visit === armed && env.watching(id);
+    at(ms, () => {
+      if (!stillTheirs()) return;
+      phone.tap(phone.allow);
+      at(350, () => {
+        if (stillTheirs()) settle("allow");
+      });
     });
   }
 
@@ -272,7 +276,7 @@ export function createRunner(scene: Scene, env: Env): Runner {
       progress?.pause();
       setStatus("needs");
       /* The decision waits four seconds for a tap before the demo allows it itself. */
-      if (!reducedMotion) at(4000, allowWithFaceId);
+      if (!reducedMotion) allowAfter(4000);
     },
     say(text, then) {
       const send = (): void => {
@@ -319,8 +323,6 @@ export function createRunner(scene: Scene, env: Env): Runner {
     title = scene.task;
     request = null;
     banner = null;
-    facing = false;
-    phone.face("off");
     setStatus("idle");
   }
   function run(): void {
@@ -354,13 +356,16 @@ export function createRunner(scene: Scene, env: Env): Runner {
     },
     start: run,
     answer(answer) {
-      if (request?.state !== "open" || facing) return;
-      if (answer === "allow") allowWithFaceId();
-      else settle("deny");
+      if (request?.state !== "open" || !env.watching(id)) return;
+      visit += 1;
+      settle(answer);
       settleInstantly();
     },
     arrive() {
-      if (request?.state === "open" && !reducedMotion) at(5000, allowWithFaceId);
+      if (request?.state === "open" && !reducedMotion) allowAfter(5000);
+    },
+    leave() {
+      visit += 1;
     },
     dismissBanner() {
       banner = null;

@@ -225,7 +225,7 @@ button {
 /* ---------- Hero ---------- */
 .hero {
   position: relative;
-  padding-block: 36px 8px;
+  padding-block: 18px 6px;
   text-align: center;
   isolation: isolate;
   overflow-x: clip;
@@ -234,7 +234,7 @@ button {
   position: absolute;
   z-index: -1;
   left: 50%;
-  top: 340px;
+  top: 280px;
   width: min(1100px, 140vw);
   aspect-ratio: 1.6;
   max-width: none;
@@ -265,6 +265,14 @@ button {
   font-variation-settings: "opsz" 144;
   text-wrap: balance;
 }
+/* On a laptop the headline takes one line, so the stage and its tabs fit under it on one screen. */
+@media (min-width: 1180px) {
+  .hero h1 {
+    max-width: none;
+    font-size: clamp(44px, 3.5vw, 50px);
+    white-space: nowrap;
+  }
+}
 .hero h1 em {
   font-style: italic;
   font-weight: 330;
@@ -275,8 +283,8 @@ button {
   padding-right: 0.06em;
 }
 .hero__sub {
-  margin: 14px auto 0;
-  max-width: 46rem;
+  margin: 12px auto 0;
+  max-width: 62rem;
   color: var(--text-soft);
   font-size: clamp(15.5px, 1.7vw, 17.5px);
   line-height: 1.5;
@@ -287,10 +295,10 @@ button {
   flex-wrap: wrap;
   gap: 10px;
   justify-content: center;
-  margin-top: 22px;
+  margin-top: 18px;
 }
 .hero__ctas .btn {
-  height: 44px;
+  height: 40px;
   padding: 0 20px;
   font-size: 15px;
 }
@@ -301,7 +309,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 10px 14px;
-  margin-top: 20px;
+  margin-top: 14px;
   color: var(--muted);
   font-size: 13px;
 }

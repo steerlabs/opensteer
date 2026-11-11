@@ -1,12 +1,10 @@
 import { clamp, find, reducedMotion, restart } from "../dom.js";
+import { CROP, PHONE_ONLY, STAGE_SIZE } from "./geometry.js";
 
 export type Side = "L" | "R" | "T" | "B";
 export type Point = readonly [number, number];
 
-const WIDTH = 1200;
-const HEIGHT = 720;
-/** What stays in frame on a narrow screen: the phone. */
-const CROP = { x: 16, width: 376 };
+const { width: WIDTH, height: HEIGHT } = STAGE_SIZE;
 
 export const STAGE = `<div class="scene-wrap"><div class="scene" data-view="list">
   <div class="view">
@@ -21,6 +19,7 @@ export const STAGE = `<div class="scene-wrap"><div class="scene" data-view="list
 
 export interface Stage {
   readonly scene: HTMLElement;
+  /** The stage is cropped to the phone. */
   readonly narrow: boolean;
   /** A point on an element, in stage units. */
   pos(el: Element, fx?: number, fy?: number): Point;
@@ -30,37 +29,73 @@ export interface Stage {
   clearLabels(): void;
   /** A spark that carries a decision from one element to another. */
   spark(from: Element, to: Element): void;
-  /** Ties the phone's live view to the region of the Mac it shows, while `active` holds. */
-  beam(live: Element, region: Element, active: () => boolean): void;
+  /** Ties the phone's live view to the region of the Mac it shows, for as long as `on` holds. */
+  runBeam(on: boolean): void;
 }
 
-export function createStage(wrap: HTMLElement): Stage {
+export interface StageParts {
+  /** The phone's live view and the region of the Mac it frames. */
+  readonly live: Element;
+  readonly region: Element;
+  /** Runs `run` after `ms` of unpaused time. */
+  later(ms: number, run: () => void): void;
+}
+
+export function createStage(wrap: HTMLElement, parts: StageParts): Stage {
   const scene = find(wrap, ".scene");
   const notes = find(wrap, ".notes");
-  const narrowQuery = matchMedia("(max-width: 640px)");
+  const beam = find<SVGPolygonElement>(scene, ".beam polygon");
+  const narrowQuery = matchMedia(PHONE_ONLY);
   let scale = 1;
   let narrow = false;
+  let beamWanted = false;
+  let frame = 0;
+
+  const drawBeam = (): void => {
+    frame = 0;
+    if (!beamWanted || narrow) return;
+    const origin = scene.getBoundingClientRect();
+    const corner = (el: Element, fx: number, fy: number): string => {
+      const at = el.getBoundingClientRect();
+      const x = (at.left - origin.left + at.width * fx) / scale;
+      const y = (at.top - origin.top + at.height * fy) / scale;
+      return `${x},${y}`;
+    };
+    const { live, region } = parts;
+    const corners = [
+      corner(live, 1, 0.04),
+      corner(region, 0, 0),
+      corner(region, 0, 1),
+      corner(live, 1, 0.96),
+    ];
+    beam.setAttribute("points", corners.join(" "));
+    frame = requestAnimationFrame(drawBeam);
+  };
+  const syncBeam = (): void => {
+    if (beamWanted && !narrow && !frame) frame = requestAnimationFrame(drawBeam);
+  };
   const fit = (): void => {
     narrow = narrowQuery.matches;
     scale = wrap.clientWidth / (narrow ? CROP.width : WIDTH);
     scene.style.transform = narrow
       ? `scale(${scale}) translate(${-CROP.x}px, 0)`
       : `scale(${scale})`;
+    syncBeam();
   };
   new ResizeObserver(fit).observe(wrap);
   fit();
 
   const pos = (el: Element, fx = 0.5, fy = 0.5): Point => {
     const at = el.getBoundingClientRect();
-    const frame = scene.getBoundingClientRect();
+    const origin = scene.getBoundingClientRect();
     return [
-      (at.left - frame.left + at.width * fx) / scale,
-      (at.top - frame.top + at.height * fy) / scale,
+      (at.left - origin.left + at.width * fx) / scale,
+      (at.top - origin.top + at.height * fy) / scale,
     ];
   };
   const retire = (label: Element): void => {
     label.classList.add("is-off");
-    setTimeout(() => label.remove(), 500);
+    parts.later(500, () => label.remove());
   };
 
   return {
@@ -75,37 +110,37 @@ export function createStage(wrap: HTMLElement): Stage {
     },
     label(text, anchor, fx, fy, side, gap) {
       notes.querySelectorAll(".note").forEach(retire);
-      const [x, y] = pos(anchor, fx, fy);
       const note = document.createElement("div");
-      note.className = "note";
+      note.className = narrow ? "note note--caption" : "note";
       note.innerHTML = `<svg viewBox="0 0 ${WIDTH} ${HEIGHT}"><polyline pathLength="1"/></svg><i class="note__dot"></i><span class="note__label"></span>`;
       const box = find(note, ".note__label");
       box.textContent = text;
       notes.appendChild(note);
       const width = box.offsetWidth;
       const height = box.offsetHeight;
-      let left = x - width / 2;
-      let top = y - height / 2;
-      if (narrow) top = 6;
-      else if (side === "L") left = x - gap - width;
-      else if (side === "R") left = x + gap;
-      else if (side === "T") top = y - gap - height;
-      else top = y + gap;
-      left = clamp(
-        left,
-        narrow ? CROP.x + 6 : 8,
-        (narrow ? CROP.x + CROP.width - 6 : WIDTH - 8) - width,
-      );
-      top = clamp(top, 6, HEIGHT - 8 - height);
-      box.style.left = `${left}px`;
-      box.style.top = `${top}px`;
-      const dot = find(note, ".note__dot");
-      dot.style.left = `${x}px`;
-      dot.style.top = `${y}px`;
-      find<SVGPolylineElement>(note, "polyline").setAttribute(
-        "points",
-        `${x},${y} ${clamp(x, left, left + width)},${clamp(y, top, top + height)}`,
-      );
+      if (narrow) {
+        box.style.left = `${CROP.x + (CROP.width - width) / 2}px`;
+        box.style.top = "6px";
+      } else {
+        const [x, y] = pos(anchor, fx, fy);
+        let left = x - width / 2;
+        let top = y - height / 2;
+        if (side === "L") left = x - gap - width;
+        else if (side === "R") left = x + gap;
+        else if (side === "T") top = y - gap - height;
+        else top = y + gap;
+        left = clamp(left, 8, WIDTH - 8 - width);
+        top = clamp(top, 6, HEIGHT - 8 - height);
+        box.style.left = `${left}px`;
+        box.style.top = `${top}px`;
+        const dot = find(note, ".note__dot");
+        dot.style.left = `${x}px`;
+        dot.style.top = `${y}px`;
+        find<SVGPolylineElement>(note, "polyline").setAttribute(
+          "points",
+          `${x},${y} ${clamp(x, left, left + width)},${clamp(y, top, top + height)}`,
+        );
+      }
       void note.offsetWidth;
       note.classList.add("is-on");
       return note;
@@ -133,24 +168,11 @@ export function createStage(wrap: HTMLElement): Stage {
       const ring = find(scene, ".spark-ring");
       ring.style.left = `${x1}px`;
       ring.style.top = `${y1}px`;
-      setTimeout(() => restart(ring, "is-on"), 700);
+      parts.later(700, () => restart(ring, "is-on"));
     },
-    beam(live, region, active) {
-      if (reducedMotion) return;
-      const shape = find<SVGPolygonElement>(scene, ".beam polygon");
-      const draw = (): void => {
-        if (active() && !narrow) {
-          const corners = [
-            pos(live, 1, 0.04),
-            pos(region, 0, 0),
-            pos(region, 0, 1),
-            pos(live, 1, 0.96),
-          ];
-          shape.setAttribute("points", corners.map((corner) => corner.join(",")).join(" "));
-        }
-        requestAnimationFrame(draw);
-      };
-      requestAnimationFrame(draw);
+    runBeam(on) {
+      beamWanted = on && !reducedMotion;
+      syncBeam();
     },
   };
 }

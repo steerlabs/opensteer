@@ -20,14 +20,16 @@ export interface Agent {
   readonly id: AgentId;
   readonly name: string;
   readonly color: string;
+  /** Id of the subject glyph its task wears in the app, in the page's icon sprite. */
+  readonly glyph: string;
   /** Index into ENGINES. A visitor can swap it. */
   engine: number;
 }
 
 export const AGENTS: Record<AgentId, Agent> = {
-  support: { id: "support", name: "Support", color: "#e6beb0", engine: 0 },
-  engineer: { id: "engineer", name: "Engineer", color: "#71c6a5", engine: 1 },
-  sales: { id: "sales", name: "Sales", color: "#84b5e0", engine: 3 },
+  support: { id: "support", name: "Support", color: "#e6beb0", glyph: "t-support", engine: 0 },
+  engineer: { id: "engineer", name: "Engineer", color: "#71c6a5", glyph: "t-engineer", engine: 1 },
+  sales: { id: "sales", name: "Sales", color: "#84b5e0", glyph: "t-sales", engine: 3 },
 };
 
 export const ORDER: readonly AgentId[] = ["support", "engineer", "sales"];
