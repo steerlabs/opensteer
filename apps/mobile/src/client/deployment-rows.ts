@@ -187,7 +187,9 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
     case "reconnecting":
       return "The connection dropped. This phone is opening it again.";
     case "offline":
-      return "This phone cannot reach it right now.";
+      return row.kindLabel === "Server"
+        ? `${row.name}’s server isn’t answering. It may be stopped or updating.`
+        : "This phone cannot reach it right now.";
     case "needs-sign-in":
       if (row.sessionFailure === "account-required") {
         return "Sign in to your Opensteer Account again to reconnect this deployment.";
@@ -205,8 +207,11 @@ export function deploymentStatusDetail(row: DeploymentRow): string | null {
     case "unverified":
       return "The address this phone uses answers as a different deployment.";
     case "update-required":
-      return row.verification === "host-too-old"
-        ? "This deployment speaks an older Opensteer protocol than this app. Update the deployment."
-        : "This deployment speaks a newer Opensteer protocol than this app. Update this app.";
+      if (row.verification !== "host-too-old") {
+        return `${row.name} runs a newer Opensteer than this app. Update Opensteer to open ${row.name}.`;
+      }
+      return row.kindLabel === "Personal computer"
+        ? `Update Opensteer on ${row.name} to open it from here.`
+        : `This app is newer than ${row.name}’s server. Whoever runs ${row.name}’s server needs to update it.`;
   }
 }
