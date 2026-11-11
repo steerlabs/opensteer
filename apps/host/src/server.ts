@@ -1,3 +1,4 @@
+import type { BrowserClientStreamMessage } from "./browser/browser-client-streams.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -2873,6 +2874,7 @@ export async function createHostServer(
         socket,
         dependencies.realtime,
         dependencies.workspaces,
+        dependencies.browser,
         session,
         request.log,
       );
@@ -3821,15 +3823,16 @@ function attachRealtimeSocket(
   socket: WebSocket,
   realtime: RealtimeHub,
   workspaces: WorkspaceService,
+  browser: BrowserService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
 ): void {
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
   const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
-  const sink: RealtimeSink = {
+  const sink = {
     ...peer,
-    send: async (message: HostToClientMessage) => {
+    send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
         message.type === "host.snapshot"
           ? {
@@ -3898,12 +3901,14 @@ function attachRealtimeSocket(
       }
       await peer.send(projected.data);
     },
-  };
+  } satisfies RealtimeSink;
   const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
     maxBytes: 4 * maxWebSocketFrameBytes,
     maxItems: 64,
   });
   let unsubscribe: (() => void) | undefined;
+  let browserStream: Awaited<ReturnType<BrowserService["clientStreams"]["attach"]>> | undefined;
+  let realtimeClosed = false;
   let workspaceId: WorkspaceId | null = null;
   // Machine notifications are addressed to the connection, not to a Workspace:
   // the people entitled to them are usually nowhere near the Workspace whose
@@ -3930,6 +3935,8 @@ function attachRealtimeSocket(
     }
   });
   const close = () => {
+    realtimeClosed = true;
+    browserStream?.close();
     cancelExpiration();
     inbox.close();
     unregister();
@@ -3968,7 +3975,18 @@ function attachRealtimeSocket(
         continue;
       }
       if (message.type === "client.ack") continue;
-      if (message.type !== "client.subscribe") throw badMessage("Unsupported client message");
+      if (message.type === "client.browser.resync") {
+        if (browserStream) browserStream.resync(message.groupId);
+        else if (!message.groupId) {
+          const attached = await browser.clientStreams.attach(session.user.id, {
+            send: (message) => sink.send(message),
+            bufferedAmount: () => socket.bufferedAmount,
+          });
+          if (realtimeClosed) attached.close();
+          else browserStream = attached;
+        }
+        continue;
+      }
       if (unsubscribe) throw badMessage("Client is already subscribed");
       // Nothing is streamed to a client on another epoch: the events it would
       // receive are exactly what the epoch governs, so the refusal comes

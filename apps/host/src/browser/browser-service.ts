@@ -1,3 +1,4 @@
+import { BrowserClientStreams, type BrowserLiveRows } from "./browser-client-streams.js";
 import {
   keyedStreamHardCapBytes,
   KeyedStreamPublisher,
@@ -698,6 +699,7 @@ interface BrowserActor {
 }
 
 export class BrowserService {
+  readonly clientStreams: BrowserClientStreams;
   readonly #personal: boolean;
   readonly #profileRequestRunner: BrowserServiceOptions["profileRequestRunner"];
   readonly #nativeActivity = new Map<
@@ -806,7 +808,12 @@ export class BrowserService {
     this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
     this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
-    this.#onSessionsChanged = options.onSessionsChanged;
+    this.#onSessionsChanged = (workspaceId, sessionIds, source) => {
+      void Promise.all(sessionIds.map((id) => this.clientStreams.source.groupChanged(id))).catch(
+        (error) => this.#onError(error),
+      );
+      options.onSessionsChanged(workspaceId, sessionIds, source);
+    };
     this.#onProfilesChanged = options.onProfilesChanged ?? (() => {});
     this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#onUsageChanged = options.onUsageChanged ?? (() => undefined);
@@ -824,6 +831,16 @@ export class BrowserService {
     this.#repository = options.repository;
     this.#signer = options.signer;
     this.#targetResolver = options.targetResolver;
+    this.clientStreams = new BrowserClientStreams({
+      authorityGeneration: () => this.#authorityGeneration,
+      groupIds: (ownerId) => this.#workspaceTabs?.groupIds(ownerId) ?? Promise.resolve([]),
+      readGroups: (ownerId, ids) => this.#workspaceTabs?.read(ownerId, ids) ?? Promise.resolve([]),
+      readTabs: (ids) => this.#workspaceTabs?.openTabs(ids) ?? Promise.resolve([]),
+      groupId: (id) => this.#workspaceTabs?.lineageForSession(id) ?? Promise.resolve(null),
+      live: (id) => this.#brokers.get(id)?.clientRows(this.#presence(id)),
+      occupants: (ownerId, id, tabId) => this.#occupants(ownerId, id, tabId),
+      onError: (error) => this.#onError(error),
+    });
   }
 
   get available(): boolean {
@@ -962,7 +979,7 @@ export class BrowserService {
       Buffer.byteLength(JSON.stringify(workspaceTabs), "utf8") > browserBootstrapSessionsMaxBytes
     )
       for (const group of workspaceTabs) delete group.tabs;
-    return bootstrap;
+    return { ...bootstrap, ...(await this.clientStreams.source.bootstrap(ownerId)) };
   }
 
   async readWorkspaceTabs(
@@ -1087,6 +1104,7 @@ export class BrowserService {
         broker = this.#brokers.get(sessionId);
       } else if (!broker.catalog(() => []).tabs.some((tab) => tab.id === tabId)) {
         await tabs.bind(initial.groupId, sessionId, tabId);
+        await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
         if (row.favicon) broker.restoreIcon(tabId, row.url, row.favicon);
         await broker.requestCdp({
           type: "cdp.command",
@@ -1129,8 +1147,11 @@ export class BrowserService {
           });
         await this.#holdForAgent(agent, session);
       }
+      await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       return {
         type: "workspace.tab.activate" as const,
+        groupId: initial.groupId,
+        sessionId,
         group: await this.readWorkspaceTabs(ownerId, initial.groupId),
         session: await this.#personSession(session, ownerId),
         tabId,
@@ -1201,9 +1222,12 @@ export class BrowserService {
       idempotencyKey,
     );
     const group = await this.readWorkspaceTabs(ownerId, row.groupId);
+    await this.clientStreams.source.groupChanged(group.session.id, { tabs: true });
     this.#onSessionsChanged(group.session.workspaceId, [group.session.id], "browser.tabs");
     return {
       type: "workspace.tab.reopen" as const,
+      groupId: row.groupId,
+      sessionId: group.session.id,
       tabId: BrowserSurfaceIdSchema.parse(row.id),
       group,
       layout: await this.#tabGroups.layout(ownerId),
@@ -1220,11 +1244,15 @@ export class BrowserService {
       if (session && broker?.live)
         await this.#disposeWorkspaceTab(ownerId, session.workspaceId, session.id, tabId, broker);
       // The closed revision reaches every viewer, so a slower earlier lineage can't bring it back.
-      if (session)
+      if (session) {
+        await this.clientStreams.source.groupChanged(session.id, { tabs: true });
         this.#onCatalogChanged(session.id, session.workspaceId, { lineageChanged: true });
+      }
     });
     return {
       type: "workspace.tab.close" as const,
+      groupId: row.groupId,
+      sessionId: (await this.#workspaceTabs!.session(ownerId, row.groupId))?.id,
       group: await this.readWorkspaceTabs(ownerId, row.groupId),
     };
   }
@@ -1469,30 +1497,30 @@ export class BrowserService {
     const broker = this.#brokers.get(sessionId);
     if (!broker)
       return this.#endedCatalogs.get(sessionId) ?? { generation: 0, revision: 0, tabs: [] };
-    return broker.catalog((surfaceId) => {
-      const occupants = new Map<ThreadId, PlaceOccupant>();
-      for (const actor of this.#actors.values()) {
-        if (actor.sessionId !== sessionId) continue;
-        const identity = actor.audience.get(ownerId);
-        const use = actor.surfaces.get(surfaceId);
-        if (!identity || !use) continue;
-        const holding =
-          this.#holdings.get(sessionId)?.has(`${actor.binding}:${surfaceId}`) === true;
-        const acting = this.#activityClock.now() - use.at < this.#actingWindowMs;
-        if (!holding && !acting) continue;
-        const previous = occupants.get(identity.threadId);
-        occupants.set(identity.threadId, {
-          threadId: identity.threadId,
-          home: identity.home,
-          holding: holding || previous?.holding === true,
-          acting: acting || previous?.acting === true,
-          lastActiveAt: new Date(
-            Math.max(use.at, use.heldAt ?? 0, previous ? Date.parse(previous.lastActiveAt) : 0),
-          ).toISOString(),
-        });
-      }
-      return [...occupants.values()];
-    }, ownerId);
+    return broker.catalog((surfaceId) => this.#occupants(ownerId, sessionId, surfaceId), ownerId);
+  }
+  #occupants(ownerId: UserId, sessionId: BrowserSessionId, surfaceId: string): PlaceOccupant[] {
+    const occupants = new Map<ThreadId, PlaceOccupant>();
+    for (const actor of this.#actors.values()) {
+      if (actor.sessionId !== sessionId) continue;
+      const identity = actor.audience.get(ownerId);
+      const use = actor.surfaces.get(surfaceId);
+      if (!identity || !use) continue;
+      const holding = this.#holdings.get(sessionId)?.has(`${actor.binding}:${surfaceId}`) === true;
+      const acting = this.#activityClock.now() - use.at < this.#actingWindowMs;
+      if (!holding && !acting) continue;
+      const previous = occupants.get(identity.threadId);
+      occupants.set(identity.threadId, {
+        threadId: identity.threadId,
+        home: identity.home,
+        holding: holding || previous?.holding === true,
+        acting: acting || previous?.acting === true,
+        lastActiveAt: new Date(
+          Math.max(use.at, use.heldAt ?? 0, previous ? Date.parse(previous.lastActiveAt) : 0),
+        ).toISOString(),
+      });
+    }
+    return [...occupants.values()];
   }
 
   async readTabCatalog(ownerId: UserId, sessionId: BrowserSessionId): Promise<BrowserTabCatalog> {
@@ -2096,9 +2124,14 @@ export class BrowserService {
           "The page outcome is unknown.",
         );
       await this.#flushCatalogNotice(record.id, record.workspaceId);
+      await this.clientStreams.source.groupChanged(record.id);
       const visible = await this.#visibleOpenerThreads(ownerId, [record]);
       return {
         type: "browser.tab.open",
+        groupId:
+          this.#brokers.get(record.id)?.groupId ??
+          (await this.#workspaceTabs?.lineageForSession(record.id)) ??
+          record.id,
         sessionId: record.id,
         browserStarted: binding.browserStarted,
         session: {
@@ -2211,12 +2244,17 @@ export class BrowserService {
         .object({ outcome: z.enum(["tab-closed", "session-closed"]) })
         .parse(response.result);
       await this.#workspaceTabs?.close(ownerId, command.surfaceId, false);
+      await this.clientStreams.source.groupChanged(command.sessionId, { tabs: true });
       if (outcome === "session-closed") {
         const record = await this.#repository.getBrowserSessionForOwner(command.sessionId, ownerId);
         if (record) await this.#stopRecord(record);
       }
       const result: BrowserTabCloseResult = {
         type: "browser.tab.close",
+        groupId:
+          this.#brokers.get(command.sessionId)?.groupId ??
+          (await this.#workspaceTabs?.lineageForSession(command.sessionId)) ??
+          command.sessionId,
         sessionId: command.sessionId,
         outcome,
         catalog: this.#catalog(ownerId, command.sessionId),
@@ -2362,7 +2400,16 @@ export class BrowserService {
         this.#clearActor(actor);
   }
 
-  invalidatePlaceAuthority(workspaceId?: WorkspaceId, threadIds?: readonly ThreadId[]): void {
+  invalidatePlaceAuthority(
+    workspaceId?: WorkspaceId,
+    threadIds?: readonly ThreadId[],
+    ownerId?: UserId,
+  ): void {
+    void (
+      ownerId
+        ? this.clientStreams.source.reauthorize(ownerId)
+        : this.clientStreams.source.reauthorizeAll()
+    ).catch((error) => this.#onError(error));
     // Pending lineage reads have no known scope yet; fence them without clearing live actors.
     this.#authorityGeneration++;
     for (const [key, token] of this.#actorKeys) if (token === null) this.#actorKeys.delete(key);
@@ -2409,6 +2456,7 @@ export class BrowserService {
           seq: ++this.#placeSequence,
         });
     }
+    this.clientStreams.source.markTabs(actor.sessionId, actor.surfaces.keys());
     this.#brokers.get(actor.sessionId)?.bumpCatalog();
   }
 
@@ -2546,6 +2594,7 @@ export class BrowserService {
     actor.audience.clear();
     for (const [ownerId, identity] of next) actor.audience.set(ownerId, identity);
     this.#actors.set(actor.token, actor);
+    this.clientStreams.source.markTabs(sessionId, actor.surfaces.keys());
     this.#actorKeys.set(key, actor.token);
     if (this.#actorKeys.size > 4096) this.#actorKeys.delete(this.#actorKeys.keys().next().value!);
   }
@@ -2596,6 +2645,10 @@ export class BrowserService {
             heldAt: holding.lastUsedAt.getTime(),
           });
       }
+      this.clientStreams.source.markTabs(
+        sessionId,
+        holdings.flatMap((holding) => (holding.tabId ? [holding.tabId] : [])),
+      );
     });
   }
 
@@ -2677,10 +2730,15 @@ export class BrowserService {
       let lineageChanged = false;
       if (broker && this.#workspaceTabs) {
         const changes = broker.tabChanges();
-        if (changes.tabs.length || changes.closed.length)
-          lineageChanged = (
-            await this.#workspaceTabs.recordChanges(sessionId, changes.tabs, changes.closed)
-          ).changed;
+        if (changes.tabs.length || changes.closed.length) {
+          const written = await this.#workspaceTabs.recordChanges(
+            sessionId,
+            changes.tabs,
+            changes.closed,
+          );
+          lineageChanged = written.changed;
+          this.clientStreams.source.tabsWritten(written.groupId, written.rows, written.closedIds);
+        }
         lineageChanged ||= changes.stateDirty;
         broker.acknowledgeTabChanges(changes);
       }
@@ -2770,7 +2828,10 @@ export class BrowserService {
       .flatMap((entry) => [...entry.surfaces.values()].map(({ at }) => at + this.#actingWindowMs))
       .filter((deadline) => deadline > at);
     this.#scheduleActingEnd(sessionId, Math.min(at + this.#actingWindowMs, ...deadlines) - at);
-    if (!wasActing) this.#brokers.get(sessionId)?.bumpCatalog();
+    if (!wasActing) {
+      this.clientStreams.source.markTabs(sessionId, [activity.surfaceId]);
+      this.#brokers.get(sessionId)?.bumpCatalog();
+    }
     const key = `${sessionId}:${activity.surfaceId}`;
     this.#activityPending.set(`${key}:${actor.token}`, {
       actor,
@@ -3917,6 +3978,7 @@ export class BrowserService {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
       await this.#workspaceTabs?.closeLineage(sessionId);
+      await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       await this.#stopRecord(persisted);
     });
   }
@@ -3929,6 +3991,7 @@ export class BrowserService {
           actor.lineageWorkspaceIds.includes(workspaceId))
       ) {
         actor.audience.delete(ownerId);
+        this.clientStreams.source.markTabs(actor.sessionId, actor.surfaces.keys());
         for (const surfaceId of actor.surfaces.keys())
           this.#onPlaceNotice(ownerId, {
             type: "host.place-activity-cleared",
@@ -3979,6 +4042,7 @@ export class BrowserService {
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    this.clientStreams.close();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
     for (const timer of this.#catalogNotices.values()) clearTimeout(timer);
@@ -4162,6 +4226,7 @@ export class BrowserService {
     });
     if (input.tabGroupId && input.initialSurfaceId)
       await this.#workspaceTabs?.bind(input.tabGroupId, sessionId, input.initialSurfaceId);
+    if (input.tabGroupId) await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
     this.#onSessionsChanged(record.workspaceId, [record.id], "browser.start");
     const initialHistoryNavigation =
       profile && initialUrl && personNavigation && target.navigationAttributionVersion
@@ -4263,6 +4328,10 @@ export class BrowserService {
             : {}),
           onPageChanged: () => this.#announcePresence(sessionId),
           onTabsChanged: () => this.#queueCatalogNotice(sessionId, record.workspaceId),
+          onRecordsChanged: (ids) => {
+            this.clientStreams.source.markTabs(sessionId, ids);
+            this.clientStreams.source.markGroup(sessionId);
+          },
           onActivity: (activity) => this.#runtimeActivity(sessionId, activity),
           workspaceId: record.workspaceId,
           cdpBoundary: target.cdpBoundary === true,
@@ -4305,6 +4374,7 @@ export class BrowserService {
             const endedBroker = this.#brokers.get(sessionId);
             await this.#flushCatalogNotice(sessionId, record.workspaceId, endedBroker);
             await this.#workspaceTabs?.suspend(sessionId);
+            await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
             if (this.#workspaceTabs)
               this.#onSessionsChanged(record.workspaceId, [sessionId], "browser.terminal");
             const previous = endedBroker?.catalog(() => []);
@@ -4567,6 +4637,12 @@ export class BrowserService {
         ].filter((at) => at > now);
         if (deadlines.length) this.#scheduleActingEnd(sessionId, Math.min(...deadlines) - now);
         if (!commands?.size) this.#agentCommands.delete(sessionId);
+        this.clientStreams.source.markTabs(
+          sessionId,
+          [...this.#actors.values()]
+            .filter((actor) => actor.sessionId === sessionId)
+            .flatMap((actor) => [...actor.surfaces.keys()]),
+        );
         this.#brokers.get(sessionId)?.bumpCatalog();
         this.#announcePresence(sessionId);
       },
@@ -4610,6 +4686,7 @@ export class BrowserService {
     const announced = JSON.stringify([presence.acting, presence.page]);
     if (this.#announcedPresence.get(sessionId) === announced) return;
     this.#announcedPresence.set(sessionId, announced);
+    this.clientStreams.source.markGroup(sessionId);
     this.#onPresenceChanged({ presence, workspaceId: broker.workspaceId });
   }
 
@@ -4807,6 +4884,7 @@ interface HostedBrowserBrokerOptions {
     readonly favicon: string;
   };
   readonly onTabsChanged: () => void;
+  readonly onRecordsChanged: (ids: readonly string[]) => void;
   readonly onActivity: (activity: BrowserRuntimeActivity) => void;
   /** The active page's title or site changed; called at most once per `pageNoticeDelayMs`. */
   readonly onPageChanged: () => void;
@@ -4982,6 +5060,7 @@ class HostedBrowserBroker {
     this.#storedTabStateRevision = changes.stateRevision;
   }
   readonly #onTabsChanged: () => void;
+  readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
   readonly #catalogGeneration = Date.now();
   readonly #catalogRevisions = new BrowserCatalogRevisions();
@@ -5128,6 +5207,7 @@ class HostedBrowserBroker {
       : undefined;
     this.#navigation = options.navigation;
     this.#onTabsChanged = options.onTabsChanged;
+    this.#onRecordsChanged = options.onRecordsChanged;
     this.#onActivity = options.onActivity;
     this.#onPageChanged = options.onPageChanged;
     this.workspaceId = options.workspaceId;
@@ -5189,6 +5269,23 @@ class HostedBrowserBroker {
   get targetedStreaming(): boolean {
     return this.#snapshot?.targetedStreamingVersion === 1;
   }
+  get groupId(): BrowserSessionId {
+    return this.#groupId;
+  }
+  clientRows(presence: Pick<BrowserLiveRows, "acting" | "page">): BrowserLiveRows {
+    return {
+      groupId: this.#groupId,
+      records: this.#tabs.rows,
+      inventoryRevision: this.inventoryRevision,
+      navigation: this.#navigation,
+      ready: this.live,
+      ...presence,
+      iconRef: (id) => {
+        const row = this.#tabs.rows.get(id);
+        return row ? (this.#surfaceIcon(row)?.ref ?? null) : null;
+      },
+    };
+  }
   get inventoryRevision(): number {
     return this.#tabs.meta?.inventoryRevision ?? 0;
   }
@@ -5206,7 +5303,7 @@ class HostedBrowserBroker {
   restoreIcon(id: BrowserSurfaceId, url: string, favicon: string): void {
     this.#restoredIcons.set(id, { url, favicon, ref: workspaceTabIconRef(this.#groupId, favicon) });
   }
-  #surfaceIcon(surface: BrowserSurface) {
+  #surfaceIcon(surface: Pick<BrowserSurface, "id" | "url">) {
     const row = this.#tabs.rows.get(surface.id);
     const current = row?.icon ? this.#icons.get(row.icon) : undefined;
     if (current) return current;
@@ -5966,6 +6063,7 @@ class HostedBrowserBroker {
         await this.#onState("ready");
         this.#runtimeReady = true;
       }
+      this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
       this.bumpCatalog();
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)

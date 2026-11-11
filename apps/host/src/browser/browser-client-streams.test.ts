@@ -90,6 +90,7 @@ function fixture(count = 1) {
     acting = false;
   let occupants: BrowserRowPorts["occupants"] = () => [];
   const ports: BrowserRowPorts = {
+    authorityGeneration: () => 0,
     groupIds: vi.fn(async (user) => (user === alice && !visible ? [] : [groupId])),
     readGroups: vi.fn(async (user, ids) =>
       (user === alice && !visible) || !ids.includes(groupId) ? [] : [{ ...facts }],
@@ -446,6 +447,75 @@ describe("BrowserClientStreams", () => {
     );
     expect(f.ports.readTabs).not.toHaveBeenCalled();
     expect(f.durable.get(tabId)?.state).toBe("restoring");
+    f.streams.close();
+  });
+  it("keeps a regrant pending when a revoked publisher's final send completes", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let release: (() => void) | undefined;
+    const a = await f.attach(
+      alice,
+      () => 0,
+      async (frame) => {
+        if (frame.type === "host.browser-tabs" && frame.stream.op === "end" && !release)
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+      },
+    );
+    expect(release).toBeDefined();
+    f.visible = false;
+    await f.streams.source.reauthorize(alice);
+    f.visible = true;
+    await f.streams.source.reauthorize(alice);
+    release!();
+    await vi.advanceTimersByTimeAsync(50);
+    const starts = a.messages.filter(
+      (frame) => frame.type === "host.browser-tabs" && frame.stream.op === "begin",
+    );
+    expect(starts).toHaveLength(2);
+    expect(starts[0]).not.toEqual(starts[1]);
+    f.streams.close();
+  });
+  it("does not read durable rows for a group no connected person may see", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const a = await f.attach();
+    a.messages.length = 0;
+    const hidden = "bsn_00000000-0000-4000-8000-000000000088" as BrowserGroupRow["id"];
+    const live = f.ports.live;
+    f.ports.live = (id) => (id === hidden ? undefined : live(id));
+    vi.mocked(f.ports.groupId).mockResolvedValue(hidden);
+    vi.mocked(f.ports.readTabs).mockClear();
+    await f.streams.source.groupChanged(hidden, { tabs: true });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(f.ports.readTabs).not.toHaveBeenCalled();
+    expect(a.messages).toHaveLength(0);
+    f.streams.close();
+  });
+  it("keeps durable rows when another viewer disconnects during a shared-cache attach", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.live = false;
+    f.facts.state = "closed";
+    const b = await f.attach(bob);
+    const frames: BrowserClientStreamMessage[] = [];
+    const attaching = f.streams.attach(alice, {
+      bufferedAmount: () => 0,
+      send: async (frame) => {
+        frames.push(frame);
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    b.close();
+    await attaching;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      frames.flatMap((frame) =>
+        frame.type === "host.browser-tabs" && frame.stream.op === "rows" ? frame.stream.rows : [],
+      ),
+    ).toMatchObject([{ id: tabId, state: "suspended", title: "Page" }]);
     f.streams.close();
   });
   it("discards a keyed group read started before reauthorization", async () => {

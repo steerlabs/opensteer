@@ -909,7 +909,7 @@ export async function createHostRuntime(
       realtime.sendToUsers([membership.userId], { type: "host.plugins-changed" });
       if (membership.state !== "active")
         browser.revokePlaceReader(membership.userId, membership.workspaceId);
-      browser.invalidatePlaceAuthority(membership.workspaceId);
+      browser.invalidatePlaceAuthority(membership.workspaceId, undefined, membership.userId);
       realtime.publishBrowserSessionsChanged(
         membership.workspaceId,
         [membership.userId],

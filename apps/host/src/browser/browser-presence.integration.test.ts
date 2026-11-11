@@ -1,3 +1,4 @@
+import { keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 import { thread_delegate } from "@opensteer/agent-tools/tools";
@@ -5,7 +6,13 @@ import { thread_delegate } from "@opensteer/agent-tools/tools";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
-import { BrowserSurfaceIdSchema, HostToRunnerMessageSchema } from "@opensteer/protocol";
+import {
+  BrowserSurfaceIdSchema,
+  createBrowserSessionId,
+  HostToClientMessageSchema,
+  type HostToClientMessage,
+  HostToRunnerMessageSchema,
+} from "@opensteer/protocol";
 import { resolvedInputParts } from "@opensteer/harness";
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -74,6 +81,7 @@ const actingWindowMs = 15_000;
 
 interface Listener {
   readonly messages: Record<string, unknown>[];
+  socket: WebSocket;
   close(): Promise<void>;
 }
 
@@ -116,12 +124,24 @@ async function listen(
     await synchronized;
   }
   return {
+    socket,
     close: async () => {
       socket.close();
       await closed(socket);
     },
     messages,
   };
+}
+
+function waitForBrowser(socket: WebSocket, predicate: (message: HostToClientMessage) => boolean) {
+  return waitForMessage(
+    socket,
+    (message) => {
+      const parsed = HostToClientMessageSchema.safeParse(message);
+      return parsed.success && predicate(parsed.data);
+    },
+    5000,
+  );
 }
 
 async function until<Value>(
@@ -248,6 +268,347 @@ integration("Browser presence and conversation usage", () => {
     for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
   });
 
+  it("attaches browser streams only on the requesting socket and measures the additive prefixes and deltas", async () => {
+    const database = await createMachineAccessDatabase(databaseUrl!);
+    cleanups.push(() => database.drop());
+    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    cleanups.push(() => host.close());
+    const caller = await connectCallerMachine(host, {
+      name: "Keyed acting",
+      maxConcurrentRuns: 1,
+      token: await enrollmentToken(host, {
+        allowedModules: ["agents"],
+        idempotencyKey: "keyed-caller",
+        name: "Keyed acting",
+      }),
+    });
+    cleanups.push(() => caller.close());
+    const run = await dispatchCallerRun(host, caller, {
+      key: "keyed-acting",
+      title: "Keyed acting",
+    });
+    const runtime = await startBrowserRuntime(
+      host.hostPort,
+      await enrollmentToken(host, {
+        allowedModules: ["browser"],
+        idempotencyKey: "keyed-browser",
+        name: "Keyed browser",
+      }),
+      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+    );
+    cleanups.push(() => runtime.close());
+    await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5000 });
+    const workspaceId = run.workspaceId;
+    const neighbors = await Promise.all(
+      ["Second", "Third"].map((name) =>
+        createTestWorkspace(host.store, {
+          createdBy: host.ownerId,
+          idempotencyKey: `keyed-${name}`,
+          name,
+          status: "ready",
+          backing: {
+            kind: "local-directory",
+            bindingId: createId("workspaceBinding"),
+            generation: 1,
+            ownerEnvironmentId: createId("environment"),
+            storageAuthorityId: null,
+          },
+        }),
+      ),
+    );
+    const a = await listen(host, host.ownerHeaders, workspaceId);
+    const b = await listen(host, host.ownerHeaders, neighbors[0]!.id);
+    cleanups.push(
+      () => a.close(),
+      () => b.close(),
+    );
+    const c = await listen(host, host.ownerHeaders, neighbors[1]!.id);
+    cleanups.push(() => c.close());
+    const opened = await host.runtime.browser.start({
+      fresh: true,
+      ownerId: host.ownerId,
+      workspaceId,
+      origin: "workspace",
+    });
+    await host.runtime.browser.flushPendingTabDescriptors();
+    const fixtures: Array<{
+      sessionId: typeof opened.session.id;
+      rows: Record<string, unknown>[];
+    }> = [];
+    const publish = async (sessionId: typeof opened.session.id, index: number, count: number) => {
+      const rows = Array.from({ length: count }, (_, order) => ({
+        id: `measure_${index}_${order}`,
+        active: order === 0,
+        title: `Page ${order}`,
+        url: `https://measure.example/private/${index}/${order}?secret=never-on-client`,
+        order,
+        openerId: null,
+        documentId: `doc_${index}_${order}`,
+        geometryRevision: 1,
+      }));
+      runtime.publishTabs({ surfaces: rows, closed: ["page-integration"] }, sessionId);
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await host.runtime.browser.readTabCatalog(host.ownerId, sessionId)).tabs,
+          ).toHaveLength(count),
+        { timeout: 5000 },
+      );
+      await host.runtime.browser.flushPendingTabDescriptors();
+      await host.runtime.browser.clientStreams.source.groupChanged(sessionId);
+      fixtures.push({ sessionId, rows });
+    };
+    await publish(opened.session.id, 0, 64);
+    const ended = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-tabs" &&
+        (message.stream as { op?: string } | undefined)?.op === "end",
+    );
+    a.socket.send(JSON.stringify({ type: "client.browser.resync" }));
+    await ended;
+    expect(a.messages.some((message) => message.type === "host.browser-groups")).toBe(true);
+    expect(
+      b.messages.some(
+        (message) => message.type === "host.browser-groups" || message.type === "host.browser-tabs",
+      ),
+    ).toBe(false);
+    const begin = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-tabs" &&
+        message.groupId === opened.session.id &&
+        (message.stream as { op?: string } | undefined)?.op === "begin",
+    );
+    a.socket.send(JSON.stringify({ type: "client.browser.resync", groupId: opened.session.id }));
+    await begin;
+    const samples: Record<string, unknown>[] = [];
+    const measure = async (count: number) => {
+      const bootstrap = await host.runtime.browser.bootstrap(host.ownerId);
+      const start = a.messages.length;
+      const begun = new Set<string>(),
+        complete = new Set<string>();
+      const snapshot = waitForBrowser(a.socket, (message) => {
+        if (message.type !== "host.browser-tabs") return false;
+        if (message.stream.op === "begin") begun.add(message.groupId);
+        if (message.stream.op === "end" && begun.has(message.groupId))
+          complete.add(message.groupId);
+        return complete.size === fixtures.length;
+      });
+      a.socket.send(JSON.stringify({ type: "client.browser.resync" }));
+      await snapshot;
+      const frames = a.messages
+        .slice(start)
+        .filter(
+          (message) =>
+            message.type === "host.browser-groups" || message.type === "host.browser-tabs",
+        );
+      const starts = [a, b, c].map((listener) => listener.messages.length);
+      const title = `Changed at ${count}`;
+      const legacy = [a, b, c].map((listener) =>
+        waitForBrowser(
+          listener.socket,
+          (message) =>
+            message.type === "host.browser-sessions-changed" &&
+            message.group?.tabs?.some((row) => row.title === title) === true,
+        ),
+      );
+      const changed = waitForBrowser(
+        a.socket,
+        (message) =>
+          message.type === "host.browser-tabs" &&
+          message.stream.op === "change" &&
+          message.stream.update?.some((row) => row.title === title) === true,
+      );
+      fixtures[0]!.rows[1] = { ...fixtures[0]!.rows[1], title };
+      runtime.publishTabs({ surfaces: fixtures[0]!.rows }, fixtures[0]!.sessionId);
+      await Promise.all([changed, ...legacy]);
+      const deltas = [a, b, c].map((listener, index) => listener.messages.slice(starts[index]));
+      const old = deltas[0]!.filter(
+        (message) =>
+          (message.type === "host.browser-tabs-changed" &&
+            message.sessionId === opened.session.id) ||
+          (message.type === "host.browser-sessions-changed" &&
+            (message.group as { id?: string } | undefined)?.id === opened.session.id),
+      );
+      const next = deltas[0]!.filter((message) => message.type === "host.browser-tabs");
+      expect(next).toHaveLength(1);
+      expect(JSON.stringify(next)).not.toContain("private/");
+      expect(
+        deltas
+          .slice(1)
+          .flat()
+          .some(
+            (message) =>
+              message.type === "host.browser-tabs" || message.type === "host.browser-groups",
+          ),
+      ).toBe(false);
+      samples.push({
+        tabs: count,
+        groups: fixtures.length,
+        freshBefore: keyedStreamBytes({
+          sessions: bootstrap.sessions,
+          workspaceTabs: bootstrap.workspaceTabs,
+        }),
+        freshAfter: {
+          total: frames.reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+          frames: frames.length,
+          largest: Math.max(...frames.map(keyedStreamBytes)),
+        },
+        titleBefore: old.reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+        titleAfter: next.reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+        titleThreeSocketsBefore: deltas
+          .flat()
+          .filter(
+            (message) =>
+              message.type === "host.browser-tabs-changed" ||
+              message.type === "host.browser-sessions-changed",
+          )
+          .reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+        titleThreeSocketsAfter: deltas
+          .flat()
+          .filter((message) => message.type === "host.browser-tabs")
+          .reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+      });
+    };
+    await measure(64);
+    for (let index = 1; index < 8; index++) {
+      const next = await host.runtime.browser.start({
+        fresh: true,
+        reuseExisting: false,
+        ownerId: host.ownerId,
+        workspaceId,
+        origin: "workspace",
+        placement: { kind: "runner", runnerId: runtime.runnerId },
+      });
+      await publish(next.session.id, index, index === 7 ? 64 : 62);
+    }
+    expect(fixtures.reduce((sum, fixture) => sum + fixture.rows.length, 0)).toBe(500);
+    await measure(500);
+    const cdp = await host.runtime.browser.attachCdpForAgent(
+      {
+        agentBindingId: `run:${run.runId}`,
+        ownerId: host.ownerId,
+        sessionId: opened.session.id,
+        workspaceId: run.workspaceId,
+      },
+      () => undefined,
+    );
+    cleanups.push(async () => cdp.close());
+    await host.runtime.browser.clientStreams.source.groupChanged(opened.session.id);
+    const ready = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-tabs" &&
+        message.groupId === opened.session.id &&
+        message.stream.op === "end",
+    );
+    a.socket.send(JSON.stringify({ type: "client.browser.resync", groupId: opened.session.id }));
+    await ready;
+    const oldCommands = runtime.receivedCommands().length;
+    for (let index = 0; index < oldCommands; index++) await runtime.nextCommand();
+    const startActing = a.messages.length;
+    const oldActing = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-presence" &&
+        message.sessions.some((row) => row.sessionId === opened.session.id && row.acting),
+    );
+    const nextActing = waitForBrowser(
+      a.socket,
+      (message) =>
+        message.type === "host.browser-groups" &&
+        message.stream.op === "change" &&
+        message.stream.update?.some((row) => row.id === opened.session.id && row.acting) === true,
+    );
+    const request = cdp.request({ method: "Target.getTargets", parameters: {} });
+    const command = await withTimeout(runtime.nextCommand(), 5000, {
+      timeoutError: () => new Error("Acting command never reached the runtime"),
+    });
+    expect(command).toMatchObject({
+      type: "cdp.command",
+      command: { method: "Target.getTargets" },
+    });
+    runtime.sendServer(
+      { type: "cdp.result", requestId: command.requestId, result: { targetInfos: [] } },
+      opened.session.id,
+    );
+    await Promise.all([request, oldActing, nextActing]);
+    const actingFrames = a.messages.slice(startActing);
+    const actingBytes = {
+      before: actingFrames
+        .filter((frame) => frame.type === "host.browser-presence")
+        .reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+      after: actingFrames
+        .filter((frame) => frame.type === "host.browser-groups")
+        .reduce((sum, frame) => sum + keyedStreamBytes(frame), 0),
+    };
+    cdp.close();
+    await run.complete();
+    await Promise.all([a.close(), b.close(), c.close()]);
+    const tabs = new WorkspaceTabStore(host.store.database);
+    for (let index = 0; index < 142; index++) {
+      const id = createBrowserSessionId();
+      await host.store.createBrowserSession({
+        id,
+        origin: "workspace",
+        placementKey: `runner:${runtime.runnerId}:browser`,
+        profileId: null,
+        runnerId: runtime.runnerId,
+        runtimeId: "browser-runtime-integration",
+        workspaceId,
+      });
+      await tabs.recordChanges(
+        id,
+        Array.from({ length: index < 80 ? 11 : 10 }, (_, order) => ({
+          id: BrowserSurfaceIdSchema.parse(`saved_${index}_${order}`),
+          title: "界".repeat(256),
+          url: `https://saved.example/${index}/${order}`,
+          order,
+          openerId: null,
+        })),
+        [],
+      );
+      await host.store.database
+        .updateTable("browserSessions")
+        .set({ state: "closed" })
+        .where("id", "=", id)
+        .execute();
+    }
+    expect(await tabs.groupIds(host.ownerId)).toHaveLength(150);
+    expect(await tabs.openTabs(await tabs.groupIds(host.ownerId))).toHaveLength(2000);
+    const reads = vi.spyOn(WorkspaceTabStore.prototype, "openTabs");
+    const large = await host.runtime.browser.bootstrap(host.ownerId);
+    expect(large.groups?.complete).toBe(false);
+    expect(large.tabs?.at(-1)?.complete).toBe(false);
+    expect(keyedStreamBytes(large.groups)).toBeLessThanOrEqual(64 * 1024);
+    expect(keyedStreamBytes(large.tabs)).toBeLessThanOrEqual(64 * 1024);
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    expect(reads.mock.calls.length).toBeLessThan(150);
+    expect(reads.mock.calls.every(([ids]) => ids.length === 1)).toBe(true);
+    const largeBefore = { sessions: large.sessions, workspaceTabs: large.workspaceTabs };
+    const report = {
+      samples,
+      acting: actingBytes,
+      large: {
+        before: keyedStreamBytes(largeBefore),
+        after: keyedStreamBytes({ groups: large.groups, tabs: large.tabs }),
+        additiveTotal: keyedStreamBytes(large),
+        strippedSessionCatalogs: large.sessions.every((row) => !row.tabCatalog),
+        strippedWorkspaceTabs: large.workspaceTabs?.every((row) => !row.tabs),
+        groupPrefix: keyedStreamBytes(large.groups),
+        tabPrefix: keyedStreamBytes(large.tabs),
+      },
+    };
+    const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
+    if (directory) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, "keyed-client-streams.json"),
+        JSON.stringify(report, null, 2),
+      );
+    }
+  });
   it("projects durable lineage changes only for connected viewers, with a bare fallback for a missing read", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());

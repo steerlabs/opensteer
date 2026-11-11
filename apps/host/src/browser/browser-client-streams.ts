@@ -5,6 +5,7 @@ import {
   type BrowserGroupRow,
   type BrowserTabRecord,
   type BrowserTabRow,
+  type HostedBrowserBootstrap,
 } from "@opensteer/protocol/browser";
 import {
   equal,
@@ -34,6 +35,7 @@ export interface BrowserLiveRows {
   iconRef(id: string): string | null;
 }
 export interface BrowserRowPorts {
+  authorityGeneration(): number;
   groupIds(userId: UserId): Promise<readonly BrowserSessionId[]>;
   readGroups(
     userId: UserId,
@@ -66,10 +68,32 @@ function current(facts: BrowserGroupFacts): boolean {
   return facts.state === "starting" || facts.state === "ready" || facts.state === "closing";
 }
 
+function prefix<Row extends { id: string }>(
+  rows: ReadonlyMap<string, Row>,
+  budget: number,
+  envelope: object,
+) {
+  const overhead = keyedStreamBytes(envelope);
+  if (budget <= overhead + 32) return { rows: [] as Row[], complete: rows.size === 0 };
+  const publisher = new KeyedStreamPublisher<Row, Record<string, never>>({
+    ids: () => rows.keys(),
+    read: (id) => rows.get(id),
+    meta: () => ({}),
+    targetBytes: budget,
+    envelopeBytes: overhead,
+  });
+  const begin = publisher.next()!;
+  publisher.settled(begin, true);
+  const frame = publisher.next();
+  const packed = frame?.op === "rows" ? frame.rows : [];
+  return { rows: packed, complete: packed.length === rows.size };
+}
+
 export class BrowserRowSource {
   readonly #projections = new Map<UserId, Projection>();
   readonly #durable = new Map<BrowserSessionId, Map<string, WorkspaceTabStreamRow>>();
   readonly #tabReads = new Map<BrowserSessionId, Promise<void>>();
+  readonly #readingGroups = new Map<BrowserSessionId, number>();
   readonly #tabVersions = new Map<BrowserSessionId, number>();
   readonly #sessionGroups = new Map<BrowserSessionId, BrowserSessionId>();
   #closed = false;
@@ -127,36 +151,66 @@ export class BrowserRowSource {
     );
   }
   #prune(): void {
-    const held = new Set([...this.#projections.values()].flatMap((p) => [...p.facts.keys()]));
+    const held = new Set([
+      ...this.#readingGroups.keys(),
+      ...[...this.#projections.values()].flatMap((p) => [...p.facts.keys()]),
+    ]);
     for (const id of this.#durable.keys()) if (!held.has(id)) this.#durable.delete(id);
     for (const [id, groupId] of this.#sessionGroups)
       if (!held.has(groupId)) this.#sessionGroups.delete(id);
     for (const id of this.#tabVersions.keys())
       if (!held.has(id) && !this.#tabReads.has(id)) this.#tabVersions.delete(id);
   }
-  async #loadTabs(groupId: BrowserSessionId): Promise<void> {
-    const pending = this.#tabReads.get(groupId);
-    if (pending) return pending;
-    const work = (async () => {
-      let version: number;
-      let rows: readonly WorkspaceTabStreamRow[];
-      do {
-        version = this.#tabVersions.get(groupId) ?? 0;
-        rows = await this.ports.readTabs([groupId]);
-      } while (!this.#closed && version !== (this.#tabVersions.get(groupId) ?? 0));
-      if (this.#closed) return;
-      this.#durable.set(groupId, new Map(rows.map((row) => [row.id, row])));
-    })().finally(() => {
-      this.#tabReads.delete(groupId);
+  async #reading<T>(ids: readonly BrowserSessionId[], operation: () => Promise<T>): Promise<T> {
+    for (const id of ids) this.#readingGroups.set(id, (this.#readingGroups.get(id) ?? 0) + 1);
+    try {
+      return await operation();
+    } finally {
+      for (const id of ids) {
+        const count = (this.#readingGroups.get(id) ?? 1) - 1;
+        if (count) this.#readingGroups.set(id, count);
+        else this.#readingGroups.delete(id);
+      }
+      this.#prune();
+    }
+  }
+  async #loadTabs(groupIds: readonly BrowserSessionId[]): Promise<void> {
+    const pending = groupIds.flatMap((id) => {
+      const work = this.#tabReads.get(id);
+      return work ? [work] : [];
     });
-    this.#tabReads.set(groupId, work);
-    return work;
+    const fresh = groupIds.filter((id) => !this.#tabReads.has(id));
+    if (!fresh.length) {
+      await Promise.all(pending);
+      return;
+    }
+    const work = (async () => {
+      let ids = fresh;
+      while (ids.length && !this.#closed) {
+        const versions = new Map(ids.map((id) => [id, this.#tabVersions.get(id) ?? 0]));
+        const rows = await this.ports.readTabs(ids);
+        if (this.#closed) return;
+        const maps = new Map(ids.map((id) => [id, new Map<string, WorkspaceTabStreamRow>()]));
+        for (const row of rows) maps.get(row.groupId)?.set(row.id, row);
+        for (const [id, tabs] of maps)
+          if (versions.get(id) === (this.#tabVersions.get(id) ?? 0)) this.#durable.set(id, tabs);
+        ids = ids.filter((id) => versions.get(id) !== (this.#tabVersions.get(id) ?? 0));
+      }
+    })().finally(() => {
+      for (const id of fresh) this.#tabReads.delete(id);
+    });
+    for (const id of fresh) this.#tabReads.set(id, work);
+    await Promise.all([work, ...pending]);
   }
   #live(facts: BrowserGroupFacts): BrowserLiveRows | undefined {
     return current(facts) ? this.ports.live(facts.sessionId) : undefined;
   }
-  #tab(facts: BrowserGroupFacts, id: string): Omit<BrowserTabRow, "occupants"> | undefined {
-    const durable = this.#durable.get(facts.id)?.get(id);
+  #tab(
+    facts: BrowserGroupFacts,
+    id: string,
+    durableTabs = this.#durable.get(facts.id),
+  ): Omit<BrowserTabRow, "occupants"> | undefined {
+    const durable = durableTabs?.get(id);
     const live = this.#live(facts);
     const record = live?.records.get(id);
     if (!durable && !record) return;
@@ -190,7 +244,8 @@ export class BrowserRowSource {
     const live = this.#live(facts);
     const row: BrowserGroupRow = {
       ...facts,
-      tabCount: projection.tabs.get(facts.id)?.size ?? 0,
+      tabCount:
+        projection.tabs.get(facts.id)?.size ?? Math.max(facts.tabCount, live?.records.size ?? 0),
       inventoryRevision: live?.inventoryRevision ?? 0,
       navigation: live?.navigation ?? false,
       acting: live?.acting ?? false,
@@ -293,6 +348,7 @@ export class BrowserRowSource {
     rows: readonly WorkspaceTabStreamRow[],
     closedIds: readonly string[],
   ): void {
+    if (!rows.length && !closedIds.length) return;
     const durable = this.#durable.get(groupId);
     if (!durable && !this.#tabReads.has(groupId)) return;
     this.#tabVersions.set(groupId, (this.#tabVersions.get(groupId) ?? 0) + 1);
@@ -321,32 +377,34 @@ export class BrowserRowSource {
       this.#sessionGroups.get(sessionId) ??
       (await this.ports.groupId(sessionId));
     if (!id) return;
-    if (options.tabs) this.#tabVersions.set(id, (this.#tabVersions.get(id) ?? 0) + 1);
-    const tabs = options.tabs ? this.#loadTabs(id) : null;
-    await Promise.all([
-      ...(tabs ? [tabs] : []),
-      ...[...this.#projections.values()].map((projection) => {
-        const generation = projection.generation;
-        const work = projection.tail
-          .catch(() => undefined)
-          .then(async () => {
-            if (!this.#valid(projection, generation)) return;
-            const rows = await this.ports.readGroups(projection.userId, [id]);
-            if (!this.#valid(projection, generation)) return;
-            const facts = rows[0];
-            if (!facts) {
-              this.#remove(projection, id);
-              return;
-            }
-            if (tabs) await tabs;
-            else if (!this.#durable.has(id)) await this.#loadTabs(id);
-            if (this.#valid(projection, generation)) this.#install(projection, facts, options.tabs);
-          });
-        projection.tail = work;
-        return work;
-      }),
-    ]);
-    this.#prune();
+    await this.#reading([id], async () => {
+      if (options.tabs) this.#tabVersions.set(id, (this.#tabVersions.get(id) ?? 0) + 1);
+      let tabs: Promise<void> | undefined;
+      await Promise.all(
+        [...this.#projections.values()].map((projection) => {
+          const generation = projection.generation;
+          const work = projection.tail
+            .catch(() => undefined)
+            .then(async () => {
+              if (projection.held) await projection.ready;
+              if (!this.#valid(projection, generation)) return;
+              const rows = await this.ports.readGroups(projection.userId, [id]);
+              if (!this.#valid(projection, generation)) return;
+              const facts = rows[0];
+              if (!facts) {
+                this.#remove(projection, id);
+                return;
+              }
+              if (options.tabs || !this.#durable.has(id)) tabs ??= this.#loadTabs([id]);
+              if (tabs) await tabs;
+              if (this.#valid(projection, generation))
+                this.#install(projection, facts, options.tabs);
+            });
+          projection.tail = work;
+          return work;
+        }),
+      );
+    });
   }
   reauthorize(userId: UserId): Promise<void> {
     const projection = this.#projections.get(userId);
@@ -366,17 +424,95 @@ export class BrowserRowSource {
       if (!this.#valid(projection, generation)) return;
       const visible = new Set(facts.map((row) => row.id));
       for (const id of projection.facts.keys()) if (!visible.has(id)) this.#remove(projection, id);
-      for (const row of facts) {
-        if (!this.#durable.has(row.id)) await this.#loadTabs(row.id);
-        if (!this.#valid(projection, generation)) return;
-        this.#install(projection, row);
-      }
+      await this.#reading(
+        facts.map((row) => row.id),
+        async () => {
+          await this.#loadTabs(
+            facts.filter((row) => !this.#durable.has(row.id)).map((row) => row.id),
+          );
+          if (this.#valid(projection, generation))
+            for (const row of facts) this.#install(projection, row);
+        },
+      );
+      if (!this.#valid(projection, generation)) return;
       projection.held = false;
       this.changed(projection, null, [], false);
       this.#prune();
     })();
     projection.ready = work;
     return work;
+  }
+  async bootstrap(
+    userId: UserId,
+  ): Promise<Required<Pick<HostedBrowserBootstrap, "groups" | "tabs">>> {
+    if (this.#closed) return { groups: { rows: [], complete: true }, tabs: [] };
+    const authority = this.ports.authorityGeneration();
+    const budget = 64 * 1024;
+    const cached = this.#projections.get(userId);
+    const groups = new Map<BrowserSessionId, BrowserGroupRow>();
+    const facts = new Map<BrowserSessionId, BrowserGroupFacts>();
+    const ids =
+      cached && !cached.held ? [...cached.groups.keys()] : await this.ports.groupIds(userId);
+    let bytes = 0;
+    let exhausted = true;
+    for (const id of ids) {
+      const row = cached && !cached.held ? cached.groups.get(id) : undefined;
+      let group = row;
+      if (!group) {
+        const read = (await this.ports.readGroups(userId, [id]))[0];
+        if (!read || (!current(read) && !read.tabCount)) continue;
+        facts.set(id, read);
+        const live = this.#live(read);
+        group = {
+          ...read,
+          tabCount: Math.max(read.tabCount, live?.records.size ?? 0),
+          inventoryRevision: live?.inventoryRevision ?? 0,
+          navigation: live?.navigation ?? false,
+          acting: live?.acting ?? false,
+          page: live?.page ?? null,
+        };
+      }
+      groups.set(id, group);
+      bytes += keyedStreamBytes(group) + 1;
+      if (bytes >= budget) {
+        exhausted = false;
+        break;
+      }
+    }
+    const packedGroups = prefix(groups, budget, { complete: false });
+    packedGroups.complete &&= exhausted;
+    const tabs: Required<HostedBrowserBootstrap>["tabs"] = [];
+    let used = 2;
+    for (const group of packedGroups.rows) {
+      let rows = cached && !cached.held ? cached.tabs.get(group.id) : undefined;
+      if (!rows) {
+        const durable = new Map(
+          (await this.ports.readTabs([group.id])).map((row) => [row.id, row]),
+        );
+        const read = facts.get(group.id)!;
+        rows = new Map();
+        for (const id of new Set([
+          ...durable.keys(),
+          ...(this.#live(read)?.records.keys() ?? []),
+        ])) {
+          const row = this.#tab(read, id, durable);
+          if (row)
+            rows.set(id, { ...row, occupants: this.ports.occupants(userId, group.sessionId, id) });
+        }
+        groups.set(group.id, { ...group, tabCount: rows.size });
+      }
+      const packed = prefix(rows, budget - used, { groupId: group.id, complete: false });
+      const entry = { groupId: group.id, ...packed };
+      if (keyedStreamBytes(entry) + used + (tabs.length ? 1 : 0) > budget) break;
+      tabs.push(entry);
+      used += keyedStreamBytes(entry) + (tabs.length > 1 ? 1 : 0);
+      if (!packed.complete) break;
+    }
+    if (authority !== this.ports.authorityGeneration()) return this.bootstrap(userId);
+    const finalGroups = prefix(groups, budget, { complete: false });
+    finalGroups.complete &&= exhausted;
+    const included = new Set(finalGroups.rows.map((row) => row.id));
+    return { groups: finalGroups, tabs: tabs.filter((entry) => included.has(entry.groupId)) };
   }
   reauthorizeAll(): Promise<void> {
     return Promise.all([...this.#projections.keys()].map((id) => this.reauthorize(id))).then(
@@ -389,6 +525,7 @@ export class BrowserRowSource {
     this.#durable.clear();
     this.#sessionGroups.clear();
     this.#tabVersions.clear();
+    this.#readingGroups.clear();
   }
 }
 
@@ -545,7 +682,8 @@ export class BrowserClientStreams {
             publisher.settled(frame, false);
             throw error;
           }
-          if (!publisher.pending) connection.pendingTabs.delete(groupId);
+          if (connection.tabs.get(groupId) === publisher && !publisher.pending)
+            connection.pendingTabs.delete(groupId);
           sent = true;
           break;
         }

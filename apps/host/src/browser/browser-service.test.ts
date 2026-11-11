@@ -2537,7 +2537,13 @@ describe("BrowserService", () => {
         targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: capable }),
         workspaceTabs: {
           list: async () => [],
-          recordChanges: async () => true,
+          groupIds: async () => [],
+          recordChanges: async (sessionId: BrowserSessionId) => ({
+            groupId: sessionId,
+            changed: true,
+            rows: [],
+            closedIds: [],
+          }),
           suspend: async () => undefined,
         } as unknown as WorkspaceTabStore,
       });
@@ -7393,7 +7399,12 @@ it("closes durable rows only on a change removal, never an interrupted or commit
   const ownerId = createId("user"),
     workspaceId = createId("workspace");
   const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-  const recordChanges = vi.fn(async () => true);
+  const recordChanges = vi.fn(async (sessionId: BrowserSessionId) => ({
+    groupId: sessionId,
+    changed: true,
+    rows: [],
+    closedIds: [],
+  }));
   const service = new BrowserService({
     ...nativeProfileOptions(),
     ...profileStateOptions,
