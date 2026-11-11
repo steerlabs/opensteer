@@ -463,17 +463,34 @@ export class SurfaceLedger {
         engine,
         bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
       };
-      const disposing = this.disposeRecord(record);
-      this.pageIds.delete(live.page);
-      this.releaseTarget?.(record.lastTargetId);
-      // Listeners are detached before the page ceases to be this tab's lease.
-      (record as TabRecord).live = null;
-      record.lease.endSleep(true);
-      this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
-      await Promise.all([disposing, live.page.close()]);
+      const suspend = () => {
+        if (this.records.get(id) !== record || record.live !== live) return;
+        if (record.lease.state === "closing") return;
+        if (record.documentId !== documentId)
+          record.restore = { url: record.url, engine: null, bytes: 0 };
+        void this.disposeRecord(record).catch(() => undefined);
+        this.pageIds.delete(live.page);
+        this.releaseTarget?.(live.targetId);
+        (record as TabRecord).live = null;
+        // A timed-out close can still finish after the lease returned to live.
+        record.lease.endSleep(true);
+        this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
+      };
+      live.page.offClose(live.onClose);
+      live.onClose = suspend;
+      live.page.onClose(suspend);
+      await withTimeout(live.page.close(), 2_000, {
+        timeoutError: () => new Error("Tab close timed out."),
+      });
+      if (record.live === live && !live.page.isClosed())
+        throw new Error("Tab close did not release its page.");
+      suspend();
       return true;
     } catch {
-      if (record.live === live && record.documentId === documentId) record.unrestorable = true;
+      if (record.live === live && record.documentId === documentId) {
+        record.unrestorable = true;
+        if (record.restore) record.restore = { url: record.url, engine: null, bytes: 0 };
+      }
       return false;
     } finally {
       if (record.lease.state === "sleeping") record.lease.endSleep(false);

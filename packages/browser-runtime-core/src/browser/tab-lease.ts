@@ -50,7 +50,8 @@ export class TabLease {
   }
 
   endSleep(committed: boolean): void {
-    if (this.state === "sleeping") this.state = committed ? "suspended" : "live";
+    if (this.state === "sleeping" || (committed && this.state === "live"))
+      this.state = committed ? "suspended" : "live";
     this.sleeping?.resolve();
     this.sleeping = null;
     this.changed();

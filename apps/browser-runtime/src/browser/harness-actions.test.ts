@@ -578,6 +578,74 @@ assert(JSON.stringify(await page.locator('#multi').selectOption([]))==='[]','mul
 });
 
 acceptance(
+  "sleep-audio",
+  "native frame media and Web Audio keep a server tab awake until playback stops",
+  async (kit) => {
+    const page = kit.ledger.binding(kit.surfaceId)!.page;
+    await kit.read(`(async () => {
+      const frame = document.createElement('iframe');
+      frame.id = 'audio-frame';
+      document.body.append(frame);
+      const audio = new frame.contentWindow.AudioContext();
+      frame.contentWindow.testAudio = audio;
+      const oscillator = audio.createOscillator();
+      oscillator.connect(audio.destination);
+      oscillator.start();
+      return audio.state;
+    })()`);
+    await (
+      await page.cdp()
+    ).send("Runtime.evaluate", {
+      expression: "document.querySelector('#audio-frame').contentWindow.testAudio.resume()",
+      userGesture: true,
+      awaitPromise: true,
+    });
+    expect(await page.keepAwake?.()).toBe("media");
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
+    await kit.read(
+      `document.querySelector('#audio-frame').contentWindow.testAudio.close().then(() => true)`,
+    );
+    expect(await page.keepAwake?.()).toBeNull();
+    const wav = Buffer.alloc(44 + 16_000);
+    wav.write("RIFF", 0);
+    wav.writeUInt32LE(wav.length - 8, 4);
+    wav.write("WAVEfmt ", 8);
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8_000, 24);
+    wav.writeUInt32LE(16_000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write("data", 36);
+    wav.writeUInt32LE(16_000, 40);
+    for (let i = 0; i < 8_000; i++)
+      wav.writeInt16LE(Math.round(10_000 * Math.sin((i * Math.PI) / 10)), 44 + 2 * i);
+    await (
+      await page.cdp()
+    ).send("Runtime.evaluate", {
+      expression: `(async () => {
+      const frame = document.querySelector('#audio-frame');
+      const media = frame.contentDocument.createElement('audio');
+      frame.contentWindow.testMedia = media;
+      media.loop = true; media.src = ${JSON.stringify(`data:audio/wav;base64,${wav.toString("base64")}`)};
+      frame.contentDocument.body.append(media);
+      await media.play();
+    })()`,
+      userGesture: true,
+      awaitPromise: true,
+    });
+    expect(await page.keepAwake?.()).toBe("media");
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(false);
+    await kit.read(`document.querySelector('#audio-frame').contentWindow.testMedia.pause();true`);
+    expect(await page.keepAwake?.()).toBeNull();
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    await kit.ledger.wake(kit.surfaceId);
+  },
+  "01",
+);
+
+acceptance(
   "sleep-resume",
   "--tab resumes the exact sleeping surface and attaches its new target",
   async (kit) => {

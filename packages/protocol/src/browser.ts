@@ -1086,6 +1086,7 @@ export const BrowserServerMessageSchema = z.union([
     type: z.literal("browser.surface"),
     surfaceId: BrowserSurfaceIdSchema,
     surface: BrowserViewerSurfaceSchema.nullable(),
+    icon: BrowserIconKeySchema.nullable().optional(),
   }),
   BaselineBrowserServerMessageSchema,
   PasskeyCeremonySchema,

@@ -14,6 +14,7 @@ const budgetShare = 0.25;
 const budgetReleaseShare = 0.85;
 const restoreBudgetBytes = 64 * 1024 ** 2;
 const sleepsPerPass = 8;
+const concurrentSleeps = 4;
 
 export interface SleepHost {
   readonly key: string;
@@ -79,8 +80,8 @@ export class TabSleeper {
         : 0)
     );
   }
-  private overBudget(): boolean {
-    const estimate = this.estimate();
+  private overBudget(pendingPages = 0): boolean {
+    const estimate = this.estimate() - pendingPages * pageEstimateBytes;
     const budget = this.budget();
     if (estimate > budget) this.releasing = true;
     if (estimate <= budget * budgetReleaseShare) this.releasing = false;
@@ -288,6 +289,7 @@ export class TabSleeper {
   private async pass(): Promise<void> {
     this.running = true;
     let attempted = 0;
+    const pending = new Set<Promise<void>>();
     try {
       const candidates = [...this.sessions].flatMap(([id, session]) =>
         [...session.ledger.policyRecords()]
@@ -300,6 +302,7 @@ export class TabSleeper {
           a.record.usedAt - b.record.usedAt,
       );
       for (const { id, session, record } of candidates) {
+        if (pending.size >= concurrentSleeps) await Promise.race(pending);
         if (attempted >= sleepsPerPass || this.closed) break;
         if (
           this.sessions.get(id) !== session ||
@@ -307,14 +310,18 @@ export class TabSleeper {
           this.blocked(id, record, Date.now())
         )
           continue;
-        if (this.deadline(session, record) > Date.now() && !this.overBudget()) continue;
-        const committed = await session.ledger.sleep(record.id, (next) =>
-          this.blocked(id, next, Date.now()),
-        );
-        if (!committed) this.nextProbe.set(record, Date.now() + quietMs);
-        this.trimRestore();
+        if (this.deadline(session, record) > Date.now() && !this.overBudget(pending.size)) continue;
+        const sleeping = session.ledger
+          .sleep(record.id, (next) => this.blocked(id, next, Date.now()))
+          .then((committed) => {
+            if (!committed) this.nextProbe.set(record, Date.now() + quietMs);
+            this.trimRestore();
+          })
+          .finally(() => pending.delete(sleeping));
+        pending.add(sleeping);
         attempted++;
       }
+      await Promise.all(pending);
       if (!this.closed && attempted < sleepsPerPass) {
         for (const host of this.retirementCandidates()) {
           if (this.closed || this.estimate() <= this.budget()) break;

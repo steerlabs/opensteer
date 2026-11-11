@@ -160,6 +160,62 @@ class TargetSocket implements WebSocketClient {
 }
 
 describe("BrowserWatchStore", () => {
+  it("resolves viewer icon references from its own connection and clears them on reconnect", () => {
+    const sockets: TargetSocket[] = [];
+    const store = new BrowserWatchStore(
+      () => {
+        const socket = new TargetSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      "watch",
+      undefined,
+      () => 0,
+    );
+    const release = store.retain(sessionId, surfaceId);
+    const key = "a".repeat(43);
+    const favicon = "data:image/png;base64,aWNvbg==";
+    const surface = {
+      id: surfaceId,
+      title: "Page",
+      url: "about:blank",
+      favicon: null,
+      state: "live",
+      documentId: "document",
+      geometryRevision: 1,
+      loading: false,
+      navigationFailed: false,
+      sizedByAgent: false,
+    };
+    try {
+      sockets[0]!.open();
+      sockets[0]!.admit();
+      sockets[0]!.receive({ type: "browser.tab.icon", key, favicon });
+      sockets[0]!.receive({ type: "browser.surface", surfaceId, surface, icon: key });
+      expect(store.surface(sessionId, surfaceId)?.favicon).toBe(favicon);
+      sockets[0]!.receive({
+        type: "browser.surface",
+        surfaceId,
+        surface: { ...surface, title: "Changed", loading: true, geometryRevision: 2 },
+        icon: key,
+      });
+      expect(store.surface(sessionId, surfaceId)).toMatchObject({
+        title: "Changed",
+        favicon,
+        loading: true,
+        geometryRevision: 2,
+      });
+      store.reconnect();
+      sockets[1]!.open();
+      sockets[1]!.admit();
+      sockets[1]!.receive({ type: "browser.surface", surfaceId, surface, icon: key });
+      expect(store.surface(sessionId, surfaceId)).toBeUndefined();
+      expect(sockets[1]!.closes).not.toEqual([]);
+    } finally {
+      release();
+      store.dispose();
+    }
+  });
   describe("raster demand", () => {
     const flush = async () => {
       for (let turn = 0; turn < 3; turn++) await Promise.resolve();

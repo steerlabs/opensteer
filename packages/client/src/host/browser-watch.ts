@@ -492,6 +492,7 @@ export class BrowserWatchStore {
     socket.binaryType = "arraybuffer";
     this.#set(target, { ...this.#kept(target), status: "connecting" });
     let synchronized = false;
+    const icons = new Map<string, string>();
     const openedAt = Date.now();
     const forgetFailures = () => {
       if (Date.now() - openedAt >= healthySocketMs) target.unreadableFrames = 0;
@@ -531,7 +532,7 @@ export class BrowserWatchStore {
         if (typeof data === "string") {
           if (data.length > 1024 * 1024)
             return fail(new Error("Browser message exceeds its byte limit."), true);
-          const message = BrowserServerMessageSchema.parse(JSON.parse(data));
+          let message = BrowserServerMessageSchema.parse(JSON.parse(data));
           forgetFailures();
           if (message.type === "browser.snapshot") {
             if (
@@ -552,12 +553,20 @@ export class BrowserWatchStore {
               status: target.pictureHolds ? "connecting" : "live",
             });
           } else if (!synchronized) throw new Error("Browser event arrived before its snapshot.");
-          else if (message.type === "browser.surface") {
+          else if (message.type === "browser.tab.icon") {
+            icons.set(message.key, message.favicon);
+            return;
+          } else if (message.type === "browser.surface") {
             if (
               message.surfaceId !== target.surfaceId ||
               (message.surface && message.surface.id !== target.surfaceId)
             )
               throw new Error("The surface metadata does not match the subscribed target.");
+            if (message.surface && message.icon !== undefined) {
+              const favicon = message.icon === null ? null : icons.get(message.icon);
+              if (favicon === undefined) throw new Error("The viewer icon has not been delivered.");
+              message = { ...message, surface: { ...message.surface, favicon } };
+            }
             const surfaces =
               this.#surfaces.get(target.sessionId) ?? new Map<string, BrowserViewerSurface>();
             if (message.surface) surfaces.set(target.surfaceId, message.surface);

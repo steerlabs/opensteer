@@ -168,6 +168,27 @@ describe("TabSleeper", () => {
       await f.close();
     }
   });
+  it("suspends the rest of a pass while one page close never answers", async () => {
+    const f = await fixture();
+    const close = vi.spyOn(f.page, "close").mockImplementation(() => new Promise(() => {}));
+    try {
+      for (let i = 1; i < 8; i++) await f.ledger.openSurface();
+      for (const record of f.ledger.policyRecords()) {
+        record.origin = "agent";
+        record.personUsed = false;
+      }
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.record.live).not.toBeNull();
+      expect([...f.ledger.policyRecords()].filter((record) => record.live)).toEqual([f.record]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.record.lease.state).toBe("live");
+      expect(f.record.live).not.toBeNull();
+    } finally {
+      close.mockRestore();
+      await f.close();
+    }
+  });
   it("uses one timer for 500 live tabs and none after removal", async () => {
     const f = await fixture();
     try {

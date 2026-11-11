@@ -31,6 +31,70 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
+  it.each(["reject", "timeout"])(
+    "retains a %s close and suspends a late close without retiring the tab",
+    async (failure) => {
+      vi.useFakeTimers();
+      const page = new FakePage({ url: "https://close.test/" });
+      page.captureRestore = async () => ({ saved: true });
+      const release = vi.fn();
+      const ledger = new SurfaceLedger(new FakeContext([page]), { releaseTarget: release });
+      await ledger.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const record = [...ledger.policyRecords()][0]!;
+      const live = record.live!;
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((event) => events.push(event));
+      const closing = Promise.withResolvers<void>();
+      const close = vi.spyOn(page, "close").mockImplementation(() => {
+        return closing.promise;
+      });
+      let lateClose: (() => void) | undefined;
+      vi.spyOn(page, "onClose").mockImplementation((listener) => {
+        lateClose = listener;
+      });
+      try {
+        let outcome: boolean | undefined;
+        void ledger
+          .sleep(record.id, () => null)
+          .then((value) => {
+            outcome = value;
+          });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(close).toHaveBeenCalledOnce();
+        expect(record.live).toBe(live);
+        expect(record.lease.state).toBe("sleeping");
+        expect(release).not.toHaveBeenCalled();
+        expect(ledger.stateOf(record.id)).toBe("live");
+        if (failure === "reject") {
+          closing.reject(new Error("Close refused"));
+          await vi.advanceTimersByTimeAsync(0);
+        } else await vi.advanceTimersByTimeAsync(2_000);
+        expect(outcome).toBe(false);
+        expect(record.live).toBe(live);
+        expect(record.lease.state).toBe("live");
+        expect(record.restore).toMatchObject({ engine: null, bytes: 0 });
+        expect(release).not.toHaveBeenCalled();
+        page.navigate("https://after-close.test/", "Still live");
+        await vi.advanceTimersByTimeAsync(0);
+        lateClose!();
+        expect(ledger.stateOf(record.id)).toBe("suspended");
+        expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId);
+        const next = await ledger.wake(record.id);
+        expect(next.surface.url).toBe("https://after-close.test/");
+        lateClose!();
+        expect(ledger.binding(record.id)?.page).toBe(next.page);
+        expect(
+          events.filter((event) => event.type === "changed" && event.change === "closed"),
+        ).toEqual([]);
+      } finally {
+        closing.resolve();
+        close.mockRestore();
+        await ledger.close();
+        vi.useRealTimers();
+      }
+    },
+  );
   it("rechecks engine protections after capture and allows a noopener sibling", async () => {
     const page = new FakePage({ url: "https://parent.test/" });
     const popup = new FakePage({ url: "https://popup.test/", opener: page });

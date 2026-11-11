@@ -717,6 +717,24 @@ export class BrowserService {
   readonly #runPlaces: RunPlaceRecorder;
   readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
+  readonly #personUseGroups = new Map<
+    BrowserSessionId,
+    {
+      tabs: Set<BrowserSurfaceId>;
+      ended: boolean;
+      ownerId: UserId;
+      workspaceId: WorkspaceId;
+      profileId: BrowserProfileId | null;
+    }
+  >();
+  #endPersonUse(groupId: BrowserSessionId): void {
+    const group = this.#personUseGroups.get(groupId);
+    if (group) {
+      group.ended = true;
+      group.tabs.clear();
+    }
+    this.#personUseGroups.delete(groupId);
+  }
   readonly #requestPins = new Map<
     string,
     readonly {
@@ -1145,6 +1163,9 @@ export class BrowserService {
   async closeWorkspaceTab(ownerId: UserId, tabId: BrowserSurfaceId, person = true) {
     const row = await this.#workspaceTabs?.close(ownerId, tabId, person);
     if (!row) throw new OpensteerError({ code: "not_found", message: "Browser tab not found." });
+    const marks = this.#personUseGroups.get(row.groupId);
+    marks?.tabs.delete(tabId);
+    if (marks?.tabs.size === 0) this.#personUseGroups.delete(row.groupId);
     // Closing commits before joining activation's turn, so a late open must dispose its page.
     await this.#serializeKey(`group:${row.groupId}`, async () => {
       const session = await this.#workspaceTabs!.session(ownerId, row.groupId);
@@ -1256,6 +1277,8 @@ export class BrowserService {
       `profile-admission:${input.profileId}`,
       () => this.#repository.deleteBrowserProfile(input),
     );
+    for (const [id, group] of this.#personUseGroups)
+      if (group.profileId === input.profileId) this.#endPersonUse(id);
     this.invalidatePlaceAuthority();
     const stops = await Promise.allSettled(
       sessionIds.map((sessionId) => this.stop(input.ownerId, sessionId)),
@@ -1287,6 +1310,8 @@ export class BrowserService {
     profiles: readonly { id: BrowserProfileId; ownerId: UserId }[],
   ): Promise<void> {
     this.invalidatePlaceAuthority();
+    for (const [id, group] of this.#personUseGroups)
+      if (profiles.some((profile) => profile.id === group.profileId)) this.#endPersonUse(id);
     for (const { id } of profiles) await this.fenceLocalProfile(id);
     for (const ownerId of new Set(profiles.map((profile) => profile.ownerId)))
       await this.#ownerProfilesChanged(ownerId);
@@ -3916,6 +3941,14 @@ export class BrowserService {
         throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
       }
       await this.#workspaceTabs?.closeLineage(sessionId);
+      const groupId =
+        this.#brokers.get(sessionId)?.groupId ??
+        (await this.#workspaceTabs?.lineageForSession(sessionId)) ??
+        sessionId;
+      const latest = this.#workspaceTabs
+        ? await this.#workspaceTabs.session(ownerId, groupId)
+        : persisted;
+      if (!latest || latest.id === sessionId) this.#endPersonUse(groupId);
       await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       await this.#stopRecord(persisted);
     });
@@ -3946,6 +3979,8 @@ export class BrowserService {
   }
 
   async revokeWorkspaceUser(ownerId: UserId, workspaceId: WorkspaceId): Promise<void> {
+    for (const [id, group] of this.#personUseGroups)
+      if (group.ownerId === ownerId && group.workspaceId === workspaceId) this.#endPersonUse(id);
     this.revokePlaceReader(ownerId, workspaceId);
     this.invalidatePlaceAuthority(workspaceId);
     const sessions = await this.#repository.listBrowserSessions(ownerId);
@@ -3973,6 +4008,7 @@ export class BrowserService {
   abandonSession(sessionId: BrowserSessionId): void {
     const broker = this.#brokers.get(sessionId);
     if (!broker) return;
+    this.#endPersonUse(broker.groupId);
     this.#brokers.delete(sessionId);
     void broker.stop().catch(() => undefined);
   }
@@ -4007,6 +4043,7 @@ export class BrowserService {
       await Promise.allSettled(this.#historyTails.values());
       await this.#workspaceTabs?.suspend();
       this.#brokers.clear();
+      for (const id of this.#personUseGroups.keys()) this.#endPersonUse(id);
       this.#requestPins.clear();
     })();
     return this.#closePromise;
@@ -4241,9 +4278,24 @@ export class BrowserService {
       throw browserStartUnavailable(correlationId, stage, error);
     }
     let readinessBudget = input.operationBudget;
+    const groupId = input.tabGroupId ?? sessionId;
+    const personUse = this.#personUseGroups.get(groupId) ?? {
+      tabs: new Set<BrowserSurfaceId>(),
+      ended: false,
+      ownerId: input.ownerId,
+      workspaceId: record.workspaceId,
+      profileId: record.profileId,
+    };
     const broker = withoutDatabaseOperationSignal(
       () =>
         new HostedBrowserBroker({
+          personUse,
+          onPersonUseChanged: () => {
+            if (personUse.ended) return;
+            if (personUse.tabs.size) this.#personUseGroups.set(groupId, personUse);
+            else if (this.#personUseGroups.get(groupId) === personUse)
+              this.#personUseGroups.delete(groupId);
+          },
           workspaceTabRestoreVersion: workspaceTabRestore,
           ...(workspaceTabRestore && input.initialSurfaceId
             ? { savedTabIds: [input.initialSurfaceId, ...(input.dormantSurfaceIds ?? [])] }
@@ -4325,6 +4377,7 @@ export class BrowserService {
             this.#sessionProfiles.delete(sessionId);
             this.#holdings.delete(sessionId);
             this.#announcedPresence.delete(sessionId);
+            if (!workspaceTabRestore) this.#endPersonUse(groupId);
           },
           sessionId,
           socket,
@@ -4801,6 +4854,8 @@ interface PendingStateImport {
 }
 
 interface HostedBrowserBrokerOptions {
+  readonly personUse?: { tabs: Set<BrowserSurfaceId>; ended: boolean };
+  readonly onPersonUseChanged?: () => void;
   readonly readSessionState: () => Promise<
     Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
   >;
@@ -4846,7 +4901,7 @@ interface HostedBrowserBrokerOptions {
   readonly socket: BrowserRuntimeConnection;
 }
 
-class HostedBrowserBroker {
+export class HostedBrowserBroker {
   readonly profileId: BrowserProfileId | null;
   readonly #historyWrite: HostedBrowserBrokerOptions["historyWrite"];
   readonly #historyNavigations = new Map<
@@ -5088,9 +5143,15 @@ class HostedBrowserBroker {
   #sessionStateTimer: NodeJS.Timeout | undefined;
   #sessionStateGeneration = 0;
   #lastSessionState: string | undefined;
-  readonly #personUsed = new Set<BrowserSurfaceId>();
+  readonly #personUse: { tabs: Set<BrowserSurfaceId>; ended: boolean };
+  readonly #pendingPersonUse: Set<BrowserSurfaceId>;
+  readonly #onPersonUseChanged: () => void;
+  #sessionStateSending: Promise<void> | undefined;
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.#personUse = options.personUse ?? { tabs: new Set(), ended: false };
+    this.#pendingPersonUse = new Set(this.#personUse.tabs);
+    this.#onPersonUseChanged = options.onPersonUseChanged ?? (() => undefined);
     this.#readSessionState = options.readSessionState;
     this.#restoreTabs = options.workspaceTabRestoreVersion === true;
     this.#savedTabIds = options.savedTabIds;
@@ -5161,8 +5222,12 @@ class HostedBrowserBroker {
   }
 
   async markPersonUsed(surfaceId: BrowserSurfaceId): Promise<void> {
-    if (!this.#tabs.rows.has(surfaceId)) return;
-    this.#personUsed.add(surfaceId);
+    if (!this.live || !this.#tabs.rows.has(surfaceId) || this.#personUse.ended) return;
+    if (!this.#personUse.tabs.has(surfaceId)) {
+      this.#personUse.tabs.add(surfaceId);
+      this.#pendingPersonUse.add(surfaceId);
+      this.#onPersonUseChanged();
+    }
     this.#sessionStateGeneration++;
     await this.#sendSessionState();
   }
@@ -5177,7 +5242,22 @@ class HostedBrowserBroker {
     this.#sessionStateTimer.unref();
   }
 
-  async #sendSessionState(): Promise<void> {
+  #sendSessionState(): Promise<void> {
+    if (this.#sessionStateSending) return this.#sessionStateSending;
+    const send = async () => {
+      let generation: number;
+      do {
+        generation = this.#sessionStateGeneration;
+        await this.#writeSessionState();
+      } while (this.live && generation !== this.#sessionStateGeneration);
+    };
+    this.#sessionStateSending = send().finally(() => {
+      this.#sessionStateSending = undefined;
+    });
+    return this.#sessionStateSending;
+  }
+
+  async #writeSessionState(): Promise<void> {
     if (!this.live || this.#snapshot?.surfaceState !== 1) return;
     const generation = this.#sessionStateGeneration;
     let facts: Awaited<ReturnType<HostedBrowserBrokerOptions["readSessionState"]>>;
@@ -5197,14 +5277,16 @@ class HostedBrowserBroker {
       if (id && this.#tabs.rows.has(id))
         (outlet.mode === "control" ? viewed : pinned).add(BrowserSurfaceIdSchema.parse(id));
     }
-    let message = {
+    let message: Extract<BrowserClientMessage, { type: "session.state" }> = {
       type: "session.state" as const,
       ...facts,
       viewed: [...viewed].sort(),
-      personUsed: [...this.#personUsed].sort(),
+      personUsed: [],
       pinned: [...pinned].sort(),
     };
-    if (keyedStreamBytes(message) > keyedStreamHardCapBytes)
+    let markBytes = 0;
+    for (const id of this.#pendingPersonUse) markBytes = Math.max(markBytes, keyedStreamBytes(id));
+    if (keyedStreamBytes(message) + markBytes > keyedStreamHardCapBytes)
       message = {
         type: "session.state",
         runs: facts.runs,
@@ -5214,9 +5296,34 @@ class HostedBrowserBroker {
         keepAwake: true,
       };
     const encoded = JSON.stringify(message);
-    if (encoded === this.#lastSessionState) return;
-    await this.#sendCommand(message);
-    this.#lastSessionState = encoded;
+    const baseBytes = keyedStreamBytes(message);
+    const send = async (ids: BrowserSurfaceId[]) => {
+      ids = this.#personUse.ended
+        ? []
+        : ids.filter((id) => this.#personUse.tabs.has(id) && this.#tabs.rows.has(id));
+      await this.#sendCommand({ ...message, personUsed: ids });
+      for (const id of ids) this.#pendingPersonUse.delete(id);
+      this.#lastSessionState = encoded;
+    };
+    let ids: BrowserSurfaceId[] = [];
+    let bytes = baseBytes;
+    for (const id of this.#pendingPersonUse) {
+      if (this.#personUse.ended || !this.#personUse.tabs.has(id)) {
+        this.#pendingPersonUse.delete(id);
+        continue;
+      }
+      if (!this.#tabs.rows.has(id)) continue;
+      const addition = keyedStreamBytes(id) + (ids.length ? 1 : 0);
+      if (bytes + addition > keyedStreamHardCapBytes) {
+        await send(ids);
+        if (!this.live || generation !== this.#sessionStateGeneration) return;
+        ids = [];
+        bytes = baseBytes;
+      }
+      bytes += keyedStreamBytes(id) + (ids.length ? 1 : 0);
+      ids.push(id);
+    }
+    if (ids.length || encoded !== this.#lastSessionState) await send(ids);
   }
 
   async #sendSavedTabs(): Promise<void> {
@@ -5961,7 +6068,8 @@ class HostedBrowserBroker {
       }
       for (const id of changes.removed) {
         const tabId = BrowserSurfaceIdSchema.parse(id);
-        this.#personUsed.delete(tabId);
+        this.#personUse.tabs.delete(tabId);
+        this.#pendingPersonUse.delete(tabId);
         this.#passkeys?.documentChanged(tabId);
         this.#editingContexts.delete(tabId);
         this.#dialogs.delete(tabId);
@@ -5972,6 +6080,15 @@ class HostedBrowserBroker {
         }
       }
       const active = this.#tabs.meta?.activeId ?? null;
+      if (!this.#runtimeReady) {
+        const saved = new Set(this.#savedTabIds);
+        for (const id of this.#personUse.tabs)
+          if (!this.#tabs.rows.has(id) && !saved.has(id)) {
+            this.#personUse.tabs.delete(id);
+            this.#pendingPersonUse.delete(id);
+          }
+      }
+      this.#onPersonUseChanged();
       this.#surfaces = [...this.#tabs.rows.values()].map((row) => {
         const { icon, ...surface } = row;
         return {
@@ -6008,7 +6125,12 @@ class HostedBrowserBroker {
         if (consumer.surfaceId && changedIds.has(consumer.surfaceId))
           this.#sendViewerSurface(consumer);
       }
-      if (previousActive !== active || changes.removed.length) this.refreshSessionState();
+      if (
+        previousActive !== active ||
+        changes.removed.length ||
+        changes.added.some((id) => this.#pendingPersonUse.has(BrowserSurfaceIdSchema.parse(id)))
+      )
+        this.refreshSessionState();
       return stream.op === "end";
     } else if (message.type === "browser.dialog.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
@@ -6217,7 +6339,17 @@ class HostedBrowserBroker {
       canGoForward: _forward,
       ...surface
     } = row;
-    outlet.sendSurface(row.id, { ...surface, favicon: this.#surfaceIcon(row)?.favicon ?? null });
+    const icon = this.#surfaceIcon(row);
+    outlet.sendSurface(
+      row.id,
+      { ...surface, favicon: null },
+      icon
+        ? {
+            key: row.icon ?? createHash("sha256").update(icon.favicon).digest("base64url"),
+            favicon: icon.favicon,
+          }
+        : null,
+    );
   }
 
   #handleConsumerFrame(
@@ -6995,7 +7127,8 @@ const browserFrameRateEstimateMs = 10_000;
 export class BrowserConsumerOutlet {
   #surfaceLast: string | null = null;
   #streamState: "admitted" | "capacity" | null = null;
-  #surfacePending: string | null = null;
+  #surfacePending: { data: string; icon: { key: string; favicon: string } | null } | null = null;
+  readonly #sentIcons = new Set<string>();
   #surfaceSending = false;
   frameWindow = false;
   #window = 1;
@@ -7121,12 +7254,21 @@ export class BrowserConsumerOutlet {
     ).catch(() => undefined);
   }
 
-  sendSurface(surfaceId: string, surface: BrowserViewerSurface | null): void {
+  sendSurface(
+    surfaceId: string,
+    surface: BrowserViewerSurface | null,
+    icon: { key: string; favicon: string } | null = null,
+  ): void {
     if (this.#closed || this.subscription === null || this.surfaceId !== surfaceId) return;
-    const data = JSON.stringify({ type: "browser.surface", surfaceId, surface });
+    const data = JSON.stringify({
+      type: "browser.surface",
+      surfaceId,
+      surface,
+      ...(surface ? { icon: icon?.key ?? null } : {}),
+    });
     if (data === this.#surfaceLast) return;
     this.#surfaceLast = data;
-    this.#surfacePending = data;
+    this.#surfacePending = { data, icon };
     if (!this.#surfaceSending) void this.#flushSurface();
   }
 
@@ -7134,8 +7276,12 @@ export class BrowserConsumerOutlet {
     this.#surfaceSending = true;
     try {
       while (!this.#closed && this.#surfacePending !== null) {
-        const data = this.#surfacePending;
+        const { data, icon } = this.#surfacePending;
         this.#surfacePending = null;
+        if (icon && !this.#sentIcons.has(icon.key)) {
+          await this.sendText(JSON.stringify({ type: "browser.tab.icon", ...icon }));
+          this.#sentIcons.add(icon.key);
+        }
         await this.sendText(data);
       }
     } catch {

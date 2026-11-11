@@ -13,6 +13,7 @@ import {
   type BrowserContext,
   type BrowserServer,
   type Page,
+  type Frame,
 } from "playwright-core";
 import { describe, expect, it, vi } from "vitest";
 import { assertImportedCookies } from "./native-profile-storage.js";
@@ -316,6 +317,69 @@ function hostileEnvironment(
 }
 
 describe("native Chromium profiles", () => {
+  it.each(["iframe media", "iframe Web Audio", "top Web Audio"])(
+    "protects %s using native media state, including existing playback",
+    async (kind) => {
+      const f = await nativeCloseFixture();
+      const main = { evaluate: async () => false } as unknown as Frame;
+      const child = { evaluate: async () => false } as unknown as Frame;
+      const page = {
+        on: vi.fn(),
+        once: vi.fn(),
+        frames: () => [main, child],
+        mainFrame: () => main,
+      } as unknown as Page;
+      let playing = true;
+      const sessions: { detach: ReturnType<typeof vi.fn> }[] = [];
+      f.context.newCDPSession.mockImplementation(async (frame) => {
+        const events = new EventEmitter();
+        const active = frame === (kind === "top Web Audio" ? main : child);
+        const session = {
+          on: events.on.bind(events),
+          detach: vi.fn().mockResolvedValue(undefined),
+          send: vi.fn(async (method: string) => {
+            if (active && method === "Media.enable" && kind === "iframe media") {
+              events.emit("Media.playerCreated", { player: { playerId: "player" } });
+              events.emit("Media.playerEventsAdded", {
+                playerId: "player",
+                events: [{ value: JSON.stringify({ event: playing ? "kPlay" : "kPause" }) }],
+              });
+            }
+            if (active && method === "WebAudio.enable" && kind !== "iframe media")
+              events.emit("WebAudio.contextCreated", {
+                context: {
+                  contextId: "audio",
+                  contextType: "realtime",
+                  contextState: playing ? "running" : "suspended",
+                },
+              });
+            return method === "Page.getFrameTree"
+              ? { frameTree: { frame: { id: "main" } } }
+              : method === "Page.createIsolatedWorld"
+                ? { executionContextId: 1 }
+                : method === "Runtime.evaluate"
+                  ? { result: { value: false } }
+                  : {};
+          }),
+        };
+        sessions.push(session);
+        return session;
+      });
+      try {
+        const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+        vi.spyOn(f.context, "pages").mockReturnValue([page]);
+        const handle = launched.context.pages()[0]!;
+        expect(await handle.keepAwake?.()).toBe("media");
+        playing = false;
+        expect(await handle.keepAwake?.()).toBeNull();
+        expect(sessions.every((session) => session.detach.mock.calls.length === 1)).toBe(true);
+        await launched.close();
+      } finally {
+        f.exit();
+        await rm(f.directory, { recursive: true, force: true });
+      }
+    },
+  );
   it.each(["context", "browser"] as const)(
     "releases proven ownership after a %s protocol close failure",
     async (stage) => {
@@ -715,7 +779,8 @@ async function nativeCloseFixture() {
   const context = {
     process: () => child,
     browser: () => browser,
-    pages: () => [],
+    pages: (): Page[] => [],
+    newCDPSession: vi.fn<(frame: Frame | Page) => Promise<unknown>>(),
     newPage: vi.fn().mockResolvedValue({ on: vi.fn(), isClosed: () => false }),
     addInitScript: vi.fn().mockResolvedValue(undefined),
     on: vi.fn(),

@@ -909,25 +909,74 @@ class PlaywrightPageHandle implements BrowserPage {
   async keepAwake(): Promise<"upload" | "post" | "media" | null> {
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
-    const cdp = await this.cdp();
-    const { frameTree } = z
-      .object({ frameTree: z.object({ frame: z.object({ id: z.string() }) }) })
-      .parse(await cdp.send("Page.getFrameTree"));
-    const { executionContextId } = z.object({ executionContextId: z.number() }).parse(
-      await cdp.send("Page.createIsolatedWorld", {
-        frameId: frameTree.frame.id,
-        worldName: "opensteer-sleep",
-      }),
-    );
-    const result = z.object({ result: z.object({ value: z.boolean() }) }).parse(
-      await cdp.send("Runtime.evaluate", {
-        contextId: executionContextId,
-        returnByValue: true,
-        expression:
-          "[...document.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)",
-      }),
-    );
-    return this.uploads.size ? "upload" : result.result.value ? "media" : null;
+    for (const frame of this.page.frames()) {
+      if (
+        await frame.evaluate<boolean>(`(() => {
+        const roots = [document];
+        for (const root of roots) {
+          if ([...root.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
+          for (const node of root.querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
+        }
+        return false;
+      })()`)
+      )
+        return "media";
+      let session: PlaywrightCdpSession;
+      try {
+        session = await this.context.newCDPSession(frame);
+      } catch (error) {
+        // Same-process frames share their local root's Web Audio graph.
+        if (error instanceof Error && error.message.includes("part of the parent frame's session"))
+          continue;
+        throw error;
+      }
+      const players = new Map<string, boolean>();
+      const contexts = new Set<string>();
+      session.on("Media.playerCreated", ({ player }) => players.set(player.playerId, true));
+      session.on("Media.playerPropertiesChanged", ({ playerId }) => {
+        if (!players.has(playerId)) players.set(playerId, true);
+      });
+      session.on("Media.playerEventsAdded", ({ playerId, events }) => {
+        for (const event of events) {
+          let value: unknown;
+          try {
+            value = JSON.parse(event.value);
+          } catch {
+            players.set(playerId, true);
+            continue;
+          }
+          if (!isRecord(value)) continue;
+          if (value.event === "kPlay") players.set(playerId, true);
+          else if (
+            ["kPause", "kEnded", "kSuspended", "kWebMediaPlayerDestroyed"].includes(
+              String(value.event),
+            )
+          )
+            players.set(playerId, false);
+        }
+      });
+      const contextChanged = ({
+        context,
+      }: {
+        context: { contextId: string; contextType: string; contextState: string };
+      }) => {
+        if (context.contextType === "realtime" && context.contextState === "running")
+          contexts.add(context.contextId);
+        else contexts.delete(context.contextId);
+      };
+      session.on("WebAudio.contextCreated", contextChanged);
+      session.on("WebAudio.contextChanged", contextChanged);
+      session.on("WebAudio.contextWillBeDestroyed", ({ contextId }) => contexts.delete(contextId));
+      try {
+        // Enabling replays existing native players and Web Audio contexts.
+        await session.send("Media.enable");
+        await session.send("WebAudio.enable");
+        if ([...players.values()].some(Boolean) || contexts.size) return "media";
+      } finally {
+        await session.detach();
+      }
+    }
+    return this.uploads.size ? "upload" : null;
   }
 
   async hasOpenerAccess(): Promise<boolean> {

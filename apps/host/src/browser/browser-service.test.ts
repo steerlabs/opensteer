@@ -55,6 +55,7 @@ import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createHash, generateKeyPairSync, randomUUID, verify, type KeyObject } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { installWebSocketLiveness } from "../server/websocket-liveness.js";
@@ -65,6 +66,7 @@ import {
 import {
   BrowserService,
   BrowserConsumerOutlet,
+  HostedBrowserBroker,
   type ActiveBrowserProfileGrant,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
@@ -2722,23 +2724,50 @@ describe("BrowserService", () => {
       `${editingEvidenceRoot}/viewer-bytes-${count}.json`,
       JSON.stringify({ tabs: count, siblingTitleBytes, ownTitleBytes }),
     );
-    const favicon = "data:image/png;base64,aWNvbg==";
+    const favicon = `data:image/png;base64,${Buffer.alloc(16 * 1024).toString("base64")}`;
     runtime.publishTabs({
       surfaces: [{ ...own, title: "Changed", favicon }, sibling, ...neighbors],
     });
     await vi.waitFor(() => expect(updates()).toHaveLength(3));
     expect(updates()[2]).toMatchObject({
       surfaceId: "page-1",
-      surface: { title: "Changed", favicon },
+      surface: { title: "Changed", favicon: null },
     });
+    const iconStart = peer.textFrames.length;
+    const changes = [
+      { title: "New title" },
+      { title: "New title", loading: true },
+      { title: "New title", loading: true, geometryRevision: 2 },
+    ];
+    for (const [index, change] of changes.entries()) {
+      runtime.publishTabs({ surfaces: [{ ...own, ...change, favicon }, sibling, ...neighbors] });
+      await vi.waitFor(() => expect(updates()).toHaveLength(4 + index));
+    }
+    expect(peer.textFrames.slice(iconStart).join("")).not.toContain(favicon);
+    expect(
+      peer.textFrames
+        .slice(iconStart)
+        .reduce((bytes, frame) => bytes + Buffer.byteLength(frame), 0),
+    ).toBeLessThan(3 * 1024);
+    expect(
+      peer.textFrames
+        .map((frame) => JSON.parse(frame))
+        .filter((message) => message.type === "browser.tab.icon"),
+    ).toEqual([
+      {
+        type: "browser.tab.icon",
+        key: createHash("sha256").update(favicon).digest("base64url"),
+        favicon,
+      },
+    ]);
     const replacementIcon = "data:image/png;base64,aWNvbjI=";
     runtime.publishTabs({
       surfaces: [{ ...own, title: "Changed", favicon: replacementIcon }, sibling, ...neighbors],
     });
     await vi.waitFor(() =>
-      expect(updates(), "The viewer did not receive its replacement icon.").toHaveLength(4),
+      expect(updates(), "The viewer did not receive its replacement icon.").toHaveLength(7),
     );
-    expect(updates()[3]).toMatchObject({ surface: { title: "Changed", favicon: replacementIcon } });
+    expect(updates()[6]).toMatchObject({ surface: { title: "Changed", favicon: null } });
     expect(JSON.stringify(updates())).not.toContain("sibling.example");
     runtime.publishTabs({ surfaces: [{ id: "page-2", title: "Sibling" }] });
     await vi.waitFor(() =>
@@ -7839,6 +7868,160 @@ it("resynchronizes an initial tab gap before announcing readiness", async () => 
   expect(await starting).toMatchObject({ result: { session: { state: "ready" } } });
 });
 
+it("batches additive person-use marks once per runtime connection and replays only existing tabs", async () => {
+  const ids = Array.from({ length: 7_000 }, (_, i) =>
+    BrowserSurfaceIdSchema.parse(`srf_${String(i).padStart(40, "0")}`),
+  );
+  const marks = { tabs: new Set(ids.slice(0, -2)), ended: false };
+  async function connect(present: typeof ids, savedTabIds?: typeof ids) {
+    const socket = new EventEmitter();
+    const sent: Record<string, unknown>[] = [];
+    let failNext = false;
+    Object.assign(socket, {
+      readyState: WebSocket.OPEN,
+      send: (data: string, _options: unknown, callback: (error?: Error) => void) => {
+        if (failNext) {
+          failNext = false;
+          callback(new Error("Write failed"));
+          return;
+        }
+        sent.push(JSON.parse(data));
+        callback();
+      },
+      close: () => socket.emit("close", 1000, Buffer.from("closed")),
+    });
+    const sessionId = createBrowserSessionId();
+    const broker = new HostedBrowserBroker({
+      socket,
+      sessionId,
+      groupId: sessionId,
+      workspaceId: createId("workspace"),
+      readSessionState: async () => ({ runs: 0, pinned: [] }),
+      personUse: marks,
+      savedTabIds,
+      profileId: null,
+      surfaceState: 1,
+      sharedControl: true,
+      connectTimeoutMs: 1000,
+      passkeys: false,
+      onState: async () => ({}),
+      onTerminal: () => undefined,
+      onTabsChanged: () => undefined,
+      onRecordsChanged: () => undefined,
+      onPageChanged: () => undefined,
+    } as unknown as ConstructorParameters<typeof HostedBrowserBroker>[0]);
+    const emit = (message: unknown) =>
+      socket.emit("message", Buffer.from(JSON.stringify(message)), false);
+    emit({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      dialog: null,
+      surfaceState: 1,
+      targetedStreamingVersion: 1,
+    });
+    const rows = new Map(
+      present.map((id, order) => [
+        id,
+        BrowserTabRecordSchema.parse({
+          id,
+          order,
+          title: "Tab",
+          url: "about:blank",
+          state: "live",
+          icon: null,
+          openerId: null,
+          documentId: "doc",
+          geometryRevision: 1,
+          loading: false,
+          navigationFailed: false,
+          canGoBack: false,
+          canGoForward: false,
+          sizedByAgent: false,
+        }),
+      ]),
+    );
+    const publisher = new KeyedStreamPublisher({
+      ids: () => rows.keys(),
+      read: (id) => rows.get(BrowserSurfaceIdSchema.parse(id)),
+      meta: () => ({ activeId: present[0] ?? null, inventoryRevision: 1 }),
+      targetBytes: 64 * 1024,
+      envelopeBytes: 256,
+    });
+    for (let stream = publisher.next(); stream; stream = publisher.next()) {
+      emit({ type: "browser.tabs", stream });
+      publisher.settled(stream, true);
+    }
+    await broker.ready();
+    cleanups.push(async () => {
+      socket.emit("close", 1000, Buffer.from("closed"));
+    });
+    return {
+      broker,
+      sent,
+      failNext: () => {
+        failNext = true;
+      },
+      add: (id: (typeof ids)[number]) => {
+        rows.set(id, { ...rows.values().next().value!, id, order: rows.size });
+        publisher.mark(id);
+        for (let stream = publisher.next(); stream; stream = publisher.next()) {
+          emit({ type: "browser.tabs", stream });
+          publisher.settled(stream, true);
+        }
+      },
+    };
+  }
+  const first = await connect(ids);
+  const states = first.sent.filter((message) => message.type === "session.state");
+  expect(states.length).toBeGreaterThan(1);
+  expect(
+    states.every(
+      (message) => Buffer.byteLength(JSON.stringify(message)) <= 256 * 1024 && !message.keepAwake,
+    ),
+  ).toBe(true);
+  expect(states.flatMap((message) => message.personUsed)).toEqual(ids.slice(0, -2));
+  const before = first.sent.length;
+  await first.broker.markPersonUsed(ids[0]!);
+  expect(first.sent).toHaveLength(before);
+  first.failNext();
+  await expect(first.broker.markPersonUsed(ids.at(-2)!)).rejects.toThrow("Write failed");
+  await first.broker.markPersonUsed(ids.at(-2)!);
+  expect(first.sent.at(-1)).toMatchObject({ personUsed: [ids.at(-2)!] });
+  await first.broker.markPersonUsed(ids.at(-1)!);
+  expect(first.sent.at(-1)).toMatchObject({ personUsed: [ids.at(-1)!] });
+  const delayed = await connect(ids.slice(0, 5), ids.slice(0, 6));
+  expect(
+    delayed.sent
+      .filter((message) => message.type === "session.state")
+      .flatMap((message) => message.personUsed),
+  ).toEqual(ids.slice(0, 5));
+  delayed.add(ids[5]!);
+  await vi.waitFor(
+    () =>
+      expect(
+        delayed.sent.filter((message) => message.type === "session.state").at(-1),
+      ).toMatchObject({ personUsed: [ids[5]!] }),
+    { timeout: 1000 },
+  );
+  const second = await connect(ids.slice(0, 5));
+  expect(
+    second.sent
+      .filter((message) => message.type === "session.state")
+      .flatMap((message) => message.personUsed),
+  ).toEqual(ids.slice(0, 5));
+  marks.ended = true;
+  marks.tabs.clear();
+  const ended = await connect(ids.slice(0, 5));
+  await ended.broker.markPersonUsed(ids[0]!);
+  expect(
+    ended.sent
+      .filter((message) => message.type === "session.state")
+      .flatMap((message) => message.personUsed),
+  ).toEqual([]);
+});
+
 it("sends authoritative sleep state after commit and keeps two viewers and Watch independent of Run holds", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -8297,5 +8480,7 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
     timeout: 1000,
   });
   runtime.publishTabs({ surfaces: [] });
-  await vi.waitFor(() => expect(lastState()).toMatchObject({ personUsed: [] }), { timeout: 1000 });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBeUndefined(), {
+    timeout: 1000,
+  });
 });
