@@ -41,7 +41,12 @@ export type KeyedStreamMessage<Row extends { id: string }, Meta extends object> 
       meta?: { [K in keyof Meta]?: Meta[K] | undefined } | undefined;
     };
 
-type Changes = { added: string[]; updated: string[]; removed: string[]; structural: boolean };
+export type KeyedStreamChanges = {
+  added: string[];
+  updated: string[];
+  removed: string[];
+  structural: boolean;
+};
 const encoder = new TextEncoder();
 export function keyedStreamBytes(value: unknown): number {
   return encoder.encode(JSON.stringify(value)).byteLength;
@@ -263,7 +268,7 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
   #generation: string | null = null;
   #revision = 0;
   #staged: Map<string, Row> | null = null;
-  readonly #listeners = new Set<(changed: Changes) => void>();
+  readonly #listeners = new Set<(changed: KeyedStreamChanges) => void>();
   get rows(): ReadonlyMap<string, Row> {
     return this.#rows;
   }
@@ -280,7 +285,7 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
     this.#staged = null;
     this.#generation = null;
   }
-  onChange(listener: (changed: Changes) => void): () => void {
+  onChange(listener: (changed: KeyedStreamChanges) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
@@ -306,7 +311,7 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
       }
       return "staged";
     }
-    const changed: Changes = { added: [], updated: [], removed: [], structural: false };
+    const changed: KeyedStreamChanges = { added: [], updated: [], removed: [], structural: false };
     const put = (row: Row) => {
       const before = this.#rows.get(row.id);
       if (before && equal(before, row)) return before;

@@ -129,3 +129,20 @@ export const BrowserTabRowSchema = z.strictObject({
   occupants: z.array(PlaceOccupantSchema).max(browserSessionMaxThreads),
 });
 export type BrowserTabRow = z.infer<typeof BrowserTabRowSchema>;
+
+export const BrowserGroupStreamSchema = keyedStreamSchema(
+  BrowserGroupRowSchema,
+  z.strictObject({}),
+);
+export const BrowserClientTabStreamSchema = keyedStreamSchema(
+  BrowserTabRowSchema,
+  z.strictObject({}),
+);
+export const BrowserViewerSurfaceSchema = BrowserTabRecordSchema.omit({
+  icon: true,
+  order: true,
+  openerId: true,
+  canGoBack: true,
+  canGoForward: true,
+}).extend({ favicon: BrowserFaviconSchema.nullable() });
+export type BrowserViewerSurface = z.infer<typeof BrowserViewerSurfaceSchema>;
