@@ -37,7 +37,7 @@ function add(api: SceneApi, at: number, product: string, line: number): void {
 
 export const engineer: Scene = {
   agent: "engineer",
-  task: "Test checkout before 2.4 ships",
+  task: "Checkout QA for 2.4",
   length: 24000,
   windows: pos + qa,
   menus: {
