@@ -549,10 +549,71 @@ describeStore("team administration Host boundary", (it) => {
     }
   });
 
+  it("refuses replacement while Projects exist before teardown or enrollment", async ({
+    storeFixture,
+  }) => {
+    const queries: string[] = [];
+    const f = await setup(storeFixture, queries);
+    const revokeComputer = vi.fn(async () => undefined);
+    const enrollComputer = vi.fn(async () => ({
+      enrollmentId: `ren_${randomUUID()}`,
+      token: "not-issued",
+      expiresAt: new Date().toISOString(),
+    }));
+    const service = new TeamAdministrationService({
+      database: f.database,
+      identity: f.identity,
+      teamName: "Test team",
+      runnerIsConnected: () => true,
+      invalidate: () => undefined,
+      revokeComputer,
+      enrollComputer,
+    });
+    try {
+      expect(await service.read("team.computer.get", {}, f.context(f.admin))).toMatchObject({
+        can: { replace: { allowed: false, reason: "projects-prevent-replacement" } },
+      });
+      for (const boundary of [service, f.service]) {
+        queries.length = 0;
+        await expect(
+          boundary.command(
+            {
+              type: "team.computer.replace",
+              expectedRevision: 2,
+              expectedComputerId: f.runnerId,
+              idempotencyKey: "blocked-replacement",
+            },
+            f.context(f.admin),
+          ),
+        ).rejects.toMatchObject({ reason: "projects-prevent-replacement" });
+        expect(
+          queries.some((query) => /(?:from|update) "(?:runners|runner_enrollments)"/u.test(query)),
+        ).toBe(false);
+        expect(queries.some((query) => /^(?:insert|update|delete) /u.test(query))).toBe(false);
+      }
+      expect(revokeComputer).not.toHaveBeenCalled();
+      expect(enrollComputer).not.toHaveBeenCalled();
+      expect(
+        await f.database
+          .selectFrom("runners")
+          .select("revokedAt")
+          .where("id", "=", f.runnerId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ revokedAt: null });
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("does not issue an enrollment if the administrator's session ends during old-computer teardown", async ({
     storeFixture,
   }) => {
     const f = await setup(storeFixture);
+    await f.database
+      .updateTable("workspaces")
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where("kind", "=", "project")
+      .execute();
     const issuer = new RunnerAuthenticator({
       store: new OpensteerStore(f.database),
       issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
@@ -616,6 +677,11 @@ describeStore("team administration Host boundary", (it) => {
     storeFixture,
   }) => {
     const f = await setup(storeFixture);
+    await f.database
+      .updateTable("workspaces")
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where("kind", "=", "project")
+      .execute();
     const issued: number[] = [];
     const enrollmentIssuer = new RunnerAuthenticator({
       store: new OpensteerStore(f.database),
@@ -662,6 +728,18 @@ describeStore("team administration Host boundary", (it) => {
       if (result.type !== "team.computer.replace") throw new Error("Wrong replacement result");
       expect(result.accessRevision).toBe(3);
       expect(result.runnerImage).toBe(`registry.team.test/opensteer/runner:sha-${"b".repeat(40)}`);
+      await expect(
+        service.command(
+          {
+            type: "team.project.create",
+            expectedRevision: result.accessRevision,
+            idempotencyKey: "create-after-replacement",
+            name: "Cannot use the old computer",
+            color: "blue",
+          },
+          f.context(f.admin),
+        ),
+      ).rejects.toMatchObject({ reason: "team-object-unavailable" });
       const replay = await service.command(command, f.context(f.admin));
       if (replay.type !== "team.computer.replace") throw new Error("Wrong replacement replay");
       expect(replay.enrollmentId).toBe(result.enrollmentId);

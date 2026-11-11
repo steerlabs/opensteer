@@ -146,6 +146,24 @@ export interface ProjectComputerRevocationPort {
   ): Promise<{ cancel(): Promise<void> }>;
 }
 
+export async function teamComputerReplacementCan(database: Kysely<DatabaseSchema>) {
+  const project = await database
+    .selectFrom("workspaces")
+    .select("id")
+    .where("kind", "=", "project")
+    .where("status", "!=", "deleted")
+    .limit(1)
+    .executeTakeFirst();
+  return project
+    ? { allowed: false as const, reason: "projects-prevent-replacement" as const }
+    : { allowed: true as const };
+}
+
+export async function requireTeamComputerReplacementAvailable(database: Kysely<DatabaseSchema>) {
+  const can = await teamComputerReplacementCan(database);
+  if (!can.allowed) teamRefusal(can.reason);
+}
+
 export async function prepareTeamComputerReplacement(
   database: Kysely<DatabaseSchema>,
   actor: AuthenticatedHuman,
@@ -168,6 +186,7 @@ export async function prepareTeamComputerReplacement(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     await requireTeamHuman(transaction, actor, true);
+    await requireTeamComputerReplacementAvailable(transaction);
     const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const receipt = await transaction
       .selectFrom("securityAudit")

@@ -1084,6 +1084,12 @@ export class MockTeamAccess {
     switch (command.type) {
       case "team.computer.replace": {
         this.#requireAdmin();
+        if (this.#projects.size)
+          throw refusal(
+            "forbidden",
+            "projects-prevent-replacement",
+            "This team computer can't be replaced while projects exist.",
+          );
         this.#checkRevision(command.expectedRevision);
         if ((this.#computer?.id ?? null) !== command.expectedComputerId)
           throw refusal(
@@ -1370,7 +1376,7 @@ export class MockTeamAccess {
         return {
           computer: this.#computer ? { ...this.#computer } : null,
           // With none, replacing it is connecting the first one.
-          can: { replace: allowed },
+          can: { replace: this.#projects.size ? denied("projects-prevent-replacement") : allowed },
         };
       }),
       "team.invitations.list": (input) =>

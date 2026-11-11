@@ -44,6 +44,8 @@ export function teamReasonText(reason: TeamReason, team = "the team"): string {
       return "This team feature isn’t available yet.";
     case "guests-unavailable":
       return "Guests aren’t available on this team yet.";
+    case "projects-prevent-replacement":
+      return "This team computer can’t be replaced while projects exist.";
     case "requester-only":
       return "Only the person who started this task can answer.";
     case "manager-only":

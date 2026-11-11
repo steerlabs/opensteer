@@ -27,6 +27,12 @@ for (const operation of ["delete", "replace"] as const)
         .execute();
       await database.deleteFrom("commands").where("runId", "=", admitted.runId).execute();
       await database.deleteFrom("runs").where("id", "=", admitted.runId).execute();
+      if (operation === "replace")
+        await database
+          .updateTable("workspaces")
+          .set({ status: "deleted", deletedAt: new Date() })
+          .where("id", "=", project.workspace.id)
+          .execute();
       const actor = { userId: project.userId, authorityGeneration: 1 };
       const action =
         operation === "delete"
@@ -45,7 +51,13 @@ for (const operation of ["delete", "replace"] as const)
         code: "workspace_unavailable",
         reason: "team-not-implemented",
       });
-      expect((await storeFixture.store.getWorkspace(project.workspace.id))?.status).toBe("ready");
+      expect(
+        await database
+          .selectFrom("workspaces")
+          .select("status")
+          .where("id", "=", project.workspace.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: operation === "replace" ? "deleted" : "ready" });
       expect(
         await database
           .selectFrom("runners")

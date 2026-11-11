@@ -26,6 +26,7 @@ import {
   getProjectRuntimeSettings,
   mutateAccess,
   prepareTeamComputerReplacement,
+  requireTeamComputerReplacementAvailable,
   deleteTeamProject,
   mutateTeamInvitation,
   previewAccess,
@@ -612,7 +613,10 @@ export class TeamAdministrationService {
     const base = { type: command.type, commandId };
     if (command.type === "team.computer.replace") {
       if (user.instanceRole !== "administrator") refuse("team-admin-required");
-      if (!this.#enrollComputer) refuse("team-not-implemented");
+      if (!this.#enrollComputer) {
+        await requireTeamComputerReplacementAvailable(this.#database);
+        refuse("team-not-implemented");
+      }
       const result = await prepareTeamComputerReplacement(
         this.#database,
         actor,

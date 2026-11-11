@@ -1,5 +1,6 @@
 import { PrincipalIdSchema } from "@opensteer/channel-core";
 import { isEveryoneMember } from "./everyone-membership.js";
+import { teamComputerHasExecutionGrant } from "./team-computer.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   createId,
@@ -2026,6 +2027,23 @@ async function coordinateAccess(
         const { next, pairs, growing } = await planAccess(transaction, input, old, now, memberIds);
         if (!admission && safeGeneration(state.revision) !== input.expectedRevision)
           conflict("Access preview is stale");
+        for (const change of input.changes) {
+          if (change.kind !== "create-project") continue;
+          const computer = await transaction
+            .selectFrom("executionEnvironments as environment")
+            .innerJoin("runners as computer", "computer.id", "environment.runnerId")
+            .select([
+              "computer.device",
+              "computer.ownerKind",
+              "computer.ownerUserId",
+              "computer.allowedModules",
+            ])
+            .where("environment.id", "=", change.backing.ownerEnvironmentId)
+            .where("computer.revokedAt", "is", null)
+            .executeTakeFirst();
+          if (!computer || !teamComputerHasExecutionGrant(computer))
+            refuse("The team's computer is no longer available", "team-object-unavailable");
+        }
         const fencedUsers = next.users
           .filter((after) => {
             const before = old.users.find((user) => user.id === after.id)!;

@@ -121,12 +121,13 @@ describe("the shared team mock", () => {
         timeZone: "Europe/London",
       }),
     ];
-    // A screen that still shows the computer it read is fenced off once that computer is replaced.
     const shown = (await team.computer()).computer!.id;
-    results.push(await team.replaceComputer(await revision(), shown));
-    expect((await team.computer()).computer).toBeNull();
+    expect((await team.computer()).can.replace).toEqual({
+      allowed: false,
+      reason: "projects-prevent-replacement",
+    });
     await expect(team.replaceComputer(await revision(), shown)).rejects.toMatchObject({
-      reason: "team-object-unavailable",
+      reason: "projects-prevent-replacement",
     });
     // Deleting a Project takes it from everyone's snapshot, and asking again changes nothing.
     const { finance } = mockTeamProjects;
@@ -149,6 +150,15 @@ describe("the shared team mock", () => {
     const elsewhere = new TeamAccess(host);
     results.push(created, await elsewhere.revokeInvitation(await revision(), (await listed())!.id));
     expect(await listed()).toMatchObject({ state: "revoked", can: { revoke: { allowed: false } } });
+    for (const project of (await team.projects()).items)
+      await team.deleteProject(await revision(), project.id);
+    expect((await team.computer()).can.replace).toEqual({ allowed: true });
+    // A screen that still shows the computer it read is fenced off once that computer is replaced.
+    results.push(await team.replaceComputer(await revision(), shown));
+    expect((await team.computer()).computer).toBeNull();
+    await expect(team.replaceComputer(await revision(), shown)).rejects.toMatchObject({
+      reason: "team-object-unavailable",
+    });
     for (const result of results) expect(() => TeamCommandResultSchema.parse(result)).not.toThrow();
     expect(new Set(results.map((result) => TeamCommandResultSchema.parse(result).type)).size).toBe(
       10,
