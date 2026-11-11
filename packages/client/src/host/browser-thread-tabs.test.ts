@@ -1,6 +1,7 @@
+import type { PlaceOccupant } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
-import type { BrowserTabSummary, PlaceOccupant } from "@opensteer/protocol";
+import type { BrowserCatalogTab as BrowserTabSummary } from "./client.js";
 import type { BrowserSessionSummary, PlaceEntry } from "./client.js";
 import { browserThreadAgentTab, browserThreadTabs } from "./browser-thread-tabs.js";
 

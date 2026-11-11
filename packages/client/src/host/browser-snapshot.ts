@@ -98,7 +98,7 @@ export class BrowserSnapshotDerivation {
     return projected;
   }
   derive(
-    snapshot: HostSnapshot,
+    snapshot: Pick<HostSnapshot, "browserSessions" | "workspaceTabs">,
     store: BrowserTabStore,
     surface: (sessionId: string, surfaceId: string) => BrowserViewerSurface | undefined = () =>
       undefined,

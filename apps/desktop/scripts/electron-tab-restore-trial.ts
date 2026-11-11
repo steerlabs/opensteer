@@ -1,3 +1,4 @@
+import { browserSnapshotFromRows } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -57,11 +58,15 @@ export async function runTabRestoreTrial(input: {
   let state = existsSync(statePath)
     ? State.parse(JSON.parse(readFileSync(statePath, "utf8")))
     : null;
-  const bootstrap = async () => HostBootstrapSchema.parse(await rpc("bootstrap.get"));
+  const parseBootstrap = (input: unknown) => {
+    const value = HostBootstrapSchema.parse(input);
+    return { ...value, browserView: browserSnapshotFromRows(value.browser) };
+  };
+  const bootstrap = async () => parseBootstrap(await rpc("bootstrap.get"));
   const rows = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.browser.workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? [];
+    value.browserView.workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? [];
   const targets = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.browser.sessions
+    value.browserView.browserSessions
       .filter((session) => session.state === "ready")
       .flatMap((session) => session.tabCatalog?.tabs ?? []);
   const page = (pathname: string) =>
@@ -648,7 +653,7 @@ export async function runTabRestoreTrial(input: {
     "workspace sidebar",
   );
 
-  const initial = HostBootstrapSchema.parse(
+  const initial = parseBootstrap(
     z
       .object({ ok: z.literal(true), data: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(root, `${trial}.before-window.json`), "utf8"))).data,
@@ -732,7 +737,7 @@ export async function runTabRestoreTrial(input: {
       icons: rows(value).map((row) => ({ id: row.id, ref: z.string().parse(row.iconRef) })),
       tabGroup: null,
     };
-    const group = value.browser.workspaceTabs!.find((group) =>
+    const group = value.browserView.workspaceTabs!.find((group) =>
       group.tabs?.some((tab) => tab.id === p1.tabId),
     )!;
     assert.deepEqual(
@@ -844,7 +849,11 @@ export async function runTabRestoreTrial(input: {
         await checkGroup("tab-groups-before-member-selection", true);
       });
       for (const id of state.oldSessions)
-        await assert.rejects(rpc("browser.tabs.get", { sessionId: id }));
+        assert(
+          !value.browser.groups.rows.some(
+            (group) => group.sessionId === id && group.state === "ready",
+          ),
+        );
       await screenshot("reopened");
       await newTab();
       await close(state.pop);

@@ -1,3 +1,4 @@
+import { browserRows } from "./browser-rows.test-support.js";
 import {
   BrowserActionRequestSchema,
   BrowserActionResponseSchema,
@@ -189,7 +190,10 @@ integration("session-scoped browser agent backends", () => {
   it("activates a sleeping surface in place, projects its state with notices, and preserves agent resume", async () => {
     const f = await setup();
     const tabId = BrowserSurfaceIdSchema.parse("page-integration");
-    const group = () => f.host.runtime.browser.readWorkspaceTabs(f.host.ownerId, f.sessionId);
+    const group = () =>
+      browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then(
+        (rows) => rows.lineage!,
+      );
     await vi.waitFor(async () => expect((await group()).tabs).toHaveLength(1), { timeout: 2000 });
     const realtime = await connect(
       `ws://127.0.0.1:${f.host.hostPort}/v1/realtime`,
@@ -236,7 +240,7 @@ integration("session-scoped browser agent backends", () => {
       await noticed;
       expect((await group()).tabs?.[0]?.state).toBe(state);
       expect(
-        (await f.host.runtime.browser.bootstrap(f.host.ownerId)).workspaceTabs?.find(
+        (await browserRows(f.host.runtime.browser, f.host.ownerId)).workspaceTabs?.find(
           (held) => held.id === f.sessionId,
         )?.tabs?.[0]?.state,
       ).toBe(state);
@@ -402,13 +406,20 @@ integration("session-scoped browser agent backends", () => {
     await vi.waitFor(
       async () =>
         expect(
-          (await f.host.runtime.browser.readWorkspaceTabs(f.host.ownerId, f.sessionId)).tabs,
+          (
+            await browserRows(f.host.runtime.browser, f.host.ownerId, f.sessionId).then(
+              (rows) => rows.lineage!,
+            )
+          ).tabs,
         ).toHaveLength(1),
       { timeout: 2000 },
     );
     const before = f.phone.receivedCommands().length;
     const result = await f.host.runtime.browser.activateWorkspaceTab(f.host.ownerId, tabId);
-    expect(result.group.tabs?.[0]?.state).toBe("live");
+    expect(
+      (await browserRows(f.host.runtime.browser, f.host.ownerId, result.session.id)).lineage
+        ?.tabs?.[0]?.state,
+    ).toBe("live");
     expect(
       f.phone
         .receivedCommands()

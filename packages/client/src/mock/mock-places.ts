@@ -1,3 +1,4 @@
+import type { BrowserTabCatalog, WorkspaceTabLineage } from "../host/client.js";
 import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
   BrowserSessionIdSchema,
@@ -13,7 +14,6 @@ import {
   BrowserHistoryUrlSchema,
   BrowserProfileSchema,
   BrowserSessionTabOpenCommandSchema,
-  BrowserTabCatalogSchema,
   BrowserTabCloseResultSchema,
   BrowserTabIconInputSchema,
   BrowserTabIconResultSchema,
@@ -33,7 +33,6 @@ import {
   type BrowserTabOpenCommand,
   type BrowserTabOpenResult,
   type PlaceOccupant,
-  type WorkspaceTabLineage,
 } from "@opensteer/protocol";
 import { browserTabArrangement, browserTabOrderTabs } from "../host/browser-tab-order.js";
 import type { BrowserWatchState } from "../host/browser-watch.js";
@@ -123,22 +122,25 @@ export function seedMockPlaces(
     }[],
   ) => {
     const id = sessionId(index);
-    const catalog = BrowserTabCatalogSchema.parse({
+    const catalog: BrowserTabCatalog = {
       generation: 1,
       revision: 1,
       inventoryRevision: 1,
       tabs: pages.map((page, order) => ({
-        id: `mock-tab-${index}-${order}`,
+        id: BrowserSurfaceIdSchema.parse(`mock-tab-${index}-${order}`),
         title: page.title,
         site: page.site,
         order,
         iconRef: `icon-${index}-${order}`,
-        openerId: page.openerIndex === undefined ? null : `mock-tab-${index}-${page.openerIndex}`,
+        openerId:
+          page.openerIndex === undefined
+            ? null
+            : BrowserSurfaceIdSchema.parse(`mock-tab-${index}-${page.openerIndex}`),
         documentId: `mock-document-${index}-${order}-1`,
         availability: "ready",
         occupants: page.occupants,
       })),
-    });
+    };
     browserUses.push(
       ...catalog.tabs.flatMap((tab) =>
         tab.occupants
@@ -1345,13 +1347,11 @@ export class MockPlaceWorld {
       browserStarted: false,
       session: HostedBrowserSessionSchema.parse({
         ...session,
-        tabCatalog: catalog,
         createdAt: session.createdAt ?? this.#now().toISOString(),
         updatedAt: this.#now().toISOString(),
       }),
       sessionId,
       tabId: id,
-      catalog,
     });
     this.#openedTabs.set(idempotencyKey, { fingerprint, result });
     this.#update(updated);
@@ -1433,7 +1433,8 @@ export class MockPlaceWorld {
     const result = WorkspaceTabReopenResultSchema.parse({
       type: "workspace.tab.reopen",
       tabId: id,
-      group,
+      groupId: group.id,
+      sessionId: group.session.id,
       layout,
     });
     this.#reopenedTabs.set(key, result);
@@ -1492,9 +1493,9 @@ export class MockPlaceWorld {
     return WorkspaceTabActivateResultSchema.parse({
       type: "workspace.tab.activate",
       tabId,
-      group: this.#snapshot().workspaceTabs?.find((group) => group.id === lineage.id),
+      groupId: lineage.id,
+      sessionId: session.id,
       session: { ...updated, updatedAt: this.#now().toISOString() },
-      catalog,
     });
   }
   async close(sessionId: string, surfaceId: string, inventoryRevision: number, person = true) {
@@ -1569,7 +1570,6 @@ export class MockPlaceWorld {
       type: "browser.tab.close",
       sessionId,
       outcome: ended ? "session-closed" : "tab-closed",
-      catalog: next,
     });
   }
   #requireHistoryOwner(profileId: string): void {

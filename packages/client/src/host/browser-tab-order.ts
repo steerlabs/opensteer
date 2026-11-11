@@ -4,7 +4,8 @@ import {
   type BrowserTabArrangement,
   type BrowserTabOrderTab,
 } from "@opensteer/core";
-import type { BrowserTabLayout, WorkspaceTabLineage } from "@opensteer/protocol";
+import type { BrowserTabLayout } from "@opensteer/protocol";
+import type { WorkspaceTabLineage } from "./client.js";
 
 export function browserTabOrderTabs(
   lineages: readonly WorkspaceTabLineage[] | undefined,

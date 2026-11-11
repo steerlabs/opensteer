@@ -1,5 +1,5 @@
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
-import type { BrowserTabSummary } from "@opensteer/protocol";
+import type { BrowserCatalogTab as BrowserTabSummary } from "@opensteer/client/host";
 import {
   browserTabPicture,
   browserTabTitle,

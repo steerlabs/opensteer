@@ -43,8 +43,14 @@ describe("start page mock journey", () => {
       expect(result.type).toBe("browser.tab.open");
       if (result.type !== "browser.tab.open") throw Error("Unexpected command");
       expect(result.browserStarted).toBe(true);
-      expect(result.catalog.tabs).toHaveLength(1);
-      expect(result.catalog.tabs[0]?.site).toBe("https://start.example");
+      expect(
+        client.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)!
+          .tabCatalog!.tabs,
+      ).toHaveLength(1);
+      expect(
+        client.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)!
+          .tabCatalog!.tabs[0]?.site,
+      ).toBe("https://start.example");
       expect(client.getSnapshot().browserSessions).toHaveLength(before + 1);
       await expect(
         client.openBrowserTab({
@@ -57,7 +63,12 @@ describe("start page mock journey", () => {
           placement: rpc.placement,
         }),
       ).rejects.toMatchObject({ reason: "browser-placement-unavailable" });
-      await client.closeBrowserTab(result.sessionId, result.tabId, result.catalog);
+      await client.closeBrowserTab(
+        result.sessionId,
+        result.tabId,
+        client.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)!
+          .tabCatalog!,
+      );
       await expect(client.openBrowserTab(result.sessionId)).rejects.toMatchObject({
         reason: "browser-session-closed",
       });

@@ -1,3 +1,4 @@
+import { browserRows } from "./browser-rows.test-support.js";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserTabRecordSchema,
@@ -32,8 +33,6 @@ import {
   browserSessionMaxThreads,
   browserSessionTabLimit,
   BrowserSurfaceIdSchema,
-  BrowserSurfaceSchema,
-  BrowserTabSummaryViewSchema,
   createBrowserSessionId,
   decodeBrowserFrameEnvelope,
   RunnerBrowserModuleSchema,
@@ -730,7 +729,7 @@ describe("BrowserService", () => {
       const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
       const favicon = "data:image/png;base64,AAAA";
       const snapshot = async (documentId: string, withIcon: boolean) => {
-        const previous = peer.textFrames.length;
+        const previous = vi.spyOn(service.clientStreams.source, "markTabs");
         runtime.publishTabs({
           surfaces: [
             {
@@ -743,9 +742,13 @@ describe("BrowserService", () => {
             },
           ],
         });
-        await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-          timeout: 1_000,
-        });
+        await vi.waitFor(
+          () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+          {
+            timeout: 1_000,
+          },
+        );
+        previous.mockRestore();
         await service.readHistory(ownerId, profile.id);
       };
       await snapshot("agent", true);
@@ -793,7 +796,7 @@ describe("BrowserService", () => {
         });
       }
       const retained = retainIcon.mock.calls.length;
-      const previous = peer.textFrames.length;
+      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
       runtime.publishTabs({
         surfaces: [
           {
@@ -807,9 +810,12 @@ describe("BrowserService", () => {
           },
         ],
       });
-      await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-        timeout: 1_000,
-      });
+      await vi.waitFor(
+        () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+        {
+          timeout: 1_000,
+        },
+      );
       await service.readHistory(ownerId, profile.id);
       expect(retainIcon).toHaveBeenCalledTimes(retained);
       attachment.close();
@@ -857,7 +863,7 @@ describe("BrowserService", () => {
       );
       const command = await runtime.nextCommand();
       const snapshot = async (title: string) => {
-        const previous = peer.textFrames.length;
+        const previous = vi.spyOn(service.clientStreams.source, "markTabs");
         runtime.publishTabs({
           surfaces: [
             {
@@ -870,9 +876,13 @@ describe("BrowserService", () => {
             },
           ],
         });
-        await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-          timeout: 1_000,
-        });
+        await vi.waitFor(
+          () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+          {
+            timeout: 1_000,
+          },
+        );
+        previous.mockRestore();
         await service.readHistory(ownerId, profile.id);
       };
       if (mode !== "unannounced") await snapshot("Current");
@@ -1053,7 +1063,7 @@ describe("BrowserService", () => {
     const iconA = "data:image/png;base64,AAAA",
       iconB = "data:image/png;base64,BBBB";
     const snapshot = async (documentId: string | null, extra: Record<string, unknown> = {}) => {
-      const previous = peer.textFrames.length;
+      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
       const { navigationId, ...surfaceExtra } = extra;
       runtime.publishTabs({
         surfaces:
@@ -1078,9 +1088,13 @@ describe("BrowserService", () => {
           documentId,
           url: extra.url ?? "https://history.example/",
         });
-      await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-        timeout: 1_000,
-      });
+      await vi.waitFor(
+        () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+        {
+          timeout: 1_000,
+        },
+      );
+      previous.mockRestore();
       await service.readHistory(ownerId, profile.id);
       expect(peer.textFrames.at(-1)).not.toContain("navigationId");
     };
@@ -1202,7 +1216,7 @@ describe("BrowserService", () => {
       runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
       await action;
       const snapshot = async (documentId: string, url: string, navigationId?: unknown) => {
-        const previous = peer.textFrames.length;
+        const previous = vi.spyOn(service.clientStreams.source, "markTabs");
         runtime.publishTabs({
           surfaces: [
             {
@@ -1222,9 +1236,13 @@ describe("BrowserService", () => {
             documentId,
             url,
           });
-        await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-          timeout: 1_000,
-        });
+        await vi.waitFor(
+          () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+          {
+            timeout: 1_000,
+          },
+        );
+        previous.mockRestore();
         await service.readHistory(ownerId, profile.id);
       };
       await snapshot("agent", "https://agent.example/");
@@ -1269,7 +1287,7 @@ describe("BrowserService", () => {
       };
       const opening = service.openTab(ownerId, input);
       const command = await runtime.nextCommand();
-      const previous = peer.textFrames.length;
+      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
       runtime.publishTabs({
         surfaces: [
           {
@@ -1290,9 +1308,13 @@ describe("BrowserService", () => {
           documentId: key,
           url: input.url,
         });
-      await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-        timeout: 1_000,
-      });
+      await vi.waitFor(
+        () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+        {
+          timeout: 1_000,
+        },
+      );
+      previous.mockRestore();
       await service.readHistory(ownerId, profile.id);
       expect(recordVisit).toHaveBeenCalledTimes(attributed ? 1 : 0);
       runtime.sendServer({
@@ -1351,7 +1373,7 @@ describe("BrowserService", () => {
         false,
       );
       expect(await runtime.nextCommand()).not.toHaveProperty("navigationId");
-      const previous = peer.textFrames.length;
+      const previous = vi.spyOn(service.clientStreams.source, "markTabs");
       runtime.publishTabs({
         surfaces: [
           {
@@ -1370,9 +1392,13 @@ describe("BrowserService", () => {
         documentId: "person",
         url: "https://person.example/",
       });
-      await vi.waitFor(() => expect(peer.textFrames.length).toBeGreaterThan(previous), {
-        timeout: 1_000,
-      });
+      await vi.waitFor(
+        () => expect(previous).toHaveBeenCalledWith(opened.session.id, expect.any(Array)),
+        {
+          timeout: 1_000,
+        },
+      );
+      previous.mockRestore();
       await service.readHistory(ownerId, profile.id);
       expect(recordVisit).not.toHaveBeenCalled();
       attachment.close();
@@ -2215,22 +2241,22 @@ describe("BrowserService", () => {
     const groupId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("page-1");
     const close = vi.fn(async () => ({ groupId }));
-    const onCatalogChanged = vi.fn(),
-      onSessionsChanged = vi.fn();
+    const onSessionsChanged = vi.fn();
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      onCatalogChanged,
       onSessionsChanged,
       repository,
       connectTimeoutMs: 2000,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
       workspaceTabs: {
+        ...{ groupIds: async () => [], read: async () => [], openTabs: async () => [] },
         close,
         session: async () => repository.session(sessionId),
         lineageForSession: async () => groupId,
-        read: async () => ({ id: groupId, tabs: [] }),
+        read: async (_ownerId: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
+          Array.isArray(id) ? [] : { id: groupId, tabs: [] },
         suspend: async () => undefined,
       } as unknown as WorkspaceTabStore,
     });
@@ -2266,10 +2292,7 @@ describe("BrowserService", () => {
       method: browserHostMethods.closeTab,
       parameters: { surfaceId: tabId, durable: true },
     });
-    // Its closed revision reaches viewers, so a slower earlier lineage cannot reopen it.
-    expect(onCatalogChanged).toHaveBeenCalledWith(sessionId, workspaceId, {
-      lineageChanged: true,
-    });
+    expect((await browserRows(service, ownerId, sessionId)).tabs).toEqual([]);
     expect(onSessionsChanged.mock.calls.some(([, , source]) => source === "browser.tabs")).toBe(
       false,
     );
@@ -2281,21 +2304,17 @@ describe("BrowserService", () => {
     });
     const ownerId = createId("user");
     const workspaceId = createId("workspace");
-    let notices = 0;
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
       repository: new MemoryBrowserRepository(ownerId, workspaceId),
       connectTimeoutMs: 2_000,
-      onCatalogChanged: () => {
-        notices += 1;
-      },
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(() => service.close());
     const sessionId = (await service.start({ fresh: true, ownerId, workspaceId })).session.id;
-    const tab = async () => (await service.readTabCatalog(ownerId, sessionId)).tabs[0];
+    const tab = async () => (await browserRows(service, ownerId, sessionId)).tabs[0];
     const page = {
       active: true,
       id: "page-1",
@@ -2304,9 +2323,8 @@ describe("BrowserService", () => {
       url: "https://site.test/pay",
     };
     // The page commits; its title is not read yet.
-    let seen = notices;
     runtime.publishTabs({ surfaces: [page] });
-    await waitFor(() => notices > seen);
+    await vi.waitFor(async () => expect((await tab())?.title).toBe(""));
     expect(await tab()).toMatchObject({ documentId: "document-pay", title: "" });
     let answered = false;
     const reading = service
@@ -2321,11 +2339,10 @@ describe("BrowserService", () => {
     expect(command.command.method).toBe(browserHostMethods.contextCandidate);
     // The page names itself while its read is out: viewers hear of it then,
     // through the ordinary coalesced notice, for the same document.
-    seen = notices;
     runtime.publishTabs({
       surfaces: [{ ...page, title: "Automatic context /pay" }],
     });
-    await waitFor(() => notices > seen);
+    await vi.waitFor(async () => expect((await tab())?.title).toBe("Automatic context /pay"));
     expect(await tab()).toMatchObject({
       documentId: "document-pay",
       title: "Automatic context /pay",
@@ -2437,16 +2454,10 @@ describe("BrowserService", () => {
       const opened = await service.start({ fresh: true, ownerId, workspaceId });
       expect(runtime.lastClaims()?.navigationVersion).toBe(capable ? 1 : undefined);
       expect(opened.session.navigationVersion).toBe(capable ? 1 : undefined);
-      expect((await service.bootstrap(ownerId)).sessions[0]?.navigationVersion).toBe(
-        capable ? 1 : undefined,
-      );
-      expect((await service.readTabCatalog(ownerId, opened.session.id)).tabs[0]).toMatchObject(
+      expect(service.clientStreams.source.ports.live(opened.session.id)?.navigation).toBe(capable);
+      expect((await browserRows(service, ownerId, opened.session.id)).tabs[0]).toMatchObject(
         capable ? { canGoBack: false, canGoForward: false } : {},
       );
-      if (!capable)
-        expect(
-          (await service.readTabCatalog(ownerId, opened.session.id)).tabs[0],
-        ).not.toHaveProperty("canGoBack");
       const control = new RecordingPeer("navigation-control");
       const watch = new RecordingPeer("navigation-watch");
       const attachment = await service.attach(
@@ -2467,25 +2478,18 @@ describe("BrowserService", () => {
         ...(capable ? { canGoBack: true, canGoForward: false } : {}),
       };
       runtime.publishTabs({ surfaces: [surface] });
-      await waitFor(() => control.textFrames.length === 2 && watch.textFrames.length === 2);
-      const oldSurface = BrowserSurfaceSchema.omit({ canGoBack: true, canGoForward: true });
-      for (const peer of [control, watch])
-        for (const raw of peer.textFrames) {
-          const frame = BrowserServerMessageSchema.parse(JSON.parse(raw));
-          if (frame.type !== "browser.snapshot" && frame.type !== "browser.surfaces.changed")
-            throw new Error("Expected viewer surfaces");
-          for (const surface of frame.surfaces)
-            expect(oldSurface.safeParse(surface).success).toBe(true);
-        }
-      const catalog = await service.readTabCatalog(ownerId, opened.session.id);
-      expect(catalog.tabs[0]?.canGoBack).toBe(capable ? true : undefined);
-      expect(catalog.tabs[0]?.canGoForward).toBe(capable ? false : undefined);
-      const oldTab = BrowserTabSummaryViewSchema.omit({
-        canGoBack: true,
-        canGoForward: true,
-      }).parse(catalog.tabs[0]);
-      expect(oldTab).not.toHaveProperty("canGoBack");
-      expect(oldTab).not.toHaveProperty("canGoForward");
+      await vi.waitFor(async () =>
+        expect((await browserRows(service, ownerId, opened.session.id)).tabs[0]?.title).toBe(
+          "Next",
+        ),
+      );
+      for (const peer of [control, watch]) {
+        expect(peer.textFrames).toHaveLength(1);
+        expect(peer.text()[0]).toMatchObject({ type: "browser.snapshot", surfaces: [] });
+      }
+      const catalog = await browserRows(service, ownerId, opened.session.id);
+      expect(catalog.tabs[0]?.canGoBack).toBe(capable);
+      expect(catalog.tabs[0]?.canGoForward).toBe(false);
       const send = (message: object) =>
         attachment.handle(Buffer.from(JSON.stringify(message)), false);
       if (capable) {
@@ -2523,12 +2527,10 @@ describe("BrowserService", () => {
       const ownerId = createId("user");
       const workspaceId = createId("workspace");
       const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-      const onCatalogChanged = vi.fn(),
-        onSessionsChanged = vi.fn();
+      const onSessionsChanged = vi.fn();
       const service = new BrowserService({
         ...nativeProfileOptions(),
         ...profileStateOptions,
-        onCatalogChanged,
         onSessionsChanged,
         repository,
         connectTimeoutMs: 2000,
@@ -2538,6 +2540,7 @@ describe("BrowserService", () => {
         }),
         targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: capable }),
         workspaceTabs: {
+          ...{ groupIds: async () => [], read: async () => [], openTabs: async () => [] },
           list: async () => [],
           groupIds: async () => [],
           recordChanges: async (sessionId: BrowserSessionId) => ({
@@ -2555,7 +2558,6 @@ describe("BrowserService", () => {
       expect(opened.session.workspaceTabRestoreVersion).toBe(capable ? 1 : undefined);
       const bootstrap = await service.bootstrap(ownerId);
       expect(bootstrap.workspaceTabRestoreVersion).toBe(1);
-      expect(bootstrap.sessions[0]?.workspaceTabRestoreVersion).toBe(capable ? 1 : undefined);
       if (capable) {
         runtime.publishTabs({
           surfaces: [
@@ -2570,12 +2572,10 @@ describe("BrowserService", () => {
           ],
           closed: [],
         });
-        await vi.waitFor(
-          () =>
-            expect(onCatalogChanged).toHaveBeenCalledWith(opened.session.id, workspaceId, {
-              lineageChanged: true,
-            }),
-          { timeout: 1000 },
+        await vi.waitFor(async () =>
+          expect((await browserRows(service, ownerId, opened.session.id)).tabs[0]?.title).toBe(
+            "Saved page",
+          ),
         );
         expect(
           onSessionsChanged.mock.calls.some(([, , source]) => source === "browser.catalog-flush"),
@@ -2583,31 +2583,6 @@ describe("BrowserService", () => {
       }
     },
   );
-  it("resolves an authorized group read from a replacement session outside bootstrap", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const ownerId = createId("user");
-    const groupId = createBrowserSessionId();
-    const sessionId = createBrowserSessionId();
-    const group = { id: groupId, tabs: [] };
-    const read = vi.fn(async (_ownerId: UserId, id: BrowserSessionId) =>
-      id === groupId ? group : null,
-    );
-    const service = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      repository: new MemoryBrowserRepository(ownerId, createId("workspace")),
-      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
-      targetResolver: { placements: () => [], resolve: () => undefined },
-      workspaceTabs: {
-        read,
-        lineageForSession: async (id: BrowserSessionId) => (id === sessionId ? groupId : null),
-        suspend: async () => undefined,
-      } as unknown as WorkspaceTabStore,
-    });
-    cleanups.push(() => service.close());
-    await expect(service.readWorkspaceTabs(ownerId, sessionId)).resolves.toEqual(group);
-    expect(read).toHaveBeenCalledWith(ownerId, groupId);
-  });
   it("delivers only the subscribed viewer surface on record and icon changes", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -2659,7 +2634,9 @@ describe("BrowserService", () => {
       ],
     });
     await vi.waitFor(() =>
-      expect(peer.text().filter(({ type }) => type === "browser.surfaces.changed")).toHaveLength(1),
+      expect(
+        service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.title,
+      ).toBe("Private sibling"),
     );
     expect(updates()).toHaveLength(1);
     const sibling = {
@@ -2668,12 +2645,13 @@ describe("BrowserService", () => {
       url: "https://sibling.example/private",
     };
     runtime.publishTabs({ surfaces: [own, sibling] });
+    const siblingFrames = peer.textFrames.length;
     await vi.waitFor(() =>
       expect(
-        peer.text().filter(({ type }) => type === "browser.surfaces.changed"),
-        "The sibling title change never reached the broker.",
-      ).toHaveLength(2),
+        service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.title,
+      ).toBe("Changed sibling"),
     );
+    expect(peer.textFrames).toHaveLength(siblingFrames);
     expect(updates()).toHaveLength(1);
     const favicon = "data:image/png;base64,aWNvbg==";
     runtime.publishTabs({ surfaces: [{ ...own, title: "Changed", favicon }, sibling] });
@@ -2778,7 +2756,11 @@ describe("BrowserService", () => {
       url: "about:blank",
     }));
     runtime.publishTabs({ surfaces });
-    await waitFor(() => peer.text().some(({ type }) => type === "browser.surfaces.changed"));
+    await vi.waitFor(() =>
+      expect(
+        service.clientStreams.source.ports.live(opened.session.id)?.records.has("page-2"),
+      ).toBe(true),
+    );
     const surfaceId = surfaces.at(-1)!.id;
     await native.handle(
       Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId, frames: false })),
@@ -2846,8 +2828,10 @@ describe("BrowserService", () => {
     };
     runtime.sendServer({ type: "browser.dialog.changed", surfaceId: "page-2", dialog });
     runtime.publishTabs({ surfaces });
-    await waitFor(
-      () => native.text().filter(({ type }) => type === "browser.surfaces.changed").length === 2,
+    await vi.waitFor(() =>
+      expect(
+        service.clientStreams.source.ports.live(opened.session.id)?.records.has("page-2"),
+      ).toBe(true),
     );
     await send({ type: "stream.subscribe", surfaceId: "page-2", frames: false });
     expect(await runtime.nextCommand()).toEqual({
@@ -3190,13 +3174,15 @@ describe("BrowserService", () => {
         url: `https://example.com/${"x".repeat(10000)}?private=value`,
       })),
     });
-    await waitFor(() => peer.text().some((message) => message.type === "browser.surfaces.changed"));
+    await vi.waitFor(() =>
+      expect(service.clientStreams.source.ports.live(opened.session.id)?.records.size).toBe(64),
+    );
     const catalog = await service.bootstrap(ownerId);
-    expect(catalog.sessions[0]?.page).toEqual({
+    expect(service.clientStreams.source.ports.live(opened.session.id)?.page).toEqual({
       title: "A".repeat(256),
       url: "https://example.com",
     });
-    expect(catalog.sessions[0]).not.toHaveProperty("surfaces");
+    expect(catalog).not.toHaveProperty("sessions");
     expect(Buffer.byteLength(JSON.stringify(catalog))).toBeLessThan(128 * 1024);
   });
 
@@ -3509,7 +3495,6 @@ describe("BrowserService", () => {
       f.audience.map((actor) => ({ ...actor, generation: actor.generation + 1 })),
     );
     f.service.invalidatePlaceAuthority();
-    await f.service.catalogsForViewers(f.sessionId);
     await f.cdp.request({ method: "Browser.getVersion" });
     const token = f.forwarded.at(-1)?.actorToken;
     expect(token).toEqual(expect.any(String));
@@ -3572,41 +3557,6 @@ describe("BrowserService", () => {
       });
     } finally {
       pending.resolve(undefined);
-    }
-  });
-
-  it("versions restored holdings and repeated identical catalog reads", async () => {
-    const f = await actorAdmissionFixture();
-    vi.useRealTimers();
-    try {
-      const first = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
-      vi.spyOn(f.backing, "resolvePlaceActors").mockResolvedValue(f.audience);
-      vi.spyOn(f.backing, "listBrowserPlaceHoldings").mockResolvedValue([
-        {
-          agentBindingId: f.authority.agentBindingId,
-          ownerId: f.authority.ownerId,
-          tabId: first.tabs[0]!.id,
-          lastUsedAt: new Date(),
-        },
-      ]);
-      const restored = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
-      expect(restored.tabs[0]!.occupants).toHaveLength(1);
-      expect(restored.revision).toBeGreaterThan(first.revision);
-      expect((await f.service.readTabCatalog(f.authority.ownerId, f.sessionId)).revision).toBe(
-        restored.revision,
-      );
-      vi.mocked(f.backing.resolvePlaceActors).mockResolvedValue([]);
-      f.service.invalidatePlaceAuthority();
-      await f.service.catalogsForViewers(f.sessionId);
-      const removed = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
-      expect(removed.tabs[0]!.occupants).toHaveLength(0);
-      expect(removed.revision).toBeGreaterThan(restored.revision);
-      await f.service.stop(f.authority.ownerId, f.sessionId);
-      const terminal = await f.service.readTabCatalog(f.authority.ownerId, f.sessionId);
-      expect(terminal.tabs).toHaveLength(0);
-      expect(terminal.revision).toBeGreaterThan(removed.revision);
-    } finally {
-      await f.service.close();
     }
   });
 
@@ -4048,6 +3998,7 @@ describe("BrowserService", () => {
     });
 
     runtime.sendFrame(browserFrame(1));
+    const recordsBeforePublish = vi.spyOn(service.clientStreams.source, "markTabs");
     runtime.publishTabs({
       surfaces: [
         {
@@ -4058,7 +4009,10 @@ describe("BrowserService", () => {
         },
       ],
     });
-    await waitFor(() => peer.textFrames.length === 2);
+    await vi.waitFor(() =>
+      expect(recordsBeforePublish).toHaveBeenCalledWith(started.session.id, expect.any(Array)),
+    );
+    recordsBeforePublish.mockRestore();
     expect(peer.binaryFrames).toHaveLength(0);
     await attachment.handle(Buffer.from(JSON.stringify({ type: "stream.subscribe" })), false);
     await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "stream.subscribe" });
@@ -4134,7 +4088,7 @@ describe("BrowserService", () => {
     runtime.sendFrame(browserFrame(3));
     runtime.sendFrame(browserFrame(4));
     runtime.sendFrame(browserFrame(5));
-    const textFrameCount = peer.textFrames.length;
+    const textFrameCount = vi.spyOn(service.clientStreams.source, "markTabs");
     runtime.publishTabs({
       surfaces: [
         {
@@ -4145,11 +4099,11 @@ describe("BrowserService", () => {
         },
       ],
     });
-    // WebSocket message order makes this server message a deterministic
-    // barrier: both binary frames have reached the broker before it is
-    // forwarded. Releasing earlier would race the network event loop and could
-    // test either one queued frame or two rather than the latest-frame policy.
-    await waitFor(() => peer.textFrames.length === textFrameCount + 1);
+    // The tab commit follows the pictures on the same Runtime socket.
+    await vi.waitFor(() =>
+      expect(textFrameCount).toHaveBeenCalledWith(started.session.id, expect.any(Array)),
+    );
+    textFrameCount.mockRestore();
     slowPeer.releaseFirstFrame();
     const token = decodeBrowserFrameEnvelope(slowPeer.binaryFrames[0]!).header.watchToken;
     await slowAttachment.handle(Buffer.from(JSON.stringify({ type: "stream.ack", token })), false);
@@ -4173,86 +4127,75 @@ describe("BrowserService", () => {
     expect(peer.closed?.code).toBe(1000);
   });
 
-  it("gives every late viewer one complete materialized snapshot", async () => {
+  it("gives late viewers only their selected page's current metadata", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const service = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      connectTimeoutMs: 2_000,
-      repository,
-      signer: new BrowserAttachTicketSigner({
-        keyId: "host-primary",
-        privateKey: keys.privateKey,
-      }),
-      targetResolver: runnerTarget({ url: runtime.url }),
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      targetControl: true,
     });
-    cleanups.push(async () => service.close());
     const started = await service.start({ fresh: true, ownerId, workspaceId });
-    const firstPeer = new RecordingPeer("ui-first");
-    await service.attach(ownerId, started.session.id, firstPeer, consumerOptions());
-
     runtime.publishTabs({
       surfaces: [
-        {
-          active: false,
-          id: "page-1",
-          title: "Example",
-          url: "https://example.com/",
-        },
-        {
-          active: true,
-          id: "page-2",
+        { id: "page-1", title: "Private sibling", url: "https://sibling.example/private" },
+        { id: "page-2", active: true, title: "Account", url: "https://account.example/current" },
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(service.clientStreams.source.ports.live(started.session.id)?.records.size).toBe(2),
+    );
+    const dialog = {
+      id: "00000000-0000-4000-8000-0000000000d1",
+      message: "Continue?",
+      surfaceId: "page-2",
+      type: "confirm",
+    };
+    runtime.sendServer({ type: "browser.dialog.changed", surfaceId: "page-2", dialog });
+    const peer = new RecordingPeer("late");
+    const attachment = await service.attach(ownerId, started.session.id, peer, consumerOptions());
+    expect(peer.text()[0]).toMatchObject({ type: "browser.snapshot", surfaces: [] });
+    await attachment.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-2", frames: false })),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(peer.text()).toContainEqual({
+        type: "browser.dialog.changed",
+        surfaceId: "page-2",
+        dialog,
+      }),
+    );
+    expect(peer.text()).toContainEqual(
+      expect.objectContaining({
+        type: "browser.surface",
+        surfaceId: "page-2",
+        surface: expect.objectContaining({
           title: "Account",
-          url: "https://example.com/account",
-        },
-      ],
-    });
-    runtime.sendServer({
-      dialog: {
-        id: "00000000-0000-4000-8000-0000000000d1",
-        message: "Continue?",
-        surfaceId: "page-2",
-        type: "confirm",
-      },
+          url: "https://account.example/current",
+        }),
+      }),
+    );
+    expect(JSON.stringify(peer.text())).not.toContain("sibling.example");
+    runtime.sendServer({ type: "browser.dialog.changed", surfaceId: "page-2", dialog: null });
+    await vi.waitFor(() =>
+      expect(peer.text().at(-1)).toMatchObject({ type: "browser.dialog.changed", dialog: null }),
+    );
+    const next = new RecordingPeer("later");
+    const later = await service.attach(ownerId, started.session.id, next, consumerOptions());
+    await later.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-2", frames: false })),
+      false,
+    );
+    expect(next.text()).toContainEqual({
       type: "browser.dialog.changed",
-    });
-    await waitFor(() => firstPeer.textFrames.length === 3);
-
-    const secondPeer = new RecordingPeer("ui-second");
-    await service.attach(ownerId, started.session.id, secondPeer, consumerOptions());
-    expect(JSON.parse(secondPeer.textFrames[0] ?? "null")).toMatchObject({
-      dialog: {
-        id: "00000000-0000-4000-8000-0000000000d1",
-        message: "Continue?",
-        surfaceId: "page-2",
-        type: "confirm",
-      },
-      sessionId: started.session.id,
-      state: "ready",
-      surfaces: [
-        expect.objectContaining({ active: false, id: "page-1" }),
-        expect.objectContaining({ active: true, id: "page-2" }),
-      ],
-      type: "browser.snapshot",
-    });
-
-    runtime.sendServer({ dialog: null, type: "browser.dialog.changed" });
-    await waitFor(() => secondPeer.textFrames.length === 2);
-    const thirdPeer = new RecordingPeer("ui-third");
-    await service.attach(ownerId, started.session.id, thirdPeer, consumerOptions());
-    expect(JSON.parse(thirdPeer.textFrames[0] ?? "null")).toMatchObject({
+      surfaceId: "page-2",
       dialog: null,
-      surfaces: [
-        expect.objectContaining({ id: "page-1" }),
-        expect.objectContaining({ id: "page-2" }),
-      ],
-      type: "browser.snapshot",
     });
   });
 
@@ -4729,6 +4672,8 @@ describe("BrowserService", () => {
 
     const bootstrap = await service.bootstrap(ownerId);
     expect(bootstrap.profileGrants).toHaveLength(100);
+    expect(bootstrap).not.toHaveProperty("sessions");
+    expect(bootstrap).not.toHaveProperty("workspaceTabs");
     expect(Buffer.byteLength(JSON.stringify(bootstrap), "utf8")).toBeLessThanOrEqual(
       1 * 1_024 * 1_024,
     );
@@ -7556,6 +7501,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
     targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: true }),
     workspaceTabs: {
+      ...{ groupIds: async () => [], read: async () => [], openTabs: async () => [] },
       recordChanges,
       suspend: async () => undefined,
     } as unknown as WorkspaceTabStore,
@@ -7569,7 +7515,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     stream: { op: "end", revision: 7, count: 0, meta: { activeId: null, inventoryRevision: 1 } },
   });
   await vi.waitFor(
-    async () => expect((await service.readTabCatalog(ownerId, opened.session.id)).tabs).toEqual([]),
+    async () => expect((await browserRows(service, ownerId, opened.session.id)).tabs).toEqual([]),
     { timeout: 1000 },
   );
   await service.flushPendingTabDescriptors();
@@ -7596,7 +7542,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
   });
   await vi.waitFor(
     async () =>
-      expect((await service.readTabCatalog(ownerId, opened.session.id)).tabs).toHaveLength(1),
+      expect((await browserRows(service, ownerId, opened.session.id)).tabs).toHaveLength(1),
     { timeout: 1000 },
   );
   await service.flushPendingTabDescriptors();
@@ -7608,7 +7554,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     stream: { op: "end", revision: 8, count: 2, meta: { activeId: row.id, inventoryRevision: 1 } },
   });
   expect(await runtime.nextCommand()).toMatchObject({ type: "tabs.resync" });
-  expect((await service.readTabCatalog(ownerId, opened.session.id)).tabs).toHaveLength(1);
+  expect((await browserRows(service, ownerId, opened.session.id)).tabs).toHaveLength(1);
   expect(recordChanges).not.toHaveBeenCalled();
   runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "recovered" } });
   runtime.sendServer({ type: "browser.tabs", stream: { op: "rows", rows: [row] } });
@@ -7621,7 +7567,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     stream: { op: "change", generation: "recovered", base: 0, revision: 1, remove: [row.id] },
   });
   await vi.waitFor(
-    async () => expect((await service.readTabCatalog(ownerId, opened.session.id)).tabs).toEqual([]),
+    async () => expect((await browserRows(service, ownerId, opened.session.id)).tabs).toEqual([]),
     { timeout: 1000 },
   );
   await service.flushPendingTabDescriptors();

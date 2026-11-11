@@ -59,9 +59,7 @@ import {
   type BrowserHistoryStore,
   type BrowserTabGroupStore,
 } from "@opensteer/database";
-import type { WorkspaceTabLineage } from "@opensteer/protocol";
 import {
-  browserBootstrapSessionsMaxBytes,
   browserCaptureMaxTargets,
   BrowserClientMessageSchema,
   BrowserContextCandidateSchema,
@@ -74,7 +72,6 @@ import {
   BrowserProfileAccessSchema,
   browserStateImportHostTimeoutMs,
   BrowserSurfaceIdSchema,
-  BrowserTabCatalogSchema,
   BrowserTabOpenCommandSchema,
   BrowserTabOpenRefusalDetailsSchema,
   browserViewerCloseCodes,
@@ -94,7 +91,6 @@ import {
   type BrowserPagePresence,
   type BrowserPlacement,
   type BrowserPlacementSelector,
-  type BrowserPresence,
   type BrowserProfile,
   type BrowserProfileAccess,
   type BrowserProfileGrant,
@@ -106,7 +102,6 @@ import {
   type BrowserSessionOpenerRecord,
   type BrowserSurface,
   type BrowserSurfaceId,
-  type BrowserTabCatalog,
   type BrowserTabCloseCommand,
   type BrowserTabCloseResult,
   type BrowserTabIconInput,
@@ -135,7 +130,6 @@ import { createHash, randomUUID } from "node:crypto";
 import type { RawData } from "ws";
 import WebSocket from "ws";
 import { z } from "zod";
-import { BrowserCatalogRevisions } from "./browser-catalog-revisions.js";
 import { LegacyBrowserClipboard } from "./browser-legacy-clipboard.js";
 import type { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import type { BrowserAttachTicketSigner } from "./browser-ticket.js";
@@ -150,7 +144,6 @@ const maxBrowserTextBytes = 1 * 1_024 * 1_024;
 const maxPendingAgentRequests = 32;
 const agentRequestTimeoutMs = 15_000;
 const maxBrowserProfiles = 128;
-const maxBrowserSessions = 100;
 const maxBrowserProfileGrants = 100;
 /** A live state export walks every context, so it gets more room than a CDP call. */
 
@@ -627,11 +620,6 @@ interface BrowserServiceOptions {
   readonly onProfilesChanged?: (ownerId: UserId, workspaceId: WorkspaceId) => void;
   readonly workspaceTabs?: WorkspaceTabStore;
   readonly tabGroups?: BrowserTabGroupStore;
-  readonly onCatalogChanged?: (
-    sessionId: BrowserSessionId,
-    workspaceId: WorkspaceId,
-    change?: { readonly lineageChanged: boolean },
-  ) => void;
   readonly onMissingActor?: (sessionId: BrowserSessionId, agentBindingId: string) => void;
   readonly onPlaceNotice?: (
     ownerId: UserId,
@@ -639,13 +627,6 @@ interface BrowserServiceOptions {
       PlaceActivityNotice | { type: "host.thread-place-changed"; reference: ThreadPlaceReference },
   ) => void;
   readonly connectTimeoutMs?: number;
-  /**
-   * Announces that viewers' browser catalogs changed in this Workspace.
-   *
-   * The list reaches a client through the HTTP bootstrap, which it re-reads on
-   * a poll — so without this an agent-opened browser stays invisible for the
-   * length of that interval.
-   */
   readonly onSessionsChanged: (
     workspaceId: WorkspaceId,
     sessionIds: readonly BrowserSessionId[],
@@ -655,11 +636,6 @@ interface BrowserServiceOptions {
    * What a person sees about one browser changed: its page, or whether an
    * agent is acting in it. These change often, so they never reread a list.
    */
-  readonly onPresenceChanged?: (change: {
-    readonly presence: BrowserPresence;
-    readonly workspaceId: WorkspaceId;
-  }) => void;
-  /** Conversations whose visible browser usage changed. */
   readonly onUsageChanged?: (credits: readonly BrowserUsageCredit[]) => void;
   /** A best-effort write that failed after the agent was already answered. */
   readonly onError?: (error: unknown) => void;
@@ -723,14 +699,12 @@ export class BrowserService {
   readonly #onHistoryChanged: NonNullable<BrowserServiceOptions["onHistoryChanged"]>;
   readonly #workspaceTabs: WorkspaceTabStore | undefined;
   readonly #tabGroups: BrowserTabGroupStore | undefined;
-  readonly #endedCatalogs = new Map<BrowserSessionId, BrowserTabCatalog>();
   readonly #closeResults = new Map<
     string,
     { fingerprint: string; outcome: BrowserTabCloseResult["outcome"] }
   >();
   readonly #onProfilesChanged: NonNullable<BrowserServiceOptions["onProfilesChanged"]>;
   readonly #onMissingActor: NonNullable<BrowserServiceOptions["onMissingActor"]>;
-  readonly #onCatalogChanged: NonNullable<BrowserServiceOptions["onCatalogChanged"]>;
   readonly #onPlaceNotice: NonNullable<BrowserServiceOptions["onPlaceNotice"]>;
   #placeOrder = 0;
   #placeSequence = 0;
@@ -740,7 +714,7 @@ export class BrowserService {
   readonly #actorResolutions = new Map<string, Promise<void>>();
   readonly #sessionOperations = new Map<string, Promise<unknown>>();
   readonly #runPlaces: RunPlaceRecorder;
-  readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
+  readonly #tabDescriptorTimers = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
   #validateLoginLease:
     | ((input: {
@@ -758,7 +732,6 @@ export class BrowserService {
     sessionIds: readonly BrowserSessionId[],
     source: BootstrapNoticeSource,
   ) => void;
-  readonly #onPresenceChanged: NonNullable<BrowserServiceOptions["onPresenceChanged"]>;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
   readonly #reservedTabs = new Map<BrowserSessionId, number>();
@@ -809,7 +782,6 @@ export class BrowserService {
     this.#workspaceTabs = options.workspaceTabs;
     this.#tabGroups = options.tabGroups;
     this.#onMissingActor = options.onMissingActor ?? (() => undefined);
-    this.#onCatalogChanged = options.onCatalogChanged ?? (() => undefined);
     this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.#onSessionsChanged = (workspaceId, sessionIds, source) => {
@@ -819,7 +791,6 @@ export class BrowserService {
       options.onSessionsChanged(workspaceId, sessionIds, source);
     };
     this.#onProfilesChanged = options.onProfilesChanged ?? (() => {});
-    this.#onPresenceChanged = options.onPresenceChanged ?? (() => undefined);
     this.#onUsageChanged = options.onUsageChanged ?? (() => undefined);
     this.#onError = options.onError ?? (() => undefined);
     this.#activityClock = options.activityClock ?? systemClock;
@@ -838,7 +809,11 @@ export class BrowserService {
     this.clientStreams = new BrowserClientStreams({
       authorityGeneration: () => this.#authorityGeneration,
       groupIds: (ownerId) => this.#workspaceTabs?.groupIds(ownerId) ?? Promise.resolve([]),
-      readGroups: (ownerId, ids) => this.#workspaceTabs?.read(ownerId, ids) ?? Promise.resolve([]),
+      readGroups: async (ownerId, ids) => {
+        const rows = (await this.#workspaceTabs?.read(ownerId, ids)) ?? [];
+        await Promise.all(rows.map((row) => this.#restoreHoldings(row.sessionId)));
+        return rows;
+      },
       readTabs: (ids) => this.#workspaceTabs?.openTabs(ids) ?? Promise.resolve([]),
       groupId: (id) => this.#workspaceTabs?.lineageForSession(id) ?? Promise.resolve(null),
       live: (id) => this.#brokers.get(id)?.clientRows(this.#presence(id)),
@@ -913,38 +888,18 @@ export class BrowserService {
   }
 
   async bootstrap(ownerId: UserId): Promise<HostedBrowserBootstrap> {
-    const [profiles, sessions, grants, homes] = await Promise.all([
+    const [profiles, grants, homes, tabGroups] = await Promise.all([
       this.#repository.listBrowserProfiles(ownerId),
-      this.#repository.listBrowserSessions(ownerId),
       this.#repository.listActiveBrowserProfileGrants(ownerId),
       this.#repository.listEligibleBrowserRunners(ownerId),
-    ]);
-    if (
-      profiles.length > maxBrowserProfiles ||
-      sessions.length > maxBrowserSessions ||
-      grants.length > maxBrowserProfileGrants
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "Browser catalog limit exceeded.",
-      });
-    }
-    const sessionIds = sessions.map((session) => session.id);
-    const [attachedRuns, threads, visibleOpeners] = await Promise.all([
-      this.#repository.listAttachedRunIdsForBrowserSessions(sessionIds),
-      this.#repository.listBrowserSessionThreads({ ownerId, sessionIds }),
-      this.#visibleOpenerThreads(ownerId, sessions),
-    ]);
-    await Promise.all(sessions.map((session) => this.#restoreHoldings(session.id)));
-    const [workspaceTabs, tabGroups] = await Promise.all([
-      this.#workspaceTabs
-        ?.list(ownerId)
-        .then((groups) => groups.map((group) => this.#personWorkspaceTabs(group))),
       this.#tabGroups?.layout(ownerId),
     ]);
-    const bootstrap: HostedBrowserBootstrap = {
+    if (profiles.length > maxBrowserProfiles || grants.length > maxBrowserProfileGrants)
+      throw new OpensteerError({ code: "conflict", message: "Browser catalog limit exceeded." });
+    return {
+      ...(await this.clientStreams.source.bootstrap(ownerId)),
       profileHomes: homes.map((home) => home.id),
-      ...(workspaceTabs ? { workspaceTabRestoreVersion: 1, workspaceTabs } : {}),
+      ...(this.#workspaceTabs ? { workspaceTabRestoreVersion: 1 as const } : {}),
       ...(tabGroups ? { tabGroupsVersion: 1, tabGroups } : {}),
       ...(this.#localProfiles
         ? { profileDeletions: await this.#localProfiles.pendingDeletions(ownerId) }
@@ -954,63 +909,6 @@ export class BrowserService {
         !this.#closed && this.#eligiblePlacements(homes).some((placement) => placement.available),
       placements: this.#eligiblePlacements(homes).map(publicPlacement),
       profiles: profiles.map(publicProfile),
-      sessions: sessions.map((session) => ({
-        tabCatalog: this.#catalog(ownerId, session.id),
-        ...publicSession(session),
-        navigationVersion: this.#brokers.get(session.id)?.navigationVersion,
-        workspaceTabRestoreVersion: this.#workspaceTabs
-          ? this.#brokers.get(session.id)?.workspaceTabRestoreVersion
-          : undefined,
-        opener: projectBrowserSessionOpener(session.opener ?? null, {
-          userId: ownerId,
-          visibleThreadIds: visibleOpeners,
-        }),
-        ...this.#presence(session.id),
-        attachedRunIds: [...(attachedRuns.get(session.id) ?? [])],
-        threadIds: [...(threads.get(session.id) ?? [])],
-      })),
-    };
-    if (
-      Buffer.byteLength(JSON.stringify(bootstrap.sessions), "utf8") >
-      browserBootstrapSessionsMaxBytes
-    ) {
-      for (const session of bootstrap.sessions) {
-        delete session.tabCatalog;
-      }
-    }
-    if (
-      workspaceTabs &&
-      Buffer.byteLength(JSON.stringify(workspaceTabs), "utf8") > browserBootstrapSessionsMaxBytes
-    )
-      for (const group of workspaceTabs) delete group.tabs;
-    return { ...bootstrap, ...(await this.clientStreams.source.bootstrap(ownerId)) };
-  }
-
-  async readWorkspaceTabs(
-    ownerId: UserId,
-    groupId: BrowserSessionId,
-  ): Promise<WorkspaceTabLineage> {
-    const resolved = (await this.#workspaceTabs?.lineageForSession(groupId)) ?? groupId;
-    const group = await this.#workspaceTabs?.read(ownerId, resolved);
-    if (!group) throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
-    return this.#personWorkspaceTabs(group);
-  }
-
-  #personWorkspaceTabs(group: WorkspaceTabLineage): WorkspaceTabLineage {
-    return {
-      ...group,
-      ...(group.tabs
-        ? {
-            tabs: group.tabs.map((tab) => {
-              const broker = tab.sessionId ? this.#brokers.get(tab.sessionId) : undefined;
-              const state =
-                broker?.live && broker.surfaceState === 1
-                  ? broker.surfaceStateOf(tab.id)
-                  : undefined;
-              return state ? { ...tab, state } : tab;
-            }),
-          }
-        : {}),
     };
   }
 
@@ -1084,7 +982,7 @@ export class BrowserService {
       if (!broker?.live) {
         sessionId = createBrowserSessionId();
         const dormantSurfaceIds =
-          (await this.readWorkspaceTabs(ownerId, initial.groupId)).tabs
+          (await tabs.read(ownerId, initial.groupId))?.tabs
             ?.filter((tab) => tab.id !== tabId)
             .map((tab) => tab.id) ?? [];
         const finish = await this.#serializeKey(
@@ -1106,7 +1004,7 @@ export class BrowserService {
         );
         await finish();
         broker = this.#brokers.get(sessionId);
-      } else if (!broker.catalog(() => []).tabs.some((tab) => tab.id === tabId)) {
+      } else if (!broker.clientRows(this.#presence(sessionId)).records.has(tabId)) {
         await tabs.bind(initial.groupId, sessionId, tabId);
         await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
         if (row.favicon) broker.restoreIcon(tabId, row.url, row.favicon);
@@ -1136,11 +1034,10 @@ export class BrowserService {
         });
       }
       if (!(await tabs.get(ownerId, tabId))) {
-        if (broker?.live)
-          await this.#disposeWorkspaceTab(ownerId, previous.workspaceId, sessionId, tabId, broker);
+        if (broker?.live) await this.#disposeWorkspaceTab(ownerId, sessionId, tabId, broker);
         throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
       }
-      await this.#flushCatalogNotice(sessionId, previous.workspaceId);
+      await this.#flushTabDescriptors(sessionId);
       const session = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
       if (!session || !broker?.live) throw unavailable("The browser computer disconnected.");
       if (agent) {
@@ -1156,10 +1053,8 @@ export class BrowserService {
         type: "workspace.tab.activate" as const,
         groupId: initial.groupId,
         sessionId,
-        group: await this.readWorkspaceTabs(ownerId, initial.groupId),
         session: await this.#personSession(session, ownerId),
         tabId,
-        catalog: this.#catalog(ownerId, sessionId),
       };
     });
   }
@@ -1225,7 +1120,8 @@ export class BrowserService {
       },
       idempotencyKey,
     );
-    const group = await this.readWorkspaceTabs(ownerId, row.groupId);
+    const group = await tabs.read(ownerId, row.groupId);
+    if (!group) throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
     await this.clientStreams.source.groupChanged(group.session.id, { tabs: true });
     this.#onSessionsChanged(group.session.workspaceId, [group.session.id], "browser.tabs");
     return {
@@ -1233,7 +1129,6 @@ export class BrowserService {
       groupId: row.groupId,
       sessionId: group.session.id,
       tabId: BrowserSurfaceIdSchema.parse(row.id),
-      group,
       layout: await this.#tabGroups.layout(ownerId),
     };
   }
@@ -1246,24 +1141,21 @@ export class BrowserService {
       const session = await this.#workspaceTabs!.session(ownerId, row.groupId);
       const broker = session ? this.#brokers.get(session.id) : undefined;
       if (session && broker?.live)
-        await this.#disposeWorkspaceTab(ownerId, session.workspaceId, session.id, tabId, broker);
+        await this.#disposeWorkspaceTab(ownerId, session.id, tabId, broker);
       // The closed revision reaches every viewer, so a slower earlier lineage can't bring it back.
       if (session) {
         await this.clientStreams.source.groupChanged(session.id, { tabs: true });
-        this.#onCatalogChanged(session.id, session.workspaceId, { lineageChanged: true });
       }
     });
     return {
       type: "workspace.tab.close" as const,
       groupId: row.groupId,
       sessionId: (await this.#workspaceTabs!.session(ownerId, row.groupId))?.id,
-      group: await this.readWorkspaceTabs(ownerId, row.groupId),
     };
   }
 
   async #disposeWorkspaceTab(
     ownerId: UserId,
-    workspaceId: WorkspaceId,
     sessionId: BrowserSessionId,
     tabId: BrowserSurfaceId,
     broker: HostedBrowserBroker,
@@ -1288,7 +1180,7 @@ export class BrowserService {
       const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
       if (record) await this.#stopRecord(record);
     }
-    await this.#flushCatalogNotice(sessionId, workspaceId, broker);
+    await this.#flushTabDescriptors(sessionId, broker);
   }
 
   /** Only people create profiles; every device of theirs learns of it, not just the one that asked. */
@@ -1447,7 +1339,6 @@ export class BrowserService {
       ...result,
       session: {
         ...result.session,
-        tabCatalog: this.#catalog(input.ownerId, result.session.id),
         ...this.#presence(result.session.id),
         threadIds: [...(threads.get(result.session.id) ?? [])],
       },
@@ -1497,12 +1388,6 @@ export class BrowserService {
     }
   }
 
-  #catalog(ownerId: UserId, sessionId: BrowserSessionId): BrowserTabCatalog {
-    const broker = this.#brokers.get(sessionId);
-    if (!broker)
-      return this.#endedCatalogs.get(sessionId) ?? { generation: 0, revision: 0, tabs: [] };
-    return broker.catalog((surfaceId) => this.#occupants(ownerId, sessionId, surfaceId), ownerId);
-  }
   #occupants(ownerId: UserId, sessionId: BrowserSessionId, surfaceId: string): PlaceOccupant[] {
     const occupants = new Map<ThreadId, PlaceOccupant>();
     for (const actor of this.#actors.values()) {
@@ -1527,12 +1412,10 @@ export class BrowserService {
     return [...occupants.values()];
   }
 
-  async readTabCatalog(ownerId: UserId, sessionId: BrowserSessionId): Promise<BrowserTabCatalog> {
+  async #requireSession(ownerId: UserId, sessionId: BrowserSessionId): Promise<void> {
     const record = await this.#repository.getBrowserSessionForOwner(sessionId, ownerId);
     if (!record || (this.#workspaceTabs && isTerminal(record.state)))
       throw new OpensteerError({ code: "not_found", message: "Browser session not found." });
-    await this.#restoreHoldings(sessionId);
-    return this.#catalog(ownerId, sessionId);
   }
 
   async readTabIcon(
@@ -1561,7 +1444,7 @@ export class BrowserService {
     ownerId: UserId,
     input: BrowserContextCandidateInput,
   ): Promise<BrowserContextCandidate> {
-    await this.readTabCatalog(ownerId, input.sessionId);
+    await this.#requireSession(ownerId, input.sessionId);
     const broker = this.#brokers.get(input.sessionId);
     if (!broker?.live || !broker.targetedStreaming)
       throw new OpensteerError({
@@ -2127,7 +2010,7 @@ export class BrowserService {
           "browser-tab-open-outcome-unknown",
           "The page outcome is unknown.",
         );
-      await this.#flushCatalogNotice(record.id, record.workspaceId);
+      await this.#flushTabDescriptors(record.id);
       await this.clientStreams.source.groupChanged(record.id);
       const visible = await this.#visibleOpenerThreads(ownerId, [record]);
       return {
@@ -2150,7 +2033,6 @@ export class BrowserService {
           }),
         },
         tabId: binding.outcome.tabId,
-        catalog: this.#catalog(ownerId, record.id),
       };
     });
   }
@@ -2195,22 +2077,21 @@ export class BrowserService {
       if (previous) {
         if (previous.fingerprint !== fingerprint)
           throw new OpensteerError({ code: "conflict", message: "Idempotency key already used." });
-        await this.readTabCatalog(ownerId, command.sessionId);
+        await this.#requireSession(ownerId, command.sessionId);
         return {
           type: "browser.tab.close",
           sessionId: command.sessionId,
           outcome: previous.outcome,
-          catalog: this.#catalog(ownerId, command.sessionId),
         };
       }
-      const catalog = await this.readTabCatalog(ownerId, command.sessionId);
+      await this.#requireSession(ownerId, command.sessionId);
       const broker = this.#brokers.get(command.sessionId);
       if (!broker?.live || !broker.targetedStreaming)
         throw new OpensteerError({
           code: "conflict",
           message: "The browser computer is unavailable or needs an update.",
         });
-      if ((catalog.inventoryRevision ?? catalog.revision) !== command.inventoryRevision)
+      if (broker.inventoryRevision !== command.inventoryRevision)
         throw new OpensteerError({
           code: "conflict",
           reason: staleBrowserTabInventoryReason,
@@ -2258,7 +2139,6 @@ export class BrowserService {
           command.sessionId,
         sessionId: command.sessionId,
         outcome,
-        catalog: this.#catalog(ownerId, command.sessionId),
       };
       this.#closeResults.set(key, { fingerprint, outcome });
       if (this.#closeResults.size > 1_000)
@@ -2431,11 +2311,7 @@ export class BrowserService {
         { agentBindingId: actor.binding, ownerId: actor.ownerId },
         actor.sessionId,
       );
-      if (broker) this.#queueCatalogNotice(actor.sessionId, broker.workspaceId);
     }
-    if (workspaceId && !threadIds)
-      for (const [sessionId, broker] of this.#brokers)
-        if (broker.workspaceId === workspaceId) this.#queueCatalogNotice(sessionId, workspaceId);
   }
 
   #clearActor(actor: BrowserActor): void {
@@ -2458,7 +2334,6 @@ export class BrowserService {
         });
     }
     this.clientStreams.source.markTabs(actor.sessionId, actor.surfaces.keys());
-    this.#brokers.get(actor.sessionId)?.bumpCatalog();
   }
 
   #startActorResolution(
@@ -2653,38 +2528,21 @@ export class BrowserService {
     });
   }
 
-  async catalogsForViewers(
-    sessionId: BrowserSessionId,
-  ): Promise<ReadonlyMap<UserId, BrowserTabCatalog>> {
-    const viewers = await this.#repository.listBrowserSessionViewers(sessionId);
-    await this.#restoreHoldings(sessionId, viewers?.userIds ?? []);
-    await Promise.all(
-      [...this.#actorResolutions]
-        .filter(([key]) => key.startsWith(`${sessionId}:`))
-        .map(([, work]) => work),
-    );
-    return new Map(
-      (viewers?.userIds ?? []).map((ownerId) => [ownerId, this.#catalog(ownerId, sessionId)]),
-    );
-  }
-
   async flushPendingTabDescriptors(): Promise<void> {
     await Promise.all(
       [...this.#brokers]
         .filter(
           ([sessionId, broker]) =>
-            this.#catalogNotices.has(sessionId) ||
+            this.#tabDescriptorTimers.has(sessionId) ||
             broker.hasTabChanges ||
             this.#sessionOperations.has(`catalog:${sessionId}`),
         )
-        .map(([sessionId, broker]) =>
-          this.#flushCatalogNotice(sessionId, broker.workspaceId, broker),
-        ),
+        .map(([sessionId, broker]) => this.#flushTabDescriptors(sessionId, broker)),
     );
   }
 
   tabOccupants(ownerId: UserId, sessionId: BrowserSessionId, tabId: BrowserSurfaceId) {
-    return this.#catalog(ownerId, sessionId).tabs.find((tab) => tab.id === tabId)?.occupants ?? [];
+    return this.#occupants(ownerId, sessionId, tabId);
   }
 
   /** The saved session's record when the agent may reach it, live or not; otherwise null. */
@@ -2709,26 +2567,24 @@ export class BrowserService {
       : null;
   }
 
-  #queueCatalogNotice(sessionId: BrowserSessionId, workspaceId: WorkspaceId): void {
-    if (this.#catalogNotices.has(sessionId)) return;
+  #queueTabDescriptors(sessionId: BrowserSessionId): void {
+    if (this.#tabDescriptorTimers.has(sessionId)) return;
     const timer = setTimeout(() => {
-      this.#catalogNotices.delete(sessionId);
-      void this.#flushCatalogNotice(sessionId, workspaceId).catch(this.#onError);
+      this.#tabDescriptorTimers.delete(sessionId);
+      void this.#flushTabDescriptors(sessionId).catch(this.#onError);
     }, 100);
     timer.unref();
-    this.#catalogNotices.set(sessionId, timer);
+    this.#tabDescriptorTimers.set(sessionId, timer);
   }
 
-  #flushCatalogNotice(
+  #flushTabDescriptors(
     sessionId: BrowserSessionId,
-    workspaceId: WorkspaceId,
     broker = this.#brokers.get(sessionId),
   ): Promise<void> {
-    const timer = this.#catalogNotices.get(sessionId);
+    const timer = this.#tabDescriptorTimers.get(sessionId);
     if (timer) clearTimeout(timer);
-    this.#catalogNotices.delete(sessionId);
+    this.#tabDescriptorTimers.delete(sessionId);
     return this.#serializeKey(`catalog:${sessionId}`, async () => {
-      let lineageChanged = false;
       if (broker && this.#workspaceTabs) {
         const changes = broker.tabChanges();
         if (changes.tabs.length || changes.closed.length) {
@@ -2737,13 +2593,10 @@ export class BrowserService {
             changes.tabs,
             changes.closed,
           );
-          lineageChanged = written.changed;
           this.clientStreams.source.tabsWritten(written.groupId, written.rows, written.closedIds);
         }
-        lineageChanged ||= changes.stateDirty;
         broker.acknowledgeTabChanges(changes);
       }
-      this.#onCatalogChanged(sessionId, workspaceId, { lineageChanged });
     });
   }
 
@@ -2781,7 +2634,10 @@ export class BrowserService {
           page,
         }),
       )
-      .then((credits) => this.announceUsage(credits))
+      .then(async (credits) => {
+        this.announceUsage(credits);
+        await this.#restoreHoldings(actor.sessionId);
+      })
       .catch((error: unknown) => {
         const surface = actor.surfaces.get(surfaceId);
         if (surface?.recordedPage === recordedPage) delete surface.recordedPage;
@@ -2831,7 +2687,6 @@ export class BrowserService {
     this.#scheduleActingEnd(sessionId, Math.min(at + this.#actingWindowMs, ...deadlines) - at);
     if (!wasActing) {
       this.clientStreams.source.markTabs(sessionId, [activity.surfaceId]);
-      this.#brokers.get(sessionId)?.bumpCatalog();
     }
     const key = `${sessionId}:${activity.surfaceId}`;
     this.#activityPending.set(`${key}:${actor.token}`, {
@@ -2925,10 +2780,6 @@ export class BrowserService {
     this.#activityTimers.set(key, timer);
   }
 
-  /**
-   * Conversations' visible usage changed. First uses and revisits that move
-   * the catalog's conversation list also refresh the viewers' catalogs.
-   */
   announceUsage(credits: readonly BrowserUsageCredit[]): void {
     if (credits.length === 0) return;
     this.#onUsageChanged(credits);
@@ -3598,7 +3449,10 @@ export class BrowserService {
                   sessionId: record.id,
                   tabId: target.data.surfaceId,
                 })
-                .then((credits) => this.announceUsage(credits))
+                .then(async (credits) => {
+                  this.announceUsage(credits);
+                  await this.#restoreHoldings(record.id);
+                })
                 .catch(this.#onError);
             }
           }
@@ -4046,8 +3900,8 @@ export class BrowserService {
     this.clientStreams.close();
     this.#authorityGeneration++;
     for (const actor of this.#actors.values()) this.#clearActor(actor);
-    for (const timer of this.#catalogNotices.values()) clearTimeout(timer);
-    this.#catalogNotices.clear();
+    for (const timer of this.#tabDescriptorTimers.values()) clearTimeout(timer);
+    this.#tabDescriptorTimers.clear();
     for (const timer of this.#activityTimers.values()) clearTimeout(timer);
     this.#activityTimers.clear();
     this.#activityPending.clear();
@@ -4063,7 +3917,7 @@ export class BrowserService {
       await this.#operationTail;
       await Promise.all(
         [...this.#brokers].map(([sessionId, broker]) =>
-          this.#flushCatalogNotice(sessionId, broker.workspaceId, broker),
+          this.#flushTabDescriptors(sessionId, broker),
         ),
       );
       await Promise.allSettled([...this.#brokers.values()].map((broker) => broker.stop()));
@@ -4328,7 +4182,7 @@ export class BrowserService {
               }
             : {}),
           onPageChanged: () => this.#announcePresence(sessionId),
-          onTabsChanged: () => this.#queueCatalogNotice(sessionId, record.workspaceId),
+          onTabsChanged: () => this.#queueTabDescriptors(sessionId),
           onRecordsChanged: (ids) => {
             this.clientStreams.source.markTabs(sessionId, ids);
             this.clientStreams.source.markGroup(sessionId);
@@ -4373,21 +4227,11 @@ export class BrowserService {
             for (const actor of this.#actors.values())
               if (actor.sessionId === sessionId) this.#clearActor(actor);
             const endedBroker = this.#brokers.get(sessionId);
-            await this.#flushCatalogNotice(sessionId, record.workspaceId, endedBroker);
+            await this.#flushTabDescriptors(sessionId, endedBroker);
             await this.#workspaceTabs?.suspend(sessionId);
             await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
             if (this.#workspaceTabs)
               this.#onSessionsChanged(record.workspaceId, [sessionId], "browser.terminal");
-            const previous = endedBroker?.catalog(() => []);
-            if (previous)
-              this.#endedCatalogs.set(sessionId, {
-                ...previous,
-                revision: previous.revision + 1,
-                tabs: [],
-              });
-            if (this.#endedCatalogs.size > maxBrowserSessions)
-              this.#endedCatalogs.delete(this.#endedCatalogs.keys().next().value!);
-            this.#onCatalogChanged(sessionId, record.workspaceId);
             this.#forgetActing(sessionId);
             this.#announcePresence(sessionId);
             this.#brokers.delete(sessionId);
@@ -4405,7 +4249,7 @@ export class BrowserService {
       try {
         stage = "runtime-readiness";
         await broker.ready();
-        let initialTabId = broker.catalog(() => []).tabs[0]?.id;
+        let initialTabId: BrowserSurfaceId | undefined;
         {
           const ready = InitialPageReadySchema.parse(socket.initialPage);
           if (
@@ -4415,7 +4259,7 @@ export class BrowserService {
             throw unavailable("The browser returned mismatched initial page readiness.");
           initialTabId = ready.surfaceId;
         }
-        await this.#flushCatalogNotice(sessionId, record.workspaceId);
+        await this.#flushTabDescriptors(sessionId);
         if (initialTabId) onInitialPage?.(initialTabId);
         stage = "session-read";
         const latest = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
@@ -4644,7 +4488,6 @@ export class BrowserService {
             .filter((actor) => actor.sessionId === sessionId)
             .flatMap((actor) => [...actor.surfaces.keys()]),
         );
-        this.#brokers.get(sessionId)?.bumpCatalog();
         this.#announcePresence(sessionId);
       },
       Math.max(0, delayMs),
@@ -4683,12 +4526,11 @@ export class BrowserService {
   #announcePresence(sessionId: BrowserSessionId): void {
     const broker = this.#brokers.get(sessionId);
     if (!broker) return;
-    const presence: BrowserPresence = { sessionId, ...this.#presence(sessionId) };
+    const presence = this.#presence(sessionId);
     const announced = JSON.stringify([presence.acting, presence.page]);
     if (this.#announcedPresence.get(sessionId) === announced) return;
     this.#announcedPresence.set(sessionId, announced);
     this.clientStreams.source.markGroup(sessionId);
-    this.#onPresenceChanged({ presence, workspaceId: broker.workspaceId });
   }
 
   async #agentSessionSummary(
@@ -5063,8 +4905,6 @@ class HostedBrowserBroker {
   readonly #onTabsChanged: () => void;
   readonly #onRecordsChanged: (ids: readonly string[]) => void;
   readonly #onActivity: (activity: BrowserRuntimeActivity) => void;
-  readonly #catalogGeneration = Date.now();
-  readonly #catalogRevisions = new BrowserCatalogRevisions();
   readonly #runtimeTargets = new Map<string, boolean>();
   readonly #runtimeRaster = new Map<
     string,
@@ -5139,7 +4979,6 @@ class HostedBrowserBroker {
    */
   #latestFrame: { readonly frame: Buffer; readonly header: BrowserBinaryFrameHeader } | null = null;
   #streamReconcileTail = Promise.resolve();
-  #viewerCommitted = false;
   #runtimeReady = false;
   #runtimeStreaming = false;
   #protocolFailed = false;
@@ -5297,10 +5136,6 @@ class HostedBrowserBroker {
     { url: string; favicon: string; ref: string }
   >();
   readonly #dialogs = new Map<string, BrowserDialog>();
-  bumpCatalog(): void {
-    this.#catalogRevisions.announce();
-    this.#onTabsChanged();
-  }
   restoreIcon(id: BrowserSurfaceId, url: string, favicon: string): void {
     this.#restoredIcons.set(id, { url, favicon, ref: workspaceTabIconRef(this.#groupId, favicon) });
   }
@@ -5320,38 +5155,6 @@ class HostedBrowserBroker {
         .find((icon) => icon?.ref === iconRef)?.favicon ?? null
     );
   }
-  catalog(occupants: (surfaceId: string) => PlaceOccupant[], viewer?: UserId): BrowserTabCatalog {
-    const candidate = {
-      generation: this.#catalogGeneration,
-      revision: this.#catalogRevisions.revision,
-      inventoryRevision: this.inventoryRevision,
-      tabs:
-        this.#surfaces.map((surface, index) => ({
-          id: surface.id,
-          title: surface.title.slice(0, 256),
-          site: browserPageSite(surface.url).slice(0, 2048),
-          iconRef: this.#surfaceIcon(surface)?.ref ?? null,
-          order: surface.order ?? index,
-          openerId: surface.openerId ?? null,
-          availability: this.live ? "ready" : "unavailable",
-          ...(surface.loading ? { loading: true } : {}),
-          ...(surface.navigationFailed ? { navigationFailed: true } : {}),
-          ...(!this.#navigation ? {} : { canGoBack: surface.canGoBack }),
-          ...(!this.#navigation ? {} : { canGoForward: surface.canGoForward }),
-          documentId: surface.documentId ?? null,
-          occupants: occupants(surface.id),
-        })) ?? [],
-    };
-    const validated = BrowserTabCatalogSchema.parse(candidate);
-    if (!viewer) return validated;
-    const { catalog, unannounced } = this.#catalogRevisions.assign(viewer, validated);
-    // A change no announced mutation covered reaches the viewer's other connections
-    // through one notice. New or evicted readers get a fresh revision but no notice:
-    // more readers than the history bound would otherwise evict each other forever.
-    if (unannounced) this.#onTabsChanged();
-    return catalog;
-  }
-
   /** The page the person sees: the active tab's title and site. */
   get page(): BrowserPagePresence | null {
     const surface = this.#surfaces.find((surface) => surface.active);
@@ -6065,7 +5868,7 @@ class HostedBrowserBroker {
         this.#runtimeReady = true;
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
-      this.bumpCatalog();
+      this.#onTabsChanged();
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();
@@ -6086,19 +5889,7 @@ class HostedBrowserBroker {
         if (consumer.surfaceId && changedIds.has(consumer.surfaceId))
           this.#sendViewerSurface(consumer);
       }
-      const firstCommit = stream.op === "end" && !this.#viewerCommitted;
-      this.#viewerCommitted = true;
-      message = firstCommit
-        ? {
-            ...this.#snapshot!,
-            surfaces: this.#surfaces,
-            inventoryRevision: this.inventoryRevision,
-          }
-        : {
-            type: "browser.surfaces.changed",
-            surfaces: this.#surfaces,
-            inventoryRevision: this.inventoryRevision,
-          };
+      return stream.op === "end";
     } else if (message.type === "browser.dialog.changed") {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
       assertBrowserDialogSurface(message.dialog, this.#surfaces);
@@ -6285,11 +6076,6 @@ class HostedBrowserBroker {
         )
         .catch(() => undefined);
     }
-    if (message.type === "browser.surfaces.changed" && this.#latestFrame) {
-      for (const consumer of this.#consumers.values())
-        if (consumer.subscription === "frames" && consumer.surfaceId === null)
-          consumer.sendFrame(this.#latestFrame.frame, this.#latestFrame.header);
-    }
     if (message.type === "browser.status" && message.state === "closed") {
       if (this.#socket.readyState === WebSocket.OPEN) {
         this.#socket.close(1000, "Browser Runtime closed session");
@@ -6300,7 +6086,7 @@ class HostedBrowserBroker {
         this.#stopping ? "Browser session closed" : "Browser Runtime disconnected",
       );
     }
-    return message.type === "browser.snapshot";
+    return false;
   }
 
   #handleCdpResponse(message: BrowserCdpWireResponse): void {
@@ -7139,7 +6925,6 @@ class HostedBrowserBroker {
           await this.#onTerminal();
         } finally {
           this.#icons.clear();
-          this.#catalogRevisions.clear();
         }
       }
     });

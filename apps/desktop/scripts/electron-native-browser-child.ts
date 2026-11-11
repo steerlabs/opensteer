@@ -1104,8 +1104,12 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
     },
   };
   kit.setContext(context);
-  const initialTabs = await api["browser.tabs.get"]({ sessionId });
-  assert(initialTabs.ok && initialTabs.data.tabs[0]);
+  const initialBootstrap = await api["bootstrap.get"]({});
+  assert(initialBootstrap.ok);
+  const initialTabs = initialBootstrap.data.browser.tabs.find((group) =>
+    group.rows.some((row) => row.sessionId === sessionId),
+  );
+  assert(initialTabs?.complete && initialTabs.rows[0]);
   const nativeMountReady = () =>
     Promise.resolve(
       pages.size > 0 &&
@@ -1116,7 +1120,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
         ),
     );
   try {
-    await kit.selectNativePage(sessionId, initialTabs.data.tabs[0].id);
+    await kit.selectNativePage(sessionId, initialTabs.rows[0].id);
     await until(nativeMountReady, "native page mounted", 10_000);
   } catch (error) {
     const descriptor = await network.partitionFetch(

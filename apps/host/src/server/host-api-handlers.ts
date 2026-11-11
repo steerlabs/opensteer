@@ -82,8 +82,6 @@ export function createHostApiHandlers(
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
     | "browser.contextCandidate.get"
-    | "browser.tabs.get"
-    | "workspace.tabs.get"
     | "browser.tabIcon.get"
     | "browser.history.get"
     | "browser.history.icons.get"

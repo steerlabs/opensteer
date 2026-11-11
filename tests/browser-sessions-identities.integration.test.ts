@@ -1,3 +1,4 @@
+import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -70,11 +71,10 @@ run("Browser Sessions through a whole deployment", () => {
     expect(results.map((result) => result.browserStarted).sort()).toEqual([false, true]);
     expect(results[0]!.session.opener).toEqual({ kind: "you" });
     const sessionId = results[0]!.sessionId;
-    const catalog = await stack.api["browser.tabs.get"]({ sessionId });
+    const catalog = await browserInventory(stack, sessionId);
     expect(catalog).toMatchObject({ ok: true, data: { tabs: expect.any(Array) } });
-    if (!catalog.ok) throw new Error(JSON.stringify(catalog));
-    expect(catalog.data.tabs).toHaveLength(2);
-    expect(catalog.data.tabs.map((tab) => tab.id).sort()).toEqual(
+    expect(catalog.tabs).toHaveLength(2);
+    expect(catalog.tabs.map((tab) => tab.id).sort()).toEqual(
       results.map((result) => result.tabId).sort(),
     );
     expect(site.requests).toContain("/one");
@@ -137,7 +137,9 @@ run("Browser Sessions through a whole deployment", () => {
       if (!native) expect(contexts.browserContextIds[0]).toEqual(expect.any(String));
     }
     const after = await stack.host.browser.bootstrap(owner);
-    expect(after.sessions.find((session) => session.id === legacy.session.id)?.opener).toEqual({
+    expect(
+      after.groups.rows.find((session) => session.sessionId === legacy.session.id)?.opener,
+    ).toEqual({
       kind: "unknown",
     });
     // Initialization is the real Host restart recovery path: open sessions fail; bindings survive.
@@ -400,7 +402,7 @@ run("Browser Sessions through a whole deployment", () => {
     const retry = await stack.api["commands.dispatch"](next);
     if (!retry.ok || retry.data.type !== "browser.tab.open") throw new Error(JSON.stringify(retry));
     expect(retry.data.sessionId).toBe(first.sessionId);
-    expect(retry.data.catalog.tabs).toHaveLength(2);
+    expect((await browserInventory(stack, retry.data.sessionId)).tabs).toHaveLength(2);
     const page = await stack.api["browser.contextCandidate.get"]({
       sessionId: first.sessionId,
       tabId: retry.data.tabId,
@@ -441,9 +443,7 @@ run("Browser Sessions through a whole deployment", () => {
     expect(
       await stack.host.store.getBrowserTabOpen(owner.id, starting.idempotencyKey),
     ).toMatchObject({ outcome: { kind: "failed" } });
-    const initialCatalog = await stack.api["browser.tabs.get"]({
-      sessionId: initialBinding.chosenSessionId,
-    });
+    const initialCatalog = await browserInventory(stack, initialBinding.chosenSessionId);
     expect(initialCatalog).toMatchObject({ ok: false });
     expect(
       await stack.host.store.getBrowserSessionForOwner(initialBinding.chosenSessionId, owner.id),
@@ -460,13 +460,13 @@ run("Browser Sessions through a whole deployment", () => {
       expect(response.statusCode, response.body).toBe(400);
       malformed.push({ status: response.statusCode, body: response.json<unknown>() });
     }
-    expect((await stack.host.browser.bootstrap(owner.id)).sessions).toHaveLength(2);
+    expect((await browserInventory(stack)).browserSessions).toHaveLength(2);
     await stack.restartHost();
     expect(await stack.api["commands.dispatch"](starting)).toMatchObject({
       ok: false,
       error: { reason: "browser-tab-open-failed" },
     });
-    expect((await stack.host.browser.bootstrap(owner.id)).sessions).toHaveLength(2);
+    expect((await browserInventory(stack)).browserSessions).toHaveLength(2);
     const directory =
       process.env.OPENSTEER_TAB_OPEN_E2E_ARTIFACT_DIR ??
       path.join(tmpdir(), "opensteer-tab-open-e2e");

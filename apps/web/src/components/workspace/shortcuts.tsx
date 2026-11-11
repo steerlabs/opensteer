@@ -81,7 +81,7 @@ export function useWorkspaceShortcuts({
             (result) =>
               show({
                 kind: "browser",
-                sessionId: result.group.session.id,
+                sessionId: result.sessionId!,
                 tabId: result.tabId,
               }),
             (error) => toast.error(actionErrorMessage(error)),

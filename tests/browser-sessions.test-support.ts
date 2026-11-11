@@ -1,3 +1,4 @@
+import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -193,8 +194,8 @@ export async function agentJourney(
     const bootstrap = await stack.api["bootstrap.get"]({});
     return (
       bootstrap.ok &&
-      bootstrap.data.browser.sessions.every(
-        (session) => session.id !== report.profileSession || session.state !== "ready",
+      bootstrap.data.browser.groups.rows.every(
+        (session) => session.sessionId !== report.profileSession || session.state !== "ready",
       )
     );
   }, 20_000);
@@ -948,4 +949,14 @@ document.getElementById("choose").addEventListener("click", () => document.getEl
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   return server;
+}
+
+export async function browserInventory(stack: VerticalStack, sessionId?: string) {
+  const owner = await stack.host.store.firstUser();
+  if (!owner) throw new Error("Browser fixture owner is missing.");
+  return browserRows(
+    stack.host.browser,
+    owner.id,
+    sessionId ? BrowserSessionIdSchema.parse(sessionId) : undefined,
+  );
 }

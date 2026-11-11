@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { BrowserServerMessageSchema } from "@opensteer/protocol/browser";
 import { browserViewerMessage } from "./browser-viewer-protocol.js";
-it("projects basic input and tab suspension only to viewers that negotiated them", () => {
+it("projects negotiated input capabilities without a session-wide surface list", () => {
   const snapshot = BrowserServerMessageSchema.parse({
     type: "browser.snapshot",
     access: "read-write",
@@ -25,15 +25,10 @@ it("projects basic input and tab suspension only to viewers that negotiated them
   expect(modern).toMatchObject({
     basicInput: 1,
     surfaceState: 1,
-    surfaces: [{ state: "suspended" }],
+    surfaces: [],
   });
   expect(modern).not.toHaveProperty("editingVersion");
   expect(modern).not.toHaveProperty("clipboard");
-  const changed = BrowserServerMessageSchema.parse({
-    type: "browser.surfaces.changed",
-    surfaces: snapshot.type === "browser.snapshot" ? snapshot.surfaces : [],
-  });
-  expect(browserViewerMessage(changed)).not.toHaveProperty("surfaces.0.state");
 });
 it("projects passkey fields only to opted-in viewers while preserving old snapshots", () => {
   const snapshot = BrowserServerMessageSchema.parse({

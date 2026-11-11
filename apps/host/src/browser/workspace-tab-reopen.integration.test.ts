@@ -1,3 +1,4 @@
+import { browserRows } from "./browser-rows.test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -155,24 +156,20 @@ integration("Reopen closed workspace tab through the Host", () => {
     });
     if (result.type !== "workspace.tab.reopen") throw new Error("Unexpected reopen");
     expect(result.tabId).not.toBe(first);
-    expect(result.group.session).toMatchObject({
+    const restored = (await browserRows(host.runtime.browser, ownerId, sessionId)).lineage!;
+    expect(restored.session).toMatchObject({
       id: sessionId,
       profileId: profile.id,
       workspaceId: run.workspaceId,
     });
-    expect(result.group.tabs?.find((tab) => tab.id === result.tabId)).toMatchObject({
+    expect(restored.tabs?.find((tab) => tab.id === result.tabId)).toMatchObject({
       title: "Saved",
       state: "suspended",
     });
     expect(runtime.connectionCount()).toBe(before);
     expect(await tabs.get(ownerId, first)).toBeNull();
     expect((await command()).status).toBe(404);
-    const catalog = await testRpcData(
-      host.origin,
-      "browser.tabs.get",
-      { sessionId },
-      { headers: host.ownerHeaders },
-    );
+    const catalog = await browserRows(host.runtime.browser, host.ownerId, sessionId);
     const legacyClose = testRpcData(
       host.origin,
       "commands.dispatch",
@@ -180,7 +177,7 @@ integration("Reopen closed workspace tab through the Host", () => {
         type: "browser.tab.close",
         sessionId,
         surfaceId: BrowserSurfaceIdSchema.parse("page-integration"),
-        inventoryRevision: catalog.inventoryRevision ?? catalog.revision,
+        inventoryRevision: catalog.inventoryRevision,
         idempotencyKey: randomUUID(),
       },
       { headers: host.ownerHeaders },

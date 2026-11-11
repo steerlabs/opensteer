@@ -1,3 +1,4 @@
+import { browserRows } from "./browser-rows.test-support.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { zeroSequence } from "@opensteer/core";
@@ -774,12 +775,7 @@ integration("Durable tab icons", () => {
       ],
     });
     await settledNotice(notices);
-    const retainedCatalog = await testRpcData(
-      host.origin,
-      "browser.tabs.get",
-      { sessionId },
-      { headers: host.ownerHeaders },
-    );
+    const retainedCatalog = await browserRows(host.runtime.browser, host.ownerId, sessionId);
     expect(retainedCatalog.tabs.find((tab) => tab.id === "page-a")?.iconRef).toBe(
       (await row("page-a"))?.iconRef,
     );
@@ -830,19 +826,14 @@ integration("Durable tab icons", () => {
           headers: host.ownerHeaders,
         },
       );
-      const group = bootstrap.browser.workspaceTabs?.find((group) => group.id === sessionId);
-      const read = await testRpcData(
-        host.origin,
-        "workspace.tabs.get",
-        { groupId: sessionId },
-        { headers: host.ownerHeaders },
-      );
+      const group = bootstrap.browser.tabs.find((group) => group.groupId === sessionId);
+      const read = await browserRows(host.runtime.browser, host.ownerId, sessionId);
       expect(JSON.stringify(group)).not.toContain("data:image");
       expect(JSON.stringify(read)).not.toContain("data:image");
       const refs = (
         tabs: readonly { id: string; iconRef?: string | null | undefined }[] | undefined,
       ) => Object.fromEntries((tabs ?? []).map((tab) => [tab.id, tab.iconRef ?? null]));
-      expect(refs(read.tabs)).toEqual(refs(group?.tabs));
+      expect(refs(read.tabs)).toEqual(refs(group?.rows));
       return { group, refs: refs(read.tabs) };
     };
     const live = await coldTabs();
@@ -875,7 +866,7 @@ integration("Durable tab icons", () => {
     const commandsAfterEnd = runtime.receivedCommands().length;
     const ended = await coldTabs();
     expect(ended.refs).toEqual(live.refs);
-    expect(ended.group?.tabs?.map((tab) => tab.state)).toEqual(["suspended", "suspended"]);
+    expect(ended.group?.rows.map((tab) => tab.state)).toEqual(["suspended", "suspended"]);
     const endedIcon = await fetchIcon(host.ownerHeaders);
     expect(endedIcon.status).toBe(200);
     expect(await endedIcon.json()).toMatchObject({ data: { favicon: iconA } });

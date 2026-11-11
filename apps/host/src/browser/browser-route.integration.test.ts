@@ -1,3 +1,4 @@
+import { browserRows } from "./browser-rows.test-support.js";
 import {
   connectCallerMachine,
   enrollmentToken,
@@ -305,12 +306,7 @@ integration("Host browser broker vertical", () => {
         expect(surfaces[0]).not.toHaveProperty("canGoForward");
       }
     }
-    const catalog = await testRpcData(
-      origin,
-      "browser.tabs.get",
-      { sessionId: started.session.id },
-      { headers: sessionHeaders },
-    );
+    const catalog = await browserRows(runtime.browser, owner.id, started.session.id);
     expect(catalog.tabs[0]).toMatchObject({ canGoBack: true, canGoForward: false });
     // A late or repeated acknowledgement changes nothing and ends nothing.
     watchSocket.send(JSON.stringify({ type: "stream.ack", token: firstWatchHeader.watchToken }));
@@ -366,8 +362,8 @@ integration("Host browser broker vertical", () => {
       { headers: { cookie } },
     );
     expect(
-      detachedBootstrap.browser.sessions.find(
-        (session: { id: string }) => session.id === started.session.id,
+      detachedBootstrap.browser.groups.rows.find(
+        (session) => session.sessionId === started.session.id,
       ),
     ).toMatchObject({ acting: false, attachedRunIds: [] });
 
