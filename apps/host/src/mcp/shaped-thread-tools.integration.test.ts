@@ -29,6 +29,7 @@ import {
   BrowserTabGroupStore,
   WorkspaceTabStore,
   assignmentSummaryInTransaction,
+  withDatabaseOperationSignal,
   AgentConnectionStore,
 } from "@opensteer/database";
 import {
@@ -236,12 +237,13 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
     });
   };
   const checkLive = vi.fn(async () => {});
-  const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller) =>
+  const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller, signal?: AbortSignal) =>
     s.product.thread_wait({
       caller,
       input: thread_wait.input.parse({ assignmentId, timeoutMs }),
       operationKey: randomUUID(),
       checkLive,
+      ...(signal ? { signal } : {}),
     });
   const status = (caller: AgentCaller = s.caller) =>
     s.product.task_status({ caller, input: { assignmentId }, operationKey: randomUUID() });
@@ -345,11 +347,13 @@ describeStore("shaped agent Thread tools", (it) => {
     await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
     await s.settle();
     await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    const queuedWhileWaiting = await s.returns();
     await s.wake();
     expect(await pending).toMatchObject({
       status: "settled",
       task: { result: "42", status: "completed" },
     });
+    expect(queuedWhileWaiting).toEqual([]);
     expect(await s.returns()).toEqual([]);
     expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
   });
@@ -385,6 +389,34 @@ describeStore("shaped agent Thread tools", (it) => {
     await storeFixture.store.drainAssignmentReturn(s.assignmentId);
     expect(await s.returns()).toHaveLength(1);
   });
+
+  for (const ending of ["timeout", "abort"] as const) {
+    it(`releases a held settled result once when its live wait ends by ${ending}`, async ({
+      storeFixture,
+    }) => {
+      const s = await waitingTask(storeFixture, `wait-held-${ending}`);
+      const abort = new AbortController();
+      const pending = withDatabaseOperationSignal(abort.signal, Date.now() + 10_000, () =>
+        s.wait(2_000, s.caller, abort.signal),
+      );
+      const outcome = pending.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+      await s.settle();
+      await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+      const during = await s.returns();
+      if (ending === "abort") abort.abort(new Error("Tool call cut off"));
+      const result = await outcome;
+      if (ending === "abort")
+        expect(result).toMatchObject({ error: new Error("Tool call cut off") });
+      else expect(result).toMatchObject({ value: { status: "timed_out" } });
+      expect(during).toEqual([]);
+      await storeFixture.store.drainPendingAssignmentReturns();
+      expect(await s.returns()).toHaveLength(1);
+    });
+  }
 
   it("returns an empty result after automatic silent settlement", async ({ storeFixture }) => {
     const s = await waitingTask(storeFixture, "wait-empty");
@@ -501,34 +533,21 @@ describeStore("shaped agent Thread tools", (it) => {
       },
       { timeout: 1000 },
     );
-    // Settled first and announced after, each on its own: an event locks the Workspace, which
-    // comes before an Assignment in the lock order.
-    await storeFixture.database
-      .updateTable("delegations")
-      .set((eb) => ({
-        status: "completed",
-        resultText: "84",
-        resultRunId: eb.ref("childRunId"),
-        finishedAt: new Date(),
-      }))
+    const row = await storeFixture.database
+      .selectFrom("delegations")
+      .select(["childRunId", "childThreadId"])
       .where("id", "=", assignmentId!)
-      .execute();
-    const event = await withDatabaseTransaction(storeFixture.database, async (tx) => {
-      const row = await tx
-        .selectFrom("delegations")
-        .selectAll()
-        .where("id", "=", assignmentId!)
-        .executeTakeFirstOrThrow();
-      return appendHostWorkspaceEvent(tx, {
-        type: "assignment.updated",
-        threadId: row.childThreadId,
-        workspaceId: s.f.workspace.id,
-        environmentId: s.f.environmentId,
-        runId: null,
-        data: { assignment: await assignmentSummaryInTransaction(tx, row) },
-      });
-    });
-    s.realtime.publish(event);
+      .executeTakeFirstOrThrow();
+    const { terminal } = await storeFixture.runDelegatedTurn(
+      s.f,
+      { id: row.childRunId, threadId: row.childThreadId },
+      {
+        replies: ["84"],
+        end: "completed",
+        suffix: "delegate-wait-mode",
+      },
+    );
+    for (const event of terminal.compensatingEvents) s.realtime.publish(event);
     expect(await pending).toMatchObject({
       result: "84",
       status: "completed",

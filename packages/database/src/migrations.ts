@@ -4847,6 +4847,7 @@ export function migrationProvider() {
         "0173_node_detail": nodeDetailMigration,
         "0174_assignment_result_reads": assignmentResultReadsMigration,
         "0175_program_tool_names": programToolNamesMigration,
+        "0176_assignment_result_waits": assignmentResultWaitsMigration,
       };
     },
   };
@@ -7994,6 +7995,18 @@ export const programToolNamesMigration: Migration = {
           '\\mthread_message\\M', 'thread_send', 'g'),
           '\\mrequest_list\\M', 'pending_request', 'g')))
       where program->>'source' ~ '\\m(thread_delegate|thread_message|request_list)\\M';
+    `.execute(database);
+  },
+};
+
+const assignmentResultWaitsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.delegations drop constraint delegations_result_message_id_key,
+        add column result_waits jsonb not null default '[]'::jsonb
+        check (jsonb_typeof(result_waits) = 'array');
+      create index delegations_result_message on public.delegations (result_message_id)
+        where result_message_id is not null;
     `.execute(database);
   },
 };

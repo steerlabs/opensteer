@@ -11,7 +11,7 @@ import {
 } from "../agents/harness-catalogs.js";
 import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
-import { AgentConnectionStore } from "@opensteer/database";
+import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac, randomUUID } from "node:crypto";
 import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
@@ -467,6 +467,7 @@ export async function createHostRuntime(
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
+    await recoverAssignmentResultWaits(database);
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
     const store = new OpensteerStore(database, {

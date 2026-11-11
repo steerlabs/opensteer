@@ -183,6 +183,7 @@ const releasedMigrationNames = [
   "0173_node_detail",
   "0174_assignment_result_reads",
   "0175_program_tool_names",
+  "0176_assignment_result_waits",
 ];
 
 describe("migration names", () => {
