@@ -169,11 +169,27 @@ export interface EventProjection {
   readonly duplicateRunUsage: boolean;
 }
 
+export interface RunnerEventProjectionEffects {
+  readonly finalize: typeof finalizeRunTransaction;
+  readonly deliverConversation: typeof deliverConversationInputsInTransaction;
+  readonly cancelRequest?:
+    | ((
+        transaction: Transaction<DatabaseSchema>,
+        event: Extract<PendingAgentEvent, { readonly type: "request.cancelled" }>,
+      ) => Promise<readonly AgentEvent[]>)
+    | undefined;
+}
+const personProjectionEffects: RunnerEventProjectionEffects = {
+  finalize: finalizeRunTransaction,
+  deliverConversation: deliverConversationInputsInTransaction,
+};
+
 export async function applyEventProjection(
   transaction: Transaction<DatabaseSchema>,
   event: PendingAgentEvent,
   links: ChannelLinks,
   attempt: RunAttemptRow | undefined,
+  effects: RunnerEventProjectionEffects = personProjectionEffects,
 ): Promise<EventProjection> {
   let canonicalMessageEvent: AgentEvent | null = null;
   let duplicateRunUsage = false;
@@ -306,6 +322,10 @@ export async function applyEventProjection(
   const compensatingEvents: AgentEvent[] = canonicalMessageEvent ? [canonicalMessageEvent] : [];
   switch (event.type) {
     case "request.cancelled": {
+      if (effects.cancelRequest) {
+        compensatingEvents.push(...(await effects.cancelRequest(transaction, event)));
+        break;
+      }
       const pendingRequest = await transaction
         .selectFrom("requests")
         .select(["id", "responseCommandId"])
@@ -374,7 +394,7 @@ export async function applyEventProjection(
           .where("status", "in", ["running", "waiting"])
           .execute();
         if (resumedStatus === "running") {
-          const handed = await deliverConversationInputsInTransaction(transaction, event.runId);
+          const handed = await effects.deliverConversation(transaction, event.runId);
           compensatingEvents.push(...handed.events);
           revokedGrants = handed.revokedGrants;
         }
@@ -489,7 +509,7 @@ export async function applyEventProjection(
         }
         // What the person wrote while the engine was starting is the started
         // turn's to take now.
-        const handed = await deliverConversationInputsInTransaction(transaction, event.runId);
+        const handed = await effects.deliverConversation(transaction, event.runId);
         compensatingEvents.push(...handed.events);
         revokedGrants = handed.revokedGrants;
       }
@@ -521,7 +541,7 @@ export async function applyEventProjection(
       if (event.runId) {
         const status = event.type === "run.completed" ? "completed" : "interrupted";
         compensatingEvents.push(
-          ...(await finalizeRunTransaction(transaction, {
+          ...(await effects.finalize(transaction, {
             completedAt: now,
             links,
             source: "runner",
@@ -535,7 +555,7 @@ export async function applyEventProjection(
     case "run.failed":
       if (event.runId) {
         compensatingEvents.push(
-          ...(await finalizeRunTransaction(transaction, {
+          ...(await effects.finalize(transaction, {
             completedAt: now,
             failure: event.data,
             links,

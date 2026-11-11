@@ -5,11 +5,17 @@ import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 import { prepareProjectAdmission } from "./project-work.test-support.js";
 import { ProjectBindingStore, ProjectExecutionStore } from "./project-execution-store.js";
-import { ProjectProposalAcceptanceStore } from "./project-event-store.js";
+import {
+  ProjectProposalAcceptanceStore,
+  ProjectRunEventAcceptanceStore,
+} from "./project-event-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-async function proposalFixture(fixture: Parameters<typeof prepareProjectAdmission>[0]) {
+async function proposalFixture(
+  fixture: Parameters<typeof prepareProjectAdmission>[0],
+  starting = false,
+) {
   const context = await prepareProjectAdmission(fixture);
   const { project, prepared, store, origin, database } = context;
   const admitted = await store.admitProjectWork({
@@ -32,6 +38,12 @@ async function proposalFixture(fixture: Parameters<typeof prepareProjectAdmissio
     leaseTokenHash: "proposal-fixture-lease",
     dispatcherId: "proposal-fixture",
   });
+  if (!starting)
+    await database
+      .updateTable("runs")
+      .set({ status: "running" })
+      .where("id", "=", bound.binding.runId)
+      .execute();
   const peer = RunnerConnectionFenceSchema.parse({
     runnerId: project.runnerId,
     bootId,
@@ -66,6 +78,126 @@ async function proposalFixture(fixture: Parameters<typeof prepareProjectAdmissio
 }
 
 describeStore("Project proposal acceptance", (it) => {
+  it("persists a Project lifecycle through the shared projections, preserves exact terminal replays and refuses new work on a lost origin", async ({
+    storeFixture,
+  }) => {
+    const { database, peer, binding, frame, project } = await proposalFixture(storeFixture, true);
+    const handler = new ProjectRunEventAcceptanceStore(database, {
+      currentPeerIsProjectCapable: () => true,
+      links: { threadUrl: () => "https://project.test.invalid/thread" },
+      requests: {
+        async propose() {
+          throw new Error("An ordinary event reached Q");
+        },
+      },
+    });
+    const nodeId = createId("executionNode");
+    const messageId = createId("message");
+    const events = [
+      { type: "run.started", data: { status: "running" } },
+      {
+        type: "node.started",
+        data: {
+          nodeId,
+          kind: "subagent",
+          title: "Child",
+          model: null,
+          nativeRef: "child-one",
+          originCallId: null,
+          parentNodeId: null,
+          prompt: null,
+          sessionRef: null,
+        },
+      },
+      { type: "reasoning.completed", data: { blockId: "reason-one", text: "Considered the task" } },
+      {
+        type: "assistant.message",
+        data: { messageId, content: [{ type: "text", text: "Project result" }] },
+      },
+      {
+        type: "node.completed",
+        data: { nodeId, status: "completed", result: "Done", usage: null },
+      },
+      { type: "run.completed", data: { status: "completed" } },
+    ];
+    let ordinal = 0;
+    for (const item of events) {
+      const accepted = await handler.accept(peer, {
+        ...frame,
+        event: { ...item, binding, ordinal, emittedAt: frame.event.emittedAt },
+      });
+      expect(accepted.wasDuplicate).toBe(false);
+      expect(accepted.events.some((event) => event.type === item.type)).toBe(true);
+      ordinal += 1;
+    }
+    expect(
+      await database
+        .selectFrom("runs")
+        .select(["status", "nextRunnerOrdinal"])
+        .where("id", "=", binding.runId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "completed", nextRunnerOrdinal: 6 });
+    expect(
+      await database
+        .selectFrom("messages")
+        .select(["actorPrincipalId", "runId", "content"])
+        .where("id", "=", messageId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({
+      actorPrincipalId: binding.authority.principal.principalId,
+      runId: binding.runId,
+      content: [{ type: "text", text: "Project result" }],
+    });
+    expect(
+      await database
+        .selectFrom("executionNodes")
+        .select(["runId", "status"])
+        .where("id", "=", nodeId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ runId: binding.runId, status: "completed" });
+    expect(
+      await database
+        .selectFrom("runAttempts")
+        .select(["outcome", "endedAt"])
+        .where("runId", "=", binding.runId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ outcome: "completed", endedAt: expect.any(Date) });
+    await database
+      .updateTable("users")
+      .set({ authorityGeneration: "2" })
+      .where("id", "=", project.userId)
+      .execute();
+    const terminal = {
+      ...frame,
+      event: { ...events[5], binding, ordinal: 5, emittedAt: frame.event.emittedAt },
+    };
+    expect(await handler.accept(peer, terminal)).toMatchObject({ wasDuplicate: true, events: [] });
+    await expect(
+      handler.accept(peer, { ...terminal, event: { ...terminal.event, ordinal: 6 } }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      handler.accept(peer, {
+        ...terminal,
+        event: {
+          ...terminal.event,
+          type: "assistant.message",
+          data: {
+            messageId: createId("message"),
+            content: [{ type: "text", text: "Changed replay" }],
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(
+      await database
+        .selectFrom("workspaceEvents")
+        .select("eventId")
+        .where("runId", "=", binding.runId)
+        .where("type", "=", "assistant.message")
+        .execute(),
+    ).toHaveLength(1);
+  });
+
   it("commits one exact source proposal and its durable refusal before returning, then rejects ordinal mutations", async ({
     storeFixture,
   }) => {

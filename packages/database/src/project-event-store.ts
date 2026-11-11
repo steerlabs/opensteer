@@ -19,10 +19,17 @@ import { z } from "zod";
 import { assertProjectAuthority } from "./deployment-execution-authority.js";
 import { assertActiveProjectBinding, readProjectRunBinding } from "./execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
-import { lockWorkspaceRow } from "./store-primitives.js";
-import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { type ChannelLinks } from "./store-primitives.js";
+import { reserveProjectWorkStop, finalizeProjectRunTransaction } from "./run-finalization.js";
+import { attemptForBinding } from "./run-attempts.js";
+import { projectAssignmentEventsInTransaction } from "./assignment-store.js";
 import { markThreadStatePending } from "./thread-status.js";
-import { storableJson } from "./runner-event-store.js";
+import {
+  storableJson,
+  applyEventProjection,
+  persistAuthenticatedRunnerEvent,
+} from "./runner-event-store.js";
+import { PendingAgentEventSchema, type PendingAgentEvent } from "@opensteer/protocol";
 import type { DatabaseSchema } from "./schema.js";
 
 export type ProjectProposalAcceptance =
@@ -61,6 +68,13 @@ export class ProjectProposalAcceptanceStore {
   readonly dependencies: {
     readonly currentPeerIsProjectCapable: (peer: RunnerConnectionFence) => boolean;
     readonly requests: ProjectRequestProposalPort;
+    readonly links?: ChannelLinks | undefined;
+    readonly cancelRequest?:
+      | ((
+          transaction: Transaction<DatabaseSchema>,
+          event: Extract<PendingAgentEvent, { readonly type: "request.cancelled" }>,
+        ) => Promise<readonly AgentEvent[]>)
+      | undefined;
   };
 
   constructor(
@@ -71,7 +85,15 @@ export class ProjectProposalAcceptanceStore {
     this.dependencies = dependencies;
   }
 
-  async accept(peerInput: RunnerConnectionFence, raw: unknown) {
+  accept(peerInput: RunnerConnectionFence, raw: unknown) {
+    return this.acceptFrame(peerInput, raw, true);
+  }
+
+  protected async acceptFrame(
+    peerInput: RunnerConnectionFence,
+    raw: unknown,
+    requireProposal: boolean,
+  ) {
     const peer = RunnerConnectionFenceSchema.parse(peerInput);
     const assertPeer = () => {
       if (!this.dependencies.currentPeerIsProjectCapable(peer))
@@ -84,7 +106,7 @@ export class ProjectProposalAcceptanceStore {
     const frame = ProjectRunnerToHostMessageSchema.parse(raw);
     if (
       frame.type !== "runner.project.event" ||
-      frame.event.type !== "request.proposed.project" ||
+      (requireProposal && frame.event.type !== "request.proposed.project") ||
       !sameRunnerConnectionFence(peer, frame)
     )
       throw new OpensteerError({
@@ -117,12 +139,6 @@ export class ProjectProposalAcceptanceStore {
           code: "forbidden",
           message: "Project proposal has no matching stored source",
         });
-      await assertActiveProjectBinding(transaction, event.binding, {
-        runnerIsAttached: (runnerId, bootId) =>
-          runnerId === peer.runnerId &&
-          bootId === peer.bootId &&
-          this.dependencies.currentPeerIsProjectCapable(peer),
-      });
       const previous = await transaction
         .selectFrom("agentControlRequests")
         .selectAll()
@@ -151,6 +167,12 @@ export class ProjectProposalAcceptanceStore {
           proposalState: null,
         };
       }
+      await assertActiveProjectBinding(transaction, event.binding, {
+        runnerIsAttached: (runnerId, bootId) =>
+          runnerId === peer.runnerId &&
+          bootId === peer.bootId &&
+          this.dependencies.currentPeerIsProjectCapable(peer),
+      });
       if (run.nextRunnerOrdinal !== event.ordinal)
         throw new OpensteerError({
           code: "conflict",
@@ -167,19 +189,92 @@ export class ProjectProposalAcceptanceStore {
           requestFingerprint: fingerprint,
         })
         .execute();
-      await lockWorkspaceRow(transaction, event.binding.workspaceId);
-      await transaction
-        .selectFrom("threads")
-        .select("id")
-        .where("id", "=", event.binding.threadId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      await lockRunProjectionRows(transaction, {
-        runIds: [run.id],
-        threadIds: [run.threadId],
-        requestIds: [event.data.request.id],
-      });
+      await reserveProjectWorkStop(transaction, { runIds: [run.id] });
       await markThreadStatePending(transaction, run.threadId);
+      if (event.type !== "request.proposed.project") {
+        const links = this.dependencies.links;
+        if (!links)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "project-event-projection-unavailable",
+            message: "The Project event persistence boundary is not connected",
+          });
+        const pending = PendingAgentEventSchema.parse({
+          type: event.type,
+          data: event.data,
+          emittedAt: event.emittedAt,
+          ordinal: event.ordinal,
+          bindingGeneration: event.binding.bindingGeneration,
+          environmentId: event.binding.environmentId,
+          workspaceId: event.binding.workspaceId,
+          runId: event.binding.runId,
+          threadId: event.binding.threadId,
+        });
+        const accepted = await persistAuthenticatedRunnerEvent(
+          transaction,
+          links,
+          {
+            event: pending,
+            data: pending.data,
+            run,
+            attempt: await attemptForBinding(transaction, run.id, event.binding.bindingGeneration),
+            environmentId: event.binding.environmentId,
+            runnerId: peer.runnerId,
+            runnerBootId: peer.bootId,
+          },
+          {
+            project: (tx, item, channelLinks, attempt) =>
+              applyEventProjection(tx, item, channelLinks, attempt, {
+                finalize: (tx, finalization) => finalizeProjectRunTransaction(tx, finalization),
+                // A post-freeze queue admission already has its own Project Run; only an explicit steer controls this one.
+                deliverConversation: async () => ({ events: [], revokedGrants: [] }),
+                cancelRequest: async (tx, cancelled) => {
+                  if (!this.dependencies.cancelRequest)
+                    throw new OpensteerError({
+                      code: "conflict",
+                      reason: "project-request-cancellation-unavailable",
+                      message:
+                        "The Project engine Request cancellation boundary is not connected yet",
+                    });
+                  return this.dependencies.cancelRequest(tx, cancelled);
+                },
+              }),
+            assignmentActivity: async (tx, runId) => {
+              const current = await tx
+                .selectFrom("runs")
+                .select("assignmentId")
+                .where("id", "=", runId)
+                .executeTakeFirst();
+              if (!current?.assignmentId) return [];
+              const assignment = await tx
+                .updateTable("delegations")
+                .set((eb) => ({ revision: eb("revision", "+", 1), updatedAt: new Date() }))
+                .where("id", "=", current.assignmentId)
+                .returningAll()
+                .executeTakeFirstOrThrow();
+              return projectAssignmentEventsInTransaction(
+                tx,
+                assignment,
+                "assignment.updated",
+                runId,
+              );
+            },
+          },
+        );
+        assertPeer();
+        return {
+          binding: event.binding,
+          ordinal: event.ordinal,
+          events: [accepted.event, ...accepted.compensatingEvents],
+          wasDuplicate: false,
+          proposalState: null,
+        };
+      }
+      if (run.status !== "running" && run.status !== "waiting")
+        throw new OpensteerError({
+          code: "conflict",
+          message: "A Project Run can propose a Request only while running or waiting",
+        });
       const proposal = await this.dependencies.requests.propose(transaction, {
         type: "request.proposed.project",
         binding: event.binding,
@@ -205,5 +300,12 @@ export class ProjectProposalAcceptanceStore {
         proposalState: proposal.state,
       };
     });
+  }
+}
+
+/** The whole Project event schema is authenticated once before using the shared durable projections. */
+export class ProjectRunEventAcceptanceStore extends ProjectProposalAcceptanceStore {
+  override accept(peer: RunnerConnectionFence, raw: unknown) {
+    return this.acceptFrame(peer, raw, false);
   }
 }
