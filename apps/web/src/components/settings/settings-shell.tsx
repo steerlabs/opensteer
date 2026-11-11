@@ -190,7 +190,7 @@ export function SettingsShell() {
         <div className="settings-navigation__header">
           <button className="settings-navigation__back" onClick={shell.leaveSettings} type="button">
             <Icon name="arrow-left" />
-            Back to conversations
+            {team ? "Back to projects" : "Back to conversations"}
           </button>
           <button
             className="settings-navigation__close icon-btn"
