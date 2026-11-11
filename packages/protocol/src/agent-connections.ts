@@ -1,30 +1,17 @@
 import { z } from "zod";
-import {
-  ThreadAccessModeSchema,
-  UserIdSchema,
-  WorkspaceIdSchema,
-  DeploymentIdSchema,
-} from "@opensteer/core";
+import { ThreadAccessModeSchema, UserIdSchema, DeploymentIdSchema } from "@opensteer/core";
 
 /** The Host's one MCP resource; an agent adds the Host's origin plus this path. */
 export const agentConnectionMcpPath = "/internal/v1/mcp";
 export const AgentConnectionIdSchema = z.string().regex(/^mcn_[0-9a-f-]{36}$/);
-export const AgentConnectionReachSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("user") }),
-  z.strictObject({ kind: z.literal("workspace"), workspaceId: WorkspaceIdSchema }),
-]);
-export type AgentConnectionReach = z.infer<typeof AgentConnectionReachSchema>;
-const AgentConnectionReachViewSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("user") }),
-  z.object({ kind: z.literal("workspace"), workspaceId: WorkspaceIdSchema }),
-]);
+
 export const AgentConnectionSchema = z.object({
   id: AgentConnectionIdSchema,
   userId: UserIdSchema,
   label: z.string().min(1).max(120),
   clientName: z.string().min(1).max(100),
   accessMode: ThreadAccessModeSchema,
-  reach: AgentConnectionReachViewSchema,
+
   createdAt: z.iso.datetime({ offset: true }),
   lastUsedAt: z.iso.datetime({ offset: true }).nullable(),
   expiresAt: z.iso.datetime({ offset: true }),
@@ -36,7 +23,6 @@ export const AgentConnectionConsentSchema = z.object({
   redirectUri: z.url(),
   resource: z.url(),
   expiresAt: z.iso.datetime({ offset: true }),
-  workspaces: z.array(z.object({ id: WorkspaceIdSchema, name: z.string() })),
 });
 export type AgentConnectionConsent = z.infer<typeof AgentConnectionConsentSchema>;
 

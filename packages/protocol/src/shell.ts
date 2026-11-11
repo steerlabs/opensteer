@@ -4,7 +4,6 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   type RunnerId,
 } from "@opensteer/core";
 import { z } from "zod";
@@ -219,9 +218,10 @@ export function machineAccessShareIssues(shares: readonly MachineAccessShare[]):
  */
 export const MachineAccessPolicySchema = z
   .strictObject({
+    reach: MachineAccessReachSchema,
     commands: z.boolean(),
     forwarding: z.boolean(),
-    reach: MachineAccessReachSchema,
+
     shares: z.array(MachineAccessShareSchema).max(machineAccessMaxShares),
   })
   .superRefine((policy, context) => {
@@ -242,9 +242,10 @@ export const MachineAccessPolicyViewSchema = z
 export type MachineAccessPolicy = z.infer<typeof MachineAccessPolicySchema>;
 
 export const machineAccessPolicyDefault: MachineAccessPolicy = Object.freeze({
+  reach: "nobody",
   commands: false,
   forwarding: false,
-  reach: "nobody",
+
   shares: [],
 });
 
@@ -259,7 +260,6 @@ export const ShellSessionAuthoritySchema = z.strictObject({
   startedAt: IsoDateTimeSchema,
   threadId: ThreadIdSchema,
   threadTitle: z.string().max(240),
-  workspaceId: WorkspaceIdSchema,
 });
 export type ShellSessionAuthority = z.infer<typeof ShellSessionAuthoritySchema>;
 

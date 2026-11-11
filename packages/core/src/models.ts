@@ -1,7 +1,9 @@
+import { TaskFolderSchema } from "./personal.js";
+import { TeamTaskOriginSchema, TeamSourceSchema } from "./team.js";
+import { TeamAgentRequestIdSchema } from "./ids.js";
 import { z } from "zod";
-import { deploymentPolicy } from "./deployment-policy.js";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
-import { IdentityEmailSchema, InstanceRoleSchema } from "./identity.js";
+import { IdentityEmailSchema } from "./identity.js";
 import {
   AssignmentIdSchema,
   BrowserSessionIdSchema,
@@ -18,19 +20,16 @@ import {
   RunIdSchema,
   RunnerIdSchema,
   SequenceSchema,
-  StorageAuthorityIdSchema,
   ThreadIdSchema,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerRevisionIdSchema,
   TriggerWatchActivationIdSchema,
   UserIdSchema,
-  WorkspaceBindingIdSchema,
-  WorkspaceIdSchema,
 } from "./ids.js";
 import { MarkColorSchema } from "./marks.js";
 import { isBareOrigin } from "./origins.js";
-import { WorkspaceIconNameSchema } from "./workspace-icons.js";
+import { IconNameSchema } from "./icons.js";
 
 // Keep accepted instants stable across validator upgrades: seconds are optional.
 export const IsoDateTimeSchema = z
@@ -68,30 +67,11 @@ export type DeploymentLifecycle = z.infer<typeof DeploymentLifecycleSchema>;
 export const RuntimeModeSchema = z.enum(["development", "production"]);
 export type RuntimeMode = z.infer<typeof RuntimeModeSchema>;
 
-export const WorkspaceBackingKindSchema = z.enum(["local-directory"]);
-export type WorkspaceBackingKind = z.infer<typeof WorkspaceBackingKindSchema>;
-
-export const DeploymentKindSchema = z.enum(["personal", "server"]);
+export const DeploymentKindSchema = z.enum(["personal", "team"]);
 export type DeploymentKind = z.infer<typeof DeploymentKindSchema>;
-
-const deploymentShape = {
-  defaultWorkspaceBacking: WorkspaceBackingKindSchema,
-  kind: DeploymentKindSchema,
-} as const;
-export const DeploymentShapeSchema = z.strictObject(deploymentShape);
-export const DeploymentShapeViewSchema = z.object(deploymentShape);
+export const DeploymentShapeSchema = z.strictObject({ kind: DeploymentKindSchema });
+export const DeploymentShapeViewSchema = z.object(DeploymentShapeSchema.shape);
 export type DeploymentShape = z.infer<typeof DeploymentShapeSchema>;
-
-export function deploymentSupportsSharing(shape: Pick<DeploymentShape, "kind">): boolean {
-  return deploymentPolicy({ defaultWorkspaceBacking: "local-directory", ...shape }).sharing;
-}
-
-export function localWorkspaceNamespace(
-  shape: Pick<DeploymentShape, "kind">,
-): "single-owner" | "owner-scoped" {
-  return deploymentPolicy({ defaultWorkspaceBacking: "local-directory", ...shape })
-    .workspaceNamespace;
-}
 
 /**
  * The Runner a Personal Deployment runs on is the Deployment, not an accessory
@@ -134,120 +114,9 @@ const UserSchema = z.object({
   emailVerified: z.boolean(),
   id: UserIdSchema,
   image: z.url().nullable(),
-  instanceRole: InstanceRoleSchema,
   updatedAt: IsoDateTimeSchema,
 });
 export type User = z.infer<typeof UserSchema>;
-
-export const WorkspaceStorageIssueSchema = z.object({
-  code: z.enum([
-    "manager-allocation-rejected",
-    "manager-configuration-invalid",
-    "manager-identity-rejected",
-    "manager-protocol-error",
-    "manager-unavailable",
-    "manager-unknown-volume-state",
-    "relocation-required",
-    "relocation-pending",
-    "local-directory-inaccessible",
-    "local-directory-missing",
-    "local-directory-replaced",
-    "local-registry-invalid",
-    // The owning machine is not reachable right now. It is deliberately
-    // distinct from the directory codes: connectivity is not evidence about
-    // the disk, so this never overwrites a last-verified `ready`.
-    "local-authority-unavailable",
-    // A Runner answered for this environment while holding another disk.
-    "local-authority-mismatch",
-  ]),
-  message: z.string().trim().min(1).max(500),
-  occurredAt: IsoDateTimeSchema,
-  retryable: z.boolean(),
-});
-export type WorkspaceStorageIssue = z.infer<typeof WorkspaceStorageIssueSchema>;
-
-export const WorkspaceKindSchema = z.enum(["main", "project"]);
-export type WorkspaceKind = z.infer<typeof WorkspaceKindSchema>;
-
-export const WorkspaceBackingSchema = // `ownerEnvironmentId` says where the work runs; `storageAuthorityId` proves
-  // which disk holds it. They are separate because a Runner credential copied
-  // to a second machine reconnects as the same environment, and must not then
-  // be able to report the original directory missing or destroy against the
-  // wrong disk. Only managed directories exist, so an adopted-folder
-  // disposition can be added later as a widening rather than a reinterpretation
-  // of what these rows already mean.
-  z.strictObject({
-    bindingId: WorkspaceBindingIdSchema,
-    generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    kind: z.literal("local-directory"),
-    ownerEnvironmentId: EnvironmentIdSchema,
-    // Null exists only for local Workspaces created before machines owned
-    // their storage. It is an explicit broken binding, never an authority a
-    // Runner can claim.
-    storageAuthorityId: StorageAuthorityIdSchema.nullable(),
-  });
-export type WorkspaceBacking = z.infer<typeof WorkspaceBackingSchema>;
-
-export type LocalWorkspaceBacking = Extract<WorkspaceBacking, { readonly kind: "local-directory" }>;
-
-export const WorkspaceSchema = z.object({
-  slug: z
-    .string()
-    .regex(/^[a-z0-9][a-z0-9-]{0,127}$/)
-    .nullable()
-    .optional(),
-  relocationSource: z
-    .object({
-      backing: z.record(z.string(), z.unknown()),
-      mounts: z.array(z.record(z.string(), z.unknown())),
-    })
-    .nullable()
-    .optional(),
-  backing: WorkspaceBackingSchema,
-  createdAt: IsoDateTimeSchema,
-  createdBy: UserIdSchema,
-  /** The chosen icon, or null to show the name's initials. */
-  icon: WorkspaceIconNameSchema.nullable(),
-  /** The colour its mark is drawn in. Older durable Workspace events lack it. */
-  color: MarkColorSchema.optional(),
-  homeThreadId: ThreadIdSchema.nullable(),
-  voiceThreadId: ThreadIdSchema.nullable(),
-  id: WorkspaceIdSchema,
-  kind: WorkspaceKindSchema,
-  name: z.string().trim().min(1).max(160),
-  status: z.enum([
-    "provisioning",
-    "ready",
-    // `archiving` is the storage authority's archive cycle in flight — the
-    // filesystem is neither servable nor sealed yet. It is distinct from
-    // `archived`, which promises a sealed archive that can be read and
-    // restored from.
-    "archiving",
-    "archived",
-    "unavailable",
-    "failed",
-    "deleting",
-    "deleted",
-  ]),
-  storageIssue: WorkspaceStorageIssueSchema.nullable(),
-  updatedAt: IsoDateTimeSchema,
-});
-export type Workspace = z.infer<typeof WorkspaceSchema>;
-
-/**
- * Statuses whose storage is out of service but recoverable on demand: a wake
- * at the storage authority brings the filesystem back, cancelling an archive
- * cycle that is still quiescing if one is in flight. Demand paths must ask for
- * the wake and retry rather than reporting a failure.
- */
-export const wakeableWorkspaceStatuses = [
-  "archiving",
-  "archived",
-] as const satisfies readonly Workspace["status"][];
-
-export function workspaceWakesOnDemand(status: Workspace["status"]): boolean {
-  return (wakeableWorkspaceStatuses as readonly string[]).includes(status);
-}
 
 // The wire contract stays limited to the capabilities every Runner actually advertises.
 export const RunnerCapabilitySchema = z.enum([
@@ -402,7 +271,8 @@ export function sameProviderContinuationIdentity(
 
 export const ThreadStatusSchema = z.enum(["idle", "running", "waiting", "failed", "archived"]);
 export type ThreadStatus = z.infer<typeof ThreadStatusSchema>;
-export const ThreadRoleSchema = z.enum(["conversation", "work"]);
+export const TaskPurposeSchema = z.enum(["task", "voice", "background-job"]);
+export type TaskPurpose = z.infer<typeof TaskPurposeSchema>;
 /** Why a Done task is Done, when the Host rather than a person put it there. */
 export const ThreadDoneReasonSchema = z.enum(["quiet"]);
 export type ThreadDoneReason = z.infer<typeof ThreadDoneReasonSchema>;
@@ -415,7 +285,6 @@ export const QuietTaskDaysSchema = z.union([
 ]);
 export type QuietTaskDays = z.infer<typeof QuietTaskDaysSchema>;
 export const defaultQuietTaskDays: QuietTaskDays = 3;
-export type ThreadRole = z.infer<typeof ThreadRoleSchema>;
 
 /**
  * Provider-neutral control over how an agent may act during a Run. Harnesses
@@ -435,33 +304,15 @@ export function threadAccessModeAtMost(mode: ThreadAccessMode, ceiling: ThreadAc
   );
 }
 export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
-/**
- * The title of a person's Chat, the Thread `Workspace.homeThreadId` names. The
- * Host sets it on creation whatever a client sends, so an older client cannot
- * bring back an earlier name.
- */
-export const CHAT_THREAD_TITLE = "Chat";
 
 export const ThreadSchema = z.object({
   specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
-  /**
-   * When a person last asked this Thread for work: their newest message that
-   * started or joined its turn, else when it was created. Task lists order by
-   * it, so a task moves only when someone asks it for something. Older Hosts
-   * and durable Thread events carry no such field.
-   */
   askedAt: IsoDateTimeSchema.optional(),
-  /** Immutable consent inherited from the lineage root, including withheld Main access. */
-  inheritsMain: z.boolean(),
+
   continuationIdentity: ProviderContinuationIdentitySchema.nullable(),
   createdAt: IsoDateTimeSchema,
   createdBy: UserIdSchema,
-  /**
-   * When someone marked this task Done, which stopped it and the work it handed
-   * out; null while it is open. A Done task takes no new work until someone
-   * reopens it. Older durable Thread events carry no such field.
-   */
   doneAt: IsoDateTimeSchema.nullable().default(null),
   /** Null while open and when a person or its own agent marked it Done. */
   doneReason: ThreadDoneReasonSchema.nullable().default(null),
@@ -470,31 +321,21 @@ export const ThreadSchema = z.object({
   id: ThreadIdSchema,
   lineageRootThreadId: ThreadIdSchema,
   inputQueuePaused: z.boolean(),
-  /**
-   * Whether the Thread is one of its person's tasks in navigation lists: a root
-   * Thread, or work a conversation such as Home handed off. Work that a task
-   * delegates is reached through that task instead. The Host decides this once,
-   * at creation, from the parent's role; `parentThreadId` remains lineage only.
-   */
   listed: z.boolean(),
   modelSelection: ModelSelectionSchema,
   parentThreadId: ThreadIdSchema.nullable(),
   pendingRequests: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  role: ThreadRoleSchema,
+  purpose: TaskPurposeSchema,
+  folder: TaskFolderSchema,
+  teamOrigin: TeamTaskOriginSchema.nullable(),
   // Older durable Thread events did not record which native session was selected.
   providerSessionId: ProviderSessionIdSchema.nullable().default(null),
   status: ThreadStatusSchema,
   title: z.string().trim().min(1).max(240),
-  /**
-   * What the task is about, as a symbol; null until it is decided (its engine
-   * names it with its title) and for Chat. A settled "nothing specific" is
-   * `defaultTaskSymbol`. Older durable Thread events carry neither field.
-   */
-  icon: WorkspaceIconNameSchema.nullable().default(null),
+  icon: IconNameSchema.nullable().default(null),
   /** The task's own colour, fixed at creation; see `MarkColorSchema`. */
   color: MarkColorSchema.optional(),
   updatedAt: IsoDateTimeSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
@@ -506,30 +347,13 @@ export const ThreadViewSchema = z.object({
 });
 export type Thread = z.infer<typeof ThreadSchema>;
 
-/** Display-only epoch-48 projection; current clients use the Thread's doneAt. */
-export const TaskPlacementSchema = z.object({
-  done: z.boolean(),
-  sequence: SequenceSchema,
-});
-export type TaskPlacement = z.infer<typeof TaskPlacementSchema>;
-
-export const ThreadReadStateSchema = z.object({
+export const ThreadReadStateSchema = z.strictObject({
   threadId: ThreadIdSchema,
   readSequence: SequenceSchema.nullable(),
   unreadSequence: SequenceSchema.nullable(),
-  // Optional for current readers; every Host producer supplies both fields.
-  placement: TaskPlacementSchema.nullable().optional(),
-  placementRevision: SequenceSchema.optional(),
   asOfSequence: SequenceSchema,
 });
 export type ThreadReadState = z.infer<typeof ThreadReadStateSchema>;
-
-export const WorkspaceNotificationPreferenceSchema = z.object({
-  workspaceId: WorkspaceIdSchema,
-  muted: z.boolean(),
-  revision: SequenceSchema,
-});
-export type WorkspaceNotificationPreference = z.infer<typeof WorkspaceNotificationPreferenceSchema>;
 
 const messageContentMaxParts = 64;
 export const messageContentMaxSerializedBytes = 350 * 1_024;
@@ -666,8 +490,6 @@ const messageAuthorVariants = [
     kind: z.literal("agent"),
     runId: RunIdSchema,
     threadId: ThreadIdSchema,
-    workspaceId: WorkspaceIdSchema,
-    workspaceName: z.string().trim().min(1).max(160),
   }),
   z.strictObject({
     displayName: z.string().trim().min(1).max(160),
@@ -802,6 +624,8 @@ const threadInputShape = {
   deliveredAt: IsoDateTimeSchema.nullable(),
   messageId: MessageIdSchema,
   policy: ThreadInputPolicySchema,
+  teamRequestId: TeamAgentRequestIdSchema.nullable(),
+  teamSource: TeamSourceSchema.nullable(),
   replyTarget: ReplyTargetSchema.nullable(),
   runId: RunIdSchema.nullable(),
   state: ThreadInputStateSchema,
@@ -950,6 +774,7 @@ export const RunUsageViewSchema = z.object(runUsageShape);
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
+  teamRequestId: TeamAgentRequestIdSchema.nullable(),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,
   assignmentId: AssignmentIdSchema.nullable(),
@@ -1190,9 +1015,8 @@ export const AssignmentSummarySchema = z.object({
     status: ThreadStatusSchema,
     title: z.string().trim().min(1).max(240),
     /** The worker's mark, as on `Thread`; absent from summaries written before marks. */
-    icon: WorkspaceIconNameSchema.nullable().default(null),
+    icon: IconNameSchema.nullable().default(null),
     color: MarkColorSchema.optional().catch(undefined),
-    workspaceId: WorkspaceIdSchema,
   }),
 });
 export type AssignmentSummary = z.infer<typeof AssignmentSummarySchema>;

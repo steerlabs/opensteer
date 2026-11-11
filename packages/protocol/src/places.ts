@@ -4,12 +4,11 @@ import {
   ThreadIdSchema,
   IsoDateTimeSchema,
   BrowserSurfaceIdSchema,
-  WorkspaceIdSchema,
 } from "@opensteer/core";
 
 export const PersonShowMessageSchema = z.object({
   type: z.literal("host.show"),
-  workspaceId: WorkspaceIdSchema,
+
   threadId: ThreadIdSchema,
   runId: RunIdSchema,
   target: z.union([
@@ -31,7 +30,6 @@ export {
 import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "@opensteer/core";
 export const PlaceOccupantSchema = z.object({
   threadId: ThreadIdSchema,
-  home: z.boolean(),
   holding: z.boolean(),
   acting: z.boolean(),
   lastActiveAt: IsoDateTimeSchema.max(64),
@@ -41,7 +39,6 @@ export const PlaceActivitySchema = z
   .strictObject({
     place: PlaceIdentitySchema,
     threadId: ThreadIdSchema,
-    home: z.boolean(),
     runId: RunIdSchema,
     generation: revision,
     seq: revision,

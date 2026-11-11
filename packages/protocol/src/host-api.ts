@@ -1,11 +1,19 @@
+import {
+  FolderFileKeySchema,
+  FolderFileCursorSchema,
+  FolderFileRevisionSchema,
+  FolderDirectoryPageViewSchema,
+  FolderFilePreviewMetadataViewSchema,
+} from "./files.js";
+import { NeedsYouPageSchema } from "./needs-you.js";
+import { TaskFolderSchema } from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
-import { TeamCommandSchema, TeamCommandResultSchema, teamReadSchemas } from "./team-access.js";
+import { TeamCommandSchema, TeamCommandResultSchema, teamReadSchemas } from "./team-api.js";
 import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
   AgentConnectionIdSchema,
-  AgentConnectionReachSchema,
   AgentConnectionConsentSchema,
 } from "./agent-connections.js";
 import {
@@ -15,9 +23,7 @@ import {
   PluginsDirectoryViewSchema,
   DevicesOverviewViewSchema,
   SettingsPluginEnableCommandSchema,
-  SettingsPluginPlacementCommandSchema,
   SettingsPluginEnableResultSchema,
-  SettingsPluginPlacementResultSchema,
 } from "./settings.js";
 import { CardApprovalSchema } from "./card-use.js";
 import { PasswordSignInCardViewSchema, PasswordSignInApprovalSchema } from "./password-sign-in.js";
@@ -58,7 +64,6 @@ import {
   AuthSessionIdSchema,
   AuthSessionSummarySchema,
   AuthenticatedSessionViewSchema,
-  BrowserProfileGrantIdSchema,
   BrowserProfileIdSchema,
   BrowserSiteSchema,
   BrowserSourceIdSchema,
@@ -72,10 +77,8 @@ import {
   HarnessInstanceIdSchema,
   HarnessInstanceStateKindSchema,
   IdentityPasswordSchema,
-  InvitationPreviewSchema,
   LiveRunProgressViewSchema,
   LocalPasswordRecoveryTokenSchema,
-  MarkColorSchema,
   MessageContentSchema,
   MessageIdSchema,
   MessageViewSchema,
@@ -105,15 +108,8 @@ import {
   QuietTaskDaysSchema,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
-  UserIdSchema,
   WaitingRequestViewSchema,
-  WorkspaceIconNameSchema,
-  WorkspaceIdSchema,
-  WorkspaceInvitationIdSchema,
-  WorkspaceInvitationSchema,
-  WorkspaceMembershipRoleSchema,
-  WorkspaceMembershipSchema,
-  WorkspaceNotificationPreferenceSchema,
+  IconNameSchema,
   attachmentMaxBytes,
   identityPasswordMaxLength,
   readableRequestList,
@@ -163,7 +159,7 @@ import {
   TriggerViewSchema,
   TriggerWatchActivationViewSchema,
   UpdateTriggerHttpBodySchema,
-} from "@opensteer/triggers";
+} from "@opensteer/triggers/models";
 import { z } from "zod";
 import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
@@ -195,27 +191,26 @@ import {
   BrowserTabOpenCommandSchema,
   BrowserTabOpenResultSchema,
   CreateBrowserProfileBodySchema,
-  CreateBrowserProfileGrantResponseSchema,
   CreateBrowserProfileResponseSchema,
   StartHostedBrowserBodySchema,
   StartHostedBrowserResponseSchema,
   ThreadBrowserUsageSchema,
-  WorkspaceTabActivateCommandSchema,
-  WorkspaceTabActivateResultSchema,
-  WorkspaceTabCloseCommandSchema,
-  WorkspaceTabCloseResultSchema,
-  WorkspaceTabGroupUpdateCommandSchema,
-  WorkspaceTabGroupUpdateResultSchema,
-  WorkspaceTabReopenCommandSchema,
-  WorkspaceTabReopenResultSchema,
-  WorkspaceTabsCloseCommandSchema,
-  WorkspaceTabsCloseResultSchema,
-  WorkspaceTabsGroupCommandSchema,
-  WorkspaceTabsGroupResultSchema,
-  WorkspaceTabsMoveCommandSchema,
-  WorkspaceTabsMoveResultSchema,
-  WorkspaceTabsUngroupCommandSchema,
-  WorkspaceTabsUngroupResultSchema,
+  PersonalTabActivateCommandSchema,
+  PersonalTabActivateResultSchema,
+  PersonalTabCloseCommandSchema,
+  PersonalTabCloseResultSchema,
+  PersonalTabGroupUpdateCommandSchema,
+  PersonalTabGroupUpdateResultSchema,
+  PersonalTabReopenCommandSchema,
+  PersonalTabReopenResultSchema,
+  PersonalTabsCloseCommandSchema,
+  PersonalTabsCloseResultSchema,
+  PersonalTabsGroupCommandSchema,
+  PersonalTabsGroupResultSchema,
+  PersonalTabsMoveCommandSchema,
+  PersonalTabsMoveResultSchema,
+  PersonalTabsUngroupCommandSchema,
+  PersonalTabsUngroupResultSchema,
   browserUsageRunBatchSize,
 } from "./browser.js";
 import {
@@ -225,8 +220,6 @@ import {
   NodeEventPageSchema,
   ThreadEventPageSchema,
   ThreadMessagePageSchema,
-  WorkspaceCatalogPageSchema,
-  WorkspaceViewSchema,
   turnPageMaxTurns,
 } from "./client.js";
 import {
@@ -248,13 +241,7 @@ import {
   ComputerViewRenewCommandSchema,
   ComputerViewRenewResultSchema,
 } from "./computer-view.js";
-import {
-  WorkspaceDirectoryPageViewSchema,
-  WorkspaceFileCursorSchema,
-  WorkspaceFileKeySchema,
-  WorkspaceFilePreviewMetadataViewSchema,
-  WorkspaceFileRevisionSchema,
-} from "./files.js";
+
 import { MachineSummarySchema } from "./machines.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
@@ -310,8 +297,6 @@ const oidcReturnPathSchema = z
   .string()
   .regex(/^\/(?:$|invite\/[A-Za-z0-9_-]{24,96}$)/)
   .default("/");
-const invitationSelectorSchema = z.string().regex(/^[A-Za-z0-9_-]{24,96}$/);
-const invitationVerifierSchema = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
 
 /**
  * The request header every rpc caller states its protocol epoch in. A request
@@ -319,7 +304,7 @@ const invitationVerifierSchema = z.string().regex(/^[A-Za-z0-9_-]{32,128}$/);
  * refuses it: there are none in the wild, because the Host serves its own web
  * bundle and the Desktop ships with the Host it talks to.
  */
-export const hostApiVersionHeader = "x-opensteer-api-version";
+export { hostApiVersionHeader, teamApiVersionHeader } from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
   code: OpensteerErrorCodeSchema,
@@ -333,17 +318,7 @@ const durablePageInputSchema = z.strictObject({
   limit: z.number().int().positive().max(100).optional(),
 });
 
-const WorkspaceMembershipViewSchema = z.object(WorkspaceMembershipSchema.shape);
-const WorkspaceInvitationViewSchema = z.object(WorkspaceInvitationSchema.shape);
-const InvitationPreviewViewSchema = z.object(InvitationPreviewSchema.shape);
 const AuthSessionSummaryViewSchema = z.object(AuthSessionSummarySchema.shape);
-
-const workspaceMemberSchema = z.object({
-  ...WorkspaceMembershipSchema.shape,
-  displayName: z.string().trim().min(1).max(120),
-  email: z.email().max(320),
-  emailVerified: z.boolean(),
-});
 
 const harnessRecordSchema = z.object({
   modelSettings: HarnessModelSettingsMapViewSchema.optional(),
@@ -390,89 +365,15 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     name: AttachmentNameSchema,
     sizeBytes: z.number().int().nonnegative().max(attachmentMaxBytes),
     type: z.literal("attachment.upload.create"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     attachmentId: AttachmentIdSchema,
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("attachment.upload.discard"),
   }),
-  z.strictObject({
-    icon: WorkspaceIconNameSchema.optional(),
-    idempotencyKey: idempotencyKeySchema,
-    name: z.string().trim().min(1).max(160),
-    type: z.literal("workspace.create"),
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("workspace.adoptRelocated"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("workspace.storage.retry"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    icon: WorkspaceIconNameSchema.nullable(),
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("workspace.icon.set"),
-    workspaceId: WorkspaceIdSchema,
-  }),
+
   /** A specialist's colour, chosen. Sent only to a Host that advertises `task-marks-v1`. */
-  z.strictObject({
-    color: MarkColorSchema,
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("workspace.color.set"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("workspace.delete"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("workspace.deletion.recover"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z
-    .strictObject({
-      idempotencyKey: idempotencyKeySchema,
-      // An email invitation binds to one address: redemption by anyone else is
-      // refused. A link invitation is bearer, so it must carry no address at
-      // all rather than an advisory one nothing enforces.
-      intendedEmail: emailSchema.optional(),
-      invitationType: z.enum(["email", "link"]).default("link"),
-      lifetimeSeconds: z
-        .number()
-        .int()
-        .min(5 * 60)
-        .max(30 * 24 * 60 * 60)
-        .default(7 * 24 * 60 * 60),
-      role: WorkspaceMembershipRoleSchema,
-      type: z.literal("workspace.invitation.create"),
-      workspaceId: WorkspaceIdSchema,
-    })
-    .superRefine((value, context) => {
-      if ((value.invitationType === "email") !== (value.intendedEmail !== undefined)) {
-        context.addIssue({ code: "custom", message: "Email invitations require an email address" });
-      }
-    }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    invitationId: WorkspaceInvitationIdSchema,
-    type: z.literal("workspace.invitation.revoke"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    role: WorkspaceMembershipRoleSchema.optional(),
-    state: z.enum(["active", "revoked"]).optional(),
-    type: z.literal("workspace.member.update"),
-    userId: UserIdSchema,
-    workspaceId: WorkspaceIdSchema,
-  }),
+
   z.strictObject({
     accessMode: ThreadAccessModeSchema.optional(),
     environmentId: EnvironmentIdSchema,
@@ -480,7 +381,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     modelSelection: ModelSelectionSchema,
     parentThreadId: ThreadIdSchema.optional(),
-    home: z.literal(true).optional(),
     /**
      * `title` is the first line of the message that will start the Thread, for
      * background naming to replace with a generated name. Absent, `title` is a name
@@ -490,7 +390,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     generateTitle: z.literal(true).optional(),
     title: ThreadTitleSchema,
     type: z.literal("thread.create"),
-    workspaceId: WorkspaceIdSchema,
+    folder: TaskFolderSchema.optional(),
   }),
   /**
    * A person names a Thread. Nothing replaces the name afterwards, even when
@@ -503,14 +403,9 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     title: ThreadTitleSchema,
     type: z.literal("thread.rename"),
   }),
-  /**
-   * A person picks a Thread's symbol; null is "Use default", the plain
-   * document. Nothing replaces it afterwards, even when it is the symbol the
-   * Thread already had. Chat has none. Sent only to a Host that advertises
-   * `task-marks-v1`.
-   */
+
   z.strictObject({
-    icon: WorkspaceIconNameSchema.nullable(),
+    icon: IconNameSchema.nullable(),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.icon.set"),
@@ -570,18 +465,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
   }),
   // Marks a task Done, which stops it and the work it handed out and refuses
   // new work until it is reopened, or reopens it. Every member sees the change.
-  z.strictObject({
-    type: z.literal("thread.shared-done.set"),
-    idempotencyKey: idempotencyKeySchema,
-    threadId: ThreadIdSchema,
-    done: z.boolean(),
-  }),
-  z.strictObject({
-    type: z.literal("workspace.notifications.update"),
-    idempotencyKey: idempotencyKeySchema,
-    workspaceId: WorkspaceIdSchema,
-    muted: z.boolean(),
-  }),
+
   z.strictObject({
     type: z.literal("notification.preview.register"),
     installationId: NotificationInstallationIdSchema,
@@ -795,7 +679,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
         kind: z.literal("approve"),
         label: z.string().trim().min(1).max(120),
         accessMode: ThreadAccessModeSchema,
-        reach: AgentConnectionReachSchema,
       }),
     ]),
     type: z.literal("connection.authorize"),
@@ -812,12 +695,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     name: z.string().trim().min(1).max(120),
     type: z.literal("runner.enrollment.createLocal"),
   }),
-  z.strictObject({
-    allowedModules: z.array(RunnerModuleNameSchema).min(1).max(5),
-    idempotencyKey: idempotencyKeySchema,
-    name: z.string().trim().min(1).max(120),
-    type: z.literal("runner.enrollment.createManaged"),
-  }),
+
   /**
    * A phone sharing Android's screen or iPhone data apps. The Host fixes the
    * integrations grant and pairing target; the optional iPhone profile pins
@@ -919,30 +797,28 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("plugin.activation.set"),
     pluginId: z.string(),
-    workspaceId: WorkspaceIdSchema,
+
     active: z.boolean(),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("plugin.list"),
-    workspaceId: WorkspaceIdSchema.optional(),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("specialist.add"),
-    workspaceId: WorkspaceIdSchema,
+
     pluginId: z.string().min(1),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("specialist.remove"),
-    workspaceId: WorkspaceIdSchema,
+
     specialistId: z.string().min(1),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("specialist.list"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -968,7 +844,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     grantId: IntegrationGrantIdSchema,
     idempotencyKey: idempotencyKeySchema,
     type: z.literal("integration.grant.revoke"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1014,7 +889,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     provider: z.string().min(1),
     routingMode: z.enum(["dedicated", "shared"]),
     type: z.literal("channel.connection.create"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     connectionId: IntegrationConnectionIdSchema,
@@ -1033,7 +907,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
     type: z.literal("channel.connection.computer.create"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     accessPolicy: ChannelAccessPolicySchema,
@@ -1042,7 +915,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     selector: ChannelRouteSelectorSchema,
     type: z.literal("channel.binding.create"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     bindingId: ChannelBindingIdSchema,
@@ -1079,7 +951,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     input: StartHostedBrowserBodySchema,
     type: z.literal("browser.session.start"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1102,14 +973,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     site: BrowserSiteSchema,
     type: z.literal("browser.site.remove"),
-    workspaceId: WorkspaceIdSchema,
   }),
-  /**
-   * Signs the site of `url` in, in one live Browser Session, with a Chrome
-   * sign-in, and remembers the site for the session's Workspace. `sourceId`
-   * answers a `choose-source` outcome; otherwise the Host picks the Workspace's
-   * preferred Chrome or the only signed-in one.
-   */
+
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     sessionId: z.string().min(1).max(128),
@@ -1138,17 +1003,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
       z.strictObject({ kind: z.literal("approve-card"), ...CardApprovalSchema.shape }),
     ]),
   }),
-  z.strictObject({
-    idempotencyKey: idempotencyKeySchema,
-    profileId: BrowserProfileIdSchema,
-    type: z.literal("browser.profile.grant"),
-    workspaceId: WorkspaceIdSchema,
-  }),
-  z.strictObject({
-    grantId: BrowserProfileGrantIdSchema,
-    idempotencyKey: idempotencyKeySchema,
-    type: z.literal("browser.profileGrant.revoke"),
-  }),
+
   /** Requires the Host's `browser-profile-manage-v1` capability. */
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1217,31 +1072,29 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
 const commandInputSchema = z.discriminatedUnion("type", [
   ...TeamCommandSchema.options,
   SettingsPluginEnableCommandSchema,
-  SettingsPluginPlacementCommandSchema,
   BrowserTabOpenCommandSchema,
-  WorkspaceTabActivateCommandSchema,
-  WorkspaceTabCloseCommandSchema,
-  WorkspaceTabReopenCommandSchema,
-  WorkspaceTabsGroupCommandSchema,
-  WorkspaceTabsUngroupCommandSchema,
-  WorkspaceTabsMoveCommandSchema,
-  WorkspaceTabGroupUpdateCommandSchema,
-  WorkspaceTabsCloseCommandSchema,
+  PersonalTabActivateCommandSchema,
+  PersonalTabCloseCommandSchema,
+  PersonalTabReopenCommandSchema,
+  PersonalTabsGroupCommandSchema,
+  PersonalTabsUngroupCommandSchema,
+  PersonalTabsMoveCommandSchema,
+  PersonalTabGroupUpdateCommandSchema,
+  PersonalTabsCloseCommandSchema,
   ...otherCommandInputSchema.options,
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
   ...TeamCommandResultSchema.options,
   SettingsPluginEnableResultSchema,
-  SettingsPluginPlacementResultSchema,
-  WorkspaceTabActivateResultSchema,
-  WorkspaceTabCloseResultSchema,
-  WorkspaceTabReopenResultSchema,
-  WorkspaceTabsGroupResultSchema,
-  WorkspaceTabsUngroupResultSchema,
-  WorkspaceTabsMoveResultSchema,
-  WorkspaceTabGroupUpdateResultSchema,
-  WorkspaceTabsCloseResultSchema,
+  PersonalTabActivateResultSchema,
+  PersonalTabCloseResultSchema,
+  PersonalTabReopenResultSchema,
+  PersonalTabsGroupResultSchema,
+  PersonalTabsUngroupResultSchema,
+  PersonalTabsMoveResultSchema,
+  PersonalTabGroupUpdateResultSchema,
+  PersonalTabsCloseResultSchema,
   BrowserTabOpenResultSchema,
   ComputerViewOpenResultSchema,
   ComputerViewCloseResultSchema,
@@ -1249,24 +1102,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   BrowserTabCloseResultSchema,
   z.object({ type: z.literal("attachment.upload.create"), attachment: AttachmentSchema }),
   z.object({ type: z.literal("attachment.upload.discard") }),
-  z.object({ type: z.literal("workspace.create"), workspace: WorkspaceViewSchema }),
-  z.object({ type: z.literal("workspace.adoptRelocated"), workspace: WorkspaceViewSchema }),
-  z.object({ type: z.literal("workspace.storage.retry"), workspace: WorkspaceViewSchema }),
-  z.object({ type: z.literal("workspace.icon.set"), workspace: WorkspaceViewSchema }),
-  z.object({ type: z.literal("workspace.color.set"), workspace: WorkspaceViewSchema }),
-  z.object({ type: z.literal("workspace.delete"), workspace: WorkspaceViewSchema }),
-  z.object({ type: z.literal("workspace.deletion.recover"), workspace: WorkspaceViewSchema }),
-  z.object({
-    invitation: WorkspaceInvitationViewSchema,
-    invitationUrl: z.url(),
-    type: z.literal("workspace.invitation.create"),
-  }),
-  z.object({ type: z.literal("workspace.invitation.revoke") }),
-  z.object({ membership: workspaceMemberSchema, type: z.literal("workspace.member.update") }),
+
   z.object({
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
     type: z.literal("thread.create"),
+    folder: TaskFolderSchema.optional(),
     wasDuplicate: z.boolean(),
   }),
   z.object({
@@ -1306,15 +1147,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("thread.read.mark"), state: ThreadReadStateSchema }),
   z.object({ type: z.literal("thread.done.set"), state: ThreadReadStateSchema }),
-  z.object({
-    asOfSequence: SequenceSchema,
-    thread: ThreadViewSchema,
-    type: z.literal("thread.shared-done.set"),
-    wasDuplicate: z.boolean(),
-  }),
-  WorkspaceNotificationPreferenceSchema.extend({
-    type: z.literal("workspace.notifications.update"),
-  }),
+
   z.object({
     type: z.literal("notification.preview.register"),
     installationId: NotificationInstallationIdSchema,
@@ -1386,12 +1219,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     token: z.string().min(32).max(4_096),
     type: z.literal("runner.enrollment.createLocal"),
   }),
-  z.object({
-    enrollmentId: z.string().min(1).max(256),
-    expiresAt: z.iso.datetime({ offset: true }),
-    token: z.string().min(16).max(4_096),
-    type: z.literal("runner.enrollment.createManaged"),
-  }),
+
   z.object({
     enrollmentId: z.string().min(1).max(256),
     expiresAt: z.iso.datetime({ offset: true }),
@@ -1546,8 +1374,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     /** How the Request ended. */
     status: z.enum(["declined", "fulfilled", "pending", "withdrawn", "cancelled"]),
   }),
-  CreateBrowserProfileGrantResponseSchema.extend({ type: z.literal("browser.profile.grant") }),
-  z.object({ type: z.literal("browser.profileGrant.revoke") }),
+
   z.object({ profile: BrowserProfileSchema, type: z.literal("browser.profile.rename") }),
   z.object({
     type: z.literal("browser.profile.delete"),
@@ -1587,6 +1414,176 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
 ) => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
 export const hostApi = defineRpc({
+  "folder.files.list": declaration(
+    "POST",
+    z.strictObject({
+      folder: TaskFolderSchema,
+      parentKey: FolderFileKeySchema,
+      cursor: FolderFileCursorSchema.optional(),
+      knownRevision: FolderFileRevisionSchema.optional(),
+    }),
+    FolderDirectoryPageViewSchema,
+  ),
+  "folder.files.preview": declaration(
+    "POST",
+    z.strictObject({ folder: TaskFolderSchema, fileKey: FolderFileKeySchema }),
+    z.object({
+      metadata: FolderFilePreviewMetadataViewSchema,
+      content: z.string().max(512 * 1024),
+    }),
+  ),
+  "needsYou.get": declaration("POST", emptyInputSchema, NeedsYouPageSchema),
+  "team.bootstrap.get": declaration(
+    "POST",
+    teamReadSchemas["team.bootstrap.get"].input,
+    teamReadSchemas["team.bootstrap.get"].output,
+  ),
+  "team.sidebar.get": declaration(
+    "POST",
+    teamReadSchemas["team.sidebar.get"].input,
+    teamReadSchemas["team.sidebar.get"].output,
+  ),
+  "team.channels.list": declaration(
+    "POST",
+    teamReadSchemas["team.channels.list"].input,
+    teamReadSchemas["team.channels.list"].output,
+  ),
+  "team.channel.get": declaration(
+    "POST",
+    teamReadSchemas["team.channel.get"].input,
+    teamReadSchemas["team.channel.get"].output,
+  ),
+  "team.channel.access.get": declaration(
+    "POST",
+    teamReadSchemas["team.channel.access.get"].input,
+    teamReadSchemas["team.channel.access.get"].output,
+  ),
+  "team.channel.instructions.get": declaration(
+    "POST",
+    teamReadSchemas["team.channel.instructions.get"].input,
+    teamReadSchemas["team.channel.instructions.get"].output,
+  ),
+  "team.messages.page": declaration(
+    "POST",
+    teamReadSchemas["team.messages.page"].input,
+    teamReadSchemas["team.messages.page"].output,
+  ),
+  "team.thread.page": declaration(
+    "POST",
+    teamReadSchemas["team.thread.page"].input,
+    teamReadSchemas["team.thread.page"].output,
+  ),
+  "team.message.get": declaration(
+    "POST",
+    teamReadSchemas["team.message.get"].input,
+    teamReadSchemas["team.message.get"].output,
+  ),
+  "team.messages.check": declaration(
+    "POST",
+    teamReadSchemas["team.messages.check"].input,
+    teamReadSchemas["team.messages.check"].output,
+  ),
+  "team.search": declaration(
+    "POST",
+    teamReadSchemas["team.search"].input,
+    teamReadSchemas["team.search"].output,
+  ),
+  "team.members.list": declaration(
+    "POST",
+    teamReadSchemas["team.members.list"].input,
+    teamReadSchemas["team.members.list"].output,
+  ),
+  "team.groups.list": declaration(
+    "POST",
+    teamReadSchemas["team.groups.list"].input,
+    teamReadSchemas["team.groups.list"].output,
+  ),
+  "team.group.get": declaration(
+    "POST",
+    teamReadSchemas["team.group.get"].input,
+    teamReadSchemas["team.group.get"].output,
+  ),
+  "team.invites.list": declaration(
+    "POST",
+    teamReadSchemas["team.invites.list"].input,
+    teamReadSchemas["team.invites.list"].output,
+  ),
+  "team.audit.page": declaration(
+    "POST",
+    teamReadSchemas["team.audit.page"].input,
+    teamReadSchemas["team.audit.page"].output,
+  ),
+  "team.notices.page": declaration(
+    "POST",
+    teamReadSchemas["team.notices.page"].input,
+    teamReadSchemas["team.notices.page"].output,
+  ),
+  "team.knowledge.topics.list": declaration(
+    "POST",
+    teamReadSchemas["team.knowledge.topics.list"].input,
+    teamReadSchemas["team.knowledge.topics.list"].output,
+  ),
+  "team.knowledge.topic.get": declaration(
+    "POST",
+    teamReadSchemas["team.knowledge.topic.get"].input,
+    teamReadSchemas["team.knowledge.topic.get"].output,
+  ),
+  "team.knowledge.topic.access.get": declaration(
+    "POST",
+    teamReadSchemas["team.knowledge.topic.access.get"].input,
+    teamReadSchemas["team.knowledge.topic.access.get"].output,
+  ),
+  "team.agent.requests.get": declaration(
+    "POST",
+    teamReadSchemas["team.agent.requests.get"].input,
+    teamReadSchemas["team.agent.requests.get"].output,
+  ),
+  "team.links.list": declaration(
+    "POST",
+    teamReadSchemas["team.links.list"].input,
+    teamReadSchemas["team.links.list"].output,
+  ),
+  "teams.links.list": declaration(
+    "POST",
+    teamReadSchemas["teams.links.list"].input,
+    teamReadSchemas["teams.links.list"].output,
+  ),
+  "teams.channelFolder.get": declaration(
+    "POST",
+    teamReadSchemas["teams.channelFolder.get"].input,
+    teamReadSchemas["teams.channelFolder.get"].output,
+  ),
+  "teams.threadTask.get": declaration(
+    "POST",
+    teamReadSchemas["teams.threadTask.get"].input,
+    teamReadSchemas["teams.threadTask.get"].output,
+  ),
+  "team.mentions.page": declaration(
+    "POST",
+    teamReadSchemas["team.mentions.page"].input,
+    teamReadSchemas["team.mentions.page"].output,
+  ),
+  "team.pins.page": declaration(
+    "POST",
+    teamReadSchemas["team.pins.page"].input,
+    teamReadSchemas["team.pins.page"].output,
+  ),
+  "team.files.page": declaration(
+    "POST",
+    teamReadSchemas["team.files.page"].input,
+    teamReadSchemas["team.files.page"].output,
+  ),
+  "team.knowledge.facts.page": declaration(
+    "POST",
+    teamReadSchemas["team.knowledge.facts.page"].input,
+    teamReadSchemas["team.knowledge.facts.page"].output,
+  ),
+  "team.knowledge.history.page": declaration(
+    "POST",
+    teamReadSchemas["team.knowledge.history.page"].input,
+    teamReadSchemas["team.knowledge.history.page"].output,
+  ),
+
   "browser.searchSuggestions.get": declaration(
     "GET",
     z.strictObject({ query: z.string().trim().min(1).max(200) }),
@@ -1647,101 +1644,7 @@ export const hostApi = defineRpc({
     BrowserSourceInspectionSchema,
   ),
   "auth.config": declaration("GET", emptyInputSchema, IdentityConfigViewSchema),
-  "team.invitations.list": declaration(
-    "GET",
-    teamReadSchemas["team.invitations.list"].input,
-    teamReadSchemas["team.invitations.list"].output,
-  ),
-  "team.summary.get": declaration(
-    "GET",
-    teamReadSchemas["team.summary.get"].input,
-    teamReadSchemas["team.summary.get"].output,
-  ),
-  "team.people.list": declaration(
-    "GET",
-    teamReadSchemas["team.people.list"].input,
-    teamReadSchemas["team.people.list"].output,
-  ),
-  "team.member.get": declaration(
-    "GET",
-    teamReadSchemas["team.member.get"].input,
-    teamReadSchemas["team.member.get"].output,
-  ),
-  "team.directory.search": declaration(
-    "GET",
-    teamReadSchemas["team.directory.search"].input,
-    teamReadSchemas["team.directory.search"].output,
-  ),
-  "team.groups.list": declaration(
-    "GET",
-    teamReadSchemas["team.groups.list"].input,
-    teamReadSchemas["team.groups.list"].output,
-  ),
-  "team.group.get": declaration(
-    "GET",
-    teamReadSchemas["team.group.get"].input,
-    teamReadSchemas["team.group.get"].output,
-  ),
-  "team.project.access.get": declaration(
-    "GET",
-    teamReadSchemas["team.project.access.get"].input,
-    teamReadSchemas["team.project.access.get"].output,
-  ),
-  "team.access.explain": declaration(
-    "GET",
-    teamReadSchemas["team.access.explain"].input,
-    teamReadSchemas["team.access.explain"].output,
-  ),
-  "team.access.preview": declaration(
-    "POST",
-    teamReadSchemas["team.access.preview"].input,
-    teamReadSchemas["team.access.preview"].output,
-  ),
-  "team.member.preview": declaration(
-    "POST",
-    teamReadSchemas["team.member.preview"].input,
-    teamReadSchemas["team.member.preview"].output,
-  ),
-  "team.audit.list": declaration(
-    "GET",
-    teamReadSchemas["team.audit.list"].input,
-    teamReadSchemas["team.audit.list"].output,
-  ),
-  "team.project.settings.get": declaration(
-    "GET",
-    teamReadSchemas["team.project.settings.get"].input,
-    teamReadSchemas["team.project.settings.get"].output,
-  ),
-  "team.project.runtimeChoices": declaration(
-    "GET",
-    teamReadSchemas["team.project.runtimeChoices"].input,
-    teamReadSchemas["team.project.runtimeChoices"].output,
-  ),
-  "team.invitation.preview": declaration(
-    "GET",
-    teamReadSchemas["team.invitation.preview"].input,
-    teamReadSchemas["team.invitation.preview"].output,
-  ),
-  "team.invitation.exchange": declaration(
-    "POST",
-    teamReadSchemas["team.invitation.exchange"].input,
-    teamReadSchemas["team.invitation.exchange"].output,
-  ),
-  "team.invitation.accept": declaration(
-    "POST",
-    teamReadSchemas["team.invitation.accept"].input,
-    teamReadSchemas["team.invitation.accept"].output,
-  ),
-  "auth.invitation.accept": declaration(
-    "POST",
-    emptyInputSchema,
-    z.object({ membership: WorkspaceMembershipViewSchema }),
-  ),
-  "auth.invitation.exchange": declaration(
-    "POST",
-    z.strictObject({ selector: invitationSelectorSchema, verifier: invitationVerifierSchema }),
-    z.object({ preview: InvitationPreviewViewSchema }),
-  ),
+
   "auth.native.complete": declaration(
     "POST",
     z.strictObject({ accept: z.boolean(), oauthQuery: oauthQuerySchema }),
@@ -1891,7 +1794,7 @@ export const hostApi = defineRpc({
   ),
   "integration.grants.list": declaration(
     "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema }),
+    z.strictObject({}),
     z.object({ grants: z.array(IntegrationGrantViewSchema).max(1_000) }),
   ),
   "integration.computer.policy.get": declaration(
@@ -1974,13 +1877,13 @@ export const hostApi = defineRpc({
   ),
   "specialist.list": declaration(
     "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema }),
+    z.strictObject({}),
     z.object({ specialists: z.array(SpecialistRegistrationViewSchema) }),
   ),
-  // Without workspaceId this is administrator-only; members receive a safe Workspace projection.
+
   "plugin.list": declaration(
     "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema.optional() }),
+    z.strictObject({}),
     z.object({ plugins: z.array(z.record(z.string(), z.unknown())) }),
   ),
   "integration.platform.get": declaration(
@@ -2013,11 +1916,7 @@ export const hostApi = defineRpc({
       sessions: z.array(ShellSessionHistoryEntrySchema).max(machineAccessHistoryMaxSessions),
     }),
   ),
-  /**
-   * The pending Requests the signed-in person is the one to answer, across
-   * every Workspace they belong to, each with the handed-out work it holds up.
-   * It is reread whenever `host.requests-changed` arrives.
-   */
+
   "requests.list": declaration(
     "GET",
     durablePageInputSchema,
@@ -2026,20 +1925,13 @@ export const hostApi = defineRpc({
       window: DurableWindowSchema,
     }),
   ),
-  /**
-   * The signed-in person's tasks across every Workspace they belong to, or in
-   * the one named, newest asked first (see `Thread.askedAt`), with their read
-   * state. The active filter keeps only running or waiting work. `done` (needs
-   * `quiet-tasks-v1`) keeps only Done tasks, newest Done first, and without a
-   * Workspace leaves out Projects. It is reread whenever `host.tasks-changed` arrives.
-   */
+
   "tasks.list": declaration(
     "GET",
     z
       .strictObject({
         active: z.boolean().optional(),
         done: z.boolean().optional(),
-        workspaceId: WorkspaceIdSchema.optional(),
       })
       .extend(durablePageInputSchema.shape)
       .refine((input) => !(input.active && input.done), "Active work is never Done"),
@@ -2211,47 +2103,11 @@ export const hostApi = defineRpc({
     "GET",
     z.strictObject({
       systemRole: z.enum(["memory-light", "memory-nightly"]).optional(),
-      workspaceId: WorkspaceIdSchema.optional(),
+
       /** Only those that run in this conversation. Needs `task-family-v1`. */
       anchorThreadId: ThreadIdSchema.optional(),
     }),
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),
-  ),
-  "workspace.catalog.list": declaration("GET", durablePageInputSchema, WorkspaceCatalogPageSchema),
-  "workspace.files.list": declaration(
-    "POST",
-    z.strictObject({
-      cursor: WorkspaceFileCursorSchema.optional(),
-      knownRevision: WorkspaceFileRevisionSchema.optional(),
-      parentKey: WorkspaceFileKeySchema,
-      retainedCursor: WorkspaceFileCursorSchema.optional(),
-      workspaceId: WorkspaceIdSchema,
-    }),
-    WorkspaceDirectoryPageViewSchema,
-  ),
-  "workspace.files.preview": declaration(
-    "POST",
-    z.strictObject({ fileKey: WorkspaceFileKeySchema, workspaceId: WorkspaceIdSchema }),
-    z.object({
-      bytes: z.instanceof(Uint8Array),
-      metadata: WorkspaceFilePreviewMetadataViewSchema,
-    }),
-    true,
-  ),
-  "workspace.invitations.list": declaration(
-    "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema }),
-    z.object({ invitations: z.array(WorkspaceInvitationViewSchema).max(1_000) }),
-  ),
-  "workspace.members.list": declaration(
-    "GET",
-    z.strictObject({ workspaceId: WorkspaceIdSchema }),
-    z.object({ members: z.array(workspaceMemberSchema).max(1_000) }),
-  ),
-  "workspace.prefetch": declaration(
-    "POST",
-    z.strictObject({ workspaceId: WorkspaceIdSchema }),
-    emptyOutputSchema,
   ),
 } as const);
 

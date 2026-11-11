@@ -1,12 +1,13 @@
+import { TaskRuntimeFenceSchema } from "./folders.js";
 import { z } from "zod";
 import { IsoDateTimeSchema } from "@opensteer/core";
-import { LocalWorkspaceBindingRefSchema, WorkspaceStorageFenceSchema } from "./workspace-local.js";
+import { TaskFolderSchema } from "@opensteer/core";
 const name = z.string().min(1).max(120);
 // Complete metadata replacement from the current authenticated storage owner. No paths or bodies.
 export const RunnerSkillMetadataReportSchema = z.strictObject({
-  ...WorkspaceStorageFenceSchema.shape,
+  ...TaskRuntimeFenceSchema.shape,
   type: z.literal("runner.skills.report"),
-  binding: LocalWorkspaceBindingRefSchema,
+  binding: TaskFolderSchema,
   scanSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   scannedAt: IsoDateTimeSchema,
   result: z.discriminatedUnion("status", [

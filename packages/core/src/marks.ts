@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { WorkspaceIconName } from "./workspace-icons.js";
+import type { IconName } from "./icons.js";
 
 /**
  * The colours a task or a specialist is drawn in. A task's colour is fixed at
@@ -36,23 +36,17 @@ export function nextMarkColor(recent: readonly MarkColor[]): MarkColor {
   return markColorAllocationOrder.find((color) => !worn.has(color)) ?? markColorAllocationOrder[0]!;
 }
 
-/**
- * Who decided a Thread's symbol, which decides whether anything may replace
- * it, exactly as `ThreadTitleSource` does for its title. Only `provisional`
- * symbols are generated; a person's or an agent's choice, and Chat's lack of
- * one, are `chosen`.
- */
 export const ThreadIconSourceSchema = z.enum(["provisional", "generated", "chosen"]);
 export type ThreadIconSource = z.infer<typeof ThreadIconSourceSchema>;
 
 /** The symbol of a task with nothing more specific to show, and of "Use default". */
-export const defaultTaskSymbol = "document" satisfies WorkspaceIconName;
+export const defaultTaskSymbol = "document" satisfies IconName;
 
 /**
  * The symbols a Thread's engine may give it: drawings that stay legible at
  * 16px and name one kind of errand. Near-duplicates, generic marks a model
  * would reach for every time (search, sparkles, folder) and the default
- * document are left out; a person may still choose any Workspace icon.
+ * document are left out; a person may still choose any icon.
  */
 export const taskSymbolNames = [
   "mail",
@@ -132,5 +126,5 @@ export const taskSymbolNames = [
   "heart",
   "care",
   "languages",
-] as const satisfies readonly WorkspaceIconName[];
+] as const satisfies readonly IconName[];
 export type TaskSymbolName = (typeof taskSymbolNames)[number];

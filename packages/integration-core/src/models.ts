@@ -6,7 +6,6 @@ import {
   RequestIdSchema,
   RunnerIdSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
   UserIdSchema,
   isLoopbackHostname,
   requestReasonMaxLength,
@@ -104,14 +103,11 @@ export type IntegrationAuthorizationSurface = z.infer<typeof IntegrationAuthoriz
 
 export function resolveIntegrationDeploymentPosture(input: {
   readonly accountReachability: "canonical" | "routed" | null;
-  readonly kind: "personal" | "server";
+  readonly kind: "personal" | "team";
   readonly personalAccountLinked: boolean;
 }): IntegrationDeploymentPosture {
   if (input.accountReachability !== null) return "account-adopted-self-hosted";
-  if (
-    deploymentPolicy({ kind: input.kind, defaultWorkspaceBacking: "local-directory" })
-      .integrationAccountBinding === "personal-link"
-  ) {
+  if (deploymentPolicy({ kind: input.kind }).services.personal) {
     return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
   }
   return "independent-self-hosted";
@@ -935,7 +931,6 @@ export const IntegrationGrantSchema = z.strictObject({
   ownerUserId: z.string().regex(/^usr_[0-9a-f-]{36}$/i),
   revokedAt: IsoDateTimeSchema.nullable(),
   status: z.enum(["active", "revoked"]),
-  workspaceId: z.string().regex(/^wsp_[0-9a-f-]{36}$/i),
 });
 export const IntegrationGrantViewSchema = z.object(IntegrationGrantSchema.shape);
 export type IntegrationGrant = z.infer<typeof IntegrationGrantSchema>;
@@ -974,9 +969,7 @@ const computerAppSetupRequestShapeSchema = z.strictObject({
   server: LocalMcpServerSetupSchema.nullable().default(null),
   reason: z.string().max(requestReasonMaxLength).nullable(),
   threadId: ThreadIdSchema.nullable(),
-  workspaceId: WorkspaceIdSchema.nullable(),
   /** The name the panel shows, fixed when this request was created. */
-  workspaceName: z.string().min(1).max(160).nullable(),
   threadTitle: z.string().max(240).nullable(),
   createdAt: IsoDateTimeSchema,
   expiresAt: IsoDateTimeSchema,
@@ -1471,6 +1464,5 @@ export const CreateIntegrationGrantSchema = z.strictObject({
   connectionId: IntegrationConnectionIdSchema.nullable(),
   installationId: IntegrationInstallationIdSchema,
   isDefault: z.boolean().default(false),
-  workspaceId: z.string().regex(/^wsp_[0-9a-f-]{36}$/i),
 });
 export type CreateIntegrationGrant = z.infer<typeof CreateIntegrationGrantSchema>;

@@ -668,14 +668,6 @@ export const ComputerUsePermissionsRequestParamsSchema = z.strictObject({
 });
 
 /**
- * The macOS privacy grants the helper holds for apps agents use through a
- * bounded API rather than their interface. They are separate from computer
- * use's two: reading a contact needs no Accessibility, and observing an app
- * needs no Contacts. The helper holds them rather than Opensteer.app because
- * every command an agent runs descends from Opensteer.app, and a grant held
- * there would be every agent's, whatever its Workspace was granted.
- */
-/**
  * The macOS grants the helper holds for apps it serves. `automation` is its
  * Automation permission for Messages; `full-disk-access` is its own Full Disk
  * Access, which only System Settings grants.

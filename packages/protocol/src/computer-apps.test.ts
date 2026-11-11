@@ -396,8 +396,7 @@ describe("computer approval review privacy", () => {
       },
       reason: null,
       threadId: null,
-      workspaceId: null,
-      workspaceName: null,
+
       threadTitle: null,
       createdAt: "2026-10-01T00:00:00Z",
       expiresAt: "2026-10-02T00:00:00Z",

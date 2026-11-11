@@ -30,6 +30,13 @@ const clientPolicyDerivations: Record<string, { count: number; reason: string }>
   },
 };
 const exceptionGroups = {
+  perKindNegotiation: {
+    "packages/deployment-authority/src/authority.ts": {
+      counts: { kind: 2 },
+      reason:
+        "Discovery and route headers select the personal or team protocol version before authentication or payload parsing.",
+    },
+  },
   dormantProjectAuthority: {
     "apps/host/src/team/team-administration-service.ts": {
       counts: { "authority.kind": 1 },
@@ -274,75 +281,31 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/baseline-schema.ts": {
     reason:
-      "Historical installed SQL; replace each named function, shape constraint or conversion through a new cutover migration, never by editing history.",
+      "Fresh schema validates exactly the two supported deployment shapes; services are composed by deploymentPolicy.",
     decisions: {
-      "baseline/public.opensteer_user_can_execute_environment": {
-        "deployment.deployment_shape->>'tenancy' <> 'single-user'": 1,
-        "deployment.deployment_shape->>'tenancy' = 'single-user'": 1,
-      },
-      "baseline/deployments_shape_check": {
-        "deployment_shape->>'ownerEstablishment' = ANY (ARRAY['self-claim', 'enrollment'])": 1,
-        "deployment_shape->>'tenancy' = ANY (ARRAY['single-user', 'multi-user'])": 1,
+      "baseline/deployments_shape": {
+        'deployment_shape in (\'{"kind":"personal"}\'::jsonb, \'{"kind":"team"}\'::jsonb))': 1,
       },
     },
   },
   "packages/database/src/migrations.ts": {
     reason:
-      "Historical installed SQL; replace each named function, shape constraint or conversion through a new cutover migration, never by editing history.",
-    decisions: {
-      "ownedNativeOAuthCallbackMigration/legacy-cloud-refusal": {
-        "workspace_profile->>'mode' = 'cloud'": 1,
-      },
-      "ownedNativeOAuthCallbackMigration/deployment-shape-conversion": {
-        "deployment_shape->>'mode' in ('personal', 'development') then 'self-claim'": 1,
-        "deployment_shape->>'mode' = 'personal' then 'single-user'": 1,
-      },
-      "ownedNativeOAuthCallbackMigration/deployments_shape_check": {
-        "deployment_shape->>'ownerEstablishment' = any (array['self-claim', 'enrollment'])": 1,
-        "deployment_shape->>'tenancy' = any (array['single-user', 'multi-user'])": 1,
-      },
-      "ownedNativeOAuthCallbackMigration/public.opensteer_user_can_execute_environment": {
-        "deployment.deployment_shape->>'tenancy' <> 'single-user'": 1,
-        "deployment.deployment_shape->>'tenancy' = 'single-user'": 1,
-      },
-      "deploymentKindAndHostIdentityMigration/deployment-shape-conversion": {
-        "deployment_shape->>'tenancy' = 'single-user' then 'personal'": 1,
-      },
-      "deploymentKindAndHostIdentityMigration/deployments_shape_check": {
-        "deployment_shape->>'kind' = any (array['personal', 'server'])": 1,
-      },
-      "deploymentKindAndHostIdentityMigration/public.opensteer_user_can_execute_environment": {
-        "deployment.deployment_shape->>'kind' = 'server'": 1,
-        "deployment.deployment_shape->>'kind' = 'personal'": 1,
-      },
-      "browserDeviceGrantsMigration/unclassified": {
-        "deployment_shape->>'kind' = 'personal')": 2,
-        "deployment_shape->>'kind' = 'personal'))": 2,
-      },
-      "browserProfileHomesMigration/browser_profile_deletions_state_check": {
-        "deployment_shape->>'kind' = 'personal')": 1,
-      },
-      "projectExecutionPreparationMigration/public.opensteer_project_runtime_settings_scope": {
-        "d.deployment_shape->>'kind' = 'server'": 1,
-      },
-      "runnerOwnedLocalWorkspacesMigration/deployments_shape_check": {
-        "deployment_shape->>'kind' = any (array['personal', 'server'])": 1,
-      },
-    },
+      "The sole lineage is shared by personal and team; the migrator makes no kind decisions.",
+    decisions: {},
   },
 };
 
 describe("deployment policy boundary", () => {
   it("requires a named exception for a new SQL migration decision", () => {
-    const historical = readFileSync(
+    const current = readFileSync(
       path.join(repositoryRoot, "packages/database/src/migrations.ts"),
       "utf8",
     );
-    expect(sqlKindDecisionInventory(historical)).toEqual(
+    expect(sqlKindDecisionInventory(current)).toEqual(
       sqlExceptions["packages/database/src/migrations.ts"]!.decisions,
     );
     const added =
-      historical +
+      current +
       `\nexport const unlistedMigration: Migration = { up: async () => sql\`select * from deployments where deployment_shape->>'kind' = 'server'\` };`;
     expect(sqlKindDecisionInventory(added)).not.toEqual(
       sqlExceptions["packages/database/src/migrations.ts"]!.decisions,
@@ -364,6 +327,8 @@ describe("deployment policy boundary", () => {
   });
   it.each([
     'shape["kind"] === "personal"',
+    'shape.kind === "team"',
+    '["personal", "team"].includes(shape.kind)',
     String.raw`shape.kind === "\u0070ersonal"`,
     String.raw`shape.kind === "\x70ersonal"`,
     "shape.kind === `personal`",
@@ -440,7 +405,7 @@ describe("deployment policy boundary", () => {
       if (sqlExceptions[file])
         expect(
           sqlKindDecisionInventory(text),
-          `${file}: installed SQL needs a named cutover exception`,
+          `${file}: schema SQL needs a named policy exception`,
         ).toEqual(sqlExceptions[file]!.decisions);
       const comparisons = file.endsWith(".sql") ? [] : kindComparisons(file, text);
       const actual = comparisonCounts(comparisons);

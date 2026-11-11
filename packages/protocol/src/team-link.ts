@@ -1,0 +1,248 @@
+import { z } from "zod";
+import {
+  DeploymentIdSchema,
+  HostInstanceIdSchema,
+  IsoDateTimeSchema,
+  RunIdSchema,
+  SequenceSchema,
+  TaskFolderSchema,
+  TeamAgentRequestIdSchema,
+  TeamBlobIdSchema,
+  TeamChannelIdSchema,
+  TeamLinkIdSchema,
+  TeamMessageIdSchema,
+  TeamOriginSchema,
+  TeamSourceSchema,
+  TeamStatusStepSchema,
+  ThreadIdSchema,
+  UserIdSchema,
+} from "@opensteer/core";
+import {
+  TeamAgentRequestSchema,
+  TeamFileSchema,
+  TeamMarkdownSchema,
+  TeamReadResultSchema,
+  TeamRequestContextSchema,
+  TeamSearchInputSchema,
+  TeamSearchPageSchema,
+} from "./team-chat.js";
+import { TeamSqlInputSchema, TeamSqlResultSchema } from "./team-knowledge.js";
+import { ProtocolErrorSchema } from "./common.js";
+
+export const teamLinkCredentialPrefix = "ost_link_";
+export const TeamLinkCredentialSchema = z.string().regex(/^ost_link_[A-Za-z0-9_-]{43}$/);
+export const TeamLinkCodeSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+export const TeamLinkOfferSchema = z.strictObject({
+  origin: TeamOriginSchema,
+  teamId: DeploymentIdSchema,
+  hostKeyFingerprint: z.string().min(1).max(128),
+  code: TeamLinkCodeSchema,
+});
+export type TeamLinkOffer = z.infer<typeof TeamLinkOfferSchema>;
+export const TeamLinkRedeemSchema = z.strictObject({
+  code: TeamLinkCodeSchema,
+  credentialHash: z.string().regex(/^[a-f0-9]{64}$/),
+  personalDeploymentId: DeploymentIdSchema,
+  installationLabel: z.string().trim().min(1).max(120),
+});
+export const TeamLinkViewSchema = z.strictObject({
+  id: TeamLinkIdSchema,
+  ownerUserId: UserIdSchema,
+  personalDeploymentId: DeploymentIdSchema.nullable(),
+  installationLabel: z.string().max(120).nullable(),
+  state: z.enum(["pending", "active", "revoked"]),
+  lastSeenAt: IsoDateTimeSchema.nullable(),
+});
+export const PersonalTeamLinkSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  hostInstanceId: HostInstanceIdSchema,
+  origin: TeamOriginSchema,
+  teamName: z.string().min(1).max(160),
+  remoteLinkId: TeamLinkIdSchema.nullable(),
+  ownerUserId: UserIdSchema.nullable(),
+  state: z.enum(["joining", "active", "unreachable", "leaving", "revoked", "needs_update"]),
+  lastContactAt: IsoDateTimeSchema.nullable(),
+});
+export type PersonalTeamLink = z.infer<typeof PersonalTeamLinkSchema>;
+export const PersonalTeamRequestSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  requestId: TeamAgentRequestIdSchema,
+  triggerMessageId: TeamMessageIdSchema,
+  taskId: ThreadIdSchema,
+  inputId: z.string().min(1).max(255),
+  runId: RunIdSchema.nullable(),
+  publicationState: z.enum(["pending", "accepted", "blocked"]),
+  terminalState: z.enum(["done", "failed", "stopped", "cancelled"]).nullable(),
+  replyMessageId: TeamMessageIdSchema.nullable(),
+  source: TeamSourceSchema,
+});
+export type PersonalTeamRequest = z.infer<typeof PersonalTeamRequestSchema>;
+export const TeamLinkWebSocketHeadersSchema = z.strictObject({
+  "x-opensteer-team-api-version": z.string().regex(/^[1-9][0-9]*$/),
+  authorization: z.string().regex(/^Bearer ost_link_[A-Za-z0-9_-]{43}$/),
+});
+export const TeamBinaryRouteHeadersSchema = TeamLinkWebSocketHeadersSchema.extend({
+  "x-opensteer-team-request-id": TeamAgentRequestIdSchema,
+});
+export const teamBinaryRoutes = {
+  upload: "/internal/v1/team/files/upload",
+  download: "/internal/v1/team/files/download",
+} as const;
+export const TeamBinaryUploadMetadataSchema = z.strictObject({
+  clientUploadId: z.uuid(),
+  filename: z.string().min(1).max(255),
+  mediaType: z.string().min(1).max(255),
+  sizeBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(100 * 1024 * 1024),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  previewSizeBytes: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(64 * 1024),
+});
+export const TeamBinaryDownloadHeadersSchema = TeamBinaryRouteHeadersSchema.extend({
+  "x-opensteer-team-blob-id": TeamBlobIdSchema,
+  "x-opensteer-team-file-part": z.enum(["original", "preview"]),
+});
+const request = { requestId: TeamAgentRequestIdSchema };
+const call = { id: z.string().min(1).max(128) };
+export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("hello"),
+    teamApiVersion: z.number().int().positive(),
+    terminalRequests: z
+      .array(
+        PersonalTeamRequestSchema.pick({
+          requestId: true,
+          terminalState: true,
+          publicationState: true,
+        }),
+      )
+      .max(32),
+  }),
+  z.strictObject({ ...call, ...request, type: z.literal("accept") }),
+  z.strictObject({ ...call, ...request, type: z.literal("context") }),
+  z.strictObject({
+    ...call,
+    ...request,
+    type: z.literal("status"),
+    state: z.enum(["working", "needs_you", "failed", "stopped", "cancelled"]),
+    steps: z.array(TeamStatusStepSchema).max(8),
+  }),
+  z.strictObject({
+    ...call,
+    ...request,
+    type: z.literal("reply"),
+    bodyMarkdown: TeamMarkdownSchema,
+    attachmentIds: z.array(TeamBlobIdSchema).max(10),
+  }),
+  z.strictObject({ ...call, ...request, type: z.literal("receipt") }),
+  z.strictObject({
+    ...call,
+    ...request,
+    type: z.literal("read"),
+    channelId: TeamChannelIdSchema,
+    threadRootId: TeamMessageIdSchema.optional(),
+    before: TeamMessageIdSchema.optional(),
+  }),
+  z.strictObject({ ...call, ...request, type: z.literal("search"), input: TeamSearchInputSchema }),
+  z.strictObject({
+    ...call,
+    ...request,
+    type: z.literal("knowledge.sql"),
+    input: TeamSqlInputSchema,
+  }),
+  z.strictObject({ ...call, type: z.literal("revoke") }),
+  z.strictObject({ type: z.literal("ping") }),
+]);
+export type TeamLinkClientFrame = z.infer<typeof TeamLinkClientFrameSchema>;
+export const TeamLinkResultSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("accepted"), request: TeamAgentRequestSchema }),
+  z.strictObject({ kind: z.literal("context"), context: TeamRequestContextSchema }),
+  z.strictObject({ kind: z.literal("receipt"), messageId: TeamMessageIdSchema.nullable() }),
+  z.strictObject({ kind: z.literal("read"), result: TeamReadResultSchema }),
+  z.strictObject({ kind: z.literal("search"), result: TeamSearchPageSchema }),
+  z.strictObject({ kind: z.literal("knowledge.sql"), result: TeamSqlResultSchema }),
+  z.strictObject({ kind: z.literal("file"), file: TeamFileSchema, source: TeamSourceSchema }),
+  z.strictObject({ kind: z.literal("ok") }),
+]);
+export const TeamLinkServerFrameSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("ready"),
+    teamApiVersion: z.number().int().positive(),
+    link: TeamLinkViewSchema,
+    accessRevision: SequenceSchema,
+  }),
+  z.strictObject({
+    type: z.literal("requests"),
+    requests: z
+      .array(z.strictObject({ request: TeamAgentRequestSchema, source: TeamSourceSchema }))
+      .max(32),
+  }),
+  z.strictObject({ type: z.literal("cancel"), requestId: TeamAgentRequestIdSchema }),
+  z.strictObject({ ...call, type: z.literal("result"), result: TeamLinkResultSchema }),
+  z.strictObject({ ...call, type: z.literal("error"), error: ProtocolErrorSchema }),
+  z.strictObject({ type: z.literal("revoked") }),
+  z.strictObject({ type: z.literal("pong") }),
+]);
+export type TeamLinkServerFrame = z.infer<typeof TeamLinkServerFrameSchema>;
+export const PersonalTeamChannelFolderSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  channelId: TeamChannelIdSchema,
+  folder: TaskFolderSchema,
+});
+
+export function serializeTeamLinkOffer(offer: TeamLinkOffer): string {
+  const parsed = TeamLinkOfferSchema.parse(offer);
+  const url = new URL("/agent-link", parsed.origin);
+  url.hash = new URLSearchParams({
+    teamId: parsed.teamId,
+    fingerprint: parsed.hostKeyFingerprint,
+    code: parsed.code,
+  }).toString();
+  return url.href;
+}
+export function parseTeamLinkOffer(text: string): TeamLinkOffer | null {
+  try {
+    const url = new URL(text);
+    if (url.pathname !== "/agent-link" || url.search || url.username || url.password) return null;
+    const params = new URLSearchParams(url.hash.slice(1));
+    if (params.size !== 3) return null;
+    const parsed = TeamLinkOfferSchema.safeParse({
+      origin: url.origin,
+      teamId: params.get("teamId"),
+      hostKeyFingerprint: params.get("fingerprint"),
+      code: params.get("code"),
+    });
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+export const TeamLinkOfferTextSchema = z
+  .string()
+  .min(1)
+  .max(2048)
+  .refine((text) => parseTeamLinkOffer(text) !== null, "Invalid team link code");
+
+export const TeamBinaryUploadHeadersSchema = TeamBinaryRouteHeadersSchema.extend({
+  "content-type": z
+    .string()
+    .max(128)
+    .regex(/^multipart\/form-data; boundary=[A-Za-z0-9'()+_,./:=?-]{1,70}$/),
+  "x-opensteer-team-upload": z
+    .string()
+    .max(2048)
+    .refine((value) => {
+      try {
+        return TeamBinaryUploadMetadataSchema.safeParse(JSON.parse(value)).success;
+      } catch {
+        return false;
+      }
+    }, "Invalid upload metadata"),
+});
+export const TeamUploadPartSchema = z.enum(["original", "preview"]);

@@ -1,12 +1,12 @@
 import { z } from "zod";
 
 /**
- * The icons a Workspace can wear. A name is a stable identifier stored on the
- * Workspace, so a listed name is never renamed or removed; retiring artwork
+ * The icons a task can wear. A name is a stable identifier stored on the
+ * task, so a listed name is never renamed or removed; retiring artwork
  * keeps the name and redraws it. Clients parse the list strictly, so adding a
  * name is a protocol epoch change (`hostApiVersion`).
  */
-export const workspaceIconNames = [
+export const iconNames = [
   "mail",
   "inbox",
   "calendar",
@@ -139,7 +139,7 @@ export const workspaceIconNames = [
   "bed",
 ] as const;
 
-export type WorkspaceIconName = (typeof workspaceIconNames)[number];
+export type IconName = (typeof iconNames)[number];
 
 /** Strict: what a person or an agent may choose. */
-export const WorkspaceIconNameSchema = z.enum(workspaceIconNames);
+export const IconNameSchema = z.enum(iconNames);

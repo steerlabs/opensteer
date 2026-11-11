@@ -13,7 +13,9 @@ import {
   RunIdSchema,
   SequenceSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
+  TeamChannelIdSchema,
+  TeamMessageIdSchema,
+  TeamNoticeIdSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 import { ControlPlaneAccountIdSchema } from "./account-id.js";
@@ -79,7 +81,6 @@ export const HostNotificationPublicationSchema = z
     schemaVersion: z.literal(1),
     sequence: SequenceSchema,
     threadId: ThreadIdSchema,
-    workspaceId: WorkspaceIdSchema,
   })
   .superRefine((publication, context) => {
     const seen = new Set<string>();
@@ -183,3 +184,18 @@ export const UnregisterNotificationDeviceResponseSchema = z.object({
   installationId: NotificationInstallationIdSchema,
   unregistered: z.literal(true),
 });
+
+export const TeamNotificationTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("team-message"),
+    teamId: DeploymentIdSchema,
+    channelId: TeamChannelIdSchema,
+    messageId: TeamMessageIdSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("team-notice"),
+    teamId: DeploymentIdSchema,
+    noticeId: TeamNoticeIdSchema,
+  }),
+]);
+export type TeamNotificationTarget = z.infer<typeof TeamNotificationTargetSchema>;

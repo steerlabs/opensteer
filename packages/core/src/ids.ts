@@ -1,13 +1,19 @@
 import { z } from "zod";
 
 const idPrefixes = {
+  teamNotice: "tnt",
+  teamBlob: "tbl",
+  teamAgentRequest: "tar",
+  teamLink: "tlk",
+  teamInvite: "tiv",
+  teamGroup: "tgr",
+  teamChannel: "tch",
   attachment: "att",
   authAccount: "aat",
   authAdmission: "adm",
   authSession: "ses",
   authVerification: "vrf",
   browserProfile: "bpr",
-  browserProfileGrant: "bpg",
   browserSource: "bsr",
   browserTabGroup: "btg",
   causalChain: "cch",
@@ -31,7 +37,6 @@ const idPrefixes = {
   runner: "rnr",
   securityAudit: "sau",
   securityEffect: "sef",
-  storageAuthority: "sta",
   thread: "thr",
   request: "req",
   trigger: "trg",
@@ -39,10 +44,6 @@ const idPrefixes = {
   triggerOccurrence: "toc",
   triggerRevision: "trv",
   user: "usr",
-  workspace: "wsp",
-  workspaceBinding: "wbd",
-  workspaceInvitation: "inv",
-  workspaceMembership: "wmb",
 } as const;
 
 export type IdKind = keyof typeof idPrefixes;
@@ -51,7 +52,6 @@ type Brand<T, Name extends string> = T & { readonly __brand: Name };
 
 export type BrowserProfileId = Brand<string, "BrowserProfileId">;
 export type AttachmentId = Brand<string, "AttachmentId">;
-export type BrowserProfileGrantId = Brand<string, "BrowserProfileGrantId">;
 export type BrowserTabGroupId = Brand<string, "BrowserTabGroupId">;
 export type BrowserSourceId = Brand<string, "BrowserSourceId">;
 export type CausalChainId = Brand<string, "CausalChainId">;
@@ -66,7 +66,7 @@ export type DelegationId = Brand<string, "DelegationId">;
 export type GrantId = Brand<string, "GrantId">;
 export type RunAttemptId = Brand<string, "RunAttemptId">;
 export type ExecutionNodeId = Brand<string, "ExecutionNodeId">;
-/** Assignments retain the IDs issued for historical delegations. */
+
 export type AssignmentId = DelegationId;
 export type EnvironmentId = Brand<string, "EnvironmentId">;
 export type EventId = Brand<string, "EventId">;
@@ -81,7 +81,6 @@ export type RunId = Brand<string, "RunId">;
 export type RunnerId = Brand<string, "RunnerId">;
 export type SecurityAuditId = Brand<string, "SecurityAuditId">;
 export type SecurityEffectId = Brand<string, "SecurityEffectId">;
-export type StorageAuthorityId = Brand<string, "StorageAuthorityId">;
 export type ThreadId = Brand<string, "ThreadId">;
 export type RequestId = Brand<string, "RequestId">;
 export type TriggerId = Brand<string, "TriggerId">;
@@ -89,19 +88,35 @@ export type TriggerWatchActivationId = Brand<string, "TriggerWatchActivationId">
 export type TriggerOccurrenceId = Brand<string, "TriggerOccurrenceId">;
 export type TriggerRevisionId = Brand<string, "TriggerRevisionId">;
 export type UserId = Brand<string, "UserId">;
-export type WorkspaceId = Brand<string, "WorkspaceId">;
-export type WorkspaceBindingId = Brand<string, "WorkspaceBindingId">;
-export type WorkspaceInvitationId = Brand<string, "WorkspaceInvitationId">;
-export type WorkspaceMembershipId = Brand<string, "WorkspaceMembershipId">;
+
+export type TeamChannelId = Brand<string, "TeamChannelId">;
+
+export type TeamGroupId = Brand<string, "TeamGroupId">;
+
+export type TeamInviteId = Brand<string, "TeamInviteId">;
+
+export type TeamLinkId = Brand<string, "TeamLinkId">;
+
+export type TeamAgentRequestId = Brand<string, "TeamAgentRequestId">;
+
+export type TeamBlobId = Brand<string, "TeamBlobId">;
+
+export type TeamNoticeId = Brand<string, "TeamNoticeId">;
 
 export interface IdByKind {
+  readonly teamNotice: TeamNoticeId;
+  readonly teamBlob: TeamBlobId;
+  readonly teamAgentRequest: TeamAgentRequestId;
+  readonly teamLink: TeamLinkId;
+  readonly teamInvite: TeamInviteId;
+  readonly teamGroup: TeamGroupId;
+  readonly teamChannel: TeamChannelId;
   readonly attachment: AttachmentId;
   readonly authAccount: AuthAccountId;
   readonly authAdmission: AuthAdmissionId;
   readonly authSession: AuthSessionId;
   readonly authVerification: AuthVerificationId;
   readonly browserProfile: BrowserProfileId;
-  readonly browserProfileGrant: BrowserProfileGrantId;
   readonly browserTabGroup: BrowserTabGroupId;
   readonly browserSource: BrowserSourceId;
   readonly causalChain: CausalChainId;
@@ -125,7 +140,6 @@ export interface IdByKind {
   readonly runner: RunnerId;
   readonly securityAudit: SecurityAuditId;
   readonly securityEffect: SecurityEffectId;
-  readonly storageAuthority: StorageAuthorityId;
   readonly thread: ThreadId;
   readonly request: RequestId;
   readonly trigger: TriggerId;
@@ -133,10 +147,6 @@ export interface IdByKind {
   readonly triggerOccurrence: TriggerOccurrenceId;
   readonly triggerRevision: TriggerRevisionId;
   readonly user: UserId;
-  readonly workspace: WorkspaceId;
-  readonly workspaceBinding: WorkspaceBindingId;
-  readonly workspaceInvitation: WorkspaceInvitationId;
-  readonly workspaceMembership: WorkspaceMembershipId;
 }
 
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -156,7 +166,6 @@ export const AuthAdmissionIdSchema = idSchema("authAdmission");
 export const AttachmentIdSchema = idSchema("attachment");
 export const AuthSessionIdSchema = idSchema("authSession");
 export const BrowserProfileIdSchema = idSchema("browserProfile");
-export const BrowserProfileGrantIdSchema = idSchema("browserProfileGrant");
 export const BrowserTabGroupIdSchema = idSchema("browserTabGroup");
 export const BrowserSourceIdSchema = idSchema("browserSource");
 export const CausalChainIdSchema = idSchema("causalChain");
@@ -177,7 +186,6 @@ export const RunIdSchema = idSchema("run");
 export const RunAttemptIdSchema = idSchema("runAttempt");
 export const ExecutionNodeIdSchema = idSchema("executionNode");
 export const RunnerIdSchema = idSchema("runner");
-export const StorageAuthorityIdSchema = idSchema("storageAuthority");
 export const ThreadIdSchema = idSchema("thread");
 export const RequestIdSchema = idSchema("request");
 export const TriggerIdSchema = idSchema("trigger");
@@ -185,10 +193,6 @@ export const TriggerWatchActivationIdSchema = idSchema("triggerWatchActivation")
 export const TriggerOccurrenceIdSchema = idSchema("triggerOccurrence");
 export const TriggerRevisionIdSchema = idSchema("triggerRevision");
 export const UserIdSchema = idSchema("user");
-export const WorkspaceIdSchema = idSchema("workspace");
-export const WorkspaceBindingIdSchema = idSchema("workspaceBinding");
-export const WorkspaceInvitationIdSchema = idSchema("workspaceInvitation");
-export const WorkspaceMembershipIdSchema = idSchema("workspaceMembership");
 
 export const BrowserSessionIdSchema = z
   .string()
@@ -214,3 +218,25 @@ export function compareSequence(left: Sequence, right: Sequence): number {
   const rightValue = BigInt(right);
   return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
 }
+
+export const TeamChannelIdSchema = idSchema("teamChannel");
+
+export const TeamGroupIdSchema = idSchema("teamGroup");
+
+export const TeamInviteIdSchema = idSchema("teamInvite");
+
+export const TeamLinkIdSchema = idSchema("teamLink");
+
+export const TeamAgentRequestIdSchema = idSchema("teamAgentRequest");
+
+export const TeamBlobIdSchema = idSchema("teamBlob");
+
+export const TeamNoticeIdSchema = idSchema("teamNotice");
+
+export const TeamMessageIdSchema = z
+  .string()
+  .max(19)
+  .regex(/^[1-9][0-9]*$/)
+  .refine((value) => value.length < 19 || value <= "9223372036854775807")
+  .brand<"TeamMessageId">();
+export type TeamMessageId = z.infer<typeof TeamMessageIdSchema>;

@@ -8,7 +8,6 @@ import {
   BrowserSourceIdSchema,
   IsoDateTimeSchema,
   RequestIdSchema,
-  WorkspaceIdSchema,
 } from "@opensteer/core";
 import {
   BrowserSourceSnapshotSchema,
@@ -59,13 +58,11 @@ export const BrowserSourceSummarySchema = z.object({
 });
 export type BrowserSourceSummary = z.infer<typeof BrowserSourceSummarySchema>;
 
-/** A site a Workspace's agents may sign in to without asking again. */
 export const BrowserSiteGrantSchema = z.object({
   createdAt: IsoDateTimeSchema,
   lastSignedInAt: IsoDateTimeSchema.nullable(),
   preferredSourceId: BrowserSourceIdSchema.nullable(),
   site: BrowserSiteSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 export type BrowserSiteGrant = z.infer<typeof BrowserSiteGrantSchema>;
 
@@ -90,19 +87,6 @@ export const BrowserSourceInspectionSchema = z.object({
 });
 export type BrowserSourceInspection = z.infer<typeof BrowserSourceInspectionSchema>;
 
-/**
- * The outcome of signing a live Browser Session in with a Chrome sign-in, as
- * the owner sees it. Anything but `applied` leaves the session unchanged.
- * - `no-chrome`: no Chrome profile is connected.
- * - `chrome-offline`: the chosen Chrome profile is not connected right now.
- * - `choose-source`: several Chrome profiles are signed in; name one.
- * - `session-closed`: the Browser Session ended.
- * - `runtime-outdated`: the browser running the session predates live sign-in.
- * - `not-allowed`: the site can never be signed in: a loopback address, or the
- *   site of this Deployment's own address (its session cookie lives there).
- * - `site-removed`: the site was removed from the Workspace's allowed sites
- *   while the sign-in was in flight; allowing it again retries.
- */
 export const BrowserSignInProblemSchema = z.union([
   BrowserSourceExportProblemSchema,
   z.enum([
@@ -186,7 +170,7 @@ export const AgentBrowserSignInResultSchema = z.discriminatedUnion("status", [
     sourceName: BrowserSourceNameSchema,
     status: z.literal("applied"),
   }),
-  /** Read-only historical result. The site's cookies were handed to the session; the agent reloads and checks the account. */
+
   z.object({
     method: PasswordSignInMethodSchema,
     site: BrowserSiteSchema,

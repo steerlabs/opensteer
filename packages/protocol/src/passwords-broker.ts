@@ -9,7 +9,7 @@ import {
   PasswordsBrokerAccountSchema,
   PasswordsBrokerAccountsSchema,
 } from "./password-sign-in-accounts.js";
-import { BrowserSiteSchema, WorkspaceIdSchema } from "@opensteer/core";
+import { BrowserSiteSchema, DeploymentIdSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   PasswordSignInAvailabilitySchema,
@@ -26,24 +26,10 @@ import { PersonFillPresenceSchema } from "./person-fill.js";
  * Version 4 authorizes a pinned login without releasing credentials. Each
  * field release revalidates the live transaction, login, grant and origin.
  */
-export const passwordsBrokerProtocolVersion = 4;
-/**
- * Current authorities explicitly negotiate 9, which adds saving a login a
- * person typed; 8 with a broker that has only person fill, and 7 with one that
- * has neither. Legacy read/release callers retain their scope.
- */
-export const passwordsBrokerLatestProtocolVersion = 9;
-export const passwordsBrokerSupportedProtocolVersions = [9, 8, 7, 6, 5, 4] as const;
-export const PasswordsBrokerProtocolVersionSchema = z.union([
-  z.literal(4),
-  z.literal(5),
-  z.literal(6),
-  z.literal(7),
-  z.literal(8),
-  z.literal(9),
-]);
+export const passwordsBrokerProtocolVersion = 10;
+export const PasswordsBrokerProtocolVersionSchema = z.literal(10);
 export type PasswordsBrokerProtocolVersion = z.infer<typeof PasswordsBrokerProtocolVersionSchema>;
-export const PasswordsPermissionVersionSchema = z.union([z.literal(4), z.literal(5)]);
+export const PasswordsPermissionVersionSchema = z.literal(6);
 export const passwordsBrokerMaxFrameBytes = 256 * 1_024;
 
 export const PasswordsBrokerMethodSchema = z.enum([
@@ -121,14 +107,10 @@ export const PasswordsVaultStateSchema = z.enum([
 ]);
 export type PasswordsVaultState = z.infer<typeof PasswordsVaultStateSchema>;
 
-/**
- * `personFill` is sent only from protocol 8 and `personSave` only from 9;
- * absent, the broker has no person fill or no saving.
- */
 export const PasswordsBrokerStatusSchema = z.strictObject({
   agentSignIns: z.enum(["on", "off"]),
-  personFill: z.enum(["on", "off"]).optional(),
-  personSave: z.enum(["on", "off"]).optional(),
+  personFill: z.enum(["on", "off"]),
+  personSave: z.enum(["on", "off"]),
   vault: PasswordsVaultStateSchema,
 });
 export type PasswordsBrokerStatus = z.infer<typeof PasswordsBrokerStatusSchema>;
@@ -146,10 +128,6 @@ export const PasswordsOriginSchema = z
     }
   }, "Expected an exact HTTPS origin.");
 
-/**
- * Whether a saved login covers the site, read without prompting. Only the site:
- * no Deployment or Workspace changes the answer.
- */
 export const PasswordsBrokerSignInProbeParamsSchema = z.strictObject({
   site: BrowserSiteSchema,
 });
@@ -163,36 +141,17 @@ export type PasswordsBrokerSignInProbeResult = z.infer<
   typeof PasswordsBrokerSignInProbeResultSchema
 >;
 
-/**
- * One sign-in, named by the Host. The Deployment, Workspace and site select a
- * grant; the names and reason are display text for the approval and Activity.
- */
 export const PasswordsBrokerSignInRequestParamsSchema = z.strictObject({
   ...PasswordSignInRequesterSchema.shape,
+  protocolVersion: z.literal(10),
+  permissionVersion: z.literal(6),
   expiresAt: z.iso.datetime({ offset: true }),
-  runtimeId: z.string().min(1).max(255),
-  sessionId: z.string().min(1).max(128),
   site: BrowserSiteSchema,
   transactionId: z.uuid(),
-  workspaceId: WorkspaceIdSchema,
+  deploymentId: DeploymentIdSchema,
 });
 export type PasswordsBrokerSignInRequestParams = z.infer<
   typeof PasswordsBrokerSignInRequestParamsSchema
->;
-
-/** Scope is pinned on the transaction, including approvals that create no grant. */
-export const PasswordsBrokerSignInRequestV6ParamsSchema = z.strictObject({
-  ...PasswordSignInRequesterSchema.shape,
-  protocolVersion: z.literal(6),
-  // Protocol 4 stays origin-only; every modern transaction asks for consent that covers apps.
-  permissionVersion: z.literal(5),
-  expiresAt: z.iso.datetime({ offset: true }),
-  site: BrowserSiteSchema,
-  transactionId: z.uuid(),
-  workspaceId: WorkspaceIdSchema,
-});
-export type PasswordsBrokerSignInRequestV6Params = z.infer<
-  typeof PasswordsBrokerSignInRequestV6ParamsSchema
 >;
 
 /** The authorized login's public descriptor. No field value is released. */
@@ -217,11 +176,6 @@ const PasswordsBrokerAuthorizedDecisionSchema = z.strictObject({
 /** Nothing may be released now; the sign-in has ended, so no transaction remains. */
 const PasswordsBrokerUnavailableReasonSchema = z.enum(["passwords-off", "not-set-up", "busy"]);
 
-/**
- * `authorized`: a grant for this Deployment, Workspace and site authorized its
- * login without asking. `approve`: the person chooses among the site's saved
- * accounts, which may be none. Both decisions release no field values.
- */
 export const PasswordsBrokerSignInDecisionSchema = z.discriminatedUnion("decision", [
   PasswordsBrokerAuthorizedDecisionSchema,
   z.strictObject({
@@ -237,13 +191,8 @@ export type PasswordsBrokerSignInDecision = z.infer<typeof PasswordsBrokerSignIn
 
 export const PasswordsBrokerTransactionParamsSchema = z.strictObject({ transactionId: z.uuid() });
 
-/**
- * Allow (`remember`, which grants the login to this Workspace for the site) or
- * Only this time. The broker prepares the exact login revision and consent;
- * only signin.commit after durable Host acceptance enables release and grants.
- */
 export const PasswordsBrokerSignInApproveParamsSchema = z.strictObject({
-  permissionVersion: z.literal(5),
+  permissionVersion: z.literal(6),
   loginId: PasswordsBrokerAccountSchema.shape.id,
   remember: z.boolean(),
   revision: PasswordsBrokerAccountSchema.shape.revision,
@@ -272,25 +221,21 @@ export type PasswordsBrokerSignInApproveResult = z.infer<
   typeof PasswordsBrokerSignInApproveResultSchema
 >;
 
-export const PasswordsBrokerSignInReleaseParamsSchema = z.strictObject({
-  transactionId: z.uuid(),
-  field: z.enum(["username", "password", "totp"]),
-  origin: PasswordsOriginSchema,
-});
-export type PasswordsBrokerSignInReleaseParams = z.infer<
-  typeof PasswordsBrokerSignInReleaseParamsSchema
->;
-/** An app release is explicit; omitting origin on a v4 release never widens consent. */
-export const PasswordsBrokerSignInReleaseV6ParamsSchema = z.discriminatedUnion("kind", [
+export const PasswordsBrokerSignInReleaseParamsSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     transactionId: z.uuid(),
-    field: PasswordsBrokerSignInReleaseParamsSchema.shape.field,
+    field: z.enum(["username", "password", "totp"]),
     kind: z.literal("app"),
   }),
-  PasswordsBrokerSignInReleaseParamsSchema.extend({ kind: z.literal("browser") }),
+  z.strictObject({
+    transactionId: z.uuid(),
+    field: z.enum(["username", "password", "totp"]),
+    kind: z.literal("browser"),
+    origin: PasswordsOriginSchema,
+  }),
 ]);
-export type PasswordsBrokerSignInReleaseV6Params = z.infer<
-  typeof PasswordsBrokerSignInReleaseV6ParamsSchema
+export type PasswordsBrokerSignInReleaseParams = z.infer<
+  typeof PasswordsBrokerSignInReleaseParamsSchema
 >;
 export const PasswordsBrokerSignInReleaseResultSchema = z.discriminatedUnion("released", [
   z.strictObject({ released: z.literal(true), value: z.string().max(4_096) }),
@@ -304,8 +249,8 @@ export type PasswordsBrokerSignInReleaseResult = z.infer<
 >;
 
 export const PasswordsBrokerCardRequestParamsSchema = z.strictObject({
-  ...PasswordsBrokerSignInRequestV6ParamsSchema.shape,
-  protocolVersion: z.literal(7),
+  ...PasswordsBrokerSignInRequestParamsSchema.shape,
+  protocolVersion: z.literal(10),
   permissionVersion: z.literal(7),
 });
 export const PasswordsBrokerCardApproveParamsSchema = z.strictObject({
@@ -459,14 +404,8 @@ export const passwordsBrokerRequests = {
   "signin.commit": PasswordsBrokerTransactionParamsSchema,
   "signin.cancel": PasswordsBrokerTransactionParamsSchema,
   "signin.probe": PasswordsBrokerSignInProbeParamsSchema,
-  "signin.request": z.union([
-    PasswordsBrokerSignInRequestParamsSchema,
-    PasswordsBrokerSignInRequestV6ParamsSchema,
-  ]),
-  "signin.release": z.union([
-    PasswordsBrokerSignInReleaseParamsSchema,
-    PasswordsBrokerSignInReleaseV6ParamsSchema,
-  ]),
+  "signin.request": PasswordsBrokerSignInRequestParamsSchema,
+  "signin.release": PasswordsBrokerSignInReleaseParamsSchema,
   status: PasswordsBrokerEmptySchema,
   "window.open": PasswordsBrokerEmptySchema,
 } as const satisfies Record<PasswordsBrokerMethod, z.ZodType>;

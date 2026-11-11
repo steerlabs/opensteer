@@ -19,8 +19,6 @@ describe("agent answer classification", () => {
     "harness.approval": false,
     "harness.input": true,
     "browser.access": false,
-    "browser.profile.save": false,
-    "browser.profile.import": false,
     "browser.sign-in": false,
     "browser.password-sign-in": false,
     "integration.access": false,
@@ -68,7 +66,6 @@ describe("agent answer classification", () => {
 });
 
 function pendingApproval() {
-  const workspaceId = createId("workspace");
   return {
     callId: "provider-call-1",
     cancellationReason: null,
@@ -79,7 +76,6 @@ function pendingApproval() {
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: workspaceId,
     payload: { kind: "harness.approval" },
     presentation: {
       kind: "choice",
@@ -95,7 +91,6 @@ function pendingApproval() {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: workspaceId,
   } as const;
 }
 
@@ -139,7 +134,7 @@ describe("Request contracts", () => {
         options: [{ hint: "confirm", id: "installed", label: "Install" }],
         title: "Install Linear?",
       },
-      requiredActor: "administrator",
+      requiredActor: "owner",
     } as const;
 
     expect(
@@ -177,7 +172,7 @@ describe("Request contracts", () => {
       mode: "durable",
       payload: {
         kind: "browser.access",
-        reason: "The Workspace needs the signed-in calendar",
+        reason: "The task needs the signed-in calendar",
         suggestion: { kind: "user_choice" },
       },
       presentation: {
@@ -243,7 +238,6 @@ describe("Request contracts", () => {
         sequence: "1",
         threadId: pending.originatingThreadId,
         type: "request.resolved",
-        workspaceId: pending.originatingWorkspaceId,
       }).success,
     ).toBe(false);
   });
@@ -270,15 +264,15 @@ describe("Request contracts", () => {
   });
 });
 
-describe("Workspace Passwords Requests", () => {
+describe("Personal Passwords Requests", () => {
   const modern = () => ({
     ...pendingApproval(),
     mode: "durable",
     kind: "browser.password-sign-in",
     payload: {
       kind: "browser.password-sign-in",
-      scope: "workspace",
-      permissionVersion: 5,
+      scope: "personal",
+      permissionVersion: 6,
       computerName: "Vault Mac",
       expiresAt: "2026-08-22T13:00:00.000Z",
       operationId: "00000000-0000-4000-8000-000000000001",

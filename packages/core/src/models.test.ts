@@ -6,7 +6,6 @@ import {
   MessageSchema,
   ProviderContinuationIdentitySchema,
   runnerRunsItsDeployment,
-  WorkspaceSchema,
   messageContentMaxSerializedBytes,
   messageAuthorCanWriteKind,
   type MessageAuthor,
@@ -71,8 +70,6 @@ describe("durable message authorship", () => {
         kind: "agent",
         runId: createId("run"),
         threadId: createId("thread"),
-        workspaceId: createId("workspace"),
-        workspaceName: "Research",
       },
       {
         displayName: "Webhook",
@@ -102,42 +99,6 @@ describe("durable message authorship", () => {
         ).toBe(expected);
       }
     }
-  });
-});
-
-describe("Workspace storage invariants", () => {
-  const baseWorkspace = {
-    createdAt: "2026-08-12T12:00:00.000Z",
-    createdBy: "usr_00000000-0000-4000-8000-000000000001",
-    id: "wsp_00000000-0000-4000-8000-000000000002",
-    homeThreadId: createId("thread"),
-    voiceThreadId: null,
-    icon: null,
-    kind: "main",
-    name: "Main",
-    status: "ready",
-    storageIssue: null,
-    updatedAt: "2026-08-12T12:00:00.000Z",
-  } as const;
-
-  it("accepts local directories and preserves an explicit missing authority", () => {
-    const backing = {
-      bindingId: "wbd_00000000-0000-4000-8000-000000000003",
-      generation: 1,
-      kind: "local-directory",
-      ownerEnvironmentId: "env_00000000-0000-4000-8000-000000000004",
-      storageAuthorityId: createId("storageAuthority"),
-    } as const;
-    expect(
-      WorkspaceSchema.safeParse({
-        ...baseWorkspace,
-        backing,
-      }).success,
-    ).toBe(true);
-    expect(
-      WorkspaceSchema.parse({ ...baseWorkspace, backing: { ...backing, storageAuthorityId: null } })
-        .backing.storageAuthorityId,
-    ).toBeNull();
   });
 });
 

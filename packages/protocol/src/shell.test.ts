@@ -566,7 +566,6 @@ describe("shell wire schemas", () => {
         startedAt: new Date().toISOString(),
         threadId: createId("thread"),
         threadTitle: "Test shell",
-        workspaceId: createId("workspace"),
       },
       dataTicket: "aaaa.bbbb.cccc",
       machineName: "Build box",

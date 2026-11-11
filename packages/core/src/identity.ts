@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-  AuthSessionIdSchema,
-  UserIdSchema,
-  WorkspaceIdSchema,
-  WorkspaceInvitationIdSchema,
-  WorkspaceMembershipIdSchema,
-} from "./ids.js";
+import { AuthSessionIdSchema, UserIdSchema } from "./ids.js";
 
 export const IdentityEmailSchema = z.email().trim().min(3).max(320);
 export type IdentityEmail = z.infer<typeof IdentityEmailSchema>;
@@ -29,50 +23,6 @@ export const LocalPasswordRecoveryTokenSchema = z.string().regex(/^olpr_[A-Za-z0
 export function normalizeIdentityEmail(value: string): IdentityEmail {
   return IdentityEmailSchema.parse(value.normalize("NFKC").trim().toLowerCase());
 }
-
-export const InstanceRoleSchema = z.enum(["administrator", "user"]);
-
-export const WorkspaceMembershipRoleSchema = z.enum(["owner", "collaborator"]);
-
-export const WorkspaceMembershipStateSchema = z.enum(["active", "revoked"]);
-
-export const WorkspaceMembershipSchema = z.strictObject({
-  generation: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  id: WorkspaceMembershipIdSchema,
-  invitedBy: UserIdSchema.nullable(),
-  joinedAt: z.iso.datetime({ offset: true }),
-  role: WorkspaceMembershipRoleSchema,
-  state: WorkspaceMembershipStateSchema,
-  userId: UserIdSchema,
-  workspaceId: WorkspaceIdSchema,
-});
-
-export const WorkspaceInvitationTypeSchema = z.enum(["email", "link"]);
-
-export const WorkspaceInvitationSchema = z.strictObject({
-  acceptedAt: z.iso.datetime({ offset: true }).nullable(),
-  acceptedBy: UserIdSchema.nullable(),
-  createdAt: z.iso.datetime({ offset: true }),
-  createdBy: UserIdSchema,
-  expiresAt: z.iso.datetime({ offset: true }),
-  id: WorkspaceInvitationIdSchema,
-  intendedEmail: IdentityEmailSchema.nullable(),
-  revokedAt: z.iso.datetime({ offset: true }).nullable(),
-  role: WorkspaceMembershipRoleSchema,
-  selector: z.string().regex(/^[A-Za-z0-9_-]{24,96}$/),
-  type: WorkspaceInvitationTypeSchema,
-  workspaceId: WorkspaceIdSchema,
-});
-
-export const InvitationPreviewSchema = z.strictObject({
-  expiresAt: z.iso.datetime({ offset: true }),
-  invitationType: WorkspaceInvitationTypeSchema,
-  inviterName: z.string().trim().min(1).max(120),
-  requiresVerifiedEmail: z.boolean(),
-  role: WorkspaceMembershipRoleSchema,
-  workspaceName: z.string().trim().min(1).max(160),
-});
-export type InvitationPreview = z.infer<typeof InvitationPreviewSchema>;
 
 /** The shape of the device behind a session, for the picture a person recognises it by. */
 export const SessionDeviceFormSchema = z.enum(["computer", "mobile"]);
@@ -147,7 +97,6 @@ export const AuthenticatedUserSchema = z.strictObject({
   emailVerified: z.boolean(),
   id: UserIdSchema,
   image: z.url().nullable(),
-  instanceRole: InstanceRoleSchema,
 });
 export type AuthenticatedUser = z.infer<typeof AuthenticatedUserSchema>;
 

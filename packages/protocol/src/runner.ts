@@ -39,16 +39,13 @@ import {
   ThreadIdSchema,
   threadReportBatchMaxEntries,
   threadReportBatchMaxSerializedBytes,
-  ThreadRoleSchema,
+  TaskPurposeSchema,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerRevisionIdSchema,
   TriggerWatchActivationIdSchema,
   UserIdSchema,
   utf8ByteLength,
-  WorkspaceBackingKindSchema,
-  WorkspaceIdSchema,
-  WorkspaceKindSchema,
   type EnvironmentId,
 } from "@opensteer/core";
 import { ComputerAppPlatformSchema } from "@opensteer/integration-core/computer-app";
@@ -56,8 +53,8 @@ import {
   TriggerExecutionOutputSchema,
   TriggerProgramEventSchema,
   TriggerProgramSchema,
-} from "@opensteer/triggers";
-import { WorkspaceExecutionAccessPlanSchema } from "@opensteer/workspace";
+} from "@opensteer/triggers/models";
+import { PersonalExecutionLocationSchema } from "./folders.js";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
@@ -89,65 +86,12 @@ import {
   VoiceSessionIdSchema,
   VoiceViewSchema,
 } from "./voice.js";
-import {
-  HostWorkspaceLocalRequestSchema,
-  RunnerLocalStorageInventorySchema,
-  RunnerWorkspaceLocalResultSchema,
-} from "./workspace-local.js";
 
 /** Who an account of an engine talks to; see `HarnessSourceDescriptorSchema`. */
 export const HarnessSourceIdSchema = z
   .string()
   .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/)
   .max(100);
-
-const MountClientCertificateRequestSchema = z
-  .string()
-  .includes("-----BEGIN CERTIFICATE REQUEST-----")
-  .max(32_768);
-
-export const MountGrantExchangeRequestSchema = z.strictObject({
-  clientCertificateRequestPem: MountClientCertificateRequestSchema,
-});
-
-const MountAuthoritySchema = z.discriminatedUnion("transport", [
-  z.strictObject({
-    address: z.string().min(1).max(512),
-    caCertificatePem: z.string().includes("-----BEGIN CERTIFICATE-----"),
-    serverName: z.string().min(1).max(253),
-    transport: z.literal("tls-private-ca"),
-  }),
-  z.strictObject({
-    address: z.string().min(1).max(512),
-    serverName: z.string().min(1).max(253),
-    transport: z.literal("tls-system-pki"),
-  }),
-]);
-
-export const MountGrantExchangeResponseSchema = z.strictObject({
-  automaticReauthorization: z.strictObject({
-    authorityGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    enrollmentCertificatePem: z
-      .string()
-      .includes("-----BEGIN CERTIFICATE-----")
-      .max(1024 * 1024),
-    enrollmentId: z.string().min(1).max(256),
-    manager: z.strictObject({
-      caCertificatePem: z
-        .string()
-        .includes("-----BEGIN CERTIFICATE-----")
-        .max(1024 * 1024),
-      serverName: z.string().min(1).max(253),
-      url: z.url(),
-    }),
-  }),
-  authority: MountAuthoritySchema,
-  capability: z.string().min(1).max(32_768),
-  clientCertificatePem: z.string().includes("-----BEGIN CERTIFICATE-----"),
-  expiresAt: IsoDateTimeSchema,
-  volumeId: z.string().min(1).max(255),
-});
-export type MountGrantExchangeResponse = z.infer<typeof MountGrantExchangeResponseSchema>;
 
 export const runHistoryMaxMessages = 200;
 export const runHistoryMaxSerializedBytes = 384 * 1_024;
@@ -172,7 +116,6 @@ export const RunHistoryWindowSchema = z.strictObject({
 });
 export type RunHistoryWindow = z.infer<typeof RunHistoryWindowSchema>;
 
-/** Historical context authorized by an explicit native-session continuation. */
 export const RunInitialContextSchema = z
   .strictObject({
     messages: z.array(MessageSchema).max(runHistoryMaxMessages),
@@ -206,7 +149,6 @@ export const RunExecutionContextSchema = z.strictObject({
     .optional(),
   plugins: RunPluginsPlanSchema,
   bindingGeneration: z.number().int().positive(),
-  membershipGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   egress: RunEgressPlanSchema,
   environmentId: EnvironmentIdSchema,
   /**
@@ -261,7 +203,7 @@ export const RunExecutionContextSchema = z.strictObject({
     .default(null),
   runId: RunIdSchema,
   threadId: ThreadIdSchema,
-  threadRole: ThreadRoleSchema,
+  taskPurpose: TaskPurposeSchema,
   /**
    * Present only for a voice call's one Run, sent only to a Runner advertising
    * `voice-run-v1`. The execution holds the call until it ends and is never
@@ -275,10 +217,6 @@ export const RunExecutionContextSchema = z.strictObject({
     })
     .optional(),
   threadState: RunThreadStateSchema,
-  workspaceId: WorkspaceIdSchema,
-  workspaceKind: WorkspaceKindSchema,
-  workspaceAccess: WorkspaceExecutionAccessPlanSchema,
-  workspaceInstructionsPath: z.string().min(1).max(4_096).nullable(),
 });
 
 /**
@@ -334,6 +272,7 @@ export const runExecuteInputsMax = 32;
 
 const ExecuteRunSchema = runnerCommandBase.extend({
   type: z.literal("run.execute"),
+  location: PersonalExecutionLocationSchema,
   context: RunExecutionContextSchema,
   inputs: z
     .array(HarnessInputSchema)
@@ -365,8 +304,6 @@ export const WatchReconcileActivationSchema = z.strictObject({
   executionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   revisionId: TriggerRevisionIdSchema,
   triggerId: TriggerIdSchema,
-  workspaceAccess: WorkspaceExecutionAccessPlanSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 export type WatchReconcileActivation = z.infer<typeof WatchReconcileActivationSchema>;
 
@@ -380,8 +317,6 @@ export const TriggerExecutionContextSchema = z.strictObject({
   program: TriggerProgramSchema,
   revisionId: TriggerRevisionIdSchema,
   triggerId: TriggerIdSchema,
-  workspaceId: WorkspaceIdSchema,
-  workspaceAccess: WorkspaceExecutionAccessPlanSchema,
 });
 export type TriggerExecutionContext = z.infer<typeof TriggerExecutionContextSchema>;
 
@@ -431,20 +366,6 @@ const SteerExecutionSchema = runnerCommandBase.extend({
   threadId: ThreadIdSchema,
 });
 
-const MountWorkspaceSchema = runnerCommandBase.extend({
-  plan: WorkspaceExecutionAccessPlanSchema,
-  runId: RunIdSchema,
-  threadId: ThreadIdSchema,
-  type: z.literal("workspace.mount"),
-  workspaceId: WorkspaceIdSchema,
-});
-
-const DetachWorkspaceSchema = runnerCommandBase.extend({
-  type: z.literal("workspace.detach"),
-  volumeId: z.string().min(1).max(255),
-  workspaceId: WorkspaceIdSchema,
-});
-
 const UpdateHarnessSchema = runnerCommandBase.extend({
   driverKind: HarnessIdSchema,
   environmentId: EnvironmentIdSchema,
@@ -463,8 +384,6 @@ export const RunnerCommandSchema = z
     InterruptTriggerExecutionSchema,
     ResolveRequestSchema,
     SteerExecutionSchema,
-    MountWorkspaceSchema,
-    DetachWorkspaceSchema,
     UpdateHarnessSchema,
   ])
   .refine(
@@ -485,7 +404,6 @@ function pendingEventVariant<T extends keyof typeof runnerEventDataSchemas>(type
     runId: RunIdSchema,
     threadId: ThreadIdSchema,
     type: z.literal(type),
-    workspaceId: WorkspaceIdSchema,
   });
 }
 
@@ -1100,11 +1018,7 @@ const modelServerFields = {
   baseUrl: z.url({ protocol: /^https?$/u }).max(2_048),
   /** Why the server cannot serve an account yet, or why no model can run. */
   detail: z.string().trim().min(1).max(500).optional(),
-  /**
-   * Chat models the server lists, and how many of them can run a Thread now.
-   * Absent when that could not be read: a server that has not answered, or one
-   * whose list is behind a key nothing sends until the person connects.
-   */
+
   models: z.number().int().nonnegative().max(maxHarnessModelsPerCatalog).optional(),
   runnableModels: z.number().int().nonnegative().max(maxHarnessModelsPerCatalog).optional(),
   runtime: ModelServerRuntimeSchema,
@@ -1198,13 +1112,6 @@ export const RunnerAgentsModuleSchema = z
     // loop over it.
     environmentIds: z.array(EnvironmentIdSchema).length(1),
     computerTool: z.literal(1).optional(),
-    /** Absent on Runners that cannot load the `opensteer:knowledge` skill. */
-    knowledgeSkill: z
-      .number()
-      .int()
-      .positive()
-      .transform((version) => (version === 1 ? (1 as const) : undefined))
-      .optional(),
     reconcileHarnessInspection: z
       .number()
       .int()
@@ -1217,7 +1124,7 @@ export const RunnerAgentsModuleSchema = z
     // Present exactly when this Runner advertises local-directory. It carries
     // the disk's durable identity plus what that disk currently holds, so a
     // reconnect is reconciled without asking binding by binding.
-    localStorage: RunnerLocalStorageInventorySchema.nullable(),
+
     loginFill: z
       .number()
       .int()
@@ -1234,38 +1141,10 @@ export const RunnerAgentsModuleSchema = z
       )
       .pipe(z.array(HarnessInstanceStateKindSchema).min(1).max(2)),
     // New choices may coexist with supported ones; a required set must remain usable.
-    workspaceBackings: z
-      .array(z.string())
-      .max(100)
-      .transform((values) =>
-        values.filter((value) => WorkspaceBackingKindSchema.safeParse(value).success),
-      )
-      .pipe(z.array(WorkspaceBackingKindSchema).min(1).max(2)),
   })
   .superRefine((module, context) => {
     if (new Set(module.providerStateModes).size !== module.providerStateModes.length) {
       context.addIssue({ code: "custom", message: "Runner provider state modes must be unique" });
-    }
-    if (new Set(module.workspaceBackings).size !== module.workspaceBackings.length) {
-      context.addIssue({ code: "custom", message: "Runner Workspace backings must be unique" });
-    }
-    if (module.workspaceBackings.includes("local-directory") !== (module.localStorage !== null)) {
-      context.addIssue({
-        code: "custom",
-        message: "A local-directory Runner must advertise exactly one local storage authority",
-        path: ["localStorage"],
-      });
-    }
-    if (
-      module.localStorage !== null &&
-      new Set(module.localStorage.bindings.map((binding) => binding.bindingId)).size !==
-        module.localStorage.bindings.length
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Runner local Workspace binding identifiers must be unique",
-        path: ["localStorage", "bindings"],
-      });
     }
   });
 export type RunnerAgentsModule = z.infer<typeof RunnerAgentsModuleSchema>;
@@ -1301,7 +1180,7 @@ export const RunnerBrowserModuleSchema = z
       .positive()
       .transform((version) => (version === 1 ? version : undefined))
       .optional(),
-    workspaceTabRestoreVersion: z
+    tabRestoreVersion: z
       .number()
       .int()
       .positive()
@@ -1839,7 +1718,6 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerSkillMetadataReportSchema,
   RunnerAppResultSchema,
   RunnerRunFileResultSchema,
-  ...RunnerWorkspaceLocalResultSchema.options,
   z.strictObject({
     ...fencedMessageBase,
     type: z.literal("runner.heartbeat"),
@@ -1886,7 +1764,7 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("runner.command-accepted"),
     commandId: CommandIdSchema,
     correlationId: CorrelationIdSchema,
-    workspacePath: z.string().min(1).max(4_096).optional(),
+    folderPath: z.string().min(1).max(4_096).optional(),
   }),
   z.strictObject({
     ...fencedMessageBase,
@@ -1980,7 +1858,6 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
           runId: RunIdSchema,
           terminal: z.boolean(),
           threadId: ThreadIdSchema,
-          workspaceId: WorkspaceIdSchema,
         }),
       )
       .max(1_000),
@@ -2045,7 +1922,6 @@ export type RunnerToHostMessage = z.infer<typeof RunnerToHostMessageSchema>;
 export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
   HostBackgroundTextSchema,
   RunnerChallengeSchema,
-  ...HostWorkspaceLocalRequestSchema.options,
   ...HostAppRequestSchema.options,
   ...HostRunFileRequestSchema.options,
   z.strictObject({

@@ -1,5 +1,6 @@
+import { TaskFolderSchema } from "./personal.js";
 import { z } from "zod";
-import { EnvironmentIdSchema, RunIdSchema, ThreadIdSchema, WorkspaceIdSchema } from "./ids.js";
+import { RunIdSchema, ThreadIdSchema } from "./ids.js";
 
 export const appMaxBytes = 5 * 1_024 * 1_024;
 export const AppIdSchema = z.string().regex(/^app_[0-9a-f-]{36}$/u);
@@ -12,7 +13,6 @@ export const AppPublishInputSchema = z.strictObject({
 });
 export const AppSchema = z.object({
   id: AppIdSchema,
-  workspaceId: WorkspaceIdSchema,
   threadId: ThreadIdSchema,
   runId: RunIdSchema,
   title: AppTitleSchema,
@@ -23,8 +23,7 @@ export const AppSchema = z.object({
 export type OpensteerApp = z.infer<typeof AppSchema>;
 
 export const AppServerSpecSchema = z.strictObject({
-  environmentId: EnvironmentIdSchema,
-  folder: z.string().min(1).max(4_096),
+  folder: TaskFolderSchema,
   command: z.string().min(1).max(16_384),
 });
 export type AppServerSpec = z.infer<typeof AppServerSpecSchema>;
@@ -48,6 +47,6 @@ export function appFolderSegments(folder: string): string[] {
         !part || part === "." || part === ".." || part.includes("\\") || part.includes("\0"),
     )
   )
-    throw new Error("Use a Workspace-relative path without traversal");
+    throw new Error("Use a folder-relative path without traversal");
   return segments;
 }

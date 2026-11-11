@@ -6,7 +6,6 @@ import {
   RequestIdSchema,
   RunIdSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
 } from "./ids.js";
 import { IsoDateTimeSchema } from "./models.js";
 
@@ -18,17 +17,6 @@ export const PersonMessageSchema = z
   .refine((s) => s.isWellFormed(), "Message must be valid Unicode")
   .refine((s) => !s.includes("\u0000"), "Message must not contain NUL");
 
-/**
- * What a person is told about: Opensteer replied to them, Opensteer needs their
- * answer, or work they were waiting on failed. A reply is a Run's final
- * message wherever the Run answers a person directly — not a task's reply,
- * which returns to the agent that assigned it, and not a channel Run's, which
- * answers in Slack or iMessage. Nothing else alerts: a report is context for
- * an agent's next turn, never a message to the person.
- *
- * Muting a Workspace silences its replies and failures, while Requests still
- * alert because they wait for a person's response.
- */
 export const NotificationKindSchema = z.enum(["reply-published", "request-opened", "run-failed"]);
 export type NotificationKind = z.infer<typeof NotificationKindSchema>;
 
@@ -59,7 +47,6 @@ export const NotificationViewSchema = z.object({
   runId: RunIdSchema.nullable(),
   threadId: ThreadIdSchema,
   title: z.string().min(1).max(notificationTitleMaxCharacters),
-  workspaceId: WorkspaceIdSchema,
 });
 export type NotificationView = z.infer<typeof NotificationViewSchema>;
 

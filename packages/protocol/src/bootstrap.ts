@@ -1,27 +1,21 @@
-import {
-  AuthSessionIdSchema,
-  QuietTaskDaysSchema,
-  WorkspaceNotificationPreferenceSchema,
-} from "@opensteer/core";
+import { PersonalSettingsSchema } from "@opensteer/core";
+import { AuthSessionIdSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
   AppIdSchema,
   AppTitleSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
   AuthenticatedUserSchema,
   DeploymentIdSchema,
   ExecutionEnvironmentKindSchema,
   ExecutionPreferencesViewSchema,
-  WorkspaceBackingKindSchema,
   HarnessInstanceStateKindSchema,
   HarnessRuntimeRevisionSchema,
   IdentityConfigSchema,
-  DeploymentShapeViewSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 import { ThreadPlaceReferenceSchema } from "./places.js";
 import { HostedBrowserBootstrapSchema } from "./browser.js";
-import { DurableWindowSchema, WorkspaceViewSchema } from "./client.js";
+
 import {
   HarnessModelSettingsMapViewSchema,
   HarnessInstanceCatalogViewSchema,
@@ -44,9 +38,7 @@ export const HostBootstrapEnvironmentSchema = z.object({
   providerStateModes: z.array(HarnessInstanceStateKindSchema).max(2),
   runnerId: z.string().min(1).nullable(),
   status: HostEnvironmentStatusSchema,
-  // What this machine can actually store, so a caller choosing where to put a
-  // new Workspace is choosing from real options rather than guessing.
-  workspaceBackings: z.array(WorkspaceBackingKindSchema).max(2),
+  can: z.strictObject({ executeTasks: z.boolean() }),
 });
 
 export const HostBootstrapHarnessSchema = z.object({
@@ -85,73 +77,32 @@ export const AppTabSchema = z.object({
   appId: AppIdSchema,
   title: AppTitleSchema,
   threadId: ThreadIdSchema,
-  workspaceId: WorkspaceIdSchema,
+
   openedAt: z.iso.datetime({ offset: true }),
   latestVersion: z.number().int().positive(),
 });
 export const AppTabsSchema = z.array(AppTabSchema).max(500);
 export type AppTab = z.infer<typeof AppTabSchema>;
 
-export const HostBootstrapSchema = z.object({
-  deploymentPolicy: z
-    .object({
-      ownership: z.enum(["single-user", "members"]).optional().catch(undefined),
-      nativePasswords: z.boolean().optional().catch(undefined),
-      nativeWebLinks: z.boolean().optional().catch(undefined),
-      localOwnerClaim: z.boolean().optional().catch(undefined),
-      deploymentOwnsMainComputer: z.boolean().optional().catch(undefined),
-      personalRemoteAccess: z.boolean().optional().catch(undefined),
-      sharing: z.boolean().optional().catch(undefined),
-      deploymentWideMachineReach: z.boolean().optional().catch(undefined),
-      serviceManagement: z.boolean().optional().catch(undefined),
-      runnerEnrollmentMode: z.enum(["reach-only", "unrestricted"]).optional().catch(undefined),
-      deploymentComputerAccess: z.boolean().optional().catch(undefined),
-      computerExecutionControls: z.boolean().optional().catch(undefined),
-      projectConsent: z.enum(["owner-wide", "per-project"]).optional().catch(undefined),
-      localRunnerDefaultModules: z
-        .array(
-          z
-            .enum(["agents", "browser", "integrations", "messaging", "shell"])
-            .optional()
-            .catch(undefined),
-        )
-        .transform((modules) => modules.filter((module) => module !== undefined))
-        .optional()
-        .catch(undefined),
-    })
-    .optional()
-    .catch({}),
-  appTabs: AppTabsSchema.optional(),
-  /** Recovery can replace the session silently, and a running app's access ends with the old one. */
-  sessionId: AuthSessionIdSchema.optional(),
-  notificationPreferences: z.array(WorkspaceNotificationPreferenceSchema).max(101),
-  /** Stable identity for client drafts; a route or public origin is not an identity. */
+export const HostBootstrapSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
+  sessionId: AuthSessionIdSchema,
+  personalSettings: PersonalSettingsSchema,
+  can: z.strictObject({
+    createTasks: z.boolean(),
+    useVoice: z.boolean(),
+    manageComputers: z.boolean(),
+    managePrivateResources: z.boolean(),
+  }),
+  appTabs: AppTabsSchema,
   browser: HostedBrowserBootstrapSchema,
-  latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096).optional(),
-  deploymentShape: DeploymentShapeViewSchema,
-  environments: z.array(HostBootstrapEnvironmentSchema),
-  /**
-   * What this person chose last, kept by the Host so every app they open
-   * starts a Thread from the same place. Optional only because an added
-   * response field is not a protocol epoch; a Host that predates it has
-   * nothing remembered, and the client reads absence as exactly that.
-   */
-  executionPreferences: ExecutionPreferencesViewSchema.optional(),
-  /** Days untouched before this person's tasks move to Done; absent before `quiet-tasks-v1`. */
-  quietTaskDays: QuietTaskDaysSchema.optional(),
-  harnesses: z.array(HostBootstrapHarnessSchema),
-  homeWorkspace: WorkspaceViewSchema.nullable(),
+  latestPlaces: z.array(ThreadPlaceReferenceSchema).max(4096),
+  environments: z.array(HostBootstrapEnvironmentSchema).max(400),
+  executionPreferences: ExecutionPreferencesViewSchema,
+  quietTaskDays: QuietTaskDaysSchema,
+  harnesses: z.array(HostBootstrapHarnessSchema).max(400),
   identityConfig: IdentityConfigViewSchema,
   machines: z.array(MachineSummarySchema).max(400),
-  /**
-   * How this authenticated request reached the Host. Optional for compatibility
-   * with older Hosts; clients must treat absence as unknown rather than
-   * inferring local authority.
-   */
-  sessionSurface: z.enum(["canonical", "personal-remote"]).optional(),
+  sessionSurface: z.enum(["canonical", "personal-remote"]),
   user: AuthenticatedUserViewSchema,
-  workspaceSharingAvailable: z.boolean(),
-  workspaces: z.array(WorkspaceViewSchema),
-  workspaceWindow: DurableWindowSchema,
 });

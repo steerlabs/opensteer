@@ -13,13 +13,13 @@ export const OpensteerErrorCodeSchema = z.enum([
   "runner_offline",
   "timeout",
   "unauthorized",
-  "workspace_unavailable",
+  "folder_unavailable",
 ]);
 export type OpensteerErrorCode = z.infer<typeof OpensteerErrorCodeSchema>;
 
 /**
  * A `conflict` refusing a Request for a Browser Session that ended, or moved
- * Workspace, after its caller last saw it open. Only this refusal means the
+ * task, after its caller last saw it open. Only this refusal means the
  * session is closed; any other conflict is the caller's to report.
  */
 export const browserSessionClosedReason = "browser-session-closed";

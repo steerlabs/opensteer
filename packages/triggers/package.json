@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./models": "./src/models.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

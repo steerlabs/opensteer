@@ -29,7 +29,7 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   MarkColorSchema,
-  WorkspaceIconNameSchema,
+  IconNameSchema,
   isBareOrigin,
   isSecureOrLoopbackOrigin,
 } from "@opensteer/core";
@@ -155,7 +155,7 @@ export const DesktopPersonalDeploymentStepSchema = z.enum([
   "checking-computer",
   "preparing-database",
   "starting-host",
-  "creating-main",
+  "preparing-agent-home",
   "starting-local-agents",
   "connecting-computer",
   "ready",
@@ -1147,7 +1147,7 @@ export const DesktopHostBinaryOpenInputSchema = z
         ? input.body === undefined && input.path.startsWith("/v1/rpc/attachment.content?input=")
         : input.path.startsWith("/v1/rpc/attachment.upload?input=")
           ? input.body === undefined && input.headers.contentType === "application/octet-stream"
-          : input.path === "/v1/rpc/workspace.files.preview" &&
+          : input.path === "/v1/rpc/folder.files.preview" &&
             input.body !== undefined &&
             input.headers.contentType === "application/json",
     "Binary Host transfer must use an attachment or file preview route",
@@ -1421,14 +1421,14 @@ export const DesktopWebLinkDeliverySchema = z.strictObject({
 });
 export type DesktopWebLinkDelivery = z.infer<typeof DesktopWebLinkDeliverySchema>;
 
-export const DesktopWorkspaceTabCommandSchema = z.union([
+export const DesktopPersonalTabCommandSchema = z.union([
   DesktopWebLinkSchema,
   z.strictObject({
     type: z.enum(["new-tab", "close-tab", "reopen-closed-tab", "next-tab", "previous-tab"]),
   }),
   z.strictObject({ type: z.literal("select-tab"), index: z.number().int().min(1).max(9) }),
 ]);
-export type DesktopWorkspaceTabCommand = z.infer<typeof DesktopWorkspaceTabCommandSchema>;
+export type DesktopPersonalTabCommand = z.infer<typeof DesktopPersonalTabCommandSchema>;
 
 const windowCoordinate = z.number().finite().min(-32_768).max(32_768);
 const windowExtent = z.number().finite().min(0).max(32_768);
@@ -1590,16 +1590,10 @@ export const DesktopBrowserFindInputSchema = z.strictObject({
 });
 export type DesktopBrowserFindInput = z.infer<typeof DesktopBrowserFindInputSchema>;
 
-/**
- * One agent's cursor on a native page, in the page's CSS pixels. The glass
- * page holds no Host snapshot, so the renderer resolves the task's mark and
- * sends it: `icon` and `color` are null while unknown, and for `home`, which
- * is Opensteer's own cursor: Chat's, or Voice's and the tasks Voice started.
- */
 export const DesktopGlassCursorSchema = z.strictObject({
   color: MarkColorSchema.nullable(),
   home: z.boolean(),
-  icon: WorkspaceIconNameSchema.nullable(),
+  icon: IconNameSchema.nullable(),
   leaving: z.boolean(),
   threadId: ThreadIdSchema,
   title: z.string().max(200),
@@ -1748,7 +1742,7 @@ export interface OpensteerDesktopBridge {
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   dismissMcpAuthorization?(requestId: string): Promise<void>;
   onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;
-  onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
+  onPersonalTabCommand(listener: (command: DesktopPersonalTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;
   reportRendererFailure?(record: RendererFailureDiagnostic): Promise<void>;

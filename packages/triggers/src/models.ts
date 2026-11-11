@@ -10,7 +10,6 @@ import {
   TriggerRevisionIdSchema,
   TriggerWatchActivationIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
@@ -116,7 +115,6 @@ export const TriggerSchema = z.strictObject({
   status: TriggerStatusSchema,
   updatedAt: IsoDateTimeSchema,
   webhookRouteKey: z.string().min(32).max(255).nullable(),
-  workspaceId: WorkspaceIdSchema,
 });
 export const TriggerViewSchema = z.object(TriggerSchema.shape);
 export type Trigger = z.infer<typeof TriggerSchema>;
@@ -160,7 +158,6 @@ export const TriggerProgramEventSchema = z.strictObject({
     anchorThreadId: ThreadIdSchema,
     id: TriggerIdSchema,
     revisionId: TriggerRevisionIdSchema,
-    workspaceId: WorkspaceIdSchema,
   }),
 });
 const TriggerProgramEventViewSchema = z.object({
@@ -219,7 +216,6 @@ export const TriggerWatchActivationSchema = z.strictObject({
     .refine((value) => utf8ByteLength(value) <= 16 * 1_024, "Watch stdout tail exceeds 16 KiB"),
   triggerId: TriggerIdSchema,
   updatedAt: IsoDateTimeSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 export const TriggerWatchActivationViewSchema = z.object(TriggerWatchActivationSchema.shape);
 export type TriggerWatchActivation = z.infer<typeof TriggerWatchActivationSchema>;
@@ -306,7 +302,6 @@ export const TriggerReadInputSchema = z.strictObject({
   limit: z.number().int().min(1).max(100).default(50),
   occurrenceLimit: z.number().int().min(1).max(100).default(25),
   triggerId: TriggerIdSchema.optional(),
-  workspaceId: WorkspaceIdSchema.optional(),
 });
 
 export const TriggerSourceInputSchema = z
@@ -364,7 +359,6 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     limit: z.number().int().min(1).max(100).default(50),
     operation: z.literal("list"),
     systemRole: TriggerSystemRoleSchema.optional(),
-    workspaceId: WorkspaceIdSchema.optional(),
   }),
   z.strictObject({
     occurrenceLimit: z.number().int().min(1).max(100).default(25),

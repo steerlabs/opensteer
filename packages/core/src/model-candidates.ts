@@ -326,11 +326,7 @@ export function catalogDefaultModelSelection(
       )
     : null;
 }
-/**
- * A site with no model preference (Project Chat, MCP, channels): the catalog default of
- * the first eligible account in the shared order. An arbitrary endpoint needs an explicit
- * selection, and `isDefault` isn't one: the first enabled account receives it automatically.
- */
+
 export function catalogDefaultCandidate<
   T extends AccountEligibilityFacts & { readonly isDefault: boolean; readonly sourceId: string },
 >(

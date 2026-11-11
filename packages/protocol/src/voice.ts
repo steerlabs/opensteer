@@ -6,7 +6,6 @@ import {
   RunIdSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
 } from "@opensteer/core";
 
 /**
@@ -30,10 +29,7 @@ export const VoiceSdpSchema = z.string().min(1).max(64_000);
 /** What the voice is asked to say; long replies are shortened before this. */
 export const voiceSayMaxLength = 4_000;
 export const VoiceSayTextSchema = z.string().trim().min(1).max(voiceSayMaxLength);
-/**
- * Names what is spoken, such as a Chat message or a Request, so the call says
- * each thing once however often a client sends it.
- */
+
 export const VoiceSayIdSchema = z.string().min(1).max(128);
 
 /** A call ends unless its client renews it within this long. */
@@ -68,7 +64,6 @@ export const VoiceStartResultSchema = z.object({
   /** The Voice Thread and this call's Run: `host.show` from this Run is meant for this device. */
   threadId: ThreadIdSchema,
   runId: RunIdSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 /** Creates the person's Voice Thread if it does not exist yet, without starting a call. */
 export const VoiceOpenInputSchema = z.strictObject({

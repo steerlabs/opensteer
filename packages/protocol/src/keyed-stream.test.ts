@@ -259,7 +259,6 @@ it("fits the worst legal runtime, client tab and group rows including envelopes"
     canGoForward: true,
     occupants: Array.from({ length: 16 }, () => ({
       threadId: createId("thread"),
-      home: true,
       holding: true,
       acting: true,
       lastActiveAt: date,
@@ -272,9 +271,9 @@ it("fits the worst legal runtime, client tab and group rows including envelopes"
     tabCount: Number.MAX_SAFE_INTEGER,
     inventoryRevision: Number.MAX_SAFE_INTEGER,
     sessionId,
-    workspaceId: createId("workspace"),
+
     state: "starting",
-    origin: "workspace",
+    origin: "person",
     access: "read-write",
     placement: { kind: "runner", runnerId: createId("runner") },
     profileId: createId("browserProfile"),

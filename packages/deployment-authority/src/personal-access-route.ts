@@ -12,8 +12,7 @@ export function isPersonalHost(
 ): boolean {
   return deploymentPolicy({
     kind: discovery.deploymentShape.kind,
-    defaultWorkspaceBacking: "local-directory",
-  }).services.personalRemoteAccess;
+  }).personalRemoteAccess;
 }
 
 export const PersonalAccessRouteGenerationSchema = z
