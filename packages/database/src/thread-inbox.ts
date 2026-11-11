@@ -10,11 +10,11 @@ import { z } from "zod";
 import { isPlaceContentPart } from "@opensteer/core";
 import { lockRunProjectionRows, lockThreadProjectionParents } from "./run-projection-locks.js";
 import { recordIncludedBrowserPages } from "./browser-session-store.js";
-import { withDatabaseTransaction } from "./connection.js";
+import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
 import { harnessRevisionChanged, prepareThreadInsertion } from "./thread-insertion.js";
 import { projectThreadState } from "./thread-status.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   ChannelConversationIdSchema,
@@ -48,6 +48,7 @@ import {
   threadInputMaxPendingEntries,
   threadInputMaxPendingSerializedBytes,
   workspaceWakesOnDemand,
+  surrogateSafeCut,
   type AgentEvent,
   type AssignmentId,
   type CausalChainId,
@@ -72,7 +73,14 @@ import {
   runHistoryMaxMessages,
   runHistoryMaxSerializedBytes,
 } from "@opensteer/protocol";
-import type { CommandRow, DatabaseSchema, RunRow, ThreadInputTable, ThreadRow } from "./schema.js";
+import type {
+  CommandRow,
+  DatabaseSchema,
+  DelegationTable,
+  RunRow,
+  ThreadInputTable,
+  ThreadRow,
+} from "./schema.js";
 import {
   messageFromRow,
   runFromRow,
@@ -2108,6 +2116,7 @@ async function assertThreadInputCapacity(
   threadId: ThreadId,
   contentBytes: number,
   policy: "report" | "queue" | "steer" = "queue",
+  replacingMessageId?: MessageId,
 ): Promise<void> {
   const pendingUsage = await transaction
     .selectFrom("threadInputs")
@@ -2119,6 +2128,9 @@ async function assertThreadInputCapacity(
     .where("threadInputs.threadId", "=", threadId)
     .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
     .where("threadInputs.policy", policy === "report" ? "=" : "!=", "report")
+    .$if(replacingMessageId !== undefined, (query) =>
+      query.where("threadInputs.messageId", "!=", replacingMessageId!),
+    )
     .executeTakeFirstOrThrow();
   const maxEntries =
     policy === "report" ? threadReportMaxPendingEntries : threadInputMaxPendingEntries;
@@ -3635,6 +3647,56 @@ async function replayThreadInput(
   };
 }
 
+async function assignmentReturnGroup(
+  transaction: Transaction<DatabaseSchema>,
+  assignment: Pick<
+    Selectable<DelegationTable>,
+    | "origin"
+    | "parentThreadId"
+    | "parentRunId"
+    | "parentOccurrenceId"
+    | "parentWatchActivationId"
+    | "parentAssignmentId"
+  > & {
+    readonly causalChainId: CausalChainId;
+    readonly requestedBy: UserId;
+  },
+) {
+  return transaction
+    .selectFrom("delegations")
+    .innerJoin("runs as childRun", "childRun.id", "delegations.childRunId")
+    .innerJoin("threads as childThread", "childThread.id", "delegations.childThreadId")
+    .selectAll("delegations")
+    .select("childThread.workspaceId as childWorkspaceId")
+    .where("delegations.parentThreadId", "=", assignment.parentThreadId)
+    .where("delegations.origin", "=", assignment.origin)
+    .where(
+      "delegations.parentRunId",
+      assignment.parentRunId === null ? "is" : "=",
+      assignment.parentRunId,
+    )
+    .where(
+      "delegations.parentOccurrenceId",
+      assignment.parentOccurrenceId === null ? "is" : "=",
+      assignment.parentOccurrenceId,
+    )
+    .where(
+      "delegations.parentWatchActivationId",
+      assignment.parentWatchActivationId === null ? "is" : "=",
+      assignment.parentWatchActivationId,
+    )
+    .where(
+      "delegations.parentAssignmentId",
+      assignment.parentAssignmentId === null ? "is" : "=",
+      assignment.parentAssignmentId,
+    )
+    .where("childRun.causalChainId", "=", assignment.causalChainId)
+    .where("childRun.requestedBy", "=", assignment.requestedBy)
+    .orderBy("delegations.createdAt", "asc")
+    .orderBy("delegations.id", "asc")
+    .execute();
+}
+
 async function lockAssignmentReturn(
   transaction: Transaction<DatabaseSchema>,
   assignmentId: AssignmentId,
@@ -3643,38 +3705,49 @@ async function lockAssignmentReturn(
     .selectFrom("delegations")
     .innerJoin("threads as childThread", "childThread.id", "delegations.childThreadId")
     .innerJoin("threads as parentThread", "parentThread.id", "delegations.parentThreadId")
+    .innerJoin("runs as childRun", "childRun.id", "delegations.childRunId")
+    .selectAll("delegations")
     .select([
-      "delegations.childThreadId",
-      "delegations.parentThreadId",
-      "delegations.childRunId",
       "childThread.workspaceId as childWorkspaceId",
       "parentThread.workspaceId as parentWorkspaceId",
+      "childRun.causalChainId",
+      "childRun.requestedBy",
     ])
     .where("delegations.id", "=", assignmentId)
     .executeTakeFirst();
   if (!observed) return null;
+  const group = await assignmentReturnGroup(transaction, observed);
+  const workspaceIds = [
+    ...new Set([
+      observed.parentWorkspaceId,
+      ...group.map(({ childWorkspaceId }) => childWorkspaceId),
+    ]),
+  ];
+  const threadIds = [
+    ...new Set([observed.parentThreadId, ...group.map(({ childThreadId }) => childThreadId)]),
+  ];
   const workspaces = await transaction
     .selectFrom("workspaces")
     .select(["id", "status"])
-    .where("id", "in", [...new Set([observed.childWorkspaceId, observed.parentWorkspaceId])])
+    .where("id", "in", workspaceIds)
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
-  await lockThreadChannelAuthorities(transaction, [
-    observed.childThreadId,
-    observed.parentThreadId,
-  ]);
+  await lockThreadChannelAuthorities(transaction, threadIds);
   await transaction
     .selectFrom("threads")
     .select("id")
-    .where("id", "in", [observed.childThreadId, observed.parentThreadId])
+    .where("id", "in", threadIds)
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
+  const lockedGroup = await assignmentReturnGroup(transaction, observed);
+  if (lockedGroup.some(({ id }) => !group.some((member) => member.id === id)))
+    throw new TransactionScopeChanged();
   await lockThreadProjectionParents(transaction, {
-    threadIds: [observed.childThreadId, observed.parentThreadId],
-    runIds: [observed.childRunId],
-    assignmentIds: [assignmentId],
+    threadIds,
+    runIds: group.map(({ childRunId }) => childRunId),
+    assignmentIds: group.map(({ id }) => id),
   });
   const assignment = await transaction
     .selectFrom("delegations")
@@ -3682,7 +3755,219 @@ async function lockAssignmentReturn(
     .where("id", "=", assignmentId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  return { assignment, workspaces, observed };
+  return { assignment, workspaces, observed, group: lockedGroup };
+}
+
+async function waitingAssignmentReturn(
+  transaction: Transaction<DatabaseSchema>,
+  messageId: MessageId,
+) {
+  return transaction
+    .selectFrom("threadInputs")
+    .selectAll()
+    .where("messageId", "=", messageId)
+    .where("state", "=", "pending")
+    .where("runId", "is", null)
+    .where("steerCommandId", "is", null)
+    .where(({ not, exists, selectFrom }) =>
+      not(
+        exists(
+          selectFrom("runs").select("id").whereRef("seedInputId", "=", "threadInputs.messageId"),
+        ),
+      ),
+    )
+    .executeTakeFirst();
+}
+
+async function assignmentReturnMembers(
+  transaction: Transaction<DatabaseSchema>,
+  messageId: MessageId,
+) {
+  return transaction
+    .selectFrom("delegations")
+    .innerJoin("threads", "threads.id", "delegations.childThreadId")
+    .innerJoin("runs", "runs.id", "delegations.childRunId")
+    .select([
+      "delegations.id",
+      "delegations.childThreadId",
+      "delegations.status",
+      "delegations.resultText",
+      "threads.title",
+      "runs.requestedBy",
+    ])
+    .where("delegations.resultMessageId", "=", messageId)
+    .where("delegations.resultReason", "is", null)
+    .orderBy("delegations.createdAt", "asc")
+    .orderBy("delegations.id", "asc")
+    .execute();
+}
+
+type AssignmentReturnMember = Awaited<ReturnType<typeof assignmentReturnMembers>>[number];
+const assignmentReturnMaxBytes = 64 * 1_024;
+
+function assignmentReturnContent(
+  members: readonly AssignmentReturnMember[],
+  maxBytes = assignmentReturnMaxBytes,
+) {
+  const entries = members.map((member) => ({
+    header: `Task ${member.status}: ${member.title}\nTask Thread: ${member.childThreadId} · Assignment: ${member.id}`,
+    result: member.status === "cancelled" ? "" : (member.resultText ?? ""),
+    pointer: `\n\n[Result shortened. Read the rest with task_status (assignmentId: ${member.id}) or thread_read (threadId: ${member.childThreadId}).]`,
+  }));
+  const content = (results: readonly string[]) => [
+    { type: "text" as const, text: results.join("\n\n") },
+  ];
+  const full = content(
+    entries.map(({ header, result }) => (result ? `${header}\n\n${result}` : header)),
+  );
+  const serializedBytes = (value: string) => Buffer.byteLength(JSON.stringify(value), "utf8") - 2;
+  if (Buffer.byteLength(JSON.stringify(full), "utf8") <= maxBytes)
+    return MessageContentSchema.parse(full);
+  const needsPreview = entries.map(
+    ({ result, pointer }) => serializedBytes(result) > serializedBytes(pointer),
+  );
+  const minimal = entries.map(({ header, result, pointer }, index) =>
+    result ? `${header}\n\n${needsPreview[index] ? pointer : result}` : header,
+  );
+  const fixedBytes = Buffer.byteLength(JSON.stringify(content(minimal)), "utf8");
+  const allowance = Math.max(
+    0,
+    Math.floor((maxBytes - fixedBytes) / needsPreview.filter(Boolean).length),
+  );
+  return MessageContentSchema.parse(
+    content(
+      entries.map(({ header, result, pointer }, index) => {
+        if (!needsPreview[index]) return minimal[index]!;
+        if (serializedBytes(result) <= allowance + serializedBytes(pointer))
+          return `${header}\n\n${result}`;
+        let low = 0;
+        let high = result.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (serializedBytes(result.slice(0, middle)) <= allowance) low = middle;
+          else high = middle - 1;
+        }
+        return `${header}\n\n${result.slice(0, surrogateSafeCut(result, low))}${pointer}`;
+      }),
+    ),
+  );
+}
+
+async function rewriteAssignmentReturn(
+  transaction: Transaction<DatabaseSchema>,
+  input: Selectable<ThreadInputTable>,
+  members: readonly AssignmentReturnMember[],
+  mayGrow = false,
+): Promise<readonly AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  const readable: AssignmentReturnMember[] = [];
+  for (const member of members) {
+    if (
+      member.status === "cancelled" ||
+      (await threadExecutionIsAvailableToUser(
+        transaction,
+        member.childThreadId,
+        member.requestedBy,
+      ))
+    ) {
+      readable.push(member);
+    } else {
+      const unavailable = await transaction
+        .updateTable("delegations")
+        .set((expression) => ({
+          resultMessageId: null,
+          resultStatus: "undeliverable",
+          resultReason: "execution-authority-unavailable",
+          completedAt: new Date(),
+          revision: expression("revision", "+", 1),
+          updatedAt: new Date(),
+        }))
+        .where("id", "=", member.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      events.push(
+        ...(await assignmentEventsInTransaction(transaction, unavailable, "assignment.updated")),
+      );
+    }
+  }
+  if (!readable.length) return [...events, await withdrawAssignmentReturn(transaction, input)];
+  const currentMessage = await transaction
+    .selectFrom("messages")
+    .select("content")
+    .where("id", "=", input.messageId)
+    .executeTakeFirstOrThrow();
+  const content = assignmentReturnContent(
+    readable,
+    mayGrow
+      ? assignmentReturnMaxBytes
+      : Math.min(
+          assignmentReturnMaxBytes,
+          Buffer.byteLength(JSON.stringify(currentMessage.content)),
+        ),
+  );
+  await assertThreadInputCapacity(
+    transaction,
+    input.threadId,
+    Buffer.byteLength(JSON.stringify(content)),
+    input.policy,
+    input.messageId,
+  );
+  const updatedInput = await transaction
+    .updateTable("threadInputs")
+    .set({
+      requestFingerprint: createHash("sha256").update(JSON.stringify(content)).digest("base64url"),
+      updatedAt: new Date(),
+    })
+    .where("messageId", "=", input.messageId)
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  const message = await transaction
+    .updateTable("messages")
+    .set({ content: jsonValue(content) })
+    .where("id", "=", input.messageId)
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  const parent = await transaction
+    .selectFrom("threads")
+    .select(["workspaceId", "environmentId"])
+    .where("id", "=", input.threadId)
+    .executeTakeFirstOrThrow();
+  events.push(
+    await appendHostWorkspaceEvent(transaction, {
+      data: { input: threadInputFromRow(updatedInput), message: messageFromRow(message) },
+      environmentId: parent.environmentId,
+      runId: null,
+      threadId: input.threadId,
+      type: "message.created",
+      workspaceId: parent.workspaceId,
+    }),
+  );
+  return events;
+}
+
+async function withdrawAssignmentReturn(
+  transaction: Transaction<DatabaseSchema>,
+  input: Selectable<ThreadInputTable>,
+) {
+  const pending = await transaction
+    .updateTable("threadInputs")
+    .set({ state: "cancelled", cancelReason: "withdrawn", updatedAt: new Date() })
+    .where("messageId", "=", input.messageId)
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  const parent = await transaction
+    .selectFrom("threads")
+    .select(["workspaceId", "environmentId"])
+    .where("id", "=", input.threadId)
+    .executeTakeFirstOrThrow();
+  return appendHostWorkspaceEvent(transaction, {
+    data: { input: threadInputFromRow(pending) },
+    environmentId: parent.environmentId,
+    runId: null,
+    threadId: input.threadId,
+    type: "thread-input.updated",
+    workspaceId: parent.workspaceId,
+  });
 }
 
 async function deliverAssignmentReturnTransaction(
@@ -3705,6 +3990,7 @@ async function deliverAssignmentReturnTransaction(
       .set((expression) => ({
         completedAt: new Date(),
         resultStatus: "delivered",
+        resultWaits: jsonValue([]),
         revision: expression("revision", "+", 1),
         updatedAt: new Date(),
       }))
@@ -3778,6 +4064,7 @@ async function deliverAssignmentReturnTransaction(
           ? "parent-assignment-terminal"
           : "execution-authority-unavailable",
         resultStatus: "undeliverable",
+        resultWaits: jsonValue([]),
         revision: expression("revision", "+", 1),
         updatedAt: new Date(),
       }))
@@ -3787,20 +4074,71 @@ async function deliverAssignmentReturnTransaction(
       .executeTakeFirstOrThrow();
     return assignmentEventsInTransaction(transaction, updated, "assignment.updated");
   }
+  for (const wait of assignment.resultWaits) {
+    if (wait.expiresAt <= Date.now()) continue;
+    try {
+      await assertThreadCaller(transaction, wait.authority, {
+        threadId: assignment.childThreadId,
+        readOnly: true,
+      });
+      await transaction
+        .updateTable("delegations")
+        .set({ resultAttemptedAt: new Date() })
+        .where("id", "=", assignment.id)
+        .execute();
+      return [];
+    } catch (error) {
+      if (!(error instanceof OpensteerError && error.code === "forbidden")) throw error;
+    }
+  }
   // A result is work for the parent's next turn; a cancellation is only
   // context, so it never starts a Run the parent did not ask for.
   const cancelled = assignment.status === "cancelled";
   const policy = cancelled || parent.doneAt ? "report" : "queue";
-  const content = MessageContentSchema.parse([
-    {
-      text: [
-        `Task ${assignment.status}: ${worker.title}`,
-        `Task Thread: ${worker.id} · Assignment: ${assignment.id}`,
-        ...(cancelled ? [] : ["", assignment.resultText]),
-      ].join("\n"),
-      type: "text",
-    },
-  ]);
+  const member: AssignmentReturnMember = {
+    id: assignment.id,
+    childThreadId: worker.id,
+    title: worker.title,
+    status: assignment.status,
+    resultText: assignment.resultText,
+    requestedBy: requester.requestedBy,
+  };
+  const siblings = locked.group.filter(
+    ({ resultMessageId, resultReason }) => resultMessageId !== null && resultReason === null,
+  );
+  for (const messageId of new Set(siblings.map(({ resultMessageId }) => resultMessageId))) {
+    if (!messageId) continue;
+    const waiting = await waitingAssignmentReturn(transaction, messageId);
+    if (
+      !waiting ||
+      waiting.policy !== policy ||
+      waiting.requestedBy !== requester.requestedBy ||
+      safeGeneration(waiting.membershipGeneration) !== safeGeneration(membership.generation) ||
+      waiting.assignmentId !== (parentOpenAssignment?.id ?? null) ||
+      !isDeepStrictEqual(waiting.replyTarget, assignment.replyTarget)
+    )
+      continue;
+    const members = [...(await assignmentReturnMembers(transaction, messageId)), member];
+    const updated = await transaction
+      .updateTable("delegations")
+      .set((expression) => ({
+        completedAt: new Date(),
+        resultMessageId: messageId,
+        resultReason: null,
+        resultStatus: "delivered",
+        resultWaits: jsonValue([]),
+        revision: expression("revision", "+", 1),
+        updatedAt: new Date(),
+      }))
+      .where("id", "=", assignment.id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    return [
+      ...(await rewriteAssignmentReturn(transaction, waiting, members, true)),
+      ...(await assignmentEventsInTransaction(transaction, updated, "assignment.updated")),
+    ];
+  }
+  const content = assignmentReturnContent([member]);
   await assertThreadInputCapacity(
     transaction,
     parent.id,
@@ -3869,6 +4207,7 @@ async function deliverAssignmentReturnTransaction(
       resultMessageId: messageId,
       resultReason: null,
       resultStatus: "delivered",
+      resultWaits: jsonValue([]),
       revision: expression("revision", "+", 1),
       updatedAt: new Date(),
     }))
@@ -3891,6 +4230,150 @@ async function deliverAssignmentReturnTransaction(
   return events;
 }
 
+async function assignmentResultReader(
+  transaction: Transaction<DatabaseSchema>,
+  input: { readonly assignmentId: AssignmentId; readonly authority: ThreadCallerAuthority },
+) {
+  await lockThreadCaller(transaction, input.authority);
+  const locked = await lockAssignmentReturn(transaction, input.assignmentId);
+  if (!locked)
+    throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
+  const { assignment } = locked;
+  const authority = input.authority;
+  await requireActiveWorkspaceMembership(
+    transaction,
+    locked.observed.childWorkspaceId,
+    authority.userId,
+  );
+  await assertThreadCaller(transaction, authority, {
+    threadId: assignment.childThreadId,
+    readOnly: true,
+  });
+  if (
+    !(await threadExecutionIsAvailableToUser(
+      transaction,
+      assignment.childThreadId,
+      authority.userId,
+    ))
+  )
+    throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
+  const requester = await transaction
+    .selectFrom("runs")
+    .select("requestedBy")
+    .where("id", "=", assignment.childRunId)
+    .executeTakeFirstOrThrow();
+  const assigner =
+    requester.requestedBy === authority.userId &&
+    (authority.kind === "run"
+      ? assignment.origin === "run" && assignment.parentRunId === authority.scope.runId
+      : authority.kind === "trigger"
+        ? assignment.parentOccurrenceId === authority.scope.occurrenceId
+        : authority.kind === "watch"
+          ? assignment.parentWatchActivationId === authority.scope.activationId
+          : false);
+  return { assignment, assigner };
+}
+
+/**
+ * How long a hold outlives its wait's own deadline: the waiter still has to
+ * recheck its authority and read the result after the wait resolves. The wait
+ * releases its hold when it ends; this bounds only a waiter that never does.
+ */
+const assignmentResultWaitGraceMs = 30_000;
+
+export function beginAssignmentResultWait(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly assignmentId: AssignmentId;
+    readonly authority: ThreadCallerAuthority;
+    readonly timeoutMs: number;
+    readonly signal?: AbortSignal;
+  },
+): Promise<string | null> {
+  return withDatabaseTransaction(
+    database,
+    async (transaction) => {
+      const { assignment, assigner } = await assignmentResultReader(transaction, input);
+      if (!assigner || assignment.resultStatus !== "pending") return null;
+      const id = randomUUID();
+      const now = Date.now();
+      await transaction
+        .updateTable("delegations")
+        .set({
+          resultWaits: jsonValue([
+            ...assignment.resultWaits.filter(({ expiresAt }) => expiresAt > now),
+            {
+              id,
+              authority: input.authority,
+              expiresAt:
+                now + Math.min(100_000, Math.max(1, input.timeoutMs)) + assignmentResultWaitGraceMs,
+            },
+          ]),
+        })
+        .where("id", "=", assignment.id)
+        .execute();
+      await assertThreadCaller(transaction, input.authority, {
+        threadId: assignment.childThreadId,
+        readOnly: true,
+      });
+      input.signal?.throwIfAborted();
+      return id;
+    },
+    undefined,
+    (error) => error instanceof TransactionScopeChanged,
+  );
+}
+
+export async function endAssignmentResultWait(
+  database: Kysely<DatabaseSchema>,
+  input: { readonly assignmentId: AssignmentId; readonly waitId: string },
+): Promise<readonly AgentEvent[]> {
+  await withDatabaseTransaction(
+    database,
+    async (transaction) => {
+      const locked = await lockAssignmentReturn(transaction, input.assignmentId);
+      if (!locked) return;
+      await transaction
+        .updateTable("delegations")
+        .set({
+          resultWaits: jsonValue(
+            locked.assignment.resultWaits.filter(({ id }) => id !== input.waitId),
+          ),
+        })
+        .where("id", "=", input.assignmentId)
+        .execute();
+    },
+    undefined,
+    (error) => error instanceof TransactionScopeChanged,
+  );
+  return drainAssignmentReturn(database, input.assignmentId);
+}
+
+/** Startup holds the Deployment's exclusive Host lease; no waiter survived it. */
+export async function recoverAssignmentResultWaits(
+  database: Kysely<DatabaseSchema>,
+): Promise<void> {
+  await withDatabaseTransaction(database, async (transaction) => {
+    const waits = await transaction
+      .selectFrom("delegations")
+      .select("id")
+      .where(sql<boolean>`result_waits <> '[]'::jsonb`)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    if (waits.length)
+      await transaction
+        .updateTable("delegations")
+        .set({ resultWaits: jsonValue([]) })
+        .where(
+          "id",
+          "in",
+          waits.map(({ id }) => id),
+        )
+        .execute();
+  });
+}
+
 /** Reading and automatic return share the same Workspace, Thread and Assignment fences. */
 export function readAssignmentResult(
   database: Kysely<DatabaseSchema>,
@@ -3900,113 +4383,64 @@ export function readAssignmentResult(
     readonly signal?: AbortSignal;
   },
 ) {
-  return withDatabaseTransaction(database, async (transaction) => {
-    await lockThreadCaller(transaction, input.authority);
-    const locked = await lockAssignmentReturn(transaction, input.assignmentId);
-    if (!locked)
-      throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
-    let { assignment } = locked;
-    const authority = input.authority;
-    await requireActiveWorkspaceMembership(
-      transaction,
-      locked.observed.childWorkspaceId,
-      authority.userId,
-    );
-    await assertThreadCaller(transaction, authority, {
-      threadId: assignment.childThreadId,
-      readOnly: true,
-    });
-    if (
-      !(await threadExecutionIsAvailableToUser(
-        transaction,
-        assignment.childThreadId,
-        authority.userId,
-      ))
-    )
-      throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
-    const requester = await transaction
-      .selectFrom("runs")
-      .select("requestedBy")
-      .where("id", "=", assignment.childRunId)
-      .executeTakeFirstOrThrow();
-    const assigner =
-      requester.requestedBy === authority.userId &&
-      (authority.kind === "run"
-        ? assignment.origin === "run" && assignment.parentRunId === authority.scope.runId
-        : authority.kind === "trigger"
-          ? assignment.parentOccurrenceId === authority.scope.occurrenceId
-          : authority.kind === "watch"
-            ? assignment.parentWatchActivationId === authority.scope.activationId
-            : false);
-    const events: AgentEvent[] = [];
-    let result = assignment.resultText;
-    if (assigner && assignment.status !== "open") {
-      let canRead =
-        assignment.resultMessageId === null || assignment.resultReason === "read-by-assigner";
-      if (assignment.resultMessageId) {
-        const reserved = await transaction
-          .selectFrom("runs")
-          .select("id")
-          .where("seedInputId", "=", assignment.resultMessageId)
-          .executeTakeFirst();
-        const pending = reserved
-          ? undefined
-          : await transaction
-              .updateTable("threadInputs")
-              .set({ state: "cancelled", cancelReason: "withdrawn", updatedAt: new Date() })
-              .where("messageId", "=", assignment.resultMessageId)
-              .where("state", "=", "pending")
-              .returningAll()
-              .executeTakeFirst();
-        if (pending) {
-          canRead = true;
-          const parent = await transaction
-            .selectFrom("threads")
-            .select(["workspaceId", "environmentId"])
-            .where("id", "=", assignment.parentThreadId)
+  return withDatabaseTransaction(
+    database,
+    async (transaction) => {
+      let { assignment, assigner } = await assignmentResultReader(transaction, input);
+      const authority = input.authority;
+      const events: AgentEvent[] = [];
+      let result = assignment.resultText;
+      if (assigner && assignment.status !== "open") {
+        let canRead =
+          assignment.resultMessageId === null || assignment.resultReason === "read-by-assigner";
+        if (assignment.resultMessageId && assignment.resultReason !== "read-by-assigner") {
+          const waiting = await waitingAssignmentReturn(transaction, assignment.resultMessageId);
+          if (waiting) {
+            canRead = true;
+            const remaining = (
+              await assignmentReturnMembers(transaction, waiting.messageId)
+            ).filter(({ id }) => id !== assignment.id);
+            if (remaining.length) {
+              events.push(...(await rewriteAssignmentReturn(transaction, waiting, remaining)));
+            } else {
+              events.push(await withdrawAssignmentReturn(transaction, waiting));
+            }
+          }
+        }
+        if (canRead && assignment.resultReason !== "read-by-assigner") {
+          assignment = await transaction
+            .updateTable("delegations")
+            .set((expression) => ({
+              completedAt: new Date(),
+              resultStatus: "delivered",
+              resultReason: "read-by-assigner",
+              resultWaits: jsonValue([]),
+              revision: expression("revision", "+", 1),
+              updatedAt: new Date(),
+            }))
+            .where("id", "=", assignment.id)
+            .returningAll()
             .executeTakeFirstOrThrow();
           events.push(
-            await appendHostWorkspaceEvent(transaction, {
-              data: { input: threadInputFromRow(pending) },
-              environmentId: parent.environmentId,
-              runId: null,
-              threadId: assignment.parentThreadId,
-              type: "thread-input.updated",
-              workspaceId: parent.workspaceId,
-            }),
+            ...(await assignmentEventsInTransaction(transaction, assignment, "assignment.updated")),
           );
         }
+        if (!canRead) result = null;
       }
-      if (canRead && assignment.resultReason !== "read-by-assigner") {
-        assignment = await transaction
-          .updateTable("delegations")
-          .set((expression) => ({
-            completedAt: new Date(),
-            resultStatus: "delivered",
-            resultReason: "read-by-assigner",
-            revision: expression("revision", "+", 1),
-            updatedAt: new Date(),
-          }))
-          .where("id", "=", assignment.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        events.push(
-          ...(await assignmentEventsInTransaction(transaction, assignment, "assignment.updated")),
-        );
-      }
-      if (!canRead) result = null;
-    }
-    await assertThreadCaller(transaction, authority, {
-      threadId: assignment.childThreadId,
-      readOnly: true,
-    });
-    input.signal?.throwIfAborted();
-    return {
-      assignment: await assignmentSummaryInTransaction(transaction, assignment),
-      result,
-      events,
-    };
-  });
+      await assertThreadCaller(transaction, authority, {
+        threadId: assignment.childThreadId,
+        readOnly: true,
+      });
+      input.signal?.throwIfAborted();
+      return {
+        assignment: await assignmentSummaryInTransaction(transaction, assignment),
+        result,
+        events,
+      };
+    },
+    undefined,
+    (error) => error instanceof TransactionScopeChanged,
+  );
 }
 
 /**
@@ -4019,8 +4453,11 @@ export async function drainAssignmentReturn(
   assignmentId: AssignmentId,
 ): Promise<readonly AgentEvent[]> {
   try {
-    return await withDatabaseTransaction(database, (transaction) =>
-      deliverAssignmentReturnTransaction(transaction, assignmentId),
+    return await withDatabaseTransaction(
+      database,
+      (transaction) => deliverAssignmentReturnTransaction(transaction, assignmentId),
+      undefined,
+      (error) => error instanceof TransactionScopeChanged,
     );
   } catch (error) {
     await database

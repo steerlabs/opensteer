@@ -1,4 +1,5 @@
 import type { AutomaticModelConfig } from "@opensteer/core";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import type {
   ChannelAccountId,
@@ -1116,6 +1117,13 @@ export interface DelegationTable {
   parentAssignmentId: Generated<AssignmentId | null>;
   status: Generated<AssignmentStatus>;
   resultText: Generated<string | null>;
+  resultWaits: Generated<
+    readonly {
+      readonly id: string;
+      readonly authority: ThreadCallerAuthority;
+      readonly expiresAt: number;
+    }[]
+  >;
   resultRunId: Generated<RunId | null>;
   finishedAt: NullableTimestamp;
   revision: Generated<number>;

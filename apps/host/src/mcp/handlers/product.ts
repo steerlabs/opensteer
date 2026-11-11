@@ -5,6 +5,9 @@ import {
   readAgentThreadActivity,
   encodeThreadHistoryCursor,
   readAssignmentResult,
+  beginAssignmentResultWait,
+  endAssignmentResultWait,
+  withoutDatabaseOperationSignal,
 } from "@opensteer/database";
 import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { isDeepStrictEqual } from "node:util";
@@ -1749,107 +1752,126 @@ export class ProductToolHandlers {
     if (assignmentId && !assignment) throw forbidden("Assignment is unavailable");
     const threadId = assignment?.workerThreadId ?? input.threadId!;
     await this.#assertWaitTarget(caller, threadId);
-    let runId: import("@opensteer/core").RunId | undefined;
-    let afterSequence: import("@opensteer/core").Sequence | undefined;
-    const wait = new ThreadWaitService({
-      subscribe: (wake) => {
-        const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
-        const detach = this.#realtime.observe((change) => {
-          if (
-            // Revocation ends a connection's whole session, so the service owns that wake.
-            ("threadId" in change &&
-              (change.threadId === threadId || change.threadId === anchorId)) ||
-            change.type === "host.machines.changed" ||
-            (caller.kind === "program" && change.type === "host.triggers-changed")
-          )
-            wake();
-        });
-        const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
-          if (membership.userId === caller.userId) wake();
-        });
-        return () => {
-          detach();
-          detachMembership();
-        };
-      },
-      read: async () => {
-        await call.checkLive?.();
-        const thread = await this.#store.getThreadForOwner(threadId, caller.userId);
-        if (!thread) throw forbidden("Thread is unavailable");
-        assertTarget(caller, thread);
-        await this.#assertWaitTarget(caller, threadId);
-        await withDatabaseTransaction(this.#store.database, (tx) =>
-          assertThreadCaller(tx, threadCallerAuthority(caller)),
-        );
-        const snapshot = await readThreadWaitSnapshot(this.#store.database, {
-          threadId: thread.id,
-          userId: caller.userId,
-          ...(!assignment && runId ? { runId } : {}),
-          ...(assignment ? { assignmentId: assignment.id } : {}),
-          ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
-          ...(!assignment && afterSequence ? { afterSequence } : {}),
-        });
-        runId ??= snapshot.run?.id;
-        afterSequence ??= snapshot.lastSequence ?? zeroSequence;
-        const task = assignment
-          ? await this.#store.getAssignmentForOwner({
-              assignmentId: assignment.id,
-              ownerId: caller.userId,
+    // Watching its own task's messages holds that task's return too: it reads the result at the end.
+    const held = assignment?.id ?? own;
+    const waitId = held
+      ? await beginAssignmentResultWait(this.#store.database, {
+          assignmentId: held,
+          authority: threadCallerAuthority(caller),
+          timeoutMs: input.timeoutMs,
+          ...(call.signal ? { signal: call.signal } : {}),
+        })
+      : null;
+    try {
+      let runId: import("@opensteer/core").RunId | undefined;
+      let afterSequence: import("@opensteer/core").Sequence | undefined;
+      const wait = new ThreadWaitService({
+        subscribe: (wake) => {
+          const anchorId = caller.kind === "connection" ? undefined : callerThread(caller).id;
+          const detach = this.#realtime.observe((change) => {
+            if (
+              // Revocation ends a connection's whole session, so the service owns that wake.
+              ("threadId" in change &&
+                (change.threadId === threadId || change.threadId === anchorId)) ||
+              change.type === "host.machines.changed" ||
+              (caller.kind === "program" && change.type === "host.triggers-changed")
+            )
+              wake();
+          });
+          const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
+            if (membership.userId === caller.userId) wake();
+          });
+          return () => {
+            detach();
+            detachMembership();
+          };
+        },
+        read: async () => {
+          await call.checkLive?.();
+          const thread = await this.#store.getThreadForOwner(threadId, caller.userId);
+          if (!thread) throw forbidden("Thread is unavailable");
+          assertTarget(caller, thread);
+          await this.#assertWaitTarget(caller, threadId);
+          await withDatabaseTransaction(this.#store.database, (tx) =>
+            assertThreadCaller(tx, threadCallerAuthority(caller)),
+          );
+          const snapshot = await readThreadWaitSnapshot(this.#store.database, {
+            threadId: thread.id,
+            userId: caller.userId,
+            ...(!assignment && runId ? { runId } : {}),
+            ...(assignment ? { assignmentId: assignment.id } : {}),
+            ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
+            ...(!assignment && afterSequence ? { afterSequence } : {}),
+          });
+          runId ??= snapshot.run?.id;
+          afterSequence ??= snapshot.lastSequence ?? zeroSequence;
+          const task = assignment
+            ? await this.#store.getAssignmentForOwner({
+                assignmentId: assignment.id,
+                ownerId: caller.userId,
+              })
+            : null;
+          if (assignment && !task) throw forbidden("Assignment is unavailable");
+          const connection =
+            caller.kind === "connection"
+              ? await this.#store.database
+                  .selectFrom("agentConnections")
+                  .select("expiresAt")
+                  .where("id", "=", caller.connectionId)
+                  .executeTakeFirst()
+              : undefined;
+          await call.checkLive?.();
+          return {
+            ...snapshot,
+            ...(task ? { settled: task.status !== "open", messages: [] } : {}),
+            ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
+            connected: this.#isEnvironmentConnected(thread.environmentId),
+            messages: assignment ? [] : await this.#readableMessages(caller, snapshot.messages),
+          };
+        },
+      });
+      const result = await wait.wait({
+        timeoutMs: input.timeoutMs,
+        ...(call.signal ? { signal: call.signal } : {}),
+      });
+      await call.checkLive?.();
+      const target = await this.#store.getThreadForOwner(threadId, caller.userId);
+      if (!target) throw forbidden("Thread is unavailable");
+      assertTarget(caller, target);
+      await withDatabaseTransaction(this.#store.database, (tx) =>
+        assertThreadCaller(tx, threadCallerAuthority(caller), { threadId, readOnly: true }),
+      );
+      // Watching its own task's messages hands the caller the final reply too, once it has settled.
+      const settled = assignment?.id ?? (result.status === "settled" ? own : undefined);
+      const task =
+        settled && result.status === "settled"
+          ? await readAssignmentResult(this.#store.database, {
+              assignmentId: settled,
+              authority: threadCallerAuthority(caller),
+              ...(call.signal ? { signal: call.signal } : {}),
             })
-          : null;
-        if (assignment && !task) throw forbidden("Assignment is unavailable");
-        const connection =
-          caller.kind === "connection"
-            ? await this.#store.database
-                .selectFrom("agentConnections")
-                .select("expiresAt")
-                .where("id", "=", caller.connectionId)
-                .executeTakeFirst()
-            : undefined;
-        await call.checkLive?.();
-        return {
-          ...snapshot,
-          ...(task ? { settled: task.status !== "open", messages: [] } : {}),
-          ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
-          connected: this.#isEnvironmentConnected(thread.environmentId),
-          messages: assignment ? [] : await this.#readableMessages(caller, snapshot.messages),
-        };
-      },
-    });
-    const result = await wait.wait({
-      timeoutMs: input.timeoutMs,
-      ...(call.signal ? { signal: call.signal } : {}),
-    });
-    await call.checkLive?.();
-    const target = await this.#store.getThreadForOwner(threadId, caller.userId);
-    if (!target) throw forbidden("Thread is unavailable");
-    assertTarget(caller, target);
-    await withDatabaseTransaction(this.#store.database, (tx) =>
-      assertThreadCaller(tx, threadCallerAuthority(caller), { threadId, readOnly: true }),
-    );
-    // Watching its own task's messages hands the caller the final reply too, once it has settled.
-    const settled = assignment?.id ?? (result.status === "settled" ? own : undefined);
-    const task =
-      settled && result.status === "settled"
-        ? await readAssignmentResult(this.#store.database, {
-            assignmentId: settled,
-            authority: threadCallerAuthority(caller),
-            ...(call.signal ? { signal: call.signal } : {}),
-          })
-        : undefined;
-    if (task) for (const event of task.events) this.#onWorkspaceEvent(event);
-    // Oldest first, so the last item is where the next wait resumes.
-    const items = boundedThreadItems(
-      result.messages.map((message) => messageItem(message, 20_000)),
-    );
-    return {
-      status: result.status,
-      ...(task ? { task: taskItem(task.assignment, task.result) } : {}),
-      ...(result.run ? { run: result.run } : {}),
-      ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
-      items,
-      hasMore: result.hasMore === true || items.length < result.messages.length,
-    };
+          : undefined;
+      if (task) for (const event of task.events) this.#onWorkspaceEvent(event);
+      // Oldest first, so the last item is where the next wait resumes.
+      const items = boundedThreadItems(
+        result.messages.map((message) => messageItem(message, 20_000)),
+      );
+      return {
+        status: result.status,
+        ...(task ? { task: taskItem(task.assignment, task.result) } : {}),
+        ...(result.run ? { run: result.run } : {}),
+        ...(result.pendingRequest ? { pendingRequest: result.pendingRequest } : {}),
+        items,
+        hasMore: result.hasMore === true || items.length < result.messages.length,
+      };
+    } finally {
+      if (held && waitId) {
+        const events = await withoutDatabaseOperationSignal(() =>
+          endAssignmentResultWait(this.#store.database, { assignmentId: held, waitId }),
+        );
+        for (const event of events) this.#onWorkspaceEvent(event);
+      }
+    }
   }
   /** The newest task on `threadId` that this very caller assigned, if it assigned one. */
   async #assignedTask(caller: AgentCaller, threadId: Thread["id"]) {

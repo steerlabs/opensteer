@@ -169,11 +169,19 @@ may use `person_message` or `person_show`; a task answers its assigner, which sh
 reports. A completed Run's last substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
 Assignment spans Runs, one open per worker, and its identity travels with inputs so a late approval
 cannot attach to a new task. Completion is derived transactionally, never declared by an agent;
-results return only if the requester can still read the worker Workspace. A settled result read by
-its assigner through `thread_wait`, `delegate_task` mode `wait` or `task_status` is delivery: the
-same locked transaction withdraws an unclaimed automatic return. A return already claimed by a
-Run owns delivery instead. Only the originating Run or program source consumes a result; other
-readers consume nothing. An empty result wakes nobody unless a
+results return only if the requester can still read the worker Workspace. Siblings started by one
+Run, program occurrence or Watch observation share one waiting return under the same requester,
+reply target and Assignment authority. Each keeps its title and id; long results are shortened
+with a pointer to `task_status` or `thread_read`. Taking the message for a Run, steering it or
+offering it to an engine seals its contents; later results start another return. Rewriting a
+waiting return rechecks access to every included result. A settled result read by its assigner
+through `thread_wait`, `delegate_task` mode `wait` or `task_status` is delivery: the same locked
+transaction removes only that result from a waiting return, withdrawing the message when none
+remain. A return already claimed by a Run owns delivery instead. Only the originating Run or
+program source consumes a result; other readers consume nothing. A live assigner's wait holds
+automatic return in PostgreSQL until it reads the result or ends. Timeout, cancellation, lost
+authority and source settlement release the hold; Host startup releases waits lost on restart.
+Unconsumed results stay in the return outbox for reconciliation. An empty result wakes nobody unless a
 parent Assignment needs it, but a waiter still receives its settlement. Bounded waits subscribe
 before reading, pin their observed Run and recheck live authority on wakes and before return; a
 timeout cancels no work. Cancellation follows Assignments, not Thread lineage.
