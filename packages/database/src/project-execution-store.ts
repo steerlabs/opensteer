@@ -11,7 +11,11 @@ import {
   type AgentEvent,
   type MessageId,
 } from "@opensteer/core";
-import { HarnessInstanceCatalogSchema, runExecuteInputsMax } from "@opensteer/protocol";
+import {
+  RunnerBootIdSchema,
+  HarnessInstanceCatalogSchema,
+  runExecuteInputsMax,
+} from "@opensteer/protocol";
 import {
   assertActiveProjectBinding,
   readProjectRunBinding,
@@ -242,7 +246,7 @@ export class ProjectExecutionStore implements ProjectRequestControlPort {
 const ProjectBindingAcquisitionSchema = z.strictObject({
   commandId: CommandIdSchema,
   runnerId: RunnerIdSchema,
-  runnerBootId: z.string().min(1).max(255),
+  runnerBootId: RunnerBootIdSchema,
   leaseTokenHash: z.string().min(1).max(255),
   leaseExpiresAt: z.date(),
   dispatcherId: z.string().min(1).max(255),

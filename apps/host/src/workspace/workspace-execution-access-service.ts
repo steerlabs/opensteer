@@ -1,4 +1,4 @@
-import { OpensteerError } from "@opensteer/core";
+import { OpensteerError, ProjectRunBindingSchema, type ProjectRunBinding } from "@opensteer/core";
 import type { DeploymentShape, EnvironmentId, UserId, Workspace } from "@opensteer/core";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import {
@@ -25,6 +25,37 @@ export class WorkspaceExecutionAccessService {
     readonly environmentId: EnvironmentId;
     readonly membershipGeneration: number;
     readonly requestedBy: UserId;
+    readonly runnerIdentity: RunnerIdentity;
+    readonly workspace: Workspace;
+  }): Promise<WorkspaceExecutionAccessPlan> {
+    return this.#planStorage(input);
+  }
+
+  async planProject(input: {
+    readonly binding: ProjectRunBinding;
+    readonly runnerIdentity: RunnerIdentity;
+    readonly workspace: Workspace;
+  }): Promise<WorkspaceExecutionAccessPlan> {
+    const binding = ProjectRunBindingSchema.parse(input.binding);
+    if (
+      binding.workspaceId !== input.workspace.id ||
+      input.workspace.kind !== "project" ||
+      binding.runnerId !== input.runnerIdentity.runnerId ||
+      binding.runnerBootId !== input.runnerIdentity.bootId
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Project storage address does not match its execution binding",
+      });
+    return this.#planStorage({
+      environmentId: binding.environmentId,
+      runnerIdentity: input.runnerIdentity,
+      workspace: input.workspace,
+    });
+  }
+
+  async #planStorage(input: {
+    readonly environmentId: EnvironmentId;
     readonly runnerIdentity: RunnerIdentity;
     readonly workspace: Workspace;
   }): Promise<WorkspaceExecutionAccessPlan> {

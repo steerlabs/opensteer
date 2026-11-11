@@ -1,3 +1,4 @@
+import { readProjectRunThreadState } from "./run-thread-state.js";
 import { ProjectBindingStore } from "./project-execution-store.js";
 import { loadProjectRunDispatchContext } from "./execution-store.js";
 import { issueRunGrant } from "./run-grants.js";
@@ -474,13 +475,14 @@ describeStore("Project work admission", (it) => {
     });
 
     if (!first.commandId || !first.runId) throw new Error("Project admission did not queue a Run");
+    const runnerBootId = `rbt_${randomUUID()}`;
     const bindings = new ProjectBindingStore(database, {
-      runnerIsAttached: (id, boot) => id === project.runnerId && boot === "attached-boot",
+      runnerIsAttached: (id, boot) => id === project.runnerId && boot === runnerBootId,
     });
     const input = {
       commandId: first.commandId,
       runnerId: project.runnerId,
-      runnerBootId: "attached-boot",
+      runnerBootId,
       leaseTokenHash: "binding-secret-hash",
       leaseExpiresAt: new Date(Date.now() + 60_000),
       dispatcherId: "project-dispatch-test",
@@ -514,6 +516,14 @@ describeStore("Project work admission", (it) => {
     expect(context).not.toHaveProperty("membershipGeneration");
     expect(context).not.toHaveProperty("voiceCall");
     expect(context.run.status).toBe("starting");
+    expect(await readProjectRunThreadState(database, bound.binding, () => true)).toEqual({
+      previousRun: null,
+      previousAssignment: null,
+    });
+    await expect(
+      readProjectRunThreadState(database, bound.binding, () => false),
+    ).rejects.toMatchObject({ code: "conflict", reason: "computer-offline" });
+
     expect(await bindings.acquire(input)).toMatchObject({
       binding: bound.binding,
       created: false,
@@ -523,7 +533,9 @@ describeStore("Project work admission", (it) => {
       await database.selectFrom("grants").select("id").where("runId", "=", first.runId).execute(),
     ).toHaveLength(1);
     const restarted = new ProjectBindingStore(database, { runnerIsAttached: () => true });
-    await expect(restarted.acquire({ ...input, runnerBootId: "new-boot" })).rejects.toMatchObject({
+    await expect(
+      restarted.acquire({ ...input, runnerBootId: `rbt_${randomUUID()}` }),
+    ).rejects.toMatchObject({
       reason: "binding-recovery-required",
     });
     const later = await admit("after-freeze");
