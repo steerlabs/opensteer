@@ -340,10 +340,10 @@ integration.sequential("durable workspace tabs", () => {
   }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    expect(await tabs.recordChanges(f.groupId, [f.first, f.second], [])).toBe(true);
+    expect((await tabs.recordChanges(f.groupId, [f.first, f.second], [])).changed).toBe(true);
     const before = await tabs.read(f.ownerId, f.groupId);
     expect(before?.tabs).toHaveLength(2);
-    expect(await tabs.recordChanges(f.groupId, [f.first, f.second], [])).toBe(false);
+    expect((await tabs.recordChanges(f.groupId, [f.first, f.second], [])).changed).toBe(false);
     expect((await tabs.read(f.ownerId, f.groupId))?.revision).toBe(before?.revision);
     await tabs.suspend(f.groupId);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.map((t) => t.state)).toEqual([
@@ -377,9 +377,14 @@ integration.sequential("durable workspace tabs", () => {
         },
       }),
     );
-    expect(await measured.recordChanges(f.groupId, [{ ...f.first, title: "Changed" }], [])).toBe(
-      true,
-    );
+    const written = await measured.recordChanges(f.groupId, [{ ...f.first, title: "Changed" }], []);
+    expect(written).toMatchObject({
+      changed: true,
+      groupId: f.groupId,
+      closedIds: [],
+      rows: [{ id: f.first.id, title: "Changed", site: "https://tabs.test" }],
+    });
+    expect(written.rows).toHaveLength(1);
     expect(
       statements
         .filter((statement) => statement.sql.startsWith('select * from "workspace_tabs"'))
@@ -445,13 +450,14 @@ integration.sequential("durable workspace tabs", () => {
     }));
     await tabs.recordChanges(f.groupId, original, []);
     expect(
-      await tabs.recordChanges(f.groupId, [...original.slice(1), f.second], [original[0]!.id]),
+      (await tabs.recordChanges(f.groupId, [...original.slice(1), f.second], [original[0]!.id]))
+        .changed,
     ).toBe(true);
     const group = await tabs.read(f.ownerId, f.groupId);
     expect(group?.tabs).toHaveLength(64);
     expect(group?.tabs?.some((tab) => tab.id === original[0]!.id)).toBe(false);
     expect(group?.tabs?.some((tab) => tab.id === f.second.id)).toBe(true);
-    expect(await tabs.recordChanges(f.groupId, original, [])).toBe(false);
+    expect((await tabs.recordChanges(f.groupId, original, [])).changed).toBe(false);
     await expect(tabs.recordChanges(f.groupId, [f.first], [])).rejects.toMatchObject({
       code: "conflict",
     });
@@ -580,11 +586,13 @@ integration.sequential("durable workspace tabs", () => {
     const id = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id });
     expect(
-      await tabs.recordChanges(
-        id,
-        [{ ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
-        [],
-      ),
+      (
+        await tabs.recordChanges(
+          id,
+          [{ ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) }],
+          [],
+        )
+      ).changed,
     ).toBe(true);
     await tabs.suspend(id);
     const listed = await tabs.list(f.ownerId);
@@ -640,22 +648,22 @@ integration.sequential("durable workspace tabs", () => {
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     const base = (await tabs.read(f.ownerId, f.groupId))!.revision;
     expect(
-      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []),
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], [])).changed,
     ).toBe(true);
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(base + 1);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
     expect(
-      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []),
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], [])).changed,
     ).toBe(false);
     // Omission is "unknown" and null on the same URL is a failed reload: both keep the icon.
-    expect(await tabs.recordChanges(f.groupId, [f.first, f.second], [])).toBe(false);
-    expect(await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: null }, f.second], [])).toBe(
-      false,
-    );
+    expect((await tabs.recordChanges(f.groupId, [f.first, f.second], [])).changed).toBe(false);
+    expect(
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: null }, f.second], [])).changed,
+    ).toBe(false);
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(base + 1);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
     expect(
-      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconB }, f.second], []),
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconB }, f.second], [])).changed,
     ).toBe(true);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconB);
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(base + 2);
@@ -670,7 +678,7 @@ integration.sequential("durable workspace tabs", () => {
     const oldRef = before.tabs![0]!.iconRef;
     expect(oldRef).toEqual(expect.any(String));
     const moved = { ...f.first, url: "https://tabs.test/elsewhere" };
-    expect(await tabs.recordChanges(f.groupId, [moved], [])).toBe(true);
+    expect((await tabs.recordChanges(f.groupId, [moved], [])).changed).toBe(true);
     let row = await tabs.get(f.ownerId, f.first.id);
     expect(row?.favicon ?? null).toBeNull();
     expect(row?.iconRef ?? null).toBeNull();
@@ -678,10 +686,10 @@ integration.sequential("durable workspace tabs", () => {
     expect(await tabs.icon(f.ownerId, f.groupId, oldRef!)).toBeNull();
     await tabs.recordChanges(f.groupId, [{ ...moved, favicon: iconA }], []);
     const nulled = { ...f.first, url: "https://tabs.test/third", favicon: null };
-    expect(await tabs.recordChanges(f.groupId, [nulled], [])).toBe(true);
+    expect((await tabs.recordChanges(f.groupId, [nulled], [])).changed).toBe(true);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon ?? null).toBeNull();
     const settled = { ...f.first, url: "https://tabs.test/fourth", favicon: iconB };
-    expect(await tabs.recordChanges(f.groupId, [settled], [])).toBe(true);
+    expect((await tabs.recordChanges(f.groupId, [settled], [])).changed).toBe(true);
     row = await tabs.get(f.ownerId, f.first.id);
     expect(row?.favicon).toBe(iconB);
     expect(row?.iconRef).toEqual(expect.any(String));
@@ -725,7 +733,9 @@ integration.sequential("durable workspace tabs", () => {
     expect(await tabs.icon(f.ownerId, replacement, before[1]!.iconRef!)).toBe(iconB);
     // The obsolete producer neither reads nor rewrites the group's icons.
     expect(await tabs.icon(f.ownerId, f.groupId, before[0]!.iconRef!)).toBeNull();
-    expect(await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconC }], [])).toBe(false);
+    expect(
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconC }], [])).changed,
+    ).toBe(false);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
   });
   it("does not resurrect a closed tab's icon or serve it after close", async ({ storeFixture }) => {
@@ -737,7 +747,7 @@ integration.sequential("durable workspace tabs", () => {
     await tabs.close(f.ownerId, f.first.id);
     expect(await tabs.icon(f.ownerId, f.groupId, ref)).toBeNull();
     expect(
-      await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []),
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], [])).changed,
     ).toBe(false);
     expect(await tabs.get(f.ownerId, f.first.id)).toBeNull();
     expect(await tabs.icon(f.ownerId, f.groupId, ref)).toBeNull();
@@ -794,7 +804,9 @@ integration.sequential("durable workspace tabs", () => {
     expect((await tabs.read(f.ownerId, f.groupId))!.revision).toBe(revision);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(iconA);
     const bounded = prefix + "A".repeat(largest - prefix.length);
-    expect(await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: bounded }], [])).toBe(true);
+    expect(
+      (await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: bounded }], [])).changed,
+    ).toBe(true);
     expect((await tabs.get(f.ownerId, f.first.id))?.favicon).toBe(bounded);
   });
   // Reopen failures: wrong actor, expired/consumed marker, stale producer, lost
@@ -1102,12 +1114,42 @@ integration.sequential("durable workspace tabs", () => {
     expect((await tabs.reopen(f.ownerId, allowReopen)).title).toBe("Popup");
     cascadeEvidence.push({ closeDuringReopen: reopened.id });
   });
+  it("lists 150 authorized groups, including live record-only groups, and reads only named facts and rows", async ({
+    storeFixture,
+  }) => {
+    const { fixture, store, tabs, database } = storeFixture;
+    const f = await fixture();
+    await tabs.recordChanges(f.groupId, [f.first], []);
+    const ids = [f.groupId];
+    for (let index = 1; index < 150; index++) {
+      const id = createBrowserSessionId();
+      await store.createBrowserSession({
+        ...f.session,
+        id,
+        origin: index === 149 ? "trigger" : "agent",
+      });
+      ids.push(id);
+    }
+    expect(new Set(await tabs.groupIds(f.ownerId))).toEqual(new Set(ids));
+    expect(await tabs.groupIds(f.strangerId)).toEqual([]);
+    expect((await tabs.read(f.ownerId, ids.slice(0, 2))).map((row) => row.id).sort()).toEqual(
+      ids.slice(0, 2).sort(),
+    );
+    expect(await tabs.read(f.strangerId, ids)).toEqual([]);
+    expect((await tabs.openTabs(ids.slice(0, 2))).map((row) => row.id)).toEqual([f.first.id]);
+    await database
+      .updateTable("browserSessions")
+      .set({ state: "closed" })
+      .where("id", "in", ids)
+      .execute();
+    expect(await tabs.groupIds(f.ownerId)).toEqual([f.groupId]);
+  });
   it("does not persist automation sessions", async ({ storeFixture }) => {
     const { fixture, store, tabs } = storeFixture;
     const f = await fixture();
     const id = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id, origin: "trigger" });
-    expect(await tabs.recordChanges(id, [f.first], [])).toBe(false);
+    expect((await tabs.recordChanges(id, [f.first], [])).changed).toBe(false);
     expect(await tabs.list(f.ownerId)).toEqual([]);
   });
 });

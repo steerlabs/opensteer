@@ -1224,6 +1224,8 @@ export const BrowserSessionUseSchema = z.object({
 export type BrowserSessionUse = z.infer<typeof BrowserSessionUseSchema>;
 
 export const browserUsageRunBatchSize = 16;
+/** The most recently used sessions in one conversation read. */
+export const browserUsageSessionsPerRead = 100;
 /**
  * The most distinct pages one Run, or the people in a conversation, report for
  * one session; the most recently used are kept.
@@ -1235,12 +1237,14 @@ export const BrowserSessionUsageProjectionSchema = BrowserSessionUseSchema.exten
 export type BrowserSessionUsageProjection = z.infer<typeof BrowserSessionUsageProjectionSchema>;
 export const ThreadBrowserUsageSchema = z.object({
   threadId: ThreadIdSchema,
-  // Per session in the bounded catalog the client already holds: one
+  // Per session this conversation used most recently: one
   // membership, the latest pages people included, and the latest
   // `browserUsageTabsPerRun` pages each requested Run used.
   uses: z
     .array(BrowserSessionUsageProjectionSchema)
-    .max(100 * ((browserUsageRunBatchSize + 1) * browserUsageTabsPerRun + 1)),
+    .max(
+      browserUsageSessionsPerRead * ((browserUsageRunBatchSize + 1) * browserUsageTabsPerRun + 1),
+    ),
 });
 
 export type BrowserPagePresence = z.infer<typeof BrowserPagePresenceSchema>;

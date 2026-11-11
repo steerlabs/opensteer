@@ -49,6 +49,7 @@ import {
   browserSessionMaxThreads,
   browserTabOpenReplayWindowMs,
   browserUsageRunBatchSize,
+  browserUsageSessionsPerRead,
   browserUsageTabsPerRun,
 } from "@opensteer/protocol";
 import { type ExpressionBuilder, type Kysely, type Transaction, sql } from "kysely";
@@ -1517,7 +1518,7 @@ export async function listBrowserSessionThreads(
 }
 
 /**
- * One conversation's browser use, within the reader's bounded catalog: per
+ * One conversation's browser use, within its most recently used sessions: per
  * session, its membership (no Run, no page), the latest pages people included,
  * and for each requested Run the latest distinct pages it used — or, for a Run
  * that never chose a page, its use of the session. Each Run and the people
@@ -1534,18 +1535,23 @@ export async function getThreadBrowserUsage(
   if (input.runIds.length > browserUsageRunBatchSize) {
     throw new OpensteerError({ code: "bad_request", message: "Too many browser Run references" });
   }
-  // The catalog read already applies who may see which session.
-  const sessions = await listBrowserSessions(database, input.ownerId);
-  if (sessions.length === 0) return [];
-  const sessionIds = sessions.map(({ id }) => id);
-  const uses = database
+  const authorized = database
     .selectFrom("browserSessionUses")
+    .innerJoin("browserSessions", "browserSessions.id", "browserSessionUses.sessionId")
+    .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
     .innerJoin("threads", "threads.id", "browserSessionUses.threadId")
     .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .where("browserSessionUses.threadId", "=", input.threadId)
-    .where("browserSessionUses.sessionId", "in", sessionIds)
+    .where((eb) => ownedBrowserSession(eb, input.ownerId))
     .where("workspaceMemberships.userId", "=", input.ownerId)
     .where("workspaceMemberships.state", "=", "active");
+  const sessionIds = authorized
+    .select("browserSessionUses.sessionId")
+    .groupBy("browserSessionUses.sessionId")
+    .orderBy((eb) => eb.fn.max("browserSessionUses.lastUsedAt"), "desc")
+    .orderBy("browserSessionUses.sessionId")
+    .limit(browserUsageSessionsPerRead);
+  const uses = authorized.where("browserSessionUses.sessionId", "in", sessionIds);
   const latestSeen = (column: "page_site" | "page_title") =>
     sql<
       string | null

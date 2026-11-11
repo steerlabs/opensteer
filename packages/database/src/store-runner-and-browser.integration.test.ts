@@ -3181,6 +3181,32 @@ describeStore("PostgreSQL store", (it) => {
         lastUsedAt: new Date(base + 1000),
       })
       .execute();
+    // Unused newer sessions must not displace this conversation's history.
+    const newer = await database
+      .selectFrom("browserSessions")
+      .selectAll()
+      .where("id", "=", sessionId)
+      .executeTakeFirstOrThrow();
+    await database
+      .insertInto("browserSessions")
+      .values(
+        Array.from({ length: 101 }, (_, index) => {
+          const id = createBrowserSessionId();
+          return {
+            ...newer,
+            id,
+            tabGroupId: id,
+            state: "closed" as const,
+            createdAt: new Date(Date.now() + index + 1),
+          };
+        }),
+      )
+      .execute();
+    await database
+      .updateTable("browserSessions")
+      .set({ state: "closed" })
+      .where("id", "=", sessionId)
+      .execute();
     const old = await store.getThreadBrowserUsage({
       ownerId: fixture.userId,
       threadId: fixture.thread.id,

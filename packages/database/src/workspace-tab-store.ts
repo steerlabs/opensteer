@@ -10,11 +10,17 @@ import {
   projectBrowserSessionOpener,
   type BrowserSessionId,
   type BrowserTabRecord,
+  type BrowserGroupRow,
   type WorkspaceTabLineage,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { createHash, randomUUID } from "node:crypto";
-import { authorizedPlaceThreadIds, getBrowserSessionForOwner } from "./browser-session-store.js";
+import {
+  authorizedPlaceThreadIds,
+  getBrowserSessionForOwner,
+  listBrowserSessionThreads,
+  listAttachedRunIdsForBrowserSessions,
+} from "./browser-session-store.js";
 import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
 import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
 import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
@@ -24,6 +30,49 @@ import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
 
 type Database = Kysely<DatabaseSchema>;
 type TabRow = Selectable<DatabaseSchema["workspaceTabs"]>;
+
+export type BrowserGroupFacts = Omit<
+  BrowserGroupRow,
+  "inventoryRevision" | "navigation" | "acting" | "page"
+>;
+export type WorkspaceTabStreamRow = NonNullable<WorkspaceTabLineage["tabs"]>[number] & {
+  groupId: BrowserSessionId;
+};
+export interface WorkspaceTabChanges {
+  groupId: BrowserSessionId;
+  changed: boolean;
+  rows: WorkspaceTabStreamRow[];
+  closedIds: string[];
+}
+function streamTab(
+  row: Pick<
+    TabRow,
+    | "id"
+    | "groupId"
+    | "sessionId"
+    | "title"
+    | "url"
+    | "iconRef"
+    | "order"
+    | "openerId"
+    | "state"
+    | "createdAt"
+  >,
+): WorkspaceTabStreamRow {
+  return {
+    kind: "browser",
+    id: BrowserSurfaceIdSchema.parse(row.id),
+    groupId: row.groupId,
+    sessionId: row.sessionId,
+    title: row.title,
+    site: browserPageSite(row.url).slice(0, 2048),
+    iconRef: row.iconRef,
+    order: row.order,
+    openerId: row.openerId ? BrowserSurfaceIdSchema.parse(row.openerId) : null,
+    state: row.state,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
 
 export function workspaceTabIconRef(groupId: BrowserSessionId, favicon: string): string {
   return createHash("sha256").update(groupId).update("\0").update(favicon).digest("base64url");
@@ -187,12 +236,111 @@ export class WorkspaceTabStore {
   list(ownerId: UserId): Promise<WorkspaceTabLineage[]> {
     return this.#read(ownerId);
   }
-  async read(
+  read(ownerId: UserId, groupIds: readonly BrowserSessionId[]): Promise<BrowserGroupFacts[]>;
+  read(
     ownerId: UserId,
     groupId: BrowserSessionId,
     database?: Database,
-  ): Promise<WorkspaceTabLineage | null> {
-    return (await this.#read(ownerId, groupId, database))[0] ?? null;
+  ): Promise<WorkspaceTabLineage | null>;
+  async read(
+    ownerId: UserId,
+    groupIds: BrowserSessionId | readonly BrowserSessionId[],
+    database?: Database,
+  ): Promise<WorkspaceTabLineage | null | BrowserGroupFacts[]> {
+    if (typeof groupIds === "string")
+      return (await this.#read(ownerId, groupIds, database))[0] ?? null;
+    if (!groupIds.length) return [];
+    return this.database
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .execute(async (tx) => {
+        const groups = await visibleWorkspaceTabLineages(tx, ownerId)
+          .where("lineages.id", "in", groupIds)
+          .select((eb) =>
+            eb
+              .selectFrom("workspaceTabs")
+              .select((eb) => eb.fn.countAll<string>().as("count"))
+              .whereRef("workspaceTabs.groupId", "=", "lineages.id")
+              .where("closedAt", "is", null)
+              .as("tabCount"),
+          )
+          .execute(databaseOperationOptions());
+        const sessionIds = groups.map((group) => group.id);
+        const [threads, runs, visible] = await Promise.all([
+          listBrowserSessionThreads(tx, { ownerId, sessionIds }),
+          listAttachedRunIdsForBrowserSessions(tx, sessionIds),
+          authorizedPlaceThreadIds(
+            tx,
+            ownerId,
+            groups.flatMap((group) =>
+              group.opener && "threadId" in group.opener ? [group.opener.threadId] : [],
+            ),
+          ),
+        ]);
+        const visibleThreadIds = new Set(visible);
+        return groups.map((group) => ({
+          id: group.tabGroupId,
+          createdAt: group.lineageCreatedAt.toISOString(),
+          unavailableReason: group.retiredAt ? "This browser computer was retired." : null,
+          tabCount: Number(group.tabCount),
+          sessionId: group.id,
+          workspaceId: group.workspaceId,
+          state: group.state,
+          origin: group.origin,
+          access: "read-write" as const,
+          placement: { kind: "runner" as const, runnerId: group.runnerId },
+          profileId: group.profileId,
+          runtimeId: group.runtimeId,
+          opener: projectBrowserSessionOpener(group.opener, { userId: ownerId, visibleThreadIds }),
+          sessionCreatedAt: group.createdAt.toISOString(),
+          updatedAt: group.updatedAt.toISOString(),
+          attachedRunIds: [...(runs.get(group.id) ?? [])],
+          threadIds: [...(threads.get(group.id) ?? [])],
+        }));
+      });
+  }
+  async groupIds(ownerId: UserId): Promise<BrowserSessionId[]> {
+    const rows = await visibleWorkspaceTabLineages(this.database, ownerId)
+      .clearSelect()
+      .select("lineages.id")
+      .where((eb) =>
+        eb.or([
+          eb("browserSessions.state", "in", ["starting", "ready", "closing"]),
+          eb.exists(
+            eb
+              .selectFrom("workspaceTabs")
+              .select("id")
+              .whereRef("workspaceTabs.groupId", "=", "lineages.id")
+              .where("closedAt", "is", null),
+          ),
+        ]),
+      )
+      .orderBy("browserSessions.updatedAt", "desc")
+      .orderBy("lineages.id", "desc")
+      .execute(databaseOperationOptions());
+    return rows.map((row) => row.id);
+  }
+  async openTabs(groupIds: readonly BrowserSessionId[]): Promise<WorkspaceTabStreamRow[]> {
+    if (!groupIds.length) return [];
+    const rows = await this.database
+      .selectFrom("workspaceTabs")
+      .select([
+        "id",
+        "groupId",
+        "sessionId",
+        "title",
+        "url",
+        "iconRef",
+        "order",
+        "openerId",
+        "state",
+        "createdAt",
+      ])
+      .where("groupId", "in", groupIds)
+      .where("closedAt", "is", null)
+      .orderBy("order")
+      .execute(databaseOperationOptions());
+    return rows.map(streamTab);
   }
   /** The open tabs a session holds, with a page or asleep. */
   async tabIds(sessionId: BrowserSessionId): Promise<string[]> {
@@ -278,7 +426,7 @@ export class WorkspaceTabStore {
     sessionId: BrowserSessionId,
     descriptors: readonly WorkspaceTabDescriptor[],
     closed: readonly string[],
-  ): Promise<boolean> {
+  ): Promise<WorkspaceTabChanges> {
     for (const descriptor of descriptors)
       if (descriptor.favicon !== undefined && descriptor.favicon !== null)
         BrowserFaviconSchema.parse(descriptor.favicon);
@@ -287,9 +435,21 @@ export class WorkspaceTabStore {
       .selectAll()
       .where("id", "=", sessionId)
       .executeTakeFirst(databaseOperationOptions());
+    const changes: WorkspaceTabChanges = {
+      groupId: session?.tabGroupId ?? sessionId,
+      changed: false,
+      rows: [],
+      closedIds: [],
+    };
     if (!session || session.origin === "trigger" || session.opener?.kind === "automation")
-      return false;
+      return changes;
     return this.#turn(session.tabGroupId, async (tx) => {
+      const changes: WorkspaceTabChanges = {
+        groupId: session.tabGroupId,
+        changed: false,
+        rows: [],
+        closedIds: [],
+      };
       const latest = await tx
         .selectFrom("browserSessions")
         .select("id")
@@ -297,7 +457,7 @@ export class WorkspaceTabStore {
         .orderBy("createdAt", "desc")
         .orderBy("id", "desc")
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      if (latest.id !== sessionId) return false;
+      if (latest.id !== sessionId) return changes;
       const previous = descriptors.length
         ? await tx
             .selectFrom("workspaceTabs")
@@ -323,7 +483,7 @@ export class WorkspaceTabStore {
         nextOrder = (bounds.maxOrder ?? -1) + 1;
         openCount = Number(bounds.openCount);
       }
-      let changed = false;
+      const written: TabRow[] = [];
       if (closed.length) {
         const closedAt = new Date();
         const result = await tx
@@ -332,9 +492,10 @@ export class WorkspaceTabStore {
           .where("sessionId", "=", sessionId)
           .where("id", "in", closed)
           .where("closedAt", "is", null)
-          .executeTakeFirst(databaseOperationOptions());
-        changed = result.numUpdatedRows > 0n;
-        openCount -= Number(result.numUpdatedRows);
+          .returning("id")
+          .execute(databaseOperationOptions());
+        changes.closedIds = result.map((row) => row.id);
+        openCount -= result.length;
         for (const row of previous)
           if (row.sessionId === sessionId && closed.includes(row.id) && !row.closedAt)
             row.closedAt = closedAt;
@@ -372,13 +533,15 @@ export class WorkspaceTabStore {
             held.iconRef === values.iconRef
           )
             continue;
-          await tx
+          const updated = await tx
             .updateTable("workspaceTabs")
             .set(values)
             .where("id", "=", held.id)
             .where("sessionId", "=", sessionId)
             .where("closedAt", "is", null)
-            .execute(databaseOperationOptions());
+            .returningAll()
+            .executeTakeFirst(databaseOperationOptions());
+          if (updated) written.push(updated);
         } else {
           if (openCount >= browserSessionTabLimit)
             throw new OpensteerError({
@@ -393,11 +556,14 @@ export class WorkspaceTabStore {
             closedAt: null,
             createdAt: new Date(),
           };
-          await tx
+          const row = await tx
             .insertInto("workspaceTabs")
             .values(inserted)
             .onConflict((c) => c.column("id").doNothing())
-            .execute(databaseOperationOptions());
+            .returningAll()
+            .executeTakeFirst(databaseOperationOptions());
+          if (!row) continue;
+          written.push(row);
           nextOrder!++;
           openCount++;
           previous.push({
@@ -408,10 +574,11 @@ export class WorkspaceTabStore {
             reopenedAt: null,
           });
         }
-        changed = true;
       }
-      if (changed) await this.#bump(tx, session.tabGroupId);
-      return changed;
+      changes.rows = written.map(streamTab);
+      changes.changed = written.length > 0 || changes.closedIds.length > 0;
+      if (changes.changed) await this.#bump(tx, session.tabGroupId);
+      return changes;
     });
   }
   async bind(groupId: BrowserSessionId, sessionId: BrowserSessionId, id: string) {

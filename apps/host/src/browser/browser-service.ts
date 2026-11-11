@@ -2678,11 +2678,9 @@ export class BrowserService {
       if (broker && this.#workspaceTabs) {
         const changes = broker.tabChanges();
         if (changes.tabs.length || changes.closed.length)
-          lineageChanged = await this.#workspaceTabs.recordChanges(
-            sessionId,
-            changes.tabs,
-            changes.closed,
-          );
+          lineageChanged = (
+            await this.#workspaceTabs.recordChanges(sessionId, changes.tabs, changes.closed)
+          ).changed;
         lineageChanged ||= changes.stateDirty;
         broker.acknowledgeTabChanges(changes);
       }
