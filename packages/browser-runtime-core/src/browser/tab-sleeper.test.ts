@@ -47,6 +47,22 @@ describe("TabSleeper", () => {
       await f.close();
     }
   });
+  it("starts a fresh release delay when unknown Host facts become known", async () => {
+    const f = await fixture();
+    try {
+      f.sleeper.setSessionState("session", { runs: 1, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [], keepAwake: true });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(f.record.live).not.toBeNull();
+      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(f.record.live).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.record.live).toBeNull();
+    } finally {
+      await f.close();
+    }
+  });
   it.each([
     "unknown",
     "keepAwake",

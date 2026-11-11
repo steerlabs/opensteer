@@ -50,7 +50,12 @@ export class TabSleeper {
   setSessionState(id: string, state: BrowserSessionState): void {
     const session = this.sessions.get(id);
     if (!session) return;
-    if (state.runs === 0 && (session.hostState === null || session.hostState.runs > 0))
+    if (
+      state.runs === 0 &&
+      (session.hostState === null ||
+        session.hostState.runs > 0 ||
+        (session.hostState.keepAwake && !state.keepAwake))
+    )
       session.releasedAt = Date.now();
     session.hostState = state;
     for (const surfaceId of state.viewed) session.ledger.touch(surfaceId, true);

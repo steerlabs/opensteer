@@ -8,7 +8,9 @@ even when they share a profile, and a session's identity is fixed at creation. C
 ## Open workspace tabs
 
 The Host database owns durable tab descriptors; live sessions and CDP handles die with their
-connection. Restoring makes a new binding and never restarts a finished Run. A selected dormant tab
+connection. A suspended page keeps its tab and live session identity; selecting or restoring it
+resumes that exact tab by reloading its address. Old document, node and object handles become
+invalid. A dormant tab whose session ended needs a new binding. Neither path restarts a finished Run. A selected dormant tab
 restores only on its saved computer and profile, waiting rather than substitute another computer or
 Guest. Each opening of a tab restores it automatically at most once; after a failure it waits for
 the person's Retry, because every attempt starts a Browser Session. Guest website state is never
@@ -27,6 +29,14 @@ paint. An uncertain open retries with its original key and replays the recorded 
 starts a second browser. Tickets, native creation and navigation are never blindly replayed. Tab
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
+
+The Host protects pages using durable Run attachments, control subscriptions from every device
+(including native control without frames), Watch previews and pending sign-in, card and passkey
+steps. A harness disconnect never releases a Run's hold. Missing Host state keeps pages awake;
+new runtime connections need fresh state after their first tab commit. An agent-created tab nobody
+has used can sleep 60 seconds after the last Run releases its session, once other protections clear.
+Watch alone does not count as a person's use. Sleep keeps the browser context and saved descriptor;
+it is not a tab close. Agents enumerate sleeping tabs and resume only within their admitted session.
 
 A Run's place history moves at most once a second and always lands where the Run settles; its usage
 is written once per new tab or page, not on every switch between them.

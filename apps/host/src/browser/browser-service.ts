@@ -13,11 +13,14 @@ import type {
 import {
   BrowserRuntimeServerMessageSchema,
   type BrowserRuntimeServerMessage,
+  type BrowserSessionState,
 } from "@opensteer/protocol/browser";
 import type { WorkspaceTabDescriptor } from "@opensteer/database";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { editingClipboardPartCount } from "@opensteer/protocol/editing";
 import {
+  BrowserListTabsParametersSchema,
+  BrowserResumeTabParametersSchema,
   BrowserActionRequestSchema,
   type BrowserActionRequest,
   type BrowserActionResult,
@@ -742,6 +745,14 @@ export class BrowserService {
   readonly #runPlaces: RunPlaceRecorder;
   readonly #catalogNotices = new Map<BrowserSessionId, NodeJS.Timeout>();
   readonly #brokers = new Map<BrowserSessionId, HostedBrowserBroker>();
+  readonly #requestPins = new Map<
+    string,
+    readonly {
+      sessionId: BrowserSessionId;
+      runId: RunId | null;
+      surfaceId: BrowserSurfaceId | null;
+    }[]
+  >();
   #validateLoginLease:
     | ((input: {
         loginRef: string;
@@ -813,6 +824,7 @@ export class BrowserService {
     this.#onPlaceNotice = options.onPlaceNotice ?? (() => undefined);
     this.#connectTimeoutMs = options.connectTimeoutMs ?? 30_000;
     this.#onSessionsChanged = (workspaceId, sessionIds, source) => {
+      for (const id of sessionIds) this.#brokers.get(id)?.refreshSessionState();
       void Promise.all(sessionIds.map((id) => this.clientStreams.source.groupChanged(id))).catch(
         (error) => this.#onError(error),
       );
@@ -1124,11 +1136,15 @@ export class BrowserService {
         });
       }
       if (
-        !agent &&
         broker?.live &&
         broker.surfaceState === 1 &&
         broker.surfaceStateOf(tabId) === "suspended"
       ) {
+        if (agent && !(await this.agentMayAccessSession(agent, previous)))
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This tab is not a saved tab you can reach.",
+          });
         await broker.requestCdp({
           type: "cdp.command",
           requestId: randomUUID(),
@@ -2821,6 +2837,7 @@ export class BrowserService {
     const previous = actor.surfaces.get(activity.surfaceId);
     const wasActing = previous !== undefined && at - previous.at < this.#actingWindowMs;
     actor.surfaces.set(activity.surfaceId, { ...previous, at, seq: activity.seq });
+    if (this.#requestPins.size) broker.refreshSessionState();
     void this.#recordActorUse(actor, activity.surfaceId);
     const previousTimer = this.#actingTimers.get(sessionId);
     if (previousTimer) previousTimer();
@@ -3263,6 +3280,9 @@ export class BrowserService {
     const detached = await this.#repository.detachBrowserSessionAttachmentsForProfileGrant(input);
     if (detached > 0) {
       const sessions = await this.#repository.listBrowserSessions(input.ownerId);
+      for (const session of sessions)
+        if (session.profileId === input.profileId)
+          this.#brokers.get(session.id)?.refreshSessionState();
       this.#onSessionsChanged(
         input.workspaceId,
         sessions
@@ -3554,7 +3574,32 @@ export class BrowserService {
           message: `The browser running Browser Session ${record.id} is an older Opensteer version that cannot receive files. Update Opensteer on that computer.`,
         });
       }
-      if (Object.values(browserHostMethods).some((method) => method === command.method))
+      if (
+        (command.method === browserHostMethods.listTabs ||
+          command.method === browserHostMethods.resumeTab) &&
+        broker.surfaceState !== 1
+      )
+        throw browserActionFailure(
+          "unsupported-operation",
+          "Update the browser computer to list and resume sleeping tabs.",
+        );
+      if (command.method === browserHostMethods.listTabs) {
+        if (!BrowserListTabsParametersSchema.safeParse(command.parameters ?? {}).success)
+          throw new OpensteerError({ code: "bad_request", message: "Invalid tab-list cursor." });
+      } else if (command.method === browserHostMethods.resumeTab) {
+        const parsed = BrowserResumeTabParametersSchema.safeParse(command.parameters);
+        if (!parsed.success)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "A tab surfaceId is required.",
+          });
+        const { surfaceId } = parsed.data;
+        if (broker.surfaceStateOf(surfaceId) === undefined)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Browser tab not found in this session.",
+          });
+      } else if (Object.values(browserHostMethods).some((method) => method === command.method))
         throw new OpensteerError({
           code: "forbidden",
           message: "This operation is reserved for the Host.",
@@ -3778,6 +3823,76 @@ export class BrowserService {
     }) => boolean,
   ): void {
     this.#validateLoginLease = validate;
+  }
+
+  tabStateOf(sessionId: BrowserSessionId, surfaceId: BrowserSurfaceId) {
+    return this.#brokers.get(sessionId)?.surfaceStateOf(surfaceId);
+  }
+
+  setRequestPins(
+    key: string,
+    pins: readonly { sessionId: BrowserSessionId; runId: RunId | null }[],
+  ): void {
+    const previous = this.#requestPins.get(key) ?? [];
+    if (pins.length)
+      this.#requestPins.set(
+        key,
+        pins.map((pin) => ({
+          ...pin,
+          surfaceId:
+            previous.find((old) => old.sessionId === pin.sessionId && old.runId === pin.runId)
+              ?.surfaceId ?? this.#requestSurface(pin.sessionId, pin.runId),
+        })),
+      );
+    else this.#requestPins.delete(key);
+    for (const id of new Set([...previous, ...pins].map((pin) => pin.sessionId)))
+      this.#brokers.get(id)?.refreshSessionState();
+  }
+
+  observeRequest(request: Request): void {
+    const payload = request.payload;
+    if (payload.kind !== "browser.sign-in" && payload.kind !== "browser.password-sign-in") return;
+    const sessionId =
+      "sessionId" in payload ? BrowserSessionIdSchema.parse(payload.sessionId) : null;
+    this.setRequestPins(
+      request.id,
+      request.status === "pending" && sessionId
+        ? [{ sessionId, runId: request.originatingRunId }]
+        : [],
+    );
+  }
+
+  #requestSurface(sessionId: BrowserSessionId, runId: RunId | null): BrowserSurfaceId | null {
+    if (!runId) return null;
+    const actor = [...this.#actors.values()].find(
+      (actor) => actor.sessionId === sessionId && actor.runId === runId,
+    );
+    const latest =
+      actor &&
+      [...actor.surfaces].sort(
+        (a, b) =>
+          Math.max(b[1].at, b[1].recordedPage?.at ?? 0) -
+            Math.max(a[1].at, a[1].recordedPage?.at ?? 0) || b[1].seq - a[1].seq,
+      )[0];
+    return latest ? BrowserSurfaceIdSchema.parse(latest[0]) : null;
+  }
+
+  async #sessionState(
+    sessionId: BrowserSessionId,
+  ): Promise<Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">> {
+    const runs = await this.#repository.countBrowserSessionAttachments(sessionId);
+    const pinned = new Set<BrowserSurfaceId>();
+    let keepAwake = false;
+    for (const pins of this.#requestPins.values())
+      for (const pin of pins) {
+        if (pin.sessionId !== sessionId) continue;
+        const surfaceId = pin.surfaceId ?? this.#requestSurface(sessionId, pin.runId);
+        if (surfaceId) {
+          pin.surfaceId = surfaceId;
+          pinned.add(surfaceId);
+        } else keepAwake = true;
+      }
+    return { runs, pinned: [...pinned], ...(keepAwake ? { keepAwake: true } : {}) };
   }
 
   /**
@@ -4070,6 +4185,7 @@ export class BrowserService {
       await Promise.allSettled(this.#historyTails.values());
       await this.#workspaceTabs?.suspend();
       this.#brokers.clear();
+      this.#requestPins.clear();
     })();
     return this.#closePromise;
   }
@@ -4327,6 +4443,7 @@ export class BrowserService {
                 },
               }
             : {}),
+          readSessionState: () => this.#sessionState(sessionId),
           onPageChanged: () => this.#announcePresence(sessionId),
           onTabsChanged: () => this.#queueCatalogNotice(sessionId, record.workspaceId),
           onRecordsChanged: (ids) => {
@@ -4872,6 +4989,9 @@ interface PendingStateImport {
 }
 
 interface HostedBrowserBrokerOptions {
+  readonly readSessionState: () => Promise<
+    Pick<BrowserSessionState, "runs" | "pinned" | "keepAwake">
+  >;
   readonly savedTabIds?: readonly BrowserSurfaceId[];
   readonly workspaceTabRestoreVersion?: boolean | undefined;
   readonly initialHistoryNavigation?: { navigationId: string; ownerId: UserId; typed: boolean };
@@ -5168,8 +5288,13 @@ class HostedBrowserBroker {
   readonly stateImport: boolean;
   readonly workspaceId: WorkspaceId;
 
+  readonly #readSessionState: HostedBrowserBrokerOptions["readSessionState"];
+  #sessionStateTimer: NodeJS.Timeout | undefined;
+  #sessionStateGeneration = 0;
+  #lastSessionState: string | undefined;
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
+    this.#readSessionState = options.readSessionState;
     this.#restoreTabs = options.workspaceTabRestoreVersion === true;
     this.#savedTabIds = options.savedTabIds;
     this.profileId = options.profileId;
@@ -5182,6 +5307,7 @@ class HostedBrowserBroker {
     this.passkeyOwnOrigins = options.passkeyOwnOrigins;
     this.#passkeys = options.passkeys
       ? new PasskeyService({
+          onChanged: () => this.refreshSessionState(),
           ownOrigins: options.passkeyOwnOrigins,
           viewers: () =>
             [...this.#consumers.values()].map((outlet): PasskeyViewer => ({
@@ -5240,6 +5366,56 @@ class HostedBrowserBroker {
       );
     this.#socket = options.socket;
     this.#readyPromise = this.#waitUntilReady();
+  }
+
+  refreshSessionState(): void {
+    this.#sessionStateGeneration++;
+    if (!this.live || this.#snapshot?.surfaceState !== 1 || this.#sessionStateTimer) return;
+    this.#sessionStateTimer = setTimeout(() => {
+      this.#sessionStateTimer = undefined;
+      void this.#sendSessionState().catch(() => undefined);
+    }, 50);
+    this.#sessionStateTimer.unref();
+  }
+
+  async #sendSessionState(): Promise<void> {
+    if (!this.live || this.#snapshot?.surfaceState !== 1) return;
+    const generation = this.#sessionStateGeneration;
+    let facts: Awaited<ReturnType<HostedBrowserBrokerOptions["readSessionState"]>>;
+    try {
+      facts = await this.#readSessionState();
+    } catch {
+      facts = { runs: 0, pinned: [], keepAwake: true };
+    }
+    if (!this.live || generation !== this.#sessionStateGeneration) return;
+    const viewed = new Set<BrowserSurfaceId>();
+    const pinned = new Set(facts.pinned);
+    for (const id of this.#passkeys?.pendingSurfaceIds ?? [])
+      pinned.add(BrowserSurfaceIdSchema.parse(id));
+    for (const outlet of this.#consumers.values()) {
+      if (outlet.subscription === null) continue;
+      const id = outlet.surfaceId ?? this.#tabs.meta?.activeId;
+      if (id && this.#tabs.rows.has(id))
+        (outlet.mode === "control" ? viewed : pinned).add(BrowserSurfaceIdSchema.parse(id));
+    }
+    let message = {
+      type: "session.state" as const,
+      ...facts,
+      viewed: [...viewed].sort(),
+      pinned: [...pinned].sort(),
+    };
+    if (keyedStreamBytes(message) > keyedStreamHardCapBytes)
+      message = {
+        type: "session.state",
+        runs: facts.runs,
+        viewed: [],
+        pinned: [],
+        keepAwake: true,
+      };
+    const encoded = JSON.stringify(message);
+    if (encoded === this.#lastSessionState) return;
+    await this.#sendCommand(message);
+    this.#lastSessionState = encoded;
   }
 
   async #sendSavedTabs(): Promise<void> {
@@ -5424,6 +5600,7 @@ class HostedBrowserBroker {
       onClose();
       const wasSubscribed = outlet.subscription !== null;
       this.#consumers.delete(peer.id);
+      this.refreshSessionState();
       this.#passkeys?.refresh();
       if (
         outlet.mode === "control" &&
@@ -6063,6 +6240,7 @@ class HostedBrowserBroker {
         await this.#sendSavedTabs();
         await this.#onState("ready");
         this.#runtimeReady = true;
+        await this.#sendSessionState();
       }
       this.#onRecordsChanged([...changes.added, ...changes.updated, ...changes.removed]);
       this.bumpCatalog();
@@ -6086,6 +6264,7 @@ class HostedBrowserBroker {
         if (consumer.surfaceId && changedIds.has(consumer.surfaceId))
           this.#sendViewerSurface(consumer);
       }
+      if (previousActive !== active || changes.removed.length) this.refreshSessionState();
       const firstCommit = stream.op === "end" && !this.#viewerCommitted;
       this.#viewerCommitted = true;
       message = firstCommit
@@ -6558,6 +6737,7 @@ class HostedBrowserBroker {
       if (outlet.surfaceId !== surfaceId || outlet.subscription === null) outlet.rasterDensity = 2;
       outlet.surfaceId = surfaceId;
       outlet.subscription = subscription;
+      this.refreshSessionState();
       this.#passkeys?.refresh();
       // Editing reaches a viewer only once it names what it shows, so each
       // subscription starts from that surface's current field.
@@ -6597,6 +6777,7 @@ class HostedBrowserBroker {
           outlet.frameWindow = previous.frameWindow;
           outlet.rasterDensity = previous.rasterDensity;
           outlet.surfaceId = previous.surfaceId;
+          this.refreshSessionState();
         }
         throw error;
       });
@@ -7084,6 +7265,7 @@ class HostedBrowserBroker {
   ): Promise<void> {
     if (this.#finishPromise) return this.#finishPromise;
     this.#settled = true;
+    if (this.#sessionStateTimer) clearTimeout(this.#sessionStateTimer);
     this.#historyNavigations.clear();
     this.#historyDocuments.clear();
     this.#historyIcons.clear();

@@ -358,7 +358,35 @@ integration("session-scoped browser agent backends", () => {
           {},
         )
       ).tabs.find((tab) => tab.tabId === tabId),
-    ).toMatchObject({ state: "open", sessionId: f.sessionId });
+    ).toMatchObject({ state: "asleep", sessionId: f.sessionId });
+    const resumeStart = f.phone.receivedCommands().length;
+    const restored = f.host.runtime.browser.restoreAgentWorkspaceTab(
+      {
+        ownerId: f.host.ownerId,
+        workspaceId: f.run.workspaceId,
+        agentBindingId: `run:${f.run.runId}`,
+      },
+      tabId,
+    );
+    const agentResume = await vi.waitFor(
+      () => {
+        const command = f.phone
+          .receivedCommands()
+          .slice(resumeStart)
+          .find((message) => message.type === "cdp.command");
+        expect(command, "Agent restore never resumed the sleeping tab").toBeDefined();
+        return command!;
+      },
+      { timeout: 1000 },
+    );
+    expect(agentResume.command).toEqual({
+      method: "Opensteer.resumeTab",
+      parameters: { surfaceId: tabId },
+    });
+    await publish("live");
+    f.phone.sendServer({ type: "cdp.result", requestId: agentResume.requestId, result: {} });
+    expect(await restored).toEqual({ tabId, sessionId: f.sessionId });
+    await publish("suspended");
     const socket = await f.actions();
     const pending = f.act(
       socket,

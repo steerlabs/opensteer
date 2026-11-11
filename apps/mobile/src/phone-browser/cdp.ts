@@ -9,8 +9,15 @@ import {
 import type { PhoneBrowserNativePort, NativeDocumentRef } from "./native-port.js";
 import { PhoneBrowserError } from "./native-port.js";
 import { agentObservationMethods } from "@opensteer/browser-core/agent-cdp-policy";
-import { BrowserStageFileParametersSchema } from "@opensteer/protocol/browser-actions";
-import type { PhoneTab } from "./state.js";
+import {
+  BrowserStageFileParametersSchema,
+  BrowserListTabsParametersSchema,
+  BrowserResumeTabParametersSchema,
+  browserListTabsMaxBytes,
+  type AgentTab,
+} from "@opensteer/protocol/browser-actions";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
+import { isLive, type PhoneTab } from "./state.js";
 
 export interface PhoneCdpOwner {
   readonly sessionId: string;
@@ -98,6 +105,57 @@ export class PhoneCdpSession {
 
   async send(command: CdpCommand): Promise<unknown> {
     if (this.#closed) throw new PhoneBrowserError("target-closed", "The attachment has ended.");
+    if (command.method === "Opensteer.listTabs" || command.method === "Opensteer.resumeTab") {
+      if (command.sessionId !== undefined)
+        throw new PhoneBrowserError("forbidden", "Tab selection belongs to the browser session.");
+      if (command.method === "Opensteer.listTabs") {
+        const { cursor } = BrowserListTabsParametersSchema.parse(command.parameters ?? {});
+        const after = cursor === undefined ? -1 : Number(cursor);
+        if (!Number.isSafeInteger(after))
+          throw new PhoneBrowserError("not-found", "Invalid tab cursor.");
+        const tabs: AgentTab[] = [];
+        let nextCursor: string | null = null;
+        for (const tab of [...this.#owner.tabs()].sort((a, b) => a.order - b.order)) {
+          if (tab.state === "closed" || tab.order <= after) continue;
+          const row: AgentTab = {
+            surfaceId: BrowserSurfaceIdSchema.parse(tab.id),
+            targetId: isLive(tab) ? tab.id : null,
+            state: isLive(tab) ? "live" : "suspended",
+            order: tab.order,
+            openerId: tab.openerId ? BrowserSurfaceIdSchema.parse(tab.openerId) : null,
+            title: tab.metadata.title.slice(0, 256),
+            url: tab.metadata.url,
+            userActivity: null,
+            pageResize: null,
+            dialog: tab.dialog
+              ? { id: tab.dialog.id, type: tab.dialog.type, message: tab.dialog.message }
+              : null,
+          };
+          if (
+            tabs.length &&
+            new TextEncoder().encode(
+              JSON.stringify({ tabs: [...tabs, row], nextCursor: String(tab.order) }),
+            ).byteLength > browserListTabsMaxBytes
+          ) {
+            nextCursor = String(tabs.at(-1)!.order);
+            break;
+          }
+          tabs.push(row);
+        }
+        return { tabs, nextCursor };
+      }
+      const { surfaceId } = BrowserResumeTabParametersSchema.parse(command.parameters);
+      const tab = this.#tab(surfaceId);
+      const documentId = tab.metadata.documentId;
+      const generation = tab.metadata.generation;
+      await this.#owner.resume(tab);
+      return {
+        surfaceId,
+        targetId: tab.id,
+        documentId: tab.metadata.documentId,
+        reloaded: tab.metadata.documentId !== documentId || tab.metadata.generation !== generation,
+      };
+    }
     if (command.method === "Opensteer.stageFile") {
       if (command.sessionId !== undefined)
         throw new PhoneBrowserError("forbidden", "File staging belongs to the browser session.");

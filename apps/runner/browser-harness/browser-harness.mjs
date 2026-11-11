@@ -273,7 +273,12 @@ class CdpClient {
     this.#pending.delete(message.id);
     clearTimeout(pending.timeout);
     if (message.error) {
-      pending.reject(new CdpProtocolError(message.error.message || "CDP command failed"));
+      pending.reject(
+        Object.assign(new CdpProtocolError(message.error.message || "CDP command failed"), {
+          code: message.error.code,
+          reason: message.error.reason,
+        }),
+      );
     } else {
       pending.resolve(message.result ?? {});
     }
@@ -398,9 +403,37 @@ function createBrowserHarness(client, initialTargetId) {
   });
 
   const pages = async () => {
-    const sequence = dialogSequence;
-    const result = observeTargets(await client.command("Target.getTargets"), sequence);
-    return (result.targetInfos ?? []).filter((target) => target.type === "page");
+    const tabs = [];
+    let cursor;
+    do {
+      const sequence = dialogSequence;
+      const result = await client.command("Opensteer.listTabs", cursor ? { cursor } : {});
+      for (const tab of result.tabs) {
+        noteDialogSnapshot(tab.targetId, tab.dialog, sequence);
+        tabs.push(tab);
+      }
+      cursor = result.nextCursor;
+    } while (cursor);
+    return tabs;
+  };
+  const resumedNotice = (surfaceId) =>
+    process.stderr.write(
+      `[opensteer] Tab ${surfaceId} was asleep and has reloaded. Observe it again before acting; old page handles are invalid.\n`,
+    );
+  const attachedSurfaces = new Map();
+  const invalidSessions = new Set();
+  const invalidateSurface = (surfaceId) => {
+    for (const [id, surface] of attachedSurfaces) {
+      if (surface !== surfaceId) continue;
+      invalidSessions.add(id);
+      const target = attachedTargets.get(id);
+      attachedSurfaces.delete(id);
+      attachedTargets.delete(id);
+      inputSessions.delete(id);
+      observedDialogs.delete(target);
+      openDialogs.delete(target);
+      dialogEvents.delete(target);
+    }
   };
 
   const detach = async () => {
@@ -430,8 +463,7 @@ function createBrowserHarness(client, initialTargetId) {
   const attach = async (requestedTargetId = selectedTargetId) => {
     await detach();
     let nextTargetId = requestedTargetId;
-    const inventory = await client.command("Target.getTargets");
-    const availablePages = (inventory.targetInfos ?? []).filter((target) => target.type === "page");
+    const availablePages = await pages();
     if (!nextTargetId) {
       if (availablePages.length !== 1) {
         throw new Error(
@@ -440,6 +472,7 @@ function createBrowserHarness(client, initialTargetId) {
             : "Choose a tab with --tab <target ID> or await switchTab(targetId). Use await listTabs() to see the open tabs.",
         );
       }
+      const inventory = await client.command("Target.getTargets");
       if (typeof inventory.rootTargetId !== "string" || inventory.rootTargetId.length === 0) {
         throw new Error(
           "The browser runtime did not provide this session's initial tab identity. Update the browser runtime, or choose an explicit target with --tab.",
@@ -460,7 +493,14 @@ function createBrowserHarness(client, initialTargetId) {
           `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
         );
       }
-      nextTargetId = named.targetId;
+      if (named.state === "suspended") {
+        const resumed = await client.command("Opensteer.resumeTab", { surfaceId: named.surfaceId });
+        if (resumed.reloaded) {
+          invalidateSurface(named.surfaceId);
+          resumedNotice(named.surfaceId);
+        }
+        nextTargetId = resumed.targetId;
+      } else nextTargetId = named.targetId;
     }
     if (typeof nextTargetId !== "string" || nextTargetId.length === 0) {
       throw new Error("CDP did not provide a target ID");
@@ -475,6 +515,12 @@ function createBrowserHarness(client, initialTargetId) {
     }
     sessionId = result.sessionId;
     attachedTargets.set(sessionId, nextTargetId);
+    attachedSurfaces.set(
+      sessionId,
+      availablePages.find(
+        (tab) => tab.surfaceId === requestedTargetId || tab.targetId === nextTargetId,
+      )?.surfaceId,
+    );
     targetId = nextTargetId;
     selectedTargetId = nextTargetId;
     attachedActivity = result.userActivity;
@@ -487,10 +533,18 @@ function createBrowserHarness(client, initialTargetId) {
   };
 
   const cdp = async (method, params = {}, requestedSessionId) => {
-    const browserLevel = method.startsWith("Target.") || method.startsWith("Browser.");
+    const browserLevel =
+      method.startsWith("Target.") ||
+      method.startsWith("Browser.") ||
+      method === "Opensteer.listTabs" ||
+      method === "Opensteer.resumeTab";
     if (!browserLevel && !requestedSessionId && !sessionId) await attach();
     const pageSessionId = requestedSessionId ?? (browserLevel ? undefined : sessionId);
     try {
+      if (invalidSessions.has(pageSessionId))
+        throw new Error(
+          "This tab reloaded after sleeping. Observe it again and use fresh page handles.",
+        );
       if (method === "Page.handleJavaScriptDialog") {
         const dialogId = params.dialogId ?? observedDialogs.get(attachedTargets.get(pageSessionId));
         if (typeof dialogId !== "string") {
@@ -504,7 +558,18 @@ function createBrowserHarness(client, initialTargetId) {
       const result = observeTargets(await client.command(method, params, pageSessionId), sequence);
       if (method === "Target.attachToTarget") {
         attachedTargets.set(result.sessionId, params.targetId);
+        attachedSurfaces.set(result.sessionId, result.surfaceId ?? params.targetId);
         noteDialogSnapshot(params.targetId, result.dialog, sequence);
+      }
+      if (method === "Opensteer.resumeTab" && result.reloaded) {
+        const selectedSurface = attachedSurfaces.get(sessionId);
+        invalidateSurface(result.surfaceId);
+        resumedNotice(result.surfaceId);
+        if (selectedSurface === result.surfaceId) {
+          sessionId = undefined;
+          targetId = undefined;
+          selectedTargetId = result.surfaceId;
+        }
       }
       // A replacement may already be open; only the dialog answered here closed.
       const answered = attachedTargets.get(pageSessionId);
@@ -515,6 +580,10 @@ function createBrowserHarness(client, initialTargetId) {
         noteDialogEvent(answered, undefined);
       return result;
     } catch (error) {
+      if (error.reason === "target-suspended")
+        process.stderr.write(
+          `[opensteer] Tab ${attachedSurfaces.get(pageSessionId) ?? selectedTargetId} is asleep. Resume its surfaceId with --tab or switchTab, then observe it again before acting; it will reload and old page handles are invalid.\n`,
+        );
       // A dialog is the usual reason a page stops answering.
       if (error instanceof CdpTimeoutError && pageSessionId && pageSessionId === sessionId) {
         const sequence = dialogSequence;
@@ -537,6 +606,7 @@ function createBrowserHarness(client, initialTargetId) {
       )
       .map((target) => ({
         targetId: target.targetId,
+        state: target.state,
         ...(target.surfaceId ? { surfaceId: target.surfaceId } : {}),
         title: target.title ?? "",
         url: target.url ?? "",
@@ -585,7 +655,7 @@ function createBrowserHarness(client, initialTargetId) {
         : undefined;
 
   const switchTab = async (target) => {
-    const requestedTargetId = normalizeTargetId(target);
+    const requestedTargetId = target?.surfaceId ?? normalizeTargetId(target);
     if (!requestedTargetId) throw new TypeError("switchTab requires a target ID or tab object");
     return attach(requestedTargetId);
   };
