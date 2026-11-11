@@ -1221,7 +1221,8 @@ function ThreadView({
                 </button>
               ) : null}
             </div>
-            {voiceThread ? null : (
+            {/* An older window can't say what runs now; back at the latest, it returns. */}
+            {voiceThread || historical ? null : (
               <div className="running-now-slot">
                 <RunningNow
                   live={live}
@@ -1235,7 +1236,7 @@ function ThreadView({
             <ThreadServerApprovals threadId={thread.id} />
             <RequestStack
               disabled={!canRespond}
-              folded={requestFolded && nowOpen}
+              folded={requestFolded && nowOpen && !historical}
               items={dockItems}
               onOpen={openRequest}
               onUnfold={unfoldRequest}

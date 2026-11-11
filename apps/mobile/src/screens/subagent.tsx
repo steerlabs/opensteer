@@ -720,11 +720,21 @@ function Fold(props: { readonly text: string }): ReactNode {
   );
 }
 
+/** A settled subagent's full result; a failed or stopped one leads with how it ended. */
 function Outcome(props: { readonly card: AgentCard; readonly result: string | null }): ReactNode {
   const { card, result } = props;
-  if (card.tone === "finished" && result)
+  if (result)
     return (
       <Animated.View entering={appear}>
+        {card.tone === "finished" || !card.detail[0] ? null : (
+          <AppText
+            role="secondary"
+            style={card.detail[0].tone === "failed" ? styles.failed : undefined}
+            tone="soft"
+          >
+            {`${card.detail[0].text}.`}
+          </AppText>
+        )}
         <Markdown text={result} />
       </Animated.View>
     );

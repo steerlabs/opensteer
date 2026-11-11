@@ -463,6 +463,7 @@ export const WorkflowRow = memo(function WorkflowRow(props: {
   readonly card: AgentCard;
 }): ReactNode {
   const { card } = props;
+  const scope = useContext(AgentScopeContext);
   const [open, setOpen] = useRemembered(`workflow:${card.key}`, card.endedAt === null);
   if (card.workflow === null) return null;
   return (
@@ -477,6 +478,18 @@ export const WorkflowRow = memo(function WorkflowRow(props: {
       time={<Elapsed endedAt={card.endedAt} startedAt={card.startedAt} />}
     >
       <WorkflowPhases card={card} />
+      {scope && card.opens ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => scope.onOpen(card)}
+          style={({ pressed }) => [trace.step, trace.stepCompact, pressed && trace.pressed]}
+        >
+          <View style={trace.icon} />
+          <AppText role="caption" tone="muted">
+            Open workflow
+          </AppText>
+        </Pressable>
+      ) : null}
     </FoldRow>
   );
 });

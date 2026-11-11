@@ -1365,7 +1365,8 @@ function ThreadPaneForUser(
   );
   const dock = (
     <>
-      {snapshot.user === null || voiceThread ? null : (
+      {/* An older window can't say what runs now; back at the latest, it returns. */}
+      {snapshot.user === null || voiceThread || historical ? null : (
         <RunningNowCapsule
           hostClient={hostClient}
           onOpen={openRunningNow}

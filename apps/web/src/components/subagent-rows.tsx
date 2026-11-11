@@ -522,6 +522,7 @@ export const AgentGroupRow = memo(function AgentGroupRow({ group }: { group: Age
 /** A workflow: its row, and its phases as numbered rows with their members under them. */
 export const WorkflowRow = memo(function WorkflowRow({ card }: { card: AgentCard }) {
   const workflow = card.workflow;
+  const openAgent = useOpenAgent();
   const [open, setOpen] = useAgentFold(card.key, card.endedAt === null);
   if (!workflow) return null;
   return (
@@ -543,6 +544,16 @@ export const WorkflowRow = memo(function WorkflowRow({ card }: { card: AgentCard
       }
     >
       <WorkflowPhases card={card} />
+      {card.opens ? (
+        <div className="trace-step trace-step--compact agent-step">
+          <div className="trace-step__row">
+            <button className="trace-step__head" onClick={() => openAgent(card)} type="button">
+              <span aria-hidden className="trace-step__icon" />
+              <span className="trace-step__label">Open workflow</span>
+            </button>
+          </div>
+        </div>
+      ) : null}
     </FoldRow>
   );
 });

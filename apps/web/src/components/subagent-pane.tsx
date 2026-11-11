@@ -130,9 +130,17 @@ export function SubagentPane({
     else onClose();
   };
   const titleRef = useRef<HTMLHeadingElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const follows = useRef(false);
   useLayoutEffect(() => {
+    follows.current = false;
     titleRef.current?.focus({ preventScroll: true });
   }, [nodeId]);
+  // Like the transcript: follow the newest step only once the reader is at the end.
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (scroller && follows.current) scroller.scrollTop = scroller.scrollHeight;
+  }, [detail?.entries, view?.state]);
   const kind = view?.card.origin === "task" ? "task" : "subagent";
   const hop = siblings && siblings.total > 1 ? siblings : null;
   return (
@@ -208,7 +216,16 @@ export function SubagentPane({
           ) : null}
         </div>
       </header>
-      <div className="subagent-pane__scroll">
+      <div
+        className="subagent-pane__scroll"
+        onScroll={(event) => {
+          const scroller = event.currentTarget;
+          follows.current =
+            scroller.scrollTop > 0 &&
+            scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+        }}
+        ref={scrollRef}
+      >
         <div className="subagent-pane__body">
           {view ? (
             <PaneBody
@@ -356,18 +373,25 @@ function PaneBody({
   );
 }
 
+/** A settled subagent's full result; a failed or stopped one leads with how it ended. */
 function Outcome({ card, result }: { card: AgentCard; result: string | null }) {
-  if (card.tone === "finished" && result)
+  if (!result)
     return (
+      <p className="subagent-pane__outcome" data-tone={card.tone}>
+        {card.detail.map((phrase) => phrase.text).join(". ")}.
+      </p>
+    );
+  return (
+    <>
+      {card.tone === "finished" || !card.detail[0] ? null : (
+        <p className="subagent-pane__outcome" data-tone={card.tone}>
+          {card.detail[0].text}.
+        </p>
+      )}
       <Suspense fallback={<p className="md-prose md-prose--plain">{result}</p>}>
         <Markdown text={result} />
       </Suspense>
-    );
-  const said = card.detail.map((phrase) => phrase.text).join(". ");
-  return (
-    <p className="subagent-pane__outcome" data-tone={card.tone}>
-      {said}.
-    </p>
+    </>
   );
 }
 

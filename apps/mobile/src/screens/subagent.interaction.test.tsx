@@ -290,6 +290,17 @@ describe("an opened subagent on a phone", () => {
     );
   });
 
+  it("shows a failed subagent's whole report under how it ended, not the row's excerpt", async () => {
+    const { node, threadId } = await scene("finished");
+    const failed = node("Inspect the old checkout");
+    const report = `Couldn't read apps/legacy-checkout. ${"The import chain stops at the vendored SDK. ".repeat(10)}End of report.`;
+    Object.assign(failed, { result: report });
+    const container = open(threadId, failed.nodeId);
+    expect(container.textContent).toContain("What happened");
+    expect(container.textContent).toContain("Couldn't finish.");
+    expect(container.textContent).toContain("End of report.");
+  });
+
   it("says one that is gone can't be shown, and leads back to the conversation", async () => {
     const { threadId } = await scene("three");
     harness.routes = [{ name: "Thread", params: { deploymentId, threadId } }];
