@@ -1186,6 +1186,42 @@ export async function createHostServer(
         const diagnostic = dependencies.realtime.bootstrapDiagnostics.report(diagnosticHeader);
         if (diagnostic) app.log.warn(diagnostic, "host.bootstrap.loop");
       }
+      if (isProjectDeploymentAuthority(await dependencies.store.securityEffectAuthority())) {
+        const [page, identityConfig] = await Promise.all([
+          dependencies.store.workspacePageForOwner({ ownerId }),
+          dependencies.authenticator.identity.configuration(),
+        ]);
+        return rpcSuccess(
+          HostBootstrapSchema.parse({
+            browser: {
+              available: false,
+              placements: [],
+              profiles: [],
+              sessions: [],
+              profileGrants: [],
+            },
+            appTabs: [],
+            latestPlaces: [],
+            notificationPreferences: page.notificationPreferences,
+            deploymentId: dependencies.discovery.document.deploymentId,
+            deploymentShape: dependencies.discovery.document.deploymentShape,
+            deploymentPolicy: deploymentClientPolicy(
+              deploymentPolicy(dependencies.discovery.document.deploymentShape),
+            ),
+            environments: [],
+            harnesses: [],
+            homeWorkspace: null,
+            identityConfig,
+            machines: [],
+            ...(context.surface ? { sessionSurface: context.surface } : {}),
+            sessionId: session.id,
+            user: session.user,
+            workspaceSharingAvailable: true,
+            workspaces: page.workspaces,
+            workspaceWindow: page.window,
+          }),
+        );
+      }
       const homeWorkspace = await dependencies.workspaces
         .ensureMainWorkspace(ownerId)
         .catch((error: unknown) => {

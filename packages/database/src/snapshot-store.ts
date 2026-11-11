@@ -1,3 +1,5 @@
+import { storedProjectDeployment } from "./deployment-execution-authority.js";
+import { teamProjectAudiences } from "./team-project-store.js";
 import { type RunId } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import {
@@ -194,12 +196,22 @@ export async function workspaceSnapshot(
   return withDatabaseTransaction(
     database,
     async (transaction) => {
-      const workspace = await transaction
+      const workspaceRow = await transaction
         .selectFrom("workspaces")
         .selectAll()
+        .select(storedProjectDeployment.as("projectAuthority"))
         .where("id", "=", workspaceId)
         .executeTakeFirst();
-      if (!workspace)
+      if (!workspaceRow)
+        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
+      const { projectAuthority, ...workspace } = workspaceRow;
+      const audience =
+        projectAuthority && options.viewerId
+          ? (await teamProjectAudiences(transaction, options.viewerId, [workspaceId])).get(
+              workspaceId,
+            )
+          : undefined;
+      if (projectAuthority && options.viewerId && !audience?.myLevel)
         throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
       // The lateral lookup uses workspace_events_run_places and reads only one
       // event per live Run, including Threads outside this snapshot's window.
@@ -268,7 +280,10 @@ export async function workspaceSnapshot(
           .executeTakeFirstOrThrow(),
       ]);
       const threads = boundedSerializedPrefix(
-        threadsFromRows(threadRows.slice(0, maxThreads)),
+        threadsFromRows(threadRows.slice(0, maxThreads)).map((thread) => ({
+          ...thread,
+          ...(audience ? { audience } : {}),
+        })),
         maxThreads,
         Math.min(192 * 1_024, maxSerializedBytes),
       );
@@ -364,7 +379,10 @@ export async function workspaceSnapshot(
             })),
           ]
         : [];
-      const workspaceView = workspaceViewFromWorkspace(workspaceFromRow(workspace));
+      const workspaceView = {
+        ...workspaceViewFromWorkspace(workspaceFromRow(workspace)),
+        ...(audience ? { audience } : {}),
+      };
       let snapshot = buildWorkspaceSnapshot({
         readStates,
         notificationPreferences,
