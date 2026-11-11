@@ -29,7 +29,7 @@ import {
   type ListRenderItemInfo,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { headerActions, useSidebarMenu } from "../navigation-header.js";
+import { headerActions, stackScreenOptions, useSidebarMenu } from "../navigation-header.js";
 import { color, radius, space } from "../theme.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
@@ -77,8 +77,19 @@ export function TeamHome(props: {
   const navigation = useNavigation();
   const { snapshot } = useHostSnapshot(props.hostClient, sameStableHostSnapshot);
   const name = snapshot.identityConfig?.deployment.name ?? "Projects";
+  useSidebarMenu(props.hostClient);
+  // Home may have shown Chat's header before the place was known; options merge,
+  // so every key Chat's header writes is written back here.
   useLayoutEffect(() => {
-    navigation.setOptions({ headerLargeTitle: true, title: name });
+    navigation.setOptions({
+      headerBlurEffect: undefined,
+      headerLargeTitle: true,
+      headerStyle: stackScreenOptions.headerStyle,
+      headerTitle: name,
+      headerTransparent: false,
+      scrollEdgeEffects: undefined,
+      title: name,
+    });
   }, [name, navigation]);
   return <ProjectDirectory deploymentId={props.deploymentId} hostClient={props.hostClient} />;
 }
