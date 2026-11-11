@@ -192,6 +192,8 @@ export function cancelTeamTaskRequest(
       .selectFrom("runs")
       .selectAll()
       .where("teamRequestId", "=", input.requestId)
+      .where("threadId", "=", request.localTaskId)
+      .where("seedInputId", "=", request.localInputId)
       .forNoKeyUpdate()
       .executeTakeFirst();
     const events: AgentEvent[] = [];
@@ -304,6 +306,8 @@ export function hydrateTeamTaskInput(
       .selectFrom("personalTeamRequests")
       .selectAll()
       .where("requestId", "=", input.requestId)
+      .where("localTaskId", "=", run.threadId)
+      .where("localInputId", "=", run.seedInputId)
       .executeTakeFirst();
     if (
       run.teamRequestId !== input.requestId ||

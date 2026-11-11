@@ -2390,8 +2390,8 @@ create index deployment_events_thread_history on deployment_events(thread_id,seq
 create index deployment_events_node_detail on deployment_events(node_detail_id,sequence desc) where node_detail_id is not null;
 create index deployment_events_run on deployment_events(run_id,sequence) where run_id is not null;
 create index requests_needs_you on requests(created_at,id) where status='pending';
-create unique index inputs_team_request on thread_inputs(team_request_id) where team_request_id is not null;
-create unique index runs_team_request on runs(team_request_id) where team_request_id is not null;
+create unique index inputs_team_request on thread_inputs(thread_id,team_request_id) where team_request_id is not null;
+create unique index runs_team_request on runs(thread_id,team_request_id) where team_request_id is not null;
 alter table thread_inputs add check (team_request_id is null or (policy='queue' and team_source is not null));
 create view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer');
 alter table team_members add foreign key(user_id) references users(id);

@@ -8,10 +8,12 @@ import {
   admitTeamTaskRequest,
   cancelTeamTaskRequest,
   findTeamTaskAdmission,
+} from "@opensteer/database/task-admission-store";
+import {
   personalSettings,
-  type DatabaseSchema,
-  type RevokedRunGrant,
-} from "@opensteer/database";
+  requirePersonalOwner,
+} from "@opensteer/database/personal-settings-store";
+import type { DatabaseSchema, RevokedRunGrant } from "@opensteer/database";
 import type { Kysely } from "kysely";
 import type {
   TaskAdmissionPort,
@@ -44,9 +46,10 @@ export class TaskAdmissionService implements TaskAdmissionPort {
         code: "bad_request",
         message: "Team request source does not match its task binding.",
       });
+    const settings = await personalSettings(this.options.database);
+    await requirePersonalOwner(this.options.database, settings.ownerId);
     const prior = await findTeamTaskAdmission(this.options.database, input);
     if (prior) return prior;
-    const settings = await personalSettings(this.options.database);
     const bound = await this.options.database
       .selectFrom("threads")
       .select(["folderComputerId", "folderPath"])

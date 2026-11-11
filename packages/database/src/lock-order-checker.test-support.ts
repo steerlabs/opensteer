@@ -973,11 +973,7 @@ async function checked(
     ...tables,
     ...triggered.map((entry) => entry.target),
   ]);
-  for (const { table, target } of triggered)
-    if (catalog.get(target)!.present) {
-      if (table === "workspace_memberships") tables.unshift(target);
-      else tables.push(target);
-    }
+  for (const { target } of triggered) if (catalog.get(target)!.present) tables.push(target);
   const keys = tables.map((table) => catalog.get(table)!.keys);
   // Every table's snapshot and the transaction ID come from one statement, in
   // that order, so the statement below is bracketed by two round trips.

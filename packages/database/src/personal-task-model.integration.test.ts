@@ -69,7 +69,11 @@ import { createThread, enqueueThreadInput } from "./thread-store.js";
 import { claimCommand } from "./command-store.js";
 import { acquireExecutionBinding, bindProviderSession } from "./execution-store.js";
 import { commitRunnerEvent } from "./runner-event-store.js";
-import { admitTeamTaskRequest, cancelTeamTaskRequest } from "./task-admission-store.js";
+import {
+  admitTeamTaskRequest,
+  cancelTeamTaskRequest,
+  hydrateTeamTaskInput,
+} from "./task-admission-store.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass, memoryPassWakeContext } from "./memory-pass-store.js";
 import { TriggerStore } from "./trigger-store.js";
@@ -938,4 +942,103 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     release.resolve();
     await Promise.allSettled([snapshot, writer]);
   }
+});
+
+async function twoTeamsWithOneRequestId() {
+  const f = await fixture();
+  const first = await f.ask();
+  const otherTeamId = createId("deployment");
+  const link = await f.database
+    .selectFrom("personalTeamLinks")
+    .selectAll()
+    .where("teamDeploymentId", "=", f.origin.teamId)
+    .executeTakeFirstOrThrow();
+  await f.database
+    .insertInto("personalTeamLinks")
+    .values({ ...link, id: crypto.randomUUID(), teamDeploymentId: otherTeamId })
+    .execute();
+  const origin = { ...f.origin, teamId: otherTeamId };
+  const second = await admitTeamTaskRequest(f.database, {
+    origin,
+    requestId: first.requestId,
+    triggerMessageId: TeamMessageIdSchema.parse("2"),
+    folder: f.agentHome,
+    source: { ...f.source, teamId: otherTeamId },
+    ownerId: f.userId,
+    execution: f.execution,
+  });
+  return { f, first, second, otherTeamId };
+}
+
+it("cancels only the exact team input when two teams reuse a request ID", async () => {
+  const { f, first, second, otherTeamId } = await twoTeamsWithOneRequestId();
+  expect(second.receipt.taskId).not.toBe(first.receipt.taskId);
+  await cancelTeamTaskRequest(f.database, { teamId: otherTeamId, requestId: first.requestId });
+  await expect(
+    f.database
+      .selectFrom("runs")
+      .select("status")
+      .where("id", "=", first.receipt.runId!)
+      .executeTakeFirstOrThrow(),
+  ).resolves.toEqual({ status: "queued" });
+  await expect(
+    f.database
+      .selectFrom("threadInputs")
+      .select("state")
+      .where("messageId", "=", first.receipt.inputId)
+      .executeTakeFirstOrThrow(),
+  ).resolves.toEqual({ state: "pending" });
+  await expect(
+    f.database
+      .selectFrom("runs")
+      .select("status")
+      .where("id", "=", second.receipt.runId!)
+      .executeTakeFirstOrThrow(),
+  ).resolves.toEqual({ status: "interrupted" });
+  await expect(
+    f.database
+      .selectFrom("threadInputs")
+      .select("state")
+      .where("messageId", "=", second.receipt.inputId)
+      .executeTakeFirstOrThrow(),
+  ).resolves.toEqual({ state: "cancelled" });
+});
+
+it("hydrates the exact team request input when request IDs collide across teams", async () => {
+  const { f, first, second, otherTeamId } = await twoTeamsWithOneRequestId();
+  const command = await f.database
+    .selectFrom("commands")
+    .select("id")
+    .where("runId", "=", second.receipt.runId!)
+    .where("type", "=", "run.execute")
+    .executeTakeFirstOrThrow();
+  await claimCommand(f.database, command.id, "fixture");
+  const source = { ...f.source, teamId: otherTeamId };
+  const hydrated = await hydrateTeamTaskInput(f.database, {
+    runId: second.receipt.runId!,
+    requestId: first.requestId,
+    source,
+    content: [{ type: "text", text: "The second team's current ask" }],
+  });
+  expect(hydrated.events).toMatchObject([
+    { type: "message.created", threadId: second.receipt.taskId },
+  ]);
+  const read = (messageId: typeof first.receipt.inputId) =>
+    f.database
+      .selectFrom("threadInputs")
+      .innerJoin("messages", "messages.id", "threadInputs.messageId")
+      .select(["threadInputs.teamSource", "messages.content"])
+      .where("messageId", "=", messageId)
+      .executeTakeFirstOrThrow();
+  expect(await read(second.receipt.inputId)).toEqual({
+    teamSource: source,
+    content: [
+      { type: "text", text: `Team source and audience: ${JSON.stringify(source)}` },
+      { type: "text", text: "The second team's current ask" },
+    ],
+  });
+  expect((await read(first.receipt.inputId)).teamSource?.teamId).toBe(f.origin.teamId);
+  expect(JSON.stringify((await read(first.receipt.inputId)).content)).not.toContain(
+    "The second team's current ask",
+  );
 });
