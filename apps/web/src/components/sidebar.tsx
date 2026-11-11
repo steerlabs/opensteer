@@ -18,7 +18,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
 import type { BrowserTabGroupColor } from "@opensteer/protocol";
 import type { BrowserTabStrip } from "@opensteer/client/host";
 import type {
@@ -37,13 +37,9 @@ import {
   tabFilterEmptyWords,
   type TabFilter,
   describeHostConnection,
-  doneDays,
-  doneTaskList,
   listedRowThreadId,
-  taskFolderKey,
-  quietlyMoved,
-  quietSeenScope,
-  requestsWaitingOn,
+  liveTasks,
+  taskList,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
@@ -79,7 +75,6 @@ import {
   composerDrafts,
   useComposerDraftIndex,
   type ComposerDraftTarget,
-  type TaskDraftRow,
 } from "./composer-drafts.js";
 import { TaskMark, TaskState, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
 import {
@@ -94,6 +89,8 @@ import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
 import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
+import { useTeams } from "../team/team-attachments.js";
+import type { SegmentBadge } from "./team/team-sidebar.js";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -111,7 +108,6 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
-import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import { TabFilterControl } from "./workspace/tab-filter.js";
@@ -121,15 +117,7 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { useDesktopPlaces } from "../desktop/places-context.js";
 import { PlaceMenuPlaces } from "./places/place-menu.js";
 import { PlaceAccountFooter, SignOutDialog } from "./places/place-account.js";
-import { FolderHeaderRow, FolderMoreRow, PersonalTopRows, TaskSource } from "./home/personal-sidebar.js";
-import {
-  folderRowLimit,
-  folderSignal,
-  groupByFolder,
-  showDoneEvent,
-} from "./home/folder-groups.js";
-import { useTaskSourceView } from "../team/team-attachments.js";
-import { TeamSidebarSections } from "../team/team-sidebar-sections.js";
+import { TeamSideFor, TeamSwitch } from "../team/team-sidebar-sections.js";
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -168,7 +156,6 @@ export function Sidebar({
   const workspace = useWorkspace();
   const { nav } = workspace;
   const { pathname } = useLocation();
-  const [searchParams] = useSearchParams();
   const snapshot = useTaskSnapshot(hostClient);
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
@@ -281,48 +268,15 @@ export function Sidebar({
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
-  const agentHome = directory.snapshot.personalSettings?.agentHome ?? null;
-  const machines = directory.snapshot.machines;
-  // Agent home leads; every other folder follows by its latest ask.
-  const grouping = useMemo(
-    () =>
-      groupByFolder(
-        [...list.working, ...list.ready],
-        agentHome,
-        (computerId) => machines.find((machine) => machine.id === computerId)?.name ?? "Computer",
-      ),
-    [agentHome, list.ready, list.working, machines],
-  );
-  const [closedFolders, toggleFolder] = useClosedFolders();
-  const [expandedFolders, setExpandedFolders] = useState<ReadonlySet<string>>(() => new Set());
+  // A handful in order of urgency; everything else is one click away in All tasks.
+  const live = useMemo(() => {
+    const rows = liveTasks(list, openRowThreadId);
+    const needs = rows.filter((row) => row.tone === "needs-you").length;
+    return rows.slice(0, Math.max(liveRowLimit, needs));
+  }, [list, openRowThreadId]);
+  const openCount = list.working.length + list.ready.length;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const doneShelf = useRef<HTMLLIElement | null>(null);
-  // Done takes the place of Tasks while it is open, at the height Tasks had,
-  // so Tabs below never move.
-  const tasksSection = useRef<HTMLElement | null>(null);
-  const [doneView, setDoneView] = useState<{ readonly height: number } | null>(null);
-  const quietTasks = directory.snapshot.quietTasksAvailable === true;
-  useEffect(() => {
-    if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
-  }, [hostClient, quietTasks, userId]);
-  const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
-  const doneRows = doneList?.rows ?? list.done;
-  const doneCount = doneList?.total ?? list.done.length;
-  const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
-  const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
-  const openDone = () => {
-    setDoneView({ height: tasksSection.current?.getBoundingClientRect().height ?? 0 });
-    markQuietSeen(moved);
-  };
-  useEffect(() => {
-    window.addEventListener(showDoneEvent, openDone);
-    return () => window.removeEventListener(showDoneEvent, openDone);
-  });
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
-  useEffect(() => {
-    if (doneActive && doneShelf.current) revealInList(doneShelf.current);
-  }, [doneActive, openRowThreadId]);
+  const [side, setSide] = useSidebarSide(deploymentId, userId);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -441,13 +395,17 @@ export function Sidebar({
     [onCloseMobile],
   );
   const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
-  const openNeedsYou = () => {
+  const openAllTasks = (filter?: string) => {
     onCloseMobile();
-    nav.openConversation("/needs-you");
+    nav.openConversation(filter ? `/tasks?filter=${filter}` : "/tasks");
   };
-  const newTask = (folder?: string) => {
+  const newTask = () => {
     onCloseMobile();
-    nav.openConversation(folder ? `/?folder=${encodeURIComponent(folder)}` : "/");
+    nav.openConversation("/");
+  };
+  const openVoice = () => {
+    onCloseMobile();
+    nav.openConversation("/voice");
   };
   const discardDraft = (target: ComposerDraftTarget) => {
     if (!deploymentId || !userId) return;
@@ -465,20 +423,7 @@ export function Sidebar({
       },
     });
   };
-  const discardTaskDraft = (row: TaskDraftRow, open: boolean) => {
-    // An open draft's composer goes first, so it cannot write the draft back.
-    if (open) nav.openConversation("/");
-    discardDraft({ kind: "task", draftId: row.draftId });
-  };
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
-  const loadEarlier = () => {
-    if (loadingEarlier) return;
-    setLoadingEarlier(true);
-    void (doneView && quietTasks ? hostClient.loadEarlierDoneTasks() : onLoadEarlierTasks())
-      .catch(() => undefined)
-      .finally(() => setLoadingEarlier(false));
-  };
-
   // Put away, the sidebar is gone entirely; the restore control in the
   // conversation's or the place's head (with the count) and ⌘\ bring it back.
   if (collapsed)
@@ -493,50 +438,7 @@ export function Sidebar({
 
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
-  const days = doneView ? doneDays(doneRows, Date.now()) : [];
-  const doneMore = doneList?.hasMore ?? list.hasMore;
-  // A draft belongs to the folder it would start in, or Agent home.
-  const draftFolder = (draft: TaskDraftRow) =>
-    draft.folder ? taskFolderKey(draft.folder) : (grouping[0]?.folder.id ?? null);
-  const folders = grouping.map((group) => {
-    const open = !closedFolders.has(group.folder.id);
-    const all = expandedFolders.has(group.folder.id);
-    const shown = open ? (all ? group.rows : group.rows.slice(0, folderRowLimit)) : [];
-    const folderDrafts = drafts.tasks.filter((draft) => draftFolder(draft) === group.folder.id);
-    return {
-      group,
-      folderDrafts,
-      open,
-      shown,
-      more: open ? group.rows.length - shown.length : 0,
-      ...folderSignal(group.rows),
-    };
-  });
-  const doneLine = doneCount > 0 || moved.length > 0;
-  const rowKeys = doneView
-    ? [
-        ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
-        ...(doneMore ? ["show-more"] : []),
-      ]
-    : [
-        ...folders.flatMap(({ group, folderDrafts, open, shown, more }) =>
-          group.rows.length + folderDrafts.length === 0 && !group.folder.agentHome
-            ? []
-            : [
-                `folder:${group.folder.id}`,
-                ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
-                ...shown.map((row) => row.threadId),
-                ...(more > 0 ? [`more:${group.folder.id}`] : []),
-              ],
-        ),
-        ...(list.hasMore ? ["show-more"] : []),
-        ...(doneLine ? ["done-shelf"] : []),
-      ];
-  // No tasks yet, no heading: the first one brings it.
-  const hasTasksSection =
-    doneView !== null ||
-    list.working.length + list.ready.length + drafts.tasks.length > 0 ||
-    doneLine;
+  const rowKeys = [...live.map((row) => row.threadId), "all-tasks"];
   const taskRow = (row: TaskRow) => (
     <TaskRowItem
       hostClient={hostClient}
@@ -551,32 +453,6 @@ export function Sidebar({
       workspace={workspace}
     />
   );
-  const draftRow = (draft: TaskDraftRow) => {
-    const open = pathname === "/" && searchParams.get("draft") === draft.draftId;
-    return (
-      <DraftRowItem
-        draft={draft}
-        key={`draft:${draft.draftId}`}
-        nav={nav}
-        onDiscard={() => discardTaskDraft(draft, open)}
-        onNavigate={onCloseMobile}
-        open={open}
-        path="/"
-        work={workspace.work}
-      />
-    );
-  };
-  const folderActions = {
-    onNewTask: (folderId: string) => newTask(folderId),
-    onCopyPath: (folderId: string) => {
-      const folder = grouping.find((group) => group.folder.id === folderId)?.value;
-      if (folder)
-        void navigator.clipboard
-          .writeText(folder.path)
-          .then(() => toast.success("Path copied"))
-          .catch(() => toast.error("Couldn’t copy the path"));
-    },
-  };
   const startPageOpen = workspace.selection.kind === "launcher";
   // The order the tab list shows; a change slides its rows to their new places.
   const motionSignature = [
@@ -727,9 +603,11 @@ export function Sidebar({
       ref={sidebarRef}
     >
       <div className="sidebar__header">
+        <h1 className="sidebar__title">Opensteer</h1>
+        <VoiceButton onOpen={openVoice} />
         <button
           aria-expanded={searching}
-          aria-label="Search tasks and tabs"
+          aria-label="Search"
           className="icon-btn"
           onClick={openSearch}
           ref={searchButtonRef}
@@ -737,6 +615,15 @@ export function Sidebar({
           type="button"
         >
           <Icon name="search" />
+        </button>
+        <button
+          aria-label="New task"
+          className="icon-btn"
+          onClick={newTask}
+          title="New task · ⌘N"
+          type="button"
+        >
+          <Icon name="plus" />
         </button>
         {mobileOpen ? (
           <button
@@ -760,6 +647,7 @@ export function Sidebar({
           </button>
         )}
       </div>
+      <TasksBadgeSwitch hostClient={hostClient} onNavigate={onCloseMobile} onSide={setSide} side={side} />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -780,188 +668,62 @@ export function Sidebar({
         shownPlaceKey={shownPlaceKey}
         sources={searchSources}
       >
-        <PersonalTopRows
-          needsYou={needsYouCount}
-          onOpenNeedsYou={openNeedsYou}
-          onOpenNewTask={() => newTask()}
-          onOpenVoice={() => {
-            onCloseMobile();
-            nav.openConversation("/voice");
-          }}
-          open={
-            pathname === "/"
-              ? "new-task"
-              : pathname === "/needs-you"
-                ? "needs-you"
-                : pathname === "/voice"
-                  ? "voice"
-                  : null
-          }
-          voice={{
-            asked:
-              snapshot.voiceThreadId !== null &&
-              requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0,
-            live: <VoiceLive />,
-          }}
-        />
-        {/* No tasks yet, no heading: New task starts one, and the heading arrives with it. */}
-        {!hasTasksSection ? null : (
-          <section
-            aria-labelledby="sidebar-tasks"
-            className="side-section side-section--tasks"
-            onKeyDown={(event) => {
-              if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(null);
-            }}
-            ref={tasksSection}
-            style={
-              doneView?.height
-                ? {
-                    flex: "none",
-                    height: doneView.height,
-                    maxHeight: doneView.height,
-                    minHeight: 0,
-                  }
-                : sectionFloor(rowKeys.length)
-            }
-          >
-            {doneView ? (
-              <div className="side-head side-head--done">
-                <button
-                  aria-label="Back to Tasks"
-                  className="icon-btn icon-btn--small side-head__back"
-                  onClick={() => setDoneView(null)}
-                  title="Back to Tasks · Esc"
-                  type="button"
-                >
-                  <Icon name="chevron-left" />
-                </button>
-                <h2 className="side-head__title" id="sidebar-tasks">
-                  Done
-                </h2>
-                <span className="side-head__count">{doneCount}</span>
-              </div>
-            ) : (
+        <section
+          aria-labelledby={side === "tasks" ? "sidebar-tasks" : undefined}
+          aria-label={side === "tasks" ? undefined : "Team"}
+          className="side-section side-section--tasks"
+          style={sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)}
+        >
+          {side === "tasks" ? (
+            <>
               <div className="side-head">
                 <h2 className="side-head__title" id="sidebar-tasks">
                   Tasks
                 </h2>
+                {needsYouCount > 0 ? (
+                  <button
+                    aria-label={`${needsYouCount} need you. Show them`}
+                    className="side-needs"
+                    onClick={() => openAllTasks("needs-you")}
+                    title="Needs you"
+                    type="button"
+                  >
+                    <span aria-hidden className="side-needs__bang">
+                      !
+                    </span>
+                    <span aria-hidden>{needsYouCount}</span>
+                  </button>
+                ) : null}
               </div>
-            )}
-            <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
-              <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
-                {/* One keyed run, so a row that moves keeps its element and focus,
-                    and slides to its new place. */}
-                {doneView
-                  ? [
-                      ...days.flatMap((day) => [
-                        <li
-                          className="side-day"
-                          data-motion-key={`day:${day.id}`}
-                          key={`day:${day.id}`}
-                        >
-                          <h3 className="side-day__title">{day.title}</h3>
-                        </li>,
-                        ...day.rows.map((row) => taskRow(row)),
-                      ]),
-                      ...(days.length === 0
-                        ? [
-                            <li
-                              className="sidebar__empty"
-                              data-motion-key="done-empty"
-                              key="done-empty"
-                            >
-                              Nothing in Done yet.
-                            </li>,
-                          ]
-                        : []),
-                      ...(doneMore
-                        ? [
-                            <li data-motion-key="show-more" key="show-more">
-                              <button
-                                className="sidebar__more"
-                                disabled={loadingEarlier}
-                                onClick={loadEarlier}
-                                type="button"
-                              >
-                                {loadingEarlier ? "Loading…" : "Show more"}
-                              </button>
-                            </li>,
-                          ]
-                        : []),
-                    ]
-                  : [
-                      ...folders.flatMap(({ group, folderDrafts, open, shown, more, signal, needsYou }) =>
-                        group.rows.length + folderDrafts.length === 0 && !group.folder.agentHome
-                          ? []
-                          : [
-                              <FolderHeaderRow
-                                actions={folderActions}
-                                group={{
-                                  folder: group.folder,
-                                  tasks: [],
-                                  more: group.rows.length + folderDrafts.length,
-                                  signal,
-                                  needsYou,
-                                }}
-                                key={`folder:${group.folder.id}`}
-                                onToggle={toggleFolder}
-                                open={open}
-                              />,
-                              ...(open ? folderDrafts.map((draft) => draftRow(draft)) : []),
-                              ...shown.map((row) => taskRow(row)),
-                              ...(more > 0
-                                ? [
-                                    <FolderMoreRow
-                                      count={more}
-                                      key={`more:${group.folder.id}`}
-                                      onOpen={() =>
-                                        setExpandedFolders(
-                                          (current) => new Set([...current, group.folder.id]),
-                                        )
-                                      }
-                                    />,
-                                  ]
-                                : []),
-                            ],
-                      ),
-                      ...(list.hasMore
-                        ? [
-                            <li data-motion-key="show-more" key="show-more">
-                              <button
-                                className="sidebar__more"
-                                disabled={loadingEarlier}
-                                onClick={loadEarlier}
-                                type="button"
-                              >
-                                {loadingEarlier ? "Loading…" : "Show more"}
-                              </button>
-                            </li>,
-                          ]
-                        : []),
-                      ...(doneLine
-                        ? [
-                            <DoneLine
-                              active={doneActive}
-                              count={doneCount}
-                              hostClient={hostClient}
-                              key="done-shelf"
-                              lineRef={doneShelf}
-                              moved={moved}
-                              onOpen={openDone}
-                              onOpenTask={openTask}
-                              onSeen={markQuietSeen}
-                              quietTaskDays={directory.snapshot.quietTaskDays}
-                            />,
-                          ]
-                        : []),
-                    ]}
-              </RowMotion>
-            </SideList>
-            <TeamSidebarSections onNavigate={onCloseMobile} />
-          </section>
-        )}
-        {hasTasksSection ? null : <TeamSidebarSections onNavigate={onCloseMobile} />}
-        {hasTasksSection ? <SideSplit onCommit={commitTasksShare} share={tasksShare} /> : null}
+              <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
+                <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
+                  {[
+                    ...live.map((row) => taskRow(row)),
+                    <li className="side-task side-all" data-motion-key="all-tasks" key="all-tasks">
+                      <Link
+                        aria-current={pathname === "/tasks" ? "page" : undefined}
+                        className="side-task__main"
+                        onClick={(event) => {
+                          onCloseMobile();
+                          openConversationRow(event, nav, "/tasks");
+                        }}
+                        to={nav.conversationHref("/tasks")}
+                      >
+                        <Icon name="list" />
+                        <span className="side-task__text">All tasks</span>
+                        {openCount > 0 ? <span className="side-all__count">{openCount}</span> : null}
+                        <Icon className="side-all__chevron" name="chevron-right" />
+                      </Link>
+                    </li>,
+                  ]}
+                </RowMotion>
+              </SideList>
+            </>
+          ) : (
+            <TeamSideFor onNavigate={onCloseMobile} teamId={side} />
+          )}
+        </section>
+        <SideSplit onCommit={commitTasksShare} share={tasksShare} />
         <section
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
@@ -1141,37 +903,77 @@ function SideList({
 
 const selectSince = ({ since }: VoiceSnapshot) => since;
 
-/** A live call's clock beside Voice, wherever the person is. */
-function VoiceLive() {
+/** Voice, in the header: its clock while a call is live. */
+function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
   const since = useVoiceValue(selectSince);
-  return since !== null ? <VoiceClock /> : null;
+  return (
+    <button
+      aria-label={since !== null ? "Voice, call live" : "Voice"}
+      className={since !== null ? "icon-btn sidebar__voice is-live" : "icon-btn sidebar__voice"}
+      onClick={onOpen}
+      title="Voice"
+      type="button"
+    >
+      <Icon name="waveform" />
+      {since !== null ? <VoiceClock /> : null}
+    </button>
+  );
 }
 
-const closedFoldersKey = "opensteer.sidebar.closed-folders";
+/** Live tasks the sidebar lists before "All tasks": more only when more need the person. */
+const liveRowLimit = 5;
 
-/** Folded folders stay folded on this device. */
-function useClosedFolders(): readonly [ReadonlySet<string>, (folderId: string) => void] {
-  const [closed, setClosed] = useState<ReadonlySet<string>>(() => {
+/** Which side of the switch this person last chose here; the app never changes it itself. */
+function useSidebarSide(
+  deploymentId: string | null,
+  userId: string | null,
+): readonly [string, (side: string) => void] {
+  const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
+  const [side, setSide] = useState(() => {
     try {
-      const stored: unknown = JSON.parse(localStorage.getItem(closedFoldersKey) ?? "[]");
-      return new Set(Array.isArray(stored) ? stored.filter((id) => typeof id === "string") : []);
+      return localStorage.getItem(key) ?? "tasks";
     } catch {
-      return new Set();
+      return "tasks";
     }
   });
-  const toggle = useCallback((folderId: string) => {
-    setClosed((current) => {
-      const next = new Set(current);
-      if (!next.delete(folderId)) next.add(folderId);
+  const { teams } = useTeams();
+  const choose = useCallback(
+    (next: string) => {
+      setSide(next);
       try {
-        localStorage.setItem(closedFoldersKey, JSON.stringify([...next]));
+        localStorage.setItem(key, next);
       } catch {
-        // Folding still works for this window.
+        // The choice still holds for this window.
       }
-      return next;
-    });
-  }, []);
-  return [closed, toggle];
+    },
+    [key],
+  );
+  // A team that is gone leaves its side; Tasks is what remains.
+  return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
+}
+
+const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {
+  const needs = snapshot.needsYou?.count ?? 0;
+  if (needs > 0) return { kind: "needs-you", count: needs };
+  return taskList(snapshot).ready.some((row) => row.unread) ? { kind: "new" } : null;
+};
+const sameBadge = (left: SegmentBadge, right: SegmentBadge) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+/** The switch, with the Tasks badge read here so it never redraws the lists. */
+function TasksBadgeSwitch({
+  hostClient,
+  onNavigate,
+  onSide,
+  side,
+}: {
+  readonly hostClient: HostClient;
+  readonly onNavigate: () => void;
+  readonly onSide: (side: string) => void;
+  readonly side: string;
+}) {
+  const badge = useHostSelector(hostClient, selectTasksBadge, sameBadge);
+  return <TeamSwitch onNavigate={onNavigate} onSide={onSide} side={side} tasksBadge={badge} />;
 }
 
 /**
@@ -1199,69 +1001,6 @@ function openConversationRow(
 }
 
 /* ---- Tasks ---- */
-
-/** A task not started yet: its first words, and the way to throw it away. */
-function DraftRowItem({
-  draft,
-  nav,
-  onDiscard,
-  onNavigate,
-  open,
-  path,
-  work,
-}: {
-  readonly draft: TaskDraftRow;
-  readonly nav: WorkspaceNavigation;
-  readonly onDiscard: () => void;
-  readonly onNavigate: () => void;
-  readonly open: boolean;
-  readonly path: string;
-  readonly work: boolean;
-}) {
-  const classes = [
-    "side-task",
-    "side-task--draft",
-    open ? (work ? "is-open" : "is-filled") : "",
-    draft.refused ? "is-refused" : "",
-  ];
-  const state = draft.refused ? "Not started" : "Draft";
-  return (
-    <li
-      className={classes.filter(Boolean).join(" ")}
-      data-draft-id={draft.draftId}
-      data-motion-key={`draft:${draft.draftId}`}
-    >
-      <Link
-        aria-current={open ? "page" : undefined}
-        aria-label={`${state}: ${draft.title}`}
-        className="side-task__main"
-        onClick={(event) => {
-          onNavigate();
-          openConversationRow(event, nav, path, draft.draftId);
-        }}
-        title={draft.title}
-        to={nav.conversationHref(`${path}?draft=${encodeURIComponent(draft.draftId)}`)}
-      >
-        <span aria-hidden className="side-draft-mark">
-          <Icon name={draft.refused ? "alert-circle" : "pencil"} />
-        </span>
-        <span className="side-task__text">
-          <span className="side-task__title">{draft.title}</span>
-        </span>
-        <span className="side-draft-state">{state}</span>
-      </Link>
-      <button
-        aria-label={`Discard draft: ${draft.title}`}
-        className="side-row-action"
-        onClick={onDiscard}
-        title="Discard draft"
-        type="button"
-      >
-        <Icon name="close" />
-      </button>
-    </li>
-  );
-}
 
 const TaskRowItem = memo(function TaskRowItem({
   hostClient,
@@ -1291,7 +1030,6 @@ const TaskRowItem = memo(function TaskRowItem({
   const [editing, setEditing] = useState(false);
   const [changingIcon, setChangingIcon] = useState(false);
   const canChangeIcon = useHostSelector(hostClient, (snapshot) => snapshot.taskMarksAvailable);
-  const source = useTaskSourceView(row.teamOrigin);
   const [menuAt, setMenuAt] = useState<{ readonly x: number; readonly y: number } | null>(null);
 
   const matches = useCallback((value: Highlight) => value.threadIds.includes(threadId), [threadId]);
@@ -1302,7 +1040,7 @@ const TaskRowItem = memo(function TaskRowItem({
     `side-task--${row.tone}`,
     open ? (work ? "is-open" : "is-filled") : "",
     lit ? "is-match" : "",
-    needsYou || source ? "has-ask" : "",
+    needsYou ? "has-ask" : "",
   ];
   const words = taskStateWords(row.tone);
   const mainRef = useRef<HTMLAnchorElement | null>(null);
@@ -1370,13 +1108,7 @@ const TaskRowItem = memo(function TaskRowItem({
           <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, row.done)} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
-            {needsYou ? (
-              <span className="side-task__ask">{ask}</span>
-            ) : source ? (
-              <span className="side-task__source">
-                <TaskSource source={source} />
-              </span>
-            ) : null}
+            {needsYou ? <span className="side-task__ask">{ask}</span> : null}
           </span>
           {unsent ? <UnsentMark /> : null}
           <TaskState state={row.tone} unread={row.unread} />

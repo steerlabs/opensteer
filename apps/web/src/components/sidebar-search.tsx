@@ -40,6 +40,7 @@ import { DeviceLabel } from "./computers/device-label.js";
 import { useScrollEdges } from "./workspace/scroll-edges.js";
 import { tabGroupStyle } from "./workspace/tab-group.js";
 import { TaskMark, TaskState } from "./workspace/task-mark.js";
+import { TeamSearchResults } from "../team/team-search-results.js";
 
 /** What search can find, as the sidebar holds it. */
 export interface SidebarSearchSources {
@@ -47,7 +48,7 @@ export interface SidebarSearchSources {
   readonly tasks: readonly TaskRow[];
   readonly attention: ReadonlyMap<string, TaskAttention>;
   /** Where each task's harness and runner labels come from. */
-  readonly snapshot: Pick<HostSnapshot, "tasks" | "workspaces">;
+  readonly snapshot: Pick<HostSnapshot, "tasks">;
 }
 
 interface Found<T> {
@@ -262,6 +263,7 @@ export function SidebarSearch({
         {showing ? (
           <section aria-label="Search results" className="side-results">
             <div className="side-results__scroll" data-scroll-edges="" ref={scrollRef}>
+              <TeamSearchResults onNavigate={onClose} query={query} />
               {results.length === 0 ? (
                 tabsSyncing ? (
                   loadingTabs ? (
@@ -351,11 +353,10 @@ interface Index {
 function searchIndex(
   tasks: readonly TaskRow[],
   attention: ReadonlyMap<string, TaskAttention>,
-  snapshot: Pick<HostSnapshot, "tasks" | "workspaces">,
+  snapshot: Pick<HostSnapshot, "tasks">,
   strip: BrowserTabStrip,
 ): Index {
   const threads = new Map(snapshot.tasks?.entries.map(({ thread }) => [thread.id, thread]));
-  const workspaces = new Map(snapshot.workspaces.map((workspace) => [workspace.id, workspace]));
   const tabs: Index["tabs"][number][] = [];
   const add = (place: PlaceItem, group: BrowserTabGroup | null) =>
     tabs.push({
@@ -381,7 +382,7 @@ function searchIndex(
             harnessLabel: thread?.harnessLabel ?? "",
             runnerLabel: thread?.runnerLabel ?? "",
           },
-          workspaces.get(row.workspaceId)?.name ?? null,
+          row.folder.path,
           ask,
         ),
       };

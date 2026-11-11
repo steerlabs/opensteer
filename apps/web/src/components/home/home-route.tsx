@@ -4,13 +4,15 @@ import { TaskFolderSchema, type TaskFolder, type ThreadAccessMode } from "@opens
 import {
   accessModeConflict,
   accountGettingReady,
+  allTasksFilters,
+  allTasksRows,
   composerExecutionSelection,
+  doneTaskList,
   lastExecutionSelection,
   newTaskDefaults,
   placementForSelection,
   taskFolderKey,
   taskMark,
-  taskTime,
   unwrapRpcResult,
   type ExecutionSelection,
   type TaskRow,
@@ -30,76 +32,113 @@ import { AreaHeader, NewTaskMark } from "../workspace/conversation-header.js";
 import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
 import { useTaskDirectory } from "../workspace/task-directory.js";
-import { useMinuteClock } from "../../ui-utils.js";
 import { useTaskSourceLookup } from "../../team/task-sources.js";
 import { FolderChip } from "./folder-picker.js";
-import {
-  folderRowLimit,
-  folderSignal,
-  folderView,
-  groupByFolder,
-  showDoneEvent,
-} from "./folder-groups.js";
-import type { FolderBrowseView, FolderGroupView, FolderView, TaskRowView } from "./home-models.js";
+import { folderView, shortPath } from "./folder-groups.js";
+import type { FolderBrowseView, FolderView, TaskRowView } from "./home-models.js";
 import { needsYouItems, useNeedsYouAnswer } from "./needs-you-model.js";
-import { TasksHome } from "./tasks-home.js";
+import { AllTasksPage, TasksHome } from "./tasks-home.js";
 
-/**
- * Home: what should your agent do, the composer that starts it in a folder,
- * what waits on the person, then every task by folder.
- */
+/** Home: what should your agent do, and the composer that starts it in a folder. */
 export function HomeRoute() {
-  const { hostClient, reportActionError, snapshot } = useShell();
-  const { nav } = useWorkspace();
+  const { hostClient, snapshot } = useShell();
   const navigate = useNavigate();
-  const directory = useTaskDirectory(hostClient);
-  const now = useMinuteClock();
-  const sourceOf = useTaskSourceLookup();
   const draftId = useTaskDraftId();
   const [suggestion, setSuggestion] = useState<{ readonly key: number; readonly text: string } | null>(
     null,
   );
-  const agentHome = snapshot.personalSettings?.agentHome ?? null;
-  const computerName = useCallback(
-    (computerId: string) =>
-      snapshot.machines.find((machine) => machine.id === computerId)?.name ?? "Computer",
-    [snapshot.machines],
+  const firstRun =
+    (snapshot.tasks?.entries.length ?? 0) === 0 && snapshot.activeTasks.length === 0;
+  return (
+    <TasksHome
+      composer={<NewTaskComposer draftId={draftId} key={draftId} suggestion={suggestion} />}
+      firstRun={firstRun}
+      header={<AreaHeader hostClient={hostClient} mark={<NewTaskMark />} title="New task" />}
+      needsAccount={snapshot.harnesses.length === 0}
+      onConnectAccount={() => void navigate("/settings/ai")}
+      onSuggestion={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))}
+    />
   );
+}
+
+/** All tasks: every open task until Done, by filter; Needs you is a filter with its asks. */
+export function AllTasksRoute() {
+  const { hostClient, reportActionError, snapshot } = useShell();
+  const { nav } = useWorkspace();
+  const [params, setParams] = useSearchParams();
+  const filter = allTasksFilters.find((value) => value === params.get("filter")) ?? "all";
+  const directory = useTaskDirectory(hostClient);
+  const sourceOf = useTaskSourceLookup();
+  const agentHome = snapshot.personalSettings?.agentHome ?? null;
+  const quietTasks = snapshot.quietTasksAvailable === true;
+  useEffect(() => {
+    if (filter === "done" && quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
+  }, [filter, hostClient, quietTasks]);
+  const doneList = useMemo(() => doneTaskList(snapshot), [snapshot]);
   const { list } = directory;
-  const folders = useMemo<FolderGroupView[]>(
+  const rows = useMemo(
     () =>
-      groupByFolder([...list.working, ...list.ready], agentHome, computerName).map((group) => ({
-        folder: group.folder,
-        tasks: group.rows.slice(0, folderRowLimit).map((row) =>
-          taskRowView(row, directory.attentionByThread.get(row.threadId)?.title ?? null, sourceOf, now),
+      allTasksRows(list, filter, doneList?.rows ?? list.done).map((row) =>
+        taskRowView(
+          row,
+          directory.attentionByThread.get(row.threadId)?.title ?? null,
+          sourceOf,
+          shortPath(row.folder.path, agentHome),
         ),
-        more: Math.max(0, group.rows.length - folderRowLimit),
-        ...folderSignal(group.rows),
-      })),
-    [agentHome, computerName, directory.attentionByThread, list.ready, list.working, now, sourceOf],
+      ),
+    [agentHome, directory.attentionByThread, doneList, filter, list, sourceOf],
+  );
+  const counts = useMemo(
+    () => ({
+      "needs-you": snapshot.needsYou?.count ?? 0,
+      running: allTasksRows(list, "running").length,
+      unread: allTasksRows(list, "unread").length,
+      read: allTasksRows(list, "read").length,
+    }),
+    [list, snapshot.needsYou?.count],
   );
   const needsYou = useMemo(() => needsYouItems(snapshot, sourceOf), [snapshot, sourceOf]);
   const answer = useNeedsYouAnswer(hostClient, reportActionError);
-  const openTask = (taskId: string) => nav.openConversation(nav.threadPath(taskId));
+  const [loadingMore, setLoadingMore] = useState(false);
+  const hasMore =
+    filter === "done"
+      ? (doneList?.hasMore ?? false)
+      : filter === "needs-you"
+        ? (snapshot.needsYou?.window.hasMore ?? false)
+        : list.hasMore;
+  const loadMore = () => {
+    setLoadingMore(true);
+    void (
+      filter === "done"
+        ? hostClient.loadEarlierDoneTasks()
+        : filter === "needs-you"
+          ? hostClient.loadEarlierNeedsYou()
+          : hostClient.loadEarlierTasks()
+    )
+      .catch(reportActionError)
+      .finally(() => setLoadingMore(false));
+  };
   return (
-    <TasksHome
+    <AllTasksPage
       actions={{
         onAnswer: answer.answer,
-        onOpenTask: openTask,
-        onOpenNeedsYou: () => nav.openConversation("/needs-you"),
-        onNewTaskIn: (folderId) =>
-          void navigate({ pathname: "/", search: `?folder=${encodeURIComponent(folderId)}` }),
-        onOpenDone: () => window.dispatchEvent(new Event(showDoneEvent)),
-        onSuggestion: (text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text })),
-        onConnectAccount: () => void navigate("/settings/ai"),
+        onOpenTask: (taskId) => nav.openConversation(nav.threadPath(taskId)),
+        onFilter: (next) => setParams(next === "all" ? {} : { filter: next }, { replace: true }),
         taskHref: (taskId) => nav.threadPath(taskId),
+        ...(hasMore ? { onLoadMore: loadMore } : {}),
       }}
-      composer={<NewTaskComposer draftId={draftId} key={draftId} suggestion={suggestion} />}
-      doneCount={list.done.length}
-      folders={folders}
-      header={<AreaHeader hostClient={hostClient} mark={<NewTaskMark />} title="New task" />}
-      needsAccount={snapshot.harnesses.length === 0}
+      counts={counts}
+      filter={filter}
+      header={
+        <AreaHeader
+          hostClient={hostClient}
+          title={`All tasks${list.working.length + list.ready.length > 0 ? ` · ${list.working.length + list.ready.length} open` : ""}`}
+        />
+      }
+      loadingMore={loadingMore}
       needsYou={needsYou}
+      pending={answer.pending}
+      rows={rows}
     />
   );
 }
@@ -108,7 +147,7 @@ export function taskRowView(
   row: TaskRow,
   ask: string | null,
   sourceOf: ReturnType<typeof useTaskSourceLookup>,
-  now: number,
+  folder: string,
 ): TaskRowView {
   return {
     id: row.threadId,
@@ -118,8 +157,9 @@ export function taskRowView(
     unread: row.unread,
     ask,
     source: sourceOf(row.threadId),
+    folder,
     status: row.line || null,
-    updatedAt: taskTime(row, now) ?? "",
+    updatedAt: row.askedAt,
     canBeDone: row.canBeDone,
   };
 }
