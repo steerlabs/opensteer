@@ -138,9 +138,12 @@ final class CopyParityTests: XCTestCase {
     return try String(contentsOf: url, encoding: .utf8)
   }
 
-  func testPersonFillCopyMatchesNamedClientExports() throws {
+  func testPersonFillAndSaveCopyMatchNamedClientExports() throws {
     let source = try clientSource()
-    for (name, sentence) in [("passwordsPersonFillLabel", Copy.personFill), ("passwordsPersonFillWindowDetail", Copy.personFillDetail)] {
+    for (name, sentence) in [
+      ("passwordsPersonFillLabel", Copy.personFill), ("passwordsPersonFillWindowDetail", Copy.personFillDetail),
+      ("passwordsPersonSaveLabel", Copy.personSave), ("passwordsPersonSaveWindowDetail", Copy.personSaveDetail),
+    ] {
       let pattern = "export const " + name + #"\s*=\s*"# + "\"" + NSRegularExpression.escapedPattern(for: sentence) + "\""
       XCTAssertNotNil(source.range(of: pattern, options: .regularExpression), name)
     }

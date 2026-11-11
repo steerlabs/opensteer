@@ -345,6 +345,64 @@ public final class VaultService: @unchecked Sendable {
     }
   }
 
+  /// "Offer to save passwords in Opensteer": missing means on, unreadable off.
+  public func personSave() async -> Bool {
+    (try? await run { self.personSaveNow() }) ?? false
+  }
+
+  private func personSaveNow() -> Bool {
+    do {
+      guard let data = try protectedStore.read(.personSave) else { return true }
+      let object = try StrictObject(CanonicalJSON.parseCanonical(data), keys: ["v", "personSave"], context: "person save")
+      guard try object.integer("v") == 1 else { return false }
+      return try object.string("personSave") == "on"
+    } catch { return false }
+  }
+
+  public func setPersonSave(_ on: Bool) async throws {
+    try await run {
+      try self.protectedStore.write(.personSave, CanonicalJSON.encode(
+        .object(["v": .integer(1), "personSave": .string(on ? "on" : "off")])))
+    }
+  }
+
+  /// Whether a login the vault would release on `login`'s site already has
+  /// its username, byte for byte. Never asks anyone.
+  func hasUsername(of login: CapturedLogin) async throws -> Bool {
+    try await run {
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      return try Self.hasUsername(of: login, in: unlocked)
+    }
+  }
+
+  private static func hasUsername(of login: CapturedLogin, in unlocked: UnlockedVault) throws -> Bool {
+    try unlocked.items(withinSite: login.site).contains { $0.username.utf8.elementsEqual(login.username.utf8) }
+  }
+
+  enum CapturedLoginOutcome: Sendable { case added, alreadySaved, off }
+  /// The one vault write that takes no window visit: the person tapped Save
+  /// for a login they had just typed. It adds exactly that login (its
+  /// origin, username and password, nothing else, no grant) and can change
+  /// nothing already saved. Nil when the save ended first.
+  func addCapturedLogin(_ login: CapturedLogin, authority: TransactionAuthority) async throws
+    -> CapturedLoginOutcome?
+  {
+    try await run {
+      guard self.personSaveNow() else { return .off }
+      let unlocked = try self.unlockNow()
+      defer { unlocked.close() }
+      if try Self.hasUsername(of: login, in: unlocked) { return .alreadySaved }
+      let draft = login.draft
+      try draft.validate()
+      return try authority.whileLive {
+        guard login.expiresAt > Date() else { return nil }
+        _ = try unlocked.commit(VaultChanges(add: [draft]))
+        return .added
+      } ?? nil
+    }
+  }
+
   func fillAccounts(withinSite site: String) async throws -> [LoginSummary] {
     try await run {
       guard self.personFillNow() else { return [] }

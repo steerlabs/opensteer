@@ -98,7 +98,7 @@ public final class BrokerApplication: NSObject, NSApplicationDelegate {
     let broker = Broker(
       configuration: BrokerConfiguration(development: build.development, brokerVersion: version), vault: vault,
       presence: LocalAuthenticationPresence(), activity: activity,
-      personActivity: PersonActivityLog(url: paths.personActivity))
+      personActivity: PersonActivityLog(url: paths.personActivity), personSaves: PersonSaveLog(url: paths.personSaves))
     await broker.load()
     let windows = PasswordsWindowController(
       model: PasswordsWindowModel(broker: broker, activityLog: activity, runner: ImportRunner.bundled()))

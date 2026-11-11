@@ -48,6 +48,9 @@ public final class Broker: IPCServerDelegate {
   public static let maxWaitingForThePerson = 4
   /// A request never waits longer than this, whatever `expiresAt` says.
   public static let maxLifetime: TimeInterval = 60 * 60
+  /// Typed logins one connection may hold for the person's answer, at once.
+  public static let maxHeldSaves = 8
+  public static let saveLifetime: TimeInterval = 2 * 60
 
   private struct Connection {
     let connection: IPCConnection
@@ -75,16 +78,19 @@ public final class Broker: IPCServerDelegate {
   private let presence: any PresenceChecker
   private let activity: ActivityLog
   public let personActivity: PersonActivityLog
+  public let personSaves: PersonSaveLog
   public weak var windows: PasswordsWindowPresenter?
 
   public private(set) var condition: VaultCondition = .notSetUp
   /// The stored setting; agents can sign in only when the vault is also ready.
   public private(set) var agentSignInsSetting = false
   public private(set) var personFillSetting = false
+  public private(set) var personSaveSetting = false
   /// Whether a ready vault holds nothing yet, which the window answers with its first step.
   public private(set) var vaultIsEmpty = false
   private var connections: [Int: Connection] = [:]
   private var transactions: [String: Transaction] = [:]
+  private var saves: [String: HeldSave] = [:]
   private var lastStatus: Wire.Status?
   private var serial = 0
   private var observers: [UUID: @MainActor (BrokerEvent) -> Void] = [:]
@@ -99,13 +105,14 @@ public final class Broker: IPCServerDelegate {
 
   public init(
     configuration: BrokerConfiguration, vault: VaultService, presence: any PresenceChecker,
-    activity: ActivityLog, personActivity: PersonActivityLog
+    activity: ActivityLog, personActivity: PersonActivityLog, personSaves: PersonSaveLog
   ) {
     self.configuration = configuration
     self.vault = vault
     self.presence = presence
     self.activity = activity
     self.personActivity = personActivity
+    self.personSaves = personSaves
   }
 
   /// Reads the vault's condition and the setting. Call before serving.
@@ -113,6 +120,7 @@ public final class Broker: IPCServerDelegate {
     condition = await vault.examine()
     agentSignInsSetting = await vault.agentSignIns()
     personFillSetting = await vault.personFill()
+    personSaveSetting = await vault.personSave()
     await readContents()
     publish()
   }
@@ -124,12 +132,15 @@ public final class Broker: IPCServerDelegate {
   public var status: Wire.Status? {
     condition.wire.map {
       Wire.Status(vault: $0, agentSignIns: condition == .ready && agentSignInsSetting,
-        personFill: condition == .ready && personFillSetting)
+        personFill: condition == .ready && personFillSetting,
+        personSave: condition == .ready && personSaveSetting)
     }
   }
 
   /// Each open sign-in's deadline, by transaction ID.
   var deadlines: [String: Date] { transactions.mapValues(\.expiresAt) }
+  /// Each held typed login's deadline, by transaction ID.
+  var heldSaves: [String: Date] { saves.mapValues(\.expiresAt) }
 
   /// Whether the window's saved logins are shown: a visit is live.
   public var loginsShown: Bool { visit != nil }
@@ -156,6 +167,7 @@ public final class Broker: IPCServerDelegate {
       // Usage is recorded at password release; connection loss ends authority.
       end(transaction, outcome: .cancelled, failure: nil)
     }
+    dropSaves { $0.connectionID == connection.id }
   }
 
   public func connection(_ connection: IPCConnection, received frame: Data) {
@@ -217,7 +229,19 @@ public final class Broker: IPCServerDelegate {
     if method.rawValue.hasPrefix("fill."), version < 8 {
       throw Wire.Failure.invalid("Password filling needs version 8.")
     }
+    if method.rawValue.hasPrefix("save."), version < 9 {
+      throw Wire.Failure.invalid("Saving passwords needs version 9.")
+    }
     switch method {
+    case .saveBegin:
+      let params = try Wire.SaveBeginParams(json: params)
+      whenExamined(call) { try self.saveBegin(params, call: call) }
+    case .saveCommit:
+      saveCommit(try Wire.TransactionParams(json: params), call: call)
+    case .saveCancel:
+      let cancel = try Wire.TransactionParams(json: params)
+      if let held = saves[cancel.transactionId], held.connectionID == call.connectionID { drop(held) }
+      reply(call, Wire.emptyResult)
     case .fillAccounts:
       let params = try Wire.FillAccountsParams(json: params)
       whenExamined(call) { self.fillAccounts(params, call: call) }
@@ -408,6 +432,134 @@ public final class Broker: IPCServerDelegate {
       }
     } ?? false
     return repeated || label?.isEmpty == true ? nil : label
+  }
+
+  // MARK: Saving for people
+
+  /// Why a typed login cannot be offered now. Checked again after every wait.
+  private var saveRefusal: Wire.SaveSkipReason? {
+    switch condition {
+    case .ready: return personSaveSetting ? nil : .off
+    case .notSetUp, .unsupported: return .notSetUp
+    case .unavailable, .updateRequired, .needsReset: return .unavailable
+    }
+  }
+
+  private var commitRefusal: Wire.SaveRefusal? {
+    saveRefusal.map { $0 == .off ? .off : .unavailable }
+  }
+
+  /// Holds the typed login only when nothing saved for its site has the
+  /// username. Never asks anyone and writes nothing.
+  private func saveBegin(_ params: Wire.SaveBeginParams, call: HeldCall) throws {
+    guard connections[call.connectionID] != nil else { return }
+    guard saves[params.transactionId] == nil, transactions[params.transactionId] == nil else {
+      throw Wire.Failure.invalid(Copy.signInMovedOn)
+    }
+    func skip(_ reason: Wire.SaveSkipReason) { reply(call, Wire.SaveDecision.skip(reason).json) }
+    if let reason = saveRefusal { return skip(reason) }
+    guard let login = CapturedLogin(params, expiresAt: Date().addingTimeInterval(Self.saveLifetime)) else {
+      return skip(.unsaveable)
+    }
+    guard saves.values.filter({ $0.connectionID == call.connectionID }).count < Self.maxHeldSaves else {
+      return skip(.unavailable)
+    }
+    let held = HeldSave(id: params.transactionId, connectionID: call.connectionID, login: login)
+    saves[held.id] = held
+    scheduleExpiry(held)
+    Task {
+      let found: Bool
+      do {
+        found = try await vault.hasUsername(of: login)
+      } catch {
+        drop(held)
+        skip(.unavailable)
+        await reload()
+        return
+      }
+      guard saves[held.id] === held else { return skip(saveRefusal ?? .unavailable) }
+      if let reason = saveRefusal {
+        drop(held)
+        return skip(reason)
+      }
+      guard !found else {
+        drop(held)
+        return skip(.saved)
+      }
+      guard held.expiresAt > Date() else {
+        drop(held)
+        return skip(.unavailable)
+      }
+      held.stage = .offered
+      reply(call, Wire.SaveDecision.offer(held.expiresAt).json)
+    }
+  }
+
+  /// Consumes the held login: adds it once, or nothing.
+  private func saveCommit(_ params: Wire.TransactionParams, call: HeldCall) {
+    func answer(_ result: Wire.SaveCommitResult) { reply(call, result.json) }
+    guard let held = saves[params.transactionId], held.connectionID == call.connectionID,
+      held.stage == .offered, let login = held.login
+    else { return answer(.refused(.ended)) }
+    guard held.expiresAt > Date() else {
+      drop(held)
+      return answer(.refused(.ended))
+    }
+    if let refusal = commitRefusal {
+      drop(held)
+      return answer(.refused(refusal))
+    }
+    held.stage = .committing
+    held.login = nil
+    Task {
+      let outcome: VaultService.CapturedLoginOutcome?
+      do {
+        outcome = try await vault.addCapturedLogin(login, authority: held.authority)
+      } catch {
+        drop(held)
+        Log.broker.error("A typed login could not be saved.")
+        answer(.refused(.unavailable))
+        if let error = error as? VaultError, Self.meansReload(error) { await reload() }
+        return
+      }
+      drop(held)
+      switch outcome {
+      case .added?:
+        personSaves.append(PersonSaveEntry(at: Date(), site: login.siteHost,
+          account: String(Display.maskedAccount(login.username).prefix(200))))
+        answer(.saved)
+        await contentsChanged()
+        notify(.changed)
+      case .alreadySaved?: answer(.refused(.saved))
+      case .off?: answer(.refused(.off))
+      case nil: answer(.refused(commitRefusal ?? .ended))
+      }
+    }
+  }
+
+  private func scheduleExpiry(_ held: HeldSave) {
+    let work = DispatchWorkItem { [weak self, weak held] in
+      MainActor.assumeIsolated {
+        guard let self, let held else { return }
+        self.drop(held)
+      }
+    }
+    held.expiry = work
+    DispatchQueue.main.asyncAfter(
+      wallDeadline: .now() + max(0, held.expiresAt.timeIntervalSinceNow), execute: work)
+  }
+
+  /// Lets the typed login go; vault work it queued writes nothing from now on.
+  private func drop(_ held: HeldSave) {
+    held.authority.revoke()
+    held.expiry?.cancel()
+    held.expiry = nil
+    held.login = nil
+    if saves[held.id] === held { saves[held.id] = nil }
+  }
+
+  private func dropSaves(where shouldDrop: (HeldSave) -> Bool = { _ in true }) {
+    for held in Array(saves.values) where shouldDrop(held) { drop(held) }
   }
 
   // MARK: Probe and request
@@ -947,11 +1099,13 @@ public final class Broker: IPCServerDelegate {
   /// carry on: an allowed account still signs in while the Mac is locked.
   public func screenLocked() {
     endVisit()
+    dropSaves()
   }
 
   /// The Mac is going to sleep.
   public func willSleep() {
     endVisit()
+    dropSaves()
   }
 
   /// The screen unlocked: a vault that could not be read before the Mac's
@@ -965,6 +1119,7 @@ public final class Broker: IPCServerDelegate {
   /// process does.
   public func stop() {
     endVisit()
+    dropSaves()
   }
 
   /// After a wake: deadlines that passed while the Mac slept end now.
@@ -972,6 +1127,7 @@ public final class Broker: IPCServerDelegate {
     for transaction in transactions.values where transaction.expiresAt <= now {
       expire(transaction)
     }
+    dropSaves { $0.expiresAt <= now }
   }
 
   private func scheduleExpiry(_ transaction: Transaction) {
@@ -1076,6 +1232,8 @@ public final class Broker: IPCServerDelegate {
     apply(await vault.examine())
     agentSignInsSetting = await vault.agentSignIns()
     personFillSetting = await vault.personFill()
+    personSaveSetting = await vault.personSave()
+    if !personSaveSetting { dropSaves() }
     await readContents()
     publish()
   }
@@ -1094,7 +1252,10 @@ public final class Broker: IPCServerDelegate {
 
   private func apply(_ next: VaultCondition) {
     condition = next
-    if next != .ready { endVisit() }
+    if next != .ready {
+      endVisit()
+      dropSaves()
+    }
   }
 
   /// Setup asks for the person first; its authentication then opens the
@@ -1106,6 +1267,7 @@ public final class Broker: IPCServerDelegate {
     apply(next)
     agentSignInsSetting = await vault.agentSignIns()
     personFillSetting = await vault.personFill()
+    personSaveSetting = await vault.personSave()
     if next == .ready { beginVisit(authentication) }
     await readContents()
     publish()
@@ -1136,6 +1298,18 @@ public final class Broker: IPCServerDelegate {
     publish()
   }
 
+  /// Off lets every held typed login go.
+  public func setPersonSave(_ on: Bool) async throws {
+    if !on {
+      personSaveSetting = false
+      dropSaves()
+      publish()
+    }
+    try await vault.setPersonSave(on)
+    personSaveSetting = on
+    publish()
+  }
+
   public func startFresh() async throws {
     guard case .needsReset = condition else { throw VaultServiceError.notReady }
     let authentication = try await authenticateForWindow(Copy.startFreshReason)
@@ -1143,6 +1317,7 @@ public final class Broker: IPCServerDelegate {
     apply(try await vault.startFresh(authentication))
     agentSignInsSetting = await vault.agentSignIns()
     personFillSetting = await vault.personFill()
+    personSaveSetting = await vault.personSave()
     await readContents()
     publish()
   }

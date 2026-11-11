@@ -13,6 +13,7 @@ import {
   PasswordsBrokerReplySchema,
   PasswordsBrokerStatusChangedEventSchema,
   passwordsBrokerProtocolVersion,
+  passwordsBrokerSupportedProtocolVersions,
   passwordsBrokerRequests,
   passwordsBrokerResults,
 } from "./passwords-broker.js";
@@ -32,6 +33,7 @@ const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   readonly error: unknown;
   readonly event: unknown;
   readonly eventV8: unknown;
+  readonly eventV9: unknown;
   readonly rejected: readonly { readonly method: string; readonly params: unknown }[];
   readonly requests: Readonly<Record<string, readonly unknown[]>>;
   readonly results: Readonly<Record<string, readonly unknown[]>>;
@@ -117,8 +119,8 @@ describe("Passwords broker wire fixture", () => {
     const answered = (fixture.results.hello ?? []).map(
       (hello) => passwordsBrokerResults.hello.parse(hello).protocolVersion,
     );
-    expect(new Set(asked)).toEqual(new Set([4, 5, 6, 7, 8]));
-    expect(new Set(answered)).toEqual(new Set([4, 5, 6, 7, 8]));
+    expect(new Set(asked)).toEqual(new Set(passwordsBrokerSupportedProtocolVersions));
+    expect(new Set(answered)).toEqual(new Set(passwordsBrokerSupportedProtocolVersions));
   });
 
   it("asks protocol-5 consent for a Workspace, never for a page or at version 4", () => {
@@ -173,6 +175,12 @@ describe("Passwords broker wire fixture", () => {
     );
     expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.event).params).not.toHaveProperty(
       "personFill",
+    );
+    expect(
+      PasswordsBrokerStatusChangedEventSchema.parse(fixture.eventV8).params,
+    ).not.toHaveProperty("personSave");
+    expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.eventV9).params.personSave).toBe(
+      "on",
     );
   });
 });
