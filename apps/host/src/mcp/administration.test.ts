@@ -9,27 +9,18 @@ import {
   AdministrationToolHandlers,
   administrationToolHandlers,
 } from "./handlers/administration.js";
-import type { AgentToolHandlers } from "./handlers/index.js";
+import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
 function fixture() {
   const userId = createId("user"),
-    workspaceId = createId("workspace"),
     environmentId = createId("environment"),
     harnessInstanceId = createId("harnessInstance"),
     machineId = createId("runner"),
     profileId = createId("browserProfile"),
     grantId = createId("browserProfileGrant");
   const connectionId = createIntegrationId("connection");
-  const workspace = {
-    id: workspaceId,
-    name: "Project",
-    kind: "project",
-    status: "ready",
-    icon: null,
-    color: "blue",
-  };
   const harness = {
     id: harnessInstanceId,
     environmentId,
@@ -47,7 +38,7 @@ function fixture() {
     key: "connection:test",
     connectionId: "test",
     userId,
-    reach: { kind: "user" },
+
     accessMode: "full-access",
   };
   const realtime = { broadcast: vi.fn(), publish: vi.fn(), publishNotificationPreference: vi.fn() };
@@ -74,7 +65,7 @@ function fixture() {
   const store = {
     replayAdministrationCommand: vi.fn(async () => undefined),
     userById: vi.fn(async () => ({ instanceRole: "administrator", disabledAt: null })),
-    workspaceMembershipForUser: vi.fn(async () => ({ state: "active", role: "owner" })),
+
     listEnvironmentsForUser: vi.fn(async () => [{ id: environmentId, kind: "local" }]),
     listHarnessInstances: vi.fn(async () => [harness]),
     getHarnessInstance: vi.fn(async () => harness),
@@ -90,7 +81,7 @@ function fixture() {
     })),
     effectiveMachineOwner: vi.fn(async () => ({ effectiveOwner: userId })),
     listActiveShellSessions: vi.fn(async () => []),
-    listWorkspacesForOwner: vi.fn(async () => [workspace]),
+
     renameRunner: vi.fn(),
     notificationState: {
       timeZoneFor: vi.fn(async () => null),
@@ -113,10 +104,6 @@ function fixture() {
     browser: {
       renameProfile: vi.fn(async () => ({ id: profileId, name: "Work", token: "secret" })),
     },
-    workspaces: {
-      setIcon: vi.fn(async () => workspace),
-      workspaceView: vi.fn(async () => workspace),
-    },
     runners: { isRunnerConnected: vi.fn(() => true) },
   };
   const service = new AdministrationService(deps as unknown as AdministrationDependencies, vi.fn());
@@ -130,12 +117,11 @@ function fixture() {
     store: {} as never,
   });
   const inputs = {
-    project_write: { action: "set_icon", workspaceId, icon: "folder" },
     settings_write: { action: "rename", environmentId, harnessInstanceId, name: "Engine" },
     computer_write: { action: "rename", machineId, name: "Mac" },
     integration_manage: { action: "disconnect", connectionId },
     channel_manage: { action: "pause", connectionId },
-    plugin_manage: { action: "activate", workspaceId, pluginId: "p" },
+    plugin_manage: { action: "enable", pluginId: "p" },
     browser_profile_write: { action: "rename", profileId, name: "Work" },
     settings_read: {},
     computer_list: {},
@@ -145,7 +131,6 @@ function fixture() {
     service,
     deps,
     inputs,
-    workspaceId,
     profileId,
     grantId,
     userId,
@@ -156,7 +141,6 @@ function fixture() {
   };
 }
 const mutations = [
-  "project_write",
   "settings_write",
   "computer_write",
   "integration_manage",
@@ -228,27 +212,6 @@ describe("administration through the MCP service", () => {
     expect(f.deps.integrations.platform.store.specialists.list).not.toHaveBeenCalled();
     expect(f.deps.integrations.platform.store.specialists.summaries).toHaveBeenCalledOnce();
   });
-  it("publishes a Project mutation so another device refreshes", async () => {
-    const f = fixture();
-    await f.mcp.callTool("token", "project_write", f.inputs.project_write, {
-      operationKey: "mark",
-    });
-    expect(f.deps.realtime.broadcast).toHaveBeenCalledWith(
-      { type: "host.machines.changed" },
-      expect.any(String),
-    );
-  });
-  it("preserves the agent identity in stored Project commands", async () => {
-    const f = fixture();
-    await f.mcp.callTool("token", "project_write", f.inputs.project_write, {
-      operationKey: "mark",
-    });
-    expect(f.deps.workspaces.setIcon).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authoritySource: { kind: "mcp", callerKind: "connection", callerKey: "connection:test" },
-      }),
-    );
-  });
   it("applies the same administration to a Run without requiring a fake person session", async () => {
     const f = fixture();
     const base = f.caller();
@@ -257,27 +220,13 @@ describe("administration through the MCP service", () => {
       operationKey: "run",
     });
     expect(f.deps.store.renameRunner).toHaveBeenCalledOnce();
-    f.setCaller({
-      ...f.caller(),
-      reach: { kind: "workspace", workspaceId: createId("workspace") },
-    });
-    await expect(
-      f.mcp.callTool("token", "project_write", f.inputs.project_write, { operationKey: "scope" }),
-    ).rejects.toThrow("outside the caller's reach");
-    await expect(
-      f.mcp.callTool("token", "browser_profile_write", f.inputs.browser_profile_write, {
-        operationKey: "scope",
-      }),
-    ).rejects.toThrow("user-wide reach");
-    expect(f.deps.workspaces.setIcon).not.toHaveBeenCalled();
-    expect(f.deps.browser.renameProfile).not.toHaveBeenCalled();
   });
-  it("rechecks reach before reading an administration replay", async () => {
+  it("rechecks the access ceiling before reading an administration replay", async () => {
     const f = fixture();
-    f.setCaller({ ...f.caller(), reach: { kind: "workspace", workspaceId: f.workspaceId } });
+    f.setCaller({ ...f.caller(), accessMode: "approval-required" });
     await expect(
       f.mcp.callTool("token", "computer_write", f.inputs.computer_write, { operationKey: "once" }),
-    ).rejects.toThrow("unavailable to this caller");
+    ).rejects.toThrow("Changing settings requires full-access");
     expect(f.deps.store.replayAdministrationCommand).not.toHaveBeenCalled();
     expect(f.deps.store.renameRunner).not.toHaveBeenCalled();
   });

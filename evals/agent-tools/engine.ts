@@ -26,9 +26,9 @@ import {
   planAgentSkills,
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
-import { discoverWorkspaceSkills } from "../../apps/runner/src/skills/workspace-skills.js";
+import { discoverFolderSkills } from "../../apps/runner/src/skills/folder-skills.js";
 import { voiceGuide } from "../../apps/host/src/agents/voice-tools.js";
-import { inputForCaseTurn, caseReach, type EvalCase } from "./cases.js";
+import { inputForCaseTurn, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
 import { fingerprint } from "./report.js";
@@ -101,7 +101,7 @@ export async function runEngine(input: {
   const selected = await Promise.all(
     planAgentSkills(
       bundle,
-      c.caller === "run" ? opensteerAgentSkillsFor(caseReach(c), { knowledge: c.knowledge }) : [],
+      c.caller === "run" ? opensteerAgentSkillsFor({ teamBound: c.teamBound }) : [],
     ).map(async (skill) => {
       const { fullName, path } = skill;
       const destination = join(p.workspace, ".eval-skills", fullName);
@@ -109,16 +109,26 @@ export async function runEngine(input: {
       return { ...skill, path: destination };
     }),
   );
-  const workspaceSkills = await discoverWorkspaceSkills(p.workspace);
-  const skills = resolveSkillPlan({
+  const workspaceSkills = await discoverFolderSkills(p.workspace);
+  const skills = await resolveSkillPlan({
     bundled: selected,
     integration: [],
-    workspace: workspaceSkills.skills,
+    home: workspaceSkills.skills,
+    folder: c.folder ? (await discoverFolderSkills(join(p.workspace, c.folder))).skills : [],
   });
-  const instructions = c.fixtures["AGENTS.md"];
+  const taskPath = c.folder ? join(p.workspace, c.folder) : p.workspace;
+  await mkdir(taskPath, { recursive: true });
+  const instructions = [
+    `Agent home folder: ${p.workspace}`,
+    c.fixtures["AGENTS.md"],
+    c.folder ? c.fixtures[`${c.folder}/AGENTS.md`] : undefined,
+    c.teamContext,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const guide =
     c.caller === "run"
-      ? platformGuideForRun({ role: c.role, reach: caseReach(c) }) +
+      ? platformGuideForRun({ purpose: c.purpose, teamBound: c.teamBound }) +
         (c.voice ? `\n\n${voiceGuide}` : "")
       : "";
   const treatment = {
@@ -148,8 +158,7 @@ export async function runEngine(input: {
       tools: toolsFor({
         kind: c.caller,
         accessMode: "full-access",
-        reach: { kind: caseReach(c) },
-        knowledge: c.knowledge,
+        teamBound: c.teamBound,
       }).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
@@ -171,11 +180,10 @@ export async function runEngine(input: {
     machineAccessPlatform: undefined,
     machineAccessRelaySocket: undefined,
     threadId: host.scope.threadId,
-    workspaceId: host.scope.workspaceId,
     threadStateDirectory,
     skills,
     signal,
-    workspacePath: p.workspace,
+    workspacePath: taskPath,
     writableRoots: [p.workspace],
     wrapProcessLaunch: p.wrapProcessLaunch,
   };

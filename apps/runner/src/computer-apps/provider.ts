@@ -4,7 +4,7 @@
  *
  * A provider owns exactly one definition and answers for itself: the handler
  * never reasons about Messages, Notes or anything else, and a provider never
- * learns which Workspace asked. Arguments arrive already validated against the
+ * learns which task asked. Arguments arrive already validated against the
  * catalog's `inputSchema`, so the provider's own narrowing is the second of two
  * checks rather than the only one — but it is still mandatory, because a
  * provider that trusted the shape it was handed would turn a Host bug into a

@@ -1,6 +1,6 @@
 # Plugin shape
 
-A device plugin is a folder in this Workspace, named for the device:
+A device plugin is a folder in the task folder, named for the device:
 
 ```text
 main-bedroom-apple-tv/
@@ -17,9 +17,9 @@ is what the person calls it.
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "main-bedroom-apple-tv",
-  "description": "Play, pause, open apps and power for the Apple TV in Main Bedroom.",
+  "description": "Play, pause, open apps and power for the Apple TV in agent home Bedroom.",
   "extensions": {
-    "com.opensteer": { "device": { "name": "Main Bedroom Apple TV", "kind": "tv" } }
+    "com.opensteer": { "device": { "name": "Agent home Bedroom Apple TV", "kind": "tv" } }
   }
 }
 ```

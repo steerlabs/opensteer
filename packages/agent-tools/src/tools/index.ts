@@ -2,7 +2,8 @@ import { administrationTools } from "./administration.js";
 import { app_publish, app_list, app_fetch } from "./apps.js";
 import { pending_request, request_withdraw } from "./requests.js";
 import { environment_list, orchestrator_capabilities } from "./environment.js";
-import { project_list, project_create, plugin_install } from "./projects.js";
+import { plugin_install } from "./plugins.js";
+import { team_read, team_search, team_reply } from "./team.js";
 import {
   thread_read,
   thread_list,
@@ -41,8 +42,6 @@ export const agentTools = [
   request_withdraw,
   environment_list,
   orchestrator_capabilities,
-  project_list,
-  project_create,
   plugin_install,
   thread_read,
   thread_list,
@@ -70,6 +69,9 @@ export const agentTools = [
   trigger_read,
   trigger_write,
   ...integrationTools,
+  team_read,
+  team_search,
+  team_reply,
   sql,
 ] as const;
 export type AgentTool = (typeof agentTools)[number];
@@ -90,7 +92,8 @@ export * from "./browser.js";
 export * from "./computer.js";
 export * from "./environment.js";
 export * from "./person.js";
-export * from "./projects.js";
+export * from "./plugins.js";
+export * from "./team.js";
 export * from "./requests.js";
 export * from "./threads.js";
 export * from "./triggers.js";

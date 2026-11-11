@@ -3,7 +3,6 @@ import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-fil
 import type { HostRunFileRequest } from "@opensteer/protocol";
 import { sameRunnerConnectionFence, computerAppMaxTimeoutMs } from "@opensteer/protocol";
 import { openAppTunnel } from "../apps/app-tunnel.js";
-import { fenceMismatch } from "../workspace/local-workspace-service.js";
 import type { HostAppRequest } from "@opensteer/protocol";
 import type { RunnerConfig } from "@opensteer/config";
 import type {
@@ -25,7 +24,6 @@ import {
   serializeJsonFrame,
   type HarnessInstanceCatalog,
   type HostToRunnerMessage,
-  type HostWorkspaceLocalRequest,
   type RunnerAgentsModule,
   type RunnerAuxiliaryModule,
   type RunnerChallenge,
@@ -34,7 +32,6 @@ import {
   type RunnerDescriptor,
   type RunnerEnrollmentCredential,
   type RunnerHarnessDriver,
-  type RunnerLocalStorageInventory,
   type RunnerOperationalReport,
   type RunnerToHostMessage,
 } from "@opensteer/protocol";
@@ -75,7 +72,6 @@ import {
 } from "../shell/full-disk-access.js";
 import type { PreparedShellModule } from "../shell/shell-host-key.js";
 import { ShellModuleHandler } from "../shell/shell-module-handler.js";
-import type { LocalWorkspaceService } from "../workspace/local-workspace-service.js";
 
 const maximumFrameBytes = 1024 * 1024;
 const maximumQueuedInboundBytes = 4 * maximumFrameBytes;
@@ -217,17 +213,9 @@ export interface RunnerLogger {
 
 /** Execution dependencies exist only when this Runner advertises agents. */
 export interface RunnerAgentsConnection {
-  /** This Runner loaded the `opensteer:knowledge` skill, so the Host may plan it. */
-  readonly knowledgeSkill?: true;
   readonly runFileOptions?: { readonly dataDirectory: string; readonly helperBinary: string };
   readonly earlierBootsContained?: boolean;
-  /** Present exactly when this Runner holds directories of its own. */
-  readonly localWorkspaces?: {
-    readonly inventory: () => Promise<RunnerLocalStorageInventory>;
-    readonly service: LocalWorkspaceService;
-  };
   readonly runtime: RunnerRuntime;
-  readonly workspaceBackings: readonly import("@opensteer/workspace").WorkspaceExecutionAccessPlan["kind"][];
 }
 
 export interface ReconnectingHostConnectionOptions {
@@ -740,7 +728,7 @@ export class ReconnectingHostConnection {
                 targetControl: 1,
                 navigationVersion: 1,
                 navigationAttributionVersion: 1,
-                workspaceTabRestoreVersion: 1,
+                tabRestoreVersion: 1,
                 surfaceState: 1,
                 popupFollowVersion: 1,
                 captureRegion: 1,
@@ -775,14 +763,11 @@ export class ReconnectingHostConnection {
       environmentIds: [environmentId],
       harnessDrivers: [...harnessDrivers],
       reconcileHarnessInspection: 1,
-      localStorage: (await agents.localWorkspaces?.inventory()) ?? null,
       loginFill: 1,
       computerTool: 1,
-      ...(agents.knowledgeSkill ? { knowledgeSkill: 1 as const } : {}),
       ...(agents.runFileOptions ? { runFiles: 1 as const } : {}),
       maxConcurrentRuns: this.#config.maxConcurrentRuns,
       providerStateModes: [...agents.runtime.providerStateModes()],
-      workspaceBackings: [...agents.workspaceBackings],
     };
   }
 
@@ -1303,27 +1288,17 @@ class AgentsWorkSession implements RunnerWorkSession {
 
   constructor(options: AgentsWorkSessionOptions) {
     this.#options = options;
-    options.agents.runtime.observeWorkspaceSkills(async (workspaceId, scan) => {
-      const local = options.agents.localWorkspaces;
-      if (!local || this.#signal.aborted) return;
-      const inventory = await local.inventory();
-      const entry = inventory.bindings.find(
-        (binding) => binding.workspaceId === workspaceId && binding.state === "ready",
-      );
-      if (!entry) return;
+    this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
+    options.agents.runtime.observeFolderSkills(async (folder, bindingGeneration, scan) => {
       await this.#reportSkills(
-        {
-          ...entry,
-          ownerEnvironmentId: options.environmentId(),
-          storageAuthorityId: inventory.storageAuthorityId,
-        },
-        local.service.skillMetadata(scan),
+        folder,
+        bindingGeneration,
+        scan
+          ? { status: "complete", skills: [...scan.metadata], warnings: [...scan.warningCodes] }
+          : { status: "failed", reason: "unreadable" },
       );
     });
-    this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
-    this.#initialSkills = this.#reportInitialSkills().catch(() =>
-      options.fail("Workspace skill inventory reporting failed"),
-    );
+    this.#initialSkills = Promise.resolve();
     this.#unsubscribePreparation = options.agents.runtime.subscribeHarnessPreparation(
       (harnessInstanceId) => {
         this.#invalidatedHarnesses.add(harnessInstanceId);
@@ -1426,26 +1401,12 @@ class AgentsWorkSession implements RunnerWorkSession {
       case "host.app.cancel":
         void this.#answerAppRequest(message).catch(() => this.#options.fail("App response failed"));
         return;
-      case "host.workspace.local.provision":
-      case "host.workspace.local.relocate":
-      case "host.workspace.local.inspect":
-      case "host.workspace.local.specialist.remove":
-      case "host.workspace.local.destroy":
-      case "host.workspace.local.files.list":
-      case "host.workspace.local.files.read":
-        // Storage answers never queue behind a Run: a Files read is a person
-        // waiting on a page, and a provision is a Workspace the Host is holding
-        // open.
-        void this.#answerWorkspaceRequest(message).catch(() => {
-          this.#options.fail("Workspace storage response failed");
-        });
-        return;
     }
   }
 
   async close(): Promise<void> {
     this.#unsubscribePreparation();
-    this.#options.agents.runtime.observeWorkspaceSkills(undefined);
+    this.#options.agents.runtime.observeFolderSkills(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
@@ -1688,7 +1649,7 @@ class AgentsWorkSession implements RunnerWorkSession {
         message:
           error instanceof RunFileError
             ? error.message
-            : "File movement failed. Use a regular file inside this task's Workspace, smaller than 2 GiB, and retry from the current execution.",
+            : "File movement failed. Use a regular file inside this task's folder, smaller than 2 GiB, and retry from the current execution.",
       });
     } finally {
       if (controller && this.#fileRequests.get(request.requestId) === controller)
@@ -1697,7 +1658,6 @@ class AgentsWorkSession implements RunnerWorkSession {
   }
 
   async #answerAppRequest(request: HostAppRequest): Promise<void> {
-    const local = this.#options.agents.localWorkspaces;
     const echo = {
       type: "runner.app.result" as const,
       requestId: request.requestId,
@@ -1707,18 +1667,13 @@ class AgentsWorkSession implements RunnerWorkSession {
     let controller: AbortController | undefined;
     let retained = false;
     try {
-      if (!local) throw new Error("App servers need a local Workspace");
-      const mismatch = fenceMismatch(request.fence, {
-        ...this.#options.fence.fence,
-        environmentId: this.#options.environmentId(),
-        storageAuthorityId: (await local.inventory()).storageAuthorityId,
-      });
-      if (mismatch) throw new Error(mismatch.message);
       if (
-        request.spec.binding.ownerEnvironmentId !== request.fence.environmentId ||
-        request.spec.binding.storageAuthorityId !== request.fence.storageAuthorityId
+        !sameRunnerConnectionFence(request.fence, this.#options.fence.fence) ||
+        request.fence.environmentId !== this.#options.environmentId()
       )
-        throw new Error("App Workspace belongs to another environment or disk");
+        throw new Error("App request belongs to another connection");
+      if (request.spec.folder.computerId !== request.fence.runnerId)
+        throw new Error("App folder belongs to another computer");
       if (request.type === "host.app.cancel") {
         this.#appRequests.get(request.requestId)?.controller.abort();
         return;
@@ -1779,89 +1734,23 @@ class AgentsWorkSession implements RunnerWorkSession {
     }
   }
 
-  async #reportInitialSkills(): Promise<void> {
-    const local = this.#options.agents.localWorkspaces;
-    if (!local) return;
-    const inventory = await local.inventory();
-    for (const entry of inventory.bindings) {
-      if (this.#signal.aborted) return;
-      if (entry.state !== "ready") continue;
-      const binding = {
-        bindingId: entry.bindingId,
-        generation: entry.generation,
-        workspaceId: entry.workspaceId,
-        ownerEnvironmentId: this.#options.environmentId(),
-        storageAuthorityId: inventory.storageAuthorityId,
-      };
-      const sequence = ++this.#skillSequence;
-      await this.#reportSkills(
-        binding,
-        await local.service.scanSkills(
-          binding,
-          AbortSignal.any([this.#signal, AbortSignal.timeout(30_000)]),
-        ),
-        sequence,
-      );
-    }
-  }
-
   #skillSequence = 0;
-
   async #reportSkills(
-    binding: import("@opensteer/protocol").LocalWorkspaceBindingRef,
+    binding: import("@opensteer/core").TaskFolder,
+    bindingGeneration: number,
     result: import("@opensteer/protocol").RunnerSkillMetadataReport["result"],
-    sequence = ++this.#skillSequence,
   ): Promise<void> {
     if (this.#signal.aborted) return;
-    // Construct the wire object explicitly: the local inventory also contains paths.
     await this.#options.sink.send({
       ...this.#options.fence.fence,
       environmentId: this.#options.environmentId(),
-      storageAuthorityId: binding.storageAuthorityId,
+      bindingGeneration,
       type: "runner.skills.report",
-      binding: {
-        bindingId: binding.bindingId,
-        generation: binding.generation,
-        ownerEnvironmentId: binding.ownerEnvironmentId,
-        storageAuthorityId: binding.storageAuthorityId,
-        workspaceId: binding.workspaceId,
-      },
-      scanSequence: sequence,
+      binding,
+      scanSequence: ++this.#skillSequence,
       scannedAt: new Date().toISOString(),
       result,
     });
-  }
-
-  async #answerWorkspaceRequest(request: HostWorkspaceLocalRequest): Promise<void> {
-    const local = this.#options.agents.localWorkspaces;
-    if (!local) {
-      await this.#options.sink.send(noLocalWorkspacesReply(request));
-      return;
-    }
-    const result = await local.service.handle(
-      request,
-      {
-        ...this.#options.fence.fence,
-        environmentId: this.#options.environmentId(),
-        storageAuthorityId: (await local.inventory()).storageAuthorityId,
-      },
-      AbortSignal.timeout(30_000),
-    );
-    await this.#options.sink.send(result);
-    if (
-      result.type === "runner.workspace.local.provisioned" ||
-      (result.type === "runner.workspace.local.inspected" && result.health.status === "ready")
-    ) {
-      const sequence = ++this.#skillSequence;
-      await this.#reportSkills(
-        request.binding,
-        await local.service.scanSkills(
-          request.binding,
-          AbortSignal.any([this.#signal, AbortSignal.timeout(30_000)]),
-        ),
-        sequence,
-      );
-    }
   }
 
   #flushPreparationNotifications(): void {
@@ -1965,15 +1854,6 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
             error: notRunningAgents,
           });
           return;
-        case "host.workspace.local.provision":
-        case "host.workspace.local.relocate":
-        case "host.workspace.local.inspect":
-        case "host.workspace.local.specialist.remove":
-        case "host.workspace.local.destroy":
-        case "host.workspace.local.files.list":
-        case "host.workspace.local.files.read":
-          await sink.send(noLocalWorkspacesReply(message));
-          return;
         // A computer that runs no agents holds no Runs to stop, resume or renew.
         case "host.runs.revoked":
         case "host.executions.attached":
@@ -1992,20 +1872,6 @@ function harnessAuthenticationTarget(
   return request.action === "start" || request.action === "logout" || request.action === "remove"
     ? { driverKind: request.harness.driverKind, harnessInstanceId: request.harness.id }
     : { driverKind: request.driverKind, harnessInstanceId: request.harnessInstanceId };
-}
-
-function noLocalWorkspacesReply(request: HostWorkspaceLocalRequest): RunnerOperationalReport {
-  return {
-    error: {
-      code: "configuration-invalid",
-      message: "This machine does not hold Workspace directories of its own.",
-      retryable: false,
-    },
-    fence: request.fence,
-    operationId: request.operationId,
-    requestId: request.requestId,
-    type: "runner.workspace.local.error",
-  };
 }
 
 function requiredEnvironmentId(identity: RunnerIdentity) {
@@ -2267,7 +2133,6 @@ function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
     case "node.stop":
     case "run.interrupt":
     case "run.steer":
-    case "workspace.mount":
       return `run:${command.runId}`;
     case "trigger.execute":
       return `trigger:${command.context.occurrenceId}`;
@@ -2275,8 +2140,6 @@ function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
       return `trigger:${command.occurrenceId}`;
     case "watch.reconcile":
       return `watch-environment:${command.environmentId}`;
-    case "workspace.detach":
-      return undefined;
     case "harness.update":
       return `harness-update:${command.environmentId}:${command.driverKind}`;
   }
@@ -2315,13 +2178,6 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
     case "host.app.connect":
     case "host.app.stop":
     case "host.app.cancel":
-    case "host.workspace.local.provision":
-    case "host.workspace.local.relocate":
-    case "host.workspace.local.inspect":
-    case "host.workspace.local.specialist.remove":
-    case "host.workspace.local.destroy":
-    case "host.workspace.local.files.list":
-    case "host.workspace.local.files.read":
       return message.fence;
     default:
       return message;

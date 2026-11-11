@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RunnerIdSchema, WorkspaceIdSchema, requestReasonMaxLength } from "@opensteer/core";
+import { RunnerIdSchema, requestReasonMaxLength } from "@opensteer/core";
 import {
   IntegrationAccessSchema,
   IntegrationConnectionIdSchema,
@@ -63,12 +63,11 @@ export const RequestUnionSchema = z.union([
     integration: z.string().min(1).max(64),
     server: IntegrationServerIdSchema.optional(),
     reason: z.string().trim().min(1).max(requestReasonMaxLength),
-    workspaceId: WorkspaceIdSchema.optional(),
   }),
   z.strictObject({
     catalog: z.string().min(1).max(64),
     access: IntegrationAccessSchema.optional(),
-    workspaceId: WorkspaceIdSchema.optional(),
+
     reason: z.string().trim().min(1).max(requestReasonMaxLength),
   }),
   // One app on one Mac, or a whole phone. The Mac resolves what `app` names,
@@ -85,7 +84,7 @@ export const RequestInputSchema = z
       "isv_ serverId from integration_search; omit for single-server installs.",
     ),
     reason: z.string().trim().min(1).max(requestReasonMaxLength),
-    workspaceId: WorkspaceIdSchema.optional(),
+
     catalog: z.string().min(1).max(64).optional(),
     kind: z.literal("computer-app").optional(),
     runnerId: RunnerIdSchema.optional(),
@@ -189,7 +188,7 @@ export const integration_request = defineAgentTool({
   name: "integration_request",
   title: "Request integration access",
   description:
-    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Runs may target reachable workspaceId; programs use their Workspace. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns the Request outcome. Pending grants no access. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
+    'Ask the person for setup/reconnection/access. Installed: integration + access + reason; catalog item: catalog instead. Omit access only for installation alone. Access is personal; folders confer no grants. Mac app: kind: "computer-app", runnerId, app, access, reason; phone: omit app. Returns the Request outcome. Pending grants no access. Programs receive no continuation. Never repeat pending/declined asks. Credentials belong in the Request UI.',
   input: RequestInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: IntegrationRequestOutputSchema,
   access: "write",

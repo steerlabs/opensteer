@@ -6,11 +6,11 @@ import { describe, expect, it } from "vitest";
 import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
 
 describe("Runner Trigger program concurrency", () => {
-  it("admits two concurrent Runs in the same Workspace", async () => {
+  it("admits two concurrent Runs in the same folder", async () => {
     const fixture = runtimeFixture({ maxConcurrentRuns: 2, maxConcurrentTriggerPrograms: 1 });
-    const workspaceId = createId("workspace");
-    const first = runCommand(fixture.environmentId, workspaceId);
-    const second = runCommand(fixture.environmentId, workspaceId);
+    const computerId = createId("runner");
+    const first = runCommand(fixture.environmentId, computerId);
+    const second = runCommand(fixture.environmentId, computerId);
     try {
       await expect(fixture.runtime.handleCommand(first, fixture.sink)).resolves.toEqual({
         status: "accepted",
@@ -26,9 +26,9 @@ describe("Runner Trigger program concurrency", () => {
 
   it("admits a Trigger program while the Run pool is saturated", async () => {
     const fixture = runtimeFixture({ maxConcurrentRuns: 1, maxConcurrentTriggerPrograms: 1 });
-    const workspaceId = createId("workspace");
-    const run = runCommand(fixture.environmentId, workspaceId);
-    const trigger = triggerCommand(fixture.environmentId, workspaceId);
+    const computerId = createId("runner");
+    const run = runCommand(fixture.environmentId, computerId);
+    const trigger = triggerCommand(fixture.environmentId, computerId);
     try {
       await expect(fixture.runtime.handleCommand(run, fixture.sink)).resolves.toEqual({
         status: "accepted",
@@ -43,11 +43,11 @@ describe("Runner Trigger program concurrency", () => {
     }
   });
 
-  it("admits two concurrent Trigger programs in the same Workspace", async () => {
+  it("admits two concurrent Trigger programs in the same folder", async () => {
     const fixture = runtimeFixture({ maxConcurrentRuns: 1, maxConcurrentTriggerPrograms: 2 });
-    const workspaceId = createId("workspace");
-    const first = triggerCommand(fixture.environmentId, workspaceId);
-    const second = triggerCommand(fixture.environmentId, workspaceId);
+    const computerId = createId("runner");
+    const first = triggerCommand(fixture.environmentId, computerId);
+    const second = triggerCommand(fixture.environmentId, computerId);
     try {
       await expect(fixture.runtime.handleCommand(first, fixture.sink)).resolves.toEqual({
         status: "accepted",
@@ -115,8 +115,7 @@ function runtimeFixture(input: {
     bootId: "boot-trigger-concurrency-test",
     browserHarnessExecutable: "/opt/opensteer/browser-harness",
     deploymentShape: {
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server" as const,
+      kind: "personal" as const,
     },
     environmentId,
     harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
@@ -139,7 +138,7 @@ function runtimeFixture(input: {
       },
     },
     projectContinuationIdentity: (identity) => identity as never,
-    workspaceManager: {
+    folderManager: {
       writableRoots: () => ["/runner/workspaces"],
       prepare: async ({ signal }) =>
         new Promise((_, rejectPromise) => {
@@ -158,24 +157,21 @@ function runtimeFixture(input: {
 
 function runCommand(
   environmentId: ReturnType<typeof createId<"environment">>,
-  workspaceId = createId("workspace"),
+  computerId = createId("runner"),
 ): Extract<RunnerCommand, { readonly type: "run.execute" }> {
   const runId = createId("run");
   const threadId = createId("thread");
   return {
+    location: {
+      folder: { computerId, path: "/runner/runs/control/workspace" },
+      agentHome: { computerId, path: "/runner/runs/control/workspace" },
+    },
     commandId: createId("command"),
     context: {
       environmentId,
       harness: { driverKind: "codex", runtimeRevision: 1 },
       runId,
       threadId,
-      workspaceAccess: {
-        kind: "local-directory",
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-        workspaceId,
-      },
-      workspaceId,
     },
     environmentId,
     type: "run.execute",
@@ -184,21 +180,18 @@ function runCommand(
 
 function triggerCommand(
   environmentId: ReturnType<typeof createId<"environment">>,
-  workspaceId = createId("workspace"),
+  computerId = createId("runner"),
 ): Extract<RunnerCommand, { readonly type: "trigger.execute" }> {
   const occurrenceId = createId("triggerOccurrence");
   return {
+    location: {
+      folder: { computerId, path: "/runner/runs/control/workspace" },
+      agentHome: { computerId, path: "/runner/runs/control/workspace" },
+    },
     commandId: createId("command"),
     context: {
       executionGeneration: 1,
       occurrenceId,
-      workspaceAccess: {
-        kind: "local-directory",
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-        workspaceId,
-      },
-      workspaceId,
     },
     environmentId,
     type: "trigger.execute",

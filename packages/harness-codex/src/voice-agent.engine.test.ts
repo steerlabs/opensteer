@@ -144,7 +144,6 @@ describe.skipIf(!qualify).each([
     });
     const threadId = createId("thread");
     const environmentId = createId("environment");
-    const workspaceId = createId("workspace");
     const environment = Object.fromEntries(
       Object.entries(process.env).filter(
         (entry): entry is [string, string] => entry[1] !== undefined,
@@ -253,7 +252,7 @@ describe.skipIf(!qualify).each([
         threadId,
         threadStateDirectory: join(directory, "call-private"),
         wrapProcessLaunch: (value) => value,
-        workspaceId,
+
         workspacePath: directory,
         writableRoots: [directory],
       } satisfies Parameters<typeof adapter.startSession>[0];

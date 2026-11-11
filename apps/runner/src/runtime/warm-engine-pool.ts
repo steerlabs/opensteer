@@ -1,4 +1,7 @@
-import type { HarnessInstanceId, ThreadId, WorkspaceId } from "@opensteer/core";
+import { createHash } from "node:crypto";
+import type { RunnerCommand } from "@opensteer/protocol";
+import type { HarnessSkillPlan } from "@opensteer/harness";
+import type { HarnessInstanceId, ThreadId } from "@opensteer/core";
 import type { HarnessSession } from "@opensteer/harness";
 import type { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import type { CredentialProxy } from "../credentials/credential-proxy.js";
@@ -38,7 +41,6 @@ export interface WarmEngine {
   readonly scope: string;
   readonly session: HarnessSession;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
 
 interface Idle {
@@ -116,7 +118,7 @@ export class WarmEnginePool {
     }
   }
 
-  /** Retires every idle engine the predicate names: an account, a Workspace, a Thread. */
+  /** Retires every idle engine the predicate names: an account or a task. */
   async evict(predicate: (engine: WarmEngine) => boolean): Promise<void> {
     const matching = [...this.#idle].filter(([, idle]) => predicate(idle.engine));
     for (const [threadId, idle] of matching) {
@@ -147,4 +149,62 @@ export class WarmEnginePool {
     this.#retiring.set(engine.threadId, retiring);
     await retiring;
   }
+}
+
+/**
+ * Everything a warm engine was started with, as one key: a Run whose key
+ * differs gets an engine of its own. Per-Run facts — its tokens, its history,
+ * its machine notice — are not in it; the session is rebound with them.
+ */
+export function warmEngineKey(input: {
+  readonly attachmentRoot: string | null;
+  readonly baseEnvironment: Readonly<Record<string, string>>;
+  readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
+  readonly instructions: string | null;
+  /** What the engine's launch directory for other computers was written from. */
+  readonly machineAccessLaunch: string;
+  readonly providerSessionReference: string | null;
+  readonly runtimeBoundary: string;
+  /** The skill catalog the engine was started with; an engine reads it at startup. */
+  readonly skills: HarnessSkillPlan | undefined;
+  readonly folderSkillsDigest: string;
+  readonly workspacePath: string;
+  readonly writableRoots: readonly string[];
+}): string {
+  const { context } = input;
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        context.threadId,
+        context.requestedBy,
+        context.harnessInstanceId,
+        context.harness,
+        context.providerSessionId,
+        input.providerSessionReference,
+        context.providerSessionStateLayout,
+        input.workspacePath,
+        input.instructions,
+        context.accessMode,
+        input.writableRoots,
+        context.specialistId ?? null,
+        // Names the Host's whole tool inventory, guide and skills.
+        context.agentTools.toolsRevision,
+        context.agentTools.instructions,
+        context.agentTools.tools,
+        context.agentTools.skills,
+        context.taskPurpose,
+        context.modelSelection,
+        [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
+        input.skills,
+        input.folderSkillsDigest,
+        context.plugins.skillPolicy ?? null,
+        context.agentTools.url,
+        context.browserCdp.url,
+        input.attachmentRoot,
+        input.baseEnvironment,
+        input.runtimeBoundary,
+        input.machineAccessLaunch,
+      ]),
+    )
+    .digest("base64url");
 }

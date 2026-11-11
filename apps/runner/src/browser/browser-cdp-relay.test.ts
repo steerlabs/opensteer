@@ -33,21 +33,18 @@ const servers: WebSocketServer[] = [];
 const heldHosts: Array<() => void> = [];
 const developmentTransport = {
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
-    kind: "server" as const,
+    kind: "personal" as const,
   },
   mode: "development",
 } as const;
 const productionCloudTransport = {
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
-    kind: "server" as const,
+    kind: "personal" as const,
   },
   mode: "production",
 } as const;
 const productionPersonalTransport = {
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
     kind: "personal" as const,
   },
   mode: "production",

@@ -11,7 +11,7 @@ import {
   PlaceContentPartSchema,
   ThreadIdSchema,
   ThreadTitleSchema,
-  WorkspaceIdSchema,
+  TaskFolderSchema,
 } from "@opensteer/core";
 
 import { z } from "zod";
@@ -37,10 +37,10 @@ export const thread_read = defineAgentTool({
   targetFields: ["threadId"],
   title: "Read a Thread",
   description:
-    "Read a reachable Thread or subagentId; `home` means Chat, `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. A subagent returns its own messages and tools, without reasoning. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
+    "Read a reachable Thread or subagentId; `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. A subagent returns its own messages and tools, without reasoning. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
   input: z
     .strictObject({
-      threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]).optional(),
+      threadId: z.union([ThreadIdSchema, z.literal("self")]).optional(),
       subagentId: ExecutionNodeIdSchema.optional(),
       view: z.enum(["messages", "activity"]).default("messages"),
       limit: z.number().int().min(1).max(100).default(20).describe("Max items."),
@@ -93,7 +93,7 @@ export const thread_list = defineAgentTool({
     limit: z.number().int().min(1).max(50).default(25),
     parentThreadId: z.union([ThreadIdSchema, z.literal("self")]).optional(),
     query: z.string().trim().min(1).max(256).optional().describe("Search titles."),
-    workspaceId: WorkspaceIdSchema.optional(),
+    folder: TaskFolderSchema.optional(),
   }),
   output: ThreadListOutputSchema,
   access: "read",
@@ -105,7 +105,7 @@ export const delegate_task = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. The Host places it. Omit `workspaceId` for this Workspace; connections must name it. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
+    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. Omit `folder` to use the current task's folder; connections default to agent home. An explicit folder selects computerId and absolute path. Existing tasks keep their folder. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
   input: z
     .strictObject({
       mode: z.enum(["async", "wait"]).default("async"),
@@ -147,18 +147,18 @@ export const delegate_task = defineAgentTool({
         .max(256)
         .optional()
         .describe("Ready specialist registration ID or plugin name."),
-      workspaceId: WorkspaceIdSchema.optional().describe(
-        "New task Workspace; omit when reusing threadId.",
+      folder: TaskFolderSchema.optional().describe(
+        "New task folder on the hosting computer; omit when reusing threadId.",
       ),
       threadId: ThreadIdSchema.optional().describe(
         "Finished task to continue; omit new-task selectors.",
       ),
     })
     .superRefine((input, context) => {
-      if (input.threadId && input.workspaceId) {
+      if (input.threadId && input.folder) {
         context.addIssue({
           code: "custom",
-          message: "Choose workspaceId for a new task or threadId to reuse a task",
+          message: "Choose folder for a new task or threadId to reuse a task",
         });
       }
       if (input.threadId && (input.harnessInstanceId || input.model)) {
@@ -211,7 +211,7 @@ export const thread_send = defineAgentTool({
   targetFields: ["threadId"],
   title: "Message a Thread",
   description:
-    "Send to a Thread; `home` means Chat. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `delegate_task` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
+    "Send to a task. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `delegate_task` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
   input: z
     .strictObject({
       delivery: z.enum(["report", "queue", "steer"]).describe("report, queue or steer."),
@@ -227,7 +227,7 @@ export const thread_send = defineAgentTool({
         .max(255)
         .optional()
         .describe("Watch observation identity; reuse for the same observation."),
-      threadId: z.union([ThreadIdSchema, z.literal("home")]),
+      threadId: ThreadIdSchema,
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: ThreadMessageOutputSchema,

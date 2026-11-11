@@ -3683,7 +3683,6 @@ describe("Claude subagent transcripts", () => {
           originatingNodeId: memberNode,
           originatingRunId: launchRequest.originatingRunId,
           originatingThreadId: context.threadId,
-          originatingWorkspaceId: context.workspaceId,
         });
         await session.resolveRequest(memberRequest.id, { kind: "choice", optionId: "allow-once" });
         await vi.waitFor(() =>
@@ -4006,7 +4005,6 @@ async function context(
     },
     threadId,
     threadStateDirectory,
-    workspaceId: createId("workspace"),
     workspacePath,
     wrapProcessLaunch: (launch) => launch,
     writableRoots: [
@@ -4087,8 +4085,6 @@ function agentInput(text: string): HarnessInput {
       kind: "agent",
       runId: createId("run"),
       threadId: testAgentThreadId,
-      workspaceId: createId("workspace"),
-      workspaceName: "Research",
     },
     content: [{ text, type: "text" }],
     createdAt: testInputCreatedAt,

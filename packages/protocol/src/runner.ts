@@ -295,6 +295,7 @@ export const WatchCapabilityPlanSchema = TriggerCapabilityPlanSchema.extend({
 });
 
 export const WatchReconcileActivationSchema = z.strictObject({
+  location: PersonalExecutionLocationSchema,
   activationId: TriggerWatchActivationIdSchema,
   anchorThreadId: ThreadIdSchema,
   capabilities: z.strictObject({
@@ -321,6 +322,7 @@ export const TriggerExecutionContextSchema = z.strictObject({
 export type TriggerExecutionContext = z.infer<typeof TriggerExecutionContextSchema>;
 
 const ExecuteTriggerSchema = runnerCommandBase.extend({
+  location: PersonalExecutionLocationSchema,
   context: TriggerExecutionContextSchema,
   type: z.literal("trigger.execute"),
 });

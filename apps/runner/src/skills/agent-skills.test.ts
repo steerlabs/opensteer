@@ -118,7 +118,7 @@ describe("Runner Agent Skills", () => {
   it("teaches that a reply, never a report, is what reaches the person", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const threads = await readFile(
-      join(bundle.paths["opensteer:threads"], "references", "chat.md"),
+      join(bundle.paths["opensteer:threads"], "references", "coordination.md"),
       "utf8",
     );
     const triggers = await readFile(
@@ -126,14 +126,14 @@ describe("Runner Agent Skills", () => {
       "utf8",
     );
 
-    expect(threads).toContain("A report never alerts the person");
+    expect(threads).toContain("Starts nothing and never alerts the person");
     expect(threads).not.toMatch(/publish an\s+update there/u);
     expect(triggers).toContain("# Reminders and updates for the person");
-    // The reminder recipe wakes Chat's agent, whose reply is the notification.
+    // A reminder wakes its actual anchor task, whose reply is the notification.
     expect(triggers).toMatch(
-      /opensteer\.callTool\("thread_send", \{\s+delivery: "queue",\s+message: `Reminder: /u,
+      /opensteer\.callTool\("thread_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
     );
-    expect(triggers).toContain('threadId: "home"');
+    expect(triggers).toContain("threadId: event.trigger.anchorThreadId");
     expect(triggers).toContain("toolContractVersion: 3");
   });
 
@@ -270,7 +270,7 @@ describe("Runner Agent Skills", () => {
     );
   });
 
-  it("starts without a broken or missing knowledge trial skill and never plans it", async () => {
+  it("rejects a broken or missing bundled team knowledge skill", async () => {
     expect(
       (await loadAgentSkillBundle(bundleDirectory)).paths["opensteer:knowledge"],
     ).toBeDefined();
@@ -287,12 +287,7 @@ describe("Runner Agent Skills", () => {
       temporaryDirectories.push(directory);
       await cp(bundleDirectory, directory, { recursive: true });
       await breakSkill(directory);
-      const bundle = await loadAgentSkillBundle(directory);
-      expect(bundle.paths["opensteer:knowledge"]).toBeUndefined();
-      expect(skillNames(bundle, ["opensteer:browser"])).toEqual(["opensteer:browser"]);
-      expect(() => planAgentSkills(bundle, ["opensteer:knowledge"])).toThrow(
-        "Agent Skill opensteer:knowledge is not available on this Runner",
-      );
+      await expect(loadAgentSkillBundle(directory)).rejects.toThrow();
     }
   });
 });

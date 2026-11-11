@@ -1409,7 +1409,6 @@ class MuseHarnessSession implements HarnessSession {
       originatingOccurrenceId: null,
       originatingRunId: active.runId,
       originatingThreadId: this.#context.threadId,
-      originatingWorkspaceId: this.#context.workspaceId,
       payload: { kind },
       presentation,
       requestedBy: active.requestedBy,
@@ -1418,7 +1417,6 @@ class MuseHarnessSession implements HarnessSession {
       resolvedBy: null,
       response: null,
       status: "pending",
-      targetWorkspaceId: this.#context.workspaceId,
     };
   }
 

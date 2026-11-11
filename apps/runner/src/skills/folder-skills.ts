@@ -14,7 +14,7 @@ type CompleteInventory = Extract<RunnerSkillMetadataReport["result"], { status: 
 const maximumSkills = 64;
 const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
-export interface DiscoveredWorkspaceSkills {
+export interface DiscoveredFolderSkills {
   /** Identifies every discovered skill's SKILL.md, which an engine reads when it starts. */
   readonly digest: string;
   readonly metadata: Readonly<CompleteInventory["skills"]>;
@@ -24,22 +24,22 @@ export interface DiscoveredWorkspaceSkills {
 }
 
 /**
- * Discovers `<workspace>/skills/<name>/SKILL.md`. Every entry here is
- * agent-writable Workspace content, so one violation skips one skill and is
+ * Discovers `<folder>/skills/<name>/SKILL.md`. Every entry here is
+ * agent-writable Folder content, so one violation skips one skill and is
  * reported rather than failing the Run, and no path may be reached through a
  * symlink.
  */
-export async function discoverWorkspaceSkills(
-  workspacePath: string,
+export async function discoverFolderSkills(
+  folderPath: string,
   signal?: AbortSignal,
-): Promise<DiscoveredWorkspaceSkills> {
+): Promise<DiscoveredFolderSkills> {
   signal?.throwIfAborted();
-  const root = join(workspacePath, "skills");
+  const root = join(folderPath, "skills");
   const rootStat = await optionalLstat(root);
   signal?.throwIfAborted();
   if (!rootStat) return empty();
-  if (rootStat.isSymbolicLink()) return warned("The Workspace skills path is a symlink");
-  if (!rootStat.isDirectory()) return warned("The Workspace skills path is not a directory");
+  if (rootStat.isSymbolicLink()) return warned("The Folder skills path is a symlink");
+  if (!rootStat.isDirectory()) return warned("The Folder skills path is not a directory");
   const entries = await readdir(root, { withFileTypes: true });
   signal?.throwIfAborted();
   const skills: HarnessSkill[] = [];
@@ -52,7 +52,7 @@ export async function discoverWorkspaceSkills(
     const name = entry.name;
     if (entry.isSymbolicLink()) {
       warningCodes.add("symlink");
-      warnings.push(`Workspace skill ${name} was skipped: it is a symlink`);
+      warnings.push(`Folder skill ${name} was skipped: it is a symlink`);
       continue;
     }
     if (!entry.isDirectory()) continue;
@@ -60,17 +60,17 @@ export async function discoverWorkspaceSkills(
     const skillFile = join(path, "SKILL.md");
     const stat = await optionalLstat(skillFile);
     signal?.throwIfAborted();
-    // A directory without SKILL.md is ordinary Workspace content, not a skill.
+    // A directory without SKILL.md is ordinary Folder content, not a skill.
     if (!stat) continue;
     if (stat.isSymbolicLink() || !stat.isFile()) {
       warningCodes.add(stat.isSymbolicLink() ? "symlink" : "invalid-metadata");
-      warnings.push(`Workspace skill ${name} was skipped: SKILL.md is not a regular file`);
+      warnings.push(`Folder skill ${name} was skipped: SKILL.md is not a regular file`);
       continue;
     }
     if (skills.length >= maximumSkills) {
       warningCodes.add("limit-exceeded");
       warnings.push(
-        `Workspace skill ${name} was skipped: a Workspace may load at most ${maximumSkills} skills`,
+        `Folder skill ${name} was skipped: a Folder may load at most ${maximumSkills} skills`,
       );
       continue;
     }
@@ -78,7 +78,7 @@ export async function discoverWorkspaceSkills(
     signal?.throwIfAborted();
     if ("problem" in read) {
       warningCodes.add("invalid-metadata");
-      warnings.push(`Workspace skill ${name} was skipped: ${read.problem}`);
+      warnings.push(`Folder skill ${name} was skipped: ${read.problem}`);
       continue;
     }
     metadata.push({
@@ -139,7 +139,7 @@ async function optionalLstat(path: string): Promise<Stats | undefined> {
   }
 }
 
-function empty(): DiscoveredWorkspaceSkills {
+function empty(): DiscoveredFolderSkills {
   return Object.freeze({
     digest: "none",
     metadata: Object.freeze([]),
@@ -149,7 +149,7 @@ function empty(): DiscoveredWorkspaceSkills {
   });
 }
 
-function warned(warning: string): DiscoveredWorkspaceSkills {
+function warned(warning: string): DiscoveredFolderSkills {
   const code: CompleteInventory["warnings"][number] = warning.includes("symlink")
     ? "symlink"
     : "invalid-metadata";

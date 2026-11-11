@@ -1289,7 +1289,6 @@ async function setup(options: SetupOptions): Promise<Fixture> {
     threadId: createId("thread"),
     // The approval socket lives here, and a Unix socket address is ~104 bytes.
     threadStateDirectory: join(directory, "t"),
-    workspaceId: createId("workspace"),
     workspacePath,
     wrapProcessLaunch: (launch) => launch,
     writableRoots: [workspacePath],

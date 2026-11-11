@@ -50,14 +50,23 @@ export const TeamFactSchema = TeamFactInputSchema.extend({
 });
 export type TeamFact = z.infer<typeof TeamFactSchema>;
 
-/** The agent's `sql` call as the personal Host forwards it, with that call's stable operation key. */
+/**
+ * The agent's `sql` call, which the personal Host forwards unchanged. Without `sql` it
+ * describes the relations and the topics this request may use.
+ */
 export const TeamSqlInputSchema = z.strictObject({
-  query: z.string().min(1).max(16_384).optional(),
-  parameters: z.array(z.json()).max(64).optional(),
   mode: z.enum(["read", "write"]).default("read"),
-  onlyIfUnchanged: z.boolean().optional(),
-  cursor: KnowledgeTopicIdSchema.optional(),
-  operationKey: z.string().regex(/^[\x21-\x7e]{1,128}$/),
+  sql: z.string().min(1).max(16_384).optional(),
+  parameters: z.array(z.json()).max(64).default([]),
+  onlyIfUnchanged: z
+    .boolean()
+    .optional()
+    .describe("Refuse the INSERT if a fact changed since the seen_fact_id it names."),
+  cursor: KnowledgeTopicIdSchema.optional().describe("nextCursor from a call without sql."),
+  operationId: z
+    .uuid()
+    .optional()
+    .describe("Required for a write: a new UUID, reused only to retry that same write."),
 });
 export type TeamSqlInput = z.infer<typeof TeamSqlInputSchema>;
 const SqlColumnSchema = z.strictObject({

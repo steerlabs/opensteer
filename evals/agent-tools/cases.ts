@@ -70,17 +70,14 @@ export const CaseSchema = z.strictObject({
   area: z.string().min(1),
   kind: z.enum(["bad", "guard", "control"]),
   source: z.strictObject({ commit: z.string().regex(/^[a-f0-9]{40}$/u), note: z.string().min(1) }),
-  // Historical fixture labels, not tool or authority profiles.
-  profile: z.enum(["main", "workspace", "delegated"]),
+  profile: z.enum(["task", "delegated"]),
   caller: z.enum(["run", "connection"]).default("run"),
-  reach: z.enum(["user", "workspace", "lineage"]).optional(),
-  role: z.enum(["conversation", "work"]),
-  /** Overrides the profile default for workers without an Assignment. */
+  purpose: z.enum(["task", "voice", "background-job"]).default("task"),
   assigned: z.boolean().optional(),
-  /** Runs as a voice call's agent, with its guide. */
   voice: z.boolean().optional(),
-  /** Runs on a Host serving the knowledge trial's `sql` tool. */
-  knowledge: z.boolean().default(false),
+  teamBound: z.boolean().default(false),
+  teamContext: z.string().min(1).optional(),
+  folder: fixturePath.optional(),
   machineAccessNotice: z.string().min(1).optional(),
   requesterTimeZone: TimeZoneSchema.optional(),
   engines: z
@@ -179,8 +176,4 @@ export function inputForCaseTurn(turn: EvalCase["turns"][number]) {
     createdAt: new Date().toISOString(),
     messageId: createId("message"),
   });
-}
-
-export function caseReach(testCase: EvalCase) {
-  return testCase.reach ?? (testCase.profile === "main" ? "user" : "workspace");
 }

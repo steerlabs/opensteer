@@ -1153,7 +1153,6 @@ function pendingRequest(
     originatingOccurrenceId: null,
     originatingRunId: active.runId,
     originatingThreadId: context.threadId,
-    originatingWorkspaceId: context.workspaceId,
     payload: { kind: presentation.kind === "form" ? "harness.input" : "harness.approval" },
     presentation,
     requestedBy: active.requestedBy,
@@ -1162,7 +1161,6 @@ function pendingRequest(
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: context.workspaceId,
   };
 }
 

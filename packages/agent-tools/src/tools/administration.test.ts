@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { agentTools } from "./index.js";
 
 const names = [
-  "project_write",
   "settings_read",
   "settings_write",
   "computer_list",

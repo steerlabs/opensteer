@@ -514,7 +514,6 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
     skills: undefined,
     threadId: createId("thread"),
     threadStateDirectory: join(directory, "thread-state"),
-    workspaceId: createId("workspace"),
     workspacePath,
     wrapProcessLaunch: (launch) => launch,
     writableRoots: [workspacePath],

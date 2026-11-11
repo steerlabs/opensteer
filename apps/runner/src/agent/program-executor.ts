@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import type { TriggerExecutionContext } from "@opensteer/protocol";
 import type { TriggerExecutionOutput } from "@opensteer/triggers";
-import type { RunWorkspace } from "../workspace/mount-manager.js";
+import type { RunFolder } from "../folders/task-folder.js";
 import { triggerProgramRuntimeSource } from "./program-runtime.js";
 
 const streamByteLimit = 512 * 1_024;
@@ -49,7 +49,7 @@ export class TriggerProgramExecutor {
     readonly endpoints: ProgramEndpoints;
     readonly planLaunch: ProgramLaunchPlanner;
     readonly signal: AbortSignal;
-    readonly workspace: RunWorkspace;
+    readonly workspace: RunFolder;
   }): Promise<TriggerExecutionOutput> {
     const { context } = input;
     const programFile = resolve(
@@ -87,7 +87,7 @@ export class TriggerProgramExecutor {
       readonly endpoints: ProgramEndpoints;
       readonly planLaunch: ProgramLaunchPlanner;
       readonly signal: AbortSignal;
-      readonly workspace: RunWorkspace;
+      readonly workspace: RunFolder;
     };
     readonly privateExecutionRoot: string;
     readonly runtimeFile: string;
@@ -186,7 +186,6 @@ function triggerEnvironment(
   environment.OPENSTEER_MCP_TOKEN = endpoints.mcp.token;
   environment.OPENSTEER_OCCURRENCE_ID = context.occurrenceId;
   environment.OPENSTEER_TRIGGER_ID = context.triggerId;
-  environment.OPENSTEER_WORKSPACE_ID = context.workspaceId;
   if (endpoints.browserCdp) {
     environment.OPENSTEER_CDP_URL = endpoints.browserCdp.url;
     environment.OPENSTEER_CDP_TOKEN = endpoints.browserCdp.token;

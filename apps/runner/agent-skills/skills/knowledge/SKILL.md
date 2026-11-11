@@ -1,11 +1,13 @@
 ---
 name: knowledge
-description: Look up, compare or record the person's structured facts (customers, trips, plans, inventory) with the sql tool, and tell knowledge apart from personal memory.
+description: Look up, compare or record shared team facts with the sql tool, and tell knowledge apart from personal memory.
 ---
 
-# Knowledge
+# Team knowledge
 
-Knowledge is a log of facts: one JSONB `value` per `topic`, `thing` and `property`. Each write appends a version; nothing is updated or deleted. Call `sql` without `query` first to see the columns and the readable topic ids.
+Available only in tasks bound to a team thread, using the current Run’s request. Its scope is the asking channel topic plus attached topics, intersected with current owner agent access. People-only content is excluded. Every result includes source and audience descriptors; keep them with any remembered claim. Channel instructions are settings only people can edit.
+
+Knowledge is a log of facts: one JSONB `value` per `topic`, `thing` and `property`. Each write appends a version; nothing is updated or deleted. Call `sql` without `sql` first to see the columns and the readable topic ids.
 
 - `facts`: the current version of each fact. Use it for "what is".
 - `fact_history`: every version, with `replaces_id` pointing at the one it replaced. Use it for "what was", "who changed" and "when".

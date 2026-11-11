@@ -126,6 +126,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     placeContext: {} as never,
   });
   const product = new ProductToolHandlers({
+    deploymentId: createId("deployment"),
     store,
     commands,
     browser,
@@ -634,24 +635,6 @@ describeStore("agents answering task questions", (it) => {
     expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
   });
 
-  it("refuses out-of-reach callers without revealing the Request", async ({ storeFixture }) => {
-    const s = await questionTask(storeFixture, "question-reach");
-    const caller: RunCaller = {
-      ...s.caller,
-      reach: { kind: "lineage", lineageRootThreadId: createId("thread") },
-    };
-    for (const id of [s.request.id, createId("request")]) {
-      await expect(s.readRequest(caller, id)).rejects.toMatchObject({
-        code: "forbidden",
-        message: "Request is unavailable",
-      });
-      await expect(s.respond(caller, requestRevision(s.request), id)).rejects.toMatchObject({
-        code: "forbidden",
-        message: "Request is unavailable",
-      });
-    }
-  });
-
   it("delivers an accepted answer after the answering Run has ended", async ({ storeFixture }) => {
     const s = await questionTask(storeFixture, "question-answerer-ended");
     await s.respond();
@@ -676,29 +659,6 @@ describeStore("agents answering task questions", (it) => {
       status: "fulfilled",
       settlementProvenance: { kind: "agent", runId: s.f.run.id },
     });
-  });
-
-  it("rechecks a removed member at admission and again before engine delivery", async ({
-    storeFixture,
-  }) => {
-    const s = await questionTask(storeFixture, "question-revoked");
-    await s.respond();
-    const replacement = await share(storeFixture, s.f);
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({ role: "owner" })
-      .where("workspaceId", "=", s.f.workspace.id)
-      .where("userId", "=", replacement)
-      .execute();
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({ state: "revoked", revokedAt: new Date(), revokedBy: s.f.userId })
-      .where("workspaceId", "=", s.f.workspace.id)
-      .where("userId", "=", s.f.userId)
-      .execute();
-    await expect(s.respond()).rejects.toMatchObject({ code: "forbidden" });
-    await expect(s.dispatch()).rejects.toMatchObject({ code: "forbidden" });
-    expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
   });
 
   it("lets exactly one answer win when a person and an agent race", async ({ storeFixture }) => {
