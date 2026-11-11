@@ -1103,15 +1103,12 @@ export function Sidebar({
                 pinned={[
                   shownPlaceKey ?? "",
                   editingGroup ?? "",
-                  ...tabEntries.flatMap(({ key }) =>
-                    key.startsWith("pending:") ||
-                    key === "filter-empty" ||
-                    key === "syncing" ||
-                    key === "start" ||
-                    key === "new"
-                      ? [key]
-                      : [],
-                  ),
+                  workspace.selection.kind === "pending"
+                    ? `pending:${workspace.selection.idempotencyKey}`
+                    : "",
+                  "filter-empty",
+                  "syncing",
+                  startPageOpen ? "start" : "new",
                 ]}
               />
             </RowMotion>

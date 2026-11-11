@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 /** A row the list draws, or a spacer standing in for the rows between two it draws. */
 export type WindowItem = { readonly index: number } | { readonly spacer: number };
@@ -110,7 +110,8 @@ export function useWindowedRows(input: {
     if (changed || gap !== view.gap) setView((current) => ({ gap, version: current.version + 1 }));
   });
 
-  useLayoutEffect(() => {
+  // After commit, not in layout: a parent list's ref is attached after its children's layout effects.
+  useEffect(() => {
     const node = list.current;
     if (!node) return;
     let frame = 0;
