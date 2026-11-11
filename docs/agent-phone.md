@@ -165,7 +165,10 @@ distribution, and the phone independently checks receipt, manifest and APK agree
 newer version, non-debuggability and the permanent signer
 ([update](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/update)). A phone on an
 older proof format needs one same-signer USB update. Android still decides install consent, and
-waiting for it is not an install failure.
+waiting for it is not an install failure. A silent update never depends on the installer of record:
+on Android 12+ an app holding `UPDATE_PACKAGES_WITHOUT_USER_ACTION` may update itself silently, and
+OEMs rewrite that record for USB installs (OnePlus's Android 12 records `pc`), so setup neither sets
+nor reads it.
 
 ## Verification
 

@@ -386,18 +386,7 @@ class PhoneSetup {
     const current = installed !== null && installed >= manifest.versionCode;
     // A build at least as new as this one, signed by us, is kept: Android
     // would refuse the downgrade, and an equal build is already this one.
-    if (current && (await this.#installedSignedBy(manifest))) {
-      if (!(await this.#installerIsSelf())) {
-        const bytes = await this.#installedApk();
-        if (bytes === null)
-          stop("install-failed", "The installed APK could not be read to retain its version.");
-        const result = await this.#adb.install(bytes);
-        if (!result.ok) stop("install-failed", result.output);
-        if (!(await this.#installerIsSelf()))
-          stop("configure-failed", "Android did not keep Agent Phone as its own installer.");
-      }
-      return;
-    }
+    if (current && (await this.#installedSignedBy(manifest))) return;
     // The installed build is not ours, so `pm` could only refuse to replace it.
     if (current) await this.#removeForeignBuild();
     let result = await this.#adb.install(this.#artifact.bytes);
@@ -412,25 +401,6 @@ class PhoneSetup {
         "The installed app is not signed by the certificate this Opensteer build names.",
       );
     }
-    // Android 16 can discard an installer name that did not exist on the first install.
-    // Replacing those same bytes now that the package exists records the installer without erasing data.
-    if (!(await this.#installerIsSelf())) {
-      const recorded = await this.#adb.install(this.#artifact.bytes);
-      if (!recorded.ok) stop("install-failed", recorded.output);
-      if (!(await this.#installerIsSelf()))
-        stop("configure-failed", "Android did not keep Agent Phone as its own installer.");
-    }
-  }
-
-  async #installerIsSelf(): Promise<boolean> {
-    const listed = await this.#required(["pm", "list", "packages", "-i", agentPhonePackageName]);
-    return listed.split("\n").some((line) => {
-      const fields = line.trim().split(/\s+/u);
-      return (
-        fields[0] === `package:${agentPhonePackageName}` &&
-        fields[1] === `installer=${agentPhonePackageName}`
-      );
-    });
   }
 
   async #installedVersionCode(): Promise<number | null> {

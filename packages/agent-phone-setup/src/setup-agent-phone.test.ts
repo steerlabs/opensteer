@@ -526,10 +526,10 @@ class FakePhone implements AgentPhoneAdb {
       }
       return ok(`${lines.join("\n")}\n`);
     }
-    if (command === `pm set-installer ${agentPhonePackageName} ${agentPhonePackageName}`)
-      return ok();
+    // Android may record another installer than a USB install names: OnePlus's
+    // Android 12 records `pc`, which lists as null.
     if (command === `pm list packages -i ${agentPhonePackageName}`)
-      return ok(`package:${agentPhonePackageName} installer=${agentPhonePackageName}\n`);
+      return ok(`package:${agentPhonePackageName} installer=null\n`);
     if (argv[0] === "appops" && argv.includes("REQUEST_INSTALL_PACKAGES"))
       return ok(argv[1] === "get" ? "REQUEST_INSTALL_PACKAGES: allow\n" : "");
     if (command === `pm path ${agentPhonePackageName}`) {
