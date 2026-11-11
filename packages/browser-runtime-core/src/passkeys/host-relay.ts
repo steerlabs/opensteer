@@ -174,6 +174,9 @@ export class HostRelayAuthenticator implements PasskeyAuthenticator {
       pending.settle(refused);
     }
   }
+  holdsSession(sessionId: string): boolean {
+    return [...this.#pending.values()].some((pending) => pending.sessionId === sessionId);
+  }
   disconnect(sessionId: string): void {
     for (const pending of this.#pending.values())
       if (pending.sessionId === sessionId) pending.settle(refused);

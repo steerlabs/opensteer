@@ -34,6 +34,193 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
+  it("sleeps a lease without closing its record and wakes once with the same identity", async () => {
+    const page = new FakePage({ url: "https://sleep.test/", title: "Keep me" });
+    const context = new FakeContext([page]);
+    const ledger = new SurfaceLedger(context);
+    const events: SurfaceLedgerEvent[] = [];
+    ledger.subscribe((event) => events.push(event));
+    await ledger.start();
+    await flushMicrotasks();
+    const before = ledger.snapshot()[0]!;
+    const revision = ledger.inventoryRevision;
+    const metrics = { width: 800, height: 600, deviceScaleFactor: 1, mobile: false };
+    await ledger.agentMetrics(await page.targetId(), metrics);
+    try {
+      expect(await ledger.sleep(before.id, () => null)).toBe(true);
+      expect(ledger.binding(before.id)).toBeNull();
+      expect(ledger.stateOf(before.id)).toBe("suspended");
+      expect(ledger.snapshot()[0]).toMatchObject({
+        id: before.id,
+        title: "Keep me",
+        url: before.url,
+        state: "suspended",
+      });
+      expect(ledger.inventoryRevision).toBe(revision);
+      expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toEqual([]);
+      const create = vi.spyOn(context, "createPage");
+      const [first, second] = await Promise.all([ledger.wake(before.id), ledger.wake(before.id)]);
+      expect(first).toEqual(second);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(ledger.snapshot()[0]).toMatchObject({
+        id: before.id,
+        order: before.order,
+        openerId: before.openerId,
+        sizedByAgent: true,
+        state: "live",
+      });
+      expect(ledger.snapshot()[0]!.documentId).not.toBe(before.documentId);
+      expect(ledger.viewportOf(before.id)).toEqual({ width: 800, height: 600 });
+      expect(ledger.inventoryRevision).toBe(revision);
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it.each(["demand", "document", "dialog", "close"])(
+    "aborts capture when %s arrives",
+    async (kind) => {
+      const page = new FakePage({ url: "https://capture.test/" });
+      const captured = Promise.withResolvers<unknown | null>();
+      const started = Promise.withResolvers<void>();
+      Object.assign(page, {
+        captureRestore: () => {
+          started.resolve();
+          return captured.promise;
+        },
+      });
+      const ledger = new SurfaceLedger(new FakeContext([page]));
+      await ledger.start();
+      const id = ledger.snapshot()[0]!.id;
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((e) => events.push(e));
+      let using: Promise<void> | undefined;
+      try {
+        const sleeping = ledger.sleep(id, (r) => (r.live?.dialog ? "dialog" : null));
+        await withTimeout(started.promise, 1000, {
+          timeoutError: () => new Error("Capture never started"),
+        });
+        if (kind === "demand")
+          using = ledger.use(id, async () => {
+            expect(page.isClosed()).toBe(false);
+          });
+        if (kind === "document") page.navigate("https://new.test/", "New");
+        if (kind === "dialog")
+          page.cdpSession.emit("Page.javascriptDialogOpening", { type: "alert", message: "Hold" });
+        if (kind === "close") await ledger.closeSurface(id);
+        captured.resolve({});
+        expect(await sleeping).toBe(false);
+        await using;
+        expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toHaveLength(
+          kind === "close" ? 1 : 0,
+        );
+        if (kind !== "close") expect(ledger.binding(id)?.page).toBe(page);
+      } finally {
+        captured.resolve(null);
+        await ledger.close();
+      }
+    },
+  );
+  it.each(["suspended", "resuming"])(
+    "closes a %s record once without leaking a page",
+    async (state) => {
+      const page = new FakePage({ url: "https://close.test/" });
+      const context = new FakeContext([page]);
+      const ledger = new SurfaceLedger(context);
+      await ledger.start();
+      const id = ledger.snapshot()[0]!.id;
+      await ledger.sleep(id, () => null);
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((e) => events.push(e));
+      const creating = Promise.withResolvers<FakePage>();
+      const started = Promise.withResolvers<void>();
+      const create = vi.spyOn(context, "createPage").mockImplementation(() => {
+        started.resolve();
+        return creating.promise;
+      });
+      let waking: Promise<unknown> | undefined;
+      try {
+        if (state === "resuming") {
+          waking = ledger.wake(id);
+          void waking.catch(() => undefined);
+          await withTimeout(started.promise, 1000, {
+            timeoutError: () => new Error("Wake never created a page"),
+          });
+        }
+        await ledger.closeSurface(id);
+        const next = new FakePage();
+        creating.resolve(next);
+        if (waking) {
+          await expect(waking).rejects.toMatchObject({ code: "not_found" });
+          expect(next.isClosed()).toBe(true);
+        }
+        expect(create).toHaveBeenCalledTimes(state === "resuming" ? 1 : 0);
+        expect(ledger.snapshot()).toEqual([]);
+        expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toHaveLength(1);
+      } finally {
+        creating.resolve(new FakePage());
+        await ledger.close();
+      }
+    },
+  );
+  it("keeps a failed wake suspended and permits a new address wake", async () => {
+    const page = new FakePage({ url: "https://retry.test/" });
+    const context = new FakeContext([page]);
+    const ledger = new SurfaceLedger(context);
+    await ledger.start();
+    const id = ledger.snapshot()[0]!.id;
+    await ledger.sleep(id, () => null);
+    const create = vi
+      .spyOn(context, "createPage")
+      .mockRejectedValueOnce(new Error("creation refused"));
+    try {
+      await expect(ledger.wake(id)).rejects.toThrow("creation refused");
+      expect(ledger.stateOf(id)).toBe("suspended");
+      const resumed = await ledger.wake(id);
+      expect(resumed.surface.id).toBe(id);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect((resumed.page as FakePage).cdpSession.sent).toContainEqual({
+        method: "Page.navigate",
+        parameters: { url: "https://retry.test/" },
+      });
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+  it("keeps title, address, opener and size through a delayed first wake commit", async () => {
+    const page = new FakePage({ url: "https://keep.test/", title: "Saved title" });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const before = ledger.snapshot()[0]!;
+    try {
+      await ledger.sleep(before.id, () => null);
+      const duringWake: string[] = [];
+      ledger.subscribe((event) => {
+        if (event.type === "geometry") duringWake.push(ledger.toRecord(before.id)!.state);
+      });
+      const binding = await ledger.wake(before.id);
+      expect(duringWake).toEqual(["suspended"]);
+      expect(binding.surface).toMatchObject({
+        title: before.title,
+        url: before.url,
+        order: before.order,
+        openerId: before.openerId,
+      });
+      expect(binding.surface.documentId).not.toBe(before.documentId);
+      (binding.page as FakePage).navigate("https://redirect.test/", "New title");
+      await flushMicrotasks();
+      expect(ledger.snapshot()[0]).toMatchObject({
+        url: "https://redirect.test/",
+        title: "New title",
+      });
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
   it("initializes a popup from its committed document when enable misses the first commit", async () => {
     const page = new FakePage({ url: "about:blank" });
     const deliver = page.cdpSession.emit.bind(page.cdpSession);

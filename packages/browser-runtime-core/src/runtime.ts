@@ -33,6 +33,7 @@ import type {
 } from "./browser/presentation.js";
 import { SessionFiles, sessionFilesRoot } from "./browser/session-files.js";
 import type { BrowserLoginAuthority } from "./browser/sign-in.js";
+import { TabSleeper } from "./browser/tab-sleeper.js";
 import { SurfaceLedger } from "./browser/surface-ledger.js";
 import { BrowserRuntimeError, toBrowserRuntimeError } from "./errors.js";
 import { LocalProfileStore, sameLocalBinding } from "./local-profile-store.js";
@@ -222,6 +223,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private readonly onHostCleanupFailure: NonNullable<BrowserRuntimeOptions["onHostCleanupFailure"]>;
   private readonly onStartFailure: NonNullable<BrowserRuntimeOptions["onStartFailure"]>;
   private readonly sessions = new Map<string, ActiveSession>();
+  private readonly sleeper = new TabSleeper();
   private shuttingDown = false;
   private readonly attempts = new Set<AbortController>();
   private shutdownResult: Promise<void> | undefined;
@@ -393,16 +395,19 @@ export class BrowserRuntime implements NativePresentationSource {
     surfaceId: BrowserSurfaceId,
   ): PresentedSurface | null {
     const session = this.sessions.get(sessionId);
+    session?.ledger.demand(surfaceId);
     const binding = session?.ledger.binding(surfaceId);
     if (this.shuttingDown || !session || !binding || binding.page.isClosed()) return null;
     const listeners = new Set<(event: PresentedSurfaceEvent) => void>();
     let released = false;
     const native = { sessionId, surfaceId, consumerToken: null as string | null };
     this.nativePresentations.add(native);
+    session.ledger.touch(surfaceId, true);
     const release = () => {
       if (released) return;
       released = true;
       this.nativePresentations.delete(native);
+      this.sleeper.poke();
       unsubscribe();
       session.presentations.delete(closed);
       binding.page.offClose(closed);
@@ -659,6 +664,7 @@ export class BrowserRuntime implements NativePresentationSource {
             "conflict",
             "The initial browser operation already has an outcome; it cannot start another browser.",
           );
+        this.sleeper.resetSessionState(active.sessionId);
         await wait(active.controller.reattach(sink));
         active.generation = ++this.generation;
         const generation = active.generation;
@@ -741,6 +747,7 @@ export class BrowserRuntime implements NativePresentationSource {
             // Every page the session holds, a tab the person opened included, is
             // one its agents can list and attach to.
             claimTarget: (targetId) => sessionRouter.claimTarget(claims.sessionId, targetId),
+            releaseTarget: (targetId) => sessionRouter.releaseTarget(claims.sessionId, targetId),
             // A person who started the browser from a view gets its first page
             // at that view's size, before anything loads there.
             initialViewport: claims.viewport
@@ -762,6 +769,7 @@ export class BrowserRuntime implements NativePresentationSource {
           const stateImports = host.stateImports;
           const stateHost = host;
           controller = new BrowserController({
+            sessionState: (state) => this.sleeper.setSessionState(claims.sessionId, state),
             loginAuthority: this.loginAuthority,
             nativePresentation: (surfaceId, consumerToken) => {
               const live = [...this.nativePresentations].filter(
@@ -811,6 +819,16 @@ export class BrowserRuntime implements NativePresentationSource {
           };
           host.sessions.set(claims.sessionId, active);
           this.sessions.set(claims.sessionId, active);
+          this.sleeper.add(claims.sessionId, {
+            ledger,
+            restoreVersion: claims.workspaceTabRestoreVersion,
+            blocked: (id) =>
+              [...this.nativePresentations].some(
+                (p) => p.sessionId === claims.sessionId && p.surfaceId === id,
+              )
+                ? "native"
+                : active.controller.sleepProtection(id),
+          });
           stage = "session-snapshot";
           await wait(controller.start());
           timing("root-page-ready", pageStarting);
@@ -840,6 +858,7 @@ export class BrowserRuntime implements NativePresentationSource {
               () => undefined,
             );
           }
+          this.sleeper.remove(claims.sessionId);
           this.sessions.delete(claims.sessionId);
           await boundedCleanup(
             settleCleanup([
@@ -1135,6 +1154,7 @@ export class BrowserRuntime implements NativePresentationSource {
   }
 
   shutdown(): Promise<void> {
+    this.sleeper.close();
     if (this.shutdownResult) return this.shutdownResult;
     this.shuttingDown = true;
     for (const attempt of this.attempts) attempt.abort();
@@ -1180,6 +1200,7 @@ export class BrowserRuntime implements NativePresentationSource {
     return this.lanes.run(current.host.identity.key, async () => {
       const active = this.sessions.get(sessionId);
       if (!active || active.generation !== generation) return;
+      this.sleeper.remove(sessionId);
       this.sessions.delete(sessionId);
       const host = active.host;
       host.sessions.delete(sessionId);
@@ -1271,7 +1292,10 @@ export class BrowserRuntime implements NativePresentationSource {
     await settleCleanup(
       sessions.flatMap((session) => [...closeSession(session), () => session.files.dispose()]),
     );
-    for (const session of sessions) this.sessions.delete(session.sessionId);
+    for (const session of sessions) {
+      this.sleeper.remove(session.sessionId);
+      this.sessions.delete(session.sessionId);
+    }
     host.sessions.clear();
     host.quiesced = true;
   }

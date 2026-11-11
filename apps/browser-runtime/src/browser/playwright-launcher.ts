@@ -174,6 +174,7 @@ export async function probePasskeySecurityState(
 }
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
+  readonly hostCost = "process" as const;
   private preparation: Promise<void> | undefined;
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
   private readonly nativeCloseFailures = new Set<string>();
@@ -351,7 +352,8 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       context.on("page", (page) => {
         page.on("close", () => openDialogs.delete(page));
       });
-      if (context.pages().length === 0) await context.newPage();
+      const anchor = await context.newPage();
+      if (context.pages().every((page) => page === anchor)) await context.newPage();
       const browserCdp = await browser.newBrowserCDPSession();
       const contexts = await browserCdp.send("Target.getBrowserContexts");
       if (
@@ -371,6 +373,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         openDialogs,
         authenticator,
         providerConfig,
+        anchor,
       );
       if (this.headless) launched.clipboard = await ChromiumClipboard.create(browser);
       // Sessions' agents hear of the pages they own as Chromium announces
@@ -844,6 +847,7 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
       this.pagesByPlaywrightPage.set(page, handle);
+      page.once("close", () => this.pagesByPlaywrightPage.delete(page));
     }
     return handle;
   }

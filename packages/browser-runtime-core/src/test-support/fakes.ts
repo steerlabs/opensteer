@@ -114,6 +114,11 @@ export class FakeCdpSession implements CdpSession {
  * in that live context.
  */
 export class FakePage implements BrowserPage {
+  captureRestore?: () => Promise<unknown | null>;
+  keepAwake: NonNullable<BrowserPage["keepAwake"]> = () => null;
+  hasOpenerAccess(): boolean {
+    return this.openerPage !== null;
+  }
   readonly cdpSession: FakeCdpSession;
   closeCount = 0;
   private closed = false;

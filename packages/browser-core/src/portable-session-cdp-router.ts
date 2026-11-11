@@ -248,6 +248,10 @@ export class SessionCdpRouter {
    * person opened, reachable by that session's agents, and its popups with it.
    * Claiming a page the session already owns changes nothing.
    */
+  releaseTarget(sessionId: string, targetId: string): void {
+    if (this.#ownerByTargetId.get(targetId) === sessionId) this.#releaseTarget(targetId);
+  }
+
   claimTarget(sessionId: string, targetId: string): void {
     this.#assertOpen();
     assertIdentifier(targetId, "CDP target ID");

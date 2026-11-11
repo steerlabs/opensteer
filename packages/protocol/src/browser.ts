@@ -425,9 +425,18 @@ export const BrowserCursorSchema = z.enum([
 export type BrowserCursor = z.infer<typeof BrowserCursorSchema>;
 const cursorSequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
+export const BrowserSessionStateSchema = z.strictObject({
+  runs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  viewed: z.array(BrowserSurfaceIdSchema),
+  pinned: z.array(BrowserSurfaceIdSchema),
+  keepAwake: z.boolean().optional(),
+});
+export type BrowserSessionState = z.infer<typeof BrowserSessionStateSchema>;
+
 const BaselineBrowserClientMessageSchema = z
   .discriminatedUnion("type", [
     z.strictObject({ ...browserBase, type: z.literal("tabs.resync") }),
+    BrowserSessionStateSchema.extend({ ...browserBase, type: z.literal("session.state") }),
     z.strictObject({
       ...browserBase,
       type: z.literal("session.saved"),
@@ -1394,11 +1403,12 @@ export const BrowserHistoryIconsSchema = z.object({
 });
 export type BrowserHistoryIcons = z.infer<typeof BrowserHistoryIconsSchema>;
 
-/** Host-only operations use the command channel with or without CDP; resume requires surfaceState. */
+/** Tab operations use the command channel with or without CDP; the Host admits each caller. */
 export const browserHostMethods = {
   openTab: "Opensteer.openTab",
   closeTab: "Opensteer.closeTab",
   resumeTab: "Opensteer.resumeTab",
+  listTabs: "Opensteer.listTabs",
   contextCandidate: "Opensteer.contextCandidate",
 } as const;
 export const browserBootstrapSessionsMaxBytes = 768 * 1024;

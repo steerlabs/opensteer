@@ -186,7 +186,7 @@ describe("Chromium child environment", () => {
       const context = {
         addInitScript: vi.fn().mockResolvedValue(undefined),
         newCDPSession: vi.fn().mockResolvedValue(tabSession),
-        newPage: vi.fn().mockResolvedValue(page),
+        newPage: vi.fn().mockImplementation(async () => ({ ...page })),
         on: vi.fn(),
         pages: () => [page],
       } as unknown as BrowserContext;
@@ -267,7 +267,7 @@ describe("Chromium child environment", () => {
       await expect(
         launched.cdp.send("Target.createTarget", { url: "https://example.com/" }),
       ).resolves.toEqual({ targetId: "agent-tab" });
-      expect(context.newPage).toHaveBeenCalledTimes(provider ? 2 : 1);
+      expect(context.newPage).toHaveBeenCalledTimes(provider ? 3 : 2);
       await vi.waitFor(() =>
         expect(tabSession.send).toHaveBeenCalledWith("Page.navigate", {
           url: "https://example.com/",

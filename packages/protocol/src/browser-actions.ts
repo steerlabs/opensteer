@@ -474,3 +474,56 @@ export const BrowserAgentEventSchema = z.strictObject({
   attachmentId: z.uuid(),
   event: BrowserActionEventSchema,
 });
+
+export const BrowserResumeTabParametersSchema = z.strictObject({
+  surfaceId: BrowserSurfaceIdSchema,
+});
+export const BrowserResumeTabResultSchema = z.strictObject({
+  surfaceId: BrowserSurfaceIdSchema,
+  targetId: identifier,
+  documentId: z.string().min(1).max(255),
+  reloaded: z.boolean(),
+});
+export type BrowserResumeTabResult = z.infer<typeof BrowserResumeTabResultSchema>;
+export const BrowserListTabsParametersSchema = z.strictObject({
+  cursor: z.string().regex(/^\d+$/u).optional(),
+});
+export const AgentTabSchema = z.strictObject({
+  surfaceId: BrowserSurfaceIdSchema,
+  targetId: identifier.nullable(),
+  state: z.enum(["live", "suspended"]),
+  title: z.string().max(256),
+  url: z.string().max(16_384),
+  order: z.number().int().nonnegative(),
+  openerId: BrowserSurfaceIdSchema.nullable(),
+  userActivity: z
+    .strictObject({
+      at: z.string(),
+      kind: z.enum(["click", "scroll", "typing", "navigation", "dialog"]),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      sinceLastAgentCommand: z.boolean(),
+    })
+    .nullable(),
+  pageResize: z
+    .strictObject({
+      at: z.string(),
+      width: z.number(),
+      height: z.number(),
+      agentSizeRemoved: z.literal(true).optional(),
+      sinceLastAgentCommand: z.boolean(),
+    })
+    .nullable(),
+  dialog: z
+    .strictObject({ id: z.string(), message: z.string().max(10_000), type: z.string() })
+    .nullable(),
+});
+export type AgentTab = z.infer<typeof AgentTabSchema>;
+/** Page target; one larger record travels alone within browserActionMaxBytes. */
+export const browserListTabsMaxBytes = 64 * 1024;
+export const BrowserListTabsResultSchema = z.strictObject({
+  tabs: z.array(AgentTabSchema),
+  nextCursor: z.string().nullable(),
+});
+
+export type BrowserListTabsResult = z.infer<typeof BrowserListTabsResultSchema>;

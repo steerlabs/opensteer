@@ -166,7 +166,9 @@ export class ScreencastController {
       if (active.casting === this.streaming) return;
       if (!this.streaming) {
         active.casting = false;
-        void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+        void this.ledger
+          .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+          .catch(() => undefined);
         return;
       }
       try {
@@ -233,7 +235,9 @@ export class ScreencastController {
       active.castAbort?.abort();
       if (active.casting) {
         active.casting = false;
-        void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+        void this.ledger
+          .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+          .catch(() => undefined);
       }
       await this.castActive(active, "raster-demand");
     });
@@ -271,7 +275,9 @@ export class ScreencastController {
       active.casting = false;
       // Chromium takes a session's commands in order, so the stop lands before
       // the start without waiting on a page that may not answer.
-      void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+      void this.ledger
+        .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+        .catch(() => undefined);
       await this.castActive(active, "geometry");
     });
   }
@@ -455,7 +461,10 @@ export class ScreencastController {
   /** Unbinds the page. Its stop is not awaited: a page under a dialog answers nothing else. */
   private stopActive(): void {
     const active = this.releaseActive();
-    if (active?.casting) void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+    if (active?.casting)
+      void this.ledger
+        .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+        .catch(() => undefined);
   }
 
   private releaseActive(): ActiveCast | null {
@@ -630,7 +639,13 @@ export class ScreencastController {
    * a JavaScript dialog answers no command until the dialog closes, so its
    * cast starts then and the stream never waits on it. Runs under the mutex.
    */
-  private async castActive(active: ActiveCast, reason: string): Promise<void> {
+  private castActive(active: ActiveCast, reason: string): Promise<void> {
+    if (this.closed || this.active !== active || !this.streaming || active.casting)
+      return Promise.resolve();
+    return this.ledger.use(active.surfaceId, () => this.castLive(active, reason));
+  }
+
+  private async castLive(active: ActiveCast, reason: string): Promise<void> {
     if (this.closed || this.active !== active || !this.streaming || active.casting) return;
     if (this.ledger.dialogOpen(active.surfaceId)) {
       this.showRetainedPicture(active);
@@ -784,7 +799,9 @@ export class ScreencastController {
     const native = !!this.ledger.binding(active.surfaceId)?.page.capture;
     if (native && active.repairAttempted) {
       active.casting = false;
-      void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+      void this.ledger
+        .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+        .catch(() => undefined);
       this.onError?.(
         new BrowserRuntimeError(
           "internal",
@@ -811,7 +828,9 @@ export class ScreencastController {
           return;
         }
         active.casting = false;
-        void active.cdp.send("Page.stopScreencast").catch(() => undefined);
+        void this.ledger
+          .use(active.surfaceId, () => active.cdp.send("Page.stopScreencast"))
+          .catch(() => undefined);
         const page = this.ledger.binding(active.surfaceId)?.page;
         if (page?.invalidateSurface) await page.invalidateSurface();
         await this.castActive(active, "raster-mismatch");
