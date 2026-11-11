@@ -1,0 +1,97 @@
+name: opensteer-team
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    restart: unless-stopped
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2
+    environment:
+      POSTGRES_USER: opensteer
+      POSTGRES_DB: opensteer
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres-data:/var/lib/postgresql]
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U opensteer -d opensteer]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  host:
+    build:
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: host
+      args: &build-args
+        OPENSTEER_AGENT_PHONE_MODE: none
+        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?required}
+        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?required}
+    restart: unless-stopped
+    environment:
+      OPENSTEER_DEPLOYMENT_KIND: team
+      OPENSTEER_BIND_ADDRESS: 0.0.0.0
+      OPENSTEER_PORT: "4310"
+      OPENSTEER_MODE: production
+      OPENSTEER_CANONICAL_ORIGIN: ${OPENSTEER_CANONICAL_ORIGIN:?required}
+      OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url
+      OPENSTEER_AUTH_SECRET_FILE: /run/secrets/auth_secret
+      OPENSTEER_CREDENTIAL_KEY_PATH: /run/secrets/credential_key
+      OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_FILE: /run/secrets/initial_owner_enrollment_token
+      OPENSTEER_HOST_DATA_DIR: /var/lib/opensteer
+      OPENSTEER_HOST_PRIVATE_KEY_PATH: /var/lib/opensteer/keys/host-private.pem
+      OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer/keys/host-public.pem
+    secrets: [database_url, auth_secret, credential_key, initial_owner_enrollment_token]
+    volumes: [host-data:/var/lib/opensteer]
+    networks: [database, edge]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4310/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 45s
+  gateway:
+    build:
+      context: ../..
+      dockerfile: deploy/container/Containerfile
+      target: gateway
+      args: *build-args
+    restart: unless-stopped
+    environment:
+      OPENSTEER_SITE_ADDRESS: ${OPENSTEER_GATEWAY_SITE_ADDRESS:-${OPENSTEER_CANONICAL_ORIGIN}}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    networks: [edge]
+    ports: ["${OPENSTEER_HTTP_BIND:-0.0.0.0}:80:80", "${OPENSTEER_HTTPS_BIND:-0.0.0.0}:443:443"]
+    depends_on:
+      host:
+        condition: service_healthy
+networks:
+  database:
+    internal: true
+  edge: {}
+volumes:
+  postgres-data: {}
+  host-data: {}
+  caddy-data: {}
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url
+  auth_secret:
+    file: ./secrets/auth_secret
+  credential_key:
+    file: ./secrets/credential_key
+  initial_owner_enrollment_token:
+    file: ./secrets/initial_owner_enrollment_token
