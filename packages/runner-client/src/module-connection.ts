@@ -433,6 +433,7 @@ function modulePrimaryMessageFence(message: PostAuthenticationHostMessage): Runn
     case "host.app.connect":
     case "host.app.stop":
     case "host.app.cancel":
+    case "host.workspace.project.provision":
     case "host.workspace.local.provision":
     case "host.workspace.local.relocate":
     case "host.workspace.local.inspect":
