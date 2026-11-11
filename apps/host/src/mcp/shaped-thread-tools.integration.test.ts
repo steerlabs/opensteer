@@ -650,6 +650,32 @@ describeStore("agents answering task questions", (it) => {
     }
   });
 
+  it("delivers an accepted answer after the answering Run has ended", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-answerer-ended");
+    await s.respond();
+    await storeFixture.store.commitRunnerEvent({
+      environmentId: s.f.environmentId,
+      runnerBootId: s.f.runnerBootId,
+      runnerId: s.f.runnerId,
+      event: pendingEvent({
+        environmentId: s.f.environmentId,
+        workspaceId: s.f.workspace.id,
+        runId: s.f.run.id,
+        threadId: s.f.thread.id,
+        bindingGeneration: s.f.bindingGeneration,
+        ordinal: 1,
+        type: "run.completed",
+        data: { status: "completed" },
+      }),
+    });
+    const { received } = await s.dispatch();
+    expect(received).toEqual({ kind: "form", answers: { format: ["CSV"] } });
+    expect(await storeFixture.store.requests.get(s.request.id)).toMatchObject({
+      status: "fulfilled",
+      settlementProvenance: { kind: "agent", runId: s.f.run.id },
+    });
+  });
+
   it("rechecks a removed member at admission and again before engine delivery", async ({
     storeFixture,
   }) => {

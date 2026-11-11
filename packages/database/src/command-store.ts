@@ -1300,7 +1300,7 @@ export async function dispatchRequestResponse(
       if (agentResponder && agentResponder.authority.userId !== observed.respondingUserId)
         throw requestResponseDispatchConflict();
       if (agentResponder)
-        await lockThreadCaller(transaction, agentResponder.authority, [observed.runId]);
+        await lockThreadCaller(transaction, agentResponder.authority, [observed.runId], true);
       const run = await transaction
         .selectFrom("runs")
         .select(["requestedBy", "status", "threadId"])
@@ -1340,7 +1340,9 @@ export async function dispatchRequestResponse(
         true,
       );
       if (agentResponder)
-        await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId);
+        await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
+          admitted: true,
+        });
       await lockThreadRow(transaction, observed.threadId);
       await lockRunProjectionRows(transaction, {
         runIds: [observed.runId],
@@ -1409,7 +1411,9 @@ export async function dispatchRequestResponse(
       void sendPromise.catch(accepted.reject);
       await accepted.promise;
       if (agentResponder)
-        await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId);
+        await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
+          admitted: true,
+        });
       const succeeded = await succeedCommandInTransaction(transaction, commandId);
       if (succeeded.events.filter((event) => event.type === "request.resolved").length !== 1) {
         throw new OpensteerError({

@@ -191,7 +191,9 @@ alone receives a Host-authored notice, unless its wait already delivers the ques
 and native engine subagents send no such notice. A person can always answer too, and the first answer
 wins. Native engine subagent questions, secret fields, approvals, access, sign-ins, credentials and
 other consent remain human-only. Agent answers
-name the answering Run and conversation, never the person. Done is shared and needs active membership plus the task's
+name the answering Run and conversation, never the person. An accepted answer outlives the Run that
+gave it: delivery rechecks the person's membership, reach and access and the Request's revision, not
+that the answering Run is still live. Done is shared and needs active membership plus the task's
 creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
 open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
 revokes grants; Reopen starts nothing. A person's own message reopens a Done task they could reopen

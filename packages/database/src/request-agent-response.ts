@@ -56,11 +56,16 @@ export async function assertAgentRequestTarget(
   transaction: Transaction<DatabaseSchema>,
   authority: ThreadCallerAuthority,
   threadId: Request["originatingThreadId"],
-  readOnly = false,
+  { readOnly = false, admitted = false }: { readOnly?: boolean; admitted?: boolean } = {},
 ): Promise<void> {
   if (authority.kind === "run" && authority.scope.requestedBy !== authority.userId)
     throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
-  await assertThreadCaller(transaction, authority, { threadId, readOnly, activate: !readOnly });
+  await assertThreadCaller(transaction, authority, {
+    threadId,
+    readOnly,
+    activate: !readOnly,
+    admitted,
+  });
   const thread = await transaction
     .selectFrom("threads")
     .select("workspaceId")
@@ -103,7 +108,9 @@ export function readAgentRequest(
       .where("id", "=", RequestIdSchema.parse(requestId))
       .executeTakeFirst();
     if (!row) throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
-    await assertAgentRequestTarget(transaction, authority, row.originatingThreadId, true);
+    await assertAgentRequestTarget(transaction, authority, row.originatingThreadId, {
+      readOnly: true,
+    });
     return requestFromRow(row);
   }).catch((error: unknown) => {
     if (
