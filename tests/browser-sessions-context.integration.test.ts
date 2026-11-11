@@ -1,3 +1,4 @@
+import { browserInventory } from "./browser-sessions.test-support.js";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   ignoreForeignTestRequest,
@@ -130,9 +131,8 @@ run("Browser Sessions through a whole deployment", () => {
         },
       });
       addCleanup("automatic context Host client", async () => client.dispose());
-      const inventory = await stack.api["browser.tabs.get"]({ sessionId });
-      if (!inventory.ok) throw new Error(JSON.stringify(inventory));
-      const tabId = inventory.data.tabs[0]!.id;
+      const inventory = await browserInventory(stack, sessionId);
+      const tabId = inventory.tabs[0]!.id;
       const read = async (label: string, pageId: string) => {
         const candidate = await client.readBrowserContextCandidate(sessionId, pageId);
         candidates.push({ label, candidate });
@@ -144,10 +144,8 @@ run("Browser Sessions through a whole deployment", () => {
       // covered by the runtime's gated tests.
       const published = (pageId: string, title: string) =>
         waitFor(async () => {
-          const catalog = await stack.api["browser.tabs.get"]({ sessionId });
-          return (
-            catalog.ok && catalog.data.tabs.some((tab) => tab.id === pageId && tab.title === title)
-          );
+          const catalog = await browserInventory(stack, sessionId);
+          return catalog.tabs.some((tab) => tab.id === pageId && tab.title === title);
         }, 10_000);
       await published(tabId, "Automatic context /login");
       const login = await read("before delayed password", tabId);
@@ -731,7 +729,9 @@ run("Browser Sessions through a whole deployment", () => {
     const coldRows = async () => {
       const result = await stack.api["bootstrap.get"]({});
       if (!result.ok) throw new Error(JSON.stringify(result));
-      return result.data.browser.workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? [];
+      return (
+        (await browserInventory(stack)).workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? []
+      );
     };
     await waitFor(async () => (await coldRows()).filter((row) => row.iconRef).length === 2, 10_000);
     const before = await coldRows();
@@ -771,23 +771,18 @@ run("Browser Sessions through a whole deployment", () => {
       idempotencyKey: randomUUID(),
     });
     expect(restored, JSON.stringify(restored)).toMatchObject({ ok: true });
-    const restoredCatalog = await stack.api["browser.tabs.get"]({
-      sessionId:
-        restored.ok && restored.data.type === "workspace.tab.activate"
-          ? restored.data.session.id
-          : sessionId,
-    });
-    expect(restoredCatalog).toMatchObject({
-      ok: true,
-      data: {
-        tabs: [
-          expect.objectContaining({
-            id: tabs[0]!.tabId,
-            iconRef: before.find((row) => row.id === tabs[0]!.tabId)!.iconRef,
-          }),
-        ],
-      },
-    });
+    const restoredCatalog = await browserInventory(
+      stack,
+      restored.ok && restored.data.type === "workspace.tab.activate"
+        ? restored.data.session.id
+        : sessionId,
+    );
+    expect(restoredCatalog.tabs.filter((tab) => tab.documentId !== null)).toEqual([
+      expect.objectContaining({
+        id: tabs[0]!.tabId,
+        iconRef: before.find((row) => row.id === tabs[0]!.tabId)!.iconRef,
+      }),
+    ]);
     const rebound = await coldRows();
     const sibling = rebound.find((row) => row.id === tabs[1]!.tabId)!;
     expect(sibling.state).toBe("suspended");

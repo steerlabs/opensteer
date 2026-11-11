@@ -1,3 +1,4 @@
+import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -63,8 +64,9 @@ run("Browser Sessions through a whole deployment", () => {
     if (!first.ok || first.data.type !== "browser.tab.open") throw new Error(JSON.stringify(first));
     const firstOpened = first.data;
     expect(retry).toEqual(first);
-    expect(firstOpened.catalog.tabs).toHaveLength(2);
-    expect(firstOpened.catalog.tabs.some((tab) => tab.id === firstOpened.tabId)).toBe(true);
+    const firstInventory = await browserInventory(stack, sessionId);
+    expect(firstInventory.tabs).toHaveLength(2);
+    expect(firstInventory.tabs.some((tab) => tab.id === firstOpened.tabId)).toBe(true);
     const mismatch = await stack.api["commands.dispatch"]({
       ...command,
       url: "https://example.com/",
@@ -96,7 +98,7 @@ run("Browser Sessions through a whole deployment", () => {
       type: "browser.tab.close",
       sessionId,
       surfaceId: first.data.tabId,
-      inventoryRevision: first.data.catalog.inventoryRevision!,
+      inventoryRevision: firstInventory.inventoryRevision,
       idempotencyKey: randomUUID(),
     });
     if (!closed.ok || closed.data.type !== "browser.tab.close")
@@ -115,16 +117,25 @@ run("Browser Sessions through a whole deployment", () => {
         headers.set("origin", stack.hostOrigin.origin);
         return fetch(input, { ...init, headers });
       },
-      webSocketFactory: () => {
-        throw new Error("Opening a tab must not create a viewer socket.");
+      webSocketFactory: (url) => {
+        expect(url).not.toContain("/browser-sessions/");
+        return new WebSocket(url, {
+          headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+        }) as unknown as WebSocketClient;
       },
     });
     addCleanup("Host client", async () => client.dispose());
     const urlSessionId = BrowserSessionIdSchema.parse(
       await startPersonBrowser(stack, { viewport: { height: 700, width: 1000 } }),
     );
+    await client.load();
     const clientOpened = await client.openBrowserTab(urlSessionId, { url: site.origin });
-    expect(clientOpened.catalog.tabs.some((tab) => tab.id === clientOpened.tabId)).toBe(true);
+    expect(
+      client
+        .getSnapshot()
+        .browserSessions.find((session) => session.id === clientOpened.sessionId)!
+        .tabCatalog!.tabs.some((tab) => tab.id === clientOpened.tabId),
+    ).toBe(true);
     await waitFor(
       async () =>
         (await client.readBrowserContextCandidate(urlSessionId, clientOpened.tabId)).url ===
@@ -132,13 +143,14 @@ run("Browser Sessions through a whole deployment", () => {
       15_000,
     );
     await stack.host.browser.stop(owner.id, urlSessionId);
-    const last = closed.data.catalog.tabs[0]!;
+    const afterClose = await browserInventory(stack, sessionId);
+    const last = afterClose.tabs[0]!;
     const race = await Promise.all([
       stack.api["commands.dispatch"]({
         type: "browser.tab.close",
         sessionId,
         surfaceId: last.id,
-        inventoryRevision: closed.data.catalog.inventoryRevision!,
+        inventoryRevision: afterClose.inventoryRevision,
         idempotencyKey: randomUUID(),
       }),
       stack.api["commands.dispatch"]({ ...command, idempotencyKey: randomUUID() }),
@@ -203,9 +215,8 @@ run("Browser Sessions through a whole deployment", () => {
     const started = Date.now();
     const timeline: { at: number; step: string; loading: boolean | undefined }[] = [];
     const catalog = async () => {
-      const read = await stack.api["browser.tabs.get"]({ sessionId });
-      if (!read.ok) throw new Error(JSON.stringify(read));
-      return read.data;
+      const read = await browserInventory(stack, sessionId);
+      return read;
     };
     const tabOf = async (tabId: string) => (await catalog()).tabs.find((tab) => tab.id === tabId);
     const note = async (step: string, tabId: string) =>
@@ -268,7 +279,7 @@ run("Browser Sessions through a whole deployment", () => {
     await waitFor(async () => site.requests.includes("/slow-frame"), 15_000);
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     await note("1.5 s into a frame that never finishes", tabId);
-    expect(timeline.at(-1)?.loading).toBeUndefined();
+    expect(timeline.at(-1)?.loading).toBe(false);
 
     // A navigation the server answers with 204 leaves no spinner behind.
     control.socket.send(
@@ -277,7 +288,7 @@ run("Browser Sessions through a whole deployment", () => {
     await waitFor(async () => site.requests.includes("/empty"), 15_000);
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     await note("1 s after a 204 answer", tabId);
-    expect(timeline.at(-1)?.loading).toBeUndefined();
+    expect(timeline.at(-1)?.loading).toBe(false);
 
     // Reloading a held page loads again, and closing the tab takes it all away.
     control.socket.send(
@@ -321,9 +332,8 @@ run("Browser Sessions through a whole deployment", () => {
       });
       expect(opened.ok).toBe(true);
     }
-    const catalog = await stack.api["browser.tabs.get"]({ sessionId });
-    if (!catalog.ok) throw new Error(JSON.stringify(catalog));
-    expect(catalog.data.tabs).toHaveLength(9);
+    const catalog = await browserInventory(stack, sessionId);
+    expect(catalog.tabs).toHaveLength(9);
     const client = new HttpHostClient({
       baseUrl: stack.hostOrigin,
       refreshIntervalMs: 0,
@@ -340,7 +350,7 @@ run("Browser Sessions through a whole deployment", () => {
     });
     addCleanup("Host client", async () => client.dispose());
     await client.load();
-    const targets = catalog.data.tabs.map((tab) => tab.id);
+    const targets = catalog.tabs.map((tab) => tab.id);
     const release = targets
       .slice(0, 8)
       .map((surfaceId) => client.retainBrowserWatch(sessionId, surfaceId));
@@ -377,7 +387,7 @@ run("Browser Sessions through a whole deployment", () => {
     );
     addCleanup("brittle viewer", async () => brittle.close());
     await brittle.handle(
-      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: targets[0]! })),
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: targets[8]! })),
       false,
     );
     failOutcome = true;
@@ -393,8 +403,6 @@ run("Browser Sessions through a whole deployment", () => {
         client.browserWatchState(sessionId, targets[8]!).error !== null,
       25_000,
     );
-    expect(writerFailures).toBe(1);
-    expect(failedReaderClosed).toBe(true);
     const saturated = targets.map((id) => ({
       id,
       ...client.browserWatchState(sessionId, id),
@@ -412,13 +420,15 @@ run("Browser Sessions through a whole deployment", () => {
     expect(
       targets.slice(1).every((id) => client.browserWatchState(sessionId, id).status === "live"),
     ).toBe(true);
+    expect(writerFailures).toBe(1);
+    expect(failedReaderClosed).toBe(true);
     const recovered = targets.slice(1).map((id) => ({
       id,
       status: client.browserWatchState(sessionId, id).status,
       frameId: client.browserWatchFrame(sessionId, id)?.header.frameId,
     }));
     for (const drop of release) drop();
-    let current = catalog.data;
+    let current = catalog;
     for (const surfaceId of targets.slice(2)) {
       const closed = await stack.api["commands.dispatch"]({
         type: "browser.tab.close",
@@ -429,7 +439,7 @@ run("Browser Sessions through a whole deployment", () => {
       });
       if (!closed.ok || closed.data.type !== "browser.tab.close")
         throw new Error(JSON.stringify(closed));
-      current = closed.data.catalog;
+      current = await browserInventory(stack, sessionId);
     }
     expect(current.tabs).toHaveLength(2);
     const displayed = current;
@@ -448,17 +458,15 @@ run("Browser Sessions through a whole deployment", () => {
       idempotencyKey: randomUUID(),
     });
     expect(firstDecision).toMatchObject({ ok: false, error: { reason: "stale-tab-inventory" } });
-    const surviving = await stack.api["browser.tabs.get"]({ sessionId });
-    expect(surviving).toMatchObject({
-      ok: true,
-      data: { tabs: [{ id: targets[0]!, availability: "ready" }] },
-    });
-    if (!surviving.ok) throw new Error("Session did not survive first decision");
+    const surviving = await browserInventory(stack, sessionId);
+    expect(surviving.tabs).toEqual([
+      expect.objectContaining({ id: targets[0]!, availability: "ready" }),
+    ]);
     const secondDecision = await stack.api["commands.dispatch"]({
       type: "browser.tab.close",
       sessionId,
       surfaceId: targets[0]!,
-      inventoryRevision: surviving.data.inventoryRevision!,
+      inventoryRevision: surviving.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
     expect(secondDecision).toMatchObject({ ok: true, data: { outcome: "session-closed" } });
@@ -715,7 +723,7 @@ run("Browser Sessions through a whole deployment", () => {
     addCleanup("control viewer", async () => control.socket.terminate());
     const surfaceId = control.activeSurfaceId;
     const firstFrame = waitForBrowserFrame(control.socket, true);
-    control.socket.send(JSON.stringify({ type: "stream.subscribe" }));
+    control.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
     const startFrame = (await firstFrame).header;
     expect(startFrame).toMatchObject({ viewportHeight: 777, viewportWidth: 1_111 });
     const reflowsBeforeFollow = site.seen.filter((entry) => entry.at === "resize");
@@ -755,7 +763,7 @@ run("Browser Sessions through a whole deployment", () => {
     );
     expect(watchResizes).toEqual([]);
     const afterWatch = waitForBrowserFrame(control.socket, true);
-    control.socket.send(JSON.stringify({ type: "navigation.reload" }));
+    control.socket.send(JSON.stringify({ type: "navigation.reload", surfaceId }));
     const afterWatchHeader = (await afterWatch).header;
     expect(afterWatchHeader).toMatchObject({ viewportHeight: 700, viewportWidth: 1_000 });
     await waitFor(async () => site.seen.filter((entry) => entry.at === "load").length >= 2, 10_000);
@@ -922,7 +930,7 @@ run("Browser Sessions through a whole deployment", () => {
       addCleanup("control viewer", async () => control.socket.terminate());
       const opener = control.activeSurfaceId;
       const viewer = recordBrowserView(control.socket);
-      control.socket.send(JSON.stringify({ type: "stream.subscribe" }));
+      control.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: opener }));
       await waitFor(async () => site.seen.includes("opener-load"), 20_000);
       const frameOf = (surfaceId: string) => (entry: ViewerEntry) =>
         entry.kind === "frame" &&
@@ -956,18 +964,13 @@ run("Browser Sessions through a whole deployment", () => {
         }
         let openedPopup: string | undefined;
         await waitFor(async () => {
-          openedPopup = viewer.entries
-            .slice(from)
-            .flatMap((entry) =>
-              entry.kind === "message" && entry.message.type === "browser.surfaces.changed"
-                ? entry.message.surfaces
-                : [],
-            )
-            .find((surface) => surface.openerId != null && surface.id !== opener)?.id;
+          openedPopup = (await browserInventory(stack, sessionId)).tabs.find(
+            (surface) => surface.openerId != null && surface.id !== opener,
+          )?.id;
           return openedPopup !== undefined;
         }, 10_000);
         expect(control.activeSurfaceId).toBe(opener);
-        control.socket.send(JSON.stringify({ type: "surface.activate", surfaceId: openedPopup }));
+        control.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: openedPopup }));
         const since = () => viewer.entries.slice(from);
         const shownAt = () =>
           since().findIndex(
@@ -988,8 +991,8 @@ run("Browser Sessions through a whole deployment", () => {
         const namedAt = since().findIndex(
           (entry) =>
             entry.kind === "message" &&
-            entry.message.type === "browser.surfaces.changed" &&
-            entry.message.surfaces.some((surface) => surface.id === popup),
+            entry.message.type === "browser.surface" &&
+            entry.message.surface?.id === popup,
         );
         const order = since()
           .slice(0, shownAt() + 1)
@@ -998,7 +1001,12 @@ run("Browser Sessions through a whole deployment", () => {
         // They answer the dialog they see, by its id; the popup then draws.
         const answeredFrom = viewer.entries.length;
         control.socket.send(
-          JSON.stringify({ accept: true, dialogId: dialog.id, type: "dialog.respond" }),
+          JSON.stringify({
+            accept: true,
+            dialogId: dialog.id,
+            surfaceId: popup,
+            type: "dialog.respond",
+          }),
         );
         await waitFor(
           async () => site.seen.some((at) => at.startsWith(`popup-answered:${kind}`)),
@@ -1040,21 +1048,17 @@ run("Browser Sessions through a whole deployment", () => {
 
         // Closing the popup returns them to the opener, which is as it was.
         const closedFrom = viewer.entries.length;
-        control.socket.send(JSON.stringify({ surfaceId: popup, type: "surface.close" }));
+        const closed = await stack.api["commands.dispatch"]({
+          type: "workspace.tab.close",
+          tabId: popup,
+          idempotencyKey: randomUUID(),
+        });
+        expect(closed).toMatchObject({ ok: true });
+        control.socket.send(JSON.stringify({ surfaceId: opener, type: "stream.subscribe" }));
         await waitFor(async () => viewer.entries.slice(closedFrom).some(frameOf(opener)), 10_000);
-        const surfacesAfterClose = viewer.entries
-          .slice(closedFrom)
-          .flatMap((entry) =>
-            entry.kind === "message" && entry.message.type === "browser.surfaces.changed"
-              ? [
-                  entry.message.surfaces.map((surface) => ({
-                    active: surface.active,
-                    id: surface.id,
-                  })),
-                ]
-              : [],
-          )
-          .at(-1);
+        const surfacesAfterClose = (await browserInventory(stack, sessionId)).tabs.map(
+          (surface) => ({ id: surface.id }),
+        );
         journeys.push({
           kind,
           dialog,
@@ -1077,10 +1081,10 @@ run("Browser Sessions through a whole deployment", () => {
         viewer.entries
           .slice(from)
           .flatMap((entry) =>
-            entry.kind === "message" && entry.message.type === "browser.surfaces.changed"
-              ? entry.message.surfaces
-                  .filter((surface) => surface.active)
-                  .map((surface) => surface.id)
+            entry.kind === "message" &&
+            entry.message.type === "browser.surface" &&
+            entry.message.surface
+              ? [entry.message.surface.id]
               : [],
           )
           .at(-1);
@@ -1095,27 +1099,30 @@ run("Browser Sessions through a whole deployment", () => {
           10_000,
         );
       }
+      const existingTabs = new Set(
+        (await browserInventory(stack, sessionId)).tabs.map((tab) => tab.id),
+      );
       control.socket.send(
         JSON.stringify({ type: "surface.open", url: `${site.origin}/asks`, viewport: view }),
       );
+      let askingId: string | undefined;
+      await waitFor(async () => {
+        askingId = (await browserInventory(stack, sessionId)).tabs.find(
+          (tab) => !existingTabs.has(tab.id),
+        )?.id;
+        return askingId !== undefined;
+      }, 10_000);
       if (mode === "startup failure") {
         await loadingStopped.promise;
-        await waitFor(async () => {
-          const latest = viewer.entries.findLast(
-            (entry) =>
-              entry.kind === "message" && entry.message.type === "browser.surfaces.changed",
-          );
-          return (
-            latest?.kind === "message" &&
-            latest.message.type === "browser.surfaces.changed" &&
-            latest.message.surfaces.some(
-              (surface) =>
-                surface.active && surface.url === `${site.origin}/asks` && !surface.loading,
-            )
-          );
-        }, 10_000);
-        control.socket.send(JSON.stringify({ type: "stream.subscribe" }));
+        await waitFor(
+          async () =>
+            (await browserInventory(stack, sessionId)).tabs.some(
+              (surface) => surface.id === askingId && !surface.loading,
+            ),
+          10_000,
+        );
       }
+      control.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId: askingId }));
       if (
         mode === "stopped navigation" ||
         mode === "stopped before rejection" ||
@@ -1237,25 +1244,25 @@ run("Browser Sessions through a whole deployment", () => {
           : null;
       if (!waitingDialog) throw new Error("The tab's dialog was not shown.");
       const awayFrom = viewer.entries.length;
-      control.socket.send(JSON.stringify({ surfaceId: opener, type: "surface.activate" }));
+      control.socket.send(JSON.stringify({ surfaceId: opener, type: "stream.subscribe" }));
       await waitFor(async () => viewer.entries.slice(awayFrom).some(frameOf(opener)), 10_000);
       const returnFrom = viewer.entries.length;
       const returnedAt = performance.now();
-      const pictureReceived = Promise.withResolvers<void>();
-      const onPicture = () => {
-        if (!viewer.entries.slice(returnFrom).some(frameOf(asking))) return;
-        control.socket.off("message", onPicture);
-        pictureReceived.resolve();
-      };
-      control.socket.on("message", onPicture);
-      control.socket.send(JSON.stringify({ surfaceId: asking, type: "surface.activate" }));
-      await pictureReceived.promise;
+      control.socket.send(JSON.stringify({ surfaceId: asking, type: "stream.subscribe" }));
+      await vi.waitFor(
+        () =>
+          expect(
+            viewer.entries.slice(returnFrom).some(frameOf(asking)),
+            "The held tab did not return its picture while the dialog waited.",
+          ).toBe(true),
+        { timeout: 10_000 },
+      );
       const back = viewer.entries.slice(returnFrom);
       const listAt = back.findIndex(
         (entry) =>
           entry.kind === "message" &&
-          entry.message.type === "browser.surfaces.changed" &&
-          entry.message.surfaces.some((surface) => surface.active && surface.id === asking),
+          entry.message.type === "browser.surface" &&
+          entry.message.surface?.id === asking,
       );
       const pictureAt = back.findIndex(frameOf(asking));
       const retained = back[pictureAt];
@@ -1266,7 +1273,12 @@ run("Browser Sessions through a whole deployment", () => {
       }
       const answerFrom = viewer.entries.length;
       control.socket.send(
-        JSON.stringify({ accept: true, dialogId: waitingDialog.id, type: "dialog.respond" }),
+        JSON.stringify({
+          accept: true,
+          dialogId: waitingDialog.id,
+          surfaceId: asking,
+          type: "dialog.respond",
+        }),
       );
       await waitFor(async () => site.seen.includes("asked:true"), 10_000);
       await waitFor(async () => viewer.entries.slice(answerFrom).some(frameOf(asking)), 10_000);
@@ -1293,7 +1305,8 @@ run("Browser Sessions through a whole deployment", () => {
       };
       const bootstrap = await stack.api["bootstrap.get"]({});
       const sessionState =
-        bootstrap.ok && bootstrap.data.browser.sessions.find((s) => s.id === sessionId)?.state;
+        bootstrap.ok &&
+        bootstrap.data.browser.groups.rows.find((s) => s.sessionId === sessionId)?.state;
       const outcome = {
         mode,
         handoffInjected,
@@ -1330,7 +1343,7 @@ run("Browser Sessions through a whole deployment", () => {
           height: journey.popupFrame.header.rasterHeight,
           width: journey.popupFrame.header.rasterWidth,
         });
-        expect(journey.openerAfterClose).toEqual([{ active: true, id: opener }]);
+        expect(journey.openerAfterClose).toEqual([{ id: opener }]);
       }
       expect(waitingTab.listBeforePicture, JSON.stringify(waitingTab.order)).toBe(true);
       expect(waitingTab.pictureAfterMs).not.toBeNull();
@@ -1406,12 +1419,22 @@ run("Browser Sessions through a whole deployment", () => {
       const control = await openBrowserView(stack, sessionId, "control");
       addCleanup("control viewer", async () => control.socket.terminate());
       const surfaceId = control.activeSurfaceId;
-      const snapshotDialog = control.snapshot.dialog;
+      expect(control.snapshot.dialog).toBeNull();
+      const held = nextJson(control.socket, "browser.dialog.changed");
+      control.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
+      const heldMessage = BrowserServerMessageSchema.parse(await held);
+      if (heldMessage.type !== "browser.dialog.changed") throw new Error("Expected held dialog");
+      const snapshotDialog = heldMessage.dialog;
       expect(snapshotDialog).toMatchObject(releasedDialog);
       expect(snapshotDialog?.id).toMatch(/^[0-9a-f-]{36}$/);
       const late = await openBrowserView(stack, sessionId, "control");
       addCleanup("late viewer", async () => late.socket.terminate());
-      expect(late.snapshot.dialog).toEqual(snapshotDialog);
+      expect(late.snapshot.dialog).toBeNull();
+      const lateHeld = nextJson(late.socket, "browser.dialog.changed");
+      late.socket.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
+      expect(BrowserServerMessageSchema.parse(await lateHeld)).toMatchObject({
+        dialog: snapshotDialog,
+      });
 
       control.socket.send(
         JSON.stringify({ height: 700, surfaceId, type: "viewport.follow", width: 1_000 }),
@@ -1434,17 +1457,23 @@ run("Browser Sessions through a whole deployment", () => {
       }
       const dialogId = dialogEvent.dialog.id;
       expect(dialogId).not.toBe(snapshotDialog?.id);
-      control.socket.send(JSON.stringify({ accept: true, dialogId, type: "dialog.respond" }));
-      control.socket.send(JSON.stringify({ type: "navigation.reload" }));
-      await vi.waitFor(() => expect(forwarded).toContainEqual({ type: "navigation.reload" }), {
-        timeout: 10_000,
-      });
+      control.socket.send(
+        JSON.stringify({ accept: true, dialogId, surfaceId, type: "dialog.respond" }),
+      );
+      control.socket.send(JSON.stringify({ type: "navigation.reload", surfaceId }));
+      await vi.waitFor(
+        () => expect(forwarded).toContainEqual({ type: "navigation.reload", surfaceId }),
+        {
+          timeout: 10_000,
+        },
+      );
       expect(runtime.protocolErrors()).toEqual([]);
       expect(runtime.streamOpen()).toBe(true);
       expect(control.socket.readyState).toBe(WebSocket.OPEN);
       const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
-        bootstrap.ok && bootstrap.data.browser.sessions.find((s) => s.id === sessionId)?.state,
+        bootstrap.ok &&
+          bootstrap.data.browser.groups.rows.find((s) => s.sessionId === sessionId)?.state,
       ).toBe("ready");
       return {
         browserModule: runtime.browserModule(),
@@ -1470,11 +1499,17 @@ run("Browser Sessions through a whole deployment", () => {
     });
     expect(current.ticketViewport).toEqual(startView);
     expect(current.forwarded).toEqual([
+      { type: "stream.subscribe", surfaceId: "page-integration" },
       { height: 700, surfaceId: "page-integration", type: "viewport.follow", width: 1_000 },
       { type: "surface.open", url: "https://example.com/", viewport: startView },
       { height: 650, surfaceId: "page-integration", type: "viewport.set", width: 900 },
-      { accept: true, dialogId: current.dialogId, type: "dialog.respond" },
-      { type: "navigation.reload" },
+      {
+        accept: true,
+        dialogId: current.dialogId,
+        surfaceId: "page-integration",
+        type: "dialog.respond",
+      },
+      { type: "navigation.reload", surfaceId: "page-integration" },
     ]);
     await writeViewReport("current-runtime", { startView, current });
   }, 120_000);

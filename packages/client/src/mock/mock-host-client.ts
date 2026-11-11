@@ -1,3 +1,6 @@
+import { BrowserSessionIdSchema } from "@opensteer/core";
+import type { WorkspaceTabLineage } from "../host/client.js";
+import { mockBrowserRows } from "./mock-browser-stream.js";
 import { MockBrowserStream } from "./mock-browser-stream.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
@@ -156,7 +159,7 @@ import {
   HarnessInstanceCatalogSchema,
   type HarnessInstallation,
   HostApiErrorSchema,
-  WorkspaceTabLineageSchema,
+  HostedBrowserSessionSchema,
   androidPhoneDefinitionId,
   browserUsageTabsPerRun,
   browserUsageSessionsPerRead,
@@ -2173,32 +2176,6 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         ...previousReleaseEligibility(new Date(client.nowIso())),
       });
     },
-    "workspace.tabs.get": async ({ groupId }) => {
-      const group = client.getSnapshot().workspaceTabs?.find((group) => group.id === groupId);
-      return group
-        ? rpcSuccess(group)
-        : mockRefusal(
-            new HostClientRequestError({
-              code: "not_found",
-              status: 404,
-              message: "Browser tabs not found.",
-            }),
-          );
-    },
-    "browser.tabs.get": async ({ sessionId }) => {
-      const catalog = client
-        .getSnapshot()
-        .browserSessions.find((session) => session.id === sessionId)?.tabCatalog;
-      return catalog
-        ? rpcSuccess(catalog)
-        : mockRefusal(
-            new HostClientRequestError({
-              code: "not_found",
-              status: 404,
-              message: "Browser session not found.",
-            }),
-          );
-    },
     "browser.tabIcon.get": async ({ sessionId, iconRef }) => {
       if (!client.places) return unsupportedMockRpc();
       return rpcSuccess({ favicon: await client.places.icon(sessionId, iconRef) });
@@ -3803,6 +3780,7 @@ function mockBootstrap(
   preference: (workspaceId: string) => WorkspaceNotificationPreference,
 ) {
   if (!snapshot.deploymentShape) throw new Error("Mock deployment shape is missing.");
+  const rows = mockBrowserRows(snapshot);
   return {
     browser: {
       available: snapshot.browserAvailable,
@@ -3810,24 +3788,13 @@ function mockBootstrap(
         ? { tabGroupsVersion: 1, tabGroups: snapshot.browserTabGroups }
         : {}),
       workspaceTabRestoreVersion: snapshot.workspaceTabRestoreVersion,
-      workspaceTabs: snapshot.workspaceTabs,
+      groups: { rows: rows.groups, complete: true },
+      tabs: [...rows.tabs].map(([groupId, rows]) => ({ groupId, rows, complete: true })),
       placements: snapshot.browserPlacements,
       profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
       ...(snapshot.browserProfileHomes ? { profileHomes: snapshot.browserProfileHomes } : {}),
       profileDeletions: snapshot.browserProfileDeletions,
-      // The catalog names each browser's conversations, as the Host's does.
-      sessions: snapshot.browserSessions.map((session) => ({
-        ...session,
-        updatedAt: session.createdAt,
-        threadIds: session.threadIds ?? [
-          ...new Set(
-            snapshot.browserUses
-              .filter((use) => use.sessionId === session.id)
-              .map((use) => use.threadId),
-          ),
-        ],
-      })),
     },
     deploymentShape: snapshot.deploymentShape,
     deploymentPolicy: snapshot.deploymentPolicy,
@@ -3981,10 +3948,10 @@ export class MockHostClient implements HostClient {
           .workspaceTabs!.find((value) => value.session.id === dormant.session.id)!;
         return {
           type: "workspace.tab.activate",
-          group,
+          groupId: group.id,
+          sessionId: group.session.id,
           session: group.session,
           tabId: BrowserSurfaceIdSchema.parse(tabId),
-          catalog: dormant.session.tabCatalog!,
         };
       },
       apply: (result) => {
@@ -4409,7 +4376,7 @@ export class MockHostClient implements HostClient {
         result.sessionId,
         result.tabId,
         this.#state.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
-          ?.tabCatalog ?? result.catalog,
+          ?.tabCatalog ?? { generation: 0, revision: 0, inventoryRevision: 0 },
       ),
     changed: (pendingBrowserTabs) =>
       this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
@@ -12445,13 +12412,17 @@ class MockHostState {
     const tabsChanged = snapshot.browserSessions !== this.snapshot.browserSessions;
     if (tabsChanged) {
       const at = this.now().toISOString();
-      const workspaceTabs = snapshot.browserSessions.map((session) => {
+      const workspaceTabs: WorkspaceTabLineage[] = snapshot.browserSessions.map((session) => {
         const held = this.snapshot.workspaceTabs?.find((lineage) => lineage.id === session.id);
-        return WorkspaceTabLineageSchema.parse({
-          id: session.id,
+        return {
+          id: BrowserSessionIdSchema.parse(session.id),
           revision: session.tabCatalog?.revision ?? 0,
           createdAt: held?.createdAt ?? session.createdAt ?? at,
-          session: { ...session, createdAt: session.createdAt ?? at, updatedAt: at },
+          session: HostedBrowserSessionSchema.parse({
+            ...session,
+            createdAt: session.createdAt ?? at,
+            updatedAt: at,
+          }),
           tabs: [
             ...(held?.tabs ?? []).filter(
               (tab) =>
@@ -12459,21 +12430,21 @@ class MockHostState {
                 !session.tabCatalog?.tabs.some((live) => live.id === tab.id),
             ),
             ...(session.tabCatalog?.tabs ?? []).map((tab) => ({
-              kind: "browser",
+              kind: "browser" as const,
               id: tab.id,
-              sessionId: session.id,
+              sessionId: BrowserSessionIdSchema.parse(session.id),
               title: tab.title,
               site: tab.site,
               iconRef: tab.iconRef,
               order: tab.order,
               openerId: tab.openerId,
-              state: "live",
+              state: "live" as const,
               createdAt:
                 held?.tabs?.find((row) => row.id === tab.id)?.createdAt ??
                 (held ? at : (session.createdAt ?? at)),
             })),
           ],
-        });
+        } satisfies WorkspaceTabLineage;
       });
       workspaceTabs.push(
         ...(snapshot.workspaceTabs ?? []).filter(

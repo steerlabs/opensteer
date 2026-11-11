@@ -1,5 +1,15 @@
-import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
-import { browserBootstrapWithRows } from "../test-support/browser-fixtures.js";
+import type { WorkspaceTabLineage } from "./client.js";
+import { KeyedStreamPublisher, keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
+import {
+  BrowserGroupRowSchema,
+  BrowserTabRecordSchema,
+  type HostedBrowserBootstrap as BrowserWireBootstrap,
+} from "@opensteer/protocol/browser";
+import {
+  browserBootstrapWithRows,
+  browserSessionFixture,
+  type BrowserBootstrapFixture as HostedBrowserBootstrap,
+} from "../test-support/browser-fixtures.js";
 import { schedulesClient } from "./schedules.js";
 import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
 import {
@@ -25,15 +35,11 @@ import {
   BrowserSurfaceIdSchema,
   ComputerViewSchema,
   HostToClientMessageSchema,
-  HostedBrowserBootstrapSchema,
-  HostedBrowserSessionSchema,
   createBrowserSessionId,
   hostApi,
   placeIdentityKey,
   type HostToClientMessage,
-  type HostedBrowserBootstrap,
   type RealtimeFrameDiagnostic,
-  type WorkspaceTabLineage,
   type WorkspaceView,
 } from "@opensteer/protocol";
 import {
@@ -173,6 +179,239 @@ it("opts control viewers into basic input and exposes only the returned negotiat
   }
 });
 
+it.each([64, 500])(
+  "measures %s tabs through the real Host publisher and three client sockets",
+  async (count) => {
+    const workspaces = [makeWorkspace(), makeWorkspace(), makeWorkspace()];
+    const counts = count === 64 ? [64] : [64, 62, 62, 62, 62, 62, 62, 64];
+    const groups = counts.map((tabCount, index) => {
+      const id = createBrowserSessionId();
+      return BrowserGroupRowSchema.parse({
+        id,
+        sessionId: id,
+        createdAt: now,
+        sessionCreatedAt: now,
+        updatedAt: now,
+        workspaceId: workspaces[index % 3]!.id,
+        state: "ready",
+        origin: "workspace",
+        access: "read-write",
+        placement: { kind: "runner", runnerId },
+        profileId: null,
+        runtimeId: "browser-runtime-integration",
+        opener: { kind: "you" },
+        navigation: false,
+        unavailableReason: null,
+        inventoryRevision: 1,
+        acting: false,
+        page: { title: "Page 0", url: "https://measure.example" },
+        attachedRunIds: [],
+        threadIds: [],
+        tabCount,
+      });
+    });
+    const live = new Map(
+      groups.map((group, index) => [
+        group.id,
+        {
+          groupId: group.id,
+          inventoryRevision: 1,
+          navigation: false,
+          ready: true,
+          acting: false,
+          page: group.page,
+          iconRef: () => null,
+          records: new Map(
+            Array.from({ length: group.tabCount }, (_, order) => {
+              const row = BrowserTabRecordSchema.parse({
+                id: `measure_${index}_${order}`,
+                title: `Page ${order}`,
+                order,
+                openerId: null,
+                url: `https://measure.example/private/${index}/${order}?secret=never-on-client`,
+                icon: null,
+                documentId: `doc_${index}_${order}`,
+                geometryRevision: 1,
+                state: "live",
+                loading: false,
+                navigationFailed: false,
+                canGoBack: false,
+                canGoForward: false,
+                sizedByAgent: false,
+              });
+              return [row.id, row];
+            }),
+          ),
+        },
+      ]),
+    );
+    const errors: unknown[] = [];
+    const ports = {
+      authorityGeneration: () => 0,
+      groupIds: async () => groups.map((group) => group.id),
+      readGroups: async (_user: typeof ownerId, ids: readonly (typeof groups)[number]["id"][]) =>
+        groups.filter((group) => ids.includes(group.id)),
+      readTabs: async () => [],
+      groupId: async (id: (typeof groups)[number]["id"]) => id,
+      live: (id: (typeof groups)[number]["id"]) => live.get(id),
+      occupants: () => [],
+      onError: (error: unknown) => {
+        errors.push(error);
+      },
+    };
+    // Loading by path keeps this cross-package fixture outside the browser-only library build.
+    const modulePath = "../../../../apps/host/src/browser/browser-client-streams.ts";
+    const { BrowserClientStreams } = (await import(modulePath)) as {
+      BrowserClientStreams: new (rowPorts: typeof ports) => {
+        source: {
+          bootstrap(user: typeof ownerId): Promise<Pick<BrowserWireBootstrap, "groups" | "tabs">>;
+          markTabs(sessionId: (typeof groups)[number]["id"], ids: Iterable<string>): void;
+        };
+        attach(
+          user: typeof ownerId,
+          transport: {
+            bufferedAmount(): number;
+            send(message: HostToClientMessage): Promise<void>;
+          },
+        ): Promise<{ close(): void; resync(): void }>;
+        close(): void;
+      };
+    };
+    const publisher = new BrowserClientStreams(ports);
+    const prefix = await publisher.source.bootstrap(ownerId);
+    const body = bootstrap(workspaces, {
+      available: true,
+      placements: [],
+      profiles: [],
+      profileGrants: [],
+      ...prefix,
+    });
+    const sockets: FakeSocket[] = [];
+    const incoming: HostToClientMessage[][] = [];
+    const attachments: { close(): void }[] = [];
+    const fetch = vi.fn(async () => json(body));
+    const client = createHttpHostClient({
+      fetch,
+      prefetchHome: false,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        const messages: HostToClientMessage[] = [];
+        incoming.push(messages);
+        sockets.push(socket);
+        let attachment: Awaited<ReturnType<typeof publisher.attach>> | undefined;
+        const send = socket.send.bind(socket);
+        socket.send = (data) => {
+          send(data);
+          const message = JSON.parse(data) as { type: string };
+          if (message.type !== "client.browser.resync") return;
+          if (attachment) attachment.resync();
+          else
+            void publisher
+              .attach(ownerId, {
+                bufferedAmount: () => 0,
+                send: async (frame) => {
+                  messages.push(frame);
+                  socket.receive(frame);
+                },
+              })
+              .then((connection) => {
+                attachment = connection;
+                attachments.push(connection);
+              });
+        };
+        const close = socket.close.bind(socket);
+        socket.close = (code, reason) => {
+          attachment?.close();
+          close(code, reason);
+        };
+        return socket;
+      },
+    });
+    const total = () =>
+      incoming.flat().reduce((sum, message) => sum + keyedStreamBytes(message), 0);
+    const ended = (index: number) =>
+      incoming[index]!.filter(
+        (message) => message.type === "host.browser-tabs" && message.stream.op === "end",
+      ).length;
+    try {
+      await client.load();
+      for (const workspace of workspaces) client.activateWorkspace(workspace.id);
+      for (const socket of sockets) socket.open();
+      await vi.waitFor(() => expect(ended(0)).toBe(groups.length));
+      expect(sockets).toHaveLength(3);
+      expect(incoming.slice(1)).toEqual([[], []]);
+      expect(client.getSnapshot().browserSessions.flatMap((session) => session.tabs)).toHaveLength(
+        count,
+      );
+      expect(client.getSnapshot().workspaceTabs?.every((group) => group.whole)).toBe(true);
+      const prefixBytes = keyedStreamBytes(prefix);
+      const browserSection = keyedStreamBytes(body.browser);
+      const snapshotBytes = total();
+      const bytesUntilWhole =
+        browserSection +
+        (prefix.groups.complete && prefix.tabs.every((group) => group.complete)
+          ? 0
+          : snapshotBytes);
+      const before = total();
+      const records = live.get(groups[0]!.id)!.records;
+      const changed = [...records.values()][1]!;
+      records.set(changed.id, { ...changed, title: `Changed at ${count}` });
+      publisher.source.markTabs(groups[0]!.id, [changed.id]);
+      await vi.waitFor(() =>
+        expect(
+          client
+            .getSnapshot()
+            .browserSessions.flatMap((session) => session.tabs)
+            .find((tab) => tab.id === changed.id)?.title,
+        ).toBe(`Changed at ${count}`),
+      );
+      const titleBytes = total() - before;
+      expect(incoming[0]!.at(-1)).toMatchObject({
+        type: "host.browser-tabs",
+        stream: { op: "change", update: [{ id: changed.id, title: `Changed at ${count}` }] },
+      });
+      expect(incoming.slice(1)).toEqual([[], []]);
+      const beforeHandover = total();
+      const readsBeforeHandover = fetch.mock.calls.length;
+      sockets[0]!.serverClose();
+      await vi.waitFor(() => expect(ended(1)).toBe(groups.length));
+      const handoverBytes = total() - beforeHandover;
+      expect(
+        sockets
+          .slice(0, 3)
+          .map(
+            (socket) =>
+              socket.sent.filter((data) => JSON.parse(data).type === "client.browser.resync")
+                .length,
+          ),
+      ).toEqual([1, 1, 0]);
+      expect(fetch).toHaveBeenCalledTimes(readsBeforeHandover);
+      expect(JSON.stringify(incoming)).not.toContain("never-on-client");
+      expect(body.browser).not.toHaveProperty("sessions");
+      expect(body.browser).not.toHaveProperty("workspaceTabs");
+      expect(errors).toEqual([]);
+      await writeRealtimeEvidence(
+        {
+          tabs: count,
+          groups: groups.length,
+          browserSection,
+          prefixBytes,
+          snapshotBytes,
+          bytesUntilWhole,
+          titleBytes,
+          handoverBytes,
+        },
+        `browser-bytes-${count}.json`,
+      );
+    } finally {
+      client.dispose();
+      for (const attachment of attachments) attachment.close();
+      publisher.close();
+    }
+  },
+);
+
 describe("browser carrier and derivation", () => {
   async function fixture(prefix = false) {
     const workspaces = [makeWorkspace(), makeWorkspace(), makeWorkspace()];
@@ -219,7 +458,6 @@ describe("browser carrier and derivation", () => {
         return json({
           sessionId: payload.sessionId,
           outcome: "tab-closed",
-          catalog: { generation: 0, revision: 2, tabs: [] },
         });
       return json(body);
     });
@@ -632,14 +870,12 @@ type TestHostClientOptions = Omit<HttpHostClientOptions, "baseUrl"> & {
   readonly browserUsageReads?: "answered" | "observed";
   /** Whether the case's own fetch sees the task list reads that follow bootstrap and sync. */
   readonly taskReads?: "answered" | "observed";
-  readonly browserCatalogReads?: "answered" | "observed";
 };
 
 function createHttpHostClient({
   timeZoneReports = "answered",
   browserUsageReads = "answered",
   taskReads = "answered",
-  browserCatalogReads = "answered",
   ...options
 }: TestHostClientOptions = {}): HttpHostClient {
   const realtime: FakeSocket[] = [];
@@ -658,7 +894,6 @@ function createHttpHostClient({
             timeZoneReports,
             browserUsageReads,
             taskReads,
-            browserCatalogReads,
             realtime,
           ),
         }
@@ -671,21 +906,14 @@ function rpcContractFetch(
   timeZoneReports: "answered" | "observed",
   browserUsageReads: "answered" | "observed",
   taskReads: "answered" | "observed",
-  browserCatalogReads: "answered" | "observed",
   realtime: FakeSocket[],
 ): typeof globalThis.fetch {
-  const startedSessions = new WeakMap<
-    FakeSocket,
-    ReturnType<typeof HostedBrowserSessionSchema.parse>
-  >();
+  const startedSessions = new WeakMap<FakeSocket, ReturnType<typeof browserSessionFixture>>();
   return async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     const prefix = "/v1/rpc/";
     if (!url.pathname.startsWith(prefix)) return fetch(input, init);
     const name = url.pathname.slice(prefix.length);
-    // Legacy browser fixtures describe no authoritative tabs; deferred reads are empty.
-    if (name === "browser.tabs.get" && browserCatalogReads === "answered")
-      return json({ data: { generation: 0, revision: 0, tabs: [] }, ok: true });
     // Nothing waits on this notional Host's reader: the read follows every
     // bootstrap, and no case here is about it.
     if (name === "requests.list") {
@@ -762,7 +990,7 @@ function rpcContractFetch(
         });
     }
     if (name === "commands.dispatch" && payload.type === "browser.session.start") {
-      const session = HostedBrowserSessionSchema.parse(body.session);
+      const session = browserSessionFixture(body.session as object);
       const socket = realtime[0]!;
       startedSessions.set(socket, session);
       if (socket.readyState !== 1) socket.open();
@@ -1482,7 +1710,6 @@ describe("HttpHostClient authentication and onboarding", () => {
             acknowledge = resolve;
             commandStarted = true;
           });
-        if (path === "/v1/rpc/workspace.tabs.get") return json(newer);
         return json(bootstrap([workspace], browser));
       },
     });
@@ -2845,7 +3072,7 @@ describe("HttpHostClient durable realtime", () => {
       return { body, client, fetch, group, socket, workspace };
     }
 
-    it("keeps stream state through stale bootstrap and ignores legacy catalog notices", async () => {
+    it("keeps stream state through stale bootstrap", async () => {
       const f = await fixture();
       try {
         const tabId = f.group.tabs![0]!.id;
@@ -2866,16 +3093,6 @@ describe("HttpHostClient durable realtime", () => {
         const current = { ...f.group, tabs: [{ ...f.group.tabs![0]!, title: "Checkout" }] };
         publishBrowser(f.socket, { workspaceTabs: [current] });
         const before = f.client.getSnapshot();
-        f.socket.receive({
-          type: "host.browser-tabs-changed",
-          sessionId: f.group.session.id,
-          catalog: { generation: 9, revision: 9, tabs: [] },
-        });
-        f.socket.receive({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: f.group,
-        });
         expect(f.client.getSnapshot()).toBe(before);
         await f.client.refresh();
         expect(f.client.getSnapshot().workspaceTabs).toBe(before.workspaceTabs);
@@ -12673,26 +12890,27 @@ describe("HttpHostClient owner views", () => {
             if (payload.type === "browser.tab.open" && socket?.readyState === 0) socket.open();
             const response = await answer(payload);
             host.commandReplies++;
+            const fixture = asObject(await response.clone().json());
+            const { sourceCatalog, ...result } = fixture;
             if (
               host.commandRows &&
               payload.type === "browser.tab.open" &&
               response.ok &&
               socket?.readyState === 1
             ) {
-              const result = asObject(await response.clone().json());
               if (result.session) {
-                const session = HostedBrowserSessionSchema.parse(result.session);
+                const session = browserSessionFixture(result.session);
                 publishBrowser(socket, {
                   sessions: [
                     {
                       ...session,
-                      tabCatalog: result.catalog as NonNullable<typeof session.tabCatalog>,
+                      tabCatalog: sourceCatalog as NonNullable<typeof session.tabCatalog>,
                     },
                   ],
                 });
               }
             }
-            return response;
+            return json(result, response.status);
           }
         }
         return host.bootstrap();
@@ -12721,10 +12939,16 @@ describe("HttpHostClient owner views", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {
       const session = mock.getSnapshot().browserSessions.find((value) => value.state === "ready")!;
-      return await mock.openBrowserTab(session.id, {
+      const result = await mock.openBrowserTab(session.id, {
         url: "https://pending.example/",
         idempotencyKey: "fixture-open",
       });
+      return {
+        ...result,
+        sourceCatalog: mock
+          .getSnapshot()
+          .browserSessions.find((value) => value.id === result.sessionId)!.tabCatalog!,
+      };
     } finally {
       mock.dispose();
     }
@@ -12741,7 +12965,8 @@ describe("HttpHostClient owner views", () => {
       const options = { url: "https://pending.example/", idempotencyKey: "before-load" };
       const opening = host.client.openBrowserTab(target, options);
       expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
-      await expect(opening).resolves.toEqual(opened);
+      const { sourceCatalog: _catalog, ...receipt } = opened;
+      await expect(opening).resolves.toEqual(receipt);
       expect(host.commands).toEqual([{ type: "browser.tab.open", ...target, ...options }]);
       expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
       expect(host.sockets).toEqual([]);
@@ -12890,10 +13115,10 @@ describe("HttpHostClient owner views", () => {
               {
                 ...opened.session,
                 tabCatalog: {
-                  ...opened.catalog,
-                  revision: opened.catalog.revision + 1,
+                  ...opened.sourceCatalog,
+                  revision: opened.sourceCatalog.revision + 1,
                   inventoryRevision:
-                    (opened.catalog.inventoryRevision ?? opened.catalog.revision) + 1,
+                    (opened.sourceCatalog.inventoryRevision ?? opened.sourceCatalog.revision) + 1,
                 },
               },
             ],
@@ -12915,7 +13140,7 @@ describe("HttpHostClient owner views", () => {
         expect(
           host.client.getSnapshot().browserSessions.find((value) => value.id === opened.sessionId)
             ?.tabCatalog?.revision,
-        ).toBe(opened.catalog.revision + 1);
+        ).toBe(opened.sourceCatalog.revision + 1);
         expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
       } finally {
         gate.resolve();
@@ -12934,7 +13159,7 @@ describe("HttpHostClient owner views", () => {
           return json({
             sessionId: opened.sessionId,
             outcome: "tab-closed",
-            catalog: opened.catalog,
+            sourceCatalog: opened.sourceCatalog,
           });
         await withTimeout(gate.promise, 2_000, {
           timeoutError: () => new Error("The delayed browser command was never released."),
@@ -12966,7 +13191,7 @@ describe("HttpHostClient owner views", () => {
       expect(close).toHaveBeenCalledExactlyOnceWith(
         opened.sessionId,
         opened.tabId,
-        expect.objectContaining({ inventoryRevision: opened.catalog.inventoryRevision }),
+        expect.objectContaining({ inventoryRevision: opened.sourceCatalog.inventoryRevision }),
       );
     } finally {
       gate.resolve();
@@ -13039,7 +13264,7 @@ describe("HttpHostClient owner views", () => {
           return json({
             sessionId: opened.sessionId,
             outcome: "tab-closed",
-            catalog: opened.catalog,
+            sourceCatalog: opened.sourceCatalog,
           });
         }
         await withTimeout(openingGate.promise, 2_000, {
@@ -13387,12 +13612,12 @@ describe("HttpHostClient owner views", () => {
         return json({
           sessionId,
           tabId: "page-1",
-          catalog: {
+          sourceCatalog: {
             generation: 1,
             revision: 1,
             tabs: [
               {
-                id: "page-1",
+                id: BrowserSurfaceIdSchema.parse("page-1"),
                 title: "Example",
                 site: "https://example.com",
                 iconRef: null,
@@ -13549,7 +13774,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       tabs: saved.tabs!.map((tab) => ({ ...tab, state: "suspended" })),
     };
     const tabId = group.tabs![0]!.id;
-    const browser = HostedBrowserBootstrapSchema.parse({
+    const browser: HostedBrowserBootstrap = {
       available: true,
       workspaceTabRestoreVersion: 1,
       workspaceTabs: [group],
@@ -13557,9 +13782,9 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       profileGrants: [],
       sessions: [],
       placements: initial.browserPlacements.map((placement) => ({ ...placement, available })),
-    });
+    };
     seed.dispose();
-    const body = bootstrap([workspace], browser);
+    const body = { ...bootstrap([workspace], browser), browser };
     const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
     const sockets: FakeSocket[] = [];
     const requests: { reply: (response: Response) => void }[] = [];
@@ -13567,7 +13792,6 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     let maximumConcurrent = 0;
     const concurrentByViewer = new Map<string, number>();
     let subscriptions = 0;
-    let heldRead: Promise<void> | null = null;
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
       lifecycle: platform.lifecycle,
@@ -13591,10 +13815,6 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
             concurrent--;
             concurrentByViewer.set(viewer, concurrentByViewer.get(viewer)! - 1);
           }
-        }
-        if (url.pathname.endsWith("/workspace.tabs.get")) {
-          await heldRead;
-          return json(group);
         }
         return json(body);
       },
@@ -13707,13 +13927,6 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
           available: value,
         }));
         await client.refresh();
-      },
-      holdRead() {
-        let release!: () => void;
-        heldRead = new Promise<void>((resolve) => {
-          release = resolve;
-        });
-        return release;
       },
       cleanup() {
         stopEffects();
@@ -14644,23 +14857,6 @@ describe("realtime protocol recovery journey", () => {
     }
   });
 
-  it("ignores unreadable legacy catalogs without rereading bootstrap", async () => {
-    const f = await synchronizedClient();
-    try {
-      const reads = f.bootstrapReads();
-      f.sockets[0]!.receiveRaw({
-        type: "host.browser-tabs-changed",
-        catalog: { generation: -1 },
-        sessionId: createBrowserSessionId(),
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(f.bootstrapReads()).toBe(reads);
-      expect(f.sockets[0]!.closeEvents).toEqual([]);
-    } finally {
-      f.client.dispose();
-    }
-  });
-
   it.each([
     ["host.live", { progress: {}, afterSequence: "10" }],
     ["host.notification", { notification: {} }],
@@ -14899,8 +15095,8 @@ describe("realtime protocol recovery journey", () => {
       workspaceId: workspace.id,
       ...fields,
     });
-    const browserWith = (sessions: unknown[]) =>
-      HostedBrowserBootstrapSchema.parse({
+    const browserWith = (sessions: NonNullable<HostedBrowserBootstrap["sessions"]>) =>
+      browserBootstrapWithRows({
         available: true,
         placements: [],
         profileGrants: [],
@@ -15760,6 +15956,10 @@ function agentEvent<Type extends AgentEvent["type"]>(
 }
 
 function json(payload: unknown, status = 200): Response {
+  if (typeof payload === "object" && payload !== null && "browser" in payload) {
+    const body = payload as { browser: HostedBrowserBootstrap };
+    payload = { ...payload, browser: browserBootstrapWithRows(body.browser) };
+  }
   return new Response(JSON.stringify(payload), {
     headers: { "content-type": "application/json" },
     status,

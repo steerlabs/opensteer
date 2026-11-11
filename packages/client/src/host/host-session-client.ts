@@ -722,9 +722,7 @@ export class HttpHostClient {
       throw new Error("The signed-in account changed while reopening the tab.");
     if (result.type !== "workspace.tab.reopen") throw new Error("Unexpected tab reopen result.");
     this.#update({ ...this.#snapshot, browserTabGroups: this.#tabGroups.receive(result.layout) });
-    await this.#waitBrowser(() =>
-      this.#browserTabs.tab(result.groupId ?? result.group.id, result.tabId),
-    );
+    await this.#waitBrowser(() => this.#browserTabs.tab(result.groupId!, result.tabId));
     return result;
   }
   readonly #tabGroups: BrowserTabGroupClient;
@@ -3901,8 +3899,7 @@ export class HttpHostClient {
       if (mark > presenceMark) continue;
       this.#presenceMarks.delete(sessionId);
     }
-    if (payload.browser.groups && payload.browser.tabs)
-      this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs });
+    this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs });
     const initialWorkspace = homeWorkspace ?? workspaces[0];
     if (initialWorkspace) this.#ensureWorkspaceChannel(initialWorkspace.id);
     // Retry retained workspaces too: the open thread need not be in Main.
@@ -4683,12 +4680,6 @@ export class HttpHostClient {
       this.browserHistory.changed(message.profileId);
       return;
     }
-    if (
-      message.type === "host.browser-tabs-changed" ||
-      message.type === "host.browser-presence" ||
-      (message.type === "host.browser-sessions-changed" && message.group)
-    )
-      return;
     if (
       message.type === "host.app-tabs-changed" ||
       message.type === "host.browser-sessions-changed"

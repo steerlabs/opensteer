@@ -33,6 +33,7 @@ import {
   IntegrationPlatformStore,
   IntegrationStore,
   OpensteerStore,
+  WorkspaceTabStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
@@ -2025,6 +2026,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const keys = generateKeyPairSync("ed25519");
     const browser = new BrowserService({
       repository: world.store,
+      workspaceTabs: new WorkspaceTabStore(world.database),
       signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
       hostOrigin: new URL("https://test-host.invalid"),
       onSessionsChanged: () => undefined,
@@ -2107,7 +2109,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const first = await browser.bootstrap(world.owner.userId);
       const second = await browser.bootstrap(reader);
       const byId = (bootstrap: typeof first) =>
-        ids.map((id) => bootstrap.sessions.find((session) => session.id === id)?.opener);
+        ids.map((id) => bootstrap.groups.rows.find((session) => session.sessionId === id)?.opener);
       expect(byId(first)).toEqual([
         { kind: "you" },
         { kind: "task", threadId: run.threadId },
@@ -2122,7 +2124,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         { kind: "automation" },
         { kind: "unknown" },
       ]);
-      expect(JSON.stringify(second.sessions)).not.toContain(world.owner.userId);
+      expect(JSON.stringify(second.groups.rows)).not.toContain(world.owner.userId);
       await world.database
         .updateTable("runs")
         .set({ status: "completed" })
@@ -2155,8 +2157,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         { kind: "automation" },
         { kind: "unknown" },
       ]);
-      expect(JSON.stringify(redacted.sessions)).not.toContain(run.threadId);
-      expect(JSON.stringify(redacted.sessions)).not.toContain("Renamed after completion");
+      expect(JSON.stringify(redacted.groups.rows)).not.toContain(run.threadId);
+      expect(JSON.stringify(redacted.groups.rows)).not.toContain("Renamed after completion");
       const directory =
         process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR ??
         path.join(tmpdir(), "opensteer-owner-view-e2e");

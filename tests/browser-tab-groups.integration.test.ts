@@ -1,3 +1,4 @@
+import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 /**
  * Failure journeys, written before the backend:
  * - Failed Runtime disposal can become false close success; dead memberships can exhaust limits.
@@ -200,7 +201,9 @@ async function bootstrap(stack: VerticalStack) {
   const result = await stack.api["bootstrap.get"]({});
   if (!result.ok) throw new Error(result.error.message);
   evidence.push({ layout: result.data.browser.tabGroups });
-  return result.data.browser;
+  const owner = await stack.host.store.firstUser();
+  if (!owner) throw new Error("Missing owner");
+  return { ...result.data.browser, ...(await browserRows(stack.host.browser, owner.id)) };
 }
 async function open(stack: VerticalStack) {
   const result = await command(stack, {
@@ -726,7 +729,7 @@ integration("personal tab groups through a real deployment", () => {
     expect(
       await stack.host.browser.applySiteCookies(third.sessionId, "https://example.test", [cookie]),
     ).toBe("applied");
-    const beforeCatalog = await stack.host.browser.readTabCatalog(owner.id, first.sessionId);
+    const beforeCatalog = await browserRows(stack.host.browser, owner.id, first.sessionId);
     const grouped = await command(stack, {
       type: "workspace.tabs.group",
       tabIds: [first.tabId, third.tabId],
@@ -735,7 +738,7 @@ integration("personal tab groups through a real deployment", () => {
     });
     if (grouped.type !== "workspace.tabs.group") throw new Error("Wrong grouping result");
     expect(
-      (await stack.host.browser.readTabCatalog(owner.id, first.sessionId)).tabs.map((t) => t.id),
+      (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map((t) => t.id),
     ).toEqual(beforeCatalog.tabs.map((t) => t.id));
     await expect(
       command(stack, {
@@ -769,7 +772,7 @@ integration("personal tab groups through a real deployment", () => {
     expect(await bootstrap(stack)).toMatchObject({
       tabGroupsVersion: 1,
       tabGroups: { revision: 2 },
-      sessions: expect.arrayContaining([
+      browserSessions: expect.arrayContaining([
         expect.objectContaining({ id: first.sessionId }),
         expect.objectContaining({ id: third.sessionId }),
       ]),
@@ -915,7 +918,7 @@ integration("agent organization and durable ownership", () => {
       expect(await sessions()).toEqual(beforeSessions);
       if (state !== "open")
         expect(
-          (await bootstrap(stack)).sessions
+          (await bootstrap(stack)).browserSessions
             .map((session) => ({
               id: session.id,
               state: session.state,
@@ -1388,9 +1391,14 @@ integration("agent organization and durable ownership", () => {
       }
     });
     const activeSeen: string[] = [];
+    view.once("open", () =>
+      view.send(
+        JSON.stringify({ type: "stream.subscribe", surfaceId: personBrowser.tabId, frames: false }),
+      ),
+    );
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error("The person's browser did not publish its view.")),
+        () => reject(new Error("The person's browser did not publish its target.")),
         10_000,
       );
       view.once("error", (error) => {
@@ -1400,10 +1408,9 @@ integration("agent organization and durable ownership", () => {
       view.on("message", (raw, binary) => {
         if (binary) return;
         const message = BrowserServerMessageSchema.parse(JSON.parse(raw.toString()));
-        if (message.type !== "browser.snapshot") return;
-        const active = message.surfaces.find((surface) => surface.active);
-        if (active) {
-          activeSeen.push(active.id);
+        if (message.type !== "browser.surface") return;
+        activeSeen.push(message.surfaceId);
+        if (message.surfaceId === personBrowser.tabId && message.surface) {
           clearTimeout(timer);
           resolve();
         }
@@ -1574,13 +1581,11 @@ integration("tab group deletion and response bounds", () => {
       ).closedAt,
     ).not.toBeNull();
     expect(
-      (await stack.host.browser.readTabCatalog(owner.id, first.sessionId)).tabs.map(
-        (tab) => tab.id,
-      ),
+      (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map((tab) => tab.id),
     ).toContain(first.tabId);
     dispose.mockRestore();
     expect(await command(stack, input)).toMatchObject({ closed: [first.tabId], failed: [] });
-    const remaining = (await stack.host.browser.readTabCatalog(owner.id, first.sessionId)).tabs.map(
+    const remaining = (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map(
       (tab) => tab.id,
     );
     expect(remaining).not.toContain(first.tabId);
@@ -1701,7 +1706,7 @@ integration("tab group deletion and response bounds", () => {
     });
   }, 120_000);
 
-  it("keeps an old grouped lineage in the bounded bootstrap inventory", async () => {
+  it("keeps old grouped and ungrouped lineages in the whole inventory", async () => {
     const stack = await deployment();
     const first = await open(stack);
     const db = stack.host.store.database;
@@ -1740,7 +1745,7 @@ integration("tab group deletion and response bounds", () => {
     }
     expect(
       (await bootstrap(stack)).workspaceTabs?.some((lineage) => lineage.id === first.sessionId),
-    ).toBe(false);
+    ).toBe(true);
     await command(stack, {
       type: "workspace.tabs.group",
       tabIds: [first.tabId],
@@ -1748,14 +1753,14 @@ integration("tab group deletion and response bounds", () => {
       idempotencyKey: randomUUID(),
     });
     const inventory = await bootstrap(stack);
-    expect(inventory.workspaceTabs).toHaveLength(100);
+    expect(inventory.workspaceTabs).toHaveLength(102);
     expect(
       inventory.workspaceTabs?.flatMap((lineage) => lineage.tabs ?? []).map((tab) => tab.id),
     ).toContain(first.tabId);
     evidence.push({
       assertions: [
-        "grouped lineage is preferred past newest 100",
-        "bootstrap stays within old-client limit",
+        "grouped and ungrouped lineages remain visible past 100",
+        "the source inventory is whole",
       ],
     });
   }, 120_000);

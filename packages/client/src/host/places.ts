@@ -7,11 +7,10 @@ import {
   type ComputerView,
   type ComputerViewRef,
   computerAppIdentityKey,
-  type BrowserTabCatalog,
   type ComputerAppIdentity,
   type PlaceOccupant,
 } from "@opensteer/protocol";
-import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
+import type { BrowserTabCatalog, BrowserSessionSummary, HostSnapshot } from "./client.js";
 import { phoneOwnerView, phonePlaceKey, phoneTabOpen, phoneTaskSession } from "./phone-tab.js";
 import type { WorkspaceSurfaceDestination as SurfaceDestination } from "./surfaces.js";
 export type { PlaceOccupant } from "@opensteer/protocol";

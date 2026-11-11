@@ -142,7 +142,7 @@ import { RunFileRelay } from "../integrations/run-file-relay.js";
 import { AppStore } from "@opensteer/database";
 import { AppService } from "../apps/app-service.js";
 import { BrowserLocalProfiles } from "../browser/browser-local-profiles.js";
-import { announceBrowserUsage, browserPresencePublisher } from "../browser/browser-presence.js";
+import { announceBrowserUsage } from "../browser/browser-presence.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserSourceService } from "../browser/browser-source-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
@@ -834,49 +834,10 @@ export async function createHostRuntime(
       ...(options.browserActivityClock ? { activityClock: options.browserActivityClock } : {}),
       onHistoryChanged: (ownerId, profileId) =>
         realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
-      // The viewer rereads its whole browser bootstrap, profiles included;
-      // reusing this notice keeps older clients working.
       onProfilesChanged: (ownerId, workspaceId) =>
         realtime.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
       tabGroups: browserTabGroups,
       workspaceTabs: new WorkspaceTabStore(database),
-      onCatalogChanged: (sessionId, workspaceId, change) => {
-        void browser
-          .catalogsForViewers(sessionId)
-          .then((catalogs) => {
-            const connected = new Set(realtime.connectedUserIds());
-            return Promise.all(
-              [...catalogs].map(async ([ownerId, catalog]) => {
-                if (!connected.has(ownerId)) return;
-                try {
-                  realtime.sendToUsers([ownerId], {
-                    type: "host.browser-tabs-changed",
-                    sessionId,
-                    catalog,
-                  });
-                  if (change?.lineageChanged) {
-                    const group = await browser
-                      .readWorkspaceTabs(ownerId, sessionId)
-                      .catch((error: unknown) => {
-                        if (!(error instanceof OpensteerError && error.code === "not_found"))
-                          reportBrowserPresenceError(error);
-                        return undefined;
-                      });
-                    realtime.publishBrowserSessionsChanged(
-                      workspaceId,
-                      [ownerId],
-                      "browser.catalog-flush",
-                      group,
-                    );
-                  }
-                } catch (error) {
-                  reportBrowserPresenceError(error);
-                }
-              }),
-            );
-          })
-          .catch((error: unknown) => reportBrowserPresenceError(error));
-      },
       onPlaceNotice: (ownerId, notice) => realtime.sendToUsers([ownerId], notice),
       onSessionsChanged: (workspaceId, sessionIds, source) => {
         // Catalog visibility is viewer-wide, independent of socket subscriptions.
@@ -890,11 +851,6 @@ export async function createHostRuntime(
           )
           .catch((error: unknown) => reportBrowserPresenceError(error));
       },
-      onPresenceChanged: browserPresencePublisher({
-        onError: (error) => reportBrowserPresenceError(error),
-        realtime,
-        store,
-      }),
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
       onError: (error) => reportBrowserUsageError(error),
       onWorkspaceEvent: (event) => publishWorkspaceEvent(event),

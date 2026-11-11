@@ -1,3 +1,4 @@
+import type { WorkspaceTabLineage } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
 
@@ -12,7 +13,7 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
-import { createBrowserSessionId, type WorkspaceTabLineage } from "@opensteer/protocol";
+import { createBrowserSessionId } from "@opensteer/protocol";
 
 import { rememberPlace } from "./navigation.js";
 

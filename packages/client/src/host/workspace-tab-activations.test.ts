@@ -29,10 +29,9 @@ function fixture() {
   const result: Result = {
     type: "workspace.tab.activate",
     tabId,
-    group,
+    groupId: group.id,
+    sessionId: group.session.id,
     session: group.session,
-    catalog: snapshot.browserSessions.find((session) => session.id === group.session.id)!
-      .tabCatalog!,
   };
   seed.dispose();
   const listeners = new Set<() => void>();

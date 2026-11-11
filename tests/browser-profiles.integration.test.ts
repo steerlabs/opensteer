@@ -335,7 +335,7 @@ async function fulfillNewProfile(
   evidence.observations.push({
     requestId,
     profile,
-    sessionIds: bootstrap.data.browser.sessions.map((session) => session.id),
+    sessionIds: bootstrap.data.browser.groups.rows.map((session) => session.sessionId),
   });
   if (people) {
     try {
@@ -408,7 +408,7 @@ run("Browser profiles through a whole deployment", () => {
       bootstrap.data.browser.profiles.map(({ name }) => name),
       ["Brex"],
     );
-    equal(evidence, "approval opened no session", bootstrap.data.browser.sessions.length, 0);
+    equal(evidence, "approval opened no session", bootstrap.data.browser.groups.rows.length, 0);
     const profile = bootstrap.data.browser.profiles[0]!;
     const grants = await stack.host.store.database
       .selectFrom("browserProfileGrants")
@@ -668,7 +668,7 @@ run("Browser profiles through a whole deployment", () => {
     equal(
       evidence,
       "no session opened to trigger invalidation",
-      bootstrap.data.browser.sessions.length,
+      bootstrap.data.browser.groups.rows.length,
       0,
     );
   });
@@ -688,7 +688,7 @@ run("Browser profiles through a whole deployment", () => {
         );
       const bootstrap = await stack.api["bootstrap.get"]({});
       if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-      equal(evidence, "Request opened no session", bootstrap.data.browser.sessions.length, 0);
+      equal(evidence, "Request opened no session", bootstrap.data.browser.groups.rows.length, 0);
     },
   );
 
@@ -742,7 +742,7 @@ run("Browser profiles through a whole deployment", () => {
         equal(evidence, "revocation arrived without reload", grantsFor(client).length, 0);
       const bootstrap = await stack.api["bootstrap.get"]({});
       if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-      equal(evidence, "grants opened no session", bootstrap.data.browser.sessions.length, 0);
+      equal(evidence, "grants opened no session", bootstrap.data.browser.groups.rows.length, 0);
     },
   );
 });

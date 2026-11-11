@@ -412,7 +412,7 @@ export async function startBrowserRuntime(
               ? { basicInput: latestClaims.basicInput, inputLanesVersion: 1 }
               : {}),
             ...(latestClaims.surfaceState ? { surfaceState: latestClaims.surfaceState } : {}),
-            ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
+            ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
             access: latestClaims.access,
             dialog: options.initialDialog ?? null,
             sessionId: latestClaims.sessionId,

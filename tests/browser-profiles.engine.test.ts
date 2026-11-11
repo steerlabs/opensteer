@@ -1,3 +1,4 @@
+import { browserInventory } from "./browser-sessions.test-support.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -98,7 +99,8 @@ describe("live agent-created browser profile", () => {
 
       const afterFirst = await stack.api["bootstrap.get"]({});
       if (!afterFirst.ok) throw new Error(afterFirst.error.message);
-      const { profiles, sessions } = afterFirst.data.browser;
+      const { profiles } = afterFirst.data.browser;
+      const { browserSessions: sessions } = await browserInventory(stack);
       const saveRequests = await stack.host.store.database
         .selectFrom("requests")
         .select(["id", "status"])

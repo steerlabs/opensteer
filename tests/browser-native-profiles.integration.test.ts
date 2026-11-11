@@ -1,3 +1,4 @@
+import { browserInventory } from "./browser-sessions.test-support.js";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -277,13 +278,12 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     return reply.data;
   };
   const close = async (opened: BrowserTabOpenResult) => {
-    const catalog = await stack.api["browser.tabs.get"]({ sessionId: opened.sessionId });
-    if (!catalog.ok) throw new Error(catalog.error.message);
+    const catalog = await browserInventory(stack, opened.sessionId);
     const reply = await stack.api["commands.dispatch"]({
       type: "browser.tab.close",
       sessionId: opened.sessionId,
       surfaceId: opened.tabId,
-      inventoryRevision: catalog.data.inventoryRevision ?? catalog.data.revision,
+      inventoryRevision: catalog.inventoryRevision,
       idempotencyKey: randomUUID(),
     });
     expect(reply.ok, `Last tab failed to close: ${JSON.stringify(reply)}`).toBe(true);
@@ -380,11 +380,8 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     ...visitsBeforeRestart,
     cold: 1,
   });
-  const tabs = await stack.api["browser.tabs.get"]({ sessionId: cold.sessionId });
-  expect(tabs).toMatchObject({
-    ok: true,
-    data: { tabs: [expect.objectContaining({ id: cold.tabId })] },
-  });
+  const tabs = await browserInventory(stack, cold.sessionId);
+  expect(tabs.tabs).toEqual([expect.objectContaining({ id: cold.tabId })]);
   expect(browser.timings.some((timing) => timing.acquisition === "cold")).toBe(true);
   coldTimings = browser.timings.slice(coldStart);
   coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);

@@ -21,6 +21,7 @@ import { MockHostClient } from "@opensteer/client/mock";
 import {
   BrowserClientMessageSchema,
   BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
   hostApi,
   hostApiVersionHeader,
   type BrowserServerMessage,
@@ -76,8 +77,32 @@ let viewerVersion: 1 | 2 | undefined;
 let requestedVersion: 1 | 2 | undefined;
 const consumerToken = randomUUID();
 const tabStream = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+let heldSurfaceId: string | null = null;
 let runtimeSnapshot: Extract<BrowserRuntimeServerMessage, { type: "browser.snapshot" }> | undefined;
 const icons = new Map<string, string>();
+function heldSurface(): BrowserServerMessage | undefined {
+  if (!heldSurfaceId) return;
+  const row = tabStream.rows.get(heldSurfaceId);
+  if (!row)
+    return {
+      type: "browser.surface",
+      surfaceId: BrowserSurfaceIdSchema.parse(heldSurfaceId),
+      surface: null,
+    };
+  const {
+    icon,
+    order: _order,
+    openerId: _opener,
+    canGoBack: _back,
+    canGoForward: _forward,
+    ...surface
+  } = row;
+  return {
+    type: "browser.surface",
+    surfaceId: row.id,
+    surface: { ...surface, favicon: icon ? (icons.get(icon) ?? null) : null },
+  };
+}
 function project(
   message: BrowserServerMessage | BrowserRuntimeServerMessage,
 ): BrowserServerMessage | undefined {
@@ -87,25 +112,11 @@ function project(
   }
   if (message.type === "browser.snapshot" && !("surfaces" in message)) {
     runtimeSnapshot = message;
-    return;
+    return browserViewerMessage({ ...message, surfaces: [] }, viewerVersion);
   }
   if (message.type === "browser.tabs") {
-    if (tabStream.apply(message.stream) !== "applied" || !runtimeSnapshot) return;
-    const surfaces = [...tabStream.rows.values()].map(({ icon, ...row }) => ({
-      ...row,
-      active: row.id === tabStream.meta?.activeId,
-      ...(icon && icons.has(icon) ? { favicon: icons.get(icon)! } : {}),
-    }));
-    return browserViewerMessage(
-      message.stream.op === "end"
-        ? { ...runtimeSnapshot, surfaces, inventoryRevision: tabStream.meta!.inventoryRevision }
-        : {
-            type: "browser.surfaces.changed",
-            surfaces,
-            inventoryRevision: tabStream.meta!.inventoryRevision,
-          },
-      viewerVersion,
-    );
+    if (tabStream.apply(message.stream) !== "applied") return;
+    return heldSurface();
   }
 
   if (
@@ -283,12 +294,18 @@ server.on("upgrade", (request, socket, head) => {
     requestedVersion =
       new URL(request.url!, "http://fixture").searchParams.get("editing") === "2" ? 2 : 1;
     viewerVersion = browserViewerEditingVersion(snapshot, requestedVersion);
-    for (const message of runtimeMessages) {
-      const projected = project(message);
-      if (projected) ws.send(JSON.stringify(projected));
-    }
+    assert(runtimeSnapshot);
+    ws.send(
+      JSON.stringify(browserViewerMessage({ ...runtimeSnapshot, surfaces: [] }, viewerVersion)),
+    );
     ws.on("message", (data) => {
       const message = BrowserClientMessageSchema.parse(JSON.parse(data.toString()));
+      if (message.type === "stream.subscribe") {
+        assert(message.surfaceId, "The viewer must subscribe to one surface.");
+        heldSurfaceId = message.surfaceId;
+        const surface = heldSurface();
+        if (surface) ws.send(JSON.stringify(surface));
+      } else if (message.type === "stream.unsubscribe") heldSurfaceId = null;
       const input = [
         "input.key",
         "input.pointer",
@@ -365,7 +382,8 @@ async function main() {
     assert.equal(snapshot.editingVersion, rawBaseline ? undefined : 2);
     assert.equal(snapshot.clipboard, rawBaseline ? undefined : false);
     assert.equal(browser?.clipboard, undefined);
-    const surfaceId = snapshot.surfaces[0]!.id;
+    const surfaceId = tabStream.meta?.activeId;
+    assert(surfaceId);
     await attachment.handle(JSON.stringify({ type: "navigation.go", url: origin, surfaceId }));
     const page = browser!.context.pages()[0]!;
     const cdp = await page.cdp();

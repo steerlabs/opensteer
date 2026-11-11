@@ -10,7 +10,6 @@ import { constants } from "node:zlib";
 // Review each addition for that.
 export const compressedReads = new Set<keyof typeof hostApi>([
   "bootstrap.get",
-  "browser.tabs.get",
   "requests.list",
   "tasks.list",
   "thread.assignments.list",
@@ -19,7 +18,6 @@ export const compressedReads = new Set<keyof typeof hostApi>([
   "thread.live.get",
   "thread.messages.list",
   "thread.requests.list",
-  "workspace.tabs.get",
 ]);
 
 const compressionOptions = {

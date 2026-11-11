@@ -54,18 +54,14 @@ export class BrowserPasskeys {
     message: BrowserServerMessage | BrowserPasskeyMessage | Snapshot,
   ): void {
     const key = this.#key(sessionId, surfaceId);
-    if (message.type === "browser.surfaces.changed") {
-      const documentId = message.surfaces.find((surface) => surface.id === surfaceId)?.documentId;
+    if (message.type === "browser.surface") {
+      if (message.surfaceId !== surfaceId) return;
+      const documentId = message.surface?.documentId;
       if (this.#documents.get(key) !== documentId) this.#set(key, null);
       this.#documents.set(key, documentId);
       return;
     }
     if (message.type === "browser.snapshot") {
-      if ("surfaces" in message)
-        this.#documents.set(
-          key,
-          message.surfaces.find((surface) => surface.id === surfaceId)?.documentId,
-        );
       if (message.passkeys) this.#modes.set(key, message.passkeys);
       else this.disconnect(sessionId, surfaceId);
       return;

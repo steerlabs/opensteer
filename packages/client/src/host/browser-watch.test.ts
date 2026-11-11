@@ -473,7 +473,7 @@ describe("frames a target cannot read", () => {
     );
     return { delays, release: store.retain(sessionId, surfaceId), sockets, store };
   }
-  const unreadable = { type: "browser.surfaces.changed", surfaces: "unreadable" };
+  const unreadable = { type: "browser.surface", surfaceId, surface: "unreadable" };
   const state = (f: ReturnType<typeof target>) => f.store.get(sessionId, surfaceId);
   /** Fails three times right after a snapshot, which leaves a 40ms wait running. */
   function failThrice(f: ReturnType<typeof target>) {
@@ -553,8 +553,20 @@ describe("frames a target cannot read", () => {
       "a message",
       (socket: TargetSocket) =>
         socket.receive({
-          type: "browser.surfaces.changed",
-          surfaces: [{ id: surfaceId, active: true, title: "Page", url: "about:blank" }],
+          type: "browser.surface",
+          surfaceId,
+          surface: {
+            id: surfaceId,
+            title: "Page",
+            url: "about:blank",
+            favicon: null,
+            state: "live",
+            documentId: "document",
+            geometryRevision: 1,
+            loading: false,
+            navigationFailed: false,
+            sizedByAgent: false,
+          },
         }),
     ],
   ])("keeps counting failures until %s is read on a socket that has stayed up", (_name, read) => {

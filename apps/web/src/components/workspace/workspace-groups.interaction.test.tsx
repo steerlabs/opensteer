@@ -1,3 +1,4 @@
+import type { WorkspaceTabLineage } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { readFileSync } from "node:fs";
 import { act } from "react";
@@ -17,7 +18,6 @@ import {
   ThreadIdSchema,
   WorkspaceIdSchema,
 } from "@opensteer/core";
-import { WorkspaceTabLineageSchema } from "@opensteer/protocol";
 import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
@@ -49,30 +49,31 @@ describe("personal browser tab groups", () => {
         const saved: HostSnapshot = {
           ...snapshot,
           workspaceTabRestoreVersion: 1,
-          workspaceTabs: snapshot.browserSessions.map((session) =>
-            WorkspaceTabLineageSchema.parse({
-              id: session.id,
-              revision: session.tabCatalog?.revision ?? 0,
-              createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
-              session: {
+          workspaceTabs: snapshot.browserSessions.map(
+            (session) =>
+              ({
                 id: session.id,
-                access: session.access,
-                origin: session.origin,
-                placement: session.placement,
-                profileId: session.profileId,
-                runtimeId: session.runtimeId,
-                state: session.state,
-                workspaceId: session.workspaceId,
+                revision: session.tabCatalog?.revision ?? 0,
                 createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
-                updatedAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
-              },
-              tabs: (session.tabCatalog?.tabs ?? []).map((tab) => ({
-                ...tab,
-                kind: "browser",
-                sessionId: session.id,
-                state: "live",
-              })),
-            }),
+                session: {
+                  id: session.id,
+                  access: session.access,
+                  origin: session.origin,
+                  placement: session.placement,
+                  profileId: session.profileId,
+                  runtimeId: session.runtimeId,
+                  state: session.state,
+                  workspaceId: session.workspaceId,
+                  createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
+                  updatedAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
+                },
+                tabs: (session.tabCatalog?.tabs ?? []).map((tab) => ({
+                  ...tab,
+                  kind: "browser",
+                  sessionId: session.id,
+                  state: "live",
+                })),
+              }) as unknown as WorkspaceTabLineage,
           ),
         };
         projections.set(snapshot, saved);
@@ -388,6 +389,10 @@ describe("personal browser tab groups", () => {
       vi.spyOn(source, "getSnapshot").mockReturnValue({
         ...snapshot,
         workspaceTabs: [],
+        browserSessions: snapshot.browserSessions.map((session) => ({
+          ...session,
+          workspaceTabRestoreVersion: undefined,
+        })),
         browserTabGroups: {
           revision: 1,
           groups: [

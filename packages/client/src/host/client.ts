@@ -75,7 +75,6 @@ import type {
   ThreadMessageWindow,
   WorkspaceFilePreviewMetadata,
   WorkspaceTabActivateResultSchema,
-  WorkspaceTabLineage as ProtocolWorkspaceTabLineage,
   WorkspaceTabReopenResultSchema,
   WorkspaceView,
 } from "@opensteer/protocol";
@@ -109,7 +108,6 @@ import type { NativeViewerSource } from "./surfaces.js";
 
 import type {
   BrowserContextCandidate,
-  BrowserTabSummary as BrowserCatalogTab,
   BrowserTabCloseResult,
   BrowserTabOpenResult,
   PlaceIdentity,
@@ -738,6 +736,22 @@ export interface BrowserSessionUseSummary {
   readonly pageSite?: string | null | undefined;
 }
 
+export interface BrowserCatalogTab {
+  readonly id: BrowserSurfaceId;
+  readonly title: string;
+  readonly site: string;
+  readonly iconRef: string | null;
+  readonly order: number;
+  readonly openerId: BrowserSurfaceId | null;
+  readonly availability: "ready" | "starting" | "unavailable";
+  readonly documentId: string | null;
+  readonly occupants: import("@opensteer/protocol").PlaceOccupant[];
+  readonly loading?: boolean | undefined;
+  readonly navigationFailed?: boolean | undefined;
+  readonly canGoBack?: boolean | undefined;
+  readonly canGoForward?: boolean | undefined;
+}
+
 export interface BrowserTabCatalog {
   readonly generation: number;
   readonly revision: number;
@@ -745,7 +759,30 @@ export interface BrowserTabCatalog {
   readonly tabs: BrowserCatalogTab[];
 }
 
-export type WorkspaceTabLineage = ProtocolWorkspaceTabLineage & { readonly whole?: boolean };
+export interface WorkspaceTabLineage {
+  readonly whole?: boolean;
+  id: import("@opensteer/protocol").BrowserSessionId;
+  revision: number;
+  createdAt: string;
+  unavailableReason?: string | undefined;
+  session: import("@opensteer/protocol").HostedBrowserSession & {
+    tabCatalog?: BrowserTabCatalog | undefined;
+  };
+  tabs?:
+    | Array<{
+        kind: "browser";
+        id: BrowserSurfaceId;
+        sessionId: import("@opensteer/protocol").BrowserSessionId;
+        title: string;
+        site: string;
+        iconRef?: string | null | undefined;
+        order: number;
+        openerId: BrowserSurfaceId | null;
+        state: "suspended" | "restoring" | "live";
+        createdAt?: string | undefined;
+      }>
+    | undefined;
+}
 
 export interface BrowserSessionSummary {
   /** Host freshness for bootstrap lifecycle reconciliation. */

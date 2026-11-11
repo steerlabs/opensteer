@@ -11,7 +11,7 @@ import {
   type BrowserSessionId,
   type BrowserTabRecord,
   type BrowserGroupRow,
-  type WorkspaceTabLineage,
+  type HostedBrowserSession,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { createHash, randomUUID } from "node:crypto";
@@ -35,6 +35,26 @@ export type BrowserGroupFacts = Omit<
   BrowserGroupRow,
   "inventoryRevision" | "navigation" | "acting" | "page"
 >;
+export interface WorkspaceTabLineage {
+  id: BrowserSessionId;
+  revision: number;
+  createdAt: string;
+  unavailableReason?: string;
+  session: HostedBrowserSession;
+  tabs?: Array<{
+    kind: "browser";
+    id: BrowserTabRecord["id"];
+    sessionId: BrowserSessionId;
+    title: string;
+    site: string;
+    iconRef?: string | null;
+    order: number;
+    openerId: BrowserTabRecord["openerId"];
+    state: "suspended" | "restoring" | "live";
+    createdAt?: string;
+  }>;
+}
+
 export type WorkspaceTabStreamRow = NonNullable<WorkspaceTabLineage["tabs"]>[number] & {
   groupId: BrowserSessionId;
 };

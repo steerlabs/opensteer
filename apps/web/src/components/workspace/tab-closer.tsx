@@ -1,3 +1,4 @@
+import type { BrowserTabCatalog } from "@opensteer/client/host";
 import {
   createContext,
   useCallback,
@@ -11,12 +12,11 @@ import {
   browserTabCloseImpact,
   reviewHostAction,
   HostClientRequestError,
-  unwrapRpcResult,
   type BrowserTabCloseImpact,
   type HostClient,
   type PlaceItem,
 } from "@opensteer/client/host";
-import { staleBrowserTabInventoryReason, type BrowserTabCatalog } from "@opensteer/protocol";
+import { staleBrowserTabInventoryReason } from "@opensteer/protocol";
 import { useActionReview } from "@opensteer/client/react";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Dialog } from "../dialog.js";
@@ -77,13 +77,14 @@ export function TabCloserProvider({
           error.reason === staleBrowserTabInventoryReason
         ) {
           try {
-            const catalog = unwrapRpcResult(
-              await hostClient.rpc["browser.tabs.get"]({ sessionId }),
-            );
+            await hostClient.readWorkspaceTabs?.(sessionId);
+            const catalog = hostClient
+              .getSnapshot()
+              .browserSessions.find((session) => session.id === sessionId)?.tabCatalog;
             const session = hostClient
               .getSnapshot()
               .browserSessions.find((candidate) => candidate.id === sessionId);
-            if (session && catalog.tabs.some((tab) => tab.id === tabId)) {
+            if (session && catalog && catalog.tabs.some((tab) => tab.id === tabId)) {
               ask({ kind: "close-tab", sessionId, tabId }, () => close(place, catalog, opener));
               setConfirming({
                 opener,

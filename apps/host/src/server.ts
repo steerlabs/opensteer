@@ -1426,20 +1426,6 @@ export async function createHostServer(
       rpcSuccess(
         await dependencies.browser.readContextCandidate(requireRpcSession(context).user.id, input),
       ),
-    "workspace.tabs.get": async (input, context) =>
-      rpcSuccess(
-        await dependencies.browser.readWorkspaceTabs(
-          requireRpcSession(context).user.id,
-          input.groupId,
-        ),
-      ),
-    "browser.tabs.get": async (input, context) =>
-      rpcSuccess(
-        await dependencies.browser.readTabCatalog(
-          requireRpcSession(context).user.id,
-          input.sessionId,
-        ),
-      ),
     "browser.history.get": async (input, context) =>
       rpcSuccess(
         await dependencies.browser.readHistory(requireRpcSession(context).user.id, input.profileId),
@@ -1636,8 +1622,6 @@ export async function createHostServer(
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
     | "browser.contextCandidate.get"
-    | "browser.tabs.get"
-    | "workspace.tabs.get"
     | "browser.tabIcon.get"
     | "browser.history.get"
     | "browser.history.icons.get"

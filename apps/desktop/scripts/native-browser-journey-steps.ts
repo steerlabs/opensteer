@@ -295,8 +295,12 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
       );
       await kit.foregroundApp();
       await kit.focusPage();
-      const tabs = await kit.context.api["browser.tabs.get"]({ sessionId: kit.context.sessionId });
-      assert(tabs.ok);
+      const beforeBootstrap = await kit.context.api["bootstrap.get"]({});
+      assert(beforeBootstrap.ok);
+      const tabs = beforeBootstrap.data.browser.tabs.find((group) =>
+        group.rows.some((row) => row.sessionId === kit.context.sessionId),
+      );
+      assert(tabs?.complete);
       let quit = 0,
         closed = 0;
       const menus: string[] = [];
@@ -338,11 +342,15 @@ export async function runJourney(kit: NativeBrowserE2EKit): Promise<void> {
           item.click = originals[i]!;
         });
       }
-      const after = await kit.context.api["browser.tabs.get"]({ sessionId: kit.context.sessionId });
-      assert(after.ok);
+      const afterBootstrap = await kit.context.api["bootstrap.get"]({});
+      assert(afterBootstrap.ok);
+      const after = afterBootstrap.data.browser.tabs.find((group) =>
+        group.rows.some((row) => row.sessionId === kit.context.sessionId),
+      );
+      assert(after?.complete);
       assert.deepEqual(
-        after.data.tabs.map(({ id, site, order }) => ({ id, site, order })),
-        tabs.data.tabs.map(({ id, site, order }) => ({ id, site, order })),
+        after.rows.map(({ id, site, order }) => ({ id, site, order })),
+        tabs.rows.map(({ id, site, order }) => ({ id, site, order })),
       );
       assert.equal(quit, 0);
       assert.equal(closed, 0);

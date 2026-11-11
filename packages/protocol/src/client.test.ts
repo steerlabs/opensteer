@@ -1,12 +1,7 @@
 import { HostBootstrapSchema } from "./bootstrap.js";
 import { createId, type Workspace } from "@opensteer/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  BrowserTabCatalogSchema,
-  BrowserTabSummarySchema,
-  browserPageSite,
-  isBrowserPageSite,
-} from "./browser.js";
+import { browserPageSite, isBrowserPageSite } from "./browser.js";
 import {
   ClientToHostMessageSchema,
   HostToClientMessageSchema,
@@ -92,23 +87,28 @@ describe("browser tab sites", () => {
     "blob:https://example.com/private",
   ];
   const catalogFrame = (site: string) => ({
-    type: "host.browser-tabs-changed",
-    sessionId: "bsn_00000000-0000-4000-8000-000000000001",
-    catalog: {
-      generation: 1,
-      revision: 1,
-      tabs: [
+    type: "host.browser-tabs",
+    groupId: "bsn_00000000-0000-4000-8000-000000000001",
+    stream: {
+      op: "rows",
+      rows: [
         {
+          sessionId: "bsn_00000000-0000-4000-8000-000000000001",
+          id: "surface-1",
+          createdAt: timestamps.createdAt,
+          state: "live",
+          title: "example.com",
+          site,
+          iconRef: null,
+          order: 0,
+          openerId: null,
           availability: "ready",
           documentId: null,
-          iconRef: null,
-          id: "surface-1",
+          loading: false,
           navigationFailed: true,
+          canGoBack: false,
+          canGoForward: false,
           occupants: [],
-          openerId: null,
-          order: 0,
-          site,
-          title: "example.com",
         },
       ],
     },
@@ -128,14 +128,11 @@ describe("browser tab sites", () => {
   it.each(accepted)("admits %j whatever the runtime's URL says", (site) => {
     stubUrlThatRefusesEverything();
     expect(isBrowserPageSite(site)).toBe(true);
-    expect(BrowserTabSummarySchema.shape.site.safeParse(site).success).toBe(true);
   });
 
   it.each(rejected)("keeps %j out of the Host's catalog", (site) => {
     stubUrlThatRefusesEverything();
     expect(isBrowserPageSite(site)).toBe(false);
-    expect(BrowserTabSummarySchema.shape.site.safeParse(site).success).toBe(false);
-    expect(BrowserTabCatalogSchema.safeParse(catalogFrame(site).catalog).success).toBe(false);
   });
 
   it.each(["chrome-error:", "chrome:", "devtools:"])(

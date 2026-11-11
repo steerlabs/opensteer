@@ -1,4 +1,3 @@
-import type { HostedBrowserSession } from "@opensteer/protocol";
 import {
   BrowserGroupRowSchema,
   BrowserTabRowSchema,
@@ -9,7 +8,7 @@ import {
 import { KeyedStreamPublisher, type KeyedStreamMessage } from "@opensteer/protocol/keyed-stream";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import { BrowserSnapshotDerivation } from "../host/browser-snapshot.js";
-import type { BrowserSessionSummary, HostSnapshot } from "../host/client.js";
+import type { BrowserSessionSummary, HostSnapshot, WorkspaceTabLineage } from "../host/client.js";
 
 class MockRows<Row extends { id: string }> {
   #rows = new Map<string, Row>();
@@ -33,7 +32,7 @@ class MockRows<Row extends { id: string }> {
 
 export function mockBrowserRows(snapshot: HostSnapshot) {
   const liveSessions = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
-  const sessions = new Map<string, HostedBrowserSession | BrowserSessionSummary>(
+  const sessions = new Map<string, WorkspaceTabLineage["session"] | BrowserSessionSummary>(
     snapshot.workspaceTabs?.map((group) => [group.session.id, group.session]),
   );
   for (const session of snapshot.browserSessions)

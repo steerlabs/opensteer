@@ -1,9 +1,10 @@
+import type { WorkspaceTabLineage } from "@opensteer/client/host";
 /* Failure modes: interleaved members move unrelated tabs; layout order overrides tab order;
  * unknown members inflate visible membership or create empty headers; native places get grouped; collapsed members remain
  * keyboard targets; unchanged rows lose identity when a different group is edited. */
 import { describe, expect, it } from "vitest";
 import { BrowserTabGroupIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
-import { WorkspaceTabLineageSchema, type BrowserTabLayout } from "@opensteer/protocol";
+import { type BrowserTabLayout } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList } from "./places.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
@@ -80,7 +81,7 @@ describe("saved tab order projection", () => {
       const ids = ["a", "b", "c", "d"].map((id) =>
         BrowserSurfaceIdSchema.parse(`surface_race_${id}`),
       );
-      const lineage = WorkspaceTabLineageSchema.parse({
+      const lineage = {
         id: session.id,
         revision: 1,
         createdAt: "2026-10-25T00:00:00.000Z",
@@ -100,7 +101,7 @@ describe("saved tab order projection", () => {
           state: "suspended" as const,
           createdAt: `2026-10-25T00:00:0${order}.000Z`,
         })),
-      });
+      } as unknown as WorkspaceTabLineage;
       const layout: BrowserTabLayout = {
         revision: 1,
         order: [],

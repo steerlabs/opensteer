@@ -1,37 +1,11 @@
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { describe, expect, it } from "vitest";
 import { ContentPartSchema, contentSaysSomething, createId } from "@opensteer/core";
-import {
-  BrowserTabCatalogSchema,
-  BrowserTabIconResultSchema,
-  TargetedBrowserClientMessageSchema,
-} from "./browser.js";
+import { BrowserTabIconResultSchema, TargetedBrowserClientMessageSchema } from "./browser.js";
 import { PlaceActivitySchema } from "./places.js";
 
-const tab = {
-  id: "tab-x",
-  title: "Private page",
-  site: "https://example.com",
-  iconRef: null,
-  order: 1,
-  openerId: null,
-  availability: "ready",
-  occupants: [],
-};
-const catalog = { generation: 1, revision: 1, tabs: [tab] };
-
 describe("place wire contracts", () => {
-  it("bounds and validates the origin-only catalog, explicit removal and scoped icon bytes", () => {
-    expect(BrowserTabCatalogSchema.safeParse(catalog).success).toBe(true);
-    expect(BrowserTabCatalogSchema.safeParse({ ...catalog, tabs: [] }).success).toBe(true);
-    for (const tabs of [
-      [tab, tab],
-      Array.from({ length: 65 }, (_, index) => ({ ...tab, id: `tab-${index}`, order: index })),
-      [{ ...tab, site: "https://example.com/private?q=secret" }],
-      [{ ...tab, favicon: "bytes" }],
-    ]) {
-      expect(BrowserTabCatalogSchema.safeParse({ ...catalog, tabs }).success).toBe(false);
-    }
+  it("validates scoped icon bytes", () => {
     expect(
       BrowserTabIconResultSchema.safeParse({ favicon: "data:image/png;base64,aGVsbG8=" }).success,
     ).toBe(true);
