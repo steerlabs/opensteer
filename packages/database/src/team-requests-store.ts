@@ -291,6 +291,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       },
     );
     this.chat.changed(observed.channelId);
+    if (["failed", "stopped", "cancelled"].includes(input.state))
+      await this.chat.requestChanged({ kind: "cancelled", linkId, requestId: id });
   }
   async reply(
     linkId: TeamLinkId,
@@ -415,6 +417,11 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         },
       );
       this.chat.changed(observed.channelId);
+      await this.chat.requestChanged({
+        kind: "cancelled",
+        linkId: observed.linkId,
+        requestId: observed.id,
+      });
     }
   }
 }

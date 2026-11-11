@@ -247,6 +247,7 @@ export class TeamFilesStore {
     return this.access.database
       .transaction()
       .execute(async (t) => {
+        await this.access.checkSession(t);
         const row = await t
           .selectFrom("teamBlobs")
           .selectAll()

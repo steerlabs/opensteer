@@ -29,11 +29,12 @@ export class TeamFileService {
     this.store = store;
     this.access = access;
     this.#directory = join(dataDirectory, "team-files");
-    this.#unsubscribe = access.onRevoke(async () => {
+    this.#unsubscribe = access.onRevoke(async (effects) => {
       await Promise.all(
         [...this.#active].map(async (transfer) => {
           try {
-            if (await transfer.authorize()) return;
+            if (!effects.users.includes(transfer.actor.userId) && (await transfer.authorize()))
+              return;
           } catch {}
           transfer.controller.abort(new Error("Team file access revoked"));
           this.#active.delete(transfer);

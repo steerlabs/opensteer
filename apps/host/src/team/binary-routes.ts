@@ -1,11 +1,16 @@
-import { TeamBlobIdSchema, TeamChannelIdSchema, type TeamActor } from "@opensteer/core";
+import {
+  TeamBlobIdSchema,
+  TeamChannelIdSchema,
+  type TeamActor,
+  type AuthenticatedSession,
+} from "@opensteer/core";
 import { TeamBinaryUploadMetadataSchema } from "@opensteer/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import { z as schema } from "zod";
 import type { TeamFileService } from "./file-service.js";
 import { assertTeamApiVersion } from "./services.js";
-import { requireTeam } from "@opensteer/database/team-access";
+import { requireTeam, type TeamAccessStore } from "@opensteer/database/team-access";
 
 export const teamHumanFileRoutes = {
   upload: "/v1/team/files/upload/:channelId",
@@ -15,7 +20,8 @@ export function registerTeamBinaryRoutes(
   app: FastifyInstance,
   options: {
     files: TeamFileService;
-    authenticate: (request: FastifyRequest, mutation: boolean) => Promise<TeamActor>;
+    access: TeamAccessStore;
+    authenticate: (request: FastifyRequest, mutation: boolean) => Promise<AuthenticatedSession>;
   },
 ) {
   void app.register(async (binary) => {
@@ -32,43 +38,50 @@ export function registerTeamBinaryRoutes(
       teamHumanFileRoutes.upload,
       { onRequest: gate, bodyLimit: 100 * 1024 * 1024 + 65536 },
       async (request, reply) => {
-        const actor = await options.authenticate(request, true);
-        requireTeam(actor.kind === "human");
-        const { channelId } = schema
-          .strictObject({ channelId: TeamChannelIdSchema })
-          .parse(request.params);
-        const header = schema.string().max(2048).parse(request.headers["x-opensteer-team-upload"]);
-        const metadata = TeamBinaryUploadMetadataSchema.parse(JSON.parse(header));
-        const controller = new AbortController(),
-          abort = () => controller.abort(new Error("Upload disconnected"));
-        request.raw.once("aborted", abort);
-        try {
-          const body = request.body as AsyncIterable<Uint8Array>;
-          requireTeam(body && Symbol.asyncIterator in body);
-          void reply.header("cache-control", "no-store");
-          return await options.files.upload(
-            actor,
-            channelId,
-            metadata,
-            splitTeamUpload(body, metadata),
-            undefined,
-            controller.signal,
-          );
-        } finally {
-          request.raw.off("aborted", abort);
-        }
+        const session = await options.authenticate(request, true);
+        return options.access.withHumanSession(session, async () => {
+          const actor: TeamActor = { kind: "human", userId: session.user.id };
+          const { channelId } = schema
+            .strictObject({ channelId: TeamChannelIdSchema })
+            .parse(request.params);
+          const header = schema
+            .string()
+            .max(2048)
+            .parse(request.headers["x-opensteer-team-upload"]);
+          const metadata = TeamBinaryUploadMetadataSchema.parse(JSON.parse(header));
+          const controller = new AbortController(),
+            abort = () => controller.abort(new Error("Upload disconnected"));
+          request.raw.once("aborted", abort);
+          try {
+            const body = request.body as AsyncIterable<Uint8Array>;
+            requireTeam(body && Symbol.asyncIterator in body);
+            void reply.header("cache-control", "no-store");
+            return await options.files.upload(
+              actor,
+              channelId,
+              metadata,
+              splitTeamUpload(body, metadata),
+              undefined,
+              controller.signal,
+            );
+          } finally {
+            request.raw.off("aborted", abort);
+          }
+        });
       },
     );
     binary.get(teamHumanFileRoutes.download, { onRequest: gate }, async (request, reply) => {
-      const actor = await options.authenticate(request, false);
-      requireTeam(actor.kind === "human");
-      const { blobId, part } = schema
-        .strictObject({ blobId: TeamBlobIdSchema, part: schema.enum(["original", "preview"]) })
-        .parse(request.params);
-      const file = await options.files.download(actor, blobId, part);
-      for (const [name, value] of Object.entries(file.headers)) void reply.header(name, value);
-      void reply.header("content-length", file.sizeBytes);
-      return reply.send(file.body);
+      const session = await options.authenticate(request, false);
+      return options.access.withHumanSession(session, async () => {
+        const actor: TeamActor = { kind: "human", userId: session.user.id };
+        const { blobId, part } = schema
+          .strictObject({ blobId: TeamBlobIdSchema, part: schema.enum(["original", "preview"]) })
+          .parse(request.params);
+        const file = await options.files.download(actor, blobId, part);
+        for (const [name, value] of Object.entries(file.headers)) void reply.header(name, value);
+        void reply.header("content-length", file.sizeBytes);
+        return reply.send(file.body);
+      });
     });
   });
 }

@@ -97,6 +97,12 @@ export class TeamInvitesStore {
     userId: UserId,
     selector: string,
   ) {
+    await transaction
+      .selectFrom("teamMembers")
+      .select("userId")
+      .where("userId", "=", userId)
+      .forNoKeyUpdate()
+      .execute();
     const invite = await transaction
       .selectFrom("teamInvites")
       .selectAll()

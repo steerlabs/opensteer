@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OpensteerError,
   SequenceSchema,
@@ -9,11 +10,12 @@ import {
   type TeamLinkId,
   type TeamMessageId,
   type UserId,
+  type AuthenticatedSession,
+  type AuthSessionId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { appendTeamAudit } from "./team-audit-store.js";
-import { resolveTeamTopicAuthority } from "./team-topics-store.js";
 import { addTeamSelfAddNotices } from "./team-notices-store.js";
 
 export interface TeamStoreAccessEffects {
@@ -66,6 +68,7 @@ export function teamReadableChannels(actor: TeamActor) {
 }
 
 export class TeamAccessStore {
+  readonly #sessions = new AsyncLocalStorage<{ sessionId: AuthSessionId; userId: UserId }>();
   #revision: Sequence = SequenceSchema.parse("0");
   readonly #closers = new Set<(effects: TeamStoreAccessEffects) => Promise<void> | void>();
   readonly database: Kysely<DatabaseSchema>;
@@ -74,6 +77,28 @@ export class TeamAccessStore {
   }
   get revision() {
     return this.#revision;
+  }
+  withHumanSession<Value>(session: AuthenticatedSession, run: () => Promise<Value>) {
+    return this.#sessions.run({ sessionId: session.id, userId: session.user.id }, run);
+  }
+  outsideHumanSession<Value>(run: () => Value): Value {
+    return this.#sessions.exit(run);
+  }
+  async checkSession(transaction: Transaction<DatabaseSchema>) {
+    const session = this.#sessions.getStore();
+    if (!session) return;
+    const valid = await transaction
+      .selectFrom("authSessions as s")
+      .innerJoin("teamMembers as m", "m.userId", "s.userId")
+      .select("s.id")
+      .where("s.id", "=", session.sessionId)
+      .where("s.userId", "=", session.userId)
+      .where("m.state", "=", "active")
+      .whereRef("s.memberGeneration", "=", "m.generation")
+      .where("s.expiresAt", ">", new Date())
+      .where("s.absoluteExpiresAt", ">", new Date())
+      .executeTakeFirst();
+    requireTeam(valid, "Team session generation changed");
   }
   async initialize() {
     await this.database
@@ -135,11 +160,42 @@ export class TeamAccessStore {
     actor: TeamActor,
     topicId: KnowledgeTopicId,
   ) {
-    return resolveTeamTopicAuthority(transaction, actor, topicId, (channelId) =>
-      this.channel(transaction, actor, channelId),
-    );
+    const row = (
+      await sql<{
+        originChannelId: TeamChannelId | null;
+        peopleOnly: boolean;
+        archivedAt: Date | null;
+      }>`select origin_channel_id,people_only,archived_at from knowledge.topics where id=${topicId}`.execute(
+        transaction,
+      )
+    ).rows[0];
+    if (!row) return { read: false, write: false, manage: false, peopleOnly: false };
+    if (row.originChannelId) {
+      const channel = await this.channel(transaction, actor, row.originChannelId);
+      const blocked = actor.kind === "agent" && row.peopleOnly;
+      return {
+        read: channel.read && !blocked,
+        write: channel.post && !row.archivedAt && !blocked,
+        manage: channel.manage,
+        peopleOnly: channel.peopleOnly || row.peopleOnly,
+      };
+    }
+    const grants = (
+      await sql<{ read: boolean; write: boolean; manage: boolean }>`${teamGroupPaths(actor.userId)}
+      select count(g.topic_id)>0 as read,coalesce(bool_or(g.level in ('write','manage')),false) as write,
+      (${actor.kind}='human' and (coalesce(bool_or(g.level='manage'),false) or m.role in ('owner','admin'))) as manage
+      from team_members m left join team_topic_grants g on g.topic_id=${topicId} and
+      ((g.subject_kind='person' and g.subject_id=m.user_id) or (g.subject_kind='group' and g.subject_id in(select id from member_groups)))
+      where m.user_id=${actor.userId} and m.state='active' group by m.role`.execute(transaction)
+    ).rows[0];
+    const blocked = actor.kind === "agent" && row.peopleOnly;
+    return {
+      read: !!grants?.read && !blocked,
+      write: !!grants?.write && !row.archivedAt && !blocked,
+      manage: !!grants?.manage,
+      peopleOnly: row.peopleOnly,
+    };
   }
-
   async mutate<Value>(
     write: (
       transaction: Transaction<DatabaseSchema>,
@@ -163,6 +219,7 @@ export class TeamAccessStore {
         // FOR UPDATE: M1/M2 requires the same channel lock before content and ACL removal.
         .forUpdate()
         .execute();
+      await this.checkSession(transaction);
       const result = await write(transaction);
       const effects = await this.#terminalize(transaction, result.effects);
       await afterAuthority?.(transaction, result.value);
@@ -180,7 +237,9 @@ export class TeamAccessStore {
     });
     if (BigInt(committed.revision) > BigInt(this.#revision)) this.#revision = committed.revision;
     const closed = await Promise.allSettled(
-      [...this.#closers].map((close) => close(committed.effects)),
+      [...this.#closers].map((close) =>
+        Promise.resolve().then(() => this.outsideHumanSession(() => close(committed.effects))),
+      ),
     );
     const failed = closed.flatMap((r) => (r.status === "rejected" ? [r.reason] : []));
     if (failed.length)
@@ -429,6 +488,7 @@ export class TeamAccessStore {
         // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
         .forUpdate()
         .executeTakeFirstOrThrow();
+      await this.checkSession(transaction);
       return write(transaction, await this.channel(transaction, actor, channelId));
     });
   }
@@ -460,6 +520,7 @@ export class TeamAccessStore {
           // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
           .forUpdate()
           .executeTakeFirstOrThrow();
+      await this.checkSession(transaction);
       const authority = await this.topic(transaction, actor, topicId);
       requireTeam(authority.write);
       return write(transaction, authority);

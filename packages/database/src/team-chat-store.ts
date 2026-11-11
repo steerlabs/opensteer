@@ -6,6 +6,8 @@ import {
   type Sequence,
   type TeamActor,
   type TeamChannelId,
+  type TeamLinkId,
+  type TeamAgentRequestId,
   type TeamMessageId,
   type TeamSource,
   type UserId,
@@ -124,7 +126,13 @@ export async function teamMessageViews(
   });
 }
 
+export interface TeamRequestChange {
+  readonly kind: "queued" | "cancelled";
+  readonly linkId: TeamLinkId;
+  readonly requestId: TeamAgentRequestId;
+}
 export class TeamChatStore {
+  readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
   readonly #listeners = new Set<(channelId: TeamChannelId) => void>();
   readonly access: TeamAccessStore;
   readonly topics: ChannelTopicPort;
@@ -143,6 +151,17 @@ export class TeamChatStore {
     return () => {
       this.#listeners.delete(listener);
     };
+  }
+  onRequestChange(listener: (event: TeamRequestChange) => Promise<void> | void) {
+    this.#requestListeners.add(listener);
+    return () => {
+      this.#requestListeners.delete(listener);
+    };
+  }
+  async requestChanged(event: TeamRequestChange) {
+    await Promise.allSettled(
+      [...this.#requestListeners].map((listener) => Promise.resolve().then(() => listener(event))),
+    );
   }
   changed(channelId: TeamChannelId) {
     for (const listener of this.#listeners) listener(channelId);
@@ -737,6 +756,15 @@ export class TeamChatStore {
       },
     );
     this.changed(input.channelId);
+    if (result.wake === "queued") {
+      const request = await this.access.database
+        .selectFrom("teamAgentRequests")
+        .select(["id", "linkId"])
+        .where("triggerMessageId", "=", result.message.id)
+        .where("ownerUserId", "=", actor.userId)
+        .executeTakeFirstOrThrow();
+      await this.requestChanged({ kind: "queued", linkId: request.linkId, requestId: request.id });
+    }
     return result;
   }
   async insert(
@@ -1073,6 +1101,17 @@ export class TeamChatStore {
       }
     });
     this.changed(channelId);
+    if (deletedRequests.length)
+      for (const request of await this.access.database
+        .selectFrom("teamAgentRequests")
+        .select(["id", "linkId"])
+        .where("id", "in", deletedRequests)
+        .execute())
+        await this.requestChanged({
+          kind: "cancelled",
+          linkId: request.linkId,
+          requestId: request.id,
+        });
     return deletedRequests;
   }
   async pin(actor: TeamActor, channelId: TeamChannelId, messageId: TeamMessageId, pin: boolean) {
@@ -1152,6 +1191,7 @@ export class TeamChatStore {
         .setIsolationLevel("repeatable read")
         .execute(async (transaction) => {
           await this.access.member(transaction, actor.userId);
+          await this.access.checkSession(transaction);
           if (channelId)
             requireTeam((await this.access.channel(transaction, actor, channelId)).read);
           const result = await read(transaction);
@@ -1169,6 +1209,7 @@ export class TeamChatStore {
         () =>
           this.access.database.transaction().execute(async (t) => {
             await this.access.member(t, actor.userId);
+            await this.access.checkSession(t);
             return channelId ? (await this.access.channel(t, actor, channelId)).read : false;
           }),
         () => value,

@@ -153,7 +153,7 @@ describe("team transaction authority", () => {
     const topicRights = (actor: TeamActor) =>
       fixture.database.transaction().execute((t) => access.topic(t, actor, topicId));
     expect(await topicRights(agent)).toMatchObject({ read: true, write: false, manage: false });
-    expect(await topicRights(owner)).toMatchObject({ read: false, write: false, manage: false });
+    expect(await topicRights(owner)).toMatchObject({ read: false, write: false, manage: true });
     await access.mutate(async (t) => {
       await sql`update knowledge.topics set people_only=true where id=${topicId}`.execute(t);
       return {
@@ -185,6 +185,10 @@ describe("team transaction authority", () => {
     await expect(
       access.knowledgeWrite(agent, channelTopic, async () => "unexpected"),
     ).rejects.toThrow();
+    await chat.update(owner, c.id, { peopleOnly: false });
+    expect(
+      await fixture.database.transaction().execute((t) => access.topic(t, agent, channelTopic)),
+    ).toMatchObject({ read: true, write: true, peopleOnly: false });
     expect((await chat.message(member, c.id, message.message.id)).bodyMarkdown).toBe(
       "confidential phrase",
     );
@@ -283,6 +287,15 @@ describe("team transaction authority", () => {
   });
   it("admits only human own-agent mentions, only once, with an active link; edits never wake", async () => {
     const c = await channel();
+    const events: { kind: string; state: string | undefined }[] = [];
+    const stop = chat.onRequestChange(async (event) => {
+      const row = await fixture.database
+        .selectFrom("teamAgentRequests")
+        .select("state")
+        .where("id", "=", event.requestId)
+        .executeTakeFirst();
+      events.push({ kind: event.kind, state: row?.state });
+    });
     expect((await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }])).wake).toBe(
       "no-link",
     );
@@ -305,6 +318,7 @@ describe("team transaction authority", () => {
       mentions: [{ kind: "agent", userId: owner.userId }],
     });
     expect(await requests.pending(l)).toHaveLength(1);
+    expect(events).toEqual([{ kind: "queued", state: "queued" }]);
     const accepted = await requests.accept(l, queued[0]!.request.id);
     const again = await requests.accept(l, accepted.id);
     expect(again.expiresAt).toBe(accepted.expiresAt);
@@ -318,6 +332,16 @@ describe("team transaction authority", () => {
     );
     await expect(requests.authorize(l, accepted.id, "read")).rejects.toThrow();
     expect(await requests.receipt(l, accepted.id)).toBe(replyId);
+    const cancelled = await send(c.id, "delete me", owner, [
+      { kind: "agent", userId: owner.userId },
+    ]);
+    await chat.editOrDelete(owner, c.id, cancelled.message.id, null);
+    expect(events).toEqual([
+      { kind: "queued", state: "queued" },
+      { kind: "queued", state: "queued" },
+      { kind: "cancelled", state: "cancelled" },
+    ]);
+    stop();
   });
   it("bounds request context while preserving the original ask after a long thread", async () => {
     const c = await channel();
@@ -525,6 +549,88 @@ describe("team transaction authority", () => {
     await writer;
     await removal;
     await expect(send(c.id, "too late", member)).rejects.toThrow();
+  });
+
+  it("refuses an old human session's pending post after removal and re-admission", async () => {
+    const member = await person("GenerationReader"),
+      c = await channel();
+    const entries = [
+      {
+        subject: { kind: "person" as const, userId: owner.userId },
+        level: "post" as const,
+        manage: true,
+      },
+      {
+        subject: { kind: "person" as const, userId: member.userId },
+        level: "post" as const,
+        manage: false,
+      },
+    ];
+    await chat.setAccess(owner, c.id, access.revision, entries);
+    const session = {
+      id: createId("authSession"),
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      absoluteExpiresAt: new Date(Date.now() + 60000).toISOString(),
+      user: {
+        id: member.userId,
+        displayName: "GenerationReader",
+        email: "GenerationReader@example.invalid",
+        emailVerified: true,
+        image: null,
+        disabledAt: null,
+      },
+    };
+    await fixture.database
+      .insertInto("authSessions")
+      .values({
+        id: session.id,
+        userId: member.userId,
+        token: randomUUID(),
+        memberGeneration: "1",
+        deviceLabel: "Old login",
+        expiresAt: new Date(session.expiresAt),
+        absoluteExpiresAt: new Date(session.absoluteExpiresAt),
+      })
+      .execute();
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const post = access.withHumanSession(session, async () => {
+      entered.resolve();
+      await withTimeout(release.promise, 10000, {
+        timeoutError: () => new Error("Old session post was not released"),
+      });
+      return send(c.id, "old login", member);
+    });
+    const outcome = post.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    try {
+      await withTimeout(entered.promise, 5000, {
+        timeoutError: () => new Error("Old login was not authenticated"),
+      });
+      await new TeamMembersStore(access).change(owner, member.userId, "remove");
+      const invites = new TeamInvitesStore(access, "https://team.example.invalid");
+      const invite = new URL((await invites.create(owner, createId("teamInvite"))).url);
+      await invites.accept(member.userId, invite.pathname.split("/").pop()!, invite.hash.slice(1));
+      await chat.setAccess(owner, c.id, access.revision, entries);
+      expect((await rights(member, c.id)).post).toBe(true);
+    } finally {
+      release.resolve();
+    }
+    expect(
+      await withTimeout(outcome, 5000, {
+        timeoutError: () => new Error("Old session post did not settle"),
+      }),
+    ).toMatchObject({ message: "Team session generation changed" });
+    expect(
+      await fixture.database
+        .selectFrom("teamMessages")
+        .select("id")
+        .where("authorUserId", "=", member.userId)
+        .execute(),
+    ).toEqual([]);
   });
 
   it("discards an already buffered page when removal returns before handoff", async () => {
@@ -918,8 +1024,21 @@ describe("team transaction authority", () => {
       backgroundError() {},
     });
     try {
+      const sessionId = createId("authSession");
+      await fixture.database
+        .insertInto("authSessions")
+        .values({
+          id: sessionId,
+          userId: owner.userId,
+          token: randomUUID(),
+          memberGeneration: "1",
+          deviceLabel: "Test",
+          expiresAt: new Date(Date.now() + 60000),
+          absoluteExpiresAt: new Date(Date.now() + 60000),
+        })
+        .execute();
       const authenticate = vi.fn(async () => ({
-        id: createId("authSession"),
+        id: sessionId,
         createdAt: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60000).toISOString(),
         absoluteExpiresAt: new Date(Date.now() + 60000).toISOString(),
@@ -965,16 +1084,9 @@ describe("team transaction authority", () => {
       expect(authenticate).toHaveBeenCalledOnce();
       const session = await authenticate();
       await fixture.database
-        .insertInto("authSessions")
-        .values({
-          id: session.id,
-          userId: owner.userId,
-          token: randomUUID(),
-          memberGeneration: "0",
-          deviceLabel: "Test",
-          expiresAt: new Date(Date.now() + 60000),
-          absoluteExpiresAt: new Date(Date.now() + 60000),
-        })
+        .updateTable("authSessions")
+        .set({ memberGeneration: "0" })
+        .where("id", "=", session.id)
         .execute();
       const preview = {
         type: "notification.preview.register",

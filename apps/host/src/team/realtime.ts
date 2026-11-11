@@ -55,6 +55,10 @@ export class TeamRealtimeHub {
     });
     this.#unsubscribeAccess = access.onRevoke(async (effects) => {
       for (const peer of this.#peers) {
+        if (effects.users.includes(peer.actor.userId)) {
+          this.#close(peer, "Team membership changed");
+          continue;
+        }
         try {
           await access.database.transaction().execute(async (t) => {
             await access.member(t, peer.actor.userId);
