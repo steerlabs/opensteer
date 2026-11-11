@@ -1155,7 +1155,9 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
             }),
           };
         verifier.claims = claims;
-        const attachment = await runtime.attach("fixture-only-ticket", sink);
+        const attachment = await runtime.attach("fixture-only-ticket", sink, {
+          passkeys: mode === "passkey",
+        });
         const id = [...sink.tabs.rows.keys()][0]!;
         const state = (viewed: string[]) =>
           attachment.handle(
@@ -1216,6 +1218,11 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
           timeoutError: () => new Error(`${mode} did not sleep through the budget policy`),
         });
         assert(!postContents.isDestroyed(), "POST result slept");
+        const wakeNavigations: string[] = [];
+        const observeWake = (_event: Electron.Event, contents: WebContents) => {
+          contents.on("did-start-navigation", (_event, url) => wakeNavigations.push(url));
+        };
+        app.on("web-contents-created", observeWake);
         await state([id]);
         const reply = z
           .object({ reloaded: z.boolean() })
@@ -1243,13 +1250,44 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
         });
         assert.equal(restored.navigationHistory.length(), 8, "Wake added a blank history entry");
         assert.equal(restored.navigationHistory.getActiveIndex(), 7);
+        app.off("web-contents-created", observeWake);
+        assert(!wakeNavigations.includes("about:blank"), "Wake loaded about:blank");
         const back = once(restored, "did-finish-load");
         restored.navigationHistory.goToIndex(4);
         await withTimeout(back, 10_000, {
           timeoutError: () => new Error("Older history entry never loaded"),
         });
         assert.deepEqual(await restored.executeJavaScript("history.state"), { step: 2 });
-        results.push({ mode, passed: true, historyEntries: 8, postProtected: true });
+        const forward = once(restored, "did-finish-load");
+        restored.navigationHistory.goToIndex(7);
+        await withTimeout(forward, 10_000, {
+          timeoutError: () => new Error("Forward history entry never loaded"),
+        });
+        assert.deepEqual(await restored.executeJavaScript("history.state"), { active: true });
+        results.push({
+          mode,
+          passed: true,
+          historyEntries: 8,
+          postProtected: true,
+          passkeysEnabled: mode === "passkey",
+          wakeNavigations,
+          restoredState: actual,
+          backForwardPassed: true,
+        });
+        writeFileSync(
+          path.join(root, "sleep-restore-results.json"),
+          JSON.stringify(results, null, 2),
+        );
+      } catch (error) {
+        results.push({
+          mode,
+          passed: false,
+          error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        });
+        writeFileSync(
+          path.join(root, "sleep-restore-results.json"),
+          JSON.stringify(results, null, 2),
+        );
       } finally {
         await runtime.shutdown();
         launcher.close();
@@ -1257,6 +1295,10 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
       }
     }
     writeFileSync(path.join(root, "sleep-restore-results.json"), JSON.stringify(results, null, 2));
+    assert(
+      results.every((result) => Reflect.get(result, "passed") === true),
+      "Restore mode failed",
+    );
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
@@ -1271,13 +1313,15 @@ if (sleepTrialRoot) {
   const userData = path.join(sleepTrialRoot, "user-data");
   mkdirSync(userData, { recursive: true });
   app.setPath("userData", userData);
-  await app.whenReady();
-  try {
-    await runPageSleepRestoreTrial(sleepTrialRoot);
-    console.log("Sleep restore trial passed: Guest, local profile, passkey");
-    app.exit(0);
-  } catch (error) {
-    console.error(error);
-    app.exit(1);
-  }
+  app.on("window-all-closed", () => undefined);
+  void app.whenReady().then(async () => {
+    try {
+      await runPageSleepRestoreTrial(sleepTrialRoot);
+      console.log("Sleep restore trial passed: Guest, local profile, passkey");
+      app.exit(0);
+    } catch (error) {
+      console.error(error);
+      app.exit(1);
+    }
+  });
 }
