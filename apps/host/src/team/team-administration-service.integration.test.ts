@@ -1,3 +1,4 @@
+import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createId } from "@opensteer/core";
@@ -270,6 +271,86 @@ describeStore("team administration Host boundary", (it) => {
       expect(
         await storeFixture.store.findMainWorkspaceForOwner(f.admin.session.user.id),
       ).toBeUndefined();
+      for (const command of [
+        { type: "machine.revoke", machineId: f.runnerId, idempotencyKey: "legacy-revoke" },
+        {
+          type: "runner.enrollment.createManaged",
+          name: "extra computer",
+          allowedModules: ["agents", "shell"],
+          idempotencyKey: "legacy-enroll",
+        },
+      ]) {
+        const refused = await injectRpcRequest(
+          f.app,
+          "commands.dispatch",
+          command,
+          f.context(f.admin).headers,
+        );
+        expect(refused.statusCode, refused.body).toBe(403);
+      }
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("does not issue an enrollment if the administrator's session ends during old-computer teardown", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    const issuer = new RunnerAuthenticator({
+      store: new OpensteerStore(f.database),
+      issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
+    });
+    const service = new TeamAdministrationService({
+      database: f.database,
+      identity: f.identity,
+      teamName: "Test team",
+      runnerIsConnected: () => false,
+      invalidate: () => undefined,
+      revokeComputer: async () => {
+        await f.database.deleteFrom("authSessions").where("id", "=", f.admin.session.id).execute();
+      },
+      enrollComputer: (revision, actor, key) =>
+        issuer.createEnrollment({
+          expectedTeamAccessRevision: revision,
+          expectedTeamActor: actor,
+          allowedModules: ["agents", "shell"],
+          createdBy: actor.userId,
+          idempotencyKey: key,
+          lifetimeSeconds: 600,
+          name: "Team computer",
+          runnerKind: "managed",
+        }),
+    });
+    try {
+      await expect(
+        service.command(
+          {
+            type: "team.computer.replace",
+            expectedRevision: 2,
+            expectedComputerId: f.runnerId,
+            idempotencyKey: "session-ended",
+          },
+          f.context(f.admin),
+        ),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+      expect(
+        await f.database
+          .selectFrom("runnerEnrollments")
+          .select("id")
+          .where("createdBy", "=", f.admin.session.user.id)
+          .where("consumedAt", "is", null)
+          .execute(),
+      ).toEqual([]);
+      expect(
+        (
+          await f.database
+            .selectFrom("runners")
+            .select("revokedAt")
+            .where("id", "=", f.runnerId)
+            .executeTakeFirst()
+        )?.revokedAt,
+      ).toBeInstanceOf(Date);
     } finally {
       await f.app.close();
     }
@@ -280,6 +361,10 @@ describeStore("team administration Host boundary", (it) => {
   }) => {
     const f = await setup(storeFixture);
     const issued: number[] = [];
+    const enrollmentIssuer = new RunnerAuthenticator({
+      store: new OpensteerStore(f.database),
+      issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
+    });
     vi.stubEnv("OPENSTEER_RUNNER_SOURCE_REVISION", "b".repeat(40));
     vi.stubEnv("OPENSTEER_SOURCE_REVISION", "a".repeat(40));
     vi.stubEnv("OPENSTEER_IMAGE_REGISTRY", "registry.team.test/opensteer");
@@ -289,7 +374,7 @@ describeStore("team administration Host boundary", (it) => {
       teamName: "Test team",
       runnerIsConnected: () => false,
       invalidate: () => undefined,
-      enrollComputer: async (revision) => {
+      enrollComputer: async (revision, actor, key) => {
         expect(
           await f.database
             .selectFrom("runners")
@@ -298,11 +383,16 @@ describeStore("team administration Host boundary", (it) => {
             .executeTakeFirst(),
         ).toEqual({ revokedAt: expect.any(Date) });
         issued.push(revision);
-        return {
-          enrollmentId: "test-enrollment",
-          token: "a-test-enrollment-token-with-enough-entropy",
-          expiresAt: new Date(Date.now() + 600000).toISOString(),
-        };
+        return enrollmentIssuer.createEnrollment({
+          expectedTeamAccessRevision: revision,
+          expectedTeamActor: actor,
+          allowedModules: ["agents", "shell"],
+          createdBy: actor.userId,
+          idempotencyKey: key,
+          lifetimeSeconds: 600,
+          name: "Team computer",
+          runnerKind: "managed",
+        });
       },
     });
     try {
@@ -313,10 +403,24 @@ describeStore("team administration Host boundary", (it) => {
         idempotencyKey: "replace",
       };
       const result = await service.command(command, f.context(f.admin));
-      expect(result).toMatchObject({
-        type: "team.computer.replace",
-        accessRevision: 3,
-        runnerImage: `registry.team.test/opensteer/runner:sha-${"b".repeat(40)}`,
+      if (result.type !== "team.computer.replace") throw new Error("Wrong replacement result");
+      expect(result.accessRevision).toBe(3);
+      expect(result.runnerImage).toBe(`registry.team.test/opensteer/runner:sha-${"b".repeat(40)}`);
+      const replay = await service.command(command, f.context(f.admin));
+      if (replay.type !== "team.computer.replace") throw new Error("Wrong replacement replay");
+      expect(replay.enrollmentId).toBe(result.enrollmentId);
+      expect(replay.expiresAt).toBe(result.expiresAt);
+      expect(replay.token === result.token).toBe(true);
+      expect(
+        await f.database
+          .selectFrom("runnerEnrollments")
+          .select(["allowedModules", "ownerKind", "ownerUserId"])
+          .where("id", "=", result.enrollmentId)
+          .executeTakeFirst(),
+      ).toEqual({
+        allowedModules: ["agents", "shell"],
+        ownerKind: "deployment",
+        ownerUserId: null,
       });
       await expect(
         service.command({ ...command, idempotencyKey: "stale" }, f.context(f.admin)),
@@ -324,7 +428,7 @@ describeStore("team administration Host boundary", (it) => {
       await expect(
         service.command({ ...command, idempotencyKey: "non-admin" }, f.context(f.manager)),
       ).rejects.toMatchObject({ reason: "team-admin-required" });
-      expect(issued).toEqual([3]);
+      expect(issued).toEqual([3, 3]);
     } finally {
       vi.unstubAllEnvs();
       await f.app.close();
@@ -501,6 +605,17 @@ describeStore("team administration Host boundary", (it) => {
       expect(JSON.stringify(summary)).not.toMatch(
         /email|instructions|presentation|password|tokenHash/,
       );
+      const snapshot = await new OpensteerStore(database).workspaceSnapshot(prepared.workspace.id, {
+        viewerId: manager.session.user.id,
+      });
+      expect(snapshot.workspace.audience).toEqual({ people: 2, myLevel: "manage" });
+      expect(snapshot.threads.length).toBeGreaterThan(0);
+      for (const thread of snapshot.threads)
+        expect(thread.audience).toEqual(snapshot.workspace.audience);
+      expect(summary.can.projects).toEqual({ allowed: true });
+      await expect(service.read("team.computer.get", {}, context(manager))).rejects.toMatchObject({
+        reason: "team-admin-required",
+      });
       const managerSummary = TeamSummarySchema.parse(
         await service.read(
           "team.summary.get",

@@ -98,7 +98,7 @@ export class TeamAdministrationService {
   readonly #enrollComputer:
     | ((
         revision: number,
-        actor: UserId,
+        actor: AuthenticatedHuman,
         key: string,
       ) => Promise<{ enrollmentId: string; token: string; expiresAt: string }>)
     | undefined;
@@ -121,7 +121,7 @@ export class TeamAdministrationService {
     computerRevocation?: ProjectComputerRevocationPort;
     enrollComputer?: (
       revision: number,
-      actor: UserId,
+      actor: AuthenticatedHuman,
       key: string,
     ) => Promise<{ enrollmentId: string; token: string; expiresAt: string }>;
     revokeComputer?: (id: RunnerId) => Promise<void>;
@@ -591,7 +591,8 @@ export class TeamAdministrationService {
         this.#computerRevocation,
       );
       if (result.revokedComputerId) await this.#revokeComputer?.(result.revokedComputerId);
-      const enrollment = await this.#enrollComputer(result.accessRevision, actor.userId, commandId);
+      const enrollment = await this.#enrollComputer(result.accessRevision, actor, commandId);
+      await this.#reads.authority(actor);
       this.#invalidate([actor.userId]);
       return TeamCommandResultSchema.parse({
         ...base,
