@@ -1,3 +1,4 @@
+import { ThreadIdSchema } from "@opensteer/core";
 import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { seedBrowserSnapshot } from "@opensteer/client/test-support";
@@ -13,7 +14,7 @@ const occupant = (acting: boolean) => ({
   holding: true,
   home: false,
   lastActiveAt: "2026-11-01T10:00:00.000Z",
-  threadId: "thread-trip",
+  threadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
 });
 const rawSnapshot = {
   appTabs: [],
@@ -23,9 +24,16 @@ const rawSnapshot = {
   activeTasks: [],
   homeThreadId: "home",
   tasks: null,
-  threads: [{ id: "thread-trip", title: "Tokyo trip", icon: null, color: null }],
+  threads: [
+    {
+      id: "thr_00000000-0000-4000-8000-000000000001",
+      title: "Tokyo trip",
+      icon: null,
+      color: null,
+    },
+  ],
   transcripts: {
-    "thread-trip": [
+    "thr_00000000-0000-4000-8000-000000000001": [
       {
         id: "visited",
         kind: "place",
@@ -70,6 +78,7 @@ const catalog = () =>
 vi.mock("@opensteer/client/react", () => ({
   useHostSelector: (_: unknown, select: (value: HostSnapshot) => unknown) => select(snapshot),
   useBrowserSessionGroupId: () => "browser",
+  useBrowserTabOccupancy: () => snapshot.browserTabs!.occupancyRevision("browser"),
   useBrowserTabs: () => ({ ids: catalog().map(({ id }) => id), syncing: false, whole: true }),
   useBrowserTab: (_: unknown, _group: string, id: string) => {
     const tab = catalog().find((candidate) => candidate.id === id);
@@ -183,7 +192,7 @@ it("lists every tab in the browser's catalog order and says which is shown and w
   expect(container.textContent).not.toContain("All tabs in this browser");
 });
 it("lists only a task's tabs and folds the browser's others under one row", () => {
-  open({ threadId: "thread-trip" });
+  open({ threadId: "thr_00000000-0000-4000-8000-000000000001" });
   expect(container.textContent).toContain("Tokyo trip");
   expect(container.textContent).toContain("2 tabs");
   // Visited earlier by the transcript, and occupied now by its agent.
@@ -200,8 +209,53 @@ it("lists only a task's tabs and folds the browser's others under one row", () =
   press("All tabs in this browser, 1");
   expect(labels()).not.toContain("Last, last.example");
 });
+it("updates task grouping and counts when tabs and occupancy change with a stable session", () => {
+  const session = snapshot.browserSessions[0]!;
+  const store = snapshot.browserTabs!;
+  const groupId = store.groupForSession(session.id)!;
+  const original = store.sessionTabs(session.id);
+  const replace = (rows: typeof original) => {
+    store.applyTabs(groupId, { op: "begin", generation: "grouping" });
+    store.applyTabs(groupId, { op: "rows", rows: [...rows] });
+    store.applyTabs(groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+    act(() =>
+      root.render(
+        <BrowserTabsScreen
+          route={{
+            params: {
+              deploymentId: "deployment",
+              sessionId: "browser",
+              tabId: "current",
+              threadId: "thr_00000000-0000-4000-8000-000000000001",
+            },
+          }}
+        />,
+      ),
+    );
+  };
+  open({ threadId: "thr_00000000-0000-4000-8000-000000000001" });
+  try {
+    const added = {
+      ...original[0]!,
+      id: "added" as (typeof original)[number]["id"],
+      title: "Added",
+      site: "https://added.example",
+      occupants: [],
+    };
+    replace([...original, added]);
+    expect(snapshot.browserSessions[0]).toBe(session);
+    expect(labels()).toContain("All tabs in this browser, 2");
+    replace([...original, { ...added, occupants: [occupant(false)] }]);
+    expect(labels()).toContain("Added, added.example");
+    expect(labels()).toContain("All tabs in this browser, 1");
+    replace(original.filter((tab) => tab.id !== "last"));
+    expect(labels().some((label) => label?.startsWith("All tabs in this browser,"))).toBe(false);
+  } finally {
+    replace(original);
+  }
+});
 it("labels the agent's tab in words, not only by its mark", () => {
-  open({ threadId: "thread-trip" });
+  open({ threadId: "thr_00000000-0000-4000-8000-000000000001" });
   const agentTab = container.querySelector<HTMLButtonElement>(
     'button[aria-label="Current, current.example, Shown, Agent is here"]',
   );
@@ -212,7 +266,7 @@ it("labels the agent's tab in words, not only by its mark", () => {
   expect(other?.textContent).not.toContain("Agent");
 });
 it("opens unfolded when the shown tab is not the task's", () => {
-  open({ tabId: "last", threadId: "thread-trip" });
+  open({ tabId: "last", threadId: "thr_00000000-0000-4000-8000-000000000001" });
   expect(container.textContent).toContain("Other tabs");
   expect(labels()).toContain("Last, last.example, Shown");
 });

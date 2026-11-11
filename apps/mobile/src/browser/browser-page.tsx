@@ -1,3 +1,4 @@
+import { useTabSuggestions } from "./tab-suggestions.js";
 import { BrowserPageMenu, type BrowserPageMenuAction } from "./browser-page-menu.js";
 import { editingClipboardMaxBytes } from "@opensteer/protocol/editing";
 import {
@@ -82,12 +83,7 @@ import { GlassSurface } from "../ui/glass.js";
 import { appear, duration, exit, move } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
-import {
-  AddressCapsule,
-  AddressEditor,
-  type OpenTabSuggestion,
-  type PageDevice,
-} from "./address-bar.js";
+import { AddressCapsule, AddressEditor, type PageDevice } from "./address-bar.js";
 import { BrowserStream, submitBrowserCommand, useBrowserFeedState } from "./browser-stream.js";
 import { ChromeSignInAction } from "./chrome-sign-in-action.js";
 import { LoginChips } from "./login-chips.js";
@@ -522,20 +518,18 @@ export function BrowserPage(props: {
   const canGoForward = catalogTab?.canGoForward !== false;
 
   const tabIds = useBrowserTabs(hostClient, groupId ?? "").ids;
-  const tabs = useMemo(
-    () => (groupId === undefined ? [] : orderedTabs(hostClient, session.id, groupId, tabIds)),
-    [groupId, hostClient, session.id, tabIds],
-  );
-  const position = tabs.findIndex(({ id }) => id === tabId);
+  const tabs = useTabSuggestions(hostClient, groupId ?? "", addressOpen);
+  const otherTabs = useMemo(() => tabs.filter(({ id }) => id !== tabId), [tabId, tabs]);
+  const position = useMemo(() => tabIds.indexOf(tabId), [tabId, tabIds]);
   const switchBy = useCallback(
     (direction: -1 | 1) => {
-      const next = tabs[position + direction];
-      if (position >= 0 && next !== undefined) onSwitchTab(next.id);
+      const next = tabIds[position + direction];
+      if (position >= 0 && next !== undefined) onSwitchTab(next);
     },
-    [onSwitchTab, position, tabs],
+    [onSwitchTab, position, tabIds],
   );
   const canSwitch =
-    position >= 0 && (tabs[position - 1] !== undefined || tabs[position + 1] !== undefined);
+    position >= 0 && (tabIds[position - 1] !== undefined || tabIds[position + 1] !== undefined);
   const fitted =
     picture.height > 0 &&
     Math.abs(picture.width - rested.width) <= 2 &&
@@ -778,8 +772,8 @@ export function BrowserPage(props: {
   const tabsButton = (
     <ToolbarButton
       accessibilityHint="Shows this browser’s tabs"
-      count={tabs.length}
-      label={`Tabs, ${tabs.length}`}
+      count={tabIds.length}
+      label={`Tabs, ${tabIds.length}`}
       onPress={props.onShowTabs}
     />
   );
@@ -817,7 +811,7 @@ export function BrowserPage(props: {
         setAddressOpen(false);
         onSwitchTab(next);
       }}
-      tabs={tabs.filter(({ id }) => id !== tabId)}
+      tabs={otherTabs}
       under={top}
     />
   );
@@ -1374,27 +1368,6 @@ export function slideFor(caret: EditingCaret | null, pageHeight: number, visible
   if (bottom + margin <= visible && top >= margin) return 0;
   const lowest = Math.min(0, visible - pageHeight);
   return Math.max(lowest, Math.min(0, visible * 0.4 - top));
-}
-
-/** A browser's tabs in its own order, as its tab strip shows them. */
-function orderedTabs(
-  hostClient: HostClient,
-  sessionId: string,
-  groupId: string,
-  ids: readonly string[],
-): readonly OpenTabSuggestion[] {
-  return ids.flatMap((id) => {
-    const tab = hostClient.browserTabs.tab(groupId, id);
-    if (!tab) return [];
-    return [
-      {
-        favicon: hostClient.browserViewerSurface(sessionId, id)?.favicon ?? null,
-        id,
-        site: pageSite(tab.site),
-        title: tab.title || pageSite(tab.site) || "New tab",
-      },
-    ];
-  });
 }
 
 /**

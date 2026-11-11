@@ -1,3 +1,5 @@
+import { PlaceActivityStore } from "./place-activity.js";
+import * as lastPictures from "./browser-last-picture.js";
 import { browserLineages } from "../test-support/browser-snapshot.js";
 import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import type { WorkspaceTabLineage } from "./client.js";
@@ -51,7 +53,12 @@ import {
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { isAppTabOpen, placeDestinationEnded, samePlaceListSource } from "./places.js";
+import {
+  PlaceProjection,
+  isAppTabOpen,
+  placeDestinationEnded,
+  samePlaceListSource,
+} from "./places.js";
 import { sameStableHostSnapshot } from "./host-snapshot-selectors.js";
 import { assignmentMark } from "./assignment-presentation.js";
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
@@ -3129,6 +3136,50 @@ describe("HttpHostClient durable realtime", () => {
       });
       return { body, client, fetch, group, socket, workspace };
     }
+
+    it("does constant client reconciliation for a single title among 10,000 tabs", async () => {
+      const f = await fixture();
+      try {
+        const store = f.client.browserTabs;
+        const groupId = store.groups().ids[0]!;
+        const row = store.sessionTabs(f.group.session.id)[0]!;
+        const rows = Array.from({ length: 10_000 }, (_, i) => ({
+          ...row,
+          id: BrowserSurfaceIdSchema.parse(`large-${i}`),
+          order: i,
+          openerId: null,
+        }));
+        store.applyTabs(groupId, { op: "begin", generation: "large" });
+        store.applyTabs(groupId, { op: "rows", rows });
+        store.applyTabs(groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+        const visit = vi.spyOn(PlaceProjection.prototype, "place");
+        const activity = vi.spyOn(PlaceActivityStore.prototype, "reconcile");
+        const pictures = vi.spyOn(lastPictures, "reconcileBrowserLastPictures");
+        const read = vi.spyOn(store, "tab");
+        const sessions = f.client.getSnapshot().browserSessions;
+        try {
+          store.applyTabs(groupId, {
+            op: "change",
+            generation: "large",
+            base: 0,
+            revision: 1,
+            update: [{ id: rows[0]!.id, title: "Fresh title" }],
+          });
+          expect(f.client.getSnapshot().browserSessions).toBe(sessions);
+          expect(visit).not.toHaveBeenCalled();
+          expect(activity).not.toHaveBeenCalled();
+          expect(pictures).not.toHaveBeenCalled();
+          expect(read.mock.calls.length).toBeLessThan(10);
+        } finally {
+          visit.mockRestore();
+          activity.mockRestore();
+          pictures.mockRestore();
+          read.mockRestore();
+        }
+      } finally {
+        f.client.dispose();
+      }
+    });
 
     it("keeps stream state through stale bootstrap", async () => {
       const f = await fixture();

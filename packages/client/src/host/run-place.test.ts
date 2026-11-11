@@ -102,7 +102,12 @@ it("resolves a durable tab from its current ready catalog even while the saved r
     machines: [],
     browserTabs: browserStoreFixture(
       [{ id: "group", sessionId: restored, state: "ready" } as BrowserGroupRow],
-      [{ groupId: "group", rows: [{ id: tabId, sessionId: restored }] as BrowserTabRow[] }],
+      [
+        {
+          groupId: "group",
+          rows: [{ id: tabId, sessionId: restored, occupants: [] }] as unknown as BrowserTabRow[],
+        },
+      ],
     ),
     browserSessions: [
       { id: original, state: "closed" },

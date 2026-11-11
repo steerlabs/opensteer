@@ -135,6 +135,10 @@ function projection(source: PlaceListSource) {
 export function placeList(source: PlaceListSource): readonly PlaceItem[] {
   return projection(source).list(source);
 }
+export type PlaceFilterItem = Pick<PlaceItem, "key" | "identity" | "device" | "occupants">;
+export function placeFilterList(source: PlaceListSource): readonly PlaceFilterItem[] {
+  return projection(source).filterList(source);
+}
 export function placeStructure(source: PlaceListSource): readonly PlaceDescriptor[] {
   return projection(source).structure(source);
 }
@@ -159,8 +163,20 @@ export class PlaceProjection {
   #nativeDependencies: readonly unknown[] | undefined;
   #native: readonly PlaceItem[] = [];
   #list: readonly PlaceItem[] = [];
+  #listDependencies: readonly unknown[] | undefined;
+  #filterDependencies: readonly unknown[] | undefined;
+  #filterList: readonly PlaceFilterItem[] = [];
+  #indices = new Map<string, number>();
+  readonly #dirty = new Set<string>();
   constructor(store: BrowserTabStore) {
     this.#store = store;
+    store.subscribeTabChanges((groupId, ids) => {
+      const sessionId = store.group(groupId)?.sessionId;
+      for (const id of ids) {
+        const key = `browser:${sessionId}:${id}`;
+        if (this.#indices.has(key)) this.#dirty.add(key);
+      }
+    });
   }
   #nativePlaces(source: PlaceListSource) {
     const dependencies = [source.appTabs, source.machines];
@@ -191,6 +207,7 @@ export class PlaceProjection {
       this.#nativePlaces(source),
       source.browserTabGroups,
       source.browserPlacements,
+      source.machines,
     ];
     if (sameDependencies(this.#structureDependencies, dependencies)) return this.#structure;
     this.#structureDependencies = dependencies;
@@ -353,9 +370,46 @@ export class PlaceProjection {
     return item;
   }
   list(source: PlaceListSource): readonly PlaceItem[] {
-    const next = this.structure(source).map(({ key }) => this.place(source, key)!);
-    if (!sameDependencies(this.#list, next)) this.#list = next;
+    const structure = this.structure(source);
+    const dependencies = [
+      structure,
+      this.#store.groupRevision,
+      source.browserProfiles,
+      source.browserPlacements,
+      source.activatingWorkspaceTabs,
+    ];
+    if (!sameDependencies(this.#listDependencies, dependencies)) {
+      this.#listDependencies = dependencies;
+      const next = structure.map(({ key }) => this.place(source, key)!);
+      this.#indices = new Map(structure.map(({ key }, index) => [key, index]));
+      if (!sameDependencies(this.#list, next)) this.#list = next;
+    } else if (this.#dirty.size) {
+      let next: PlaceItem[] | undefined;
+      for (const key of this.#dirty) {
+        const index = this.#indices.get(key);
+        if (index === undefined) continue;
+        const item = this.place(source, key)!;
+        if (item === this.#list[index]) continue;
+        next ??= [...this.#list];
+        next[index] = item;
+      }
+      if (next) this.#list = next;
+    }
+    this.#dirty.clear();
     return this.#list;
+  }
+  filterList(source: PlaceListSource): readonly PlaceFilterItem[] {
+    const dependencies = [
+      this.structure(source),
+      this.#store.filterRevision,
+      source.browserProfiles,
+      source.browserPlacements,
+    ];
+    if (!sameDependencies(this.#filterDependencies, dependencies)) {
+      this.#filterDependencies = dependencies;
+      this.#filterList = this.list(source);
+    }
+    return this.#filterList;
   }
 }
 function nativePlaces(source: PlaceListSource): readonly PlaceItem[] {
