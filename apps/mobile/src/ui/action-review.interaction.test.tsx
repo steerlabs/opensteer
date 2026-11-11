@@ -4,6 +4,7 @@ import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 import {
   assignmentPresentation,
   HostClientRequestError,
@@ -52,7 +53,12 @@ afterEach(() => {
 async function setup() {
   client = new MockHostClient({ latencyMs: 0 });
   await client.load();
-  snapshot = client.getSnapshot();
+  snapshot = withBrowserTabStore({
+    ...client.getSnapshot(),
+    workspaceTabRestoreVersion: undefined,
+    workspaceTabs: undefined,
+  });
+  vi.spyOn(client, "browserTabs", "get").mockImplementation(() => snapshot.browserTabs!);
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   vi.spyOn(client, "subscribe").mockImplementation((listener) => {
     listeners.add(listener);
@@ -63,7 +69,7 @@ async function setup() {
 }
 async function emit(next: HostSnapshot) {
   await act(async () => {
-    snapshot = next;
+    snapshot = withBrowserTabStore(next);
     for (const listener of listeners) listener();
   });
 }

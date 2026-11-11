@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createId, WaitingRequestSchema, type Request, type WaitingRequest } from "@opensteer/core";
 import { MemoryRouter } from "react-router";
 import { mockTmdbProposal } from "@opensteer/client/mock";
+import { BrowserTabStore } from "@opensteer/client/host";
 import { InputSurface } from "./input-surface.js";
 
 const noPlaces = vi.hoisted(() => ({ browserSessions: [], connection: "connected", machines: [] }));
@@ -64,6 +65,9 @@ const shell = vi.hoisted(() => ({
   reportActionError: vi.fn(),
   localExecutionStatus: null,
 }));
+const browserTabs = new BrowserTabStore();
+Object.assign(noPlaces, { browserTabs });
+Object.assign(shell.hostClient, { browserTabs });
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root;
