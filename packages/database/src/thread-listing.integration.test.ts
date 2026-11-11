@@ -2,7 +2,6 @@ import { createId, type MessageAuthor, type ThreadId } from "@opensteer/core";
 import { expect } from "vitest";
 import { jsonValue } from "./store-primitives.js";
 import { describeStore, testModelSelection } from "./store.integration.test-support.js";
-
 describeStore("person-asked Thread listing", (it) => {
   it("lists only human-seeded Chat delegations and promotes on re-task", async ({
     storeFixture,
@@ -11,7 +10,9 @@ describeStore("person-asked Thread listing", (it) => {
     const f = await startRunFixture("listing");
     await database
       .updateTable("threads")
-      .set({ role: "conversation" })
+      .set({
+        purpose: "voice",
+      })
       .where("id", "=", f.thread.id)
       .execute();
     const human = (
@@ -29,27 +30,46 @@ describeStore("person-asked Thread listing", (it) => {
         harnessInstanceId: f.harnessInstance.id,
         idempotencyKey: key,
         modelSelection: testModelSelection,
-        origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
-        task: [{ type: "text", text: key }],
+        origin: {
+          kind: "run",
+          parentRunId: f.run.id,
+          parentThreadId: f.thread.id,
+        },
+        task: [
+          {
+            type: "text",
+            text: key,
+          },
+        ],
         title: key,
-        workspaceId: f.workspace.id,
-        ...(threadId ? { threadId } : {}),
+        ...(threadId
+          ? {
+              threadId,
+            }
+          : {}),
       });
     const asked = await delegate("asked");
     expect(asked.thread.listed).toBe(true);
     expect(asked.events.filter((event) => event.type === "thread.created")).toMatchObject([
-      { data: { thread: { listed: true } } },
+      {
+        data: {
+          thread: {
+            listed: true,
+          },
+        },
+      },
     ]);
     expect(asked.events.some((event) => event.type === "thread.listed")).toBe(false);
     const authors: MessageAuthor[] = [
-      { kind: "platform", cause: "assignment-result" },
+      {
+        kind: "platform",
+        cause: "assignment-result",
+      },
       {
         kind: "agent",
         displayName: "Worker",
         runId: f.run.id,
         threadId: f.thread.id,
-        workspaceId: f.workspace.id,
-        workspaceName: "Main",
       },
       {
         kind: "trigger",
@@ -79,12 +99,17 @@ describeStore("person-asked Thread listing", (it) => {
     }
     await database
       .updateTable("messages")
-      .set({ author: jsonValue(human), kind: "input" })
+      .set({
+        author: jsonValue(human),
+        kind: "input",
+      })
       .where("id", "=", f.run.seedInputId)
       .execute();
     await database
       .updateTable("threads")
-      .set({ role: "work" })
+      .set({
+        purpose: "task",
+      })
       .where("id", "=", f.thread.id)
       .execute();
     const helper = await delegate("helper");
@@ -97,16 +122,23 @@ describeStore("person-asked Thread listing", (it) => {
     });
     await database
       .updateTable("threads")
-      .set({ role: "conversation" })
+      .set({
+        purpose: "voice",
+      })
       .where("id", "=", f.thread.id)
       .execute();
     const promoted = await delegate("promote", helper.thread.id);
     expect(promoted.thread.listed).toBe(true);
     expect(promoted.events.filter((event) => event.type === "thread.listed")).toMatchObject([
-      { data: { thread: { listed: true } } },
+      {
+        data: {
+          thread: {
+            listed: true,
+          },
+        },
+      },
     ]);
   });
-
   it("keeps a person's child inside a task, and lists one they make in Chat", async ({
     storeFixture,
   }) => {
@@ -121,17 +153,17 @@ describeStore("person-asked Thread listing", (it) => {
         modelSelection: testModelSelection,
         parentThreadId: f.thread.id,
         title: key,
-        workspaceId: f.workspace.id,
       });
     expect((await create("inside-task")).thread.listed).toBe(false);
     await database
       .updateTable("threads")
-      .set({ role: "conversation" })
+      .set({
+        purpose: "voice",
+      })
       .where("id", "=", f.thread.id)
       .execute();
     expect((await create("from-chat")).thread.listed).toBe(true);
   });
-
   for (const kind of ["trigger", "watch"] as const) {
     it(`never lists ${kind} work on Chat, including a re-tasked helper`, async ({
       storeFixture,
@@ -144,14 +176,22 @@ describeStore("person-asked Thread listing", (it) => {
         environmentId: f.environmentId,
         harnessInstanceId: f.harnessInstance.id,
         modelSelection: testModelSelection,
-        task: [{ type: "text" as const, text: "Work" }],
+        task: [
+          {
+            type: "text" as const,
+            text: "Work",
+          },
+        ],
         title: "Worker",
-        workspaceId: f.workspace.id,
       };
       const helper = await store.delegateThread({
         ...base,
         idempotencyKey: "helper",
-        origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
+        origin: {
+          kind: "run",
+          parentRunId: f.run.id,
+          parentThreadId: f.thread.id,
+        },
       });
       expect(helper.thread.listed).toBe(false);
       await store.cancelAssignment({
@@ -161,7 +201,9 @@ describeStore("person-asked Thread listing", (it) => {
       });
       await database
         .updateTable("threads")
-        .set({ role: "conversation" })
+        .set({
+          purpose: "voice",
+        })
         .where("id", "=", f.thread.id)
         .execute();
       const occurrence = await startTriggerOccurrence(f, kind);
@@ -174,11 +216,13 @@ describeStore("person-asked Thread listing", (it) => {
               idempotencyKey: "watch",
               name: "Watch",
               program: {
-                toolContractVersion: 2,
+                toolContractVersion: 3,
                 language: "javascript",
                 source: "export default async () => null",
               },
-              source: { kind: "watch" },
+              source: {
+                kind: "watch",
+              },
             })
           : null;
       const watches = watch
@@ -202,13 +246,21 @@ describeStore("person-asked Thread listing", (it) => {
               triggerId: watch.trigger.id,
               parentThreadId: f.thread.id,
             }
-          : { kind: "trigger" as const, occurrenceId: occurrence.id, parentThreadId: f.thread.id };
+          : {
+              kind: "trigger" as const,
+              occurrenceId: occurrence.id,
+              parentThreadId: f.thread.id,
+            };
       for (const threadId of [undefined, helper.thread.id]) {
         const result = await store.delegateThread({
           ...base,
           idempotencyKey: `automation-${threadId ?? "new"}`,
           origin,
-          ...(threadId ? { threadId } : {}),
+          ...(threadId
+            ? {
+                threadId,
+              }
+            : {}),
         });
         expect(result.thread.listed).toBe(false);
         expect(result.events.some((event) => event.type === "thread.listed")).toBe(false);

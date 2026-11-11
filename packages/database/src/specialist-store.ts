@@ -4,63 +4,32 @@ import {
 } from "./administration-command.js";
 import { pluginPolicyAllows } from "./plugin-settings-store.js";
 import { randomUUID } from "node:crypto";
-import {
-  OpensteerError,
-  SpecialistManifestSchema,
-  type UserId,
-  type WorkspaceId,
-} from "@opensteer/core";
+import { OpensteerError, SpecialistManifestSchema, type UserId } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { PluginStore } from "./plugin-store.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 
-/** A registration adds a model and instructions; its access is its caller's in that Workspace. */
+/** A registration adds a model and instructions within its caller's access limits. */
 export class SpecialistStore {
   private readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
   }
-
-  private async authorize(workspaceId: WorkspaceId, actorUserId: UserId) {
-    const member = await this.database
-      .selectFrom("workspaceMemberships")
-      .select("state")
-      .where("workspaceId", "=", workspaceId)
-      .where("userId", "=", actorUserId)
-      .executeTakeFirst();
-    if (member?.state !== "active")
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Active Workspace membership is required",
-      });
+  private async authorize(actorUserId: UserId) {
+    await requirePersonalOwner(this.database, actorUserId);
   }
-
-  async add(input: {
-    workspaceId: WorkspaceId;
-    pluginId: string;
-    actorUserId: UserId;
-    activate?: boolean;
-  }) {
-    return this.database.transaction().execute((tx) => this.addIn(tx, input));
+  async add(input: { pluginId: string; actorUserId: UserId }) {
+    return withPersonalTransaction(this.database, (tx) => this.addIn(tx, input));
   }
-
   async addIn(
     tx: Kysely<DatabaseSchema>,
     input: {
-      workspaceId: WorkspaceId;
       pluginId: string;
       actorUserId: UserId;
-      activate?: boolean;
     },
   ) {
-    await new SpecialistStore(tx).authorize(input.workspaceId, input.actorUserId);
-    if (input.activate !== false)
-      await new PluginStore(tx).activateIn(
-        tx,
-        input.pluginId,
-        input.workspaceId,
-        input.actorUserId,
-      );
+    await new SpecialistStore(tx).authorize(input.actorUserId);
     const plugin = await tx
       .selectFrom("plugins")
       .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
@@ -76,7 +45,6 @@ export class SpecialistStore {
     const previous = await tx
       .selectFrom("specialists")
       .selectAll()
-      .where("workspaceId", "=", input.workspaceId)
       .where("pluginId", "=", input.pluginId)
       .where("ownerUserId", "=", input.actorUserId)
       .executeTakeFirst();
@@ -93,7 +61,6 @@ export class SpecialistStore {
       .insertInto("specialists")
       .values({
         id,
-        workspaceId: input.workspaceId,
         pluginId: input.pluginId,
         pluginVersionId: plugin.id,
         ownerUserId: input.actorUserId,
@@ -103,7 +70,7 @@ export class SpecialistStore {
         updatedAt: now,
       })
       .onConflict((c) =>
-        c.columns(["workspaceId", "pluginId", "ownerUserId"]).doUpdateSet({
+        c.columns(["pluginId", "ownerUserId"]).doUpdateSet({
           pluginVersionId: plugin.id,
           status: "ready",
           updatedAt: now,
@@ -112,7 +79,6 @@ export class SpecialistStore {
       .execute();
     return new SpecialistStore(tx).registration(id);
   }
-
   private async registration(id: string) {
     const row = await this.database
       .selectFrom("specialists")
@@ -131,7 +97,6 @@ export class SpecialistStore {
     const manifest = SpecialistManifestSchema.parse(row.specialistManifest);
     return {
       id,
-      workspaceId: row.workspaceId,
       pluginId: row.pluginId,
       pluginVersionId: row.pluginVersionId,
       ownerUserId: row.ownerUserId,
@@ -144,30 +109,25 @@ export class SpecialistStore {
       access: [],
     };
   }
-
-  async summaries(workspaceId: WorkspaceId, actorUserId: UserId) {
-    await this.authorize(workspaceId, actorUserId);
+  async summaries(actorUserId: UserId) {
+    await this.authorize(actorUserId);
     return this.database
       .selectFrom("specialists")
       .innerJoin("plugins", "plugins.id", "specialists.pluginId")
       .select([
         "specialists.id",
-        "specialists.workspaceId",
         "specialists.pluginId",
         "specialists.status",
         "plugins.name as plugin",
       ])
-      .where("specialists.workspaceId", "=", workspaceId)
       .orderBy("specialists.createdAt")
       .execute();
   }
-
-  async list(workspaceId: WorkspaceId, actorUserId: UserId) {
-    await this.authorize(workspaceId, actorUserId);
+  async list(actorUserId: UserId) {
+    await this.authorize(actorUserId);
     const rows = await this.database
       .selectFrom("specialists")
       .select("id")
-      .where("workspaceId", "=", workspaceId)
       .orderBy("createdAt")
       .execute();
     return Promise.all(
@@ -180,30 +140,20 @@ export class SpecialistStore {
       }),
     );
   }
-
-  private removalHandler?: (input: {
-    workspaceId: WorkspaceId;
-    specialistId: string;
-    actorUserId: UserId;
-  }) => Promise<void>;
-
+  private removalHandler?: (input: { specialistId: string; actorUserId: UserId }) => Promise<void>;
   setRemovalHandler(handler: NonNullable<SpecialistStore["removalHandler"]>) {
     this.removalHandler = handler;
   }
-
   async remove(input: {
     administration?: AdministrationCommandIdentity | undefined;
-    workspaceId: WorkspaceId;
     specialistId: string;
     actorUserId: UserId;
   }) {
-    await this.authorize(input.workspaceId, input.actorUserId);
+    await this.authorize(input.actorUserId);
     await this.cleanup(input);
   }
-
   private async cleanup(input: {
     administration?: AdministrationCommandIdentity | undefined;
-    workspaceId: WorkspaceId;
     specialistId: string;
     actorUserId: UserId;
   }) {
@@ -214,67 +164,59 @@ export class SpecialistStore {
       .executeTakeFirst();
     if (!exists) {
       if (input.administration)
-        await this.database
-          .transaction()
-          .execute((transaction) =>
-            administrationCommand(transaction, input.administration, async () => {}),
-          );
+        await withPersonalTransaction(this.database, (transaction) =>
+          administrationCommand(transaction, input.administration, async () => {}),
+        );
       return;
     }
     const removed = await this.database
       .updateTable("specialists")
-      .set({ removedAt: new Date(), status: "removing" })
+      .set({
+        removedAt: new Date(),
+        status: "removing",
+      })
       .where("id", "=", input.specialistId)
-      .where("workspaceId", "=", input.workspaceId)
       .where("ownerUserId", "=", input.actorUserId)
       .returning("id")
       .executeTakeFirst();
     if (!removed)
       throw new OpensteerError({
         code: "forbidden",
-        message: "Only the consent owner may remove this specialist",
+        message: "Only the personal owner may remove this specialist",
       });
     try {
-      const workspace = await this.database
-        .selectFrom("workspaces")
-        .select("status")
-        .where("id", "=", input.workspaceId)
-        .executeTakeFirstOrThrow();
-      if (workspace.status !== "deleted") {
-        if (!this.removalHandler)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Specialist removal is unavailable",
-          });
-        await this.removalHandler(input);
-      }
+      if (!this.removalHandler)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Specialist removal is unavailable",
+        });
+      await this.removalHandler(input);
     } catch (error) {
       await this.database
         .updateTable("specialists")
-        .set({ status: "removal-failed" })
+        .set({
+          status: "removal-failed",
+        })
         .where("id", "=", input.specialistId)
         .execute();
       throw error;
     }
-    await this.database.transaction().execute((tx) =>
+    await withPersonalTransaction(this.database, (tx) =>
       administrationCommand(tx, input.administration, async () => {
         await tx
           .deleteFrom("specialists")
           .where("id", "=", input.specialistId)
-          .where("workspaceId", "=", input.workspaceId)
           .where("ownerUserId", "=", input.actorUserId)
           .execute();
       }),
     );
   }
-
-  async assertRunnable(id: string, workspaceId: WorkspaceId, requester: UserId) {
-    await this.authorize(workspaceId, requester);
+  async assertRunnable(id: string, requester: UserId) {
+    await this.authorize(requester);
     const exists = await this.database
       .selectFrom("specialists")
       .select("id")
       .where("id", "=", id)
-      .where("workspaceId", "=", workspaceId)
       .executeTakeFirst();
     if (!exists)
       throw new OpensteerError({
@@ -282,27 +224,21 @@ export class SpecialistStore {
         message: "Specialist registration was removed",
       });
     const registration = await this.registration(id);
-    const workspace = await this.database
-      .selectFrom("workspaces")
-      .select("kind")
-      .where("id", "=", workspaceId)
-      .executeTakeFirstOrThrow();
-    const main = workspace.kind === "main";
     if (
-      !(await pluginPolicyAllows(
-        this.database,
-        requester,
-        { kind: "specialist", pluginId: registration.pluginId, ownerUserId: requester },
-        main,
-      )) ||
-      !(await pluginPolicyAllows(
-        this.database,
-        requester,
-        { kind: "plugin", pluginId: registration.pluginId },
-        main,
-      ))
+      !(await pluginPolicyAllows(this.database, requester, {
+        kind: "specialist",
+        pluginId: registration.pluginId,
+        ownerUserId: requester,
+      })) ||
+      !(await pluginPolicyAllows(this.database, requester, {
+        kind: "plugin",
+        pluginId: registration.pluginId,
+      }))
     )
-      throw new OpensteerError({ code: "forbidden", message: "Specialist is turned off here" });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Specialist is turned off",
+      });
     if (registration.ownerUserId !== requester)
       throw new OpensteerError({
         code: "forbidden",
@@ -315,7 +251,6 @@ export class SpecialistStore {
       });
     return registration;
   }
-
   async retirePlugin(pluginId: string) {
     const rows = await this.database
       .selectFrom("specialists")
@@ -326,44 +261,34 @@ export class SpecialistStore {
       .execute();
     for (const row of rows)
       await this.cleanup({
-        workspaceId: row.workspaceId,
         specialistId: row.id,
         actorUserId: row.ownerUserId,
       });
   }
-
-  async finishPlacementRemovals(pluginId: string, owner: UserId) {
+  async finishRemovals(pluginId: string, owner: UserId) {
     const rows = await this.database
       .selectFrom("specialists")
-      .select(["id", "workspaceId"])
+      .select(["id"])
       .where("pluginId", "=", pluginId)
       .where("ownerUserId", "=", owner)
       .where("removedAt", "is not", null)
       .execute();
     for (const row of rows)
       await this.cleanup({
-        workspaceId: row.workspaceId,
         specialistId: row.id,
         actorUserId: owner,
       });
   }
-
-  async resumeRemovals(environmentIds: readonly string[]) {
+  async resumeRemovals() {
     const rows = await this.database
       .selectFrom("specialists")
-      .innerJoin("workspaces", "workspaces.id", "specialists.workspaceId")
       .selectAll("specialists")
-      .select("workspaces.backing")
       .where("specialists.removedAt", "is not", null)
       .execute();
     for (const row of rows) {
-      if (
-        row.backing.kind === "local-directory" &&
-        environmentIds.includes(row.backing.ownerEnvironmentId)
-      ) {
+      {
         try {
           await this.cleanup({
-            workspaceId: row.workspaceId,
             specialistId: row.id,
             actorUserId: row.ownerUserId,
           });

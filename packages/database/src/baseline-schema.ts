@@ -370,7 +370,7 @@ create table attachments (
   "uploader_id" text not null,
   "name" text not null,
   "media_type" text not null,
-  "size_bytes" bigint not null,
+  "size_bytes" integer not null,
   "kind" text check (kind in ('image', 'file')),
   "width" integer,
   "height" integer,
@@ -1207,7 +1207,7 @@ create table requests (
   "payload" jsonb not null,
   "response" jsonb,
   "response_command_id" text,
-  "cancellation_reason" text not null,
+  "cancellation_reason" text,
   "resolved_at" timestamp with time zone,
   "resolved_by" text,
   "settlement_provenance" jsonb,
@@ -2374,6 +2374,18 @@ alter table threads add check (folder_path <> '' and purpose in ('task','voice',
 alter table threads add check ((team_id is null and channel_id is null and thread_root_id is null) or (team_id is not null and channel_id is not null and thread_root_id is not null and purpose = 'task'));
 create unique index threads_team_origin on threads(team_id,channel_id,thread_root_id) where team_id is not null;
 create index threads_folder_tasks on threads(folder_computer_id,folder_path,asked_at desc,id) where listed;
+create function opensteer_keep_task_location() returns trigger language plpgsql as $$
+begin
+  if row(old.folder_computer_id, old.folder_path, old.team_id, old.channel_id, old.thread_root_id)
+    is distinct from row(new.folder_computer_id, new.folder_path, new.team_id, new.channel_id, new.thread_root_id) then
+    raise exception 'A task folder and team origin never change' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+create trigger threads_keep_task_location before update of folder_computer_id, folder_path, team_id, channel_id, thread_root_id
+  on threads for each row execute function opensteer_keep_task_location();
+
 create index deployment_events_thread_history on deployment_events(thread_id,sequence) where node_detail_id is null;
 create index deployment_events_node_detail on deployment_events(node_detail_id,sequence desc) where node_detail_id is not null;
 create index deployment_events_run on deployment_events(run_id,sequence) where run_id is not null;

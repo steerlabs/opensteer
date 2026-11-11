@@ -41,7 +41,6 @@ describe("keyed command admission", () => {
     expect(order).toEqual(["a1 start", "b1", "a1 end", "a2"]);
     await queue.close();
   });
-
   it("keeps a command behind an earlier one for its Thread that is still waiting", async () => {
     const queue = new KeyedAdmissionQueue({
       maxInFlight: 1,
@@ -67,7 +66,6 @@ describe("keyed command admission", () => {
     expect(order).toEqual(["x", "a1", "a2"]);
     await queue.close();
   });
-
   it("orders a command that touches two Threads against both", async () => {
     const queue = new KeyedAdmissionQueue({
       maxInFlight: 4,
@@ -93,7 +91,6 @@ describe("keyed command admission", () => {
     expect(order).toEqual(["parent", "delegation", "child"]);
     await queue.close();
   });
-
   it("bounds what runs at once and what waits, and rejects overload before running it", async () => {
     const queue = new KeyedAdmissionQueue({
       maxInFlight: 2,
@@ -119,7 +116,9 @@ describe("keyed command admission", () => {
       queue.execute(["thread:d"], 1, async () => {
         ranOverload = true;
       }),
-    ).rejects.toMatchObject({ retryable: true });
+    ).rejects.toMatchObject({
+      retryable: true,
+    });
     await expect(queue.execute(["thread:e"], 11, async () => undefined)).rejects.toMatchObject({
       retryable: true,
     });
@@ -129,7 +128,6 @@ describe("keyed command admission", () => {
     expect(ranOverload).toBe(false);
     await queue.close();
   });
-
   it("frees a Thread when its command fails", async () => {
     const queue = new KeyedAdmissionQueue({
       maxInFlight: 4,
@@ -144,9 +142,10 @@ describe("keyed command admission", () => {
     await expect(next).resolves.toBe("applied");
     await queue.close();
   });
-
   it("tries a command again after a transaction conflict, and only then", async () => {
-    const conflict = Object.assign(new Error("deadlock detected"), { code: "40P01" });
+    const conflict = Object.assign(new Error("deadlock detected"), {
+      code: "40P01",
+    });
     const queue = new KeyedAdmissionQueue({
       isTransactionConflict: (error) =>
         error instanceof Error && "code" in error && error.code === "40P01",
@@ -163,7 +162,6 @@ describe("keyed command admission", () => {
       }),
     ).resolves.toBe("applied");
     expect(attempts).toBe(3);
-
     let refusals = 0;
     await expect(
       queue.execute(["thread:a"], 1, async () => {
@@ -172,7 +170,6 @@ describe("keyed command admission", () => {
       }),
     ).rejects.toThrow("refused");
     expect(refusals).toBe(1);
-
     let conflicts = 0;
     await expect(
       queue.execute(["thread:a"], 1, async () => {
@@ -183,7 +180,6 @@ describe("keyed command admission", () => {
     expect(conflicts).toBeLessThanOrEqual(5);
     await queue.close();
   });
-
   it("refuses new work when closed and waits for work already running", async () => {
     const queue = new KeyedAdmissionQueue({
       maxInFlight: 1,
@@ -198,7 +194,9 @@ describe("keyed command admission", () => {
     });
     const waiting = queue.execute(["thread:b"], 1, async () => "never");
     const closing = queue.close();
-    await expect(waiting).rejects.toMatchObject({ retryable: true });
+    await expect(waiting).rejects.toMatchObject({
+      retryable: true,
+    });
     await expect(queue.execute(["thread:c"], 1, async () => undefined)).rejects.toMatchObject({
       code: "conflict",
     });
@@ -208,11 +206,16 @@ describe("keyed command admission", () => {
     expect(finished).toBe(true);
   });
 });
-
-function gate(): { readonly open: () => void; readonly promise: Promise<void> } {
+function gate(): {
+  readonly open: () => void;
+  readonly promise: Promise<void>;
+} {
   let open!: () => void;
   const promise = new Promise<void>((resolve) => {
     open = resolve;
   });
-  return { open, promise };
+  return {
+    open,
+    promise,
+  };
 }

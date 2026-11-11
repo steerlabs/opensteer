@@ -17,7 +17,6 @@ import {
   type HarnessKind,
   type ModelSelection,
   type ThreadAccessMode,
-  type WorkspaceId,
   shortRequestHoldMs,
 } from "@opensteer/core";
 import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
@@ -61,23 +60,23 @@ import {
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 let runtimeCacheDirectory: string | undefined;
-
 beforeAll(async () => {
   runtimeCacheDirectory = await mkdtemp(join(tmpdir(), "opensteer-engine-runtime-"));
 });
-
 afterAll(async () => {
-  if (runtimeCacheDirectory) await rm(runtimeCacheDirectory, { force: true, recursive: true });
+  if (runtimeCacheDirectory)
+    await rm(runtimeCacheDirectory, {
+      force: true,
+      recursive: true,
+    });
   runtimeCacheDirectory = undefined;
 });
-
 const newEngineKinds = new Set<HarnessKind>(["antigravity", "grok", "muse"]);
 const expectedAccessModes = {
   antigravity: ["approval-required", "auto-accept-edits", "auto", "full-access"],
   grok: ["approval-required", "auto", "full-access"],
   muse: ["approval-required", "full-access"],
 } as const satisfies Partial<Record<HarnessKind, readonly ThreadAccessMode[]>>;
-
 describe("engine qualification", () => {
   it("derives every runtime qualification from the complete engine catalog", () => {
     expect(Object.keys(qualificationAccounts).toSorted()).toEqual(
@@ -91,7 +90,6 @@ describe("engine qualification", () => {
       ]),
     );
   });
-
   it("qualifies the access modes each new engine declares", async () => {
     const harnesses = createHarnessRegistry(
       parseAgentExecutionConfig(process.env).harnessExecutables,
@@ -108,22 +106,18 @@ describe("engine qualification", () => {
       await harnesses.close();
     }
   });
-
   describe.each(qualifiedEngines)("$label", (engine) => {
     let stack: VerticalStack | undefined;
     let restorePath: (() => Promise<void>) | undefined;
-
     beforeEach(async () => {
       if (engine.executable === "shipped") restorePath = await shippedEnginesFirstOnPath();
     });
-
     afterEach(async () => {
       await stack?.close();
       stack = undefined;
       await restorePath?.();
       restorePath = undefined;
     }, 60_000);
-
     it.each(qualificationHoldMs[engine.driverKind] === undefined ? ["short"] : ["long", "short"])(
       "holds a Request call until the person answers, and keeps native context (%s hold)",
       async (hold) => {
@@ -165,12 +159,14 @@ describe("engine qualification", () => {
             providerId: model.providerId,
           }),
           title: `${engine.label} Request hold`,
-          workspaceId: workspace.id,
         });
         const nonce = randomUUID();
         // Told to keep working on purpose: only the runtime can stop it.
         const prompt = `Remember ${nonce}. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work. Do not open a browser or sign in. Once the person has chosen the profile, reply with the chosen profile name and the remembered code.`;
-        const first = await active.queueMessage({ text: prompt, threadId });
+        const first = await active.queueMessage({
+          text: prompt,
+          threadId,
+        });
         if (!first.runId) throw new Error("The engine's first Run was not queued");
         const firstRunId = first.runId;
         const database = active.host.store.database;
@@ -184,9 +180,15 @@ describe("engine qualification", () => {
             expect(rows, "The engine did not open the Request").toHaveLength(1);
             return rows[0]!;
           },
-          { timeout: 180_000, interval: 100 },
+          {
+            timeout: 180_000,
+            interval: 100,
+          },
         );
-        expect(request).toMatchObject({ mode: "durable", status: "pending" });
+        expect(request).toMatchObject({
+          mode: "durable",
+          status: "pending",
+        });
         const runStatus = async () =>
           (
             await database
@@ -203,13 +205,22 @@ describe("engine qualification", () => {
           await vi.waitFor(
             async () =>
               expect(await runStatus(), "The hold limit did not stop the Run").toBe("interrupted"),
-            { timeout: shortRequestHoldMs + 60_000, interval: 100 },
+            {
+              timeout: shortRequestHoldMs + 60_000,
+              interval: 100,
+            },
           );
         }
         const toolEvent = (data: unknown) =>
-          data as { callId?: string; isError?: boolean; tool?: { name?: string } };
+          data as {
+            callId?: string;
+            isError?: boolean;
+            tool?: {
+              name?: string;
+            };
+          };
         const held = await database
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .select(["type", "data"])
           .where("runId", "=", firstRunId)
           .orderBy("sequence", "asc")
@@ -266,18 +277,25 @@ describe("engine qualification", () => {
           resolvedBy: opened.requestedBy,
           response: {
             kind: "external",
-            value: { decision: "fulfilled", createProfile: { name: "Chosen Receipts" } },
+            value: {
+              decision: "fulfilled",
+              createProfile: {
+                name: "Chosen Receipts",
+              },
+            },
           },
         });
         const stalled = async (error: unknown) => {
           const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
           if (evidence) {
-            await mkdir(evidence, { recursive: true });
+            await mkdir(evidence, {
+              recursive: true,
+            });
             await writeFile(
               join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-stalled.json`),
               JSON.stringify(
                 await database
-                  .selectFrom("workspaceEvents")
+                  .selectFrom("deploymentEvents")
                   .select(["sequence", "type", "createdAt", "data"])
                   .where("threadId", "=", threadId)
                   .orderBy("sequence", "asc")
@@ -302,7 +320,10 @@ describe("engine qualification", () => {
               expect(run!.status, "The answered Run did not complete").toBe("completed");
               return run!;
             },
-            { timeout: 180_000, interval: 100 },
+            {
+              timeout: 180_000,
+              interval: 100,
+            },
           )
           .catch(stalled);
         const delivery = await database
@@ -334,7 +355,9 @@ describe("engine qualification", () => {
         expect(after.providerSessionReference).toBe(before.providerSessionReference);
         const evidence = process.env.OPENSTEER_ENGINE_E2E_OUTPUT;
         if (evidence) {
-          await mkdir(evidence, { recursive: true });
+          await mkdir(evidence, {
+            recursive: true,
+          });
           await writeFile(
             join(evidence, `${engine.label.replaceAll(" ", "-")}-${hold}-request-hold.json`),
             JSON.stringify(
@@ -353,7 +376,6 @@ describe("engine qualification", () => {
         }
       },
     );
-
     it("reaches the agent with the person's message during a hold, leaving the Request open", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
       stack = await startVerticalStack({
@@ -383,7 +405,6 @@ describe("engine qualification", () => {
           providerId: model.providerId,
         }),
         title: `${engine.label} message during a hold`,
-        workspaceId: active.mainWorkspaceId,
       });
       const first = await active.queueMessage({
         text: "Request a new browser profile named Receipts with browser_profile_request for this expense task. Do not open a browser or sign in.",
@@ -402,7 +423,10 @@ describe("engine qualification", () => {
           expect(rows, "The engine did not open the Request").toHaveLength(1);
           return rows[0]!;
         },
-        { timeout: 180_000, interval: 100 },
+        {
+          timeout: 180_000,
+          interval: 100,
+        },
       );
       const marker = `MESSAGE-${randomUUID()}`;
       await active.queueMessage({
@@ -422,12 +446,14 @@ describe("engine qualification", () => {
             "The person's message did not reach the agent during the hold",
           ).toContain(marker);
         },
-        { timeout: 180_000, interval: 250 },
+        {
+          timeout: 180_000,
+          interval: 250,
+        },
       );
       const after = await active.host.store.requests.get(request.id);
       expect(after?.status, "A message must never answer a Request").toBe("pending");
     });
-
     it("contributes the person's Chat follow-ups to the reply under way", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
       const command = installedCommand(engine.driverKind);
@@ -468,7 +494,6 @@ describe("engine qualification", () => {
           providerId: model.providerId,
         }),
         title: "Chat",
-        workspaceId,
       });
       const database = active.host.store.database;
       const input = (messageId: string) =>
@@ -488,12 +513,18 @@ describe("engine qualification", () => {
             .execute()
         ).map(({ content, sequence }) => ({
           sequence: String(sequence),
-          text: (content as readonly { readonly text?: string }[])
+          text: (
+            content as readonly {
+              readonly text?: string;
+            }[]
+          )
             .flatMap((part) => (part.text ? [part.text] : []))
             .join("\n"),
         }));
       const attempts = async (runId: string) => {
-        const listed = await active.api["run.attempts.list"]({ runId: runId as never });
+        const listed = await active.api["run.attempts.list"]({
+          runId: runId as never,
+        });
         if (!listed.ok) throw new Error(listed.error.message);
         return listed.data.attempts.map((attempt) => [attempt.reason, attempt.outcome]);
       };
@@ -518,11 +549,13 @@ describe("engine qualification", () => {
         },
         text: `Use your shell tool to run exactly \`sleep 15\` and wait for it to finish. Then reply with the code ${original}.`,
         threadId,
-        workspaceId,
       });
       expect(midTurn.assistantText).toContain(original);
       expect(midTurn.assistantText).toContain(added);
-      expect(await input(followUpId)).toMatchObject({ runId: midTurn.runId, state: "delivered" });
+      expect(await input(followUpId)).toMatchObject({
+        runId: midTurn.runId,
+        state: "delivered",
+      });
       const midTurnAttempts = await attempts(midTurn.runId);
       expect(midTurnAttempts).toEqual(
         native
@@ -554,7 +587,6 @@ describe("engine qualification", () => {
         },
         text: "Reply with exactly the word GAMMA.",
         threadId,
-        workspaceId,
       });
       const lateInput = await input(lateId);
       let lateAnsweredBy = late.runId;
@@ -594,7 +626,6 @@ describe("engine qualification", () => {
         },
         text: "Without using any tools, write a numbered list of 40 short facts about the ocean.",
         threadId,
-        workspaceId,
       });
       const midAnswerInput = await input(midAnswerId);
       const midAnswerReplies = await replies(midAnswer.runId);
@@ -616,7 +647,10 @@ describe("engine qualification", () => {
 
       // Messages sent before the engine can start are its first turn.
       const burstRunsBefore = await runCount();
-      const first = await active.queueMessage({ text: "Remember the word ECHO.", threadId });
+      const first = await active.queueMessage({
+        text: "Remember the word ECHO.",
+        threadId,
+      });
       const second = await active.queueMessage({
         text: "Then reply with the remembered word followed by FOXTROT.",
         threadId,
@@ -641,9 +675,11 @@ describe("engine qualification", () => {
         },
         text: "Use your shell tool to run exactly `sleep 60` and wait for it to finish.",
         threadId,
-        workspaceId,
       });
-      const afterStop = await active.queueMessage({ text: "Reply with exactly HOTEL.", threadId });
+      const afterStop = await active.queueMessage({
+        text: "Reply with exactly HOTEL.",
+        threadId,
+      });
       if (!afterStop.runId) throw new Error("The next message waited for a Resume");
       await waitForRunStatus(active, afterStop.runId, "completed");
       expect((await replies(afterStop.runId)).at(-1)?.text).toMatch(/HOTEL/u);
@@ -653,11 +689,12 @@ describe("engine qualification", () => {
         .where("id", "=", threadId)
         .executeTakeFirstOrThrow();
       expect(paused.inputQueuePaused).toBe(false);
-
       const evidenceRoot =
         process.env.OPENSTEER_ENGINE_E2E_OUTPUT ??
         join(tmpdir(), "opensteer-engine-evidence", randomUUID());
-      await mkdir(evidenceRoot, { recursive: true });
+      await mkdir(evidenceRoot, {
+        recursive: true,
+      });
       await writeFile(
         join(evidenceRoot, `conversation-${engine.driverKind}-${engine.executable}.json`),
         JSON.stringify(
@@ -685,7 +722,13 @@ describe("engine qualification", () => {
                 )
                 .map((event) =>
                   event.type === "run.phase"
-                    ? `run.phase:${String((event.data as { phase?: unknown }).phase)}`
+                    ? `run.phase:${String(
+                        (
+                          event.data as {
+                            phase?: unknown;
+                          }
+                        ).phase,
+                      )}`
                     : event.type,
                 ),
               runId: midAnswer.runId,
@@ -715,7 +758,6 @@ describe("engine qualification", () => {
       );
       console.info(`Conversation delivery evidence: ${evidenceRoot}`);
     }, 900_000);
-
     it("answers, continues, and takes a listed option through a whole deployment", async () => {
       if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
       const command = installedCommand(engine.driverKind);
@@ -750,7 +792,12 @@ describe("engine qualification", () => {
       const model = defaults[0]!;
       if (newEngineKinds.has(engine.driverKind)) {
         expect(model.options).toEqual(
-          expect.arrayContaining([expect.objectContaining({ id: "effort", type: "select" })]),
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: "effort",
+              type: "select",
+            }),
+          ]),
         );
       }
       const workspace = await stack.createWorkspace(`${engine.label} qualification`);
@@ -761,14 +808,11 @@ describe("engine qualification", () => {
           providerId: model.providerId,
         }),
         title: `${engine.label} qualification`,
-        workspaceId: workspace.id,
       });
-
       const remembered = randomUUID();
       const first = await stack.sendMessage({
         text: `Remember this code for later: ${remembered}. Reply with exactly the word READY and nothing else.`,
         threadId,
-        workspaceId: workspace.id,
       });
       expect(first.assistantText).toMatch(/\bREADY\b/iu);
       if (newEngineKinds.has(engine.driverKind)) {
@@ -779,7 +823,9 @@ describe("engine qualification", () => {
           eventTypes.indexOf("run.completed"),
         );
         expect(eventTypes.indexOf("run.usage")).toBeLessThan(eventTypes.indexOf("run.completed"));
-        const listed = await stack.api["run.attempts.list"]({ runId: first.runId });
+        const listed = await stack.api["run.attempts.list"]({
+          runId: first.runId,
+        });
         if (!listed.ok) throw new Error(listed.error.message);
         const usage = listed.data.attempts.at(-1)?.usage;
         expect(usage?.outputTokens).toBeGreaterThan(0);
@@ -813,7 +859,6 @@ describe("engine qualification", () => {
       const second = await stack.sendMessage({
         text: "Reply with only the code I asked you to remember.",
         threadId,
-        workspaceId: workspace.id,
       });
       expect(second.assistantText).toContain(remembered);
 
@@ -830,7 +875,6 @@ describe("engine qualification", () => {
       const third = await stack.sendMessage({
         text: "Repeat the remembered code, with nothing else.",
         threadId,
-        workspaceId: workspace.id,
       });
       expect(third.assistantText).toContain(remembered);
 
@@ -839,14 +883,15 @@ describe("engine qualification", () => {
       const reused = await stack.sendMessage({
         text: "Reply with only the remembered code, once more.",
         threadId,
-        workspaceId: workspace.id,
       });
       expect(reused.assistantText).toContain(remembered);
       // How each Run's engine started, and how long from dispatch until it
       // accepted the work: the part a warm engine saves.
       const engineStarts = [];
       for (const runId of [first.runId, second.runId, third.runId, reused.runId]) {
-        const listed = await stack.api["run.attempts.list"]({ runId });
+        const listed = await stack.api["run.attempts.list"]({
+          runId,
+        });
         if (!listed.ok) throw new Error(listed.error.message);
         const attempt = listed.data.attempts.at(-1)!;
         engineStarts.push({
@@ -879,13 +924,11 @@ describe("engine qualification", () => {
         bytes: Buffer.from(`The qualification code is ${fileNonce}.\n`, "utf8"),
         mediaType: "text/plain",
         name: "qualification.txt",
-        workspaceId: workspace.id,
       });
       const fileTurn = await stack.sendMessage({
         attachments: [attachmentReference(file)],
         text: "Read the attached text file and reply with only its qualification code.",
         threadId,
-        workspaceId: workspace.id,
       });
       expect(fileTurn.assistantText).toContain(fileNonce);
       console.info(`${engine.label}: continued conversation read uploaded file`);
@@ -899,7 +942,6 @@ describe("engine qualification", () => {
           providerId: model.providerId,
         }),
         title: `${engine.label} approval qualification`,
-        workspaceId: workspace.id,
       });
       await stack.updateThreadAccess(approvalThreadId, "approval-required");
       const approvalCode = randomUUID();
@@ -910,7 +952,6 @@ describe("engine qualification", () => {
         },
         text: `Use the shell tool to run exactly \`printf '${approvalCode}'\`, then reply with only its output.`,
         threadId: approvalThreadId,
-        workspaceId: workspace.id,
       });
       expect(approvalRequestId).not.toBe("");
       expect(approved.assistantText).toContain(approvalCode);
@@ -923,30 +964,49 @@ describe("engine qualification", () => {
 
       // An engine's own subagents are the Run's execution nodes: their steps
       // name them, and their words are their result, not the Run's message.
-      let subagentResult: { nodes: readonly unknown[]; response: string; runId: string } | null =
-        null;
+      let subagentResult: {
+        nodes: readonly unknown[];
+        response: string;
+        runId: string;
+      } | null = null;
       if (["claude", "codex", "opencode"].includes(engine.driverKind)) {
         const code = randomUUID();
         const delegated = await stack.sendMessage({
           text: `Start exactly one subagent and have it run the shell command \`echo ${code}\` and report the output. Then reply with only that output.`,
           threadId,
-          workspaceId: workspace.id,
         });
         expect(delegated.assistantText).toContain(code);
-        const listed = await stack.api["run.attempts.list"]({ runId: delegated.runId });
+        const listed = await stack.api["run.attempts.list"]({
+          runId: delegated.runId,
+        });
         if (!listed.ok) throw new Error(listed.error.message);
         expect(listed.data.nodes.length).toBeGreaterThan(0);
         expect(
-          listed.data.nodes.map((node) => ({ status: node.status, title: node.title })),
-        ).toEqual(listed.data.nodes.map((node) => ({ status: "completed", title: node.title })));
+          listed.data.nodes.map((node) => ({
+            status: node.status,
+            title: node.title,
+          })),
+        ).toEqual(
+          listed.data.nodes.map((node) => ({
+            status: "completed",
+            title: node.title,
+          })),
+        );
         const childSteps = await stack.host.store.database
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .select("data")
           .where("runId", "=", delegated.runId)
           .where("type", "=", "tool.started")
           .execute();
         expect(
-          childSteps.some((step) => typeof (step.data as { nodeId?: unknown }).nodeId === "string"),
+          childSteps.some(
+            (step) =>
+              typeof (
+                step.data as {
+                  nodeId?: unknown;
+                }
+              ).nodeId === "string",
+          ),
         ).toBe(true);
         // A Codex subagent's responses are its node's usage and the Run's too.
         if (engine.driverKind === "codex") {
@@ -971,8 +1031,11 @@ describe("engine qualification", () => {
       // An engine that cannot take a message mid-turn restarts the Run with
       // it: the running attempt is interrupted and the next one, in the same
       // native conversation, starts with the steered message.
-      let restartResult: { attempts: readonly unknown[]; response: string; runId: string } | null =
-        null;
+      let restartResult: {
+        attempts: readonly unknown[];
+        response: string;
+        runId: string;
+      } | null = null;
       if (
         harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))?.steering !== true
       ) {
@@ -988,10 +1051,11 @@ describe("engine qualification", () => {
           },
           text: "Use your shell tool to run exactly `sleep 30` and wait for it to finish. Then reply with DONE.",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(restarted.assistantText).toContain(steeredCode);
-        const listed = await stack.api["run.attempts.list"]({ runId: restarted.runId });
+        const listed = await stack.api["run.attempts.list"]({
+          runId: restarted.runId,
+        });
         if (!listed.ok) throw new Error(listed.error.message);
         expect(listed.data.attempts.map((attempt) => [attempt.reason, attempt.outcome])).toEqual([
           ["initial", "interrupted"],
@@ -1026,14 +1090,19 @@ describe("engine qualification", () => {
             pixels[offset + (x < 32 ? 0 : 2)] = 255;
           }
         }
-        const png = await sharp(pixels, { raw: { width: 64, height: 32, channels: 3 } })
+        const png = await sharp(pixels, {
+          raw: {
+            width: 64,
+            height: 32,
+            channels: 3,
+          },
+        })
           .png()
           .toBuffer();
         const image = await stack.uploadAttachment({
           bytes: png,
           mediaType: "image/png",
           name: "two-colors.png",
-          workspaceId: workspace.id,
         });
         const imageThreadId = await stack.createThread({
           modelSelection: ModelSelectionSchema.parse({
@@ -1042,13 +1111,11 @@ describe("engine qualification", () => {
             providerId: imageModel.providerId,
           }),
           title: `${engine.label} image qualification`,
-          workspaceId: workspace.id,
         });
         const imageTurn = await stack.sendMessage({
           attachments: [attachmentReference(image)],
           text: "What color is the LEFT half of the attached image? Reply with only RED or BLUE.",
           threadId: imageThreadId,
-          workspaceId: workspace.id,
         });
         expect(imageTurn.assistantText.trim().split(/\r?\n/u).at(-1)).toMatch(/^RED[.!]?$/iu);
         console.info(`${engine.label}: catalog-confirmed model read native image`);
@@ -1063,7 +1130,6 @@ describe("engine qualification", () => {
           steering:
             harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))
               ?.messageAttachments?.nativeImages?.steering === true,
-          workspaceId: workspace.id,
         });
         imageResult = {
           modelId: imageModel.modelId,
@@ -1079,12 +1145,18 @@ describe("engine qualification", () => {
         .select(["providerSessionReference", "status"])
         .where("threadId", "=", threadId)
         .execute();
-      expect(sessions).toEqual([{ providerSessionReference: expect.any(String), status: "ready" }]);
-
+      expect(sessions).toEqual([
+        {
+          providerSessionReference: expect.any(String),
+          status: "ready",
+        },
+      ]);
       const evidenceRoot =
         process.env.OPENSTEER_ENGINE_E2E_OUTPUT ??
         join(tmpdir(), "opensteer-engine-evidence", randomUUID());
-      await mkdir(evidenceRoot, { recursive: true });
+      await mkdir(evidenceRoot, {
+        recursive: true,
+      });
       await writeFile(
         join(evidenceRoot, `${engine.driverKind}-${engine.executable}.json`),
         JSON.stringify(
@@ -1111,9 +1183,15 @@ describe("engine qualification", () => {
                 .filter((event) => event.type.startsWith("tool."))
                 .map((event) => event.type),
             },
-            restartSteer: restartResult ?? { status: "The engine steers natively" },
-            subagents: subagentResult ?? { status: "Not qualified for this engine" },
-            image: imageResult ?? { status: "No catalog-confirmed image model" },
+            restartSteer: restartResult ?? {
+              status: "The engine steers natively",
+            },
+            subagents: subagentResult ?? {
+              status: "Not qualified for this engine",
+            },
+            image: imageResult ?? {
+              status: "No catalog-confirmed image model",
+            },
           },
           null,
           2,
@@ -1123,7 +1201,6 @@ describe("engine qualification", () => {
     }, 900_000);
   });
 });
-
 describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
   let stack: VerticalStack | undefined;
   let restorePath: (() => Promise<void>) | undefined;
@@ -1131,12 +1208,13 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
     await stack?.close();
     await restorePath?.();
   }, 60_000);
-
   it("generates an isolated title and symbol and preserves personal choices on the next Run", async () => {
     const root =
       process.env.OPENSTEER_ENGINE_E2E_OUTPUT ??
       join(tmpdir(), "opensteer-engine-evidence", randomUUID());
-    await mkdir(root, { recursive: true });
+    await mkdir(root, {
+      recursive: true,
+    });
     const evidencePath = join(root, `thread-name-${engine.driverKind}-${engine.executable}.json`);
     const evidence: Record<string, unknown> = {
       engine: engine.driverKind,
@@ -1190,13 +1268,11 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
           options: {},
         }),
         title: seed,
-        workspaceId: active.mainWorkspaceId,
       });
       const started = Date.now();
       const first = await active.sendMessage({
         text: message,
         threadId,
-        workspaceId: active.mainWorkspaceId,
       });
       const latencyMs = Date.now() - started;
       evidence.latencyMs = latencyMs;
@@ -1218,14 +1294,19 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
             titleSource: "generated",
             iconSource: "generated",
           }),
-        { timeout: 120_000, interval: 250 },
+        {
+          timeout: 120_000,
+          interval: 250,
+        },
       );
       evidence.namingMs = Date.now() - started;
       const stored = await named();
       evidence.generatedTitle = stored.title;
       evidence.generatedIcon = stored.icon;
       const scratchEntries = (
-        await readdir(active.runnerDataDirectory, { recursive: true })
+        await readdir(active.runnerDataDirectory, {
+          recursive: true,
+        })
       ).filter((name) =>
         // Shared background scratch is `text-*`; an engine's own is `<engine>-text-*`.
         name.split(/[\\/]/u).some((part) => /^(?:[a-z]+-)?text-/u.test(part)),
@@ -1265,7 +1346,6 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       const second = await active.sendMessage({
         text: "Keep the migration on hold. Reply only WAITING.",
         threadId,
-        workspaceId: active.mainWorkspaceId,
       });
       expect(second.assistantText).toMatch(/\bWAITING\b/u);
       const afterSecond = await active.host.store.database
@@ -1275,7 +1355,9 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
         .executeTakeFirstOrThrow();
       expect(afterSecond.title).toBe(renamedTitle);
       expect(afterSecond.icon).toBe(chosenIcon);
-      const attempts = await active.api["run.attempts.list"]({ runId: second.runId });
+      const attempts = await active.api["run.attempts.list"]({
+        runId: second.runId,
+      });
       if (!attempts.ok) throw new Error(attempts.error.message);
       if (engine.driverKind === "codex" || engine.driverKind === "opencode")
         expect(attempts.data.attempts.at(-1)?.engineStart).toBe("warm");
@@ -1331,22 +1413,18 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
     }
   }, 360_000);
 });
-
 describe("live Home handoff between native engines", () => {
   let stack: VerticalStack | undefined;
   let restorePath: (() => Promise<void>) | undefined;
-
   beforeEach(async () => {
     restorePath = await shippedEnginesFirstOnPath();
   });
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
     await restorePath?.();
     restorePath = undefined;
   }, 60_000);
-
   it("delivers committed Codex history to Claude and Claude history to a fresh Codex session", async () => {
     if (!databaseUrl) throw new Error("Run the engine suite through pnpm test:engines");
     const shipped = qualifiedEngines.filter((engine) => engine.executable === "shipped");
@@ -1394,13 +1472,11 @@ describe("live Home handoff between native engines", () => {
       home: true,
       modelSelection: codexSelection,
       title: "Chat",
-      workspaceId: stack.mainWorkspaceId,
     });
     const sourceCode = randomUUID();
     const first = await stack.sendMessage({
       text: `Remember this source code: ${sourceCode}. Reply only READY.`,
       threadId,
-      workspaceId: stack.mainWorkspaceId,
     });
     expect(first.assistantText).toMatch(/\bREADY\b/iu);
     const firstRun = await stack.host.store.database
@@ -1414,7 +1490,6 @@ describe("live Home handoff between native engines", () => {
       .where("id", "=", firstRun.providerSessionId)
       .executeTakeFirstOrThrow();
     expect(firstSession.providerSessionReference).toEqual(expect.any(String));
-
     await stack.updateThreadExecution(threadId, claudeSelection, {
       expectedProviderSessionId: firstSession.id,
       harnessInstanceId: claudeHarnessId,
@@ -1423,7 +1498,6 @@ describe("live Home handoff between native engines", () => {
     const second = await stack.sendMessage({
       text: `What source code did I give earlier? Also remember this new handoff code: ${handoffCode}. Reply only with the earlier source code.`,
       threadId,
-      workspaceId: stack.mainWorkspaceId,
     });
     expect(second.assistantText).toContain(sourceCode);
     const secondRun = await stack.host.store.database
@@ -1434,7 +1508,6 @@ describe("live Home handoff between native engines", () => {
     expect(secondRun.providerSessionId).not.toBe(firstSession.id);
     expect(secondRun.initialContext?.messageIds).toContain(firstRun.seedInputId);
     expect(secondRun.initialContext?.messageIds).not.toContain(secondRun.seedInputId);
-
     await stack.updateThreadExecution(threadId, codexSelection, {
       expectedProviderSessionId: secondRun.providerSessionId,
       harnessInstanceId: stack.harnessInstanceId,
@@ -1442,7 +1515,6 @@ describe("live Home handoff between native engines", () => {
     const third = await stack.sendMessage({
       text: "What new handoff code did I ask the previous engine to remember? Reply only with that code.",
       threadId,
-      workspaceId: stack.mainWorkspaceId,
     });
     expect(third.assistantText).toContain(handoffCode);
     const thirdRun = await stack.host.store.database
@@ -1453,11 +1525,12 @@ describe("live Home handoff between native engines", () => {
     expect(thirdRun.providerSessionId).not.toBe(firstSession.id);
     expect(thirdRun.providerSessionId).not.toBe(secondRun.providerSessionId);
     expect(thirdRun.initialContext?.messageIds).toContain(secondRun.seedInputId);
-
     const evidenceRoot =
       process.env.OPENSTEER_ENGINE_E2E_OUTPUT ??
       join(tmpdir(), "opensteer-engine-evidence", randomUUID());
-    await mkdir(evidenceRoot, { recursive: true });
+    await mkdir(evidenceRoot, {
+      recursive: true,
+    });
     await writeFile(
       join(evidenceRoot, "home-codex-claude-codex.json"),
       JSON.stringify(
@@ -1481,7 +1554,6 @@ describe("live Home handoff between native engines", () => {
     console.info(`Live Home handoff evidence: ${evidenceRoot}`);
   }, 900_000);
 });
-
 interface PhotoEvidence {
   readonly answer: string;
   readonly check: string;
@@ -1506,13 +1578,11 @@ async function qualifyPhotos(input: {
   readonly modelSelection: ModelSelection;
   readonly stack: VerticalStack;
   readonly steering: boolean;
-  readonly workspaceId: WorkspaceId;
 }): Promise<readonly PhotoEvidence[]> {
-  const { stack, workspaceId } = input;
+  const { stack } = input;
   const threadId = await stack.createThread({
     modelSelection: input.modelSelection,
     title: `${input.label} photo qualification`,
-    workspaceId,
   });
   const evidence: PhotoEvidence[] = [];
   const sources = (attachments: readonly Attachment[]) =>
@@ -1531,14 +1601,12 @@ async function qualifyPhotos(input: {
     bytes,
     mediaType: "image/jpeg",
     name: "IMG_8003.jpeg",
-    workspaceId,
   });
   expect([photo.width, photo.height]).toEqual([5712, 4284]);
   const read = await stack.sendMessage({
     attachments: [attachmentReference(photo)],
     text: "What word is written in large letters in the attached photo? Reply with only that word.",
     threadId,
-    workspaceId,
   });
   expect(read.assistantText.toUpperCase()).toContain(word);
   evidence.push({
@@ -1555,7 +1623,6 @@ async function qualifyPhotos(input: {
   const recall = await stack.sendMessage({
     text: "In the photo I sent before, what color are the letters of that word? Reply with only one word: YELLOW, RED, or GREEN.",
     threadId,
-    workspaceId,
   });
   expect(recall.assistantText.toUpperCase()).toContain("YELLOW");
   expect(recall.assistantText.toUpperCase()).not.toMatch(/\b(?:RED|GREEN)\b/u);
@@ -1572,14 +1639,12 @@ async function qualifyPhotos(input: {
     bytes: await turnedPhoto(),
     mediaType: "image/jpeg",
     name: "turned.jpg",
-    workspaceId,
   });
   expect([turned.width, turned.height]).toEqual([900, 1200]);
   const orientation = await stack.sendMessage({
     attachments: [attachmentReference(turned)],
     text: "Look only at the photo attached to this message. Which color fills its TOP half? Reply with only RED or BLUE.",
     threadId,
-    workspaceId,
   });
   expect(orientation.assistantText.trim().split(/\r?\n/u).at(-1)).toMatch(/^RED[.!]?$/iu);
   evidence.push({
@@ -1599,14 +1664,12 @@ async function qualifyPhotos(input: {
         bytes: await wordPhoto(each, "#ffffff"),
         mediaType: "image/jpeg",
         name: `photo-${index + 1}.jpeg`,
-        workspaceId,
       }),
     );
   const ordered = await stack.sendMessage({
     attachments: several.map(attachmentReference),
     text: "Each of the three attached photos shows one large word. Reply with the three words in the order the photos are attached, separated by spaces, and nothing else.",
     threadId,
-    workspaceId,
   });
   const positions = words.map((each) => ordered.assistantText.toUpperCase().indexOf(each));
   expect(positions.every((position) => position >= 0)).toBe(true);
@@ -1625,13 +1688,11 @@ async function qualifyPhotos(input: {
     bytes: await deepWordImage(deepWord),
     mediaType: "image/png",
     name: "scan.png",
-    workspaceId,
   });
   const deepRead = await stack.sendMessage({
     attachments: [attachmentReference(deep)],
     text: "What word is written in the attached image? Reply with only that word.",
     threadId,
-    workspaceId,
   });
   expect(deepRead.assistantText.toUpperCase()).toContain(deepWord);
   evidence.push({
@@ -1642,7 +1703,6 @@ async function qualifyPhotos(input: {
     sources: sources([deep]),
   });
   console.info(`${input.label}: read rotated, several and deep images`);
-
   if (input.steering) {
     // The photo arrives while the agent's command is running, through the
     // engine's mid-turn path rather than the prompt that started the turn.
@@ -1651,7 +1711,6 @@ async function qualifyPhotos(input: {
       bytes: await wordPhoto(steeredWord, "#7cff4f"),
       mediaType: "image/jpeg",
       name: "IMG_8004.jpeg",
-      workspaceId,
     });
     const steered = await stack.sendMessage({
       onQueued: async (runId) => {
@@ -1664,7 +1723,6 @@ async function qualifyPhotos(input: {
       },
       text: "Use your shell tool to run exactly `sleep 30` and wait for it to finish. Then reply with DONE, plus the answer to any question you received meanwhile.",
       threadId,
-      workspaceId,
     });
     expect(steered.assistantText.toUpperCase()).toContain(steeredWord);
     evidence.push({
@@ -1682,7 +1740,12 @@ async function qualifyPhotos(input: {
 /** Five letters no model confuses with digits or each other in a bold sans-serif. */
 function randomWord(): string {
   const letters = "ACEFHKLMNPRTUVWXY";
-  return Array.from({ length: 5 }, () => letters[randomInt(letters.length)]).join("");
+  return Array.from(
+    {
+      length: 5,
+    },
+    () => letters[randomInt(letters.length)],
+  ).join("");
 }
 
 /** A 5712×4284 photo, noisy enough to exceed 5 MiB, with one large word. */
@@ -1695,7 +1758,11 @@ async function wordPhoto(word: string, color: string): Promise<Buffer> {
       height,
       channels: 3,
       background: "#808080",
-      noise: { type: "gaussian", mean: 128, sigma: 24 },
+      noise: {
+        type: "gaussian",
+        mean: 128,
+        sigma: 24,
+      },
     },
   })
     .raw()
@@ -1703,9 +1770,21 @@ async function wordPhoto(word: string, color: string): Promise<Buffer> {
   const lettering = Buffer.from(
     `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#1e3a8a" fill-opacity="0.55"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="950" fill="${color}">${word}</text></svg>`,
   );
-  return sharp(grain, { raw: { width, height, channels: 3 } })
-    .composite([{ input: lettering }])
-    .jpeg({ quality: 94 })
+  return sharp(grain, {
+    raw: {
+      width,
+      height,
+      channels: 3,
+    },
+  })
+    .composite([
+      {
+        input: lettering,
+      },
+    ])
+    .jpeg({
+      quality: 94,
+    })
     .toBuffer();
 }
 
@@ -1714,7 +1793,12 @@ async function turnedPhoto(): Promise<Buffer> {
   const halves = Buffer.from(
     `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg"><rect width="600" height="900" fill="#d61f1f"/><rect x="600" width="600" height="900" fill="#1f3fd6"/></svg>`,
   );
-  return sharp(halves).jpeg().withMetadata({ orientation: 6 }).toBuffer();
+  return sharp(halves)
+    .jpeg()
+    .withMetadata({
+      orientation: 6,
+    })
+    .toBuffer();
 }
 
 /** 9700×7200 16-bit RGBA with one large word: 558 MB decoded, a few MB stored. */
@@ -1725,15 +1809,29 @@ async function deepWordImage(word: string): Promise<Buffer> {
     `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="1800" fill="#ffffff">${word}</text></svg>`,
   );
   return sharp({
-    create: { width, height, channels: 4, background: { r: 32, g: 48, b: 74, alpha: 1 } },
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: {
+        r: 32,
+        g: 48,
+        b: 74,
+        alpha: 1,
+      },
+    },
     limitInputPixels: false,
   })
-    .composite([{ input: lettering, limitInputPixels: false }])
+    .composite([
+      {
+        input: lettering,
+        limitInputPixels: false,
+      },
+    ])
     .toColourspace("rgb16")
     .png()
     .toBuffer();
 }
-
 function qualificationFailure(engine: QualifiedEngine, error: unknown): Error {
   const failure = error instanceof Error ? error : new Error(String(error));
   if (
@@ -1744,7 +1842,9 @@ function qualificationFailure(engine: QualifiedEngine, error: unknown): Error {
   ) {
     return new Error(
       `${engine.label} is not signed in. ${engine.signInGuidance} Then rerun \`pnpm test:engines -- -t '${engine.label}'\`.`,
-      { cause: failure },
+      {
+        cause: failure,
+      },
     );
   }
   return failure;
@@ -1769,7 +1869,10 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
         .executeTakeFirst();
       expect(pending, "The supervised engine did not open an approval Request").toBeDefined();
     },
-    { interval: 250, timeout: 180_000 },
+    {
+      interval: 250,
+      timeout: 180_000,
+    },
   );
   if (!pending) throw new Error("The supervised engine did not open an approval Request");
   expect(pending.kind).toBe("harness.approval");
@@ -1783,13 +1886,15 @@ async function approvePendingHarnessRequest(active: VerticalStack, runId: string
   const answered = await active.api["commands.dispatch"]({
     idempotencyKey: key,
     requestId: pending.id,
-    response: { kind: "choice", optionId: allow.id },
+    response: {
+      kind: "choice",
+      optionId: allow.id,
+    },
     type: "request.respond",
   });
   if (!answered.ok) throw new Error(answered.error.message);
   return pending.id;
 }
-
 async function waitForRunStatus(
   active: VerticalStack,
   runId: string,
@@ -1814,7 +1919,9 @@ async function waitForRunStatus(
 async function waitForAssistantText(active: VerticalStack, runId: string): Promise<void> {
   const deadline = Date.now() + 300_000;
   for (;;) {
-    const live = await active.api["thread.live.get"]({ threadId: await threadOf(active, runId) });
+    const live = await active.api["thread.live.get"]({
+      threadId: await threadOf(active, runId),
+    });
     const written = live.ok
       ? live.data.runs
           .filter((run) => run.progress.runId === runId)
@@ -1827,7 +1934,6 @@ async function waitForAssistantText(active: VerticalStack, runId: string): Promi
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
-
 async function threadOf(active: VerticalStack, runId: string) {
   const run = await active.host.store.database
     .selectFrom("runs")

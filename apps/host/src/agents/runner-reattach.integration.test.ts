@@ -52,12 +52,28 @@ const captureSchema = z
   .object({
     method: z.string().optional(),
     params: z
-      .object({ input: z.array(z.unknown()).optional(), threadId: z.string().optional() })
+      .object({
+        input: z.array(z.unknown()).optional(),
+        threadId: z.string().optional(),
+      })
       .passthrough()
       .optional(),
-    fakeOpensteerTokens: z.object({ agentTools: z.string().optional() }).optional(),
-    fakeTurn: z.object({ pid: z.number() }).passthrough().optional(),
-    preparationHeld: z.object({ pid: z.number() }).optional(),
+    fakeOpensteerTokens: z
+      .object({
+        agentTools: z.string().optional(),
+      })
+      .optional(),
+    fakeTurn: z
+      .object({
+        pid: z.number(),
+      })
+      .passthrough()
+      .optional(),
+    preparationHeld: z
+      .object({
+        pid: z.number(),
+      })
+      .optional(),
     dispatchReadinessTurn: z
       .object({
         input: z.array(z.unknown()),
@@ -69,46 +85,65 @@ const captureSchema = z
   .passthrough();
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 const messages = 3;
 // The fake runs commands after its final answer, which opens a background/turn phase pair.
 const completedStreamEventTypes = [
   "run.started",
-  ...Array.from({ length: messages }, (_value, index) => [
-    "reasoning.completed",
-    "assistant.message",
-    ...(index === messages - 1 ? ["run.phase", "run.phase"] : []),
-    ...Array.from({ length: 7 }, () => ["tool.started", "tool.completed"]).flat(),
-  ]).flat(),
+  ...Array.from(
+    {
+      length: messages,
+    },
+    (_value, index) => [
+      "reasoning.completed",
+      "assistant.message",
+      ...(index === messages - 1 ? ["run.phase", "run.phase"] : []),
+      ...Array.from(
+        {
+          length: 7,
+        },
+        () => ["tool.started", "tool.completed"],
+      ).flat(),
+    ],
+  ).flat(),
   "run.completed",
 ];
-const heldText = Array.from({ length: 200 }, (_value, index) => `m0t${index} `).join("");
-
+const heldText = Array.from(
+  {
+    length: 200,
+  },
+  (_value, index) => `m0t${index} `,
+).join("");
 integration("Runs that outlive their connection", () => {
   const clockMilestones: unknown[] = [];
   let stack: VerticalStack | undefined;
   const temporary: string[] = [];
-
   afterAll(async () => {
     const directory =
       process.env.OPENSTEER_EXECUTION_PLANE_E2E_OUTPUT ??
       (await mkdtemp(join(tmpdir(), "opensteer-reattach-clocks-")));
-    await mkdir(directory, { recursive: true });
+    await mkdir(directory, {
+      recursive: true,
+    });
     await writeFile(
       join(directory, "clock-milestones.json"),
       JSON.stringify(clockMilestones, null, 2) + "\n",
     );
     console.info(`Runner reattach clock evidence: ${directory}`);
   });
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
-    for (const path of temporary.splice(0)) await rm(path, { force: true, recursive: true });
+    for (const path of temporary.splice(0))
+      await rm(path, {
+        force: true,
+        recursive: true,
+      });
   }, 90_000);
-
   async function start(input: {
     readonly executionClock?: ManualClock;
     readonly config?: Readonly<Record<string, unknown>>;
@@ -162,11 +197,21 @@ integration("Runs that outlive their connection", () => {
       return registry;
     };
     stack = await startVerticalStack({
-      ...(input.executionClock ? { executionClock: input.executionClock } : {}),
-      runnerWire: { contained: () => true },
+      ...(input.executionClock
+        ? {
+            executionClock: input.executionClock,
+          }
+        : {}),
+      runnerWire: {
+        contained: () => true,
+      },
       catalogTimeoutMs: 30_000,
       databaseUrl: databaseUrl!,
-      ...(input.executionLeaseMs ? { executionLeaseMs: input.executionLeaseMs } : {}),
+      ...(input.executionLeaseMs
+        ? {
+            executionLeaseMs: input.executionLeaseMs,
+          }
+        : {}),
       harnessInstance: {
         config: input.config ?? {},
         driverKind: "codex",
@@ -191,12 +236,13 @@ integration("Runs that outlive their connection", () => {
       turnPids,
     };
   }
-
   async function thread(active: VerticalStack, title: string): Promise<ThreadId> {
     const workspace = await active.createWorkspace(`${title} workspace`);
-    return active.createThread({ modelSelection, title, workspaceId: workspace.id });
+    return active.createThread({
+      modelSelection,
+      title,
+    });
   }
-
   async function ageDisconnectedLease(active: VerticalStack, clock: ManualClock, runId: RunId) {
     await waitFor(() => executionDisconnected(active), 30_000, "Host observed Runner disconnect");
     const expiry = await executionLeaseExpiresAt(active.host, runId);
@@ -210,7 +256,6 @@ integration("Runs that outlive their connection", () => {
       completedPasses: await active.host.settleExecutionLeases(),
     });
   }
-
   async function run(active: VerticalStack, runId: RunId) {
     return active.host.store.database
       .selectFrom("runs")
@@ -218,7 +263,6 @@ integration("Runs that outlive their connection", () => {
       .where("id", "=", runId)
       .executeTakeFirstOrThrow();
   }
-
   async function connectionGeneration(active: VerticalStack): Promise<bigint> {
     const row = await active.host.store.database
       .selectFrom("runners")
@@ -226,49 +270,54 @@ integration("Runs that outlive their connection", () => {
       .executeTakeFirstOrThrow();
     return BigInt(row.connectionGeneration);
   }
-
   async function liveAssistant(active: VerticalStack, threadId: ThreadId) {
-    const read = await active.api["thread.live.get"]({ threadId });
+    const read = await active.api["thread.live.get"]({
+      threadId,
+    });
     if (!read.ok) throw new Error(read.error.message);
     return read.data.runs
       .flatMap((entry) => entry.progress.items)
       .find((item) => item.stream === "assistant")?.text;
   }
-
   async function storedRunnerEvents(active: VerticalStack, runId: RunId) {
     return active.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["runnerOrdinal", "type"])
       .where("runId", "=", runId)
       .where("runnerOrdinal", "is not", null)
       .orderBy("runnerOrdinal", "asc")
       .execute();
   }
-
   async function expectCompletedExactlyOnce(active: VerticalStack, runId: RunId): Promise<void> {
     const stored = await storedRunnerEvents(active, runId);
     expect(stored.map((row) => row.runnerOrdinal)).toEqual(stored.map((_row, index) => index));
     expect(stored.filter((row) => row.type === "run.completed")).toHaveLength(1);
     expect(stored.filter((row) => row.type === "assistant.message")).toHaveLength(messages);
   }
-
   it("finishes a turn whose Runner connection dropped mid-stream, exactly once", async () => {
     const outputDirectory =
       process.env.OPENSTEER_EXECUTION_PLANE_E2E_OUTPUT ??
       join(tmpdir(), "opensteer-execution-plane-evidence", randomUUID());
-    await mkdir(outputDirectory, { recursive: true });
-    const { release, stack: active } = await start({ executionLeaseMs: 60_000 });
+    await mkdir(outputDirectory, {
+      recursive: true,
+    });
+    const { release, stack: active } = await start({
+      executionLeaseMs: 60_000,
+    });
     const threadId = await thread(active, "Network blip");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
     const before = await connectionGeneration(active);
-
     active.network.drop();
     await waitFor(async () => (await connectionGeneration(active)) > before, 30_000, "reconnect");
     expect((await run(active, runId)).status).toBe("running");
     // The Runner states its streams again on the new connection.
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "live");
-
     await release();
     await waitFor(async () => (await run(active, runId)).status === "completed", 60_000, "done");
     await expectCompletedExactlyOnce(active, runId);
@@ -290,7 +339,6 @@ integration("Runs that outlive their connection", () => {
     );
     console.info(`Runner reattach E2E evidence: ${outputDirectory}`);
   }, 180_000);
-
   it("queues recovery when a Runner stays away beyond its lease", async ({ signal }) => {
     const clock = new ManualClock();
     const { release, stack: active } = await start({
@@ -298,9 +346,13 @@ integration("Runs that outlive their connection", () => {
       executionClock: clock,
     });
     const threadId = await thread(active, "Lost network");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
-
     active.network.block();
     await ageDisconnectedLease(active, clock, runId);
     await waitFor(
@@ -308,13 +360,24 @@ integration("Runs that outlive their connection", () => {
       60_000,
       "lease recovery",
     );
-    expect(await run(active, runId)).toEqual({ failure: null, status: "queued" });
-    expect(await active.api["run.attempts.list"]({ runId })).toMatchObject({
+    expect(await run(active, runId)).toEqual({
+      failure: null,
+      status: "queued",
+    });
+    expect(
+      await active.api["run.attempts.list"]({
+        runId,
+      }),
+    ).toMatchObject({
       ok: true,
       data: {
         attempts: [
-          expect.objectContaining({ outcome: "interrupted" }),
-          expect.objectContaining({ reason: "recovery" }),
+          expect.objectContaining({
+            outcome: "interrupted",
+          }),
+          expect.objectContaining({
+            reason: "recovery",
+          }),
         ],
       },
     });
@@ -328,7 +391,12 @@ integration("Runs that outlive their connection", () => {
       signal,
       "recovered",
     );
-    const next = (await active.queueMessage({ text: "Again.", threadId })).runId!;
+    const next = (
+      await active.queueMessage({
+        text: "Again.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await run(active, next)).status === "completed", signal, "next");
     expect((await run(active, runId)).status).toBe("completed");
     expect((await storedRunnerEvents(active, runId)).slice(0, lostEvents.length)).toEqual(
@@ -341,7 +409,6 @@ integration("Runs that outlive their connection", () => {
     );
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
-
   it("recovers at once after a lost lease, though the engine never ended the stopped turn", async () => {
     const clock = new ManualClock();
     // The engine acknowledges the interrupt and never ends the turn; waiting
@@ -352,15 +419,21 @@ integration("Runs that outlive their connection", () => {
       stack: active,
       turnPids,
     } = await start({
-      config: { requestTimeoutMs },
+      config: {
+        requestTimeoutMs,
+      },
       engineArguments: ["--ignore-interrupt"],
       executionLeaseMs: 12_000,
       executionClock: clock,
     });
     const threadId = await thread(active, "Lost lease, stuck turn");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
-
     active.network.block();
     await ageDisconnectedLease(active, clock, runId);
     await waitFor(
@@ -368,18 +441,26 @@ integration("Runs that outlive their connection", () => {
       60_000,
       "lease end",
     );
-    expect(await run(active, runId)).toEqual({ failure: null, status: "queued" });
-    const attempts = await active.api["run.attempts.list"]({ runId });
+    expect(await run(active, runId)).toEqual({
+      failure: null,
+      status: "queued",
+    });
+    const attempts = await active.api["run.attempts.list"]({
+      runId,
+    });
     expect(attempts).toMatchObject({
       ok: true,
       data: {
         attempts: [
-          expect.objectContaining({ outcome: "interrupted" }),
-          expect.objectContaining({ reason: "recovery" }),
+          expect.objectContaining({
+            outcome: "interrupted",
+          }),
+          expect.objectContaining({
+            reason: "recovery",
+          }),
         ],
       },
     });
-
     const lostEvents = await storedRunnerEvents(active, runId);
     // The Runner stops the lost engine before recovering the same conversation.
     const reconnectedAt = Date.now();
@@ -398,7 +479,10 @@ integration("Runs that outlive their connection", () => {
       60_000,
       "next",
     );
-    expect(await run(active, next)).toEqual({ failure: null, status: "completed" });
+    expect(await run(active, next)).toEqual({
+      failure: null,
+      status: "completed",
+    });
     expect(Date.now() - reconnectedAt).toBeLessThan(requestTimeoutMs / 2);
     const [stuck, resumed] = await turnPids();
     expect(resumed).not.toBe(stuck);
@@ -410,29 +494,40 @@ integration("Runs that outlive their connection", () => {
     expect(events.slice(0, lostEvents.length)).toEqual(lostEvents);
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
-
   it("keeps a turn running through a Host restart and finishes it exactly once", async () => {
-    const { release, stack: active } = await start({ executionLeaseMs: 60_000 });
+    const { release, stack: active } = await start({
+      executionLeaseMs: 60_000,
+    });
     const threadId = await thread(active, "Host restart");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
     const before = await connectionGeneration(active);
-
     await active.restartHost();
     await waitFor(async () => (await connectionGeneration(active)) > before, 30_000, "reconnect");
     expect((await run(active, runId)).status).toBe("running");
-
     await release();
     await waitFor(async () => (await run(active, runId)).status === "completed", 60_000, "done");
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
-
   it("keeps a turn that finished while the Host was down for longer than two leases", async () => {
     const clock = new ManualClock();
     const executionLeaseMs = 12_000;
-    const { release, stack: active } = await start({ executionLeaseMs, executionClock: clock });
+    const { release, stack: active } = await start({
+      executionLeaseMs,
+      executionClock: clock,
+    });
     const threadId = await thread(active, "Host outage");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
 
     // The turn ends while no Host is listening, and stays unacknowledged for
@@ -464,18 +559,25 @@ integration("Runs that outlive their connection", () => {
     await waitFor(async () => (await run(active, runId)).status === "completed", 60_000, "done");
     await expectCompletedExactlyOnce(active, runId);
   }, 180_000);
-
   it("recovers the same turn at once when its Runner process restarts", async () => {
-    const { release, stack: active } = await start({ executionLeaseMs: 60_000 });
+    const { release, stack: active } = await start({
+      executionLeaseMs: 60_000,
+    });
     const threadId = await thread(active, "Runner restart");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
-
     const restarted = Date.now();
     await active.restartRunner();
     await waitFor(
       async () => {
-        const listed = await active.api["run.attempts.list"]({ runId });
+        const listed = await active.api["run.attempts.list"]({
+          runId,
+        });
         return (
           (listed.ok && listed.data.attempts.length === 2) ||
           ["failed", "interrupted"].includes((await run(active, runId)).status)
@@ -487,17 +589,22 @@ integration("Runs that outlive their connection", () => {
     // Far sooner than the lease: a new boot proves the old one's work is gone.
     expect(Date.now() - restarted).toBeLessThan(30_000);
     expect((await run(active, runId)).failure).toBeNull();
-    const attempts = await active.api["run.attempts.list"]({ runId });
+    const attempts = await active.api["run.attempts.list"]({
+      runId,
+    });
     expect(attempts).toMatchObject({
       ok: true,
       data: {
         attempts: [
-          expect.objectContaining({ outcome: "interrupted" }),
-          expect.objectContaining({ reason: "recovery" }),
+          expect.objectContaining({
+            outcome: "interrupted",
+          }),
+          expect.objectContaining({
+            reason: "recovery",
+          }),
         ],
       },
     });
-
     await release();
     await waitFor(
       async () => (await run(active, runId)).status === "completed",
@@ -505,10 +612,17 @@ integration("Runs that outlive their connection", () => {
       "recovered",
     );
     await expectCompletedExactlyOnce(active, runId);
-    const next = (await active.queueMessage({ text: "Again.", threadId })).runId!;
+    const next = (
+      await active.queueMessage({
+        text: "Again.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await run(active, next)).status === "completed", 60_000, "next");
     const evidenceDirectory = join(tmpdir(), "opensteer-execution-plane-evidence", randomUUID());
-    await mkdir(evidenceDirectory, { recursive: true });
+    await mkdir(evidenceDirectory, {
+      recursive: true,
+    });
     const artifact = join(evidenceDirectory, "runner-recovery.json");
     await writeFile(
       artifact,
@@ -546,7 +660,6 @@ integration("Runs that outlive their connection", () => {
     );
     console.info(`Runner recovery E2E evidence: ${artifact}`);
   }, 180_000);
-
   it("preserves a delegated recovery through Runner preparation and a dispatch disconnect race", async () => {
     const {
       captured,
@@ -563,15 +676,16 @@ integration("Runs that outlive their connection", () => {
       home: true,
       modelSelection,
       title: "Restart parent",
-      workspaceId: active.mainWorkspaceId,
     });
     const spareId = await active.createThread({
       modelSelection,
       title: "Change selection while preparing",
-      workspaceId: active.mainWorkspaceId,
     });
     const parentSeedRunId = (
-      await active.queueMessage({ text: "Delegate a restart task.", threadId: parentId })
+      await active.queueMessage({
+        text: "Delegate a restart task.",
+        threadId: parentId,
+      })
     ).runId!;
     await waitFor(
       async () => (await liveAssistant(active, parentId)) === heldText,
@@ -585,12 +699,19 @@ integration("Runs that outlive their connection", () => {
       .match(/http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools/gu)
       ?.at(-1);
     if (!proxyUrl) throw new Error("Parent engine has no agent-tools proxy");
-    const client = new Client({ name: "dispatch-readiness-e2e", version: "1" });
+    const client = new Client({
+      name: "dispatch-readiness-e2e",
+      version: "1",
+    });
     const delegated = await (async () => {
       try {
         await client.connect(
           new StreamableHTTPClientTransport(new URL(proxyUrl), {
-            requestInit: { headers: { authorization: `Bearer ${token}` } },
+            requestInit: {
+              headers: {
+                authorization: `Bearer ${token}`,
+              },
+            },
           }) as Transport,
         );
         const result = await client.callTool({
@@ -598,7 +719,6 @@ integration("Runs that outlive their connection", () => {
           arguments: {
             task: "Keep the delegated task running until its Runner restarts.",
             title: "Restart task",
-            workspaceId: active.mainWorkspaceId,
           },
         });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
@@ -634,7 +754,6 @@ integration("Runs that outlive their connection", () => {
       "parent idle",
     );
     expect((await run(active, childRun.id)).status).toBe("running");
-
     const restarting = active.restartRunner();
     void restarting.catch(() => undefined);
     await waitFor(
@@ -654,7 +773,10 @@ integration("Runs that outlive their connection", () => {
       .selectAll()
       .where("id", "=", assignmentId)
       .executeTakeFirstOrThrow();
-    expect(assignment).toMatchObject({ status: "open", resultMessageId: null });
+    expect(assignment).toMatchObject({
+      status: "open",
+      resultMessageId: null,
+    });
     const recoveryInput = await waitForValue(30_000, async () => {
       const rows = await active.host.store.database
         .selectFrom("messages")
@@ -680,11 +802,19 @@ integration("Runs that outlive their connection", () => {
       .where("id", "=", inputId)
       .executeTakeFirstOrThrow();
     expect(resultMessage).toMatchObject({
-      author: { cause: "run-recovery", kind: "platform" },
+      author: {
+        cause: "run-recovery",
+        kind: "platform",
+      },
       kind: "continuation",
     });
     const notice = z
-      .array(z.object({ type: z.literal("text"), text: z.string() }))
+      .array(
+        z.object({
+          type: z.literal("text"),
+          text: z.string(),
+        }),
+      )
       .parse(resultMessage.content)
       .map((part) => part.text)
       .join("\n");
@@ -718,7 +848,10 @@ integration("Runs that outlive their connection", () => {
         current.run.failure,
         "preparation must preserve the continuation rather than dispatch_failed",
       ).toBeNull();
-      expect(current.command).toMatchObject({ id: command.id, runId: recoveringRunId });
+      expect(current.command).toMatchObject({
+        id: command.id,
+        runId: recoveringRunId,
+      });
       expect(["pending", "dispatched"]).toContain(current.command.status);
       expect(current.command.attempts).toBeLessThanOrEqual(1);
       expect(
@@ -745,7 +878,7 @@ integration("Runs that outlive their connection", () => {
     expect(heldSnapshots.at(-1)!.run.status).toBe("queued");
     expect(heldSnapshots.at(-1)!.command.status).toBe("pending");
     const heldEvents = await active.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["sequence", "type", "data"])
       .where("runId", "=", recoveringRunId)
       .where("createdAt", ">=", recoveryInput.createdAt)
@@ -771,7 +904,6 @@ integration("Runs that outlive their connection", () => {
         modelSelection,
         title: "Refuse during preparation",
         type: "thread.create" as const,
-        workspaceId: active.mainWorkspaceId,
       },
       {
         harnessInstanceId: active.harnessInstanceId,
@@ -786,9 +918,15 @@ integration("Runs that outlive their connection", () => {
       });
       expect(refusal).toMatchObject({
         ok: false,
-        error: { retryable: true, message: "Preparing Vertical account…" },
+        error: {
+          retryable: true,
+          message: "Preparing Vertical account…",
+        },
       });
-      refusals.push({ type: mutation.type, response: refusal });
+      refusals.push({
+        type: mutation.type,
+        response: refusal,
+      });
     }
 
     // A Runner lost after disk inspection, before dispatch reads it, is waited for.
@@ -832,7 +970,9 @@ integration("Runs that outlive their connection", () => {
       id: command.id,
       runId: recoveringRunId,
       status: "pending",
-      lastError: { message: "Runner is offline" },
+      lastError: {
+        message: "Runner is offline",
+      },
     });
     expect(offlineRetry.command.attempts).toBe(heldSnapshots.at(-1)!.command.attempts + 1);
     expect(offlineRetry.run).toMatchObject({
@@ -891,7 +1031,10 @@ integration("Runs that outlive their connection", () => {
         .executeTakeFirstOrThrow();
       return state.resultMessageId ? state : undefined;
     });
-    expect(returned).toMatchObject({ status: "completed", resultStatus: "delivered" });
+    expect(returned).toMatchObject({
+      status: "completed",
+      resultStatus: "delivered",
+    });
     const parentResult = await active.host.store.database
       .selectFrom("messages")
       .selectAll()
@@ -923,7 +1066,13 @@ integration("Runs that outlive their connection", () => {
       .flatMap((record) => (record.dispatchReadinessTurn ? [record.dispatchReadinessTurn] : []))
       .map((turn) =>
         z
-          .array(z.object({ text: z.string() }).passthrough())
+          .array(
+            z
+              .object({
+                text: z.string(),
+              })
+              .passthrough(),
+          )
           .parse(turn.input)
           .map(({ text }) => text)
           .join("\n"),
@@ -947,11 +1096,14 @@ integration("Runs that outlive their connection", () => {
       .select(["state", "cancelReason", "runId"])
       .where("messageId", "=", inputId)
       .executeTakeFirstOrThrow();
-    expect(finalInput).toEqual({ state: "delivered", cancelReason: null, runId: recoveringRunId });
+    expect(finalInput).toEqual({
+      state: "delivered",
+      cancelReason: null,
+      runId: recoveringRunId,
+    });
     const events = await active.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["sequence", "type", "runId", "data"])
-      .where("workspaceId", "=", active.mainWorkspaceId)
       .where("runId", "in", [parentSeedRunId, childRun.id, recoveringRunId])
       .orderBy("sequence", "asc")
       .execute();
@@ -962,7 +1114,9 @@ integration("Runs that outlive their connection", () => {
       events.filter((event) => event.runId === recoveringRunId && event.type === "run.completed"),
     ).toHaveLength(1);
     const evidenceDirectory = join(tmpdir(), "opensteer-e2e-artifacts", randomUUID());
-    await mkdir(evidenceDirectory, { recursive: true });
+    await mkdir(evidenceDirectory, {
+      recursive: true,
+    });
     const artifact = join(evidenceDirectory, "dispatch-readiness.json");
     await writeFile(
       artifact,
@@ -996,13 +1150,18 @@ integration("Runs that outlive their connection", () => {
     );
     process.stdout.write(`Dispatch readiness E2E evidence: ${artifact}\n`);
   }, 180_000);
-
   it("delivers a stop sent while the Runner was unreachable once it reattaches", async () => {
-    const { stack: active } = await start({ executionLeaseMs: 60_000 });
+    const { stack: active } = await start({
+      executionLeaseMs: 60_000,
+    });
     const threadId = await thread(active, "Stop while away");
-    const runId = (await active.queueMessage({ text: "Write at length.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Write at length.",
+        threadId,
+      })
+    ).runId!;
     await waitFor(async () => (await liveAssistant(active, threadId)) === heldText, 30_000, "held");
-
     active.network.block();
     await active.interruptRun(threadId, runId);
     await delay(1_000);
@@ -1014,7 +1173,6 @@ integration("Runs that outlive their connection", () => {
       "stop delivered",
     );
   }, 120_000);
-
   it("delivers an answer to a Request given while the Runner was unreachable", async () => {
     const { stack: active } = await start({
       executionLeaseMs: 60_000,
@@ -1022,7 +1180,12 @@ integration("Runs that outlive their connection", () => {
     });
     const threadId = await thread(active, "Approve while away");
     await active.updateThreadAccess(threadId, "approval-required");
-    const runId = (await active.queueMessage({ text: "Run the tests.", threadId })).runId!;
+    const runId = (
+      await active.queueMessage({
+        text: "Run the tests.",
+        threadId,
+      })
+    ).runId!;
     const request = await waitForValue(30_000, async () =>
       active.host.store.database
         .selectFrom("requests")
@@ -1032,10 +1195,12 @@ integration("Runs that outlive their connection", () => {
         .executeTakeFirst(),
     );
     const presentation = request.presentation as {
-      readonly options: readonly { readonly hint?: string; readonly id: string }[];
+      readonly options: readonly {
+        readonly hint?: string;
+        readonly id: string;
+      }[];
     };
     const allow = presentation.options.find((option) => option.hint !== "reject-once")!;
-
     active.network.block();
     const key = `respond-${randomUUID()}`;
     await testRpcData(
@@ -1044,7 +1209,10 @@ integration("Runs that outlive their connection", () => {
       {
         idempotencyKey: key,
         requestId: request.id,
-        response: { kind: "choice", optionId: allow.id },
+        response: {
+          kind: "choice",
+          optionId: allow.id,
+        },
         type: "request.respond",
       },
       {
@@ -1059,7 +1227,6 @@ integration("Runs that outlive their connection", () => {
     active.network.unblock();
     await waitFor(async () => (await run(active, runId)).status === "completed", 30_000, "answer");
   }, 120_000);
-
   it("delivers an answer while a sibling Run in the same Workspace streams, without dropping the Runner", async () => {
     const {
       advanceSibling,
@@ -1074,18 +1241,24 @@ integration("Runs that outlive their connection", () => {
     const streaming = await active.createThread({
       modelSelection,
       title: "Streaming",
-      workspaceId: workspace.id,
     });
     const asking = await active.createThread({
       modelSelection,
       title: "Asking",
-      workspaceId: workspace.id,
     });
     await active.updateThreadAccess(asking, "approval-required");
-    const streamingRun = (await active.queueMessage({ text: "Keep notes.", threadId: streaming }))
-      .runId!;
-    const askingRun = (await active.queueMessage({ text: "Ask before acting.", threadId: asking }))
-      .runId!;
+    const streamingRun = (
+      await active.queueMessage({
+        text: "Keep notes.",
+        threadId: streaming,
+      })
+    ).runId!;
+    const askingRun = (
+      await active.queueMessage({
+        text: "Ask before acting.",
+        threadId: asking,
+      })
+    ).runId!;
     const request = await waitForValue(30_000, async () =>
       active.host.store.database
         .selectFrom("requests")
@@ -1104,10 +1277,12 @@ integration("Runs that outlive their connection", () => {
     );
     const generation = await connectionGeneration(active);
     const presentation = request.presentation as {
-      readonly options: readonly { readonly hint?: string; readonly id: string }[];
+      readonly options: readonly {
+        readonly hint?: string;
+        readonly id: string;
+      }[];
     };
     const allow = presentation.options.find((option) => option.hint !== "reject-once")!;
-
     await waitFor(
       async () => {
         const pending = await active.host.store.database
@@ -1128,9 +1303,9 @@ integration("Runs that outlive their connection", () => {
         .where("id", "=", workspace.id)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
-      const result = await sql<{ pid: number }>`select pg_backend_pid() as pid`.execute(
-        transaction,
-      );
+      const result = await sql<{
+        pid: number;
+      }>`select pg_backend_pid() as pid`.execute(transaction);
       locked.resolve(result.rows[0]!.pid);
       await unlock.promise;
     });
@@ -1138,7 +1313,9 @@ integration("Runs that outlive their connection", () => {
     const blockerPid = await locked.promise;
     const contention: number[][] = [];
     const waiting = async () => {
-      const result = await sql<{ pid: number }>`
+      const result = await sql<{
+        pid: number;
+      }>`
         with recursive blocked(pid) as (
           select pid from pg_stat_activity
           where datname = current_database() and ${blockerPid} = any(pg_blocking_pids(pid))
@@ -1159,7 +1336,10 @@ integration("Runs that outlive their connection", () => {
       {
         idempotencyKey: key,
         requestId: request.id,
-        response: { kind: "choice", optionId: allow.id },
+        response: {
+          kind: "choice",
+          optionId: allow.id,
+        },
         type: "request.respond",
       },
       {
@@ -1199,7 +1379,9 @@ integration("Runs that outlive their connection", () => {
     const outputDirectory =
       process.env.OPENSTEER_EXECUTION_PLANE_E2E_OUTPUT ??
       (await mkdtemp(join(tmpdir(), "opensteer-sibling-approval-")));
-    await mkdir(outputDirectory, { recursive: true });
+    await mkdir(outputDirectory, {
+      recursive: true,
+    });
     await writeFile(
       join(outputDirectory, "sibling-approval.json"),
       JSON.stringify(
@@ -1208,7 +1390,10 @@ integration("Runs that outlive their connection", () => {
           contention,
           askingRun,
           streamingRun,
-          connectionGenerations: { before: generation.toString(), after: after.toString() },
+          connectionGenerations: {
+            before: generation.toString(),
+            after: after.toString(),
+          },
           status: {
             asking: await run(active, askingRun),
             streaming: await run(active, streamingRun),
@@ -1220,7 +1405,6 @@ integration("Runs that outlive their connection", () => {
     );
     console.info(`Sibling approval E2E evidence: ${outputDirectory}`);
   }, 120_000);
-
   it("dispatches new turns while other Runs wait, bounded by the Runner's capacity", async () => {
     // The Host dispatches two commands at a time; three held Runs must all run.
     const { release, stack: active } = await start({
@@ -1232,7 +1416,14 @@ integration("Runs that outlive their connection", () => {
     );
     const runIds: RunId[] = [];
     for (const threadId of threads) {
-      runIds.push((await active.queueMessage({ text: "Write at length.", threadId })).runId!);
+      runIds.push(
+        (
+          await active.queueMessage({
+            text: "Write at length.",
+            threadId,
+          })
+        ).runId!,
+      );
     }
     await waitFor(
       async () =>
@@ -1248,7 +1439,6 @@ integration("Runs that outlive their connection", () => {
     }
   }, 180_000);
 });
-
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
   budget: number | AbortSignal,
@@ -1261,10 +1451,17 @@ async function waitFor(
     if (deadline !== undefined && Date.now() >= deadline) {
       throw new Error(`Timed out waiting for ${label}`);
     }
-    await delay(100, undefined, typeof budget === "number" ? undefined : { signal: budget });
+    await delay(
+      100,
+      undefined,
+      typeof budget === "number"
+        ? undefined
+        : {
+            signal: budget,
+          },
+    );
   }
 }
-
 async function waitForValue<T>(timeoutMs: number, read: () => Promise<T | undefined>): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

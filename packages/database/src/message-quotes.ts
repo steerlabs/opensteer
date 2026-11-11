@@ -1,3 +1,4 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { isPlaceContentPart } from "@opensteer/core";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import {
@@ -11,25 +12,25 @@ import {
 import type { Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { messageFromRow } from "./thread-row-mappers.js";
-
 export async function resolveMessageQuote(
   transaction: Transaction<DatabaseSchema>,
   messageId: MessageId,
   userId: UserId,
 ): Promise<MessageQuote> {
+  await requirePersonalOwner(transaction, userId);
   const row = await transaction
     .selectFrom("messages")
     .innerJoin("threads", "threads.id", "messages.threadId")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
     .selectAll("messages")
     .where("messages.id", "=", messageId)
-    .where("workspaceMemberships.userId", "=", userId)
-    .where("workspaceMemberships.state", "=", "active")
     .where(publishedMessagePredicate("threadInputs"))
     .executeTakeFirst();
   if (!row)
-    throw new OpensteerError({ code: "not_found", message: "The quoted message is unavailable" });
+    throw new OpensteerError({
+      code: "not_found",
+      message: "The quoted message is unavailable",
+    });
   const source = messageFromRow(row);
   return MessageQuoteSchema.parse({
     messageId: source.id,

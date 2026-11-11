@@ -1,5 +1,4 @@
 import { OpensteerError } from "@opensteer/core";
-
 interface QueuedTask<T> {
   readonly bytes: number;
   readonly keys: readonly string[];
@@ -7,7 +6,6 @@ interface QueuedTask<T> {
   readonly resolve: (value: T | PromiseLike<T>) => void;
   readonly reject: (error: unknown) => void;
 }
-
 interface KeyedAdmissionQueueOptions {
   /**
    * Whether a failure is a transaction that lost to a concurrent one, such as a
@@ -44,7 +42,6 @@ export class KeyedAdmissionQueue {
   #queuedBytes = 0;
   #closed = false;
   #idleWaiters: Array<() => void> = [];
-
   constructor(options: KeyedAdmissionQueueOptions) {
     for (const [name, value] of [
       ["maxInFlight", options.maxInFlight],
@@ -60,19 +57,19 @@ export class KeyedAdmissionQueue {
     this.#maxQueuedBytes = options.maxQueuedBytes;
     this.#maxQueuedCommands = options.maxQueuedCommands;
   }
-
   get queuedCommands(): number {
     return this.#pending.length;
   }
-
   get queuedBytes(): number {
     return this.#queuedBytes;
   }
-
   execute<T>(keys: readonly string[], estimatedBytes: number, run: () => Promise<T>): Promise<T> {
     if (this.#closed) {
       return Promise.reject(
-        new OpensteerError({ code: "conflict", message: "Command queue is closed" }),
+        new OpensteerError({
+          code: "conflict",
+          message: "Command queue is closed",
+        }),
       );
     }
     if (!Number.isInteger(estimatedBytes) || estimatedBytes < 0) {
@@ -85,7 +82,9 @@ export class KeyedAdmissionQueue {
       return Promise.reject(
         new OpensteerError({
           code: "timeout",
-          details: { retryAfterMs: 250 },
+          details: {
+            retryAfterMs: 250,
+          },
           message: "Host command admission is temporarily full",
           retryable: true,
         }),
@@ -104,7 +103,6 @@ export class KeyedAdmissionQueue {
     this.#pump();
     return promise;
   }
-
   async close(): Promise<void> {
     if (this.#closed) return this.#waitForIdle();
     this.#closed = true;
@@ -117,7 +115,6 @@ export class KeyedAdmissionQueue {
     this.#queuedBytes = 0;
     await this.#waitForIdle();
   }
-
   #pump(): void {
     // Keys of earlier commands that could not start yet: a later command
     // sharing one waits behind them rather than overtaking.
@@ -138,7 +135,6 @@ export class KeyedAdmissionQueue {
       for (const resolve of this.#idleWaiters.splice(0)) resolve();
     }
   }
-
   #start(task: QueuedTask<unknown>): void {
     this.#inFlight += 1;
     this.#queuedBytes -= task.bytes;
@@ -155,7 +151,6 @@ export class KeyedAdmissionQueue {
         this.#pump();
       });
   }
-
   async #runWithConflictRetries(task: QueuedTask<unknown>): Promise<unknown> {
     for (let attempt = 1; ; attempt += 1) {
       try {
@@ -169,7 +164,6 @@ export class KeyedAdmissionQueue {
       }
     }
   }
-
   #waitForIdle(): Promise<void> {
     if (this.#inFlight === 0 && this.#pending.length === 0) return Promise.resolve();
     return new Promise((resolve) => this.#idleWaiters.push(resolve));

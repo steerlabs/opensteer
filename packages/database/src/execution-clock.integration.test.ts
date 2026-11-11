@@ -17,7 +17,9 @@ describeStore("execution lease clock", (it) => {
     const { database, startRunFixture } = storeFixture;
     const f = await startRunFixture("clock-expired-authority");
     const clock = new ManualClock();
-    const store = new OpensteerStore(database, { executionClock: clock });
+    const store = new OpensteerStore(database, {
+      executionClock: clock,
+    });
     const binding = await database
       .selectFrom("providerSessions")
       .select(["leaseExpiresAt", "leaseTokenHash"])
@@ -27,13 +29,11 @@ describeStore("execution lease clock", (it) => {
     const authority = {
       bindingGeneration: f.bindingGeneration,
       environmentId: f.environmentId,
-      membershipGeneration: 1,
       requestedBy: f.userId,
       runId: f.run.id,
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
     };
     const single = await store.renewExecutionBinding({
       ...authority,
@@ -51,13 +51,14 @@ describeStore("execution lease clock", (it) => {
     // Renewal is > now; sweep remains < now. Equality must not be normalized.
     expect((await store.recoverRunsWithExpiredExecutionBindings()).events).toEqual([]);
     clock.advanceBy(1);
-    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(store.assertActiveGrant(authority)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     const eventContext = {
       bindingGeneration: f.bindingGeneration,
       environmentId: f.environmentId,
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
     };
     const ordinary = {
       environmentId: f.environmentId,
@@ -65,23 +66,39 @@ describeStore("execution lease clock", (it) => {
       runnerId: f.runnerId,
       event: pendingEvent({
         ...eventContext,
-        data: { content: [{ type: "text", text: "Too late" }], messageId: createId("message") },
+        data: {
+          content: [
+            {
+              type: "text",
+              text: "Too late",
+            },
+          ],
+          messageId: createId("message"),
+        },
         ordinal: 1,
         type: "assistant.message",
       }),
     };
-    await expect(store.commitRunnerEvent(ordinary)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(store.commitRunnerEvent(ordinary)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     const beforeClassification = await database
       .selectFrom("runs")
       .select(["status", "nextRunnerOrdinal"])
       .where("id", "=", f.run.id)
       .executeTakeFirstOrThrow();
-    expect(beforeClassification).toEqual({ status: "running", nextRunnerOrdinal: 1 });
+    expect(beforeClassification).toEqual({
+      status: "running",
+      nextRunnerOrdinal: 1,
+    });
     const admitted = await store.commitRunnerEvent({
       ...ordinary,
       event: pendingEvent({
         ...eventContext,
-        data: { status: "interrupted", cause: "lease-lost" },
+        data: {
+          status: "interrupted",
+          cause: "lease-lost",
+        },
         ordinal: 1,
         type: "run.interrupted",
       }),

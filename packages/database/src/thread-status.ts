@@ -1,4 +1,5 @@
-import { withDatabaseTransaction } from "./connection.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import "./connection.js";
 import {
   deriveThreadStatus,
   nonTerminalRunStatuses,
@@ -8,7 +9,7 @@ import {
 import type { Kysely, Transaction } from "kysely";
 import { assignmentStateEventsForThread } from "./assignment-store.js";
 import type { DatabaseSchema } from "./schema.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 
 /** Callers hold the fences in ./lock-order.ts; Run and Request facts are unlocked reads. */
 export async function projectThreadState(
@@ -25,7 +26,7 @@ export async function projectThreadState(
     .forNoKeyUpdate()
     .execute();
   // Every Request mutation records its marker after appending its event under
-  // this Workspace lock; a later commit therefore cannot lose its wakeup here.
+  // the Deployment fence; a later commit therefore cannot lose its wakeup here.
   await transaction.deleteFrom("threadStatePending").where("threadId", "=", threadId).execute();
   const thread = await transaction
     .selectFrom("threads")
@@ -38,7 +39,6 @@ export async function projectThreadState(
       "inputQueuePaused",
       "projectedInputQueuePaused",
       "pendingRequestCount",
-      "workspaceId",
       "environmentId",
     ])
     .where("id", "=", threadId)
@@ -89,7 +89,7 @@ export async function projectThreadState(
     .executeTakeFirstOrThrow();
   if (!changed) return [];
   return [
-    await appendHostWorkspaceEvent(transaction, {
+    await appendHostDeploymentEvent(transaction, {
       data: {
         status,
         title: thread.title,
@@ -103,7 +103,6 @@ export async function projectThreadState(
       runId: null,
       threadId,
       type: "thread.state-changed",
-      workspaceId: thread.workspaceId,
     }),
     ...(pendingRequests !== thread.pendingRequestCount
       ? await assignmentStateEventsForThread(transaction, threadId)
@@ -111,17 +110,8 @@ export async function projectThreadState(
   ];
 }
 
-/** Request events already hold their originating Workspace's sequence lock. */
-export async function markThreadStatePending(
-  transaction: Transaction<DatabaseSchema>,
-  threadId: ThreadId,
-): Promise<void> {
-  await transaction
-    .insertInto("threadStatePending")
-    .values({ threadId, requestedAt: new Date() })
-    .onConflict((conflict) => conflict.column("threadId").doNothing())
-    .execute();
-}
+/** Request events already hold the Deployment sequence fence. */
+export { markThreadStatePending } from "./thread-state-pending.js";
 
 /** How many Threads one drain pass projects; the next pass takes the rest. */
 const threadStateDrainBatch = 100;
@@ -135,12 +125,12 @@ export async function drainPendingThreadStates(
   database: Kysely<DatabaseSchema>,
   onCommitted?: (events: readonly AgentEvent[]) => void,
 ): Promise<readonly AgentEvent[]> {
-  // Discover without a marker lock: Request writers own the Workspace before
+  // Discover without a marker lock: Request writers own the Deployment fence before
   // touching the marker, so taking the marker first would reverse that order.
   const pending = await database
     .selectFrom("threadStatePending")
     .innerJoin("threads", "threads.id", "threadStatePending.threadId")
-    .select(["threadStatePending.threadId", "threads.workspaceId"])
+    .select(["threadStatePending.threadId"])
     .orderBy("threadStatePending.requestedAt", "asc")
     .orderBy("threadStatePending.threadId", "asc")
     .limit(threadStateDrainBatch)
@@ -150,14 +140,7 @@ export async function drainPendingThreadStates(
   for (const row of pending) {
     let committed: readonly AgentEvent[];
     try {
-      committed = await withDatabaseTransaction(database, async (transaction) => {
-        const workspace = await transaction
-          .selectFrom("workspaces")
-          .select("id")
-          .where("id", "=", row.workspaceId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!workspace) return [];
+      committed = await withPersonalTransaction(database, async (transaction) => {
         const thread = await transaction
           .selectFrom("threads")
           .select("id")

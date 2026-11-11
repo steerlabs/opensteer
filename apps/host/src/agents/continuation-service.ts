@@ -19,12 +19,10 @@ import type { PasswordSignInContinuationState } from "../browser/password-sign-i
 import type { ComputerAppApprovalService } from "../integrations/computer-app-approval-service.js";
 import { computerToolRefs } from "../integrations/computer-use-discovery.js";
 import type { IntegrationPlatformService } from "../integrations/integration-platform-service.js";
-
 const defaultIntervalMs = 5_000;
 const cancelledContinuationReason = "Continuation delivery was cancelled by Thread input admission";
 const triggerOriginatedContinuationReason =
   "Trigger-originated Requests receive no continuation: there is no Run or turn to resume, and the next Trigger occurrence observes the resolved state";
-
 type RequestContinuationStore = Pick<
   OpensteerStore["requests"],
   "listPendingContinuations" | "recordContinuationAttempt" | "get"
@@ -57,7 +55,6 @@ export class ContinuationService {
   #closed = false;
   readonly #drains: CoalescedWake;
   #timer: NodeJS.Timeout | undefined;
-
   constructor(options: {
     readonly commands: Pick<CommandService, "enqueueThreadInput">;
     readonly integrations: IntegrationInventorySource;
@@ -72,39 +69,50 @@ export class ContinuationService {
     this.#onError = options.onError;
     this.#requests = options.requests;
     this.#passwordSignIn =
-      options.passwordSignIn ?? (() => ({ publishing: false, loginRef: undefined }));
-    this.#drains = new CoalescedWake({ run: () => this.#drainOnce(), onError: this.#onError });
+      options.passwordSignIn ??
+      (() => ({
+        publishing: false,
+        loginRef: undefined,
+      }));
+    this.#drains = new CoalescedWake({
+      run: () => this.#drainOnce(),
+      onError: this.#onError,
+    });
   }
-
   start(): void {
     if (this.#closed || this.#timer) return;
     this.#timer = setInterval(() => this.notify(), this.#intervalMs);
     this.#timer.unref();
     this.notify();
   }
-
   notify(): void {
     if (this.#closed) return;
     this.#drains.wake();
   }
-
   async close(): Promise<void> {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     await this.#drains.stop();
   }
-
   async outcome(request: Request): Promise<{
     readonly request: Request;
     readonly text: string;
     readonly loginRef?: string;
-    readonly publicCard?: { readonly brand: string; readonly lastFour: string };
+    readonly publicCard?: {
+      readonly brand: string;
+      readonly lastFour: string;
+    };
   } | null> {
     // A settled row proves its publication flag is already set, so the flag read next is current.
     if (request.status === "pending") return null;
     let loginRef: string | undefined;
-    let publicCard: { readonly brand: string; readonly lastFour: string } | undefined;
+    let publicCard:
+      | {
+          readonly brand: string;
+          readonly lastFour: string;
+        }
+      | undefined;
     if (request.payload.kind === "browser.password-sign-in") {
       const state = this.#passwordSignIn(request.payload.operationId);
       if (state.publishing) return null;
@@ -122,18 +130,23 @@ export class ContinuationService {
     return {
       request,
       text,
-      ...(loginRef ? { loginRef } : {}),
-      ...(publicCard ? { publicCard } : {}),
+      ...(loginRef
+        ? {
+            loginRef,
+          }
+        : {}),
+      ...(publicCard
+        ? {
+            publicCard,
+          }
+        : {}),
     };
   }
-
   async #drainOnce(): Promise<void> {
     const continuations = await this.#requests.listPendingContinuations();
     const groups = new Map<string, Request[]>();
     for (const { request } of continuations) {
-      if (request.kind === "browser.profile.save") {
-        await this.#settleUndeliverable(request, "Guest profile saving has been removed.");
-      } else if (request.originatingRunId === null) {
+      if (request.originatingRunId === null) {
         await this.#settleUndeliverable(request, triggerOriginatedContinuationReason);
       } else {
         const group = groups.get(request.originatingRunId) ?? [];
@@ -239,7 +252,6 @@ export class ContinuationService {
       }
     }
   }
-
   async #settleUndeliverable(request: Request, reason: string): Promise<void> {
     try {
       await this.#requests.recordContinuationAttempt({
@@ -252,7 +264,6 @@ export class ContinuationService {
     }
   }
 }
-
 const IntegrationAccessAccountSchema = z.strictObject({
   accountIdentifier: z.string().trim().min(1).nullable(),
   displayName: z.string().trim().min(1),
@@ -265,19 +276,26 @@ const IntegrationAccessAccountSchema = z.strictObject({
  */
 const InstallManifestSummarySchema = z.discriminatedUnion("kind", [
   z.object({
-    definition: z.object({ id: z.string().min(1), name: z.string().min(1) }),
+    definition: z.object({
+      id: z.string().min(1),
+      name: z.string().min(1),
+    }),
     kind: z.literal("catalog"),
   }),
   z.object({
     kind: z.literal("proposal"),
-    proposal: z.object({ digest: z.string().min(1) }),
+    proposal: z.object({
+      digest: z.string().min(1),
+    }),
   }),
 ]);
 type InstallManifestSummary = z.infer<typeof InstallManifestSummarySchema>;
-
-const CatalogProvenanceSchema = z.object({ definitionId: z.string().min(1) });
-const ProposalProvenanceSchema = z.object({ artifactDigest: z.string().min(1) });
-
+const CatalogProvenanceSchema = z.object({
+  definitionId: z.string().min(1),
+});
+const ProposalProvenanceSchema = z.object({
+  artifactDigest: z.string().min(1),
+});
 export async function continuationMessage(
   request: Request,
   integrations: IntegrationInventorySource,
@@ -305,23 +323,15 @@ export async function continuationMessage(
     }
     case "browser.access": {
       if (request.status === "declined")
-        return `Request ${request.id} was declined by the user. Browser profiles this Workspace could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`;
+        return `Request ${request.id} was declined by the user. Browser profiles your Opensteer could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`;
       const outcome = BrowserRequestOutcomeSchema.safeParse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
       if (!outcome.success)
-        return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`;
+        return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles your Opensteer can use. Continue the task.`;
       const { id: profileId, name } = outcome.data.profile;
       return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
     }
-    case "browser.profile.save":
-      return `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`;
-    case "browser.profile.import":
-      return request.status === "declined" &&
-        request.response.kind === "external" &&
-        request.response.value?.replacedBy === "browser.sign-in"
-        ? `Request ${request.id} can no longer be completed: copying a Chrome login into a new profile was replaced by live sign-ins. If a page still needs the user's sign-in, call sign_in once with your Browser Session and the site.`
-        : `Request ${request.id} is no longer actionable because browser source imports are unavailable. Continue without importing this browser source.`;
     case "browser.sign-in": {
       if (request.payload.kind !== "browser.sign-in")
         throw new Error("Browser sign-in Request payload is invalid");
@@ -357,7 +367,7 @@ export async function continuationMessage(
       const response = PasswordSignInRequestResponseSchema.parse(
         request.response.kind === "external" ? request.response.value : undefined,
       );
-      if (request.payload.scope === "workspace") {
+      {
         const { site, computerName } = request.payload;
         if (request.payload.credential === "card") {
           const action =
@@ -372,16 +382,8 @@ export async function continuationMessage(
             : `The saved login for ${site} ended. Call sign_in again.`;
           return `Request ${request.id} was approved. ${action} If the reference expires, call sign_in again.`;
         }
-        return `Request ${request.id} was fulfilled. The sign-in to ${site} ${response.outcome === "expired" ? "expired" : "stopped"} on ${computerName}. If the task still needs it, call sign_in again.`;
+        return `Request ${request.id} was fulfilled. ${passwordSignInContinuation({ site, computerName }, response)}`;
       }
-      if (response.outcome === "authorized") {
-        const { sessionId, site } = request.payload;
-        const action = loginRef
-          ? `Sign in to ${site} as ${response.account} in Browser Session ${sessionId}: focus each field and call Browser Harness fillLogin("${loginRef}", "username" | "password" | "code"), submit, handle what the site shows, then confirm the account on a signed-in page.`
-          : `The login lease for ${site} in Browser Session ${sessionId} ended. Call sign_in again.`;
-        return `Request ${request.id} was approved. ${action} If fillLogin answers expired, call sign_in again.`;
-      }
-      return `Request ${request.id} was fulfilled. ${passwordSignInContinuation(request.payload, response)}`;
     }
     case "integration.access": {
       if (request.status === "declined") {
@@ -391,14 +393,21 @@ export async function continuationMessage(
         throw new Error("Integration access Request payload is invalid");
       const { access, installationId, requestedServerId } = request.payload;
       const target = z
-        .object({ connectionId: IntegrationConnectionIdSchema.nullable() })
+        .object({
+          connectionId: IntegrationConnectionIdSchema.nullable(),
+        })
         .safeParse(request.response.kind === "external" ? request.response.value : undefined);
       const entry = installationId
         ? (
             await inventoryFor(
               request,
               integrations,
-              target.success ? { access, connectionId: target.data.connectionId } : undefined,
+              target.success
+                ? {
+                    access,
+                    connectionId: target.data.connectionId,
+                  }
+                : undefined,
             )
           ).find(({ installation }) => installation.id === installationId)
         : undefined;
@@ -456,7 +465,7 @@ export async function continuationMessage(
         case "ready":
           return `${receipt} Its ${access} access is active.`;
         case "needs-grant":
-          return `${receipt} This Workspace still holds no access grant${detailClause(state.detail)}.`;
+          return `${receipt} Your Opensteer still holds no access grant${detailClause(state.detail)}.`;
         case "needs-account":
           return `${receipt} The fulfilled target is not usable${detailClause(state.detail)}.`;
         case "blocked":
@@ -484,7 +493,7 @@ export async function continuationMessage(
         case "ready":
           return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and ready. Call integration_search now to pick up its tools and continue the task.`;
         case "needs-grant":
-          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and its account connection works, but this Workspace holds no access grant yet${detailClause(state.detail)}. Call integration_search now, then call integration_request with this integration and the access class the task needs.`;
+          return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed and its account connection works, but your Opensteer holds no access grant yet${detailClause(state.detail)}. Call integration_search now, then call integration_request with this integration and the access class the task needs.`;
         case "needs-account":
           return `Request ${request.id} was fulfilled. ${entry.installation.title} is installed but has no connected account${detailClause(state.detail)}. Call integration_request now for the account connection, then continue the task.`;
         case "blocked":
@@ -523,7 +532,6 @@ export async function continuationMessage(
       throw new Error("A live harness Request cannot have a durable continuation");
   }
 }
-
 async function computerAppContinuation(
   request: Request,
   integrations: IntegrationInventorySource,
@@ -539,7 +547,6 @@ async function computerAppContinuation(
     await integrations.listCallableTools({
       ownerUserId: request.requestedBy,
       threadId: request.originatingThreadId,
-      workspaceId: request.targetWorkspaceId,
     }),
     app.connectionId,
   );
@@ -559,27 +566,27 @@ async function phoneContinuation(
     await integrations.listCallableTools({
       ownerUserId: request.requestedBy,
       threadId: request.originatingThreadId,
-      workspaceId: request.targetWorkspaceId,
     }),
     phone.connection.connectionId,
   );
   if (!refs.observe) return unavailable;
   return `Request ${request.id} was fulfilled. ${phone.name} is ready. Use phone(${JSON.stringify(phone.name)}) in the computer tool. Release it when you are done so another task can use it. Continue.`;
 }
-
 function inventoryFor(
   request: Request,
   integrations: IntegrationInventorySource,
   target?: Parameters<IntegrationInventorySource["listDiscoveryInventory"]>[0]["target"],
 ): Promise<readonly IntegrationInventoryEntry[]> {
   return integrations.listDiscoveryInventory({
-    ...(target ? { target } : {}),
+    ...(target
+      ? {
+          target,
+        }
+      : {}),
     ownerUserId: request.requestedBy,
     threadId: request.originatingThreadId,
-    workspaceId: request.targetWorkspaceId,
   });
 }
-
 function manifestName(manifest: InstallManifestSummary): string {
   return manifest.kind === "catalog" ? manifest.definition.name : "the proposed integration";
 }
@@ -605,25 +612,31 @@ function installedFromManifest(
     ProposalProvenanceSchema.safeParse(provenance).data?.artifactDigest === manifest.proposal.digest
   );
 }
-
 type IntegrationState =
   | {
       readonly detail: string | null;
       readonly disposition: "needs-account" | "needs-grant" | "ready";
     }
-  | { readonly detail: string | null; readonly disposition: "blocked"; readonly remedy: string };
+  | {
+      readonly detail: string | null;
+      readonly disposition: "blocked";
+      readonly remedy: string;
+    };
 
 /**
  * Access continuations scope inventory to the fulfilled connection and access,
  * and consider only its requested server or matching connection requirements.
  * Installation continuations use the best state any server reaches: one usable server is
  * enough for the agent to proceed, and otherwise the nearest obstacle is the
- * one worth reporting — a missing Workspace grant is nearer than a missing
+ * one worth reporting — a missing personal grant is nearer than a missing
  * account, because the account already exists.
  */
 function integrationState(
   entry: IntegrationInventoryEntry,
-  target?: { readonly connectionId: string | null; readonly serverId: string | null },
+  target?: {
+    readonly connectionId: string | null;
+    readonly serverId: string | null;
+  },
 ): IntegrationState {
   const states = entry.readiness.servers
     .filter((readiness) => {
@@ -649,21 +662,27 @@ function integrationState(
     }
   );
 }
-
 function readinessState(readiness: IntegrationReadiness): IntegrationState {
   const detail = readiness.detail ? readiness.detail.slice(0, 240) : null;
   switch (readiness.code) {
     // A ready server has nothing left to explain, so any detail it still
     // carries is stale and would only mislead.
     case "READY":
-      return { detail: null, disposition: "ready" };
-    // Installed, connected, and still unusable here: the Workspace holds no
-    // grant. Calling that "ready" is the lie this split exists to remove.
+      return {
+        detail: null,
+        disposition: "ready",
+      };
     case "ACCESS_GRANT_REQUIRED":
-      return { detail, disposition: "needs-grant" };
+      return {
+        detail,
+        disposition: "needs-grant",
+      };
     case "USER_AUTHORIZATION_REQUIRED":
     case "REAUTHORIZATION_REQUIRED":
-      return { detail, disposition: "needs-account" };
+      return {
+        detail,
+        disposition: "needs-account",
+      };
     case "ADMIN_CONFIGURATION_REQUIRED":
       return {
         detail,
@@ -680,15 +699,12 @@ function readinessState(readiness: IntegrationReadiness): IntegrationState {
       };
   }
 }
-
 function detailClause(detail: string | null): string {
   return detail ? ` (${detail})` : "";
 }
-
 function isPermanentContinuationFailure(error: unknown): boolean {
   return error instanceof OpensteerError && !error.retryable;
 }
-
 function continuationFailureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : "Continuation delivery failed";
   return message.trim().slice(0, 500) || "Continuation delivery failed";

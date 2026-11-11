@@ -1,16 +1,11 @@
 import { PrincipalIdSchema, type PrincipalId } from "@opensteer/channel-core";
 import {
-  AgentEventSchema,
   IsoDateTimeSchema,
   OpensteerError,
-  WorkspaceSchema,
   type AgentEvent,
   type EnvironmentId,
   type ThreadId,
   type UserId,
-  type Workspace,
-  type WorkspaceBacking,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { durableWindowCursorMaxCharacters } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Kysely, type Transaction } from "kysely";
@@ -21,22 +16,13 @@ import {
   executionEnvironmentIsAvailableToUser,
 } from "./execution-authority.js";
 import { databaseOperationOptions } from "./operation-budget.js";
-import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import type { DatabaseSchema } from "./schema.js";
-import {
-  legacyLiveEventTypes,
-  type CommandRow,
-  type LegacyLiveEventType,
-  type RunRow,
-  type WorkspaceEventRow,
-} from "./schema.js";
+import { type CommandRow, type RunRow } from "./schema.js";
 import { projectThreadState } from "./thread-status.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 export const systemPrincipalId = PrincipalIdSchema.parse(
   "pri_00000000-0000-4000-8000-000000000001",
 );
-
 export function jsonValue<T>(value: T) {
   return sql<T>`${JSON.stringify(value)}::jsonb`;
 }
@@ -57,25 +43,28 @@ export interface ChannelLinks {
  * caller that does not know the origin can honestly produce.
  */
 export const threadPathLinks: ChannelLinks = {
-  threadUrl: (threadId) => `/threads/${threadId}`,
+  threadUrl: (threadId) => `/tasks/${threadId}`,
 };
-
 export function safeGeneration(value: number | string): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new OpensteerError({ code: "internal", message: "Invalid durable generation" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Invalid durable generation",
+    });
   }
   return parsed;
 }
-
 export function safeCount(value: string | number | bigint): number {
   const count = Number(value);
   if (!Number.isSafeInteger(count) || count < 0) {
-    throw new OpensteerError({ code: "internal", message: "Durable item count is out of range" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Durable item count is out of range",
+    });
   }
   return count;
 }
-
 export function requireBoundedIdentity(value: string, label: string, maximum: number): void {
   if (
     value.length < 1 ||
@@ -83,18 +72,21 @@ export function requireBoundedIdentity(value: string, label: string, maximum: nu
     value.trim() !== value ||
     /\p{Control}/u.test(value)
   ) {
-    throw new OpensteerError({ code: "bad_request", message: `Invalid ${label}` });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: `Invalid ${label}`,
+    });
   }
 }
-
 export function idempotencyConflict(key: string): OpensteerError {
   return new OpensteerError({
     code: "conflict",
-    details: { idempotencyKey: key },
+    details: {
+      idempotencyKey: key,
+    },
     message: "The idempotency key was already used for a different command",
   });
 }
-
 export async function lockCommandIdempotency(
   transaction: Transaction<DatabaseSchema>,
   requestedBy: UserId,
@@ -107,26 +99,6 @@ export async function lockCommandIdempotency(
   );
 }
 
-// See ./lock-order.ts. Request callers reserve their complete Workspace set.
-export async function lockWorkspaceRow(
-  transaction: Transaction<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-): Promise<void> {
-  assertRequestWorkspacesLocked(transaction, [workspaceId]);
-  await transaction
-    .selectFrom("workspaces")
-    .select("id")
-    .where("id", "=", workspaceId)
-    .forNoKeyUpdate()
-    .executeTakeFirstOrThrow(databaseOperationOptions());
-}
-
-/**
- * Channel messages still pending on a Thread are authorized again under its
- * lock, and their binding, account, connections and grants rank before
- * Threads, so they are share-fenced first. A Thread with none pays one indexed
- * read.
- */
 export async function lockThreadRow(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
@@ -139,7 +111,6 @@ export async function lockThreadRow(
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow(databaseOperationOptions());
 }
-
 export async function requireExecutionEnvironmentAccess(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   environmentId: EnvironmentId,
@@ -147,18 +118,18 @@ export async function requireExecutionEnvironmentAccess(
   message: string,
 ): Promise<void> {
   if (await executionEnvironmentIsAvailableToUser(database, environmentId, userId)) return;
-  throw new OpensteerError({ code: "forbidden", message });
+  throw new OpensteerError({
+    code: "forbidden",
+    message,
+  });
 }
-
 export async function threadExecutionIsAvailableToUser(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   threadId: ThreadId,
   userId: UserId,
-  membershipGeneration?: number,
 ): Promise<boolean> {
-  return (await admitThreadExecution(database, threadId, userId, membershipGeneration)) !== null;
+  return (await admitThreadExecution(database, threadId, userId)) !== null;
 }
-
 export async function principalIdForUser(
   transaction: Transaction<DatabaseSchema>,
   userId: UserId,
@@ -170,48 +141,25 @@ export async function principalIdForUser(
     .where("userId", "=", userId)
     .executeTakeFirst(databaseOperationOptions());
   if (!principal) {
-    throw new OpensteerError({ code: "internal", message: "User principal is missing" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "User principal is missing",
+    });
   }
   return principal.id;
 }
-
-export async function requireActiveWorkspaceMembership(
-  transaction: Transaction<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-  userId: UserId,
-  lock = false,
-): Promise<{ readonly role: "owner" | "collaborator"; readonly generation: number }> {
-  let query = transaction
-    .selectFrom("workspaceMemberships")
-    .select(["role", "state", "generation"])
-    .where("workspaceId", "=", workspaceId)
-    .where("userId", "=", userId);
-  if (lock) query = query.forNoKeyUpdate();
-  const membership = await query.executeTakeFirst(databaseOperationOptions());
-  if (!membership || membership.state !== "active") {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Active Workspace membership is required",
-    });
-  }
-  return { role: membership.role, generation: safeGeneration(membership.generation) };
-}
-
-/**
- * Puts a starting Run whose execute command was never confirmed back in its
- * Thread's queue. The caller holds the Run, Workspace and Thread locks and has already
- * returned the command to pending.
- */
 export async function returnRunToQueue(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly run: Pick<RunRow, "environmentId" | "id" | "threadId">;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<readonly AgentEvent[]> {
   const queued = await transaction
     .updateTable("runs")
-    .set({ bindingGeneration: null, status: "queued" })
+    .set({
+      bindingGeneration: null,
+      status: "queued",
+    })
     .where("id", "=", input.run.id)
     .where("status", "=", "starting")
     .executeTakeFirst(databaseOperationOptions());
@@ -221,13 +169,14 @@ export async function returnRunToQueue(
       message: "The Run could not return to queued atomically",
     });
   }
-  const event = await appendHostWorkspaceEvent(transaction, {
-    data: { status: "queued" },
+  const event = await appendHostDeploymentEvent(transaction, {
+    data: {
+      status: "queued",
+    },
     environmentId: input.run.environmentId,
     runId: input.run.id,
     threadId: input.run.threadId,
     type: "run.status",
-    workspaceId: input.workspaceId,
   });
   return [
     event,
@@ -235,7 +184,6 @@ export async function returnRunToQueue(
     ...(await assignmentActivityEventsForRun(transaction, input.run.id)),
   ];
 }
-
 export async function findCommandByIdempotency(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   requestedBy: UserId,
@@ -269,43 +217,29 @@ export function messageWasNotWithdrawn(expression: ExpressionBuilder<DatabaseSch
   );
 }
 
-export function isLegacyLiveEventType(type: AgentEvent["type"] | LegacyLiveEventType): boolean {
-  return (legacyLiveEventTypes as readonly string[]).includes(type);
-}
-
-export function eventFromRow(row: WorkspaceEventRow): AgentEvent {
-  return AgentEventSchema.parse({
-    createdAt: row.createdAt.toISOString(),
-    data: row.data,
-    environmentId: row.environmentId,
-    eventId: row.eventId,
-    runId: row.runId,
-    sequence: String(row.sequence),
-    threadId: row.threadId,
-    type: row.type,
-    workspaceId: row.workspaceId,
-  });
-}
-
+export { eventFromRow } from "./deployment-events.js";
 export function safeError(error: unknown): Readonly<Record<string, unknown>> {
   if (error instanceof OpensteerError) {
-    return { code: error.code, message: error.message, retryable: error.retryable };
+    return {
+      code: error.code,
+      message: error.message,
+      retryable: error.retryable,
+    };
   }
-  return { message: error instanceof Error ? error.message : "Unknown error" };
+  return {
+    message: error instanceof Error ? error.message : "Unknown error",
+  };
 }
-
 type DurableCursorKind =
+  | "request"
   | "agent-thread"
   | "assignment"
-  | "delegated-workspace"
   | "message"
   | "owner-thread"
   | "task"
   | "task-asked"
   | "task-done"
-  | "thread"
-  | "workspace";
-
+  | "thread";
 export function encodeWindowCursor(
   kind: DurableCursorKind,
   scopeId: string,
@@ -313,20 +247,31 @@ export function encodeWindowCursor(
   id: string,
 ): string {
   const cursor = Buffer.from(
-    JSON.stringify({ id, kind, scopeId, timestamp, version: 1 }),
+    JSON.stringify({
+      id,
+      kind,
+      scopeId,
+      timestamp,
+      version: 1,
+    }),
     "utf8",
   ).toString("base64url");
   if (cursor.length > durableWindowCursorMaxCharacters) {
-    throw new OpensteerError({ code: "internal", message: "Durable window cursor is too large" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Durable window cursor is too large",
+    });
   }
   return cursor;
 }
-
 export function decodeWindowCursor(
   cursor: string,
   kind: DurableCursorKind,
   scopeId: string,
-): { readonly id: string; readonly timestamp: Date } {
+): {
+  readonly id: string;
+  readonly timestamp: Date;
+} {
   if (
     cursor.length < 1 ||
     cursor.length > durableWindowCursorMaxCharacters ||
@@ -361,25 +306,30 @@ export function decodeWindowCursor(
   }
   const timestamp = IsoDateTimeSchema.safeParse(parsed.timestamp);
   if (!timestamp.success) throw invalidWindowCursor();
-  return { id: parsed.id, timestamp: new Date(timestamp.data) };
+  return {
+    id: parsed.id,
+    timestamp: new Date(timestamp.data),
+  };
 }
-
 export function invalidWindowCursor(): OpensteerError {
-  return new OpensteerError({ code: "bad_request", message: "Invalid durable window cursor" });
+  return new OpensteerError({
+    code: "bad_request",
+    message: "Invalid durable window cursor",
+  });
 }
-
 export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/gu, (character) => `\\${character}`);
 }
-
 export function boundedWindowLimit(value: number | undefined, maximum: number): number {
   if (value === undefined) return maximum;
   if (!Number.isInteger(value) || value < 1) {
-    throw new OpensteerError({ code: "bad_request", message: "Window limit must be positive" });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Window limit must be positive",
+    });
   }
   return Math.min(value, maximum);
 }
-
 export function boundedWindowBytes(value: number | undefined, maximum: number): number {
   if (value === undefined) return maximum;
   if (!Number.isInteger(value) || value < 1) {
@@ -390,52 +340,20 @@ export function boundedWindowBytes(value: number | undefined, maximum: number): 
   }
   return Math.min(value, maximum);
 }
-
 export function boundedLimit(value: number, maximum: number): number {
   if (!Number.isInteger(value) || value < 1) {
-    throw new OpensteerError({ code: "bad_request", message: "Query limit must be positive" });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Query limit must be positive",
+    });
   }
   return Math.min(value, maximum);
 }
-
 export function requirePositiveSafeGeneration(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
-    throw new OpensteerError({ code: "bad_request", message: `Invalid ${label}` });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: `Invalid ${label}`,
+    });
   }
-}
-
-export function workspaceFromRow(row: {
-  readonly backing: WorkspaceBacking;
-  readonly homeThreadId: ThreadId | null;
-  readonly voiceThreadId: ThreadId | null;
-  readonly icon: string | null;
-  readonly color: NonNullable<Workspace["color"]>;
-  readonly id: WorkspaceId;
-  readonly kind: "main" | "project";
-  readonly name: string;
-  readonly status: string;
-  readonly storageErrorAt: Date | null;
-  readonly storageErrorCode: string | null;
-  readonly storageErrorMessage: string | null;
-  readonly storageErrorRetryable: boolean;
-  readonly createdBy: UserId;
-  readonly createdAt: Date;
-  readonly updatedAt: Date;
-}): Workspace {
-  return WorkspaceSchema.parse({
-    ...row,
-    homeThreadId: row.homeThreadId ?? null,
-    voiceThreadId: row.voiceThreadId ?? null,
-    createdAt: row.createdAt.toISOString(),
-    storageIssue:
-      row.storageErrorCode && row.storageErrorMessage && row.storageErrorAt
-        ? {
-            code: row.storageErrorCode,
-            message: row.storageErrorMessage,
-            occurredAt: row.storageErrorAt.toISOString(),
-            retryable: row.storageErrorRetryable,
-          }
-        : null,
-    updatedAt: row.updatedAt.toISOString(),
-  });
 }

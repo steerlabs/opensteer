@@ -10,7 +10,6 @@ import { z } from "zod";
 import { readCodexRunCaptures } from "./codex-capture.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 import type { WireRecord } from "./runner-wire.test-support.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const fixture = fileURLToPath(
   new URL(
@@ -19,7 +18,6 @@ const fixture = fileURLToPath(
   ),
 );
 const evidence: unknown[] = [];
-
 (databaseUrl ? describe : describe.skip)("Runner boot readiness", () => {
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-runner-readiness-"));
@@ -38,7 +36,6 @@ const evidence: unknown[] = [];
     );
     console.info(`Runner readiness evidence: ${path}`);
   });
-
   it("waits for gated preparation and observes its invalidation recapture", async () => {
     const preparation = Promise.withResolvers<void>();
     const preparing = Promise.withResolvers<void>();
@@ -118,7 +115,6 @@ const evidence: unknown[] = [];
       await active?.close();
     }
   }, 90_000);
-
   it.each([false, true])(
     "owns an unready replacement during assertion-failure teardown (child=%s)",
     async (child) => {
@@ -184,7 +180,9 @@ const evidence: unknown[] = [];
           .poll(
             async () =>
               (await readCodexRunCaptures(capture)).some((entry) => entry.preparationHeld),
-            { timeout: 30_000 },
+            {
+              timeout: 30_000,
+            },
           )
           .toBe(true);
         const held = z
@@ -217,7 +215,10 @@ const evidence: unknown[] = [];
         }[] = [];
         const closeHost = stack.host.close.bind(stack.host);
         vi.spyOn(stack.host, "close").mockImplementation(async () => {
-          beforeHostClose.push({ survivors: survivingPids(), restartSettled });
+          beforeHostClose.push({
+            survivors: survivingPids(),
+            restartSettled,
+          });
           await closeHost();
         });
         await expect(
@@ -240,7 +241,12 @@ const evidence: unknown[] = [];
           survivors,
           restartSettled,
         });
-        expect(beforeHostClose).toEqual([{ survivors: [], restartSettled: true }]);
+        expect(beforeHostClose).toEqual([
+          {
+            survivors: [],
+            restartSettled: true,
+          },
+        ]);
         expect(survivors).toEqual([]);
         expect(restartSettled).toBe(true);
       } finally {
@@ -248,12 +254,14 @@ const evidence: unknown[] = [];
         await writeFile(release, "");
         await restart?.catch(() => undefined);
         await active?.close();
-        await rm(scratch, { recursive: true, force: true });
+        await rm(scratch, {
+          recursive: true,
+          force: true,
+        });
       }
     },
     90_000,
   );
-
   it.each(["restart", "child restart", "crash", "companion"] as const)(
     "%s ignores a stale ready catalog until the new boot commits its own",
     async (kind) => {
@@ -288,7 +296,10 @@ const evidence: unknown[] = [];
           },
           ...(kind === "child restart" || kind === "crash"
             ? {
-                runnerChild: { fixture, arguments: ["--scenario=happy"] },
+                runnerChild: {
+                  fixture,
+                  arguments: ["--scenario=happy"],
+                },
               }
             : {}),
           catalogTimeoutMs: 30_000,
@@ -369,7 +380,12 @@ const evidence: unknown[] = [];
         const harness = (await stack.host.store.getHarnessInstance(accountId))!;
         await stack.host.store.recordHarnessCatalogs({
           environmentId: harness.environmentId,
-          catalogs: [{ ...prior.catalog, harnessInstanceId: accountId }],
+          catalogs: [
+            {
+              ...prior.catalog,
+              harnessInstanceId: accountId,
+            },
+          ],
           expectedRevisions: new Map([[accountId, harness.runtimeRevision]]),
         });
         expect(
@@ -404,7 +420,11 @@ const evidence: unknown[] = [];
             (record) => record.harnessInstanceId === accountId,
           )!.catalog,
         ).toEqual(response.catalogs.find((catalog) => catalog.harnessInstanceId === accountId));
-        evidence.push({ kind, released: true, proceeded });
+        evidence.push({
+          kind,
+          released: true,
+          proceeded,
+        });
       } finally {
         gate = false;
         if (active) {

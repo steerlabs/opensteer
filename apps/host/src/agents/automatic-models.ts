@@ -1,3 +1,4 @@
+import { ExecutionPreferencesSchema } from "@opensteer/core";
 import {
   automaticAccountEligibility,
   automaticModelDefaults,
@@ -24,7 +25,6 @@ import {
   type AutomaticModelsView,
   type HarnessInstanceCatalog,
 } from "@opensteer/protocol";
-
 export interface AutomaticModelDependencies {
   readonly store: Pick<
     OpensteerStore,
@@ -40,9 +40,9 @@ type Runners = Pick<
   RunnerRegistry,
   "canRunHarness" | "harnessAccessModes" | "identityForEnvironment"
 >;
-
-const ok: ModelRunEligibility = { ok: true };
-
+const ok: ModelRunEligibility = {
+  ok: true,
+};
 export function backgroundTextSupport(
   runners: Pick<Runners, "canRunHarness" | "identityForEnvironment">,
 ): ModelRunPredicate {
@@ -52,25 +52,38 @@ export function backgroundTextSupport(
       ?.capabilities.includes("background-text-v1") &&
     runners.canRunHarness(account.environmentId, account.driverKind)
       ? ok
-      : { ok: false, reason: "unsupported-capability" };
+      : {
+          ok: false,
+          reason: "unsupported-capability",
+        };
 }
-
-export function workspaceExecution(
+export function personalExecution(
   runners: Pick<Runners, "canRunHarness" | "harnessAccessModes">,
-  boundary: { readonly environmentId: EnvironmentId; readonly accessMode: ThreadAccessMode },
+  boundary: {
+    readonly environmentId: EnvironmentId;
+    readonly accessMode: ThreadAccessMode;
+  },
 ): ModelRunPredicate {
   return (account) =>
     account.environmentId !== boundary.environmentId
-      ? { ok: false, reason: "wrong-computer" }
+      ? {
+          ok: false,
+          reason: "wrong-computer",
+        }
       : !runners.canRunHarness(account.environmentId, account.driverKind)
-        ? { ok: false, reason: "unsupported-capability" }
+        ? {
+            ok: false,
+            reason: "unsupported-capability",
+          }
         : runners
               .harnessAccessModes(account.environmentId, account.driverKind)
               ?.includes(boundary.accessMode)
           ? ok
-          : { ok: false, reason: "unsupported-access-mode" };
+          : {
+              ok: false,
+              reason: "unsupported-access-mode",
+            };
 }
-
 function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
   if (!catalog) return [];
   const providers = new Set(catalog.models.map((model) => model.providerId));
@@ -83,28 +96,51 @@ function usageFacts(catalog: HarnessInstanceCatalog | null): ModelUsageFact[] {
       .flatMap(({ usage }): ModelUsageFact[] => {
         if (!usage) return [];
         if (usage.windows.length === 0)
-          return usage.limitReached ? [{ providerId, exhausted: true, resetsAt: null }] : [];
+          return usage.limitReached
+            ? [
+                {
+                  providerId,
+                  exhausted: true,
+                  resetsAt: null,
+                },
+              ]
+            : [];
         return usage.windows.flatMap((window): ModelUsageFact[] => {
           if (window.usedPercent < 100) return [];
           const resetsAt = window.resetsAt === null ? null : Date.parse(window.resetsAt);
-          if (window.scope?.kind !== "model") return [{ providerId, exhausted: true, resetsAt }];
+          if (window.scope?.kind !== "model")
+            return [
+              {
+                providerId,
+                exhausted: true,
+                resetsAt,
+              },
+            ];
           return window.scope.providerId === providerId
-            ? [{ providerId, modelId: window.scope.modelId, exhausted: true, resetsAt }]
+            ? [
+                {
+                  providerId,
+                  modelId: window.scope.modelId,
+                  exhausted: true,
+                  resetsAt,
+                },
+              ]
             : [];
         });
       }),
   );
 }
-
 export type HostModelAccount = AuthorizedModelAccountSnapshot & {
   readonly catalog: HarnessInstanceCatalog | null;
 };
 export interface AuthorizedModelAccounts {
   readonly accounts: readonly HostModelAccount[];
   readonly harnesses: readonly HarnessInstanceRecord[];
-  readonly environments: readonly { readonly id: EnvironmentId; readonly name: string }[];
+  readonly environments: readonly {
+    readonly id: EnvironmentId;
+    readonly name: string;
+  }[];
 }
-
 export async function readAuthorizedModelAccounts(
   { store, runners }: AutomaticModelDependencies,
   userId: UserId,
@@ -112,7 +148,9 @@ export async function readAuthorizedModelAccounts(
   const environments = await store.listEnvironmentsForUser(userId);
   const environmentIds = environments.map((environment) => environment.id);
   const [harnesses, catalogs] = await Promise.all([
-    store.listHarnessInstances({ environmentIds }),
+    store.listHarnessInstances({
+      environmentIds,
+    }),
     store.listHarnessCatalogs(environmentIds),
   ]);
   const accounts = harnesses.map((harness): HostModelAccount => {
@@ -135,9 +173,12 @@ export async function readAuthorizedModelAccounts(
       usage: usageFacts(catalog),
     };
   });
-  return { accounts, harnesses, environments };
+  return {
+    accounts,
+    harnesses,
+    environments,
+  };
 }
-
 export interface AutomaticModelRequest {
   readonly userId: UserId;
   readonly wants: (config: AutomaticModelConfig) => readonly ModelWant[];
@@ -149,14 +190,12 @@ export interface AutomaticModelResolution extends AuthorizedModelAccounts {
   readonly candidates: readonly ResolvedModelCandidate[];
   readonly skipped: readonly SkippedModelCandidate[];
 }
-
 function readAutomaticModelInputs(dependencies: AutomaticModelDependencies, userId: UserId) {
   return Promise.all([
     dependencies.store.getAutomaticModelConfig(userId),
     readAuthorizedModelAccounts(dependencies, userId),
   ]);
 }
-
 function resolveWithin(
   config: AutomaticModelConfig,
   snapshot: AuthorizedModelAccounts,
@@ -164,13 +203,21 @@ function resolveWithin(
 ): AutomaticModelResolution {
   const resolved = resolveModelCandidates({
     wants: request.wants(config),
-    ...(request.original ? { original: request.original } : {}),
+    ...(request.original
+      ? {
+          original: request.original,
+        }
+      : {}),
     accounts: snapshot.accounts,
     excludedAccounts: config.excludedAccounts,
     canRun: request.canRun,
     now: Date.now(),
   });
-  return { ...snapshot, config, ...resolved };
+  return {
+    ...snapshot,
+    config,
+    ...resolved,
+  };
 }
 
 /** Every automatic site resolves through here: the person's config over their own accounts. */
@@ -189,24 +236,30 @@ export async function resolveAutomaticModels(
  */
 export async function readAutomaticModelPreview(
   dependencies: AutomaticModelDependencies & {
-    readonly store: Pick<OpensteerStore, "findMainWorkspaceForOwner" | "getThreadForOwner">;
+    readonly store: Pick<OpensteerStore, "database">;
     readonly runners: Pick<Runners, "canRunHarness" | "harnessAccessModes">;
   },
   userId: UserId,
 ): Promise<AutomaticModelsView> {
   const { store, runners } = dependencies;
-  const main = await store.findMainWorkspaceForOwner(userId);
-  const chat = main?.homeThreadId ? await store.getThreadForOwner(main.homeThreadId, userId) : null;
-  const memory =
-    main?.backing.kind === "local-directory" && chat
-      ? {
-          canRun: workspaceExecution(runners, {
-            environmentId: main.backing.ownerEnvironmentId,
-            accessMode: chat.accessMode,
-          }),
-          original: chat,
-        }
-      : { canRun: () => ok };
+  const settings = await store.database
+    .selectFrom("personalSettings")
+    .select(["agentHomeComputerId", "executionPreferences"])
+    .where("ownerId", "=", userId)
+    .executeTakeFirstOrThrow();
+  const environment = await store.database
+    .selectFrom("executionEnvironments")
+    .select("id")
+    .where("runnerId", "=", settings.agentHomeComputerId)
+    .executeTakeFirstOrThrow();
+  const preferences = ExecutionPreferencesSchema.parse(settings.executionPreferences);
+  const memory = {
+    canRun: personalExecution(runners, {
+      environmentId: environment.id,
+      accessMode: preferences.accessMode,
+    }),
+    original: preferences.history[0],
+  };
   const [config, snapshot] = await readAutomaticModelInputs(dependencies, userId);
   const light = resolveWithin(config, snapshot, {
     wants: (current) => automaticModelWants(current, "light"),
@@ -226,7 +279,11 @@ export async function readAutomaticModelPreview(
     const harness = harnesses.find((candidate) => candidate.id === harnessInstanceId);
     const environment = environments.find((candidate) => candidate.id === environmentId);
     return account && harness && environment
-      ? { account, accountDisplayName: harness.name, computerDisplayName: environment.name }
+      ? {
+          account,
+          accountDisplayName: harness.name,
+          computerDisplayName: environment.name,
+        }
       : undefined;
   };
   const modelNames = (
@@ -241,7 +298,11 @@ export async function readAutomaticModelPreview(
     );
     const lab = providerId ?? model?.providerId;
     return {
-      ...(lab ? { providerDisplayName: modelLabLabels[lab] ?? lab } : {}),
+      ...(lab
+        ? {
+            providerDisplayName: modelLabLabels[lab] ?? lab,
+          }
+        : {}),
       modelDisplayName: model?.displayName ?? modelId,
     };
   };
@@ -310,7 +371,10 @@ export async function readAutomaticModelPreview(
         reason: eligibility.ok ? null : eligibility.reason,
       };
     }),
-    light: { label: "General preference", ...preview(light) },
+    light: {
+      label: "General preference",
+      ...preview(light),
+    },
     deep: preview(deep),
   };
 }

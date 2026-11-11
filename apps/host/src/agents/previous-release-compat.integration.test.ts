@@ -29,7 +29,6 @@ import {
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 import { delegate_task } from "@opensteer/agent-tools/tools";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const evidence =
@@ -37,7 +36,9 @@ const evidence =
   join(tmpdir(), "opensteer-previous-release", randomUUID());
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 
@@ -54,7 +55,6 @@ integration.sequential("previous public release client journeys", () => {
     stack = undefined;
     for (const close of cleanups.splice(0)) await close();
   }, 60_000);
-
   it.each([false, true])(
     "refuses the released browser-home client from the previous protocol epoch (Personal=%s)",
     async (personal) => {
@@ -80,7 +80,11 @@ integration.sequential("previous public release client journeys", () => {
       );
       stack = await startVerticalStack({
         databaseUrl: databaseUrl!,
-        ...(personal ? { personal: {} } : {}),
+        ...(personal
+          ? {
+              personal: {},
+            }
+          : {}),
         runnerWire: {},
         harnesses,
         harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
@@ -109,31 +113,39 @@ integration.sequential("previous public release client journeys", () => {
         refreshIntervalMs: 0,
         webSocketFactory: (url: string) =>
           new WebSocket(url, {
-            headers: { cookie: active.sessionCookie, origin: active.hostOrigin.origin },
+            headers: {
+              cookie: active.sessionCookie,
+              origin: active.hostOrigin.origin,
+            },
           }) as unknown as WebSocketClient,
       };
       const old = new released.reader.HttpHostClient(options);
       clients.push(old);
-      await expect(old.load()).rejects.toMatchObject({ reason: unsupportedVersionReason });
+      await expect(old.load()).rejects.toMatchObject({
+        reason: unsupportedVersionReason,
+      });
       await expect(
         old.dispatch({
           type: "browser.profile.create",
           idempotencyKey: "released-create",
-          input: { name: "Created" },
+          input: {
+            name: "Created",
+          },
         }),
-      ).rejects.toMatchObject({ reason: unsupportedVersionReason });
+      ).rejects.toMatchObject({
+        reason: unsupportedVersionReason,
+      });
       const current = new HttpHostClient(options);
       clients.push(current);
       await current.load();
       expect(current.getSnapshot().user).not.toBeNull();
     },
   );
-
   it("keeps the released Runner's strict plan boundary visible", async () => {
     const released = await releasedClientReader(previousPublicRelease);
     cleanups.push(released.close);
     const plan = agentToolsPlanForRun({
-      role: "work",
+      purpose: "task",
       accessMode: "full-access",
       reach: "workspace",
       token: "run-token",
@@ -144,7 +156,6 @@ integration.sequential("previous public release client journeys", () => {
     );
     expect(released.reader.RunAgentToolsPlanSchema.safeParse(plan).success).toBe(false);
   });
-
   for (const revision of [previousPublicRelease]) {
     it(`serves discovery, subscription, reads and ordinary mutations to ${revision}`, async () => {
       const released = await releasedClientReader(revision);
@@ -183,15 +194,22 @@ integration.sequential("previous public release client journeys", () => {
       });
       const active = stack;
       const transcript: unknown[] = [
-        { readerRevision: released.sourceRevision, hostRevision: released.hostRevision },
+        {
+          readerRevision: released.sourceRevision,
+          hostRevision: released.hostRevision,
+        },
       ];
       let commandRequests = 0;
-      await mkdir(evidence, { recursive: true });
+      await mkdir(evidence, {
+        recursive: true,
+      });
       try {
         const descriptor = await (
           await fetch(new URL("/.well-known/opensteer", active.hostOrigin))
         ).json();
-        transcript.push({ descriptor });
+        transcript.push({
+          descriptor,
+        });
         expect(released.reader.HostDescriptorSchema.parse(descriptor).apiVersion).toBe(
           hostApiVersion,
         );
@@ -209,9 +227,19 @@ integration.sequential("previous public release client journeys", () => {
             body: JSON.stringify({}),
           });
           const body: unknown = await refused.json();
-          transcript.push({ refused: { status: refused.status, body } });
+          transcript.push({
+            refused: {
+              status: refused.status,
+              body,
+            },
+          });
           expect(refused.status).toBe(400);
-          expect(body).toMatchObject({ ok: false, error: { reason: unsupportedVersionReason } });
+          expect(body).toMatchObject({
+            ok: false,
+            error: {
+              reason: unsupportedVersionReason,
+            },
+          });
           return;
         }
         expect(released.reader.hostApiCompatibility(descriptor)).toBe("compatible");
@@ -226,12 +254,10 @@ integration.sequential("previous public release client journeys", () => {
         const threadId = await active.createThread({
           modelSelection,
           title: "Previous release compatibility",
-          workspaceId: active.mainWorkspaceId,
         });
         await active.sendMessage({
           text: "History for the released subscriber",
           threadId,
-          workspaceId: active.mainWorkspaceId,
         });
         const run = await active.host.store.database
           .selectFrom("runs")
@@ -257,17 +283,18 @@ integration.sequential("previous public release client journeys", () => {
           sequence: "0",
           threadId,
           type: "place.entered",
-          workspaceId: active.mainWorkspaceId,
         });
         await active.host.store.database.transaction().execute(async (transaction) => {
           const workspace = await transaction
             .updateTable("workspaces")
-            .set({ eventSequence: sql<string>`event_sequence + 1` })
+            .set({
+              eventSequence: sql<string>`event_sequence + 1`,
+            })
             .where("id", "=", active.mainWorkspaceId)
             .returning("eventSequence")
             .executeTakeFirstOrThrow();
           await transaction
-            .insertInto("workspaceEvents")
+            .insertInto("deploymentEvents")
             .values({
               ...placeEvent,
               createdAt: new Date(placeEvent.createdAt),
@@ -281,7 +308,10 @@ integration.sequential("previous public release client journeys", () => {
             .execute();
         });
         const snapshots: WorkspaceSnapshot[] = [];
-        const headers = { cookie: active.sessionCookie, origin: active.hostOrigin.origin };
+        const headers = {
+          cookie: active.sessionCookie,
+          origin: active.hostOrigin.origin,
+        };
         const transport: typeof fetch = async (input, init) => {
           const request = new Request(
             input instanceof Request ? input : new URL(String(input), active.hostOrigin),
@@ -291,7 +321,10 @@ integration.sequential("previous public release client journeys", () => {
           if (request.url.endsWith("/commands.dispatch")) commandRequests += 1;
           const response = await fetch(request);
           if (request.url.includes("/v1/rpc/"))
-            transcript.push({ request: request.url, response: await response.clone().json() });
+            transcript.push({
+              request: request.url,
+              response: await response.clone().json(),
+            });
           return response;
         };
         const sockets: WebSocket[] = [];
@@ -302,7 +335,9 @@ integration.sequential("previous public release client journeys", () => {
           fetch: transport,
           refreshIntervalMs: 0,
           webSocketFactory: (url: string) => {
-            const socket = new WebSocket(url, { headers });
+            const socket = new WebSocket(url, {
+              headers,
+            });
             sockets.push(socket);
             socket.on("message", (data) => {
               const message = JSON.parse(data.toString());
@@ -313,7 +348,9 @@ integration.sequential("previous public release client journeys", () => {
               } catch (error) {
                 readerErrors.push(error);
               }
-              transcript.push({ realtime: message });
+              transcript.push({
+                realtime: message,
+              });
             });
             return socket;
           },
@@ -327,7 +364,9 @@ integration.sequential("previous public release client journeys", () => {
         expect(snapshots.length).toBeGreaterThan(0);
         expect(snapshots.every((snapshot) => snapshot.messagesOmitted === undefined)).toBe(true);
         expect(snapshots.flatMap((snapshot) => snapshot.messages)).toContainEqual(
-          expect.objectContaining({ threadId }),
+          expect.objectContaining({
+            threadId,
+          }),
         );
         old.activateWorkspace(active.mainWorkspaceId);
         old.activateThread(threadId);
@@ -336,16 +375,19 @@ integration.sequential("previous public release client journeys", () => {
         await active.sendMessage({
           text: "Compatibility reply",
           threadId,
-          workspaceId: active.mainWorkspaceId,
         });
         await old.loadLatestTranscript(threadId);
         await vi.waitFor(() => expect(old.getSnapshot().threadReadStates[threadId]).toBeDefined());
         const beforeRead = old.getSnapshot().threadReadStates[threadId]!;
-        transcript.push({ beforeRead });
+        transcript.push({
+          beforeRead,
+        });
         // The Host still serves epoch-48 placement; 0.1.219 drops it while merging,
         // so read it from what the Host answers this client.
         const hostReadState = async (client: HostClient) => {
-          const result = await client.rpc["thread.readState.get"]({ threadId });
+          const result = await client.rpc["thread.readState.get"]({
+            threadId,
+          });
           if (!result.ok) throw new Error(result.error.message);
           return result.data;
         };
@@ -359,7 +401,9 @@ integration.sequential("previous public release client journeys", () => {
           ),
         );
         const stale = old.getSnapshot().threadReadStates[threadId];
-        transcript.push({ stale });
+        transcript.push({
+          stale,
+        });
         const CurrentClient = HttpHostClient as unknown as typeof released.reader.HttpHostClient;
         const current = new CurrentClient({
           ...options,
@@ -393,7 +437,12 @@ integration.sequential("previous public release client journeys", () => {
         current.activateThread(threadId);
         const ordinary = await old.dispatch({
           type: "thread.sendMessage",
-          content: [{ type: "text", text: "Sent by the released client" }],
+          content: [
+            {
+              type: "text",
+              text: "Sent by the released client",
+            },
+          ],
           idempotencyKey: `released-send-${revision}`,
           threadId,
         });
@@ -407,14 +456,20 @@ integration.sequential("previous public release client journeys", () => {
                 .select("status")
                 .where("id", "=", ordinary.run!.id)
                 .executeTakeFirst(),
-            ).toEqual({ status: "completed" }),
-          { timeout: 15_000 },
+            ).toEqual({
+              status: "completed",
+            }),
+          {
+            timeout: 15_000,
+          },
         );
 
         // A read task older than a day remains open in the released list.
         await active.host.store.database
           .updateTable("threads")
-          .set({ updatedAt: new Date(Date.now() - 48 * 3_600_000) })
+          .set({
+            updatedAt: new Date(Date.now() - 48 * 3_600_000),
+          })
           .where("id", "=", threadId)
           .execute();
         await old.loadWorkspaceTasks(active.mainWorkspaceId);
@@ -448,7 +503,6 @@ integration.sequential("previous public release client journeys", () => {
           selector: randomUUID(),
           tokenHash,
           type: "link",
-          workspaceId: active.mainWorkspaceId,
         });
         await active.host.store.acceptWorkspaceInvitation({
           selector: invitation.selector,
@@ -465,7 +519,12 @@ integration.sequential("previous public release client journeys", () => {
         const token = randomUUID();
         await active.host.store.database
           .insertInto("authSessions")
-          .values({ ...ownerSession, id: createId("authSession"), userId: memberId, token })
+          .values({
+            ...ownerSession,
+            id: createId("authSession"),
+            userId: memberId,
+            token,
+          })
           .execute();
         const signature = createHmac("sha256", "vertical-auth-secret".padEnd(40, "x"))
           .update(token)
@@ -486,7 +545,9 @@ integration.sequential("previous public release client journeys", () => {
             return fetch(request);
           },
           webSocketFactory: (url) => {
-            const socket = new WebSocket(url, { headers: memberHeaders });
+            const socket = new WebSocket(url, {
+              headers: memberHeaders,
+            });
             socket.on("message", (data) => {
               const message = JSON.parse(data.toString());
               try {
@@ -494,7 +555,9 @@ integration.sequential("previous public release client journeys", () => {
               } catch (error) {
                 readerErrors.push(error);
               }
-              transcript.push({ memberRealtime: message });
+              transcript.push({
+                memberRealtime: message,
+              });
             });
             return socket;
           },
@@ -512,7 +575,12 @@ integration.sequential("previous public release client journeys", () => {
         // The real Runner opens a pending approval; shared Done must cancel it readably.
         const asking = await old.dispatch({
           type: "thread.sendMessage",
-          content: [{ type: "text", text: "[[ask]]" }],
+          content: [
+            {
+              type: "text",
+              text: "[[ask]]",
+            },
+          ],
           idempotencyKey: `released-ask-${revision}`,
           threadId,
         });
@@ -523,7 +591,9 @@ integration.sequential("previous public release client journeys", () => {
             expect(
               old.getSnapshot().requests[threadId]?.some((request) => request.status === "pending"),
             ).toBe(true),
-          { timeout: 15_000 },
+          {
+            timeout: 15_000,
+          },
         );
         const request = old
           .getSnapshot()
@@ -548,14 +618,14 @@ integration.sequential("previous public release client journeys", () => {
             operationKey: randomUUID(),
             task: "[[hold]]",
             title: "Compatibility delegate",
-            workspaceId: active.mainWorkspaceId,
           },
         );
         expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
         const delegated = delegate_task.output.parse(delegatedResponse.structuredContent);
         const delegatedThreadId = delegated.threadId;
-        transcript.push({ delegated });
-
+        transcript.push({
+          delegated,
+        });
         await current.dispatch({
           type: "thread.shared-done.set",
           threadId,
@@ -571,7 +641,9 @@ integration.sequential("previous public release client journeys", () => {
         expect(
           (await active.host.store.getThreadForOwner(delegatedThreadId, ownerId))?.doneAt,
         ).not.toBeNull();
-        transcript.push({ cancelled });
+        transcript.push({
+          cancelled,
+        });
         // The launch client shows Done from the Thread, not epoch-48 placement.
         const releasedDoneAt = (client: HostClient) =>
           released.reader.heldThread(client.getSnapshot(), threadId)?.doneAt;
@@ -579,7 +651,11 @@ integration.sequential("previous public release client journeys", () => {
         await vi.waitFor(() => expect(releasedDoneAt(member)).toEqual(expect.any(String)));
         for (const client of [old, member])
           await vi.waitFor(async () =>
-            expect(await hostReadState(client)).toMatchObject({ placement: { done: true } }),
+            expect(await hostReadState(client)).toMatchObject({
+              placement: {
+                done: true,
+              },
+            }),
           );
         const afterDoneHost = await hostReadState(old);
         expect(afterDoneHost.placementRevision).toBe(afterDoneHost.asOfSequence);
@@ -593,7 +669,11 @@ integration.sequential("previous public release client journeys", () => {
         await vi.waitFor(() => expect(releasedDoneAt(member)).toBeNull());
         for (const client of [old, member])
           await vi.waitFor(async () =>
-            expect(await hostReadState(client)).toMatchObject({ placement: { done: false } }),
+            expect(await hostReadState(client)).toMatchObject({
+              placement: {
+                done: false,
+              },
+            }),
           );
         // Only what a Done command could write: the shared fact and Done command
         // receipts. The waiting Run keeps touching the Thread row and event head,
@@ -624,7 +704,11 @@ integration.sequential("previous public release client journeys", () => {
           });
           expect(result).toMatchObject({
             ok: false,
-            error: { code: "bad_request", reason: "shared-task-done-required", retryable: false },
+            error: {
+              code: "bad_request",
+              reason: "shared-task-done-required",
+              retryable: false,
+            },
           });
         }
         expect(
@@ -659,7 +743,10 @@ integration.sequential("previous public release client journeys", () => {
           "does not support shared task Done",
         );
         expect(commandRequests).toBe(beforeUnsupported);
-        const preview = new MockHostClient({ latencyMs: 0, sharedTaskDoneAvailable: false });
+        const preview = new MockHostClient({
+          latencyMs: 0,
+          sharedTaskDoneAvailable: false,
+        });
         clients.push(preview);
         const previewTask = preview
           .getSnapshot()
@@ -672,7 +759,9 @@ integration.sequential("previous public release client journeys", () => {
         expect(taskCanBeDone(preview.getSnapshot(), previewTask)).toBe(false);
         expect(readerErrors).toEqual([]);
         sockets[0]?.terminate();
-        await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(3), { timeout: 15_000 });
+        await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(3), {
+          timeout: 15_000,
+        });
         await vi.waitFor(() => expect(old.getSnapshot().connection).toBe("connected"), {
           timeout: 15_000,
         });

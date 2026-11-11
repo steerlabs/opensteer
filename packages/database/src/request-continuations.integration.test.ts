@@ -1,19 +1,18 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { createHash } from "node:crypto";
 import { expect } from "vitest";
 import { sql } from "kysely";
 import { createId, type RequestCancellationReason } from "@opensteer/core";
 import { OpensteerStore } from "./store.js";
 import { cancelPending } from "./request-cancellation.js";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import {
   describeStore,
   pendingEvent,
   type StoreFixture,
   testContinuationIdentity,
 } from "./store.integration.test-support.js";
-
 type Started = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
-
 function open(store: OpensteerStore, fixture: Started, callId: string) {
   return store.requests.create({
     callId,
@@ -21,19 +20,25 @@ function open(store: OpensteerStore, fixture: Started, callId: string) {
     mode: "durable",
     originatingRunId: fixture.run.id,
     originatingThreadId: fixture.thread.id,
-    originatingWorkspaceId: fixture.workspace.id,
-    targetWorkspaceId: fixture.workspace.id,
     requestedBy: fixture.userId,
     requiredActor: "requester",
-    payload: { kind: "browser.access", reason: "Read email", suggestion: { kind: "user_choice" } },
+    payload: {
+      kind: "browser.access",
+      reason: "Read email",
+      suggestion: {
+        kind: "user_choice",
+      },
+    },
     presentation: {
       kind: "external",
       title: "Choose a profile",
-      subject: { kind: "workspace", id: fixture.workspace.id },
+      subject: {
+        kind: "task",
+        id: fixture.thread.id,
+      },
     },
   });
 }
-
 async function finish(store: OpensteerStore, fixture: Started, interrupted = false) {
   const row = await store.database
     .selectFrom("runs")
@@ -49,15 +54,23 @@ async function finish(store: OpensteerStore, fixture: Started, interrupted = fal
       environmentId: fixture.environmentId,
       runId: fixture.run.id,
       threadId: fixture.thread.id,
-      workspaceId: fixture.workspace.id,
       ordinal: row.nextRunnerOrdinal,
       ...(interrupted
-        ? ({ type: "run.interrupted", data: { status: "interrupted" } } as const)
-        : ({ type: "run.completed", data: { status: "completed" } } as const)),
+        ? ({
+            type: "run.interrupted",
+            data: {
+              status: "interrupted",
+            },
+          } as const)
+        : ({
+            type: "run.completed",
+            data: {
+              status: "completed",
+            },
+          } as const)),
     }),
   });
 }
-
 describeStore("Request continuation admission", (it) => {
   for (const [narration, heldStop] of [
     [null, false],
@@ -72,7 +85,12 @@ describeStore("Request continuation admission", (it) => {
       const channel = await createChannelDeliveryFixture("durable-request-notice");
       const base = channel.fixture;
       const turn = await enqueueHumanTrigger({
-        content: [{ type: "text", text: "Check email" }],
+        content: [
+          {
+            type: "text",
+            text: "Check email",
+          },
+        ],
         idempotencyKey: "channel-parked-seed",
         requestedBy: base.userId,
         threadId: base.thread.id,
@@ -84,7 +102,6 @@ describeStore("Request continuation admission", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: base.harnessInstance.id,
         leaseTokenHash: "channel-parked-lease",
-        membershipGeneration: 1,
         runnerBootId,
         runnerId: base.runnerId,
         runId: turn.run.id,
@@ -93,6 +110,7 @@ describeStore("Request continuation admission", (it) => {
       const fixture = {
         ...base,
         run: turn.run,
+        runId: turn.run.id,
         turn,
         runnerBootId,
         bindingGeneration: binding.bindingGeneration,
@@ -106,16 +124,20 @@ describeStore("Request continuation admission", (it) => {
           environmentId: fixture.environmentId,
           runId: fixture.run.id,
           threadId: fixture.thread.id,
-          workspaceId: fixture.workspace.id,
           ordinal: 0,
           type: "run.started",
-          data: { status: "running" },
+          data: {
+            status: "running",
+          },
         }),
       });
       await database
         .updateTable("runs")
         .set({
-          replyTarget: sql`${JSON.stringify({ kind: "channel", conversationId: channel.conversationId })}::jsonb`,
+          replyTarget: sql`${JSON.stringify({
+            kind: "channel",
+            conversationId: channel.conversationId,
+          })}::jsonb`,
         })
         .where("id", "=", fixture.run.id)
         .execute();
@@ -141,10 +163,17 @@ describeStore("Request continuation admission", (it) => {
             environmentId: fixture.environmentId,
             runId: fixture.run.id,
             threadId: fixture.thread.id,
-            workspaceId: fixture.workspace.id,
             ordinal: 1,
             type: "assistant.message",
-            data: { content: [{ type: "text", text: narration }], messageId: createId("message") },
+            data: {
+              content: [
+                {
+                  type: "text",
+                  text: narration,
+                },
+              ],
+              messageId: createId("message"),
+            },
           }),
         });
       if (heldStop)
@@ -173,12 +202,16 @@ describeStore("Request continuation admission", (it) => {
       host.requests.resolveBrowserRequest({
         requestId,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { decision: "declined" } },
+        response: {
+          kind: "external",
+          value: {
+            decision: "declined",
+          },
+        },
       });
     await decline(secondHost, first.request.id);
     const visible = await store.requests.visiblePage({
       originatingThreadId: fixture.thread.id,
-      targetWorkspaceId: fixture.workspace.id,
       limit: 50,
     });
     expect(visible.requests.find(({ id }) => id === first.request.id)?.status).toBe("declined");
@@ -192,7 +225,9 @@ describeStore("Request continuation admission", (it) => {
     ]);
     expect(resolutions.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
     expect(resolutions.find((result) => result.status === "rejected")).toMatchObject({
-      reason: { code: "conflict" },
+      reason: {
+        code: "conflict",
+      },
     });
     const eligible = await Promise.all([
       store.requests.listPendingContinuations(),
@@ -202,7 +237,12 @@ describeStore("Request continuation admission", (it) => {
     for (const rows of eligible) expect(rows.map(({ request }) => request.id).sort()).toEqual(ids);
     const idempotencyKey = `request-continuation:${createHash("sha256").update(JSON.stringify(ids)).digest("hex")}`;
     const input = {
-      content: [{ type: "text" as const, text: "Both Requests were declined." }],
+      content: [
+        {
+          type: "text" as const,
+          text: "Both Requests were declined.",
+        },
+      ],
       idempotencyKey,
       policy: "queue" as const,
       requestedBy: fixture.userId,
@@ -227,7 +267,6 @@ describeStore("Request continuation admission", (it) => {
         .execute(),
     ).toHaveLength(1);
   });
-
   for (const ends of ["before-enqueue", "after-enqueue", "after-delivery"] as const) {
     it(`joins background after all siblings settle, preserving one continuation when it ends ${ends}`, async ({
       storeFixture,
@@ -240,7 +279,12 @@ describeStore("Request continuation admission", (it) => {
         store.requests.resolveBrowserRequest({
           requestId,
           resolvedBy: fixture.userId,
-          response: { kind: "external", value: { decision: "declined" } },
+          response: {
+            kind: "external",
+            value: {
+              decision: "declined",
+            },
+          },
         });
       await answer(first.request.id);
       await store.commitRunnerEvent({
@@ -252,10 +296,11 @@ describeStore("Request continuation admission", (it) => {
           environmentId: fixture.environmentId,
           runId: fixture.run.id,
           threadId: fixture.thread.id,
-          workspaceId: fixture.workspace.id,
           ordinal: 1,
           type: "run.phase",
-          data: { phase: "background" },
+          data: {
+            phase: "background",
+          },
         }),
       });
       expect(await store.requests.listPendingContinuations()).toEqual([]);
@@ -265,7 +310,12 @@ describeStore("Request continuation admission", (it) => {
       ).toEqual([first.request.id, second.request.id].sort());
       if (ends === "before-enqueue") await finish(store, fixture);
       const input = {
-        content: [{ type: "text" as const, text: "Both profiles were declined." }],
+        content: [
+          {
+            type: "text" as const,
+            text: "Both profiles were declined.",
+          },
+        ],
         idempotencyKey: `background-answers-${ends}`,
         policy: "queue" as const,
         requestedBy: fixture.userId,
@@ -298,7 +348,6 @@ describeStore("Request continuation admission", (it) => {
       expect(rows[0]!.state).toBe(ends === "after-delivery" ? "delivered" : "pending");
     });
   }
-
   it("does not release answered Requests while the origin Run can still open another", async ({
     storeFixture,
   }) => {
@@ -308,7 +357,12 @@ describeStore("Request continuation admission", (it) => {
     await store.requests.resolveBrowserRequest({
       requestId: request.request.id,
       resolvedBy: fixture.userId,
-      response: { kind: "external", value: { decision: "declined" } },
+      response: {
+        kind: "external",
+        value: {
+          decision: "declined",
+        },
+      },
     });
     expect(await store.requests.listPendingContinuations()).toEqual([]);
     await finish(store, fixture);
@@ -316,7 +370,6 @@ describeStore("Request continuation admission", (it) => {
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([request.request.id]);
   });
-
   it("delivers a held answer once and retains fallback for an abandoned call", async ({
     storeFixture,
   }) => {
@@ -329,7 +382,12 @@ describeStore("Request continuation admission", (it) => {
       await store.requests.resolveBrowserRequest({
         requestId,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { decision: "declined" } },
+        response: {
+          kind: "external",
+          value: {
+            decision: "declined",
+          },
+        },
       });
     expect(await store.requests.markToolDelivered(held.request.id, claims)).toBe("delivered");
     expect(await store.requests.markToolDelivered(held.request.id, claims)).toBe(
@@ -340,7 +398,6 @@ describeStore("Request continuation admission", (it) => {
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([abandoned.request.id]);
   });
-
   it("refuses stale delivery and stop without consuming fallback", async ({ storeFixture }) => {
     const { store, startRunFixture } = storeFixture;
     const fixture = await startRunFixture("stale-held-request");
@@ -349,9 +406,17 @@ describeStore("Request continuation admission", (it) => {
     await store.requests.resolveBrowserRequest({
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
-      response: { kind: "external", value: { decision: "declined" } },
+      response: {
+        kind: "external",
+        value: {
+          decision: "declined",
+        },
+      },
     });
-    const stale = { ...claims, bindingGeneration: claims.bindingGeneration + 1 };
+    const stale = {
+      ...claims,
+      bindingGeneration: claims.bindingGeneration + 1,
+    };
     expect(await store.requests.markToolDelivered(opened.request.id, stale)).toBe("refused");
     expect(await store.stopHeldRun(stale, "limit")).toBeNull();
     await finish(store, fixture);
@@ -359,7 +424,6 @@ describeStore("Request continuation admission", (it) => {
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([opened.request.id]);
   });
-
   it("refuses an answered outcome after grant revocation while its Run is still running", async ({
     storeFixture,
   }) => {
@@ -370,7 +434,12 @@ describeStore("Request continuation admission", (it) => {
     await store.requests.resolveBrowserRequest({
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
-      response: { kind: "external", value: { decision: "declined" } },
+      response: {
+        kind: "external",
+        value: {
+          decision: "declined",
+        },
+      },
     });
     expect(await store.stopHeldRun(claims, "limit")).not.toBeNull();
     expect(
@@ -379,7 +448,9 @@ describeStore("Request continuation admission", (it) => {
         .select("status")
         .where("id", "=", fixture.run.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "running" });
+    ).toEqual({
+      status: "running",
+    });
     expect(await store.requests.markToolDelivered(opened.request.id, claims)).toBe("refused");
     expect(
       await database
@@ -387,13 +458,14 @@ describeStore("Request continuation admission", (it) => {
         .select("status")
         .where("requestId", "=", opened.request.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "waiting" });
+    ).toEqual({
+      status: "waiting",
+    });
     await finish(store, fixture, true);
     expect(
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([opened.request.id]);
   });
-
   for (const reason of ["limit", "queued-input"] as const) {
     it(`stops a held Run for ${reason} without pausing or closing its Request`, async ({
       storeFixture,
@@ -413,19 +485,25 @@ describeStore("Request continuation admission", (it) => {
           .select("inputQueuePaused")
           .where("id", "=", fixture.thread.id)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ inputQueuePaused: false });
+      ).toEqual({
+        inputQueuePaused: false,
+      });
       await finish(store, fixture);
       await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { decision: "declined" } },
+        response: {
+          kind: "external",
+          value: {
+            decision: "declined",
+          },
+        },
       });
       expect(
         (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
       ).toEqual([opened.request.id]);
     });
   }
-
   it("sees delivered person steers in every current hold, without replaying them into a later call", async ({
     storeFixture,
   }) => {
@@ -434,11 +512,18 @@ describeStore("Request continuation admission", (it) => {
     const opened = await open(store, fixture, "held");
     const steersAtAdmission = await store.requests.personSteerCount(fixture.run.id);
     const steered = await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Use another route" }],
+      content: [
+        {
+          type: "text",
+          text: "Use another route",
+        },
+      ],
       idempotencyKey: "person-steer",
       policy: "steer",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     const command = await database
@@ -451,7 +536,10 @@ describeStore("Request continuation admission", (it) => {
     expect(
       await store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
       "A steer still on its way must keep the call held",
-    ).toMatchObject({ steered: false, queued: false });
+    ).toMatchObject({
+      steered: false,
+      queued: false,
+    });
     await store.commitRunnerEvent({
       environmentId: fixture.environmentId,
       runnerId: fixture.runnerId,
@@ -461,10 +549,11 @@ describeStore("Request continuation admission", (it) => {
         environmentId: fixture.environmentId,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
-        workspaceId: fixture.workspace.id,
         ordinal: 1,
         type: "message.injected",
-        data: { messageId: steered.input.messageId },
+        data: {
+          messageId: steered.input.messageId,
+        },
       }),
     });
     expect(
@@ -473,21 +562,28 @@ describeStore("Request continuation admission", (it) => {
         .select("state")
         .where("messageId", "=", steered.input.messageId)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ state: "delivered" });
+    ).toEqual({
+      state: "delivered",
+    });
     for (const snapshot of await Promise.all([
       store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
       store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
     ]))
-      expect(snapshot).toMatchObject({ steered: true, queued: false });
+      expect(snapshot).toMatchObject({
+        steered: true,
+        queued: false,
+      });
     expect(
       await store.requests.holdSnapshot(
         opened.request.id,
         fixture.run.id,
         await store.requests.personSteerCount(fixture.run.id),
       ),
-    ).toMatchObject({ steered: false, queued: false });
+    ).toMatchObject({
+      steered: false,
+      queued: false,
+    });
   });
-
   it("ignores continuations, reports and agent messages while a Request is held", async ({
     storeFixture,
   }) => {
@@ -504,23 +600,41 @@ describeStore("Request continuation admission", (it) => {
         },
         policy: "queue" as const,
       },
-      { source: { kind: "human" as const }, policy: "report" as const },
-      { source: { kind: "agent" as const, runId: fixture.run.id }, policy: "queue" as const },
+      {
+        source: {
+          kind: "human" as const,
+        },
+        policy: "report" as const,
+      },
+      {
+        source: {
+          kind: "agent" as const,
+          runId: fixture.run.id,
+        },
+        policy: "queue" as const,
+      },
     ];
     for (const [index, input] of sources.entries()) {
       await store.enqueueThreadInput({
         ...input,
-        content: [{ type: "text", text: "Machine work" }],
+        content: [
+          {
+            type: "text",
+            text: "Machine work",
+          },
+        ],
         idempotencyKey: `machine-${index}`,
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
       expect(
         await store.requests.holdSnapshot(opened.request.id, fixture.run.id, steersAtAdmission),
-      ).toMatchObject({ queued: false, steered: false });
+      ).toMatchObject({
+        queued: false,
+        steered: false,
+      });
     }
   });
-
   it("releases an old Run's settled outcomes when a person starts newer work without holding their message", async ({
     storeFixture,
   }) => {
@@ -531,16 +645,28 @@ describeStore("Request continuation admission", (it) => {
     await store.requests.resolveBrowserRequest({
       requestId: first.request.id,
       resolvedBy: fixture.userId,
-      response: { kind: "external", value: { decision: "declined" } },
+      response: {
+        kind: "external",
+        value: {
+          decision: "declined",
+        },
+      },
     });
     await finish(store, fixture);
     expect(await store.requests.listPendingContinuations()).toEqual([]);
     const next = await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Skip that, continue with something else" }],
+      content: [
+        {
+          type: "text",
+          text: "Skip that, continue with something else",
+        },
+      ],
       idempotencyKey: "continue-after-request",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     expect(next.disposition).toBe("run-queued");
@@ -548,7 +674,6 @@ describeStore("Request continuation admission", (it) => {
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([first.request.id]);
   });
-
   for (const reason of [
     "resource-deleted",
     "authority-revoked",
@@ -556,16 +681,18 @@ describeStore("Request continuation admission", (it) => {
     "process-lost",
     "source-closed",
     "thread-archived",
-    "workspace-deleted",
-    "membership-revoked",
   ] satisfies RequestCancellationReason[]) {
     it(`continues cancellation only when work remains (${reason})`, async ({ storeFixture }) => {
       const { store, database, startRunFixture } = storeFixture;
       const fixture = await startRunFixture(`request-cancel-${reason}`);
       const request = await open(store, fixture, "cancelled");
       await finish(store, fixture);
-      await withDatabaseTransaction(database, (tx) =>
-        cancelPending(tx, { requestIds: [request.request.id], reason, resolvedAt: new Date() }),
+      await withPersonalTransaction(database, (tx) =>
+        cancelPending(tx, {
+          requestIds: [request.request.id],
+          reason,
+          resolvedAt: new Date(),
+        }),
       );
       const eligible = await store.requests.listPendingContinuations();
       expect(eligible.map(({ request }) => request.id)).toEqual(

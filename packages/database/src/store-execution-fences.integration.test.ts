@@ -1,8 +1,5 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { lockDeploymentEvents } from "./deployment-events.js";
+
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { lockCommandIdempotency } from "./store-primitives.js";
 import { HarnessIdSchema, ModelSelectionSchema, createId } from "@opensteer/core";
@@ -16,469 +13,9 @@ import {
   testModelSelection,
   testContinuationIdentity,
   testReadyHarnessCatalog,
-  testWorkspaceProfile,
-  enrollTestRunner,
   pendingEvent,
 } from "./store.integration.test-support.js";
-
 describeStore("PostgreSQL store", (it) => {
-  it("separates shared Workspace visibility from private Runner execution authority", async ({
-    storeFixture,
-  }) => {
-    const { store, database, enqueueHumanTrigger, triggers } = storeFixture;
-    await store.ensureDeployment({
-      canonicalOrigin: "https://execution-authority.test",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: testWorkspaceProfile,
-    });
-    const aliceId = await store.createUser("Alice");
-    const bobId = await store.createUser("Bob");
-    const aliceEnvironmentId = createId("environment");
-    const bobEnvironmentId = createId("environment");
-    const aliceRunnerId = createId("runner");
-    await enrollTestRunner(store, {
-      createdBy: aliceId,
-      environmentId: aliceEnvironmentId,
-      name: "Alice Mac",
-      runnerId: aliceRunnerId,
-      runnerKind: "local",
-      tokenSuffix: "alice-private-runner",
-    });
-    await enrollTestRunner(store, {
-      createdBy: bobId,
-      environmentId: bobEnvironmentId,
-      name: "Bob Mac",
-      runnerId: createId("runner"),
-      runnerKind: "local",
-      tokenSuffix: "bob-private-runner",
-    });
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: aliceId,
-      idempotencyKey: "execution-authority-workspace",
-      name: "Shared research",
-      status: "ready",
-    });
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy: aliceId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role: "owner",
-        state: "active",
-        updatedAt: new Date(),
-        userId: bobId,
-        workspaceId: workspace.id,
-      })
-      .executeTakeFirstOrThrow();
-    const harness = await store.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: aliceEnvironmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    const bobHarness = await store.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: bobEnvironmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    const { thread: aliceThread } = await store.createThread({
-      createdBy: aliceId,
-      environmentId: aliceEnvironmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "execution-authority-alice-thread",
-      modelSelection: testModelSelection,
-      title: "Alice thread",
-      workspaceId: workspace.id,
-    });
-    expect((await store.readThreadForOwner(aliceThread.id, bobId, 10))?.thread.id).toBe(
-      aliceThread.id,
-    );
-    await expect(
-      enqueueHumanTrigger({
-        content: [{ text: "Resume Alice's provider session", type: "text" }],
-        idempotencyKey: "execution-authority-bob-turn",
-        requestedBy: bobId,
-        threadId: aliceThread.id,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      store.createThread({
-        createdBy: bobId,
-        environmentId: bobEnvironmentId,
-        harnessInstanceId: bobHarness.id,
-        idempotencyKey: "execution-authority-bob-child",
-        modelSelection: testModelSelection,
-        parentThreadId: aliceThread.id,
-        title: "Bob's safe fork",
-        workspaceId: workspace.id,
-      }),
-    ).resolves.toMatchObject({
-      thread: { environmentId: bobEnvironmentId, parentThreadId: aliceThread.id },
-    });
-    await expect(
-      store.createThread({
-        createdBy: bobId,
-        environmentId: aliceEnvironmentId,
-        harnessInstanceId: harness.id,
-        idempotencyKey: "execution-authority-bob-child-alice-environment",
-        modelSelection: testModelSelection,
-        parentThreadId: aliceThread.id,
-        title: "Forbidden execution transfer",
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      triggers.create({
-        actorThreadId: null,
-        anchorThreadId: aliceThread.id,
-        createdBy: bobId,
-        idempotencyKey: "execution-authority-bob-trigger",
-        name: "Forbidden Trigger",
-        program: {
-          toolContractVersion: 2,
-          language: "javascript",
-          source: "export default async () => null",
-        },
-        source: { kind: "webhook" },
-        webhookRouteKey: "wh_bob_forbidden_execution_authority",
-        webhookSecretHash: "b".repeat(64),
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-
-    const inFlight = await enqueueHumanTrigger({
-      content: [{ text: "Alice in flight", type: "text" }],
-      idempotencyKey: "execution-authority-alice-inflight",
-      requestedBy: aliceId,
-      threadId: aliceThread.id,
-    });
-    await store.claimCommand(inFlight.command.id, "execution-authority-dispatcher");
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: testContinuationIdentity,
-      harnessInstanceId: harness.id,
-      leaseTokenHash: "execution-authority-binding",
-      membershipGeneration: 1,
-      runnerBootId: "execution-authority-alice-boot",
-      runnerId: aliceRunnerId,
-      runId: inFlight.run.id,
-      threadId: aliceThread.id,
-    });
-    const runCapability = {
-      bindingGeneration: binding.bindingGeneration,
-      environmentId: aliceEnvironmentId,
-      membershipGeneration: 1,
-      requestedBy: aliceId,
-      runId: inFlight.run.id,
-      runnerBootId: "execution-authority-alice-boot",
-      runnerId: aliceRunnerId,
-      threadId: aliceThread.id,
-      workspaceId: workspace.id,
-    };
-    await expect(store.assertActiveExecutionBinding(runCapability)).resolves.toBeUndefined();
-
-    // Queue control does not transfer Alice's private Runner authority to Bob.
-    // Bob may stop and resume as a Workspace owner, while every surviving item
-    // remains admitted and executed as Alice.
-    const { thread: stoppedThread } = await store.createThread({
-      createdBy: aliceId,
-      environmentId: aliceEnvironmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "execution-authority-owner-resume-thread",
-      modelSelection: testModelSelection,
-      title: "Owner-controlled Alice queue",
-      workspaceId: workspace.id,
-    });
-    const stoppedSeed = await store.enqueueThreadInput({
-      content: [{ text: "Alice work stopped by an owner", type: "text" }],
-      idempotencyKey: "execution-authority-owner-resume-seed",
-      policy: "queue",
-      requestedBy: aliceId,
-      source: { kind: "human" },
-      threadId: stoppedThread.id,
-    });
-    const survivingWork = await store.enqueueThreadInput({
-      content: [{ text: "Alice work surviving the stop", type: "text" }],
-      idempotencyKey: "execution-authority-owner-resume-survivor",
-      policy: "queue",
-      requestedBy: aliceId,
-      source: { kind: "human" },
-      threadId: stoppedThread.id,
-    });
-    if (!stoppedSeed.run) throw new Error("Expected Alice's private Run to be queued");
-    await store.enqueueRunnerControl({
-      idempotencyKey: "execution-authority-owner-stop",
-      requestedBy: bobId,
-      runId: stoppedSeed.run.id,
-      threadId: stoppedThread.id,
-      type: "run.interrupt",
-    });
-    const ownerResumed = await store.resumeThreadInputQueue({
-      idempotencyKey: "execution-authority-owner-resume",
-      requestedBy: bobId,
-      threadId: stoppedThread.id,
-    });
-    expect(ownerResumed.thread.inputQueuePaused).toBe(false);
-    await expect(
-      database
-        .selectFrom("runs")
-        .select(["requestedBy", "seedInputId", "status"])
-        .where("threadId", "=", stoppedThread.id)
-        .where("status", "=", "queued")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      requestedBy: aliceId,
-      seedInputId: survivingWork.message.id,
-      status: "queued",
-    });
-    await expect(
-      store.enqueueThreadInput({
-        content: [{ text: "Bob cannot use Alice's private Runner", type: "text" }],
-        idempotencyKey: "execution-authority-owner-direct-enqueue",
-        policy: "queue",
-        requestedBy: bobId,
-        source: { kind: "human" },
-        threadId: stoppedThread.id,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-
-    // A later Stop cannot take ownership of an existing pause. Otherwise the
-    // Run requester could overwrite an owner's pause and immediately resume.
-    const { thread: pauseOwnershipThread } = await store.createThread({
-      createdBy: aliceId,
-      environmentId: aliceEnvironmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "execution-authority-pause-ownership-thread",
-      modelSelection: testModelSelection,
-      title: "Owner-paused Alice thread",
-      workspaceId: workspace.id,
-    });
-    const pauseOwnershipWork = await enqueueHumanTrigger({
-      content: [{ text: "Alice work paused by an owner", type: "text" }],
-      idempotencyKey: "execution-authority-pause-ownership-work",
-      requestedBy: aliceId,
-      threadId: pauseOwnershipThread.id,
-    });
-    await store.claimCommand(
-      pauseOwnershipWork.command.id,
-      "execution-authority-pause-ownership-dispatcher",
-    );
-    // Bound, the Run outlives a first Stop until its Runner winds it down.
-    await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: testContinuationIdentity,
-      harnessInstanceId: harness.id,
-      leaseTokenHash: "execution-authority-pause-ownership-binding",
-      membershipGeneration: 1,
-      runnerBootId: "execution-authority-alice-boot",
-      runnerId: aliceRunnerId,
-      runId: pauseOwnershipWork.run.id,
-      threadId: pauseOwnershipThread.id,
-    });
-    await store.enqueueRunnerControl({
-      idempotencyKey: "execution-authority-pause-ownership-owner-stop",
-      requestedBy: bobId,
-      runId: pauseOwnershipWork.run.id,
-      threadId: pauseOwnershipThread.id,
-      type: "run.interrupt",
-    });
-    await store.enqueueRunnerControl({
-      idempotencyKey: "execution-authority-pause-ownership-requester-stop",
-      requestedBy: aliceId,
-      runId: pauseOwnershipWork.run.id,
-      threadId: pauseOwnershipThread.id,
-      type: "run.interrupt",
-    });
-    await expect(
-      database
-        .selectFrom("threads")
-        .select(["inputQueuePaused", "inputQueuePausedBy"])
-        .where("id", "=", pauseOwnershipThread.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ inputQueuePaused: true, inputQueuePausedBy: bobId });
-
-    const { thread: queuedThread } = await store.createThread({
-      createdBy: aliceId,
-      environmentId: aliceEnvironmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "execution-authority-alice-queued-thread",
-      modelSelection: testModelSelection,
-      title: "Queued Alice thread",
-      workspaceId: workspace.id,
-    });
-    const queuedReport = await store.enqueueThreadInput({
-      content: [{ text: "Report claimed before membership revocation", type: "text" }],
-      idempotencyKey: "execution-authority-alice-queued-report",
-      policy: "report",
-      requestedBy: aliceId,
-      source: { kind: "human" },
-      threadId: queuedThread.id,
-    });
-    const queued = await enqueueHumanTrigger({
-      content: [{ text: "Queued before revocation", type: "text" }],
-      idempotencyKey: "execution-authority-alice-queued",
-      requestedBy: aliceId,
-      threadId: queuedThread.id,
-    });
-    await store.claimCommand(queued.command.id, "execution-authority-pre-revocation-retry");
-    await store.retryCommand(queued.command.id, new Error("Runner was temporarily unavailable"));
-    const schedule = await triggers.create({
-      actorThreadId: null,
-      anchorThreadId: aliceThread.id,
-      createdBy: aliceId,
-      idempotencyKey: "execution-authority-alice-schedule",
-      name: "Alice schedule",
-      program: {
-        toolContractVersion: 2,
-        language: "javascript",
-        source: "export default async () => null",
-      },
-      source: {
-        kind: "schedule",
-        schedule: {
-          at: new Date(Date.now() + 60_000).toISOString(),
-          kind: "at",
-          payload: null,
-        },
-      },
-    });
-    const webhook = await triggers.create({
-      actorThreadId: null,
-      anchorThreadId: aliceThread.id,
-      createdBy: aliceId,
-      idempotencyKey: "execution-authority-alice-webhook",
-      name: "Alice webhook",
-      program: {
-        toolContractVersion: 2,
-        language: "javascript",
-        source: "export default async () => null",
-      },
-      source: { kind: "webhook" },
-      webhookRouteKey: "wh_alice_execution_authority_active",
-      webhookSecretHash: "a".repeat(64),
-    });
-    const occurrence = await triggers.enqueueManual({
-      actorThreadId: null,
-      ownerId: aliceId,
-      triggerId: webhook.trigger.id,
-    });
-    await store.claimCommand(occurrence.commandId, "execution-authority-trigger-dispatcher");
-    const triggerBinding = await triggers.startExecution({
-      commandId: occurrence.commandId,
-      runnerBootId: "execution-authority-alice-boot",
-      runnerId: aliceRunnerId,
-    });
-
-    const revoked = await store.changeWorkspaceMembership({
-      actorId: bobId,
-      state: "revoked",
-      targetUserId: aliceId,
-      workspaceId: workspace.id,
-    });
-    const claimedAfterRevocation = await store.claimCommand(
-      queued.command.id,
-      "execution-authority-after-revocation",
-    );
-    expect(claimedAfterRevocation?.terminalFailure).toContain("no longer available");
-    await store.failCommand(
-      queued.command.id,
-      claimedAfterRevocation!.terminalFailure!,
-      "authority-cohort",
-    );
-    await expect(
-      database
-        .selectFrom("threadInputs")
-        .select(["cancelReason", "state"])
-        .where("messageId", "=", queued.message.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ cancelReason: "execution-authority-unavailable", state: "cancelled" });
-    await expect(
-      database
-        .selectFrom("threadInputs")
-        .select(["cancelReason", "state"])
-        .where("messageId", "=", queuedReport.message.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ cancelReason: "membership-changed", state: "cancelled" });
-    await expect(
-      database
-        .selectFrom("threads")
-        .select("status")
-        .where("id", "=", queuedThread.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "failed" });
-    await expect(
-      enqueueHumanTrigger({
-        content: [{ text: "Work after Alice's membership was revoked", type: "text" }],
-        idempotencyKey: "execution-authority-revoked-member-work",
-        requestedBy: aliceId,
-        threadId: queuedThread.id,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(store.assertActiveExecutionBinding(runCapability)).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    expect(
-      await triggers.revokeForMembershipRevocation({
-        membershipGeneration: revoked.membership.generation,
-        userId: aliceId,
-        workspaceId: workspace.id,
-      }),
-    ).toBe(2);
-    await expect(
-      triggers.assertActiveExecutionBinding({
-        environmentId: aliceEnvironmentId,
-        executionGeneration: triggerBinding.executionGeneration,
-        occurrenceId: occurrence.id,
-        requestedBy: aliceId,
-        runnerBootId: "execution-authority-alice-boot",
-        runnerId: aliceRunnerId,
-        threadId: aliceThread.id,
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      triggers.enqueueWebhook({
-        headers: {},
-        method: "POST",
-        payload: null,
-        routeKey: webhook.trigger.webhookRouteKey ?? "",
-      }),
-    ).rejects.toBeDefined();
-    expect((await triggers.claimDueSchedules(new Date(Date.now() + 120_000))).occurrences).toEqual(
-      [],
-    );
-    await expect(
-      database
-        .selectFrom("triggerOccurrences")
-        .select("status")
-        .where("id", "=", occurrence.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "failed" });
-    await expect(
-      database
-        .selectFrom("triggers")
-        .select(["nextFireAt", "status"])
-        .where("id", "=", schedule.trigger.id)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ nextFireAt: null, status: "archived" });
-  });
-
   it("reserves delegation task idempotency before execution fences", async ({ storeFixture }) => {
     const { startRunFixture, database, store } = storeFixture;
     const fixture = await startRunFixture("delegation-idempotency-order");
@@ -486,12 +23,7 @@ describeStore("PostgreSQL store", (it) => {
     const barrier = pauseAfterLock(database, (node) => node.includes("pg_advisory_xact_lock"));
     const peer = barrier.database.transaction().execute(async (transaction) => {
       await lockCommandIdempotency(transaction, fixture.userId, `${key}:task`);
-      await transaction
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", fixture.workspace.id)
-        .forNoKeyUpdate()
-        .execute();
+      await lockDeploymentEvents(transaction);
     });
     void peer.catch(() => undefined);
     let delegation: ReturnType<OpensteerStore["delegateThread"]> | undefined;
@@ -504,16 +36,26 @@ describeStore("PostgreSQL store", (it) => {
         harnessInstanceId: fixture.harnessInstance.id,
         idempotencyKey: key,
         modelSelection: testModelSelection,
-        origin: { kind: "run", parentRunId: fixture.run.id, parentThreadId: fixture.thread.id },
-        task: [{ text: "Child task", type: "text" }],
+        origin: {
+          kind: "run",
+          parentRunId: fixture.run.id,
+          parentThreadId: fixture.thread.id,
+        },
+        task: [
+          {
+            text: "Child task",
+            type: "text",
+          },
+        ],
         title: "Child",
-        workspaceId: fixture.workspace.id,
       });
       void delegation.catch(() => undefined);
       await expect
         .poll(async () =>
           (
-            await sql<{ query: string }>`
+            await sql<{
+              query: string;
+            }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -524,13 +66,16 @@ describeStore("PostgreSQL store", (it) => {
       const results = await Promise.allSettled([peer, delegation]);
       expect(barrier.conflicts).toEqual([]);
       expect(results.filter(({ status }) => status === "rejected")).toEqual([]);
-      expect(results[1]).toMatchObject({ value: { wasDuplicate: false } });
+      expect(results[1]).toMatchObject({
+        value: {
+          wasDuplicate: false,
+        },
+      });
     } finally {
       barrier.release();
       await Promise.allSettled([peer, delegation]);
     }
   });
-
   it("reserves Assignment cancellation idempotency before its scope fence", async ({
     storeFixture,
   }) => {
@@ -543,10 +88,18 @@ describeStore("PostgreSQL store", (it) => {
       harnessInstanceId: fixture.harnessInstance.id,
       idempotencyKey: "cancel-idempotency-child",
       modelSelection: testModelSelection,
-      origin: { kind: "run", parentRunId: fixture.run.id, parentThreadId: fixture.thread.id },
-      task: [{ text: "Child task", type: "text" }],
+      origin: {
+        kind: "run",
+        parentRunId: fixture.run.id,
+        parentThreadId: fixture.thread.id,
+      },
+      task: [
+        {
+          text: "Child task",
+          type: "text",
+        },
+      ],
       title: "Child",
-      workspaceId: fixture.workspace.id,
     });
     const key = "cancel-idempotency-order";
     const barrier = pauseAfterLock(database, (node) => node.includes("pg_advisory_xact_lock"));
@@ -573,7 +126,9 @@ describeStore("PostgreSQL store", (it) => {
       await expect
         .poll(async () =>
           (
-            await sql<{ query: string }>`
+            await sql<{
+              query: string;
+            }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -589,11 +144,19 @@ describeStore("PostgreSQL store", (it) => {
       await Promise.allSettled([peer, cancellation]);
     }
   });
-
   it.for([
-    { eventType: "run.started", fence: "provider_sessions" },
-    { eventType: "run.interrupted", fence: "provider_sessions" },
-    { eventType: "run.interrupted", fence: "commands" },
+    {
+      eventType: "run.started",
+      fence: "provider_sessions",
+    },
+    {
+      eventType: "run.interrupted",
+      fence: "provider_sessions",
+    },
+    {
+      eventType: "run.interrupted",
+      fence: "commands",
+    },
   ] as const)(
     "fences $fence before input projection for $eventType",
     async ({ eventType, fence }, { storeFixture }) => {
@@ -601,7 +164,12 @@ describeStore("PostgreSQL store", (it) => {
         storeFixture;
       const fixture = await createRunFixture(`projection-${eventType.replace(".", "-")}-${fence}`);
       const turn = await enqueueHumanTrigger({
-        content: [{ type: "text", text: "Work" }],
+        content: [
+          {
+            type: "text",
+            text: "Work",
+          },
+        ],
         idempotencyKey: "projection-fences",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -635,20 +203,23 @@ describeStore("PostgreSQL store", (it) => {
           runnerId: fixture.runnerId,
           event: pendingEvent({
             bindingGeneration: binding.bindingGeneration,
-            data: { status: eventType === "run.started" ? "running" : "interrupted" },
+            data: {
+              status: eventType === "run.started" ? "running" : "interrupted",
+            },
             environmentId: fixture.environmentId,
             ordinal: 0,
             runId: turn.run.id,
             threadId: fixture.thread.id,
             type: eventType,
-            workspaceId: fixture.workspace.id,
           }),
         });
         void projecting.catch(() => undefined);
         await expect
           .poll(async () =>
             (
-              await sql<{ query: string }>`
+              await sql<{
+                query: string;
+              }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -665,7 +236,6 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-
   it.for(["provider_sessions", "commands"] as const)(
     "fences Assignment %s before cancelled inputs",
     async (fence, { storeFixture }) => {
@@ -678,10 +248,18 @@ describeStore("PostgreSQL store", (it) => {
         harnessInstanceId: fixture.harnessInstance.id,
         idempotencyKey: "cancel-projection-child",
         modelSelection: testModelSelection,
-        origin: { kind: "run", parentRunId: fixture.run.id, parentThreadId: fixture.thread.id },
-        task: [{ text: "Child", type: "text" }],
+        origin: {
+          kind: "run",
+          parentRunId: fixture.run.id,
+          parentThreadId: fixture.thread.id,
+        },
+        task: [
+          {
+            text: "Child",
+            type: "text",
+          },
+        ],
         title: "Child",
-        workspaceId: fixture.workspace.id,
       });
       const barrier = pauseAfterLock(database, (node) => node.includes(fence));
       const peer = barrier.database.transaction().execute(async (transaction) => {
@@ -710,7 +288,9 @@ describeStore("PostgreSQL store", (it) => {
         await expect
           .poll(async () =>
             (
-              await sql<{ query: string }>`select query from pg_stat_activity
+              await sql<{
+                query: string;
+              }>`select query from pg_stat_activity
         where datname=current_database() and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
             ).rows.some(({ query }) => query.includes(fence)),
@@ -726,7 +306,6 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-
   it("does not interrupt a worker Run that finished while cancellation waited on it", async ({
     storeFixture,
   }) => {
@@ -739,16 +318,26 @@ describeStore("PostgreSQL store", (it) => {
       harnessInstanceId: fixture.harnessInstance.id,
       idempotencyKey: "cancel-finished-worker-child",
       modelSelection: testModelSelection,
-      origin: { kind: "run", parentRunId: fixture.run.id, parentThreadId: fixture.thread.id },
-      task: [{ text: "Child", type: "text" }],
+      origin: {
+        kind: "run",
+        parentRunId: fixture.run.id,
+        parentThreadId: fixture.thread.id,
+      },
+      task: [
+        {
+          text: "Child",
+          type: "text",
+        },
+      ],
       title: "Child",
-      workspaceId: fixture.workspace.id,
     });
     const workerRunId = delegated.run.id;
     // A dispatched worker: cancellation would interrupt it rather than finalize it.
     await database
       .updateTable("runs")
-      .set({ status: "running" })
+      .set({
+        status: "running",
+      })
       .where("id", "=", workerRunId)
       .execute();
     const held = Promise.withResolvers<void>();
@@ -764,7 +353,10 @@ describeStore("PostgreSQL store", (it) => {
       await finish.promise;
       await transaction
         .updateTable("runs")
-        .set({ completedAt: new Date(), status: "interrupted" })
+        .set({
+          completedAt: new Date(),
+          status: "interrupted",
+        })
         .where("id", "=", workerRunId)
         .execute();
     });
@@ -782,7 +374,9 @@ describeStore("PostgreSQL store", (it) => {
       await expect
         .poll(async () =>
           (
-            await sql<{ query: string }>`select query from pg_stat_activity
+            await sql<{
+              query: string;
+            }>`select query from pg_stat_activity
         where datname=current_database() and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
           ).rows.some(({ query }) => query.includes('from "runs"')),
@@ -804,7 +398,6 @@ describeStore("PostgreSQL store", (it) => {
         .execute(),
     ).toEqual([]);
   });
-
   it.for(["channel_bindings", "channel_identities"] as const)(
     "fences queued channel %s before its Thread",
     async (resource, { storeFixture }) => {
@@ -812,7 +405,10 @@ describeStore("PostgreSQL store", (it) => {
       const fixture = await createChannelNoticeFixture("channel-claim-prefix", {
         accessMode: "anyone",
       });
-      const adopted = await fixture.adopt({ eventId: "claim-prefix", type: "dm" });
+      const adopted = await fixture.adopt({
+        eventId: "claim-prefix",
+        type: "dm",
+      });
       if (adopted.result.kind !== "adopted" || !adopted.result.run)
         throw new Error("Expected queued channel Run");
       const run = adopted.result.run;
@@ -843,7 +439,9 @@ describeStore("PostgreSQL store", (it) => {
         await expect
           .poll(async () =>
             (
-              await sql<{ query: string }>`
+              await sql<{
+                query: string;
+              }>`
           select query from pg_stat_activity where datname=current_database()
           and application_name='opensteer-integration-test' and wait_event_type='Lock'
         `.execute(database)
@@ -860,7 +458,6 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-
   it("fences the Assignment before claiming its Command", async ({ storeFixture }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("assignment-claim-prefix");
@@ -871,10 +468,18 @@ describeStore("PostgreSQL store", (it) => {
       harnessInstanceId: fixture.harnessInstance.id,
       idempotencyKey: "assignment-claim-child",
       modelSelection: testModelSelection,
-      origin: { kind: "run", parentRunId: fixture.run.id, parentThreadId: fixture.thread.id },
-      task: [{ text: "Child", type: "text" }],
+      origin: {
+        kind: "run",
+        parentRunId: fixture.run.id,
+        parentThreadId: fixture.thread.id,
+      },
+      task: [
+        {
+          text: "Child",
+          type: "text",
+        },
+      ],
       title: "Child",
-      workspaceId: fixture.workspace.id,
     });
     const command = await database
       .selectFrom("commands")
@@ -906,7 +511,9 @@ describeStore("PostgreSQL store", (it) => {
       await expect
         .poll(async () =>
           (
-            await sql<{ query: string }>`
+            await sql<{
+              query: string;
+            }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -922,11 +529,10 @@ describeStore("PostgreSQL store", (it) => {
       await Promise.allSettled([peer, claiming]);
     }
   });
-
   it.for(["nested-delegation", "cancel-request", "drain-pending"] as const)(
     "orders Assignment projection fences (%s)",
     async (scenario, { storeFixture }) => {
-      const { startRunFixture, store, database, bindAgentControlRun, createProjectWorkspace } =
+      const { startRunFixture, store, database, bindAgentControlRun, createTaskForOwner } =
         storeFixture;
       const fixture = await startRunFixture("assignment-projection-prefix");
       const delegated = await store.delegateThread({
@@ -936,10 +542,18 @@ describeStore("PostgreSQL store", (it) => {
         harnessInstanceId: fixture.harnessInstance.id,
         idempotencyKey: "projection-child",
         modelSelection: testModelSelection,
-        origin: { kind: "run", parentRunId: fixture.run.id, parentThreadId: fixture.thread.id },
-        task: [{ text: "Child", type: "text" }],
+        origin: {
+          kind: "run",
+          parentRunId: fixture.run.id,
+          parentThreadId: fixture.thread.id,
+        },
+        task: [
+          {
+            text: "Child",
+            type: "text",
+          },
+        ],
         title: "Child",
-        workspaceId: fixture.workspace.id,
       });
       const command = await database
         .selectFrom("commands")
@@ -960,16 +574,17 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: fixture.runnerId,
         event: pendingEvent({
           bindingGeneration: binding.bindingGeneration,
-          data: { status: "running" },
+          data: {
+            status: "running",
+          },
           environmentId: fixture.environmentId,
           ordinal: 0,
           runId: delegated.run.id,
           threadId: delegated.thread.id,
           type: "run.started",
-          workspaceId: fixture.workspace.id,
         }),
       });
-      const target = await createProjectWorkspace(fixture.userId, "projection-request-target");
+      const target = await createTaskForOwner(fixture.userId, "projection-request-target");
       const opened =
         scenario !== "nested-delegation"
           ? await store.requests.create({
@@ -978,16 +593,19 @@ describeStore("PostgreSQL store", (it) => {
               mode: "durable",
               originatingRunId: delegated.run.id,
               originatingThreadId: delegated.thread.id,
-              originatingWorkspaceId: fixture.workspace.id,
-              targetWorkspaceId: target.id,
               payload: {
                 kind: "browser.access",
                 reason: "Choose browser",
-                suggestion: { kind: "user_choice" },
+                suggestion: {
+                  kind: "user_choice",
+                },
               },
               presentation: {
                 kind: "external",
-                subject: { id: target.id, kind: "workspace" },
+                subject: {
+                  id: target.id,
+                  kind: "workspace",
+                },
                 title: "Choose browser",
               },
               requestedBy: fixture.userId,
@@ -1044,9 +662,13 @@ describeStore("PostgreSQL store", (it) => {
                   parentRunId: delegated.run.id,
                   parentThreadId: delegated.thread.id,
                 },
-                task: [{ text: "Grandchild", type: "text" }],
+                task: [
+                  {
+                    text: "Grandchild",
+                    type: "text",
+                  },
+                ],
                 title: "Grandchild",
-                workspaceId: fixture.workspace.id,
               })
             : scenario === "cancel-request"
               ? store.cancelAssignment({
@@ -1060,7 +682,9 @@ describeStore("PostgreSQL store", (it) => {
         await expect
           .poll(async () =>
             (
-              await sql<{ query: string }>`
+              await sql<{
+                query: string;
+              }>`
           select query from pg_stat_activity where datname=current_database()
           and application_name='opensteer-integration-test' and wait_event_type='Lock'
         `.execute(database)
@@ -1077,7 +701,6 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-
   it.for(["Thread", "Account"] as const)(
     "fences dispatch %s before its messaging receipt",
     async (scope, { storeFixture }) => {
@@ -1085,7 +708,10 @@ describeStore("PostgreSQL store", (it) => {
       const fixture = await createChannelNoticeFixture("channel-receipt-prefix", {
         accessMode: "anyone",
       });
-      const adopted = await fixture.adopt({ eventId: "receipt-prefix", type: "dm" });
+      const adopted = await fixture.adopt({
+        eventId: "receipt-prefix",
+        type: "dm",
+      });
       if (adopted.result.kind !== "adopted" || !adopted.result.run)
         throw new Error("Expected channel Run");
       const run = adopted.result.run;
@@ -1140,7 +766,9 @@ describeStore("PostgreSQL store", (it) => {
         await expect
           .poll(async () =>
             (
-              await sql<{ query: string }>`
+              await sql<{
+                query: string;
+              }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -1159,11 +787,13 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-
   it("fences the channel identity before redeeming its link code", async ({ storeFixture }) => {
     const { createChannelNoticeFixture, database } = storeFixture;
     const fixture = await createChannelNoticeFixture("link-order");
-    await fixture.adopt({ eventId: "link-order-event", type: "dm" });
+    await fixture.adopt({
+      eventId: "link-order-event",
+      type: "dm",
+    });
     const code = await database
       .selectFrom("channelLinkCodes")
       .selectAll()
@@ -1196,7 +826,9 @@ describeStore("PostgreSQL store", (it) => {
       await expect
         .poll(async () =>
           (
-            await sql<{ query: string }>`select query from pg_stat_activity
+            await sql<{
+              query: string;
+            }>`select query from pg_stat_activity
         where datname=current_database() and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
           ).rows.some(({ query }) => query.includes('"channel_identities"')),
@@ -1212,118 +844,12 @@ describeStore("PostgreSQL store", (it) => {
           .select("linkedUserId")
           .where("id", "=", code.identityId)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ linkedUserId: fixture.fixture.userId });
+      ).toEqual({
+        linkedUserId: fixture.fixture.userId,
+      });
     } finally {
       barrier.release();
       await Promise.allSettled([peer, linking]);
-    }
-  });
-
-  it("uses its Workspace fence for durable Request membership reads", async ({ storeFixture }) => {
-    const { startRunFixture, createProjectWorkspace, store, database } = storeFixture;
-    const fixture = await startRunFixture("request-membership-read");
-    const target = await createProjectWorkspace(fixture.userId, "request-membership-read-target");
-    const opened = await store.requests.create({
-      callId: "membership-read",
-      kind: "browser.access",
-      mode: "durable",
-      originatingRunId: fixture.run.id,
-      originatingThreadId: fixture.thread.id,
-      originatingWorkspaceId: fixture.workspace.id,
-      targetWorkspaceId: target.id,
-      requestedBy: fixture.userId,
-      requiredActor: "requester",
-      payload: { kind: "browser.access", reason: "Choose", suggestion: { kind: "user_choice" } },
-      presentation: {
-        kind: "external",
-        title: "Choose",
-        subject: { id: target.id, kind: "workspace" },
-      },
-    });
-    const barrier = pauseAfterLock(
-      database,
-      (node) => node.includes('"name":"requests"') && node.includes("ForNoKeyUpdate"),
-    );
-    const resolving = new OpensteerStore(barrier.database).requests.resolveBrowserRequest({
-      requestId: opened.request.id,
-      resolvedBy: fixture.userId,
-      response: { kind: "external", value: { decision: "declined" } },
-    });
-    void resolving.catch(() => undefined);
-    try {
-      await barrier.reached;
-      // The Workspace fence already serializes all production membership writes.
-      // Inspect actual held locks before resolution commits, not its SQL spelling.
-      expect(
-        (
-          await sql<{ count: number }>`select count(*)::integer as count
-        from pgrowlocks('workspace_memberships') where cardinality(pids) > 0`.execute(database)
-        ).rows[0]!.count,
-      ).toBe(0);
-    } finally {
-      barrier.release();
-      await resolving;
-    }
-    expect(await store.requests.get(opened.request.id)).toMatchObject({ status: "declined" });
-  });
-
-  it("orders access-mode membership fencing before Thread mutation", async ({ storeFixture }) => {
-    const { createRunFixture, database, store } = storeFixture;
-    const fixture = await createRunFixture("mode-membership-order");
-    const barrier = pauseAfterLock(
-      database,
-      (node) =>
-        node.includes('"kind":"SelectQueryNode"') &&
-        /"name":"workspace_?memberships"/iu.test(node) &&
-        node.includes("ForNoKeyUpdate"),
-    );
-    // Replay the observed membership -> Thread edge against the real mutation.
-    // A raw peer isolates the two row fences from unrelated Workspace admission.
-    const peer = barrier.database.transaction().execute(async (transaction) => {
-      await transaction
-        .selectFrom("workspaceMemberships")
-        .select("id")
-        .where("workspaceId", "=", fixture.workspace.id)
-        .where("userId", "=", fixture.userId)
-        .forNoKeyUpdate()
-        .execute();
-      await transaction
-        .selectFrom("threads")
-        .select("id")
-        .where("id", "=", fixture.thread.id)
-        .forNoKeyUpdate()
-        .execute();
-    });
-    void peer.catch(() => undefined);
-    let changing: ReturnType<OpensteerStore["updateThreadAccessMode"]> | undefined;
-    try {
-      await barrier.reached;
-      changing = store.updateThreadAccessMode({
-        accessMode: "auto",
-        requestedBy: fixture.userId,
-        threadId: fixture.thread.id,
-      });
-      void changing.catch(() => undefined);
-      await expect
-        .poll(async () =>
-          (
-            await sql<{ query: string }>`
-        select query from pg_stat_activity where datname=current_database()
-        and application_name='opensteer-integration-test' and wait_event_type='Lock'
-      `.execute(database)
-          ).rows.some(({ query }) => query.includes('"workspace_memberships"')),
-        )
-        .toBe(true);
-      barrier.release();
-      const results = await Promise.allSettled([peer, changing]);
-      expect(barrier.conflicts).toEqual([]);
-      expect(results.filter(({ status }) => status === "rejected")).toEqual([]);
-      expect(await store.getThreadForOwner(fixture.thread.id, fixture.userId)).toMatchObject({
-        accessMode: "auto",
-      });
-    } finally {
-      barrier.release();
-      await Promise.allSettled([peer, changing]);
     }
   });
 
@@ -1333,11 +859,18 @@ describeStore("PostgreSQL store", (it) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("injected-command-order");
     const steer = await store.enqueueThreadInput({
-      content: [{ text: "Steer the active work", type: "text" }],
+      content: [
+        {
+          text: "Steer the active work",
+          type: "text",
+        },
+      ],
       idempotencyKey: "injected-command-order",
       policy: "steer",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     if (!steer.command) throw new Error("Expected steer command");
@@ -1370,13 +903,14 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           bindingGeneration: fixture.bindingGeneration,
-          data: { messageId: steer.message.id },
+          data: {
+            messageId: steer.message.id,
+          },
           environmentId: fixture.environmentId,
           ordinal: 1,
           runId: fixture.run.id,
           threadId: fixture.thread.id,
           type: "message.injected",
-          workspaceId: fixture.workspace.id,
         }),
         runnerBootId: fixture.runnerBootId,
         runnerId: fixture.runnerId,
@@ -1385,7 +919,9 @@ describeStore("PostgreSQL store", (it) => {
       await expect
         .poll(async () =>
           (
-            await sql<{ query: string }>`
+            await sql<{
+              query: string;
+            }>`
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
@@ -1402,20 +938,26 @@ describeStore("PostgreSQL store", (it) => {
           .select("state")
           .where("messageId", "=", steer.message.id)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ state: "delivered" });
+      ).toEqual({
+        state: "delivered",
+      });
     } finally {
       barrier.release();
       await Promise.allSettled([peer, injected]);
     }
   });
-
   it("orders catalog adoption with execution binding without a deadlock", async ({
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const fixture = await createRunFixture("catalog-binding-order");
     const turn = await enqueueHumanTrigger({
-      content: [{ text: "Bind while adopting", type: "text" }],
+      content: [
+        {
+          text: "Bind while adopting",
+          type: "text",
+        },
+      ],
       idempotencyKey: "catalog-binding-order",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -1423,7 +965,9 @@ describeStore("PostgreSQL store", (it) => {
     await store.claimCommand(turn.command.id, "catalog-binding-order");
     await database
       .updateTable("providerSessions")
-      .set({ continuationIdentity: sql`${JSON.stringify(testContinuationIdentity)}::jsonb` })
+      .set({
+        continuationIdentity: sql`${JSON.stringify(testContinuationIdentity)}::jsonb`,
+      })
       .where("id", "=", turn.run.providerSessionId!)
       .execute();
     const replacement = {
@@ -1459,7 +1003,6 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: replacement,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: "catalog-binding-order",
-        membershipGeneration: 1,
         runnerBootId: "catalog-binding-order",
         runnerId: fixture.runnerId,
         runId: turn.run.id,
@@ -1489,7 +1032,6 @@ describeStore("PostgreSQL store", (it) => {
       await Promise.allSettled([adopting, binding]);
     }
   });
-
   it("moves Threads onto a superseded continuation identity's replacement", async ({
     storeFixture,
   }) => {
@@ -1501,7 +1043,12 @@ describeStore("PostgreSQL store", (it) => {
       driverKind: HarnessIdSchema.parse("native"),
     };
     const turn = await enqueueHumanTrigger({
-      content: [{ text: "Start the Thread", type: "text" }],
+      content: [
+        {
+          text: "Start the Thread",
+          type: "text",
+        },
+      ],
       idempotencyKey: "catalog-supersede-first",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -1512,13 +1059,11 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "catalog-supersede-lease",
-      membershipGeneration: 1,
       runnerBootId: "catalog-supersede-boot",
       runnerId: fixture.runnerId,
       runId: turn.run.id,
       threadId: fixture.thread.id,
     });
-
     const models = [
       {
         displayName: "GPT-5.6 Sol",
@@ -1528,16 +1073,23 @@ describeStore("PostgreSQL store", (it) => {
         providerId: "openai",
       },
     ];
-    const laptopEnvironmentId = await store.createEnvironment({ kind: "local", name: "Laptop" });
+    const laptopEnvironmentId = await store.createEnvironment({
+      kind: "local",
+      name: "Laptop",
+    });
     const laptopHarness = await store.createHarnessInstance({
-      config: { model: "test" },
+      config: {
+        model: "test",
+      },
       driverKind: HarnessIdSchema.parse("native"),
       environmentId: laptopEnvironmentId,
       name: "Native",
       stateKind: "isolated",
     });
     const codexHarness = await store.createHarnessInstance({
-      config: { model: "test" },
+      config: {
+        model: "test",
+      },
       driverKind: HarnessIdSchema.parse("codex"),
       environmentId: fixture.environmentId,
       name: "Codex",
@@ -1577,9 +1129,10 @@ describeStore("PostgreSQL store", (it) => {
       expectedRevisions: new Map([[codexHarness.id, codexHarness.runtimeRevision]]),
     });
     await expect(store.getThreadForOwner(fixture.thread.id, fixture.userId)).resolves.toMatchObject(
-      { continuationIdentity: testContinuationIdentity },
+      {
+        continuationIdentity: testContinuationIdentity,
+      },
     );
-
     const catalog = HarnessInstanceCatalogSchema.parse({
       continuationIdentity: replacement,
       driverKind: "native",
@@ -1604,12 +1157,12 @@ describeStore("PostgreSQL store", (it) => {
         [fixture.harnessInstance.id, fixture.harnessInstance.runtimeRevision],
       ]),
     });
-
     await expect(store.getThreadForOwner(fixture.thread.id, fixture.userId)).resolves.toMatchObject(
-      { continuationIdentity: replacement },
+      {
+        continuationIdentity: replacement,
+      },
     );
   });
-
   it("pins an admitted Run while an explicit native-session switch races it", async ({
     storeFixture,
   }) => {
@@ -1618,21 +1171,31 @@ describeStore("PostgreSQL store", (it) => {
     const firstSessionId = fixture.thread.providerSessionId;
     expect(firstSessionId).not.toBeNull();
     const admitted = await enqueueHumanTrigger({
-      content: [{ text: "Already admitted", type: "text" }],
+      content: [
+        {
+          text: "Already admitted",
+          type: "text",
+        },
+      ],
       idempotencyKey: "session-switch-admitted",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
     expect(admitted.run.providerSessionId).toBe(firstSessionId);
     const claude = await store.createHarnessInstance({
-      config: { model: "sonnet", modelProviderId: "anthropic" },
+      config: {
+        model: "sonnet",
+        modelProviderId: "anthropic",
+      },
       driverKind: HarnessIdSchema.parse("claude"),
       environmentId: fixture.environmentId,
       name: "Session switch Claude",
       stateKind: "isolated",
     });
     const change = {
-      continuation: { expectedProviderSessionId: firstSessionId },
+      continuation: {
+        expectedProviderSessionId: firstSessionId,
+      },
       continuationIdentity: {
         continuationKey: "runner:v1:XBFO4gDBdSg2fXioCLyTd-RGpc_Zcz838BvyfVUY5d0",
         driverKind: HarnessIdSchema.parse("claude"),
@@ -1658,10 +1221,12 @@ describeStore("PostgreSQL store", (it) => {
       .select(["providerSessionId", "status"])
       .where("id", "=", admitted.run.id)
       .executeTakeFirstOrThrow();
-    expect(persistedRun).toEqual({ providerSessionId: firstSessionId, status: "queued" });
+    expect(persistedRun).toEqual({
+      providerSessionId: firstSessionId,
+      status: "queued",
+    });
   });
-
-  it("refuses idempotent Thread and execution-selection replays after Workspace access is revoked", async ({
+  it("refuses idempotent Thread and execution-selection replays after the personal owner is disabled", async ({
     storeFixture,
   }) => {
     const { createRunFixture, store, database } = storeFixture;
@@ -1673,7 +1238,6 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "replay-revoked-create",
       modelSelection: testModelSelection,
       title: "Revoked replay target",
-      workspaceId: fixture.workspace.id,
     };
     const created = await store.createThread(create);
     const selection = {
@@ -1686,48 +1250,35 @@ describeStore("PostgreSQL store", (it) => {
     };
     await store.updateThreadExecutionSelection(selection);
     await expect(store.findThreadCreationByIdempotency(create)).resolves.toMatchObject({
-      thread: { id: created.thread.id },
+      thread: {
+        id: created.thread.id,
+      },
       wasDuplicate: true,
     });
-    await expect(store.createThread(create)).resolves.toMatchObject({ wasDuplicate: true });
+    await expect(store.createThread(create)).resolves.toMatchObject({
+      wasDuplicate: true,
+    });
     await expect(store.updateThreadExecutionSelection(selection)).resolves.toMatchObject({
       wasDuplicate: true,
     });
 
     // A committed access change between Host admission and store replay must
     // win over the earlier idempotency receipt.
-    const remainingOwnerId = await store.createUser("Remaining Workspace owner");
     await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy: fixture.userId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role: "owner",
-        state: "active",
-        updatedAt: new Date(),
-        userId: remainingOwnerId,
-        workspaceId: fixture.workspace.id,
-      })
-      .executeTakeFirstOrThrow();
-    await store.changeWorkspaceMembership({
-      actorId: remainingOwnerId,
-      state: "revoked",
-      targetUserId: fixture.userId,
-      workspaceId: fixture.workspace.id,
-    });
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", fixture.userId)
+      .execute();
     await expect(store.findThreadCreationByIdempotency(create)).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(store.createThread(create)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(store.createThread(create)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await expect(store.updateThreadExecutionSelection(selection)).rejects.toMatchObject({
       code: "forbidden",
     });
   });
-
   it("keeps node detail out of parent history and pages it only for its own Thread", async ({
     storeFixture,
   }) => {
@@ -1740,10 +1291,14 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "node-detail-sibling",
       modelSelection: testModelSelection,
       title: "Sibling",
-      workspaceId: fixture.workspace.id,
     });
     const turn = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Other Run" }],
+      content: [
+        {
+          type: "text",
+          text: "Other Run",
+        },
+      ],
       idempotencyKey: "node-detail-other-run",
       requestedBy: fixture.userId,
       threadId: sibling.thread.id,
@@ -1754,7 +1309,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "node-detail-other-lease",
-      membershipGeneration: 1,
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
       runId: turn.run.id,
@@ -1772,19 +1326,25 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: other.runnerBootId,
       event: pendingEvent({
         type: "run.started",
-        data: { status: "running" },
+        data: {
+          status: "running",
+        },
         ordinal: 0,
         bindingGeneration: other.bindingGeneration,
         environmentId: other.environmentId,
         runId: other.run.id,
         threadId: other.thread.id,
-        workspaceId: other.workspace.id,
       }),
     });
     let ordinal = 1;
     type RunEvent = {
       [K in PendingAgentEvent["type"]]: Pick<
-        Extract<PendingAgentEvent, { type: K }>,
+        Extract<
+          PendingAgentEvent,
+          {
+            type: K;
+          }
+        >,
         "type" | "data"
       >;
     }[PendingAgentEvent["type"]];
@@ -1798,7 +1358,6 @@ describeStore("PostgreSQL store", (it) => {
           ordinal,
           runId: fixture.run.id,
           threadId: fixture.thread.id,
-          workspaceId: fixture.workspace.id,
           environmentId: fixture.environmentId,
           bindingGeneration: fixture.bindingGeneration,
         }),
@@ -1829,17 +1388,43 @@ describeStore("PostgreSQL store", (it) => {
         },
       });
     }
-    await emit({ type: "node.updated", data: { nodeId, parentNodeId: workflowId } });
     await emit({
       type: "node.updated",
-      data: { nodeId: workflowId, phases: ["Research", "Review"], effort: "medium" },
+      data: {
+        nodeId,
+        parentNodeId: workflowId,
+      },
+    });
+    await emit({
+      type: "node.updated",
+      data: {
+        nodeId: workflowId,
+        phases: ["Research", "Review"],
+        effort: "medium",
+      },
     });
     await expect(
-      emit({ type: "node.updated", data: { nodeId, parentNodeId: workflowId } }),
-    ).rejects.toMatchObject({ code: "conflict" });
+      emit({
+        type: "node.updated",
+        data: {
+          nodeId,
+          parentNodeId: workflowId,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     await expect(
-      emit({ type: "node.updated", data: { nodeId: workflowId, parentNodeId: nodeId } }),
-    ).rejects.toMatchObject({ code: "conflict" });
+      emit({
+        type: "node.updated",
+        data: {
+          nodeId: workflowId,
+          parentNodeId: nodeId,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     const foreignNodeId = createId("executionNode");
     await store.commitRunnerEvent({
       environmentId: other.environmentId,
@@ -1851,7 +1436,6 @@ describeStore("PostgreSQL store", (it) => {
         ordinal: 1,
         runId: other.run.id,
         threadId: other.thread.id,
-        workspaceId: other.workspace.id,
         environmentId: other.environmentId,
         data: {
           nodeId: foreignNodeId,
@@ -1867,54 +1451,107 @@ describeStore("PostgreSQL store", (it) => {
       }),
     });
     for (const event of [
-      { type: "node.message", data: { nodeId: foreignNodeId, text: "Foreign" } },
       {
-        type: "reasoning.completed",
-        data: { nodeId: foreignNodeId, blockId: "foreign", text: "Foreign" },
+        type: "node.message",
+        data: {
+          nodeId: foreignNodeId,
+          text: "Foreign",
+        },
       },
-      { type: "node.updated", data: { nodeId: workflowId, parentNodeId: foreignNodeId } },
-    ] as const)
-      await expect(emit(event)).rejects.toMatchObject({ code: "conflict" });
-    const detail = [
-      { type: "node.message", data: { nodeId, text: "I found the answer" } },
       {
         type: "reasoning.completed",
-        data: { nodeId, blockId: "thinking", text: "Check the source" },
+        data: {
+          nodeId: foreignNodeId,
+          blockId: "foreign",
+          text: "Foreign",
+        },
+      },
+      {
+        type: "node.updated",
+        data: {
+          nodeId: workflowId,
+          parentNodeId: foreignNodeId,
+        },
+      },
+    ] as const)
+      await expect(emit(event)).rejects.toMatchObject({
+        code: "conflict",
+      });
+    const detail = [
+      {
+        type: "node.message",
+        data: {
+          nodeId,
+          text: "I found the answer",
+        },
+      },
+      {
+        type: "reasoning.completed",
+        data: {
+          nodeId,
+          blockId: "thinking",
+          text: "Check the source",
+        },
       },
       {
         type: "tool.started",
         data: {
           nodeId,
           callId: "child-call",
-          tool: { namespace: "test", name: "read" },
+          tool: {
+            namespace: "test",
+            name: "read",
+          },
           arguments: {},
         },
       },
       {
         type: "tool.completed",
-        data: { nodeId, callId: "child-call", isError: false, output: { text: "Source" } },
+        data: {
+          nodeId,
+          callId: "child-call",
+          isError: false,
+          output: {
+            text: "Source",
+          },
+        },
       },
     ] as const;
     for (const event of detail) await emit(event);
     await emit({
       type: "node.completed",
-      data: { nodeId, status: "completed", result: "Answer", usage: null },
+      data: {
+        nodeId,
+        status: "completed",
+        result: "Answer",
+        usage: null,
+      },
     });
     const stored = await database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", fixture.run.id)
       .where("nodeDetailId", "=", nodeId)
       .orderBy("sequence", "asc")
       .execute();
     expect(stored.map((row) => row.type)).toEqual(detail.map((event) => event.type));
-    const read = { ownerId: fixture.userId, threadId: fixture.thread.id };
+    const read = {
+      ownerId: fixture.userId,
+      threadId: fixture.thread.id,
+    };
     for (const mode of [
       {},
-      { maxTurns: 1 },
-      { aroundMessageId: fixture.run.seedInputId },
+      {
+        maxTurns: 1,
+      },
+      {
+        aroundMessageId: fixture.run.seedInputId,
+      },
     ] as const) {
-      const page = await store.threadEventPageForOwner({ ...read, ...mode });
+      const page = await store.threadEventPageForOwner({
+        ...read,
+        ...mode,
+      });
       expect(page!.events.some((event) => nodeDetailEventNodeId(event) !== undefined)).toBe(false);
       expect(page!.events.map((event) => event.type)).toEqual(
         expect.arrayContaining(["node.started", "node.completed"]),
@@ -1922,8 +1559,16 @@ describeStore("PostgreSQL store", (it) => {
       expect(page!.window.itemCount).toBe(page!.events.length);
       expect(page!.window.byteCount).toBe(Buffer.byteLength(JSON.stringify(page!.events)));
     }
-    const page = await store.nodeEventPageForOwner({ ...read, nodeId });
-    expect(page!.events.map((event) => ({ type: event.type, data: event.data }))).toEqual(detail);
+    const page = await store.nodeEventPageForOwner({
+      ...read,
+      nodeId,
+    });
+    expect(
+      page!.events.map((event) => ({
+        type: event.type,
+        data: event.data,
+      })),
+    ).toEqual(detail);
     // The subagent itself comes with its page, whatever its conversation's history holds.
     expect(page!.node.id).toBe(nodeId);
     expect(page!.window).toMatchObject({
@@ -1933,9 +1578,17 @@ describeStore("PostgreSQL store", (it) => {
       byteCount: Buffer.byteLength(JSON.stringify(page!.events)),
     });
     const through = page!.events[2]!.sequence;
-    const newest = await store.nodeEventPageForOwner({ ...read, nodeId, through, maxItems: 2 });
+    const newest = await store.nodeEventPageForOwner({
+      ...read,
+      nodeId,
+      through,
+      maxItems: 2,
+    });
     expect(newest!.events).toEqual(page!.events.slice(1, 3));
-    expect(newest!.window).toMatchObject({ hasMore: true, totalItems: 3 });
+    expect(newest!.window).toMatchObject({
+      hasMore: true,
+      totalItems: 3,
+    });
     const older = await store.nodeEventPageForOwner({
       ...read,
       nodeId,
@@ -1946,10 +1599,18 @@ describeStore("PostgreSQL store", (it) => {
     expect(older!.events).toEqual(page!.events.slice(0, 1));
     expect(older!.window.hasMore).toBe(false);
     await expect(
-      store.nodeEventPageForOwner({ ...read, threadId: sibling.thread.id, nodeId }),
+      store.nodeEventPageForOwner({
+        ...read,
+        threadId: sibling.thread.id,
+        nodeId,
+      }),
     ).resolves.toBeNull();
     await expect(
-      store.nodeEventPageForOwner({ ...read, ownerId: await store.createUser("Outsider"), nodeId }),
+      store.nodeEventPageForOwner({
+        ...read,
+        ownerId: await store.createUser("Outsider"),
+        nodeId,
+      }),
     ).resolves.toBeNull();
     const nodes = (await store.listRunAttemptsForOwner({
       ownerId: fixture.userId,
@@ -1968,7 +1629,6 @@ describeStore("PostgreSQL store", (it) => {
       parentNodeId: null,
     });
   });
-
   it("anchors an event page on a delivered message and retains nearby Run events", async ({
     storeFixture,
   }) => {
@@ -1982,8 +1642,14 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(page?.events).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ type: "message.placed", runId: fixture.run.id }),
-        expect.objectContaining({ type: "run.started", runId: fixture.run.id }),
+        expect.objectContaining({
+          type: "message.placed",
+          runId: fixture.run.id,
+        }),
+        expect.objectContaining({
+          type: "run.started",
+          runId: fixture.run.id,
+        }),
       ]),
     );
     expect(page?.events.map((event) => event.sequence)).toEqual(
@@ -2012,20 +1678,28 @@ describeStore("PostgreSQL store", (it) => {
         ownerId: fixture.userId,
         threadId: fixture.thread.id,
       }),
-    ).rejects.toMatchObject({ code: "internal" });
+    ).rejects.toMatchObject({
+      code: "internal",
+    });
   });
-
   it("anchors steer history on a rendered Message rather than its later delivery receipt", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store } = storeFixture;
     const fixture = await startRunFixture("steer-message-anchor");
     const steered = await store.enqueueThreadInput({
-      content: [{ text: "Use this constraint", type: "text" }],
+      content: [
+        {
+          text: "Use this constraint",
+          type: "text",
+        },
+      ],
       idempotencyKey: "steer-message-anchor-input",
       policy: "steer",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     if (!steered.command) throw new Error("Expected steer command");
@@ -2034,13 +1708,14 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: fixture.bindingGeneration,
-        data: { messageId: steered.message.id },
+        data: {
+          messageId: steered.message.id,
+        },
         environmentId: fixture.environmentId,
         ordinal: 1,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
         type: "message.injected",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
@@ -2053,9 +1728,12 @@ describeStore("PostgreSQL store", (it) => {
     });
     expect(page?.events).toHaveLength(1);
     expect(["message.created", "message.placed"]).toContain(page?.events[0]?.type);
-    expect(page?.events[0]?.data).toMatchObject({ message: { id: steered.message.id } });
+    expect(page?.events[0]?.data).toMatchObject({
+      message: {
+        id: steered.message.id,
+      },
+    });
   });
-
   it("keeps a frozen handoff after native reference creation but before first acceptance", async ({
     storeFixture,
   }) => {
@@ -2065,26 +1743,32 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: fixture.bindingGeneration,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         environmentId: fixture.environmentId,
         ordinal: 1,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
         type: "run.completed",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
     });
     const claude = await store.createHarnessInstance({
-      config: { model: "sonnet", modelProviderId: "anthropic" },
+      config: {
+        model: "sonnet",
+        modelProviderId: "anthropic",
+      },
       driverKind: HarnessIdSchema.parse("claude"),
       environmentId: fixture.environmentId,
       name: "Handoff Claude",
       stateKind: "isolated",
     });
     const switched = await store.updateThreadExecutionSelection({
-      continuation: { expectedProviderSessionId: fixture.thread.providerSessionId },
+      continuation: {
+        expectedProviderSessionId: fixture.thread.providerSessionId,
+      },
       continuationIdentity: {
         continuationKey: "runner:v1:XBFO4gDBdSg2fXioCLyTd-RGpc_Zcz838BvyfVUY5d0",
         driverKind: HarnessIdSchema.parse("claude"),
@@ -2102,7 +1786,12 @@ describeStore("PostgreSQL store", (it) => {
     expect(switched.thread.id).toBe(fixture.thread.id);
     expect(switched.thread.providerSessionId).not.toBe(fixture.thread.providerSessionId);
     const first = await enqueueHumanTrigger({
-      content: [{ text: "Continue in Claude", type: "text" }],
+      content: [
+        {
+          text: "Continue in Claude",
+          type: "text",
+        },
+      ],
       idempotencyKey: "first-context-input",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -2125,7 +1814,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: identity,
       harnessInstanceId: claude.id,
       leaseTokenHash: "first-context-lease",
-      membershipGeneration: 1,
       runnerBootId: "first-context-boot",
       runnerId: fixture.runnerId,
       runId: first.run.id,
@@ -2147,7 +1835,6 @@ describeStore("PostgreSQL store", (it) => {
       "allocated-before-first-input",
     );
   });
-
   it("finalizes a frozen initial context once from ordered candidates", async ({
     storeFixture,
   }) => {
@@ -2159,7 +1846,12 @@ describeStore("PostgreSQL store", (it) => {
       event: pendingEvent({
         bindingGeneration: fixture.bindingGeneration,
         data: {
-          content: [{ text: "Earlier assistant answer", type: "text" }],
+          content: [
+            {
+              text: "Earlier assistant answer",
+              type: "text",
+            },
+          ],
           messageId: assistantMessageId,
         },
         environmentId: fixture.environmentId,
@@ -2167,7 +1859,6 @@ describeStore("PostgreSQL store", (it) => {
         runId: fixture.run.id,
         threadId: fixture.thread.id,
         type: "assistant.message",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
@@ -2176,26 +1867,32 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: fixture.bindingGeneration,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         environmentId: fixture.environmentId,
         ordinal: 2,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
         type: "run.completed",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId: fixture.runnerBootId,
       runnerId: fixture.runnerId,
     });
     const claude = await store.createHarnessInstance({
-      config: { model: "sonnet", modelProviderId: "anthropic" },
+      config: {
+        model: "sonnet",
+        modelProviderId: "anthropic",
+      },
       driverKind: HarnessIdSchema.parse("claude"),
       environmentId: fixture.environmentId,
       name: "Context finalization Claude",
       stateKind: "isolated",
     });
     await store.updateThreadExecutionSelection({
-      continuation: { expectedProviderSessionId: fixture.thread.providerSessionId },
+      continuation: {
+        expectedProviderSessionId: fixture.thread.providerSessionId,
+      },
       continuationIdentity: {
         continuationKey: "runner:v1:XBFO4gDBdSg2fXioCLyTd-RGpc_Zcz838BvyfVUY5d0",
         driverKind: HarnessIdSchema.parse("claude"),
@@ -2211,7 +1908,12 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     });
     const next = await enqueueHumanTrigger({
-      content: [{ text: "Continue with less context", type: "text" }],
+      content: [
+        {
+          text: "Continue with less context",
+          type: "text",
+        },
+      ],
       idempotencyKey: "finalized-context-next",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -2228,20 +1930,28 @@ describeStore("PostgreSQL store", (it) => {
         commandId: next.command.id,
         messageIds: [assistantMessageId, fixture.run.seedInputId],
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     await expect(
       store.finalizeRunInitialContext({
         commandId: next.command.id,
         messageIds: [createId("message")],
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     const finalized = await store.finalizeRunInitialContext({
       commandId: next.command.id,
       messageIds: [assistantMessageId],
     });
     expect(finalized).toEqual({
       finalized: true,
-      messages: [expect.objectContaining({ id: assistantMessageId })],
+      messages: [
+        expect.objectContaining({
+          id: assistantMessageId,
+        }),
+      ],
       omittedCount: before!.omittedCount + 1,
       throughSequence: before!.throughSequence,
     });
@@ -2253,14 +1963,18 @@ describeStore("PostgreSQL store", (it) => {
     ).toEqual(finalized);
     expect((await store.loadRunDispatchContext(next.command.id)).initialContext).toEqual(finalized);
   });
-
   it("keeps a compatible native continuation across model selection changes", async ({
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const fixture = await createRunFixture("execution-selection");
     const first = await enqueueHumanTrigger({
-      content: [{ text: "Use the initial selection", type: "text" }],
+      content: [
+        {
+          text: "Use the initial selection",
+          type: "text",
+        },
+      ],
       idempotencyKey: "execution-selection-first",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -2276,7 +1990,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "execution-selection-lease",
-      membershipGeneration: 1,
       runnerBootId: "execution-selection-boot",
       runnerId: fixture.runnerId,
       runId: first.run.id,
@@ -2296,21 +2009,24 @@ describeStore("PostgreSQL store", (it) => {
       environmentId: fixture.environmentId,
       event: pendingEvent({
         bindingGeneration: firstBinding.bindingGeneration,
-        data: { status: "running" },
+        data: {
+          status: "running",
+        },
         environmentId: fixture.environmentId,
         ordinal: 0,
         runId: first.run.id,
         threadId: fixture.thread.id,
         type: "run.started",
-        workspaceId: fixture.workspace.id,
       }),
       runnerBootId: "execution-selection-boot",
       runnerId: fixture.runnerId,
     });
     await store.failCommand(first.command.id, "Initial selection finished unsuccessfully.");
-
     const claude = await store.createHarnessInstance({
-      config: { model: "sonnet", modelProviderId: "anthropic" },
+      config: {
+        model: "sonnet",
+        modelProviderId: "anthropic",
+      },
       driverKind: HarnessIdSchema.parse("claude"),
       environmentId: fixture.environmentId,
       name: "Claude Code",
@@ -2318,7 +2034,9 @@ describeStore("PostgreSQL store", (it) => {
     });
     const claudeSelection = ModelSelectionSchema.parse({
       modelId: "sonnet",
-      options: { effort: "high" },
+      options: {
+        effort: "high",
+      },
       providerId: "anthropic",
     });
     await expect(
@@ -2333,8 +2051,9 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
-
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     const foreignEnvironmentId = await store.createEnvironment({
       kind: "local",
       name: "Other computer",
@@ -2355,7 +2074,9 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     await expect(
       store.createThread({
         createdBy: fixture.userId,
@@ -2364,12 +2085,14 @@ describeStore("PostgreSQL store", (it) => {
         idempotencyKey: "execution-selection-cross-environment",
         modelSelection: testModelSelection,
         title: "Invalid environment binding",
-        workspaceId: fixture.workspace.id,
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
-
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     const compatible = await store.createHarnessInstance({
-      config: { model: "gpt-5.6-sol" },
+      config: {
+        model: "gpt-5.6-sol",
+      },
       driverKind: HarnessIdSchema.parse("native"),
       environmentId: fixture.environmentId,
       name: "Compatible Native",
@@ -2402,9 +2125,13 @@ describeStore("PostgreSQL store", (it) => {
       providerSessionReference: "native-session-1",
       status: "broken",
     });
-
     const second = await enqueueHumanTrigger({
-      content: [{ text: "Use the new selection", type: "text" }],
+      content: [
+        {
+          text: "Use the new selection",
+          type: "text",
+        },
+      ],
       idempotencyKey: "execution-selection-second",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -2420,7 +2147,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: compatible.id,
       leaseTokenHash: "execution-selection-second-lease",
-      membershipGeneration: 1,
       runnerBootId: "execution-selection-boot",
       runnerId: fixture.runnerId,
       runId: second.run.id,
@@ -2436,18 +2162,21 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           bindingGeneration: secondBinding.bindingGeneration,
-          data: { status: "running" },
+          data: {
+            status: "running",
+          },
           environmentId: fixture.environmentId,
           ordinal: 0,
           runId: second.run.id,
           threadId: fixture.thread.id,
           type: "run.started",
-          workspaceId: fixture.workspace.id,
         }),
         runnerBootId: "execution-selection-boot",
         runnerId: fixture.runnerId,
       }),
-    ).resolves.toMatchObject({ wasDuplicate: false });
+    ).resolves.toMatchObject({
+      wasDuplicate: false,
+    });
     expect(first.run).toMatchObject({
       harnessInstanceId: fixture.harnessInstance.id,
       modelSelection: testModelSelection,
@@ -2461,7 +2190,9 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
   });
 
   // Only a bound Run can have reached a Runner: a Host failure before the
@@ -2472,7 +2203,12 @@ describeStore("PostgreSQL store", (it) => {
       const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
       const fixture = await createRunFixture("unstarted-retry");
       const first = await enqueueHumanTrigger({
-        content: [{ text: "First attempt", type: "text" }],
+        content: [
+          {
+            text: "First attempt",
+            type: "text",
+          },
+        ],
         idempotencyKey: "unstarted-first",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -2482,38 +2218,55 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: "unstarted-lease",
-        membershipGeneration: 1,
         runnerBootId: "unstarted-boot",
         runnerId: fixture.runnerId,
         threadId: fixture.thread.id,
       };
       await store.claimCommand(first.command.id, "test");
       if (createBinding)
-        await store.acquireExecutionBinding({ ...bindingInput, runId: first.run.id });
+        await store.acquireExecutionBinding({
+          ...bindingInput,
+          runId: first.run.id,
+        });
       await store.failCommand(
         first.command.id,
         "Workspace mount unavailable before engine startup",
       );
       const retry = await enqueueHumanTrigger({
-        content: [{ text: "Retry", type: "text" }],
+        content: [
+          {
+            text: "Retry",
+            type: "text",
+          },
+        ],
         idempotencyKey: "unstarted-retry",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
       await store.claimCommand(retry.command.id, "test");
-      const started = store.acquireExecutionBinding({ ...bindingInput, runId: retry.run.id });
+      const started = store.acquireExecutionBinding({
+        ...bindingInput,
+        runId: retry.run.id,
+      });
       if (createBinding) await expect(started).rejects.toThrow("uncertain native start");
-      else await expect(started).resolves.toMatchObject({ runnerBootId: "unstarted-boot" });
+      else
+        await expect(started).resolves.toMatchObject({
+          runnerBootId: "unstarted-boot",
+        });
     },
   );
-
   it("refuses an unknown first delivery after its native reference was minted", async ({
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
     const fixture = await createRunFixture("minted-reference-unknown-delivery");
     const first = await enqueueHumanTrigger({
-      content: [{ text: "First delivery may have begun", type: "text" }],
+      content: [
+        {
+          text: "First delivery may have begun",
+          type: "text",
+        },
+      ],
       idempotencyKey: "minted-reference-first",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -2523,7 +2276,6 @@ describeStore("PostgreSQL store", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: fixture.harnessInstance.id,
       leaseTokenHash: "minted-reference-lease",
-      membershipGeneration: 1,
       runnerBootId: "minted-reference-boot",
       runnerId: fixture.runnerId,
       threadId: fixture.thread.id,
@@ -2545,14 +2297,22 @@ describeStore("PostgreSQL store", (it) => {
     });
     await store.failCommand(first.command.id, "Runner acknowledgement was lost");
     const retry = await enqueueHumanTrigger({
-      content: [{ text: "Continue after uncertainty", type: "text" }],
+      content: [
+        {
+          text: "Continue after uncertainty",
+          type: "text",
+        },
+      ],
       idempotencyKey: "minted-reference-retry",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
     });
     await store.claimCommand(retry.command.id, "test");
     await expect(
-      store.acquireExecutionBinding({ ...bindingInput, runId: retry.run.id }),
+      store.acquireExecutionBinding({
+        ...bindingInput,
+        runId: retry.run.id,
+      }),
     ).rejects.toThrow("uncertain native start");
     const retained = await database
       .selectFrom("runs")
@@ -2564,23 +2324,32 @@ describeStore("PostgreSQL store", (it) => {
       status: "starting",
     });
   });
-
   it("commits a terminal Run while deferring a successor under corrupt engine selection", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const fixture = await startRunFixture("terminal-selection-corruption");
     const followUp = await store.enqueueThreadInput({
-      content: [{ text: "Wait for the current Run", type: "text" }],
+      content: [
+        {
+          text: "Wait for the current Run",
+          type: "text",
+        },
+      ],
       idempotencyKey: "terminal-selection-follow-up",
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: fixture.thread.id,
     });
     expect(followUp.run).toBeNull();
     const incompatible = await store.createHarnessInstance({
-      config: { model: "sonnet", modelProviderId: "anthropic" },
+      config: {
+        model: "sonnet",
+        modelProviderId: "anthropic",
+      },
       driverKind: HarnessIdSchema.parse("claude"),
       environmentId: fixture.environmentId,
       name: "Corrupt selection fixture",
@@ -2588,7 +2357,9 @@ describeStore("PostgreSQL store", (it) => {
     });
     await database
       .updateTable("threads")
-      .set({ harnessInstanceId: incompatible.id })
+      .set({
+        harnessInstanceId: incompatible.id,
+      })
       .where("id", "=", fixture.thread.id)
       .executeTakeFirstOrThrow();
     await expect(
@@ -2596,41 +2367,52 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: fixture.environmentId,
         event: pendingEvent({
           bindingGeneration: fixture.bindingGeneration,
-          data: { status: "completed" },
+          data: {
+            status: "completed",
+          },
           environmentId: fixture.environmentId,
           ordinal: 1,
           runId: fixture.run.id,
           threadId: fixture.thread.id,
           type: "run.completed",
-          workspaceId: fixture.workspace.id,
         }),
         runnerBootId: fixture.runnerBootId,
         runnerId: fixture.runnerId,
       }),
-    ).resolves.toMatchObject({ wasDuplicate: false });
+    ).resolves.toMatchObject({
+      wasDuplicate: false,
+    });
     expect(
       await database
         .selectFrom("runs")
         .select("status")
         .where("id", "=", fixture.run.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "completed" });
+    ).toEqual({
+      status: "completed",
+    });
     expect(
       await database
         .selectFrom("threadInputs")
         .select("state")
         .where("messageId", "=", followUp.message.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ state: "pending" });
+    ).toEqual({
+      state: "pending",
+    });
   });
-
   it.for(["run.failed", "run.interrupted"] as const)(
     "allows first startup after an ordered %s receipt without a provider session",
     async (type, { storeFixture }) => {
       const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
       const fixture = await createRunFixture("startup-receipt");
       const first = await enqueueHumanTrigger({
-        content: [{ text: "First", type: "text" }],
+        content: [
+          {
+            text: "First",
+            type: "text",
+          },
+        ],
         idempotencyKey: "receipt-first",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -2640,7 +2422,6 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: "receipt-lease",
-        membershipGeneration: 1,
         runnerBootId: "receipt-boot",
         runnerId: fixture.runnerId,
         threadId: fixture.thread.id,
@@ -2660,7 +2441,6 @@ describeStore("PostgreSQL store", (it) => {
           ordinal: 0,
           runId: first.run.id,
           threadId: fixture.thread.id,
-          workspaceId: fixture.workspace.id,
           type,
           data:
             type === "run.failed"
@@ -2670,19 +2450,31 @@ describeStore("PostgreSQL store", (it) => {
                   status: "failed",
                   retryable: false,
                 }
-              : { status: "interrupted" },
+              : {
+                  status: "interrupted",
+                },
         }),
       });
       const retry = await enqueueHumanTrigger({
-        content: [{ text: "Retry", type: "text" }],
+        content: [
+          {
+            text: "Retry",
+            type: "text",
+          },
+        ],
         idempotencyKey: "receipt-retry",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
       });
       await store.claimCommand(retry.command.id, "test");
       await expect(
-        store.acquireExecutionBinding({ ...bindingInput, runId: retry.run.id }),
-      ).resolves.toMatchObject({ providerSessionReference: null });
+        store.acquireExecutionBinding({
+          ...bindingInput,
+          runId: retry.run.id,
+        }),
+      ).resolves.toMatchObject({
+        providerSessionReference: null,
+      });
     },
   );
 });

@@ -14,24 +14,24 @@ import {
   type ReadyAttachment,
   type UserId,
 } from "@opensteer/core";
-import { AttachmentStore, type AttachmentRow } from "@opensteer/database";
+import type { AttachmentStore, AttachmentRow } from "@opensteer/database";
 import sharp from "sharp";
 import { RunCapabilityTokenService } from "../agents/run-capability.js";
-
 export class RunAttachmentsTokenService extends RunCapabilityTokenService<"opensteer-run-attachments"> {
   constructor(options: {
     readonly authorizer: ConstructorParameters<typeof RunCapabilityTokenService>[0]["authorizer"];
     readonly lifetimeSeconds?: number;
     readonly tokens: ConstructorParameters<typeof RunCapabilityTokenService>[0]["tokens"];
   }) {
-    super({ ...options, audience: "opensteer-run-attachments" });
+    super({
+      ...options,
+      audience: "opensteer-run-attachments",
+    });
   }
 }
-
 function attachmentView(row: AttachmentRow): Attachment {
   return AttachmentSchema.parse({
     id: row.id,
-    workspaceId: row.workspaceId,
     uploaderId: row.uploaderId,
     name: row.name,
     mediaType: row.mediaType,
@@ -47,11 +47,9 @@ function attachmentView(row: AttachmentRow): Attachment {
     expiresAt: row.expiresAt.toISOString(),
   });
 }
-
 function readyView(row: AttachmentRow): ReadyAttachment {
   return ReadyAttachmentSchema.parse(attachmentView(row));
 }
-
 function unavailable(): OpensteerError {
   return new OpensteerError({
     code: "conflict",
@@ -64,7 +62,6 @@ export class AttachmentService {
   readonly #directory: string;
   readonly #store: AttachmentStore;
   readonly #runTokens: RunAttachmentsTokenService;
-
   constructor(input: {
     readonly dataDirectory: string;
     readonly store: AttachmentStore;
@@ -74,25 +71,23 @@ export class AttachmentService {
     this.#store = input.store;
     this.#runTokens = input.runTokens;
   }
-
   async reserve(input: Parameters<AttachmentStore["reserve"]>[0]): Promise<Attachment> {
     // Refused before any bytes move: no upload of this type could be accepted.
     if (input.mediaType.startsWith("image/") && !isNativeImageMediaType(input.mediaType))
       throw unsupportedImageType(input.mediaType);
     return attachmentView(await this.#store.reserve(input));
   }
-
   async get(attachmentId: string, userId: UserId): Promise<Attachment> {
     return attachmentView(
       await this.#store.getForUser(AttachmentIdSchema.parse(attachmentId), userId),
     );
   }
-
   async upload(input: {
     readonly attachmentId: string;
     readonly userId: UserId;
     readonly body: AsyncIterable<Uint8Array>;
     readonly signal?: AbortSignal;
+    readonly expectedSha256?: string;
   }): Promise<Attachment> {
     const id = AttachmentIdSchema.parse(input.attachmentId);
     const row = await this.#store.getForUser(id, input.userId);
@@ -102,9 +97,18 @@ export class AttachmentService {
         message: "Only the uploader can complete this attachment",
       });
     if (row.state === "deleting" || row.messageId)
-      throw new OpensteerError({ code: "conflict", message: "Upload is no longer active" });
-    await mkdir(join(this.#directory, "originals"), { recursive: true, mode: 0o700 });
-    await mkdir(join(this.#directory, "pending"), { recursive: true, mode: 0o700 });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Upload is no longer active",
+      });
+    await mkdir(join(this.#directory, "originals"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await mkdir(join(this.#directory, "pending"), {
+      recursive: true,
+      mode: 0o700,
+    });
     const temp = join(this.#directory, "pending", `${id}-${randomUUID()}`);
     const final = this.#path(id);
     const file = await open(temp, "wx", 0o600);
@@ -114,7 +118,10 @@ export class AttachmentService {
       try {
         for await (const chunk of input.body) {
           if (input.signal?.aborted)
-            throw new OpensteerError({ code: "conflict", message: "Upload was interrupted" });
+            throw new OpensteerError({
+              code: "conflict",
+              message: "Upload was interrupted",
+            });
           size += chunk.byteLength;
           if (size > row.sizeBytes || size > attachmentMaxBytes)
             throw new OpensteerError({
@@ -139,6 +146,12 @@ export class AttachmentService {
         await file.close();
       }
       const sha256 = hash.digest("hex");
+      if (input.expectedSha256 !== undefined && input.expectedSha256 !== sha256)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Attachment checksum differs from the team file",
+        });
+      input.signal?.throwIfAborted();
       const decoded = await inspectImage(temp, row.mediaType);
       const completed = await this.#store.complete({
         attachmentId: id,
@@ -168,60 +181,78 @@ export class AttachmentService {
       await this.#verifiedContent(completed);
       return attachmentView(completed);
     } finally {
-      await rm(temp, { force: true });
+      await rm(temp, {
+        force: true,
+      });
     }
   }
-
   async discard(attachmentId: string, userId: UserId): Promise<void> {
     const id = AttachmentIdSchema.parse(attachmentId);
-    await this.#store.discard({ attachmentId: id, uploaderId: userId });
-    await rm(this.#path(id), { force: true });
+    await this.#store.discard({
+      attachmentId: id,
+      uploaderId: userId,
+    });
+    await rm(this.#path(id), {
+      force: true,
+    });
     await this.#store.removeDeleting(id);
   }
-
   async recoverDeleting(): Promise<void> {
     for (;;) {
       const rows = await this.#store.listDeleting(100);
       if (rows.length === 0) break;
       for (const row of rows) {
-        await rm(this.#path(row.id), { force: true });
+        await rm(this.#path(row.id), {
+          force: true,
+        });
         await this.#store.removeDeleting(row.id);
       }
     }
   }
-
   async collectGarbage(): Promise<void> {
     await this.#store.expireUnbound(100);
     await this.recoverDeleting();
     const pending = join(this.#directory, "pending");
-    await mkdir(pending, { recursive: true, mode: 0o700 });
+    await mkdir(pending, {
+      recursive: true,
+      mode: 0o700,
+    });
     for (const name of await readdir(pending)) {
       if (!/^att_[0-9a-f-]{36}-[0-9a-f-]{36}$/u.test(name)) continue;
       const path = join(pending, name);
       const file = await stat(path).catch(() => null);
       if (file?.isFile() && Date.now() - file.mtimeMs > attachmentUploadLifetimeMs) {
-        await rm(path, { force: true });
+        await rm(path, {
+          force: true,
+        });
       }
     }
     const originals = join(this.#directory, "originals");
-    await mkdir(originals, { recursive: true, mode: 0o700 });
+    await mkdir(originals, {
+      recursive: true,
+      mode: 0o700,
+    });
     for (const name of await readdir(originals)) {
       if (!AttachmentIdSchema.safeParse(name).success) continue;
       const path = join(originals, name);
       const file = await stat(path).catch(() => null);
       if (!file?.isFile() || Date.now() - file.mtimeMs <= attachmentUploadLifetimeMs) continue;
-      if (!(await this.#store.get(name))) await rm(path, { force: true });
+      if (!(await this.#store.get(name)))
+        await rm(path, {
+          force: true,
+        });
     }
   }
-
   async contentForUser(
     attachmentId: string,
     userId: UserId,
-  ): Promise<{ readonly bytes: Uint8Array; readonly metadata: ContentMetadata }> {
+  ): Promise<{
+    readonly bytes: Uint8Array;
+    readonly metadata: ContentMetadata;
+  }> {
     const row = await this.#store.getForUser(AttachmentIdSchema.parse(attachmentId), userId);
     return this.#verifiedContent(row);
   }
-
   async listForRun(
     token: string,
     after: string | null,
@@ -241,11 +272,13 @@ export class AttachmentService {
       nextCursor: rows.length === 100 ? rows[99]!.id : null,
     };
   }
-
   async contentForRun(
     token: string,
     attachmentId: string,
-  ): Promise<{ readonly bytes: Uint8Array; readonly metadata: ContentMetadata }> {
+  ): Promise<{
+    readonly bytes: Uint8Array;
+    readonly metadata: ContentMetadata;
+  }> {
     const claims = await this.#runTokens.authenticate(token);
     const row = await this.#store.getForRun({
       attachmentId: AttachmentIdSchema.parse(attachmentId),
@@ -254,10 +287,10 @@ export class AttachmentService {
     });
     return this.#verifiedContent(row);
   }
-
-  async #verifiedContent(
-    row: AttachmentRow,
-  ): Promise<{ readonly bytes: Uint8Array; readonly metadata: ContentMetadata }> {
+  async #verifiedContent(row: AttachmentRow): Promise<{
+    readonly bytes: Uint8Array;
+    readonly metadata: ContentMetadata;
+  }> {
     if (row.state !== "ready" || !row.sha256) throw unavailable();
     let bytes: Buffer;
     try {
@@ -279,12 +312,10 @@ export class AttachmentService {
       },
     };
   }
-
   #path(id: string): string {
     return join(this.#directory, "originals", AttachmentIdSchema.parse(id));
   }
 }
-
 type ContentMetadata = {
   readonly contentType: string;
   readonly etag: string;
@@ -292,22 +323,18 @@ type ContentMetadata = {
   readonly sizeBytes: number;
   readonly truncated: false;
 };
-
 function isAlreadyExists(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-
 function isNativeImageMediaType(mediaType: string): boolean {
   return (attachmentNativeImageMediaTypes as readonly string[]).includes(mediaType);
 }
-
 function unsupportedImageType(mediaType: string): OpensteerError {
   return new OpensteerError({
     code: "conflict",
     message: `This image type (${mediaType}) is not supported. Use PNG, JPEG, or WebP.`,
   });
 }
-
 function damagedImage(): OpensteerError {
   return new OpensteerError({
     code: "conflict",
@@ -328,11 +355,18 @@ async function inspectImage(
   readonly width: number | null;
   readonly height: number | null;
 }> {
-  if (!mediaType.startsWith("image/")) return { kind: "file", width: null, height: null };
+  if (!mediaType.startsWith("image/"))
+    return {
+      kind: "file",
+      width: null,
+      height: null,
+    };
   if (!isNativeImageMediaType(mediaType)) throw unsupportedImageType(mediaType);
   // A header read decodes no pixels; sharp's own default pixel limit would
   // otherwise report an oversized image as unreadable instead of oversized.
-  const metadata = await sharp(path, { limitInputPixels: false })
+  const metadata = await sharp(path, {
+    limitInputPixels: false,
+  })
     .metadata()
     .catch(() => {
       throw damagedImage();
@@ -362,13 +396,20 @@ async function inspectImage(
       message: `This image is ${width}×${height} (${((width * height) / 1_000_000).toFixed(1)} MP). The limit is ${attachmentImageMaxPixels / 1_000_000} MP.`,
     });
   try {
-    await sharp(path, { failOn: "error", limitInputPixels: attachmentImageMaxPixels })
+    await sharp(path, {
+      failOn: "error",
+      limitInputPixels: attachmentImageMaxPixels,
+    })
       .resize(1, 1)
       .toBuffer();
   } catch {
     throw damagedImage();
   }
-  return { kind: "image", width, height };
+  return {
+    kind: "image",
+    width,
+    height,
+  };
 }
 
 /**

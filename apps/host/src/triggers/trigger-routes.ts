@@ -11,20 +11,16 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { TriggerService } from "./trigger-service.js";
 import type { HostAuthenticator } from "../identity/auth.js";
-
 const WebhookParamsSchema = z.strictObject({
   routeKey: z.string().regex(/^wh_[A-Za-z0-9_-]{32}$/),
 });
 const webhookRetryAfterSeconds = 300;
-
 export function createTriggerRpcHandlers(
   triggers: TriggerService,
 ): Pick<HostApiHandlers, "triggers.get" | "triggers.list"> {
   return {
     "triggers.get": async (input, context) => {
-      const detail = await triggers.get(requireUserId(context), input.triggerId, 25, {
-        kind: "user",
-      });
+      const detail = await triggers.get(requireUserId(context), input.triggerId, 25);
       return rpcSuccess(hostApi["triggers.get"].success.parse(detail));
     },
     "triggers.list": async (input, context) =>
@@ -32,23 +28,29 @@ export function createTriggerRpcHandlers(
         hostApi["triggers.list"].success.parse({
           // The Automations page groups everything its owner has; the list
           // answers as many as the response carries.
-          triggers: await triggers.list(
-            requireUserId(context),
-            {
-              limit: 100,
-              ...(input.systemRole ? { systemRole: input.systemRole } : {}),
-              ...(input.anchorThreadId ? { anchorThreadId: input.anchorThreadId } : {}),
-              ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
-            },
-            { kind: "user" },
-          ),
+          triggers: await triggers.list(requireUserId(context), {
+            limit: 100,
+            ...(input.systemRole
+              ? {
+                  systemRole: input.systemRole,
+                }
+              : {}),
+            ...(input.anchorThreadId
+              ? {
+                  anchorThreadId: input.anchorThreadId,
+                }
+              : {}),
+          }),
         }),
       ),
   };
 }
-
-type TriggerCommand = Extract<HostApiCommand, { readonly type: `trigger.${string}` }>;
-
+type TriggerCommand = Extract<
+  HostApiCommand,
+  {
+    readonly type: `trigger.${string}`;
+  }
+>;
 export async function handleTriggerCommand(
   triggers: TriggerService,
   command: TriggerCommand,
@@ -74,9 +76,21 @@ export async function handleTriggerCommand(
           ownerId,
           {
             expectedRevisionId: command.input.expectedRevisionId,
-            ...(command.input.name === undefined ? {} : { name: command.input.name }),
-            ...(command.input.program === undefined ? {} : { program: command.input.program }),
-            ...(command.input.source === undefined ? {} : { source: command.input.source }),
+            ...(command.input.name === undefined
+              ? {}
+              : {
+                  name: command.input.name,
+                }),
+            ...(command.input.program === undefined
+              ? {}
+              : {
+                  program: command.input.program,
+                }),
+            ...(command.input.source === undefined
+              ? {}
+              : {
+                  source: command.input.source,
+                }),
             triggerId: command.triggerId,
           },
           null,
@@ -113,7 +127,11 @@ export async function handleTriggerCommand(
             await triggers.cancel(
               ownerId,
               {
-                ...(command.occurrenceId ? { occurrenceId: command.occurrenceId } : {}),
+                ...(command.occurrenceId
+                  ? {
+                      occurrenceId: command.occurrenceId,
+                    }
+                  : {}),
                 triggerId: command.triggerId,
               },
               null,
@@ -124,7 +142,6 @@ export async function handleTriggerCommand(
       };
   }
 }
-
 export function registerTriggerRoutes(
   app: FastifyInstance,
   _authenticator: HostAuthenticator,
@@ -138,7 +155,11 @@ export function registerTriggerRoutes(
     let result: Awaited<ReturnType<TriggerService["acceptWebhook"]>>;
     try {
       result = await triggers.acceptWebhook({
-        ...(deliveryId ? { deliveryId } : {}),
+        ...(deliveryId
+          ? {
+              deliveryId,
+            }
+          : {}),
         headers,
         method: request.method,
         payload: normalizeWebhookPayload(request.body, request.headers["content-type"]),
@@ -152,7 +173,13 @@ export function registerTriggerRoutes(
       return reply
         .header("retry-after", String(webhookRetryAfterSeconds))
         .status(429)
-        .send({ error: { code: error.code, message: error.message, retryable: true } });
+        .send({
+          error: {
+            code: error.code,
+            message: error.message,
+            retryable: true,
+          },
+        });
     }
     return reply.status(202).send({
       occurrenceId: TriggerOccurrenceIdSchema.parse(result.occurrence.id),
@@ -160,22 +187,25 @@ export function registerTriggerRoutes(
     });
   });
 }
-
 function requireUserId(context: HostApiServerContext): UserId {
   if (!context.session) {
-    throw new OpensteerError({ code: "unauthorized", message: "Authentication required" });
+    throw new OpensteerError({
+      code: "unauthorized",
+      message: "Authentication required",
+    });
   }
   return context.session.user.id;
 }
-
 function bearerToken(value: string | undefined): string {
   const match = /^Bearer ([^\s]{20,4096})$/u.exec(value ?? "");
   if (!match?.[1]) {
-    throw new OpensteerError({ code: "not_found", message: "Webhook not found" });
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Webhook not found",
+    });
   }
   return match[1];
 }
-
 function selectedWebhookHeaders(
   headers: FastifyRequest["headers"],
 ): Readonly<Record<string, string>> {
@@ -197,7 +227,6 @@ function selectedWebhookHeaders(
     }),
   );
 }
-
 function webhookDeliveryId(headers: Readonly<Record<string, string>>): string | undefined {
   return (
     headers["x-github-delivery"] ??
@@ -207,7 +236,6 @@ function webhookDeliveryId(headers: Readonly<Record<string, string>>): string | 
     headers["x-request-id"]
   )?.slice(0, 512);
 }
-
 function normalizeWebhookPayload(body: unknown, contentType: string | undefined): unknown {
   if (!Buffer.isBuffer(body)) return body ?? null;
   const mediaType =
@@ -215,5 +243,9 @@ function normalizeWebhookPayload(body: unknown, contentType: string | undefined)
   if (mediaType.startsWith("text/") || mediaType === "application/x-www-form-urlencoded") {
     return body.toString("utf8");
   }
-  return { contentType: mediaType, data: body.toString("base64"), encoding: "base64" };
+  return {
+    contentType: mediaType,
+    data: body.toString("base64"),
+    encoding: "base64",
+  };
 }

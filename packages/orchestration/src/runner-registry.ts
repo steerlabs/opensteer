@@ -1,3 +1,4 @@
+import type { z } from "zod";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { delay } from "@opensteer/shared/delay";
@@ -14,7 +15,6 @@ import type {
   ThreadId,
   TriggerOccurrenceId,
   TriggerWatchActivationId,
-  WorkspaceId,
   UserId,
 } from "@opensteer/core";
 import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
@@ -47,15 +47,12 @@ import {
   type RunnerCommand,
   type RunnerCommandAccepted,
   type RunnerConnectionId,
-  type HostWorkspaceLocalRequest,
   type RunnerDescriptor,
   type RunnerOperationalMessage,
-  type RunnerWorkspaceLocalResult,
   type WatchReconcileActivation,
-  type WorkspaceStorageFence,
+  type TaskRuntimeFenceSchema,
 } from "@opensteer/protocol";
 import { CommandDispatchError } from "./execution-coordinator.js";
-
 export interface RunnerPeer {
   readonly id: string;
   send(message: HostToRunnerMessage): Promise<void>;
@@ -85,7 +82,6 @@ export interface RunnerAuxiliaryPeer {
   readonly id: string;
   close(code: number, reason: string): void;
 }
-
 export interface RunnerIdentity extends RunnerDescriptor {
   /** The enrollment's grant, which the advertised modules never exceed. */
   readonly allowedModules: readonly RunnerModuleName[];
@@ -102,14 +98,12 @@ export interface RunnerIdentity extends RunnerDescriptor {
   readonly environmentIds: readonly EnvironmentId[];
   readonly fence: RunnerConnectionFence;
 }
-
 export interface RunnerAuxiliaryStream {
   readonly auxiliaryStreamId: RunnerAuxiliaryStreamId;
   readonly fence: RunnerAuxiliaryFrameFence;
   readonly identity: RunnerIdentity;
   readonly streamLeaseExpiresAt: string;
 }
-
 export type RunnerStreamLossReason =
   | "host-shutdown"
   | "lease-expired"
@@ -131,48 +125,61 @@ export type RunnerCommandReceipt = Omit<RunnerCommandAccepted, keyof RunnerConne
  * Host, leaves them to their leases and to reattachment.
  */
 export type RunnerDisconnectReason = "lost" | "replaced" | "revoked" | "shutdown" | "superseded";
-
 export interface RunnerDisconnectScope {
   readonly reason: RunnerDisconnectReason;
   readonly runIds: readonly RunId[];
   readonly triggerOccurrenceIds: readonly TriggerOccurrenceId[];
 }
-
-export type RunnerLive = Extract<RunnerOperationalMessage, { readonly type: "runner.live" }>;
+export type RunnerLive = Extract<
+  RunnerOperationalMessage,
+  {
+    readonly type: "runner.live";
+  }
+>;
 /** What a refused Runner report is answered for: one Run, under one binding. */
 export type RefusedRunnerReport = Pick<PendingAgentEvent, "bindingGeneration" | "runId">;
 export type RunnerAttach = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.executions.attach" }
+  {
+    readonly type: "runner.executions.attach";
+  }
 >;
 export type RunnerAttachResult = Extract<
   HostToRunnerMessage,
-  { readonly type: "host.executions.attached" }
+  {
+    readonly type: "host.executions.attached";
+  }
 >["results"][number];
-
 type RunnerSessionBound = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.session-bound" }
+  {
+    readonly type: "runner.session-bound";
+  }
 >;
-
 type RunnerTriggerResult = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.trigger-result" }
+  {
+    readonly type: "runner.trigger-result";
+  }
 >;
 type RunnerWatchStatus = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.watch-status" }
+  {
+    readonly type: "runner.watch-status";
+  }
 >;
-
 type RunnerHarnessCatalogInvalidated = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.harness-catalog-invalidated" }
+  {
+    readonly type: "runner.harness-catalog-invalidated";
+  }
 >;
 type RunnerHarnessInstallation = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.harness-installation" }
+  {
+    readonly type: "runner.harness-installation";
+  }
 >;
-
 export interface RunnerRegistryHooks {
   authorize(identity: RunnerIdentity): Promise<void>;
   /** Persist the Runner receipt before any causally later event is admitted. */
@@ -255,7 +262,10 @@ export interface RunnerRegistryHooks {
   issueAuxiliaryTicket?(
     identity: RunnerIdentity,
     module: RunnerAuxiliaryModule,
-  ): Promise<{ readonly expiresAt: string; readonly ticket: string }>;
+  ): Promise<{
+    readonly expiresAt: string;
+    readonly ticket: string;
+  }>;
   /**
    * Fresh capability tokens for a Run this Runner boot holds, or a refusal once
    * its grant has ended. A throw means the Host could not decide now. Only the
@@ -266,12 +276,18 @@ export interface RunnerRegistryHooks {
     runId: RunId,
   ): Promise<
     Exclude<
-      Extract<HostToRunnerMessage, { type: "host.grants.credentials" }>["result"],
-      { readonly status: "unavailable" }
+      Extract<
+        HostToRunnerMessage,
+        {
+          type: "host.grants.credentials";
+        }
+      >["result"],
+      {
+        readonly status: "unavailable";
+      }
     >
   >;
 }
-
 interface PendingAck {
   readonly beforeAck?: () => Promise<void>;
   readonly commandType: RunnerCommand["type"];
@@ -280,7 +296,6 @@ interface PendingAck {
   readonly reject: (error: unknown) => void;
   readonly resolve: (result: RunnerCommandAccepted) => void;
 }
-
 interface PendingTriggerProgram {
   readonly reject: (error: unknown) => void;
   readonly resolve: () => void;
@@ -293,15 +308,15 @@ interface PendingTriggerProgram {
  */
 export type HarnessCatalogRequestDefinitions = Extract<
   HostToRunnerMessage,
-  { readonly type: "host.reconcile-harnesses" }
+  {
+    readonly type: "host.reconcile-harnesses";
+  }
 >["harnesses"];
-
 interface PendingCatalog {
   readonly expected: ReadonlyMap<string, string>;
   readonly reject: (error: unknown) => void;
   readonly resolve: (catalogs: readonly HarnessInstanceCatalog[]) => void;
 }
-
 interface PendingHarnessAuthentication {
   readonly driverKind: HarnessId;
   readonly harnessInstanceId: HarnessInstanceId;
@@ -314,39 +329,27 @@ interface PendingHarnessAuthentication {
  * the registry knows which socket is current, and a request fenced to a stale
  * one must never be sent at all.
  */
-export type WorkspaceLocalRequest = DistributiveOmit<HostWorkspaceLocalRequest, "fence">;
-
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
-
 type BackgroundTextResult = Extract<
   RunnerOperationalMessage,
-  { readonly type: "runner.background-text-result" }
+  {
+    readonly type: "runner.background-text-result";
+  }
 >["result"];
-
 interface PendingBackgroundText {
   readonly expiresAt: number;
   readonly reject: (error: unknown) => void;
   readonly resolve: (result: BackgroundTextResult) => void;
 }
-
 interface PendingModelServers {
   readonly reject: (error: unknown) => void;
   readonly resolve: (servers: readonly ModelServer[]) => void;
 }
-
-interface PendingWorkspaceLocal {
-  readonly operationId: string;
-  readonly reject: (error: unknown) => void;
-  readonly resolve: (result: RunnerWorkspaceLocalResult) => void;
-}
-
 interface OwnedRunBinding {
   readonly environmentId: EnvironmentId;
   readonly bindingGeneration: number;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
-
 interface RunnerConnection {
   /**
    * Whether this connection's Runner has said which Runs it holds and the Host
@@ -355,7 +358,13 @@ interface RunnerConnection {
    */
   attached: boolean;
   /** Committed progress not yet acknowledged to the Runner, per Run. */
-  readonly eventAcks: Map<RunId, { sessionBound: boolean; throughOrdinal: number }>;
+  readonly eventAcks: Map<
+    RunId,
+    {
+      sessionBound: boolean;
+      throughOrdinal: number;
+    }
+  >;
   eventAckTimer: NodeJS.Timeout | undefined;
   /**
    * Runs the Host ended without this Runner. Their later events and progress
@@ -374,19 +383,28 @@ interface RunnerConnection {
   readonly pendingHarnessAuthentications: Map<string, PendingHarnessAuthentication>;
   readonly pendingVoice: Map<
     string,
-    { resolve: (result: RunnerVoiceResult) => void; reject: (error: unknown) => void }
+    {
+      resolve: (result: RunnerVoiceResult) => void;
+      reject: (error: unknown) => void;
+    }
   >;
   readonly pendingBackgroundText: Map<string, PendingBackgroundText>;
   readonly pendingModelServers: Map<string, PendingModelServers>;
   readonly pendingTriggerPrograms: Map<TriggerOccurrenceId, PendingTriggerProgram>;
-  readonly pendingWorkspaceLocal: Map<string, PendingWorkspaceLocal>;
   readonly pendingApps: Map<
     string,
-    { appId: string; resolve: (result: RunnerAppResult) => void; reject: (error: unknown) => void }
+    {
+      appId: string;
+      resolve: (result: RunnerAppResult) => void;
+      reject: (error: unknown) => void;
+    }
   >;
   readonly pendingRunFiles: Map<
     string,
-    { resolve: (result: RunnerRunFileResult) => void; reject: (error: unknown) => void }
+    {
+      resolve: (result: RunnerRunFileResult) => void;
+      reject: (error: unknown) => void;
+    }
   >;
   /**
    * Work that may have crossed the transport boundary on this exact socket.
@@ -448,7 +466,6 @@ interface RunnerConnection {
   catalogGeneration: number;
   lastSeenAt: number;
 }
-
 interface RunnerRegistryOptions {
   readonly commandAckTimeoutMs?: number;
   readonly connectionLeaseMs?: number;
@@ -477,7 +494,6 @@ const maximumHeartbeatClockSkewMs = 30_000;
  * Deployment is unreachable.
  */
 export const interactiveRunnerRequestTimeoutMs = 20_000;
-
 interface AuxiliaryStream {
   readonly admittedAt: number;
   readonly auxiliaryStreamId: RunnerAuxiliaryStreamId;
@@ -490,7 +506,6 @@ interface AuxiliaryStream {
   leaseExpiresAt: number;
   leaseTimer: NodeJS.Timeout | undefined;
 }
-
 export class RunnerRegistry {
   readonly #hooks: RunnerRegistryHooks;
   readonly #commandAckTimeoutMs: number;
@@ -507,18 +522,24 @@ export class RunnerRegistry {
   // only closes the concurrent dispatch interval and therefore needs no TTL.
   readonly #canceledRuns = new Map<
     RunId,
-    { active: boolean; pendingInterrupts: number; threadId: string }
+    {
+      active: boolean;
+      pendingInterrupts: number;
+      threadId: string;
+    }
   >();
   readonly #canceledTriggerOccurrences = new Map<
     TriggerOccurrenceId,
-    { active: boolean; pendingInterrupts: number }
+    {
+      active: boolean;
+      pendingInterrupts: number;
+    }
   >();
   readonly #hookOperations = new Set<Promise<unknown>>();
   readonly #revokedRunnerIds = new Set<RunnerId>();
   readonly #lifetime = new AbortController();
   #closing = false;
   #closePromise: Promise<void> | undefined;
-
   constructor(options: RunnerRegistryOptions) {
     this.#hooks = options.hooks;
     this.#commandAckTimeoutMs = options.commandAckTimeoutMs ?? 15_000;
@@ -529,19 +550,27 @@ export class RunnerRegistry {
     this.#now = options.now ?? Date.now;
     this.#executionLeaseMs = options.executionLeaseMs ?? defaultExecutionLeaseMs;
   }
-
   async register(identity: RunnerIdentity, peer: RunnerPeer): Promise<RunnerIdentity> {
     this.#assertOpen();
     if (this.#revokedRunnerIds.has(identity.runnerId)) {
-      throw new OpensteerError({ code: "forbidden", message: "Runner identity is revoked" });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Runner identity is revoked",
+      });
     }
     if (this.#byPeer.has(peer.id)) {
-      throw new OpensteerError({ code: "conflict", message: "Runner peer is already registered" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Runner peer is already registered",
+      });
     }
     await this.#runHook(() => this.#hooks.authorize(identity));
     this.#assertOpen();
     if (this.#revokedRunnerIds.has(identity.runnerId)) {
-      throw new OpensteerError({ code: "forbidden", message: "Runner identity is revoked" });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Runner identity is revoked",
+      });
     }
     for (const environmentId of identity.environmentIds) {
       const owner = this.#byEnvironment.get(environmentId);
@@ -552,7 +581,6 @@ export class RunnerRegistry {
         });
       }
     }
-
     const prior = this.#byRunner.get(identity.runnerId);
     if (prior) {
       if (prior.identity.connectionGeneration >= identity.connectionGeneration) {
@@ -604,7 +632,6 @@ export class RunnerRegistry {
       pendingVoice: new Map(),
       pendingBackgroundText: new Map(),
       pendingTriggerPrograms: new Map(),
-      pendingWorkspaceLocal: new Map(),
       pendingApps: new Map(),
       pendingRunFiles: new Map(),
       ownedRunIds: new Set(),
@@ -638,7 +665,11 @@ export class RunnerRegistry {
     } catch (error) {
       await this.#disconnect(
         connection,
-        error instanceof Error ? error : new Error("Runner welcome failed", { cause: error }),
+        error instanceof Error
+          ? error
+          : new Error("Runner welcome failed", {
+              cause: error,
+            }),
         1011,
       );
       throw error;
@@ -654,15 +685,12 @@ export class RunnerRegistry {
     }
     return identity;
   }
-
   identityForEnvironment(environmentId: EnvironmentId): RunnerIdentity | undefined {
     return this.#byEnvironment.get(environmentId)?.identity;
   }
-
   identityForRunner(runnerId: RunnerId): RunnerIdentity | undefined {
     return this.#byRunner.get(runnerId)?.identity;
   }
-
   isAvailable(environmentId: EnvironmentId): boolean {
     return this.#byEnvironment.has(environmentId);
   }
@@ -687,7 +715,6 @@ export class RunnerRegistry {
     const capacity = connection.identity.modules.agents?.maxConcurrentRuns ?? 1;
     return connection.ownedRunIds.size + dispatching < capacity;
   }
-
   isRunnerConnected(runnerId: RunnerId): boolean {
     return this.#byRunner.has(runnerId);
   }
@@ -768,7 +795,10 @@ export class RunnerRegistry {
       });
     }
     if (this.#auxiliaryByPeer.has(input.peer.id)) {
-      throw new OpensteerError({ code: "conflict", message: "Auxiliary peer is already admitted" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Auxiliary peer is already admitted",
+      });
     }
     const now = this.#now();
     const auxiliaryStreamId = `rax_${randomUUID()}` as RunnerAuxiliaryStreamId;
@@ -776,7 +806,11 @@ export class RunnerRegistry {
       admittedAt: now,
       auxiliaryStreamId,
       detached: false,
-      fence: { ...connection.identity.fence, auxiliaryStreamId, module: input.module },
+      fence: {
+        ...connection.identity.fence,
+        auxiliaryStreamId,
+        module: input.module,
+      },
       identity: connection.identity,
       lastHeartbeatSentAt: undefined,
       leaseExpiresAt: now + this.#connectionLeaseMs,
@@ -808,18 +842,23 @@ export class RunnerRegistry {
       });
     }
     if (stream.leaseExpiresAt <= this.#now()) {
-      throw new OpensteerError({ code: "conflict", message: "The auxiliary stream lease expired" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The auxiliary stream lease expired",
+      });
     }
     if (
       stream.fence.auxiliaryStreamId !== fence.auxiliaryStreamId ||
       stream.fence.module !== fence.module ||
       !sameRunnerConnectionFence(stream.fence, fence)
     ) {
-      throw new OpensteerError({ code: "conflict", message: "The auxiliary fence is stale" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "The auxiliary fence is stale",
+      });
     }
     return auxiliarySnapshot(stream);
   }
-
   heartbeatAuxiliary(peer: RunnerAuxiliaryPeer, sentAt: string): RunnerAuxiliaryStream {
     const stream = this.#auxiliaryByPeer.get(peer.id);
     if (!stream || stream.peer !== peer) {
@@ -847,13 +886,11 @@ export class RunnerRegistry {
     stream.leaseTimer = this.#auxiliaryLeaseTimer(stream);
     return auxiliarySnapshot(stream);
   }
-
   detachAuxiliary(peer: RunnerAuxiliaryPeer): void {
     const stream = this.#auxiliaryByPeer.get(peer.id);
     if (!stream || stream.peer !== peer) return;
     this.#removeAuxiliary(stream, "transport-disconnected");
   }
-
   #removeAuxiliary(stream: AuxiliaryStream, reason: RunnerStreamLossReason): void {
     if (stream.detached) return;
     stream.detached = true;
@@ -871,7 +908,6 @@ export class RunnerRegistry {
       // A module observer cannot prevent identity cleanup.
     }
   }
-
   #auxiliaryLeaseTimer(stream: AuxiliaryStream): NodeJS.Timeout {
     const timer = setTimeout(
       () => {
@@ -884,7 +920,6 @@ export class RunnerRegistry {
     timer.unref();
     return timer;
   }
-
   #leaseTimer(connection: RunnerConnection): NodeJS.Timeout {
     const timer = setTimeout(
       () => {
@@ -911,10 +946,16 @@ export class RunnerRegistry {
    */
   #assertFence(connection: RunnerConnection, fence: RunnerConnectionFence): void {
     if (connection.leaseExpiresAt <= this.#now()) {
-      throw new OpensteerError({ code: "conflict", message: "Runner connection lease expired" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Runner connection lease expired",
+      });
     }
     if (!sameRunnerConnectionFence(connection.identity.fence, fence)) {
-      throw new OpensteerError({ code: "conflict", message: "Runner connection fence is stale" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Runner connection fence is stale",
+      });
     }
   }
 
@@ -957,14 +998,16 @@ export class RunnerRegistry {
    */
   async disconnectConnection(
     identity: Pick<RunnerIdentity, "connectionId" | "runnerId">,
-    options: { readonly code: number; readonly reason: string },
+    options: {
+      readonly code: number;
+      readonly reason: string;
+    },
   ): Promise<boolean> {
     const connection = this.#byRunner.get(identity.runnerId);
     if (!connection || connection.identity.connectionId !== identity.connectionId) return false;
     await this.#disconnect(connection, new Error(options.reason), options.code);
     return true;
   }
-
   async revoke(runnerId: RunnerId): Promise<void> {
     this.#revokedRunnerIds.add(runnerId);
     const connection = this.#byRunner.get(runnerId);
@@ -976,13 +1019,11 @@ export class RunnerRegistry {
       );
     }
   }
-
   isHarnessPreparing(environmentId: EnvironmentId, harnessInstanceId: HarnessInstanceId): boolean {
     return (
       this.#byEnvironment.get(environmentId)?.preparingHarnesses.has(harnessInstanceId) ?? false
     );
   }
-
   canRunHarness(environmentId: EnvironmentId, driverKind: HarnessId): boolean {
     const connection = this.#byEnvironment.get(environmentId);
     if (!connection || connection.readiness.get("agents")?.readiness === "unavailable") {
@@ -993,7 +1034,6 @@ export class RunnerRegistry {
     );
     return advertised !== undefined && advertised.readiness !== "unavailable";
   }
-
   attachmentInputFailure(input: {
     readonly content: readonly ContentPart[];
     readonly driverKind: HarnessId;
@@ -1044,14 +1084,12 @@ export class RunnerRegistry {
     if (!model.acceptsImages) return "The selected model does not accept images";
     return null;
   }
-
   supportsLongRequestHold(environmentId: EnvironmentId, driverKind: HarnessId): boolean {
     const driver = this.#byEnvironment
       .get(environmentId)
       ?.identity.modules.agents?.harnessDrivers.find((entry) => entry.driverKind === driverKind);
     return driver?.readiness !== "unavailable" && driver?.longRequestHold === true;
   }
-
   supportsMessageAttachments(environmentId: EnvironmentId, driverKind: HarnessId): boolean {
     const advertised = this.#byEnvironment
       .get(environmentId)
@@ -1172,7 +1210,9 @@ export class RunnerRegistry {
     environmentId: EnvironmentId,
     harnesses: HarnessCatalogRequestDefinitions,
     signal: AbortSignal,
-    options?: { readonly fresh: boolean },
+    options?: {
+      readonly fresh: boolean;
+    },
   ): Promise<readonly HarnessInstanceCatalog[]> {
     const connection = this.#byEnvironment.get(environmentId);
     if (!connection) return [];
@@ -1192,7 +1232,6 @@ export class RunnerRegistry {
       }),
     );
   }
-
   #cachedCatalog(
     connection: RunnerConnection,
     harness: HarnessCatalogRequestDefinitions[number],
@@ -1251,7 +1290,11 @@ export class RunnerRegistry {
         await connection.peer.send({
           ...connection.identity.fence,
           harnesses: [...harnesses],
-          ...(inspect === undefined ? {} : { inspect: [...inspect] }),
+          ...(inspect === undefined
+            ? {}
+            : {
+                inspect: [...inspect],
+              }),
           requestId,
           type,
         });
@@ -1308,19 +1351,19 @@ export class RunnerRegistry {
     }
     return await withAbort(attempt, signal);
   }
-
   catalogForHarness(
     environmentId: EnvironmentId,
     harnessInstanceId: string,
   ): HarnessInstanceCatalog | undefined {
     return this.#byEnvironment.get(environmentId)?.catalogCache.get(harnessInstanceId)?.catalog;
   }
-
   async manageHarnessAuthentication(
     environmentId: EnvironmentId,
     request: Extract<
       HostToRunnerMessage,
-      { readonly type: "host.harness-authentication" }
+      {
+        readonly type: "host.harness-authentication";
+      }
     >["request"],
     signal: AbortSignal,
   ): Promise<HarnessAuthenticationState> {
@@ -1334,7 +1377,10 @@ export class RunnerRegistry {
     }
     const target =
       request.action === "start" || request.action === "logout" || request.action === "remove"
-        ? { driverKind: request.harness.driverKind, harnessInstanceId: request.harness.id }
+        ? {
+            driverKind: request.harness.driverKind,
+            harnessInstanceId: request.harness.id,
+          }
         : request;
     const requestId = CorrelationIdSchema.parse(`harness-auth:${randomUUID()}`);
     const pending = deferred<HarnessAuthenticationState>();
@@ -1366,7 +1412,6 @@ export class RunnerRegistry {
       connection.pendingHarnessAuthentications.delete(requestId);
     }
   }
-
   async voice(
     environmentId: EnvironmentId,
     userId: UserId,
@@ -1443,7 +1488,11 @@ export class RunnerRegistry {
         connection.peer
           .send({
             ...connection.identity.fence,
-            ...(address === undefined ? {} : { address }),
+            ...(address === undefined
+              ? {}
+              : {
+                  address,
+                }),
             requestId,
             type: "host.discover-model-servers",
           })
@@ -1459,9 +1508,8 @@ export class RunnerRegistry {
 
   /**
    * Asks the machine that holds a local directory to act on it. Everything the
-   * Host knows about that disk is second-hand, so the request is fenced to the
-   * exact connection and storage authority it was written for, and the answer
-   * is refused unless it echoes both back.
+   * The request is fenced to the folder's connected computer and app version;
+   * the answer must echo that fence.
    */
   async requestApp(
     environmentId: EnvironmentId,
@@ -1469,24 +1517,15 @@ export class RunnerRegistry {
     signal: AbortSignal,
   ): Promise<RunnerAppResult> {
     const connection = this.#byEnvironment.get(environmentId);
-    const authority = connection?.identity.modules.agents?.localStorage?.storageAuthorityId;
-    if (!connection || !authority)
+    if (!connection || request.spec.folder.computerId !== connection.identity.runnerId)
       throw new OpensteerError({
-        code: "workspace_unavailable",
-        message: "The app's computer is not connected with local storage",
+        code: "folder_unavailable",
+        message: "The app's hosting computer is not connected",
       });
-    if (
-      authority !== request.spec.binding.storageAuthorityId ||
-      environmentId !== request.spec.binding.ownerEnvironmentId
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        message: "The app's Workspace belongs to another disk",
-      });
-    const fence: WorkspaceStorageFence = {
+    const fence: z.infer<typeof TaskRuntimeFenceSchema> = {
       ...connection.identity.fence,
       environmentId,
-      storageAuthorityId: authority,
+      bindingGeneration: request.spec.version,
     };
     const pending = deferred<RunnerAppResult>();
     connection.pendingApps.set(request.requestId, {
@@ -1499,13 +1538,23 @@ export class RunnerRegistry {
       if (canceled) return;
       canceled = true;
       void connection.peer
-        .send({ type: "host.app.cancel", requestId: request.requestId, spec: request.spec, fence })
+        .send({
+          type: "host.app.cancel",
+          requestId: request.requestId,
+          spec: request.spec,
+          fence,
+        })
         .catch(() => undefined);
     };
-    signal.addEventListener("abort", cancel, { once: true });
+    signal.addEventListener("abort", cancel, {
+      once: true,
+    });
     try {
       signal.throwIfAborted();
-      await connection.peer.send({ ...request, fence });
+      await connection.peer.send({
+        ...request,
+        fence,
+      });
       const result = await withDeadline(
         pending.promise,
         30_000,
@@ -1514,12 +1563,12 @@ export class RunnerRegistry {
       );
       if (
         !sameRunnerConnectionFence(result.fence, fence) ||
-        result.fence.storageAuthorityId !== authority ||
+        result.fence.bindingGeneration !== fence.bindingGeneration ||
         result.fence.environmentId !== environmentId
       )
         throw new OpensteerError({
           code: "conflict",
-          message: "App response belongs to another connection or disk",
+          message: "App response belongs to another connection or app version",
         });
       return result;
     } catch (error) {
@@ -1540,11 +1589,21 @@ export class RunnerRegistry {
     runnerId: RunnerId,
     request:
       | Pick<
-          Extract<HostRunFileRequest, { type: "host.run-file.receive" }>,
+          Extract<
+            HostRunFileRequest,
+            {
+              type: "host.run-file.receive";
+            }
+          >,
           "execution" | "transfers" | "type"
         >
       | Pick<
-          Extract<HostRunFileRequest, { type: "host.run-file.send" }>,
+          Extract<
+            HostRunFileRequest,
+            {
+              type: "host.run-file.send";
+            }
+          >,
           "execution" | "files" | "type"
         >,
     signal: AbortSignal,
@@ -1564,13 +1623,23 @@ export class RunnerRegistry {
       if (canceled) return;
       canceled = true;
       void connection.peer
-        .send({ ...fence, requestId, type: "host.run-file.cancel" })
+        .send({
+          ...fence,
+          requestId,
+          type: "host.run-file.cancel",
+        })
         .catch(() => undefined);
     };
-    signal.addEventListener("abort", cancel, { once: true });
+    signal.addEventListener("abort", cancel, {
+      once: true,
+    });
     try {
       signal.throwIfAborted();
-      await connection.peer.send({ ...fence, ...request, requestId });
+      await connection.peer.send({
+        ...fence,
+        ...request,
+        requestId,
+      });
       const result = await withDeadline(
         pending.promise,
         runFileRequestTimeoutMs,
@@ -1591,98 +1660,43 @@ export class RunnerRegistry {
       connection.pendingRunFiles.delete(requestId);
     }
   }
-
   appConnectionSignal(environmentId: EnvironmentId, connectionId: RunnerConnectionId): AbortSignal {
     const connection = this.#byEnvironment.get(environmentId);
     return connection?.identity.connectionId === connectionId
       ? connection.disconnected.controller.signal
       : AbortSignal.abort(new Error("App connection was lost"));
   }
-
-  async requestWorkspaceLocal(
-    environmentId: EnvironmentId,
-    request: WorkspaceLocalRequest,
-    signal: AbortSignal,
-  ): Promise<RunnerWorkspaceLocalResult> {
-    const connection = this.#byEnvironment.get(environmentId);
-    if (!connection) {
-      throw new OpensteerError({
-        code: "workspace_unavailable",
-        message: "That computer is not connected right now.",
-        retryable: true,
-      });
-    }
-    const authority = connection.identity.modules.agents?.localStorage?.storageAuthorityId;
-    if (authority === undefined) {
-      throw new OpensteerError({
-        code: "workspace_unavailable",
-        message: "That computer does not offer directories of its own.",
-        retryable: true,
-      });
-    }
-    if (authority !== request.binding.storageAuthorityId) {
-      // The environment reconnected from a different disk. Answering from it
-      // would report the original directory missing, or destroy the wrong one.
-      throw new OpensteerError({
-        code: "conflict",
-        message: "That computer does not hold the disk this Workspace lives on.",
-      });
-    }
-    const fence: WorkspaceStorageFence = {
-      ...connection.identity.fence,
-      environmentId,
-      storageAuthorityId: authority,
-    };
-    const pending = deferred<RunnerWorkspaceLocalResult>();
-    connection.pendingWorkspaceLocal.set(request.requestId, {
-      operationId: request.operationId,
-      reject: pending.reject,
-      resolve: pending.resolve,
-    });
-    try {
-      // A workspace-local request carries the connection fence inside its
-      // storage fence, which also names the disk. Repeating the bare fence
-      // beside it would be a second, weaker copy of the same statement.
-      await connection.peer.send({ ...request, fence } as HostToRunnerMessage);
-      const result = await withDeadline(
-        pending.promise,
-        this.#commandAckTimeoutMs * 2,
-        signal,
-        "The machine holding this Workspace did not answer in time",
-      );
-      if (
-        !sameRunnerConnectionFence(result.fence, fence) ||
-        result.fence.environmentId !== fence.environmentId ||
-        result.fence.storageAuthorityId !== fence.storageAuthorityId
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "The machine answered for another connection or another disk.",
-        });
-      }
-      return result;
-    } finally {
-      connection.pendingWorkspaceLocal.delete(request.requestId);
-    }
-  }
-
   /** One ephemeral request, bound to this exact authenticated connection until its deadline. */
   async backgroundText(
     request: Omit<
-      Extract<HostToRunnerMessage, { type: "host.background-text" }>,
+      Extract<
+        HostToRunnerMessage,
+        {
+          type: "host.background-text";
+        }
+      >,
       keyof RunnerConnectionFence
     >,
     signal: AbortSignal,
   ) {
     const connection = this.#byEnvironment.get(request.environmentId);
     if (!connection?.attached || !connection.identity.capabilities.includes("background-text-v1")) {
-      throw new OpensteerError({ code: "runner_offline", message: "Background Runner is offline" });
+      throw new OpensteerError({
+        code: "runner_offline",
+        message: "Background Runner is offline",
+      });
     }
     const expiresAt = Date.parse(request.deadline);
     const pending = deferred<BackgroundTextResult>();
-    connection.pendingBackgroundText.set(request.attemptId, { ...pending, expiresAt });
+    connection.pendingBackgroundText.set(request.attemptId, {
+      ...pending,
+      expiresAt,
+    });
     try {
-      await connection.peer.send({ ...request, ...connection.identity.fence });
+      await connection.peer.send({
+        ...request,
+        ...connection.identity.fence,
+      });
       const result = await withDeadline(
         pending.promise,
         Math.max(1, expiresAt - Date.now()),
@@ -1693,7 +1707,10 @@ export class RunnerRegistry {
         this.#byEnvironment.get(request.environmentId) !== connection ||
         Date.now() >= expiresAt
       ) {
-        throw new OpensteerError({ code: "conflict", message: "Background attempt expired" });
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Background attempt expired",
+        });
       }
       return result;
     } finally {
@@ -1732,8 +1749,18 @@ export class RunnerRegistry {
         ? current
         : undefined;
     let runCancellation:
-      { active: boolean; pendingInterrupts: number; threadId: string } | undefined;
-    let triggerCancellation: { active: boolean; pendingInterrupts: number } | undefined;
+      | {
+          active: boolean;
+          pendingInterrupts: number;
+          threadId: string;
+        }
+      | undefined;
+    let triggerCancellation:
+      | {
+          active: boolean;
+          pendingInterrupts: number;
+        }
+      | undefined;
     if (command.type === "run.interrupt") {
       const existing = this.#canceledRuns.get(command.runId);
       if (existing && existing.threadId !== command.threadId) {
@@ -1812,9 +1839,21 @@ export class RunnerRegistry {
     connection.pendingAcks.set(command.commandId, {
       ...ack,
       commandType: command.type,
-      ...(beforeAck ? { beforeAck } : {}),
-      ...(runId ? { runId } : {}),
-      ...(occurrenceId ? { triggerOccurrenceId: occurrenceId } : {}),
+      ...(beforeAck
+        ? {
+            beforeAck,
+          }
+        : {}),
+      ...(runId
+        ? {
+            runId,
+          }
+        : {}),
+      ...(occurrenceId
+        ? {
+            triggerOccurrenceId: occurrenceId,
+          }
+        : {}),
     });
     // A Trigger program's dispatch lasts until its result. A Run's ends when the
     // Runner accepts it: its outcome arrives as events, and a Run that waits on
@@ -1833,7 +1872,6 @@ export class RunnerRegistry {
         bindingGeneration: command.context.bindingGeneration,
         environmentId: command.context.environmentId,
         threadId: command.context.threadId,
-        workspaceId: command.context.workspaceId,
       });
     }
     if (completion && occurrenceId) {
@@ -1885,7 +1923,9 @@ export class RunnerRegistry {
         throw new CommandDispatchError(
           error instanceof Error ? error.message : "Runner dispatch was refused",
           "retry",
-          { cause: error },
+          {
+            cause: error,
+          },
         );
       }
       // Once bytes may have crossed the socket, a missing acknowledgement is
@@ -1898,21 +1938,24 @@ export class RunnerRegistry {
           connection,
           error instanceof Error
             ? error
-            : new Error("Runner command acknowledgement failed", { cause: error }),
+            : new Error("Runner command acknowledgement failed", {
+                cause: error,
+              }),
           1011,
         );
       }
       throw new CommandDispatchError(
         error instanceof Error ? error.message : "Runner dispatch failed",
         sent ? "uncertain" : "retry",
-        { cause: error },
+        {
+          cause: error,
+        },
       );
     } finally {
       connection.pendingAcks.delete(command.commandId);
       this.#releaseCancellation(command, runCancellation, triggerCancellation);
     }
   }
-
   async reconcileWatches(
     environmentId: EnvironmentId,
     reconcileGeneration: number,
@@ -1929,15 +1972,19 @@ export class RunnerRegistry {
         type: "watch.reconcile",
       },
       signal,
-      { beforeAck: async () => undefined },
+      {
+        beforeAck: async () => undefined,
+      },
     );
   }
-
   async handle(peer: RunnerPeer, message: RunnerOperationalMessage): Promise<void> {
     this.#assertOpen();
     const connection = this.#byPeer.get(peer.id);
     if (!connection)
-      throw new OpensteerError({ code: "forbidden", message: "Runner is not registered" });
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Runner is not registered",
+      });
     this.#assertFence(connection, connectionFenceOf(message));
     connection.lastSeenAt = this.#now();
     switch (message.type) {
@@ -1973,8 +2020,15 @@ export class RunnerRegistry {
           const result = await Promise.resolve()
             .then(() => this.#hooks.refreshRunCredentials?.(connection.identity, message.runId))
             .then(
-              (answer) => answer ?? ({ status: "refused" } as const),
-              () => ({ status: "unavailable" }) as const,
+              (answer) =>
+                answer ??
+                ({
+                  status: "refused",
+                } as const),
+              () =>
+                ({
+                  status: "unavailable",
+                }) as const,
             );
           await connection.peer.send({
             ...connection.identity.fence,
@@ -1997,7 +2051,10 @@ export class RunnerRegistry {
           ...connection.identity,
           modules: {
             ...connection.identity.modules,
-            shell: { ...shell, fullDiskAccess: message.fullDiskAccess },
+            shell: {
+              ...shell,
+              fullDiskAccess: message.fullDiskAccess,
+            },
           },
         };
         if (this.#hooks.onShellFullDiskAccess) {
@@ -2090,7 +2147,9 @@ export class RunnerRegistry {
                 ? message.error.message
                 : "The AI engine could not be started.",
               message.error.retryable ? "retry" : "failed",
-              { cause: message.error },
+              {
+                cause: message.error,
+              },
             ),
           );
         }
@@ -2135,7 +2194,14 @@ export class RunnerRegistry {
           event.type === "run.completed" ||
           event.type === "run.failed" ||
           event.type === "run.interrupted";
-        this.#acknowledge(connection, event.runId, { ordinal: event.ordinal }, terminal);
+        this.#acknowledge(
+          connection,
+          event.runId,
+          {
+            ordinal: event.ordinal,
+          },
+          terminal,
+        );
         if (terminal) this.#releaseRun(connection, event.runId);
         break;
       }
@@ -2152,8 +2218,7 @@ export class RunnerRegistry {
           !connection.identity.environmentIds.includes(message.environmentId) ||
           owned.bindingGeneration !== message.bindingGeneration ||
           owned.environmentId !== message.environmentId ||
-          owned.threadId !== progress.threadId ||
-          owned.workspaceId !== progress.workspaceId
+          owned.threadId !== progress.threadId
         ) {
           break;
         }
@@ -2201,7 +2266,14 @@ export class RunnerRegistry {
             break;
           }
         }
-        this.#acknowledge(connection, message.runId, { sessionBound: true }, false);
+        this.#acknowledge(
+          connection,
+          message.runId,
+          {
+            sessionBound: true,
+          },
+          false,
+        );
         break;
       case "runner.executions.attach":
         await this.#attach(connection, message);
@@ -2265,7 +2337,13 @@ export class RunnerRegistry {
         // A late answer to a request the Host gave up on, as for sign-in above.
         if (!pending) break;
         if (message.error === undefined) pending.resolve(message.servers);
-        else pending.reject(new OpensteerError({ code: "conflict", message: message.error }));
+        else
+          pending.reject(
+            new OpensteerError({
+              code: "conflict",
+              message: message.error,
+            }),
+          );
         break;
       }
       case "runner.app.result": {
@@ -2281,26 +2359,6 @@ export class RunnerRegistry {
       case "runner.run-file.result":
         connection.pendingRunFiles.get(message.requestId)?.resolve(message);
         break;
-      case "runner.workspace.local.provisioned":
-      case "runner.workspace.local.relocated":
-      case "runner.workspace.local.inspected":
-      case "runner.workspace.local.specialist.removed":
-      case "runner.workspace.local.destroyed":
-      case "runner.workspace.local.files.listed":
-      case "runner.workspace.local.files.read":
-      case "runner.workspace.local.error": {
-        const pending = connection.pendingWorkspaceLocal.get(message.requestId);
-        // A late answer to a request the Host gave up on, as for sign-in above.
-        if (!pending) break;
-        if (pending.operationId !== message.operationId) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The machine answered a different Workspace storage operation",
-          });
-        }
-        pending.resolve(message);
-        break;
-      }
       case "runner.harness-catalog-invalidated":
         connection.catalogGeneration += 1;
         connection.catalogCache.delete(message.harnessInstanceId);
@@ -2327,7 +2385,10 @@ export class RunnerRegistry {
                 ...agents,
                 harnessDrivers: agents.harnessDrivers.map((driver) =>
                   driver.driverKind === message.driverKind
-                    ? { ...driver, installation: message.installation }
+                    ? {
+                        ...driver,
+                        installation: message.installation,
+                      }
                     : driver,
                 ),
               },
@@ -2347,7 +2408,10 @@ export class RunnerRegistry {
   /** Tells this connection to stop Runs the Host has already ended. */
   async revokeRuns(
     runnerId: RunnerId,
-    revocations: readonly { readonly reason: string; readonly runId: RunId }[],
+    revocations: readonly {
+      readonly reason: string;
+      readonly runId: RunId;
+    }[],
   ): Promise<void> {
     const connection = this.#byRunner.get(runnerId);
     if (!connection || revocations.length === 0) return;
@@ -2364,7 +2428,6 @@ export class RunnerRegistry {
       type: "host.runs.revoked",
     });
   }
-
   async #refuseEvent(
     connection: RunnerConnection,
     event: RefusedRunnerReport,
@@ -2379,7 +2442,10 @@ export class RunnerRegistry {
     const owned = connection.ownedRunBindings.get(event.runId);
     if (owned && owned.bindingGeneration !== event.bindingGeneration) return;
     await this.revokeRuns(connection.identity.runnerId, [
-      { reason: refusal.message, runId: event.runId },
+      {
+        reason: refusal.message,
+        runId: event.runId,
+      },
     ]);
   }
 
@@ -2421,7 +2487,6 @@ export class RunnerRegistry {
         bindingGeneration: execution.bindingGeneration,
         environmentId: execution.environmentId,
         threadId: execution.threadId,
-        workspaceId: execution.workspaceId,
       });
     }
     await connection.peer.send({
@@ -2442,10 +2507,16 @@ export class RunnerRegistry {
   #acknowledge(
     connection: RunnerConnection,
     runId: RunId,
-    progress: { readonly ordinal?: number; readonly sessionBound?: true },
+    progress: {
+      readonly ordinal?: number;
+      readonly sessionBound?: true;
+    },
     immediately: boolean,
   ): void {
-    const pending = connection.eventAcks.get(runId) ?? { sessionBound: false, throughOrdinal: -1 };
+    const pending = connection.eventAcks.get(runId) ?? {
+      sessionBound: false,
+      throughOrdinal: -1,
+    };
     if (progress.ordinal !== undefined) {
       pending.throughOrdinal = Math.max(pending.throughOrdinal, progress.ordinal);
     }
@@ -2467,7 +2538,6 @@ export class RunnerRegistry {
     }, eventAckBatchMs);
     connection.eventAckTimer.unref?.();
   }
-
   async #flushAcknowledgements(connection: RunnerConnection): Promise<void> {
     if (connection.eventAcks.size === 0 || this.#byPeer.get(connection.peer.id) !== connection) {
       return;
@@ -2496,12 +2566,10 @@ export class RunnerRegistry {
     connection.observedRunIds.delete(runId);
     this.#canceledRuns.delete(runId);
   }
-
   disconnect(peer: RunnerPeer): void {
     const connection = this.#byPeer.get(peer.id);
     if (connection) void this.#disconnect(connection, new Error("Runner disconnected"));
   }
-
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
     this.#closing = true;
@@ -2509,7 +2577,6 @@ export class RunnerRegistry {
     this.#closePromise = this.#close();
     return this.#closePromise;
   }
-
   async #close(): Promise<void> {
     await Promise.all(
       [...this.#byRunner.values()].map((connection) =>
@@ -2522,7 +2589,6 @@ export class RunnerRegistry {
     this.#canceledRuns.clear();
     this.#canceledTriggerOccurrences.clear();
   }
-
   async #disconnect(
     connection: RunnerConnection,
     error: Error,
@@ -2580,7 +2646,6 @@ export class RunnerRegistry {
     for (const pending of connection.pendingVoice.values()) pending.reject(error);
     for (const pending of connection.pendingBackgroundText.values()) pending.reject(error);
     for (const pending of connection.pendingTriggerPrograms.values()) pending.reject(error);
-    for (const pending of connection.pendingWorkspaceLocal.values()) pending.reject(error);
     for (const pending of connection.pendingApps.values()) pending.reject(error);
     for (const pending of connection.pendingRunFiles.values()) pending.reject(error);
     connection.pendingAcks.clear();
@@ -2590,7 +2655,6 @@ export class RunnerRegistry {
     connection.pendingVoice.clear();
     connection.pendingBackgroundText.clear();
     connection.pendingTriggerPrograms.clear();
-    connection.pendingWorkspaceLocal.clear();
     connection.pendingApps.clear();
     connection.pendingRunFiles.clear();
     connection.ownedRunIds.clear();
@@ -2605,7 +2669,6 @@ export class RunnerRegistry {
       await this.#runHook(() => this.#recoverDisconnect(connection.identity, scope));
     }
   }
-
   async #recoverDisconnect(identity: RunnerIdentity, scope: RunnerDisconnectScope): Promise<void> {
     let retryMs = 250;
     for (;;) {
@@ -2626,7 +2689,6 @@ export class RunnerRegistry {
       }
     }
   }
-
   #runHook<T>(invoke: () => Promise<T> | T): Promise<T> {
     const operation = Promise.resolve().then(invoke);
     this.#hookOperations.add(operation);
@@ -2660,17 +2722,29 @@ export class RunnerRegistry {
     if (connection.leaseTimer) clearTimeout(connection.leaseTimer);
     connection.leaseTimer = this.#leaseTimer(connection);
   }
-
   #assertOpen(): void {
     if (this.#closing) {
-      throw new OpensteerError({ code: "conflict", message: "Runner registry is closed" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Runner registry is closed",
+      });
     }
   }
-
   #releaseCancellation(
     command: RunnerCommand,
-    runCancellation: { active: boolean; pendingInterrupts: number; threadId: string } | undefined,
-    triggerCancellation: { active: boolean; pendingInterrupts: number } | undefined,
+    runCancellation:
+      | {
+          active: boolean;
+          pendingInterrupts: number;
+          threadId: string;
+        }
+      | undefined,
+    triggerCancellation:
+      | {
+          active: boolean;
+          pendingInterrupts: number;
+        }
+      | undefined,
   ): void {
     if (command.type === "run.interrupt" && runCancellation) {
       if (this.#canceledRuns.get(command.runId) !== runCancellation) return;
@@ -2687,14 +2761,12 @@ export class RunnerRegistry {
       }
     }
   }
-
   #deactivateRunCancellation(runId: RunId): void {
     const cancellation = this.#canceledRuns.get(runId);
     if (!cancellation) return;
     cancellation.active = false;
     if (cancellation.pendingInterrupts === 0) this.#canceledRuns.delete(runId);
   }
-
   #deactivateTriggerCancellation(occurrenceId: TriggerOccurrenceId): void {
     const cancellation = this.#canceledTriggerOccurrences.get(occurrenceId);
     if (!cancellation) return;
@@ -2705,15 +2777,9 @@ export class RunnerRegistry {
   }
 }
 
-/**
- * A Workspace storage result carries its fence as one field because that fence
- * also names the disk; everything else repeats the connection fence inline.
- * Both are the same statement about which socket this frame belongs to.
- */
 function connectionFenceOf(message: RunnerOperationalMessage): RunnerConnectionFence {
   return "fence" in message ? message.fence : message;
 }
-
 function auxiliarySnapshot(stream: AuxiliaryStream): RunnerAuxiliaryStream {
   return {
     auxiliaryStreamId: stream.auxiliaryStreamId,
@@ -2725,7 +2791,6 @@ function auxiliarySnapshot(stream: AuxiliaryStream): RunnerAuxiliaryStream {
 
 /** A file call's own deadline, plus time for its answer to arrive. */
 const runFileRequestTimeoutMs = computerAppMaxTimeoutMs + 5_000;
-
 function deferred<T>(): {
   readonly promise: Promise<T>;
   readonly resolve: (value: T | PromiseLike<T>) => void;
@@ -2737,9 +2802,12 @@ function deferred<T>(): {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
-  return { promise, reject, resolve };
+  return {
+    promise,
+    reject,
+    resolve,
+  };
 }
-
 async function withDeadline<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -2752,7 +2820,14 @@ async function withDeadline<T>(
       withAbort(promise, signal),
       new Promise<T>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new OpensteerError({ code: "timeout", message, retryable: true })),
+          () =>
+            reject(
+              new OpensteerError({
+                code: "timeout",
+                message,
+                retryable: true,
+              }),
+            ),
           timeoutMs,
         );
         timer.unref();
@@ -2762,12 +2837,13 @@ async function withDeadline<T>(
     if (timer) clearTimeout(timer);
   }
 }
-
 function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(signal.reason ?? new Error("Aborted"));
-    signal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", abort, {
+      once: true,
+    });
     void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
@@ -2780,14 +2856,13 @@ function withAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 function catalogFingerprint(harnesses: HarnessCatalogRequestDefinitions): string {
   return canonicalJson(harnesses);
 }
-
 const runnerEventRefusalCodes: ReadonlySet<OpensteerError["code"]> = new Set([
   "bad_request",
   "conflict",
   "forbidden",
   "not_found",
   "unauthorized",
-  "workspace_unavailable",
+  "folder_unavailable",
 ]);
 
 /**

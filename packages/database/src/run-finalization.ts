@@ -1,3 +1,4 @@
+import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
 import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { appendDoneState } from "./task-done.js";
@@ -16,22 +17,16 @@ import {
 import type { Transaction } from "kysely";
 import { ensureQueuedRun, settleOutstandingSteersForRun } from "./thread-inbox.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";
-import {
-  jsonValue,
-  lockThreadRow,
-  lockWorkspaceRow,
-  type ChannelLinks,
-} from "./store-primitives.js";
+import { jsonValue, lockThreadRow, type ChannelLinks } from "./store-primitives.js";
 import { enqueueChannelConversationStatus, enqueueChannelReply } from "./channel-deliveries.js";
 import { runReply } from "./run-reply.js";
 import type { CommandRow, DatabaseSchema, RunRow } from "./schema.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { cancelPending } from "./request-store.js";
 import { settleAssignmentAfterRun, threadOrAssignmentHasPendingWork } from "./assignment-store.js";
 import { endLiveExecutionNodes } from "./execution-nodes.js";
 import { endOpenAttempts } from "./run-attempts.js";
 import { revokeRunGrants, type RevokedRunGrant, runWasStopped } from "./run-grants.js";
-
 interface FinalizeRunRequest {
   readonly requestCancellationReason?: RequestCancellationReason;
   readonly completedAt: Date;
@@ -52,7 +47,10 @@ export async function finalizeRunTransaction(
   requested: FinalizeRunRequest,
 ): Promise<readonly AgentEvent[]> {
   if (requested.status === "failed" && !requested.failure) {
-    throw new OpensteerError({ code: "internal", message: "Failed Run has no failure record" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Failed Run has no failure record",
+    });
   }
   const run = await transaction
     .selectFrom("runs")
@@ -66,14 +64,12 @@ export async function finalizeRunTransaction(
       "runs.harnessInstanceId",
       "runs.id",
       "runs.providerSessionId",
-      "runs.membershipGeneration",
       "runs.replyTarget",
       "runs.requestedBy",
       "runs.status as runStatus",
       "runs.threadId",
       "runs.seedInputId",
       "runs.turnReplyMessageId",
-      "threads.workspaceId",
     ])
     .where("runs.id", "=", requested.runId)
     .forNoKeyUpdate("runs")
@@ -88,14 +84,16 @@ export async function finalizeRunTransaction(
     (await runWasStopped(transaction, run.id))
       ? stoppedOutcome(requested)
       : requested;
-  await lockWorkspaceRow(transaction, run.workspaceId);
   await lockThreadRow(transaction, run.threadId);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+  await lockRunProjectionRows(transaction, {
+    runIds: [run.id],
+    threadIds: [run.threadId],
+  });
   if (input.expectedCommandId) {
     const command = await transaction
       .selectFrom("commands")
@@ -122,7 +120,7 @@ export async function finalizeRunTransaction(
     }
     events.push(
       input.status === "failed"
-        ? await appendHostWorkspaceEvent(transaction, {
+        ? await appendHostDeploymentEvent(transaction, {
             data: input.failure as {
               readonly code: string;
               readonly message: string;
@@ -133,15 +131,15 @@ export async function finalizeRunTransaction(
             runId: run.id,
             threadId: run.threadId,
             type: "run.failed",
-            workspaceId: run.workspaceId,
           })
-        : await appendHostWorkspaceEvent(transaction, {
-            data: { status: "interrupted" },
+        : await appendHostDeploymentEvent(transaction, {
+            data: {
+              status: "interrupted",
+            },
             environmentId: run.environmentId,
             runId: run.id,
             threadId: run.threadId,
             type: "run.interrupted",
-            workspaceId: run.workspaceId,
           }),
     );
   }
@@ -186,13 +184,15 @@ export async function finalizeRunTransaction(
           : `The agent was stopped. Open the Thread in Opensteer: ${threadUrl}`,
     });
   }
-
   await recordPersonWaited(transaction, run.id);
   const cleanup = await cleanupRunAttemptTransaction(transaction, {
     completedAt: input.completedAt,
     failure: input.failure,
     requestCancellationReason: input.requestCancellationReason ?? "run-ended",
-    run: { ...run, status: run.runStatus },
+    run: {
+      ...run,
+      status: run.runStatus,
+    },
     source: input.source,
     status: input.status,
   });
@@ -212,9 +212,7 @@ export async function finalizeRunTransaction(
           .where("threadId", "=", run.threadId)
           .where("policy", "!=", "report")
           .$if(input.queuedInputCancellation === "authority-cohort", (query) =>
-            query
-              .where("requestedBy", "=", run.requestedBy)
-              .where("membershipGeneration", "=", run.membershipGeneration),
+            query.where("requestedBy", "=", run.requestedBy),
           )
           .$if(input.queuedInputCancellation === "seed-input", (query) =>
             query.where("messageId", "=", run.seedInputId),
@@ -276,21 +274,21 @@ export async function finalizeRunTransaction(
   // A terminal event without a start receipt cannot prove whether the provider
   // saw the frozen reports. Retain that uncertainty; only later real work may
   // deliver them again, with the same IDs and the old snapshot still on its Run.
-  const membership = await transaction
-    .selectFrom("workspaceMemberships")
-    .select(["generation", "state"])
-    .where("workspaceId", "=", run.workspaceId)
-    .where("userId", "=", run.requestedBy)
-    .executeTakeFirst();
-  const reportAuthorityCurrent =
-    membership?.state === "active" && membership.generation === run.membershipGeneration;
+  const reportAuthorityCurrent = await threadExecutionIsAvailableToUser(
+    transaction,
+    run.threadId,
+    run.requestedBy,
+  );
   const unconfirmedReports = await transaction
     .updateTable("threadInputs")
     .set(
       reportAuthorityCurrent
-        ? { state: "unknown", updatedAt: input.completedAt }
+        ? {
+            state: "unknown",
+            updatedAt: input.completedAt,
+          }
         : {
-            cancelReason: "membership-changed",
+            cancelReason: "execution-authority-unavailable",
             state: "cancelled",
             updatedAt: input.completedAt,
           },
@@ -302,13 +300,14 @@ export async function finalizeRunTransaction(
     .execute();
   for (const row of [...cancelled, ...unconfirmedReports]) {
     events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { input: threadInputFromRow(row) },
+      await appendHostDeploymentEvent(transaction, {
+        data: {
+          input: threadInputFromRow(row),
+        },
         environmentId: run.environmentId,
         runId: run.id,
         threadId: run.threadId,
         type: "thread-input.updated",
-        workspaceId: run.workspaceId,
       }),
     );
   }
@@ -327,19 +326,27 @@ export async function finalizeRunTransaction(
         assignmentId: run.assignmentId,
         failureSummary: input.status === "failed" ? failureSummary(input.failure) || null : null,
         finishedAt: input.completedAt,
-        run: { id: run.id, threadId: run.threadId },
+        run: {
+          id: run.id,
+          threadId: run.threadId,
+        },
         status: input.status,
       })),
     );
   }
-
   if (run.doneWhenFinished) {
     await transaction
       .updateTable("runs")
-      .set({ doneWhenFinished: false })
+      .set({
+        doneWhenFinished: false,
+      })
       .where("id", "=", run.id)
       .execute();
-    if (!(await threadOrAssignmentHasPendingWork(transaction, { threadId: run.threadId }))) {
+    if (
+      !(await threadOrAssignmentHasPendingWork(transaction, {
+        threadId: run.threadId,
+      }))
+    ) {
       const triggers = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -350,7 +357,12 @@ export async function finalizeRunTransaction(
       const doneAt = input.completedAt;
       await transaction
         .updateTable("threads")
-        .set({ doneAt, doneReason: null, inputQueuePaused: false, inputQueuePausedBy: null })
+        .set({
+          doneAt,
+          doneReason: null,
+          inputQueuePaused: false,
+          inputQueuePausedBy: null,
+        })
         .where("id", "=", run.threadId)
         .execute();
       thread.doneAt = doneAt;
@@ -362,7 +374,9 @@ export async function finalizeRunTransaction(
 
   // A corrupt selection must not roll back an already accepted terminal event.
   // Pending work remains queued until an explicit engine selection repairs it.
-  const followOn = await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
+  const followOn = await ensureQueuedRun(transaction, thread, {
+    onInvalidSelection: "defer",
+  });
   events.push(...followOn.events);
   events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt)));
   // Nodes and attempts rank last; the Run's lock already orders these writes.
@@ -377,20 +391,20 @@ function failureSummary(failure: RunFailure | undefined): string {
   const sentence = message.length > 240 ? `${message.slice(0, 239).trimEnd()}\u2026` : message;
   return /[.!?\u2026]$/u.test(sentence) ? sentence : `${sentence}.`;
 }
-
 function stoppedOutcome(requested: FinalizeRunRequest): FinalizeRunRequest {
   const { failure: _failure, ...stopped } = requested;
-  return { ...stopped, status: "interrupted" };
+  return {
+    ...stopped,
+    status: "interrupted",
+  };
 }
 
-/**
- * Ends a stopped starting Run that no Runner holds, where it would otherwise
- * go back to its Thread's queue: a stop is final. The caller holds the Run,
- * Workspace and Thread locks and has not touched its commands.
- */
 export async function endStoppedUnconfirmedRun(
   transaction: Transaction<DatabaseSchema>,
-  input: { readonly links: ChannelLinks; readonly runId: RunId },
+  input: {
+    readonly links: ChannelLinks;
+    readonly runId: RunId;
+  },
 ): Promise<readonly AgentEvent[]> {
   const events = await finalizeRunTransaction(transaction, {
     completedAt: new Date(),
@@ -404,7 +418,9 @@ export async function endStoppedUnconfirmedRun(
   // was never bound, so it cannot make a later Run's start uncertain.
   await transaction
     .updateTable("runs")
-    .set({ bindingGeneration: null })
+    .set({
+      bindingGeneration: null,
+    })
     .where("id", "=", input.runId)
     .execute();
   return events;
@@ -448,7 +464,11 @@ export async function cleanupRunAttemptTransaction(
   await transaction
     .updateTable("commands")
     .set({
-      ...(input.source === "host" && input.failure ? { lastError: jsonValue(input.failure) } : {}),
+      ...(input.source === "host" && input.failure
+        ? {
+            lastError: jsonValue(input.failure),
+          }
+        : {}),
       status: input.source === "host" ? "failed" : "succeeded",
       updatedAt: input.completedAt,
     })
@@ -459,7 +479,9 @@ export async function cleanupRunAttemptTransaction(
   await transaction
     .updateTable("commands")
     .set({
-      lastError: jsonValue({ message: "The Run ended before control delivery was confirmed" }),
+      lastError: jsonValue({
+        message: "The Run ended before control delivery was confirmed",
+      }),
       status: "failed",
       updatedAt: input.completedAt,
     })
@@ -481,7 +503,6 @@ export async function cleanupRunAttemptTransaction(
       .where("id", "=", run.providerSessionId)
       .execute();
   }
-
   if (input.retireBinding) {
     await transaction
       .updateTable("providerSessions")
@@ -513,7 +534,10 @@ export async function cleanupRunAttemptTransaction(
   return {
     events,
     finish: async (endAttempts) => {
-      await endLiveExecutionNodes(transaction, { endedAt: input.completedAt, runId: run.id });
+      await endLiveExecutionNodes(transaction, {
+        endedAt: input.completedAt,
+        runId: run.id,
+      });
       await endAttempts();
       return input.retireBinding ? revokeRunGrants(transaction, [run.id], "superseded") : [];
     },

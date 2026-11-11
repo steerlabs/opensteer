@@ -141,6 +141,7 @@ export const DeploymentSnapshotSchema = z
       done: z.lazy(() => TaskPageSchema),
     }),
     needsYou: z.lazy(() => NeedsYouPageSchema),
+
     resources: z.object({ appTabs: AppTabsSchema, browser: HostedBrowserBootstrapSchema }),
     readStates: z.array(ThreadReadStateSchema).max(deploymentSnapshotMaxThreads),
     messages: z.array(MessageViewSchema).max(deploymentSnapshotMaxMessages),

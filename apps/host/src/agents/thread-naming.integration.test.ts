@@ -34,30 +34,51 @@ const fakeCodexAppServer = fileURLToPath(
 );
 const taskModel = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-const waitOptions = { timeout: 20_000, interval: 50 };
-
+const waitOptions = {
+  timeout: 20_000,
+  interval: 50,
+};
 interface Captured {
   readonly method?: string;
   readonly captureProcessId?: number;
-  readonly params?: { readonly clientInfo?: { readonly name?: string } };
-  readonly fakeTitleTurn?: { readonly pid: number; readonly model: string };
-  readonly fakeOpensteerTokenEnvironment?: { readonly agentTools: boolean };
+  readonly params?: {
+    readonly clientInfo?: {
+      readonly name?: string;
+    };
+  };
+  readonly fakeTitleTurn?: {
+    readonly pid: number;
+    readonly model: string;
+  };
+  readonly fakeOpensteerTokenEnvironment?: {
+    readonly agentTools: boolean;
+  };
 }
-type TitleScript = Record<string, { reply?: string; error?: string; hold?: string }>;
-
+type TitleScript = Record<
+  string,
+  {
+    reply?: string;
+    error?: string;
+    hold?: string;
+  }
+>;
 integration("Task naming through the Runner", () => {
   let stack: VerticalStack | undefined;
   const scratches: string[] = [];
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
-    for (const path of scratches.splice(0)) await rm(path, { force: true, recursive: true });
+    for (const path of scratches.splice(0))
+      await rm(path, {
+        force: true,
+        recursive: true,
+      });
   }, 60_000);
-
   async function start() {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-naming-"));
     scratches.push(scratch);
@@ -112,13 +133,15 @@ integration("Task naming through the Runner", () => {
           generateTitle: true,
           modelSelection,
           title: text.slice(0, 40),
-          workspaceId: active.mainWorkspaceId,
           idempotencyKey: `naming-${randomUUID()}`,
         });
         return threadId;
       },
       send: (threadId: ThreadId, text: string) =>
-        active.sendMessage({ text, threadId, workspaceId: active.mainWorkspaceId }),
+        active.sendMessage({
+          text,
+          threadId,
+        }),
       thread: (threadId: ThreadId) =>
         active.host.store.database
           .selectFrom("threads")
@@ -127,11 +150,15 @@ integration("Task naming through the Runner", () => {
           .executeTakeFirstOrThrow(),
     };
   }
-
   it("names a new task through its account's Runner without holding up the Run", async () => {
     const f = await start();
     const held = f.hold("first");
-    await f.script({ "gpt-6-luna": { reply: "Help desk migration\nplane", hold: held } });
+    await f.script({
+      "gpt-6-luna": {
+        reply: "Help desk migration\nplane",
+        hold: held,
+      },
+    });
     const threadId = await f.task("Plan moving our support team to a new help desk");
     const turn = await f.send(threadId, "Plan moving our support team to a new help desk");
     // The Run completed while its task's naming was still held open.
@@ -176,14 +203,20 @@ integration("Task naming through the Runner", () => {
     const named = async (threadId: ThreadId, title: string) =>
       vi.waitFor(
         async () =>
-          expect(await f.thread(threadId)).toMatchObject({ title, titleSource: "generated" }),
+          expect(await f.thread(threadId)).toMatchObject({
+            title,
+            titleSource: "generated",
+          }),
         waitOptions,
       );
     const models = async () => (await f.turns()).map((turn) => turn.model);
-
     await f.script({
-      "gpt-6-luna": { error: "You've hit your usage limit. Try again later." },
-      "gpt-5.6-luna": { reply: "Quarterly plan\ncalendar" },
+      "gpt-6-luna": {
+        error: "You've hit your usage limit. Try again later.",
+      },
+      "gpt-5.6-luna": {
+        reply: "Quarterly plan\ncalendar",
+      },
     });
     const limited = await f.task("Draft the quarterly plan");
     await f.send(limited, "Draft the quarterly plan");
@@ -194,21 +227,31 @@ integration("Task naming through the Runner", () => {
     const failed = capture.findIndex((line) => line.fakeTitleTurn?.model === "gpt-6-luna");
     const next = capture.findIndex((line) => line.fakeTitleTurn?.model === "gpt-5.6-luna");
     expect(capture.slice(failed, next).some((line) => line.method === "model/list")).toBe(true);
-
     await f.script({
-      "gpt-6-luna": { error: "You've hit your usage limit." },
-      "gpt-5.6-luna": { error: "Model unavailable." },
-      "gpt-5.6-sol": { reply: "Fallback name\nmap" },
+      "gpt-6-luna": {
+        error: "You've hit your usage limit.",
+      },
+      "gpt-5.6-luna": {
+        error: "Model unavailable.",
+      },
+      "gpt-5.6-sol": {
+        reply: "Fallback name\nmap",
+      },
     });
     const fallback = await f.task("Book the venue for the offsite");
     await f.send(fallback, "Book the venue for the offsite");
     await named(fallback, "Fallback name");
     expect((await models()).slice(2)).toEqual(["gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-sol"]);
-
     await f.script({
-      "gpt-6-luna": { error: "You've hit your usage limit." },
-      "gpt-5.6-luna": { error: "Model unavailable." },
-      "gpt-5.6-sol": { error: "You've hit your usage limit." },
+      "gpt-6-luna": {
+        error: "You've hit your usage limit.",
+      },
+      "gpt-5.6-luna": {
+        error: "Model unavailable.",
+      },
+      "gpt-5.6-sol": {
+        error: "You've hit your usage limit.",
+      },
     });
     const unnamed = await f.task("Sort the receipts from March");
     await f.send(unnamed, "Sort the receipts from March");
@@ -223,16 +266,24 @@ integration("Task naming through the Runner", () => {
       titleSource: "provisional",
       iconSource: "provisional",
     });
-    await f.script({ "gpt-6-luna": { reply: "March receipts\nmail" } });
+    await f.script({
+      "gpt-6-luna": {
+        reply: "March receipts\nmail",
+      },
+    });
     await f.send(unnamed, "Start with the hotel ones");
     await named(unnamed, "March receipts");
     expect((await models()).slice(8)).toEqual(["gpt-6-luna"]);
   });
-
   it("keeps a person's rename made while naming is in flight", async () => {
     const f = await start();
     const held = f.hold("rename");
-    await f.script({ "gpt-6-luna": { reply: "Generated name\nplane", hold: held } });
+    await f.script({
+      "gpt-6-luna": {
+        reply: "Generated name\nplane",
+        hold: held,
+      },
+    });
     const threadId = await f.task("Find a dentist near the office");
     await f.send(threadId, "Find a dentist near the office");
     await vi.waitFor(async () => expect(await f.turns()).toHaveLength(1), waitOptions);
@@ -256,25 +307,38 @@ integration("Task naming through the Runner", () => {
       waitOptions,
     );
   });
-
   it("rejects a disconnected attempt's late answer and names through the reconnected Runner", async () => {
     const f = await start();
     const stale = f.hold("stale");
     const fresh = f.hold("fresh");
-    await f.script({ "gpt-6-luna": { reply: "Stale name\nplane", hold: stale } });
+    await f.script({
+      "gpt-6-luna": {
+        reply: "Stale name\nplane",
+        hold: stale,
+      },
+    });
     const threadId = await f.task("Renew the car insurance");
     await f.send(threadId, "Renew the car insurance");
     await vi.waitFor(async () => expect(await f.turns()).toHaveLength(1), waitOptions);
     const [held] = await f.turns();
     // Later attempts, on any candidate, answer freshly once released.
-    const answer = { reply: "Fresh name\nmail", hold: fresh };
-    await f.script({ "gpt-6-luna": answer, "gpt-5.6-luna": answer, "gpt-5.6-sol": answer });
+    const answer = {
+      reply: "Fresh name\nmail",
+      hold: fresh,
+    };
+    await f.script({
+      "gpt-6-luna": answer,
+      "gpt-5.6-luna": answer,
+      "gpt-5.6-sol": answer,
+    });
     f.active.network.drop();
     // The Host gave up the dropped attempt at once and asked the reconnected Runner.
     await vi.waitFor(async () => expect(await f.turns()).toHaveLength(2), waitOptions);
     await f.release(stale);
     await vi.waitFor(() => expect(alive(held!.pid)).toBe(false), waitOptions);
-    expect(await f.thread(threadId)).toMatchObject({ titleSource: "provisional" });
+    expect(await f.thread(threadId)).toMatchObject({
+      titleSource: "provisional",
+    });
     await f.release(fresh);
     await vi.waitFor(
       async () =>
@@ -287,14 +351,20 @@ integration("Task naming through the Runner", () => {
       waitOptions,
     );
   });
-
   it("never names on an account the person excluded, its own task's included, and uses it once allowed", async () => {
     const f = await start();
-    await f.script({ "gpt-6-luna": { reply: "Lease offers\nmail" } });
+    await f.script({
+      "gpt-6-luna": {
+        reply: "Lease offers\nmail",
+      },
+    });
     const config = async (excludedAccounts: readonly HarnessInstanceId[]) => {
       const result = await f.active.api["commands.dispatch"]({
         type: "automaticModels.set",
-        config: { roles: {}, excludedAccounts: [...excludedAccounts] },
+        config: {
+          roles: {},
+          excludedAccounts: [...excludedAccounts],
+        },
         idempotencyKey: `automatic-${randomUUID()}`,
       });
       if (!result.ok) throw new Error(result.error.message);
@@ -307,11 +377,17 @@ integration("Task naming through the Runner", () => {
     const account = (await preview()).accounts[0]!;
     await config([account.harnessInstanceId]);
     expect((await preview()).light.candidates).toEqual([]);
-    expect((await preview()).accounts[0]).toMatchObject({ eligible: false, reason: "excluded" });
+    expect((await preview()).accounts[0]).toMatchObject({
+      eligible: false,
+      reason: "excluded",
+    });
     const bootstrap = await f.active.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-    expect(bootstrap.data.harnesses).toMatchObject([{ automaticEligible: false }]);
-
+    expect(bootstrap.data.harnesses).toMatchObject([
+      {
+        automaticEligible: false,
+      },
+    ]);
     const warn = vi.spyOn(console, "warn");
     try {
       const threadId = await f.task("Compare the two lease offers");
@@ -321,17 +397,24 @@ integration("Task naming through the Runner", () => {
         () =>
           expect(warn).toHaveBeenCalledWith(
             "Thread naming found no name",
-            expect.objectContaining({ threadId, candidates: 0 }),
+            expect.objectContaining({
+              threadId,
+              candidates: 0,
+            }),
           ),
         waitOptions,
       );
       expect(await f.turns()).toEqual([]);
-      expect(await f.thread(threadId)).toMatchObject({ titleSource: "provisional" });
-
+      expect(await f.thread(threadId)).toMatchObject({
+        titleSource: "provisional",
+      });
       await config([]);
       await f.send(threadId, "Start with the cheaper one");
       await vi.waitFor(
-        async () => expect(await f.thread(threadId)).toMatchObject({ title: "Lease offers" }),
+        async () =>
+          expect(await f.thread(threadId)).toMatchObject({
+            title: "Lease offers",
+          }),
         waitOptions,
       );
       expect((await f.turns()).map((turn) => turn.model)).toEqual(["gpt-6-luna"]);
@@ -339,22 +422,36 @@ integration("Task naming through the Runner", () => {
       warn.mockRestore();
     }
   });
-
   it("won't fall back to a task's own arbitrary endpoint, which may not be the one its first Run used", async () => {
     const f = await start();
-    await f.script({ "gpt-6-luna": { reply: "Lease offers\nmail" } });
+    await f.script({
+      "gpt-6-luna": {
+        reply: "Lease offers\nmail",
+      },
+    });
     const threadId = await f.task("Compare the two lease offers");
     const source = (sourceId: string) =>
-      f.active.host.store.database.updateTable("harnessInstances").set({ sourceId }).execute();
+      f.active.host.store.database
+        .updateTable("harnessInstances")
+        .set({
+          sourceId,
+        })
+        .execute();
     const warn = vi.spyOn(console, "warn");
     try {
       await source("openai-compatible");
-      await f.active.queueMessage({ text: "Compare the two lease offers", threadId });
+      await f.active.queueMessage({
+        text: "Compare the two lease offers",
+        threadId,
+      });
       await vi.waitFor(
         () =>
           expect(warn).toHaveBeenCalledWith(
             "Thread naming found no name",
-            expect.objectContaining({ threadId, candidates: 0 }),
+            expect.objectContaining({
+              threadId,
+              candidates: 0,
+            }),
           ),
         waitOptions,
       );
@@ -365,7 +462,6 @@ integration("Task naming through the Runner", () => {
     }
   });
 });
-
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);

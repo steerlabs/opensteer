@@ -13,7 +13,6 @@ import {
   type RunId,
   type Sequence,
   type ThreadId,
-  type WorkspaceId,
 } from "@opensteer/core";
 
 /** A Run's progress as clients receive it: after every durable event it follows. */
@@ -21,23 +20,19 @@ export interface LiveFrame {
   readonly afterSequence: Sequence;
   readonly progress: LiveRunProgress;
 }
-
 interface LiveStreamState {
   readonly key: LiveStreamKey;
   nodeId?: ExecutionNodeId;
   length: number;
   tail: string;
 }
-
 interface LiveRunState {
   afterSequence: Sequence;
   readonly runId: RunId;
   readonly streams: Map<string, LiveStreamState>;
   readonly threadId: ThreadId;
   touchedAt: number;
-  readonly workspaceId: WorkspaceId;
 }
-
 export interface LiveRunRegistryOptions {
   /** Streams one Run may hold open; past it the oldest stream is forgotten. */
   readonly maxStreamsPerRun?: number;
@@ -45,7 +40,6 @@ export interface LiveRunRegistryOptions {
   readonly maxRuns?: number;
   readonly now?: () => number;
 }
-
 const terminalRunEventTypes: ReadonlySet<AgentEvent["type"]> = new Set([
   "run.completed",
   "run.failed",
@@ -71,7 +65,6 @@ export class LiveRunRegistry {
   readonly #maxStreamsPerRun: number;
   readonly #maxRuns: number;
   readonly #now: () => number;
-
   constructor(options: LiveRunRegistryOptions = {}) {
     this.#maxStreamsPerRun = options.maxStreamsPerRun ?? 64;
     this.#maxRuns = options.maxRuns ?? 2_048;
@@ -100,7 +93,7 @@ export class LiveRunRegistry {
       // The superseded attempt's streams never complete; the next attempt
       // opens its own from the start.
       if (event.type === "run.restarted") this.#runs.delete(event.runId);
-      const state = this.#ensureRun(event.runId, event.threadId, event.workspaceId);
+      const state = this.#ensureRun(event.runId, event.threadId);
       if (!state) continue;
       if (compareSequence(transactionSequence, state.afterSequence) > 0) {
         state.afterSequence = transactionSequence;
@@ -111,7 +104,7 @@ export class LiveRunRegistry {
 
   /**
    * Starts following a Run that resumed on a new connection, at the sequence
-   * its Workspace had reached. After a Host restart this is how the Host
+   * its Deployment had reached. After a Host restart this is how the Host
    * learns of a Run that commits nothing more before its next progress: the
    * Runner states its streams again right after it reattaches.
    */
@@ -119,9 +112,8 @@ export class LiveRunRegistry {
     readonly afterSequence: Sequence;
     readonly runId: RunId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   }): void {
-    const state = this.#ensureRun(input.runId, input.threadId, input.workspaceId);
+    const state = this.#ensureRun(input.runId, input.threadId);
     if (state && compareSequence(input.afterSequence, state.afterSequence) > 0) {
       state.afterSequence = input.afterSequence;
     }
@@ -133,11 +125,7 @@ export class LiveRunRegistry {
    */
   apply(progress: LiveRunProgress): LiveFrame | undefined {
     const state = this.#runs.get(progress.runId);
-    if (
-      !state ||
-      state.threadId !== progress.threadId ||
-      state.workspaceId !== progress.workspaceId
-    ) {
+    if (!state || state.threadId !== progress.threadId) {
       return undefined;
     }
     state.touchedAt = this.#now();
@@ -149,15 +137,16 @@ export class LiveRunRegistry {
     if (accepted.length === 0) return undefined;
     return {
       afterSequence: state.afterSequence,
-      progress: { ...progress, items: accepted },
+      progress: {
+        ...progress,
+        items: accepted,
+      },
     };
   }
 
-  /** Every open stream of every active Run in the Workspace, as `replace` items. */
-  workspaceFrames(workspaceId: WorkspaceId): readonly LiveFrame[] {
-    return [...this.#runs.values()]
-      .filter((state) => state.workspaceId === workspaceId)
-      .flatMap(replacementFrames);
+  /** Every open stream of every active Run in the Deployment, as `replace` items. */
+  deploymentFrames(): readonly LiveFrame[] {
+    return [...this.#runs.values()].flatMap(replacementFrames);
   }
 
   /** Every open stream of the Thread's active Runs, as `replace` items. */
@@ -166,14 +155,11 @@ export class LiveRunRegistry {
       .filter((state) => state.threadId === threadId)
       .flatMap(replacementFrames);
   }
-
-  #ensureRun(runId: RunId, threadId: ThreadId, workspaceId: WorkspaceId): LiveRunState | undefined {
+  #ensureRun(runId: RunId, threadId: ThreadId): LiveRunState | undefined {
     const existing = this.#runs.get(runId);
     if (existing) {
       existing.touchedAt = this.#now();
-      return existing.threadId === threadId && existing.workspaceId === workspaceId
-        ? existing
-        : undefined;
+      return existing.threadId === threadId ? existing : undefined;
     }
     if (this.#runs.size >= this.#maxRuns) this.#evictLeastRecent();
     const state: LiveRunState = {
@@ -182,12 +168,10 @@ export class LiveRunRegistry {
       streams: new Map(),
       threadId,
       touchedAt: this.#now(),
-      workspaceId,
     };
     this.#runs.set(runId, state);
     return state;
   }
-
   #evictLeastRecent(): void {
     let oldest: LiveRunState | undefined;
     for (const state of this.#runs.values()) {
@@ -195,27 +179,44 @@ export class LiveRunRegistry {
     }
     if (oldest) this.#runs.delete(oldest.runId);
   }
-
   #completeStream(state: LiveRunState, event: AgentEvent): void {
     switch (event.type) {
       case "node.completed":
-        state.streams.delete(liveStreamKeyId({ nodeId: event.data.nodeId, stream: "node" }));
+        state.streams.delete(
+          liveStreamKeyId({
+            nodeId: event.data.nodeId,
+            stream: "node",
+          }),
+        );
         return;
       case "assistant.message":
-        state.streams.delete(liveStreamKeyId({ stream: "assistant" }));
+        state.streams.delete(
+          liveStreamKeyId({
+            stream: "assistant",
+          }),
+        );
         return;
       case "reasoning.completed":
         if (event.data.nodeId) return;
-        state.streams.delete(liveStreamKeyId({ blockId: event.data.blockId, stream: "reasoning" }));
+        state.streams.delete(
+          liveStreamKeyId({
+            blockId: event.data.blockId,
+            stream: "reasoning",
+          }),
+        );
         return;
       case "tool.completed":
-        state.streams.delete(liveStreamKeyId({ callId: event.data.callId, stream: "tool" }));
+        state.streams.delete(
+          liveStreamKeyId({
+            callId: event.data.callId,
+            stream: "tool",
+          }),
+        );
         return;
       default:
         return;
     }
   }
-
   #applyItem(state: LiveRunState, item: LiveItem): LiveItem | undefined {
     const key = liveStreamKeyOf(item);
     const id = liveStreamKeyId(key);
@@ -236,9 +237,12 @@ export class LiveRunRegistry {
     const at = stream.length;
     stream.length = end;
     stream.tail = appendLiveStreamTail(stream.tail, text);
-    return { ...item, at, text };
+    return {
+      ...item,
+      at,
+      text,
+    };
   }
-
   #stream(state: LiveRunState, id: string, key: LiveStreamKey): LiveStreamState {
     const existing = state.streams.get(id);
     if (existing) return existing;
@@ -246,7 +250,11 @@ export class LiveRunRegistry {
       const oldest = state.streams.keys().next();
       if (!oldest.done) state.streams.delete(oldest.value);
     }
-    const stream: LiveStreamState = { key, length: 0, tail: "" };
+    const stream: LiveStreamState = {
+      key,
+      length: 0,
+      tail: "",
+    };
     state.streams.set(id, stream);
     return stream;
   }
@@ -258,7 +266,6 @@ export class LiveRunRegistry {
  * of that after escaping, so a Run's open streams are split across frames.
  */
 const replacementFrameMaxCharacters = 448 * 1_024;
-
 function replacementFrames(state: LiveRunState): readonly LiveFrame[] {
   const frames: LiveFrame[] = [];
   let items: LiveItem[] = [];
@@ -271,7 +278,6 @@ function replacementFrames(state: LiveRunState): readonly LiveFrame[] {
         items,
         runId: state.runId,
         threadId: state.threadId,
-        workspaceId: state.workspaceId,
       },
     });
     items = [];
@@ -293,12 +299,16 @@ function replacementFrames(state: LiveRunState): readonly LiveFrame[] {
   flush();
   return frames;
 }
-
 function replacementItem(stream: LiveStreamState): LiveItem {
   const { key } = stream;
   switch (key.stream) {
     case "assistant":
-      return { length: stream.length, op: "replace", stream: "assistant", text: stream.tail };
+      return {
+        length: stream.length,
+        op: "replace",
+        stream: "assistant",
+        text: stream.tail,
+      };
     case "reasoning":
       return {
         blockId: key.blockId,
@@ -318,7 +328,11 @@ function replacementItem(stream: LiveStreamState): LiveItem {
     case "tool":
       return {
         callId: key.callId,
-        ...(stream.nodeId === undefined ? {} : { nodeId: stream.nodeId }),
+        ...(stream.nodeId === undefined
+          ? {}
+          : {
+              nodeId: stream.nodeId,
+            }),
         length: stream.length,
         op: "replace",
         stream: "tool",

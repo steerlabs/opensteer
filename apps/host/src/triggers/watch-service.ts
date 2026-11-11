@@ -2,28 +2,21 @@ import {
   triggerProgramCompatibilityReason,
   type TriggerProgramRunnerStore,
 } from "./trigger-program-compatibility.js";
-import {
-  runnerAgentToolsFailure,
-  type EnvironmentId,
-  type TriggerId,
-  type WorkspaceId,
-} from "@opensteer/core";
+import { runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@opensteer/core";
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { WATCH_CAPABILITY_RENEWAL_MS, WATCH_START_RETRY_MS } from "@opensteer/triggers";
 import type { BrowserService } from "../browser/browser-service.js";
-import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
+import type { FolderAdmissionService } from "../threads/folder-admission-service.js";
 import type {
   WatchCapabilityScope,
   WatchCapabilityTokenService,
   WatchControlTokenService,
 } from "./watch-capability.js";
-
 const watchReconcileRetryInitialMs = 5_000;
 const watchReconcileRetryMaximumMs = 60_000;
-
 type WatchBrowserTokenService = WatchCapabilityTokenService<"opensteer-watch-browser-cdp">;
 type WatchStore = Pick<
   TriggerStore,
@@ -31,23 +24,21 @@ type WatchStore = Pick<
   | "recordWatchUnavailable"
   | "reconcileWatchesForRunner"
   | "watchEnvironmentForTrigger"
-  | "watchEnvironmentsForWorkspace"
+  | "watchEnvironments"
 >;
-
 export interface WatchServiceOptions {
-  readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
+  readonly browser: Pick<BrowserService, "hasBrowserProfiles">;
   readonly browserCdpUrl: string;
   readonly controlTokens: Pick<WatchControlTokenService, "issue">;
   readonly mcpUrl: string;
-  readonly onChanged: (workspaceId: WorkspaceId) => void;
+  readonly onChanged: () => void;
   readonly onError: (error: unknown, environmentId: EnvironmentId) => void;
   readonly runners: Pick<RunnerRegistry, "identityForEnvironment" | "reconcileWatches">;
   readonly store: WatchStore;
   readonly runnerStore: TriggerProgramRunnerStore;
   readonly watchBrowserTokens: Pick<WatchBrowserTokenService, "issue">;
-  readonly workspaceAccess: Pick<WorkspaceExecutionAccessService, "plan">;
+  readonly folders: Pick<FolderAdmissionService, "assertAvailable">;
 }
-
 export class WatchService {
   readonly #browser: WatchServiceOptions["browser"];
   readonly #browserCdpUrl: string;
@@ -59,7 +50,7 @@ export class WatchService {
   readonly #store: WatchStore;
   readonly #runnerStore: TriggerProgramRunnerStore;
   readonly #watchBrowserTokens: WatchServiceOptions["watchBrowserTokens"];
-  readonly #workspaceAccess: WatchServiceOptions["workspaceAccess"];
+  readonly #folders: WatchServiceOptions["folders"];
   readonly #lifetime = new AbortController();
   readonly #pending = new Map<EnvironmentId, Promise<void>>();
   readonly #knownEnvironments = new Set<EnvironmentId>();
@@ -68,7 +59,6 @@ export class WatchService {
   readonly #startRetryTimers = new Map<EnvironmentId, NodeJS.Timeout>();
   #closed = false;
   #renewalTimer: NodeJS.Timeout | undefined;
-
   constructor(options: WatchServiceOptions) {
     this.#browser = options.browser;
     this.#browserCdpUrl = options.browserCdpUrl;
@@ -80,9 +70,8 @@ export class WatchService {
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#watchBrowserTokens = options.watchBrowserTokens;
-    this.#workspaceAccess = options.workspaceAccess;
+    this.#folders = options.folders;
   }
-
   start(): void {
     if (this.#closed || this.#renewalTimer) return;
     this.#renewalTimer = setInterval(() => {
@@ -90,7 +79,6 @@ export class WatchService {
     }, WATCH_CAPABILITY_RENEWAL_MS);
     this.#renewalTimer.unref();
   }
-
   async close(): Promise<void> {
     this.#closed = true;
     this.#lifetime.abort(new Error("Watch service is closing"));
@@ -103,11 +91,9 @@ export class WatchService {
     this.#reconcileRetryAttempts.clear();
     await Promise.allSettled(this.#pending.values());
   }
-
   changed(environmentId: EnvironmentId): void {
     void this.#schedule(environmentId, true);
   }
-
   #schedule(environmentId: EnvironmentId, resetRetryBackoff: boolean): Promise<void> {
     if (this.#closed) return Promise.resolve();
     this.#knownEnvironments.add(environmentId);
@@ -134,29 +120,27 @@ export class WatchService {
     this.#pending.set(environmentId, next);
     return next;
   }
-
   async triggerChanged(triggerId: TriggerId): Promise<void> {
     const environmentId = await this.#store.watchEnvironmentForTrigger(triggerId);
     if (environmentId) this.changed(environmentId);
   }
-
-  async workspaceChanged(workspaceId: WorkspaceId): Promise<void> {
-    const environmentIds = await this.#store.watchEnvironmentsForWorkspace(workspaceId);
+  async deploymentChanged(): Promise<void> {
+    const environmentIds = await this.#store.watchEnvironments();
     for (const environmentId of environmentIds) this.changed(environmentId);
   }
-
   runnerRegistered(identity: RunnerIdentity): void {
     for (const environmentId of identity.environmentIds) this.#knownEnvironments.add(environmentId);
     for (const environmentId of identity.environmentIds) void this.#schedule(environmentId, true);
   }
-
   async applyStatus(
     identity: RunnerIdentity,
     // The fence is the registry's business and was checked before this runs,
     // so what a watch status means here is only what the Runner observed.
     status: Extract<
       import("@opensteer/protocol").RunnerOperationalReport,
-      { readonly type: "runner.watch-status" }
+      {
+        readonly type: "runner.watch-status";
+      }
     >,
   ): Promise<void> {
     const result = await this.#store.applyWatchStatus({
@@ -173,10 +157,9 @@ export class WatchService {
       stderrTail: status.stderrTail,
       stdoutTail: status.stdoutTail,
     });
-    this.#onChanged(result.activation.workspaceId);
+    this.#onChanged();
     if (result.autoPaused) this.changed(result.activation.environmentId);
   }
-
   async reconcile(environmentId: EnvironmentId): Promise<void> {
     const identity = this.#runners.identityForEnvironment(environmentId);
     if (!identity) return;
@@ -194,7 +177,6 @@ export class WatchService {
       readonly executionGeneration: number;
       readonly reason: string;
     }[] = [];
-    let waitingForWorkspace = false;
     for (const context of snapshot.activations) {
       const incompatibility =
         runnerAgentToolsFailure(identity.capabilities) ??
@@ -211,61 +193,51 @@ export class WatchService {
         });
         continue;
       }
-      if (context.workspace.status !== "ready") {
-        waitingForWorkspace = true;
-        continue;
-      }
       const scope: WatchCapabilityScope = {
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
         createdBy: context.activation.createdBy,
         environmentId: context.activation.environmentId,
         executionGeneration: context.activation.executionGeneration,
-        membershipGeneration: context.membershipGeneration,
         revisionId: context.activation.revisionId,
         triggerId: context.activation.triggerId,
         toolContractVersion: context.toolContractVersion,
-        workspaceId: context.activation.workspaceId,
       };
-      let workspaceAccess: WatchReconcileActivation["workspaceAccess"];
       try {
-        workspaceAccess = await this.#workspaceAccess.plan({
-          environmentId,
-          membershipGeneration: context.membershipGeneration,
-          requestedBy: context.activation.createdBy,
-          runnerIdentity: identity,
-          workspace: context.workspace,
-        });
+        await this.#folders.assertAvailable(context.location.folder);
       } catch (error) {
         unavailable.push({
           activationId: context.activation.id,
           executionGeneration: context.activation.executionGeneration,
           reason: safeMessage(error, {
-            fallback: "Workspace access is unavailable",
+            fallback: "The anchor task folder is unavailable",
             maximumLength: 20_000,
           }),
         });
         continue;
       }
       const mcp = this.#controlTokens.issue(scope);
-      const hasBrowser = await this.#browser.hasBrowserProfileAccess(
-        context.activation.createdBy,
-        context.activation.workspaceId,
-        `thread:${context.activation.anchorThreadId}`,
-      );
+      const hasBrowser = await this.#browser.hasBrowserProfiles(context.activation.createdBy);
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
       desired.push({
         activationId: context.activation.id,
         anchorThreadId: context.activation.anchorThreadId,
         capabilities: {
-          browserCdp: browserCdp ? { ...browserCdp, url: this.#browserCdpUrl } : null,
-          mcp: { ...mcp, url: this.#mcpUrl },
+          browserCdp: browserCdp
+            ? {
+                ...browserCdp,
+                url: this.#browserCdpUrl,
+              }
+            : null,
+          mcp: {
+            ...mcp,
+            url: this.#mcpUrl,
+          },
         },
         executionGeneration: context.activation.executionGeneration,
         revisionId: context.activation.revisionId,
         triggerId: context.activation.triggerId,
-        workspaceAccess,
-        workspaceId: context.activation.workspaceId,
+        location: context.location,
       });
     }
     await this.#runners.reconcileWatches(
@@ -275,17 +247,16 @@ export class WatchService {
       AbortSignal.any([this.#lifetime.signal, AbortSignal.timeout(30_000)]),
     );
     for (const activation of unavailable) {
-      const updated = await this.#store.recordWatchUnavailable({
+      await this.#store.recordWatchUnavailable({
         ...activation,
         runnerBootId: identity.bootId,
         runnerConnectionGeneration: identity.connectionGeneration,
         runnerId: identity.runnerId,
       });
-      this.#onChanged(updated.workspaceId);
+      this.#onChanged();
     }
-    this.#scheduleStartRetry(environmentId, waitingForWorkspace);
+    this.#scheduleStartRetry(environmentId, unavailable.length > 0);
   }
-
   #scheduleStartRetry(environmentId: EnvironmentId, waiting: boolean): void {
     this.#clearStartRetry(environmentId);
     if (!waiting || this.#closed) return;
@@ -296,7 +267,6 @@ export class WatchService {
     timer.unref();
     this.#startRetryTimers.set(environmentId, timer);
   }
-
   #scheduleReconcileRetry(environmentId: EnvironmentId): void {
     if (this.#closed || this.#reconcileRetryTimers.has(environmentId)) return;
     const attempt = (this.#reconcileRetryAttempts.get(environmentId) ?? 0) + 1;
@@ -312,19 +282,16 @@ export class WatchService {
     timer.unref();
     this.#reconcileRetryTimers.set(environmentId, timer);
   }
-
   #clearStartRetry(environmentId: EnvironmentId): void {
     const timer = this.#startRetryTimers.get(environmentId);
     if (timer) clearTimeout(timer);
     this.#startRetryTimers.delete(environmentId);
   }
-
   #clearReconcileRetry(environmentId: EnvironmentId): void {
     const timer = this.#reconcileRetryTimers.get(environmentId);
     if (timer) clearTimeout(timer);
     this.#reconcileRetryTimers.delete(environmentId);
   }
-
   *#connectedEnvironments(): Iterable<EnvironmentId> {
     for (const environmentId of this.#knownEnvironments) {
       if (this.#runners.identityForEnvironment(environmentId)) yield environmentId;

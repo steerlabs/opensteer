@@ -21,7 +21,6 @@ import {
   type UsageRecord,
 } from "./codex-usage.test-support.js";
 import { startVerticalStack, type VerticalStack } from "./vertical-stack.test-support.js";
-
 const configuredDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = configuredDatabaseUrl ? describe : describe.skip;
 const fakeCodexAppServer = fileURLToPath(
@@ -30,10 +29,11 @@ const fakeCodexAppServer = fileURLToPath(
     import.meta.url,
   ),
 );
-
 const codexSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 
@@ -63,16 +63,13 @@ function fakeCodexRegistry(
 interface UsageJourney extends UsageRecord {
   readonly name: string;
 }
-
 integration("Host, Runner, and Codex harness integration", () => {
   let stack: VerticalStack | undefined;
   const usageJourneys: UsageJourney[] = [];
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
   }, 60_000);
-
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-usage-"));
     const artifact = join(directory, "usage.json");
@@ -104,11 +101,13 @@ integration("Host, Runner, and Codex harness integration", () => {
     const threadId = await stack.createThread({
       modelSelection: codexSelection,
       title: "Usage journey",
-      workspaceId: stack.mainWorkspaceId,
     });
-    return { active: stack, captureFile, threadId };
+    return {
+      active: stack,
+      captureFile,
+      threadId,
+    };
   }
-
   it("closes a partly started deployment when its engine reports sign-in required", async () => {
     await expect(
       startVerticalStack({
@@ -126,7 +125,6 @@ integration("Host, Runner, and Codex harness integration", () => {
       }),
     ).rejects.toThrow("authentication-required: Sign in to Codex on this Runner");
   }, 30_000);
-
   it("commits a REST turn completed by a supervised Codex app-server", async () => {
     stack = await startVerticalStack({
       catalogTimeoutMs: 10_000,
@@ -142,21 +140,20 @@ integration("Host, Runner, and Codex harness integration", () => {
       runTimeoutMs: 15_000,
     });
     const { host, mountCalls } = stack;
-
     const workspace = await stack.createWorkspace("Vertical client workspace");
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
-        options: { effort: "low" },
+        options: {
+          effort: "low",
+        },
         providerId: "openai",
       }),
       title: "Complete the request",
-      workspaceId: workspace.id,
     });
     const turn = await stack.sendMessage({
       text: "Complete this deterministic integration request.",
       threadId,
-      workspaceId: workspace.id,
     });
 
     // The answer streams as live progress; the durable log holds its completion.
@@ -166,10 +163,15 @@ integration("Host, Runner, and Codex harness integration", () => {
     expect(turn.assistantText).toBe("Completed by Codex.");
     const snapshot = await host.store.workspaceSnapshot(workspace.id);
     expect(snapshot.threads).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: threadId, status: "idle" })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: threadId,
+          status: "idle",
+        }),
+      ]),
     );
     const persistedRunnerEvents = await host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["runnerOrdinal", "type"])
       .where("runId", "=", turn.runId)
       .where("runnerOrdinal", "is not", null)
@@ -195,7 +197,9 @@ integration("Host, Runner, and Codex harness integration", () => {
         .select("status")
         .where("runId", "=", turn.runId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ status: "succeeded" });
+    ).resolves.toEqual({
+      status: "succeeded",
+    });
     await expect(
       host.store.database
         .selectFrom("providerSessions")
@@ -207,7 +211,10 @@ integration("Host, Runner, and Codex harness integration", () => {
       status: "ready",
     });
     // Codex stated no usage for this turn, so the Run records none rather than zeroes.
-    expectRecordedUsage(await recordedUsage(stack, turn.runId), { attempt: null, nodes: [] });
+    expectRecordedUsage(await recordedUsage(stack, turn.runId), {
+      attempt: null,
+      nodes: [],
+    });
 
     // The owner's Main Workspace is provisioned on first bootstrap, and this
     // test then creates one project Workspace of its own.
@@ -216,24 +223,20 @@ integration("Host, Runner, and Codex harness integration", () => {
     expect(mountCalls).toHaveLength(1);
     expect(mountCalls[0]?.plan).toMatchObject({
       ...(await host.store.getWorkspace(workspace.id))?.backing,
-      workspaceId: workspace.id,
     });
     expect(stack.mountCleanupCalls()).toBe(0);
   });
-
   it("records what a Codex turn's own responses consumed, once each", async () => {
     const { active, captureFile, threadId } = await startUsageStack("vertical");
     const turn = await active.sendMessage({
       text: "Complete this deterministic integration request.",
       threadId,
-      workspaceId: active.mainWorkspaceId,
     });
     expect(turn.assistantText).toBe("Completed by Codex.");
     await waitFor(
       async () => (await codexUsageFrames(captureFile)).some((frame) => frame.label === "late"),
       "the statement after the turn",
     );
-
     const frames = await codexUsageFrames(captureFile);
     expect(frames.map((frame) => frame.label)).toEqual([
       "response",
@@ -259,13 +262,18 @@ integration("Host, Runner, and Codex harness integration", () => {
       nodes: [],
     });
     const recorded = await recordedUsage(active, turn.runId);
-    usageJourneys.push({ name: "several responses", ...usageRecord(frames, expected, recorded) });
+    usageJourneys.push({
+      name: "several responses",
+      ...usageRecord(frames, expected, recorded),
+    });
     expectRecordedUsage(recorded, expected);
   });
-
   it("counts a steered Codex turn's responses on its one attempt", async () => {
     const { active, captureFile, threadId } = await startUsageStack("steer");
-    const queued = await active.queueMessage({ text: "Draft the launch plan", threadId });
+    const queued = await active.queueMessage({
+      text: "Draft the launch plan",
+      threadId,
+    });
     const runId = queued.runId!;
     await waitFor(
       async () =>
@@ -273,14 +281,16 @@ integration("Host, Runner, and Codex harness integration", () => {
         (await codexUsageFrames(captureFile)).length === 1,
       "the turn's first response",
     );
-    const steered = await active.steerMessage({ text: "Use the blue palette", threadId });
+    const steered = await active.steerMessage({
+      text: "Use the blue palette",
+      threadId,
+    });
     expect(steered.runId).toBe(runId);
     await waitFor(
       async () => ["completed", "failed", "interrupted"].includes(await runStatus(active, runId)),
       "the Run to end",
     );
     expect(await runStatus(active, runId)).toBe("completed");
-
     const frames = await codexUsageFrames(captureFile);
     expect(frames.map((frame) => frame.label)).toEqual(["response", "response"]);
     const expected = expectedUsage(frames, await codexThreadOf(active, threadId));
@@ -292,15 +302,20 @@ integration("Host, Runner, and Codex harness integration", () => {
       reasoningTokens: 49,
     });
     const recorded = await recordedUsage(active, runId);
-    usageJourneys.push({ name: "steered turn", ...usageRecord(frames, expected, recorded) });
+    usageJourneys.push({
+      name: "steered turn",
+      ...usageRecord(frames, expected, recorded),
+    });
     expectRecordedUsage(recorded, expected);
   });
-
   it("fails a Run whose engine states usage that cannot be, keeping what came before", async () => {
     const { active, captureFile, threadId } = await startUsageStack("vertical", [
       "--impossible-usage",
     ]);
-    const queued = await active.queueMessage({ text: "Complete the request", threadId });
+    const queued = await active.queueMessage({
+      text: "Complete the request",
+      threadId,
+    });
     const runId = queued.runId!;
     await waitFor(
       async () => ["completed", "failed", "interrupted"].includes(await runStatus(active, runId)),
@@ -308,7 +323,7 @@ integration("Host, Runner, and Codex harness integration", () => {
     );
     expect(await runStatus(active, runId)).toBe("failed");
     const failure = await active.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select("data")
       .where("runId", "=", runId)
       .where("type", "=", "run.failed")
@@ -340,7 +355,6 @@ integration("Host, Runner, and Codex harness integration", () => {
     expectRecordedUsage(recorded, expected);
   });
 });
-
 async function runStatus(active: VerticalStack, runId: RunId): Promise<string> {
   const run = await active.host.store.database
     .selectFrom("runs")
@@ -349,7 +363,6 @@ async function runStatus(active: VerticalStack, runId: RunId): Promise<string> {
     .executeTakeFirstOrThrow();
   return run.status;
 }
-
 async function waitFor(check: () => Promise<boolean>, label: string, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

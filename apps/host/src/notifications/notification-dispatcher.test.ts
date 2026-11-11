@@ -12,7 +12,6 @@ import {
   type NotificationDispatcherOptions,
 } from "./notification-dispatcher.js";
 import { NotificationPublicationClient } from "./notification-publication-client.js";
-
 const instant = new Date("2026-10-01T12:00:00Z");
 function fixture(kind: "reply-published" | "request-opened" = "reply-published") {
   const messageId = createId("message");
@@ -37,7 +36,6 @@ function fixture(kind: "reply-published" | "request-opened" = "reply-published")
     sequence: "3",
     threadId: createId("thread"),
     type: "run.completed",
-    workspaceId: createId("workspace"),
   });
   const decided: DecidedNotification = {
     userId: createId("user"),
@@ -51,10 +49,12 @@ function fixture(kind: "reply-published" | "request-opened" = "reply-published")
       runId: event.runId,
       threadId: event.threadId,
       title: "Opensteer",
-      workspaceId: event.workspaceId,
     },
   };
-  return { event, decided };
+  return {
+    event,
+    decided,
+  };
 }
 function setup(
   input: {
@@ -66,7 +66,11 @@ function setup(
   } = {},
 ) {
   const { event, decided } = fixture(input.kind);
-  const calls: { at: number; body: Record<string, unknown>; authorization: string | null }[] = [];
+  const calls: {
+    at: number;
+    body: Record<string, unknown>;
+    authorization: string | null;
+  }[] = [];
   const target = vi.fn(async () =>
     input.noTarget
       ? null
@@ -84,14 +88,27 @@ function setup(
     const answer = input.answers?.[calls.length - 1] ?? 202;
     if (answer === "network") throw new Error(`Bearer osc_${"a".repeat(43)}`);
     if (answer === "not-configured")
-      return new Response(JSON.stringify({ error: { reason: "push-not-configured" } }), {
-        status: 404,
-      });
+      return new Response(
+        JSON.stringify({
+          error: {
+            reason: "push-not-configured",
+          },
+        }),
+        {
+          status: 404,
+        },
+      );
     return new Response(
       answer === 202
-        ? JSON.stringify({ accepted: true, deliveries: 1, notificationId: decided.view.id })
+        ? JSON.stringify({
+            accepted: true,
+            deliveries: 1,
+            notificationId: decided.view.id,
+          })
         : "",
-      { status: answer },
+      {
+        status: answer,
+      },
     );
   });
   const store = {
@@ -116,7 +133,18 @@ function setup(
       fetch,
     }),
   });
-  return { dispatcher, event, decided, store, target, fetch, calls, onLive, onError, onWarning };
+  return {
+    dispatcher,
+    event,
+    decided,
+    store,
+    target,
+    fetch,
+    calls,
+    onLive,
+    onError,
+    onWarning,
+  };
 }
 const dispatchers: NotificationDispatcher[] = [];
 function start(input: Parameters<typeof setup>[0] = {}) {
@@ -134,13 +162,15 @@ afterEach(async () => {
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
 });
-
 describe("NotificationDispatcher", () => {
   it("drains the complete grace and retry intervals on a domain clock", async () => {
     const clock = new ManualClock(instant.getTime());
     const f = start({
       answers: [503, 202],
-      timing: { now: () => new Date(clock.now()), wait: clock.wait },
+      timing: {
+        now: () => new Date(clock.now()),
+        wait: clock.wait,
+      },
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.calls).toHaveLength(0);
@@ -152,7 +182,6 @@ describe("NotificationDispatcher", () => {
     expect(f.onError).not.toHaveBeenCalled();
     expect(f.onWarning).not.toHaveBeenCalled();
   });
-
   it("H1 sends live immediately and posts a reply after exactly five seconds with a fifteen-minute window", async () => {
     const f = start();
     await vi.advanceTimersByTimeAsync(0);
@@ -177,10 +206,14 @@ describe("NotificationDispatcher", () => {
     expect(f.onError).not.toHaveBeenCalled();
   });
   it("H4 sends Requests immediately and suppresses an already answered Request", async () => {
-    const f = start({ kind: "request-opened" });
+    const f = start({
+      kind: "request-opened",
+    });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.calls).toHaveLength(1);
-    const answered = setup({ kind: "request-opened" });
+    const answered = setup({
+      kind: "request-opened",
+    });
     dispatchers.push(answered.dispatcher);
     answered.store.publicationSkipReason.mockResolvedValue("answered");
     answered.dispatcher.dispatch(answered.event);
@@ -198,7 +231,10 @@ describe("NotificationDispatcher", () => {
     expect(f.calls).toEqual([]);
   });
   it("H6 retries network, 5xx and 429 after 1, 2, 4, 8, 16 seconds then logs one drop", async () => {
-    const f = start({ kind: "request-opened", answers: ["network", 503, 429, 500, 503, 503] });
+    const f = start({
+      kind: "request-opened",
+      answers: ["network", 503, 429, 500, 503, 503],
+    });
     await vi.advanceTimersByTimeAsync(31_000);
     expect(f.calls.map(({ at }) => at - instant.getTime())).toEqual([
       0, 1_000, 3_000, 7_000, 15_000, 31_000,
@@ -215,9 +251,18 @@ describe("NotificationDispatcher", () => {
     expect(JSON.stringify(f.onError.mock.calls)).not.toContain("osc_");
   });
   it("H6 delivers a 503 then 202 and drops 400 or push-not-configured with one appropriate log", async () => {
-    const f = start({ kind: "request-opened", answers: [503, 202] });
-    const bad = start({ kind: "request-opened", answers: [400] });
-    const missing = start({ kind: "request-opened", answers: ["not-configured"] });
+    const f = start({
+      kind: "request-opened",
+      answers: [503, 202],
+    });
+    const bad = start({
+      kind: "request-opened",
+      answers: [400],
+    });
+    const missing = start({
+      kind: "request-opened",
+      answers: ["not-configured"],
+    });
     await vi.advanceTimersByTimeAsync(32_000);
     expect(f.calls).toHaveLength(2);
     expect(f.onError).not.toHaveBeenCalled();
@@ -228,7 +273,9 @@ describe("NotificationDispatcher", () => {
     expect(missing.onError).not.toHaveBeenCalled();
   });
   it("H7 skips absent targets and Account subjects quietly after live delivery", async () => {
-    const f = start({ noTarget: true });
+    const f = start({
+      noTarget: true,
+    });
     const noSubject = start();
     noSubject.store.accountSubjects.mockResolvedValue([]);
     await vi.advanceTimersByTimeAsync(40_000);
@@ -252,7 +299,10 @@ describe("NotificationDispatcher", () => {
     ready();
     await vi.advanceTimersByTimeAsync(0);
     expect(f.calls).toEqual([]);
-    const retry = start({ kind: "request-opened", answers: [503] });
+    const retry = start({
+      kind: "request-opened",
+      answers: [503],
+    });
     await vi.advanceTimersByTimeAsync(0);
     retry.store.accountSubjects.mockResolvedValue([]);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -260,7 +310,10 @@ describe("NotificationDispatcher", () => {
     expect(retry.onError).not.toHaveBeenCalled();
   });
   it("H11 resolves a changed Personal target for each retry", async () => {
-    const f = start({ kind: "request-opened", answers: [503] });
+    const f = start({
+      kind: "request-opened",
+      answers: [503],
+    });
     await vi.advanceTimersByTimeAsync(0);
     f.target.mockResolvedValue({
       controlApiOrigin: new URL("https://new.invalid"),
@@ -270,17 +323,27 @@ describe("NotificationDispatcher", () => {
     expect(f.calls[1]?.authorization).toBe(`Bearer osc_${"b".repeat(43)}`);
   });
   it("logs once when readiness outlasts the window", async () => {
-    const f = start({ ready: new Promise<void>(() => undefined) });
+    const f = start({
+      ready: new Promise<void>(() => undefined),
+    });
     await vi.advanceTimersByTimeAsync(notificationPushWindowMilliseconds);
     expect(f.calls).toEqual([]);
     expect(f.onError).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ reason: "Notification push window closed" }),
+      expect.objectContaining({
+        reason: "Notification push window closed",
+      }),
     );
   });
   it("H8/H12 closes pending holds and retries and unresolved readiness promptly", async () => {
     const hold = start();
-    const retry = start({ kind: "request-opened", answers: [503] });
-    const waiting = start({ kind: "request-opened", ready: new Promise<void>(() => undefined) });
+    const retry = start({
+      kind: "request-opened",
+      answers: [503],
+    });
+    const waiting = start({
+      kind: "request-opened",
+      ready: new Promise<void>(() => undefined),
+    });
     await vi.advanceTimersByTimeAsync(0);
     await Promise.all([hold, retry, waiting].map(({ dispatcher }) => dispatcher.close()));
     expect(vi.getTimerCount()).toBe(0);
@@ -290,7 +353,9 @@ describe("NotificationDispatcher", () => {
     expect(waiting.calls).toEqual([]);
   });
   it("H8 aborts and awaits the in-flight request and ignores events after close", async () => {
-    const f = setup({ kind: "request-opened" });
+    const f = setup({
+      kind: "request-opened",
+    });
     dispatchers.push(f.dispatcher);
     let finished = false;
     f.fetch.mockImplementation(
@@ -304,7 +369,9 @@ describe("NotificationDispatcher", () => {
                 reject(new Error("aborted"));
               });
             },
-            { once: true },
+            {
+              once: true,
+            },
           );
         }),
     );

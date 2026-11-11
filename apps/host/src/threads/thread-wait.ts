@@ -1,12 +1,16 @@
 import { OpensteerError, type Message, type RunId, type Run } from "@opensteer/core";
-
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
-
 export interface ThreadWaitSnapshot {
   readonly connected: boolean;
-  readonly pendingRequest?: { readonly id: string; readonly kind: string };
+  readonly pendingRequest?: {
+    readonly id: string;
+    readonly kind: string;
+  };
   readonly authorityExpiresAt?: number;
-  readonly run?: { readonly id: RunId; readonly status: Run["status"] };
+  readonly run?: {
+    readonly id: RunId;
+    readonly status: Run["status"];
+  };
   readonly messages: readonly Message[];
   /** Messages after these were not read yet. */
   readonly hasMore?: boolean;
@@ -22,7 +26,9 @@ export class ThreadWaitService {
   }
   wait(input: { readonly timeoutMs: number; readonly signal?: AbortSignal }) {
     return new Promise<
-      ThreadWaitSnapshot & { readonly status: "running" | "settled" | "offline" | "timed_out" }
+      ThreadWaitSnapshot & {
+        readonly status: "running" | "settled" | "offline" | "timed_out";
+      }
     >((resolve, reject) => {
       const deadline = Date.now() + Math.min(threadWaitMaxMs, Math.max(1, input.timeoutMs));
       let done = false;
@@ -48,7 +54,10 @@ export class ThreadWaitService {
       const finish = (status: "running" | "settled" | "offline" | "timed_out") => {
         if (done || !snapshot) return;
         cleanup();
-        resolve({ ...snapshot, status });
+        resolve({
+          ...snapshot,
+          status,
+        });
       };
       const aborted = () => fail(input.signal?.reason ?? new Error("Thread wait cancelled"));
       const read = () => {
@@ -91,14 +100,19 @@ export class ThreadWaitService {
       // Subscribe before reading: an event during the read marks a second read,
       // and a commit before subscription is already in the first snapshot.
       unsubscribe = this.options.subscribe(read);
-      input.signal?.addEventListener("abort", aborted, { once: true });
+      input.signal?.addEventListener("abort", aborted, {
+        once: true,
+      });
       if (input.signal?.aborted) {
         aborted();
         return;
       }
       timer = setTimeout(
         () => {
-          snapshot ??= { connected: true, messages: [] };
+          snapshot ??= {
+            connected: true,
+            messages: [],
+          };
           finish("timed_out");
         },
         Math.min(threadWaitMaxMs, Math.max(1, input.timeoutMs)),

@@ -1,3 +1,5 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   lockThreadCaller,
   assertThreadCaller,
@@ -6,7 +8,6 @@ import {
 import { isDeepStrictEqual } from "node:util";
 import {
   createId,
-  threadInReach,
   nonTerminalRunStatuses,
   OpensteerError,
   SequenceSchema,
@@ -17,7 +18,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
+import { TransactionScopeChanged } from "./connection.js";
 import type { DatabaseSchema, ThreadRow } from "./schema.js";
 import {
   assignmentEventsInTransaction,
@@ -29,13 +30,12 @@ import { revokeRunGrants } from "./run-grants.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { cancelPending } from "./request-cancellation.js";
 import { pauseTriggerInTransaction } from "./trigger-store.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   idempotencyConflict,
   jsonValue,
   lockCommandIdempotency,
   principalIdForUser,
-  requireActiveWorkspaceMembership,
   type ChannelLinks,
 } from "./store-primitives.js";
 import {
@@ -49,72 +49,39 @@ import { lockThreadChannelAuthorities } from "./channel-execution.js";
 import { projectThreadState } from "./thread-status.js";
 import { admitRunToolCallInTransaction, type RunToolAdmissionInput } from "./run-tool-admission.js";
 import { threadIsQuiet } from "./quiet-tasks.js";
-
 export interface ThreadWriteActor {
   readonly authority?: ThreadCallerAuthority;
   readonly requestedBy: UserId;
   readonly actorRunId?: RunId;
 }
 
-/** Consent reach never replaces the person's membership and task ownership. */
 export async function requireThreadWriteAuthority(
   transaction: Transaction<DatabaseSchema>,
-  thread: Pick<ThreadRow, "id" | "workspaceId" | "createdBy">,
+  thread: Pick<ThreadRow, "id" | "createdBy">,
   actor: ThreadWriteActor,
-  action: "rename" | "set_icon" | "done" | "reopen",
+  _action: "rename" | "set_icon" | "done" | "reopen",
 ): Promise<void> {
-  const membership = await requireActiveWorkspaceMembership(
-    transaction,
-    thread.workspaceId,
-    actor.requestedBy,
-  );
-  const run = actor.actorRunId
-    ? await transaction
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select([
-          "runs.requestedBy",
-          "runs.status",
-          "runs.threadId",
-          "threads.workspaceId",
-          "threads.inheritsMain",
-          "threads.specialistId",
-          "threads.lineageRootThreadId",
-        ])
-        .where("runs.id", "=", actor.actorRunId)
-        .executeTakeFirst()
-    : null;
-  if (
-    actor.actorRunId &&
-    (!run ||
-      run.requestedBy !== actor.requestedBy ||
-      !nonTerminalRunStatuses.some((status) => status === run.status))
-  )
-    throw new OpensteerError({ code: "forbidden", message: "Writing Run is no longer active" });
-  const self = run?.threadId === thread.id;
-  if (
-    (action === "done" || action === "reopen") &&
-    !(self && action === "done") &&
-    thread.createdBy !== actor.requestedBy &&
-    membership.role !== "owner"
-  )
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Only the owner can stop another member's task",
-    });
-  if (!run || self) return;
-  const target = await transaction
-    .selectFrom("threads")
-    .select(["inheritsMain", "specialistId", "lineageRootThreadId", "workspaceId"])
-    .where("id", "=", thread.id)
-    .executeTakeFirstOrThrow();
-  if (threadInReach(run, target)) return;
-  throw new OpensteerError({
-    code: "forbidden",
-    message: "This task is outside the agent's consent scope",
+  await requirePersonalOwner(transaction, actor.requestedBy);
+  await assertThreadCaller(transaction, actor.authority, {
+    threadId: thread.id,
   });
+  if (actor.actorRunId) {
+    const run = await transaction
+      .selectFrom("runs")
+      .select(["requestedBy", "status"])
+      .where("id", "=", actor.actorRunId)
+      .executeTakeFirst();
+    if (
+      !run ||
+      run.requestedBy !== actor.requestedBy ||
+      !nonTerminalRunStatuses.some((status) => status === run.status)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Writing Run is no longer active",
+      });
+  }
 }
-
 export interface SetThreadDoneInput extends ThreadWriteActor {
   readonly done: boolean;
   readonly idempotencyKey: string;
@@ -131,7 +98,11 @@ export interface SetThreadDoneInput extends ThreadWriteActor {
 /** The open Assignments a task serves or handed out, and every open one beneath them. */
 async function openDoneAssignments(database: Kysely<DatabaseSchema>, threadId: ThreadId) {
   return (
-    await sql<{ id: AssignmentId; childThreadId: ThreadId; parentThreadId: ThreadId }>`
+    await sql<{
+      id: AssignmentId;
+      childThreadId: ThreadId;
+      parentThreadId: ThreadId;
+    }>`
     with recursive tree as (
       select id, child_thread_id, parent_thread_id from delegations
       where status = 'open' and (child_thread_id = ${threadId} or parent_thread_id = ${threadId})
@@ -154,7 +125,6 @@ export async function doneScopeThreadIds(
   const assignments = await openDoneAssignments(database, threadId);
   return [...new Set([threadId, ...assignments.map((row) => row.childThreadId)])].sort();
 }
-
 async function discoverDoneScope(
   transaction: Transaction<DatabaseSchema>,
   input: SetThreadDoneInput,
@@ -196,7 +166,7 @@ async function discoverDoneScope(
     .execute();
   const requests = await transaction
     .selectFrom("requests")
-    .select(["id", "originatingWorkspaceId"])
+    .select(["id"])
     .where("originatingThreadId", "in", threadIds)
     .where("status", "=", "pending")
     .orderBy("id")
@@ -209,23 +179,37 @@ async function discoverDoneScope(
     .where("policy", "<>", "report")
     .orderBy("messageId")
     .execute();
-  return { assignments, threadIds, runs, triggers, requests, inputs };
+  return {
+    assignments,
+    threadIds,
+    runs,
+    triggers,
+    requests,
+    inputs,
+  };
 }
-
 export async function setThreadDone(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   input: SetThreadDoneInput,
 ) {
-  return withDatabaseTransaction(
+  return withPersonalTransaction(
     database,
     async (transaction) => {
       await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
       const payload = {
         threadId: input.threadId,
         done: input.done,
-        ...(input.actorRunId ? { actorRunId: input.actorRunId } : {}),
-        ...(input.quiet ? { quiet: true } : {}),
+        ...(input.actorRunId
+          ? {
+              actorRunId: input.actorRunId,
+            }
+          : {}),
+        ...(input.quiet
+          ? {
+              quiet: true,
+            }
+          : {}),
       };
       const existing = await transaction
         .selectFrom("commands")
@@ -235,8 +219,7 @@ export async function setThreadDone(
         .executeTakeFirst();
       if (
         existing &&
-        (existing.type !== "thread.shared-done.set" ||
-          !isDeepStrictEqual(existing.payload, payload))
+        (existing.type !== "thread.done.set" || !isDeepStrictEqual(existing.payload, payload))
       )
         throw idempotencyConflict(input.idempotencyKey);
       const scope = await discoverDoneScope(transaction, input);
@@ -259,45 +242,19 @@ export async function setThreadDone(
             .execute()
         : [];
       await admitThreadWrite(transaction, input);
-      const workspaceThreads = [
-        ...new Set([
-          ...scope.threadIds,
-          ...scope.assignments.map(({ parentThreadId }) => parentThreadId),
-          ...runs.map(({ threadId }) => threadId),
-        ]),
-      ];
-      const workspaceRows = await transaction
-        .selectFrom("threads")
-        .select("workspaceId")
-        .where("id", "in", workspaceThreads)
-        .execute();
-      const workspaces = await transaction
-        .selectFrom("workspaces")
-        .select(["id", "homeThreadId"])
-        .where("id", "in", [
-          ...new Set([
-            ...workspaceRows.map(({ workspaceId }) => workspaceId),
-            ...scope.requests.map(({ originatingWorkspaceId }) => originatingWorkspaceId),
-          ]),
-        ])
-        .orderBy("id")
-        .forNoKeyUpdate()
-        .execute();
       const observed = await transaction
         .selectFrom("threads")
         .selectAll()
         .where("id", "=", input.threadId)
         .executeTakeFirst();
-      if (!observed) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      await requireActiveWorkspaceMembership(
-        transaction,
-        observed.workspaceId,
-        input.requestedBy,
-        true,
-      );
+      if (!observed)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Thread not found",
+        });
       await lockThreadChannelAuthorities(transaction, scope.threadIds);
       // Active bindings must not rotate into this set while scope is checked.
-      const channelContexts = await transaction
+      await transaction
         .selectFrom("channelConversationContexts")
         .selectAll()
         .where("activeThreadId", "in", scope.threadIds)
@@ -314,18 +271,6 @@ export async function setThreadDone(
         .execute();
       const thread = threads.find(({ id }) => id === input.threadId)!;
       await requireThreadWriteAuthority(transaction, thread, input, input.done ? "done" : "reopen");
-      if (
-        threads.some(
-          (row) =>
-            row.role !== "work" ||
-            workspaces.some(({ homeThreadId }) => homeThreadId === row.id) ||
-            channelContexts.some(({ activeThreadId }) => activeThreadId === row.id),
-        )
-      )
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Chat and active channel conversations cannot be Done",
-        });
       const triggers = scope.triggers.length
         ? await transaction
             .selectFrom("triggers")
@@ -368,8 +313,14 @@ export async function setThreadDone(
         (input.done && !input.actorRunId && (await threadIsQuiet(transaction, thread.id, now)));
       const authoritySource = jsonValue(
         input.quiet
-          ? { kind: "quiet-tasks", userId: input.requestedBy }
-          : { kind: "user-session", userId: input.requestedBy },
+          ? {
+              kind: "quiet-tasks",
+              userId: input.requestedBy,
+            }
+          : {
+              kind: "user-session",
+              userId: input.requestedBy,
+            },
       );
       if (!existing && stillQuiet) {
         const self =
@@ -378,7 +329,9 @@ export async function setThreadDone(
         if (self) {
           await transaction
             .updateTable("runs")
-            .set({ doneWhenFinished: true })
+            .set({
+              doneWhenFinished: true,
+            })
             .where("id", "=", self.id)
             .execute();
           doneWhenRunEnds = true;
@@ -389,7 +342,9 @@ export async function setThreadDone(
           if (!input.done && reopened.length)
             await transaction
               .updateTable("runs")
-              .set({ doneWhenFinished: false })
+              .set({
+                doneWhenFinished: false,
+              })
               .where(
                 "id",
                 "in",
@@ -411,7 +366,10 @@ export async function setThreadDone(
             } else
               await transaction
                 .updateTable("threads")
-                .set({ doneAt: null, doneReason: null })
+                .set({
+                  doneAt: null,
+                  doneReason: null,
+                })
                 .where("id", "=", row.id)
                 .execute();
           }
@@ -424,7 +382,11 @@ export async function setThreadDone(
             );
             const cancelledInputs = await transaction
               .updateTable("threadInputs")
-              .set({ state: "cancelled", cancelReason: "task-done", updatedAt: now })
+              .set({
+                state: "cancelled",
+                cancelReason: "task-done",
+                updatedAt: now,
+              })
               .where("threadId", "in", scope.threadIds)
               .where("state", "in", ["pending", "claimed"])
               .where("policy", "<>", "report")
@@ -433,10 +395,11 @@ export async function setThreadDone(
             for (const row of cancelledInputs) {
               const owner = threads.find(({ id }) => id === row.threadId)!;
               events.push(
-                await appendHostWorkspaceEvent(transaction, {
-                  data: { input: threadInputFromRow(row) },
+                await appendHostDeploymentEvent(transaction, {
+                  data: {
+                    input: threadInputFromRow(row),
+                  },
                   environmentId: owner.environmentId,
-                  workspaceId: owner.workspaceId,
                   threadId: owner.id,
                   runId: null,
                   type: "thread-input.updated",
@@ -524,7 +487,7 @@ export async function setThreadDone(
             runId: input.actorRunId ?? null,
             status: "succeeded",
             threadId: thread.id,
-            type: "thread.shared-done.set",
+            type: "thread.done.set",
           })
           .execute();
       } else
@@ -548,12 +511,11 @@ export async function setThreadDone(
         .where("id", "=", thread.id)
         .executeTakeFirstOrThrow();
       const head = await transaction
-        .selectFrom("workspaces")
-        .select("eventSequence")
-        .where("id", "=", thread.workspaceId)
+        .selectFrom("deploymentEventState")
+        .select("sequence")
         .executeTakeFirstOrThrow();
       return {
-        asOfSequence: SequenceSchema.parse(head.eventSequence),
+        asOfSequence: SequenceSchema.parse(head.sequence),
         thread: threadFromRow(current),
         events,
         interruptCommands,
@@ -566,7 +528,6 @@ export async function setThreadDone(
     (error) => error instanceof TransactionScopeChanged,
   );
 }
-
 export async function appendDoneState(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
@@ -576,7 +537,7 @@ export async function appendDoneState(
     .selectAll()
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
-  return appendHostWorkspaceEvent(transaction, {
+  return appendHostDeploymentEvent(transaction, {
     data: {
       status: thread.status,
       title: thread.title,
@@ -587,13 +548,11 @@ export async function appendDoneState(
       pendingRequests: thread.pendingRequestCount,
     },
     environmentId: thread.environmentId,
-    workspaceId: thread.workspaceId,
     threadId,
     runId: null,
     type: "thread.state-changed",
   });
 }
-
 export async function admitThreadWrite(
   transaction: Transaction<DatabaseSchema>,
   input: ThreadWriteActor & {
@@ -601,7 +560,9 @@ export async function admitThreadWrite(
     readonly admission?: RunToolAdmissionInput;
   },
 ): Promise<void> {
-  await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+  await assertThreadCaller(transaction, input.authority, {
+    threadId: input.threadId,
+  });
   if (!input.admission) return;
   if (
     input.admission.runId !== input.actorRunId ||

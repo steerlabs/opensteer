@@ -1,8 +1,11 @@
-import { recoverThreadWorkQueues } from "./execution-recovery.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { readEmptyPersonalResources } from "./store.integration.test-support.js";
+
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { messageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
-import { sql } from "kysely";
-import { createId, ModelSelectionSchema } from "@opensteer/core";
+
+import { createId, AgentEventSchema, ModelSelectionSchema } from "@opensteer/core";
 import { expect } from "vitest";
 import { OpensteerStore } from "./store.js";
 import {
@@ -10,8 +13,7 @@ import {
   testModelSelection,
   testContinuationIdentity,
 } from "./store.integration.test-support.js";
-
-describeStore("Workspace snapshot history", (it) => {
+describeStore("Deployment snapshot history", (it) => {
   it("remembers a human hand-off returned to the queue at finalization", async ({
     storeFixture,
   }) => {
@@ -19,7 +21,11 @@ describeStore("Workspace snapshot history", (it) => {
     const f = await startRunFixture("waited-returned-steer");
     await database
       .updateTable("threads")
-      .set({ role: "conversation", inputQueuePaused: true, inputQueuePausedBy: f.userId })
+      .set({
+        purpose: "voice",
+        inputQueuePaused: true,
+        inputQueuePausedBy: f.userId,
+      })
       .where("id", "=", f.thread.id)
       .execute();
     await database
@@ -37,20 +43,32 @@ describeStore("Workspace snapshot history", (it) => {
       .execute();
     await database
       .updateTable("runs")
-      .set({ personWaited: false })
+      .set({
+        personWaited: false,
+      })
       .where("id", "=", f.run.id)
       .execute();
     const queued = await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Please help" }],
+      content: [
+        {
+          type: "text",
+          text: "Please help",
+        },
+      ],
       idempotencyKey: "waited-return",
       policy: "queue",
       requestedBy: f.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: f.thread.id,
     });
     await database
       .updateTable("threads")
-      .set({ inputQueuePaused: false, inputQueuePausedBy: null })
+      .set({
+        inputQueuePaused: false,
+        inputQueuePausedBy: null,
+      })
       .where("id", "=", f.thread.id)
       .execute();
     const steered = await store.steerThreadInput({
@@ -63,13 +81,18 @@ describeStore("Workspace snapshot history", (it) => {
     expect(steered.command).not.toBeNull();
     await database
       .updateTable("threads")
-      .set({ inputQueuePaused: true, inputQueuePausedBy: f.userId })
+      .set({
+        inputQueuePaused: true,
+        inputQueuePausedBy: f.userId,
+      })
       .where("id", "=", f.thread.id)
       .execute();
     await database.transaction().execute((tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
-        links: { threadUrl: (id) => `https://example.test/thread/${id}` },
+        links: {
+          threadUrl: (id) => `https://example.test/thread/${id}`,
+        },
         queuedInputCancellation: "seed-input",
         runId: f.run.id,
         source: "runner",
@@ -82,63 +105,30 @@ describeStore("Workspace snapshot history", (it) => {
         .select("runId")
         .where("id", "=", queued.message.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ runId: null });
+    ).toEqual({
+      runId: null,
+    });
     expect(
       await database
         .selectFrom("runs")
         .select(["personWaited"])
         .where("id", "=", f.run.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ personWaited: true });
-  });
-
-  it("interrupts legacy report-driven queued Runs during recovery", async ({ storeFixture }) => {
-    const { database, createRunFixture, enqueueHumanTrigger } = storeFixture;
-    const f = await createRunFixture("quiet-legacy-report");
-    const admitted = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Legacy report" }],
-      requestedBy: f.userId,
-      idempotencyKey: "legacy-report",
-      threadId: f.thread.id,
+    ).toEqual({
+      personWaited: true,
     });
-    await database
-      .updateTable("messages")
-      .set({
-        author: {
-          kind: "watch",
-          displayName: "Watcher",
-          activationId: createId("triggerWatchActivation"),
-          revisionId: createId("triggerRevision"),
-          triggerId: createId("trigger"),
-        },
-      })
-      .where("id", "=", admitted.run.seedInputId)
-      .execute();
-    await database
-      .updateTable("runs")
-      .set({ personWaited: false })
-      .where("id", "=", admitted.run.id)
-      .execute();
-    await database
-      .updateTable("threadInputs")
-      .set({ policy: "report" })
-      .where("messageId", "=", admitted.run.seedInputId)
-      .execute();
-    await recoverThreadWorkQueues(database);
-    expect(
-      await database
-        .selectFrom("runs")
-        .select(["status"])
-        .where("id", "=", admitted.run.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ status: "interrupted" });
   });
 
   it("keeps a human-seeded Run stopped before claim", async ({ storeFixture }) => {
     const { database, store, createRunFixture, enqueueHumanTrigger } = storeFixture;
     const f = await createRunFixture("human-stop-before-claim");
     const admitted = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Please help" }],
+      content: [
+        {
+          type: "text",
+          text: "Please help",
+        },
+      ],
       requestedBy: f.userId,
       idempotencyKey: "human-stop",
       threadId: f.thread.id,
@@ -146,7 +136,9 @@ describeStore("Workspace snapshot history", (it) => {
     await database.transaction().execute((tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
-        links: { threadUrl: (id) => `https://example.test/thread/${id}` },
+        links: {
+          threadUrl: (id) => `https://example.test/thread/${id}`,
+        },
         queuedInputCancellation: "seed-input",
         runId: admitted.run.id,
         source: "host",
@@ -159,7 +151,9 @@ describeStore("Workspace snapshot history", (it) => {
         .select(["personWaited"])
         .where("id", "=", admitted.run.id)
         .executeTakeFirstOrThrow(),
-    ).toEqual({ personWaited: true });
+    ).toEqual({
+      personWaited: true,
+    });
     expect(
       await store.threadEventPageForOwner({
         ownerId: f.userId,
@@ -168,13 +162,14 @@ describeStore("Workspace snapshot history", (it) => {
       }),
     ).not.toBeNull();
   });
-
   it("does not count report updates or automatic steers as new turns", async ({ storeFixture }) => {
     const { database, store, startRunFixture } = storeFixture;
     const f = await startRunFixture("automatic-page-boundaries");
     await database
       .updateTable("threads")
-      .set({ role: "conversation" })
+      .set({
+        purpose: "voice",
+      })
       .where("id", "=", f.thread.id)
       .execute();
     const seed = await database
@@ -201,17 +196,46 @@ describeStore("Workspace snapshot history", (it) => {
     };
     const starts: string[] = [];
     for (const [type, data] of [
-      ["message.placed", { message }],
       [
-        "message.created",
-        { message: { ...message, id: createId("message") }, input: { ...input, policy: "steer" } },
+        "message.placed",
+        {
+          message,
+        },
       ],
-      ["message.placed", { message: { ...message, id: createId("message") } }],
       [
         "message.created",
         {
-          message: { ...message, id: createId("message"), runId: null },
-          input: { ...input, policy: "report" },
+          message: {
+            ...message,
+            id: createId("message"),
+          },
+          input: {
+            ...input,
+            policy: "steer",
+          },
+        },
+      ],
+      [
+        "message.placed",
+        {
+          message: {
+            ...message,
+            id: createId("message"),
+          },
+        },
+      ],
+      [
+        "message.created",
+        {
+          message: {
+            ...message,
+            id: createId("message"),
+            runId: null,
+          },
+          input: {
+            ...input,
+            policy: "report",
+          },
         },
       ],
       [
@@ -225,17 +249,22 @@ describeStore("Workspace snapshot history", (it) => {
         },
       ],
     ] as const) {
-      const clock = await database
-        .updateTable("workspaces")
-        .set({ eventSequence: sql`event_sequence + 1` })
-        .where("id", "=", f.workspace.id)
-        .returning("eventSequence")
-        .executeTakeFirstOrThrow();
-      starts.push(clock.eventSequence);
-      await sql`insert into workspace_events (event_id, sequence, workspace_id, thread_id, run_id, environment_id, type, data, created_at)
-        values (${createId("event")}, ${clock.eventSequence}, ${f.workspace.id}, ${f.thread.id}, ${f.run.id}, ${f.environmentId}, ${type}, ${JSON.stringify(data)}::jsonb, now())`.execute(
-        database,
+      const event = await withPersonalTransaction(database, (transaction) =>
+        appendHostDeploymentEvent(
+          transaction,
+          AgentEventSchema.parse({
+            type,
+            data,
+            threadId: f.thread.id,
+            runId: f.run.id,
+            environmentId: f.environmentId,
+            eventId: createId("event"),
+            sequence: "0",
+            createdAt: new Date().toISOString(),
+          }),
+        ),
       );
+      starts.push(event.sequence);
     }
     const page = await store.threadEventPageForOwner({
       ownerId: f.userId,
@@ -246,7 +275,6 @@ describeStore("Workspace snapshot history", (it) => {
     expect(page!.window.nextBefore).toBe(starts[0]);
     expect(page!.window.totalItems).toBeGreaterThanOrEqual(5);
   });
-
   it("moves tasks only for admitted human work, including steering a running turn", async ({
     storeFixture,
   }) => {
@@ -259,30 +287,43 @@ describeStore("Workspace snapshot history", (it) => {
       idempotencyKey: "task-asked-other",
       modelSelection: testModelSelection,
       title: "Other",
-      workspaceId: f.workspace.id,
     });
     expect(other.thread.askedAt).toBe(other.thread.createdAt);
     await database
       .updateTable("threads")
-      .set({ askedAt: new Date("2020-01-01") })
+      .set({
+        askedAt: new Date("2020-01-01"),
+      })
       .where("id", "=", f.thread.id)
       .execute();
     await database
       .updateTable("threads")
-      .set({ askedAt: new Date("2021-01-01") })
+      .set({
+        askedAt: new Date("2021-01-01"),
+      })
       .where("id", "=", other.thread.id)
       .execute();
-    const page = () => store.taskPageForUser({ userId: f.userId });
+    const page = () =>
+      store.taskPageForUser({
+        userId: f.userId,
+      });
     expect((await page()).tasks.map(({ thread }) => thread.id)).toEqual([
       other.thread.id,
       f.thread.id,
     ]);
     const steer = await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Please change direction" }],
+      content: [
+        {
+          type: "text",
+          text: "Please change direction",
+        },
+      ],
       idempotencyKey: "task-asked-steer",
       policy: "steer",
       requestedBy: f.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: f.thread.id,
     });
     expect(steer.disposition).toBe("steering");
@@ -294,11 +335,19 @@ describeStore("Workspace snapshot history", (it) => {
         (await page()).tasks.find(({ thread }) => thread.id === f.thread.id)!.thread.askedAt,
       ).toBe(asked.askedAt);
     await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Agent context" }],
+      content: [
+        {
+          type: "text",
+          text: "Agent context",
+        },
+      ],
       idempotencyKey: "task-asked-agent",
       policy: "queue",
       requestedBy: f.userId,
-      source: { kind: "agent", runId: f.run.id },
+      source: {
+        kind: "agent",
+        runId: f.run.id,
+      },
       threadId: f.thread.id,
     });
     await unchanged();
@@ -309,14 +358,24 @@ describeStore("Workspace snapshot history", (it) => {
       harnessInstanceId: f.harnessInstance.id,
       idempotencyKey: "task-asked-child",
       modelSelection: testModelSelection,
-      origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
-      task: [{ type: "text", text: "Check something" }],
+      origin: {
+        kind: "run",
+        parentRunId: f.run.id,
+        parentThreadId: f.thread.id,
+      },
+      task: [
+        {
+          type: "text",
+          text: "Check something",
+        },
+      ],
       title: "Child",
-      workspaceId: f.workspace.id,
     });
     await database
       .updateTable("runs")
-      .set({ status: "completed" })
+      .set({
+        status: "completed",
+      })
       .where("id", "=", child.run.id)
       .execute();
     await database
@@ -335,19 +394,28 @@ describeStore("Workspace snapshot history", (it) => {
       ),
     ).toBe(true);
     await unchanged();
-
     await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Human report" }],
+      content: [
+        {
+          type: "text",
+          text: "Human report",
+        },
+      ],
       idempotencyKey: "task-asked-report",
       policy: "report",
       requestedBy: f.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: f.thread.id,
     });
     await unchanged();
     await database
       .updateTable("threads")
-      .set({ titleSource: "provisional", iconSource: "provisional" })
+      .set({
+        titleSource: "provisional",
+        iconSource: "provisional",
+      })
       .where("id", "=", f.thread.id)
       .execute();
     expect(
@@ -367,7 +435,9 @@ describeStore("Workspace snapshot history", (it) => {
     await unchanged();
     await database
       .updateTable("runs")
-      .set({ status: "completed" })
+      .set({
+        status: "completed",
+      })
       .where("threadId", "=", f.thread.id)
       .execute();
     await store.updateThreadExecutionSelection({
@@ -384,20 +454,28 @@ describeStore("Workspace snapshot history", (it) => {
     await unchanged();
     await database
       .updateTable("threads")
-      .set({ askedAt: new Date("2020-01-01") })
+      .set({
+        askedAt: new Date("2020-01-01"),
+      })
       .where("id", "=", other.thread.id)
       .execute();
     await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Start other" }],
+      content: [
+        {
+          type: "text",
+          text: "Start other",
+        },
+      ],
       idempotencyKey: "task-asked-human",
       policy: "queue",
       requestedBy: f.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: other.thread.id,
     });
     expect((await page()).tasks[0]!.thread.id).toBe(other.thread.id);
   });
-
   it("omits history without reading message rows or counts and retains metadata", async ({
     storeFixture,
   }) => {
@@ -416,16 +494,22 @@ describeStore("Workspace snapshot history", (it) => {
           return result;
         },
       }),
+      { readPersonalResources: readEmptyPersonalResources },
     );
-    const full = await observed.workspaceSnapshot(f.workspace.id);
+    const full = await observed.deploymentSnapshot();
     expect(full.messages.length).toBeGreaterThan(0);
     expect(full.messageWindows).toContainEqual(
-      expect.objectContaining({ threadId: f.thread.id, totalItems: 1 }),
+      expect.objectContaining({
+        threadId: f.thread.id,
+        totalItems: 1,
+      }),
     );
     expect(full).not.toHaveProperty("messagesOmitted");
     expect(messageQueries).toBe(2);
     messageQueries = 0;
-    const omitted = await observed.workspaceSnapshot(f.workspace.id, { omitMessages: true });
+    const omitted = await observed.deploymentSnapshot({
+      omitMessages: true,
+    });
     expect.soft(omitted.messages).toEqual([]);
     expect.soft(omitted.messageWindows).toEqual([]);
     expect.soft(omitted).toHaveProperty("messagesOmitted", true);
@@ -440,16 +524,24 @@ describeStore("Workspace snapshot history", (it) => {
     }: typeof omitted) => rest;
     expect(metadata(omitted)).toEqual(metadata(full));
     // Viewer state still reads the latest published sequence, never history bodies.
-    const withViewer = await store.workspaceSnapshot(f.workspace.id, { viewerId: f.userId });
-    const omittedWithViewer = await store.workspaceSnapshot(f.workspace.id, {
+    const withViewer = await store.deploymentSnapshot({
+      viewerId: f.userId,
+    });
+    const omittedWithViewer = await store.deploymentSnapshot({
       viewerId: f.userId,
       omitMessages: true,
     });
     expect(omittedWithViewer.readStates).toHaveLength(1);
     expect(metadata(omittedWithViewer)).toEqual(metadata(withViewer));
     expect(omittedWithViewer.pendingRequests).toContainEqual(
-      expect.objectContaining({ id: requestId }),
+      expect.objectContaining({
+        id: requestId,
+      }),
     );
-    expect(omittedWithViewer.runQueue).toContainEqual(expect.objectContaining({ id: f.run.id }));
+    expect(omittedWithViewer.runQueue).toContainEqual(
+      expect.objectContaining({
+        id: f.run.id,
+      }),
+    );
   });
 });

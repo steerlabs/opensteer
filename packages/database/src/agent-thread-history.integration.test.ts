@@ -1,11 +1,11 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { createId } from "@opensteer/core";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-import { withDatabaseTransaction } from "./connection.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
+import "./connection.js";
 import { readAgentThreadActivity, readAgentThreadRecent } from "./agent-thread-history.js";
 import { readThreadWaitSnapshot } from "./thread-wait.js";
-
 describeStore("agent Thread history", (it) => {
   it("orders messages by their newest published event marker and never event content", async ({
     storeFixture,
@@ -16,12 +16,19 @@ describeStore("agent Thread history", (it) => {
       threadId: f.thread.id,
       requestedBy: f.userId,
       policy: "queue",
-      content: [{ type: "text", text: "Waiting work" }],
-      source: { kind: "human" },
+      content: [
+        {
+          type: "text",
+          text: "Waiting work",
+        },
+      ],
+      source: {
+        kind: "human",
+      },
       idempotencyKey: "waiting-work",
     });
     const originalMarker = await database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("type", "=", "message.created")
       .where("threadId", "=", f.thread.id)
@@ -30,7 +37,7 @@ describeStore("agent Thread history", (it) => {
     const append = async () => {
       const sequence = String(BigInt(originalMarker.sequence) + 100n);
       await database
-        .insertInto("workspaceEvents")
+        .insertInto("deploymentEvents")
         .values({
           ...originalMarker,
           type: "message.placed",
@@ -39,12 +46,19 @@ describeStore("agent Thread history", (it) => {
           data: {
             message: {
               id: queued.message.id,
-              content: [{ type: "text", text: "Forged event content" }],
+              content: [
+                {
+                  type: "text",
+                  text: "Forged event content",
+                },
+              ],
             },
           },
         })
         .execute();
-      return { sequence };
+      return {
+        sequence,
+      };
     };
     const hidden = await readAgentThreadActivity(database, {
       ownerId: f.userId,
@@ -58,7 +72,11 @@ describeStore("agent Thread history", (it) => {
     ).toBe(false);
     await database
       .updateTable("threadInputs")
-      .set({ state: "delivered", runId: f.run.id, deliveredAt: new Date() })
+      .set({
+        state: "delivered",
+        runId: f.run.id,
+        deliveredAt: new Date(),
+      })
       .where("messageId", "=", queued.message.id)
       .execute();
     const last = await append();
@@ -71,7 +89,15 @@ describeStore("agent Thread history", (it) => {
     expect(messages.filter((item) => item.message.id === queued.message.id)).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       sequence: last.sequence,
-      message: { id: queued.message.id, content: [{ type: "text", text: "Waiting work" }] },
+      message: {
+        id: queued.message.id,
+        content: [
+          {
+            type: "text",
+            text: "Waiting work",
+          },
+        ],
+      },
     });
     expect(visible!.items.map((item) => BigInt(item.sequence))).toEqual(
       visible!.items
@@ -94,22 +120,24 @@ describeStore("agent Thread history", (it) => {
       }),
     ).toBeNull();
   });
-
   it("bounds recent places by newest Runs and newest entries before deduplication", async ({
     storeFixture,
   }) => {
     const { database, startRunFixture } = storeFixture;
     const f = await startRunFixture("agent-recent");
     for (let i = 0; i < 12; i++)
-      await withDatabaseTransaction(database, (tx) =>
-        appendHostWorkspaceEvent(tx, {
-          workspaceId: f.workspace.id,
+      await withPersonalTransaction(database, (tx) =>
+        appendHostDeploymentEvent(tx, {
           threadId: f.thread.id,
           runId: f.run.id,
           environmentId: f.environmentId,
           type: "place.entered",
           data: {
-            place: { kind: "app", machineId: f.runnerId, appKey: "com.test." + i },
+            place: {
+              kind: "app",
+              machineId: f.runnerId,
+              appKey: "com.test." + i,
+            },
             title: String(i),
             site: null,
           },
@@ -139,7 +167,6 @@ describeStore("agent Thread history", (it) => {
       }),
     ).toBeNull();
   });
-
   it("says a wait has more when messages after it were left unread", async ({ storeFixture }) => {
     const { store, database, startRunFixture } = storeFixture;
     const f = await startRunFixture("agent-wait-more");
@@ -150,18 +177,33 @@ describeStore("agent Thread history", (it) => {
           threadId: f.thread.id,
           requestedBy: f.userId,
           policy: "report",
-          content: [{ type: "text", text: `Report ${index}` }],
-          source: { kind: "human" },
+          content: [
+            {
+              type: "text",
+              text: `Report ${index}`,
+            },
+          ],
+          source: {
+            kind: "human",
+          },
           idempotencyKey: `wait-more-${index}`,
         }),
       );
     const read = (afterMessageId: (typeof sent)[number]["message"]["id"]) =>
-      readThreadWaitSnapshot(database, { threadId: f.thread.id, userId: f.userId, afterMessageId });
+      readThreadWaitSnapshot(database, {
+        threadId: f.thread.id,
+        userId: f.userId,
+        afterMessageId,
+      });
     const first = await read(sent[0]!.message.id);
-    expect(first).toMatchObject({ hasMore: true });
+    expect(first).toMatchObject({
+      hasMore: true,
+    });
     expect(first.messages).toHaveLength(100);
     const rest = await read(first.messages.at(-1)!.id);
-    expect(rest).toMatchObject({ hasMore: false });
+    expect(rest).toMatchObject({
+      hasMore: false,
+    });
     expect(rest.messages.map(({ id }) => id)).toEqual([sent[101]!.message.id]);
   });
 });

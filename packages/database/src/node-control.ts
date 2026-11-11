@@ -1,3 +1,5 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
 import { z } from "zod";
 import {
   EnvironmentIdSchema,
@@ -7,12 +9,11 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { createId } from "@opensteer/core";
-import { withDatabaseTransaction } from "./connection.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import "./connection.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   lockCommandIdempotency,
   findCommandByIdempotency,
@@ -34,52 +35,35 @@ import {
   lockThreadCaller,
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
-import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-primitives.js";
+import "./store-primitives.js";
 import { runHasActiveGrant } from "./run-grants.js";
-
 type Database = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
-
 export async function reachableNode(database: Database, nodeId: ExecutionNodeId, ownerId: UserId) {
+  await requirePersonalOwner(database, ownerId);
   return database
     .selectFrom("executionNodes as node")
     .innerJoin("runs", "runs.id", "node.runId")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .innerJoin(
-      "workspaceMemberships as membership",
-      "membership.workspaceId",
-      "threads.workspaceId",
-    )
     .selectAll("node")
-    .select(["runs.threadId", "runs.requestedBy", "threads.workspaceId"])
+    .select(["runs.threadId", "runs.requestedBy"])
     .where("node.id", "=", nodeId)
-    .where("membership.userId", "=", ownerId)
-    .where("membership.state", "=", "active")
     .executeTakeFirst();
 }
-
 export const NodeStopAuthoritySchema = z.object({
   kind: z.literal("run"),
   userId: UserIdSchema,
   accessMode: ThreadAccessModeSchema,
-  reach: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("user") }),
-    z.object({ kind: z.literal("workspace"), workspaceId: WorkspaceIdSchema }),
-    z.object({ kind: z.literal("lineage"), lineageRootThreadId: ThreadIdSchema }),
-  ]),
   scope: z.object({
     bindingGeneration: z.number().int().positive(),
     environmentId: EnvironmentIdSchema,
     grantId: GrantIdSchema.optional(),
-    membershipGeneration: z.number().int().positive(),
     requestedBy: UserIdSchema,
     runId: RunIdSchema,
     runnerBootId: z.string().min(1).max(255),
     runnerId: RunnerIdSchema,
     threadId: ThreadIdSchema,
-    workspaceId: WorkspaceIdSchema,
   }),
 });
-
 export interface NodeStopInput {
   readonly nodeId: ExecutionNodeId;
   readonly runId: RunId;
@@ -88,7 +72,6 @@ export interface NodeStopInput {
   readonly idempotencyKey: string;
   readonly authority?: ThreadCallerAuthority;
 }
-
 export async function assertNodeStop(
   transaction: Transaction<DatabaseSchema>,
   input: NodeStopInput,
@@ -103,24 +86,18 @@ export async function assertNodeStop(
     .executeTakeFirst();
   const node = await reachableNode(transaction, input.nodeId, input.requestedBy);
   if (!node || !run || node.runId !== run.id || run.threadId !== input.threadId)
-    throw new OpensteerError({ code: "not_found", message: "Subagent is unavailable" });
-  await lockWorkspaceRow(transaction, node.workspaceId);
-  const membership = await requireActiveWorkspaceMembership(
-    transaction,
-    node.workspaceId,
-    input.requestedBy,
-    true,
-  );
-  await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Subagent is unavailable",
+    });
+  await requirePersonalOwner(transaction, input.requestedBy);
+  await assertThreadCaller(transaction, input.authority, {
+    threadId: input.threadId,
+  });
   if (input.authority && (input.authority.kind !== "run" || input.authority.scope.runId !== run.id))
     throw new OpensteerError({
       code: "forbidden",
       message: "Only this Run's agent may stop its subagents",
-    });
-  if (run.requestedBy !== input.requestedBy && membership.role !== "owner")
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Only a Workspace owner may stop another member's Run",
     });
   const attempt = await transaction
     .selectFrom("runAttempts")
@@ -145,18 +122,25 @@ export async function assertNodeStop(
       code: "conflict",
       message: "This engine cannot stop this subagent separately",
     });
-  return { node, run, bindingGeneration: Number(run.bindingGeneration) };
+  return {
+    node,
+    run,
+    bindingGeneration: Number(run.bindingGeneration),
+  };
 }
-
 export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: NodeStopInput) {
-  return withDatabaseTransaction(database, async (tx) => {
+  return withPersonalTransaction(database, async (tx) => {
     await lockCommandIdempotency(tx, input.requestedBy, input.idempotencyKey);
     await lockThreadCaller(tx, input.authority, [input.runId]);
     // A replay answers as it first did, even once the subagent has ended.
     const existing = await findCommandByIdempotency(tx, input.requestedBy, input.idempotencyKey);
     if (existing) {
       const sent = z
-        .object({ nodeId: ExecutionNodeIdSchema, runId: RunIdSchema, threadId: ThreadIdSchema })
+        .object({
+          nodeId: ExecutionNodeIdSchema,
+          runId: RunIdSchema,
+          threadId: ThreadIdSchema,
+        })
         .safeParse(existing.payload);
       if (
         existing.type !== "node.stop" ||
@@ -167,8 +151,15 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       )
         throw idempotencyConflict(input.idempotencyKey);
       if (!(await reachableNode(tx, input.nodeId, input.requestedBy)))
-        throw new OpensteerError({ code: "not_found", message: "Subagent is unavailable" });
-      return { command: existing, events: [], wasDuplicate: true };
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Subagent is unavailable",
+        });
+      return {
+        command: existing,
+        events: [],
+        wasDuplicate: true,
+      };
     }
     const { node, run, bindingGeneration } = await assertNodeStop(tx, input);
     const payload = {
@@ -177,7 +168,11 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       runId: run.id,
       threadId: run.threadId,
       bindingGeneration,
-      ...(input.authority ? { authority: NodeStopAuthoritySchema.parse(input.authority) } : {}),
+      ...(input.authority
+        ? {
+            authority: NodeStopAuthoritySchema.parse(input.authority),
+          }
+        : {}),
     };
     const principalId = await principalIdForUser(tx, input.requestedBy);
     const command = await tx
@@ -190,8 +185,15 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
         actorPrincipalId: principalId,
         authoritySource: jsonValue(
           input.authority?.kind === "run"
-            ? { kind: "run", runId: input.authority.scope.runId, userId: input.requestedBy }
-            : { kind: "workspace-membership", userId: input.requestedBy },
+            ? {
+                kind: "run",
+                runId: input.authority.scope.runId,
+                userId: input.requestedBy,
+              }
+            : {
+                kind: "user-session",
+                userId: input.requestedBy,
+              },
         ),
         threadId: run.threadId,
         runId: run.id,
@@ -205,27 +207,34 @@ export async function enqueueNodeStop(database: Kysely<DatabaseSchema>, input: N
       .executeTakeFirstOrThrow();
     await tx
       .updateTable("executionNodes")
-      .set({ stopping: true })
+      .set({
+        stopping: true,
+      })
       .where("id", "=", node.id)
       .execute();
-    const event = await appendHostWorkspaceEvent(tx, {
+    const event = await appendHostDeploymentEvent(tx, {
       type: "node.updated",
-      data: { nodeId: node.id, stopping: true },
+      data: {
+        nodeId: node.id,
+        stopping: true,
+      },
       runId: run.id,
       threadId: run.threadId,
-      workspaceId: node.workspaceId,
       environmentId: run.environmentId,
     });
-    return { command, events: [event], wasDuplicate: false };
+    return {
+      command,
+      events: [event],
+      wasDuplicate: false,
+    };
   });
 }
-
 export async function failNodeStop(
   database: Kysely<DatabaseSchema>,
   commandId: import("@opensteer/core").CommandId,
   message: string,
 ) {
-  return withDatabaseTransaction(database, async (tx) => {
+  return withPersonalTransaction(database, async (tx) => {
     const command = await tx
       .selectFrom("commands")
       .selectAll()
@@ -239,28 +248,35 @@ export async function failNodeStop(
       .where("id", "=", command.runId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    const payload = z.object({ nodeId: ExecutionNodeIdSchema }).parse(command.payload);
+    const payload = z
+      .object({
+        nodeId: ExecutionNodeIdSchema,
+      })
+      .parse(command.payload);
     const node = await tx
       .selectFrom("executionNodes as node")
       .innerJoin("runs", "runs.id", "node.runId")
       .innerJoin("threads", "threads.id", "runs.threadId")
-      .select(["node.id", "runs.environmentId", "runs.threadId", "threads.workspaceId"])
+      .select(["node.id", "runs.environmentId", "runs.threadId"])
       .where("node.id", "=", payload.nodeId)
       .where("runs.id", "=", command.runId)
       .executeTakeFirstOrThrow();
-    await lockWorkspaceRow(tx, node.workspaceId);
     await tx
       .updateTable("executionNodes")
-      .set({ stopping: false })
+      .set({
+        stopping: false,
+      })
       .where("id", "=", node.id)
       .execute();
-    const event = await appendHostWorkspaceEvent(tx, {
+    const event = await appendHostDeploymentEvent(tx, {
       type: "node.updated",
-      data: { nodeId: node.id, stopping: false },
+      data: {
+        nodeId: node.id,
+        stopping: false,
+      },
       runId: command.runId,
       environmentId: node.environmentId,
       threadId: node.threadId,
-      workspaceId: node.workspaceId,
     });
     await tx
       .updateTable("commands")
@@ -278,7 +294,6 @@ export async function failNodeStop(
     return [event];
   });
 }
-
 export async function dispatchNodeStop(
   database: Kysely<DatabaseSchema>,
   input: NodeStopInput,
@@ -293,6 +308,7 @@ export async function dispatchNodeStop(
   try {
     // A remote effect cannot be retried with a database transaction.
     await database.transaction().execute(async (tx) => {
+      await lockDeploymentEvents(tx);
       await assertNodeStop(tx, input, bindingGeneration);
       sending = send(async () => {
         accepted.resolve();
@@ -302,7 +318,11 @@ export async function dispatchNodeStop(
       await accepted.promise;
       await tx
         .updateTable("commands")
-        .set({ status: "succeeded", lastError: null, updatedAt: new Date() })
+        .set({
+          status: "succeeded",
+          lastError: null,
+          updatedAt: new Date(),
+        })
         .where("id", "=", commandId)
         .where("status", "=", "dispatched")
         .execute();

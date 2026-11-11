@@ -1,5 +1,6 @@
-import { createId, type AssignmentId, type WorkspaceId } from "@opensteer/core";
-import { createTestWorkspace } from "./workspace-fixture.test-support.js";
+import { lockDeploymentEvents } from "./deployment-events.js";
+import { createId, type AssignmentId } from "@opensteer/core";
+
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
 import { expect, vi } from "vitest";
@@ -17,34 +18,31 @@ import {
   testModelSelection,
   type StoreFixture,
 } from "./store.integration.test-support.js";
-
 function byDeadline<T>(promise: Promise<T>, message: string) {
-  return withTimeout(promise, 5_000, { timeoutError: () => new Error(message) });
+  return withTimeout(promise, 5_000, {
+    timeoutError: () => new Error(message),
+  });
 }
-
 async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
   const { store, database } = storeFixture;
   const f = await storeFixture.startRunFixture(suffix);
   const authority: ThreadCallerAuthority = {
     kind: "run",
     userId: f.userId,
-    reach: { kind: "user" },
+
     accessMode: f.thread.accessMode,
     scope: {
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
       runnerId: f.runnerId,
       runnerBootId: f.runnerBootId,
       bindingGeneration: f.bindingGeneration,
-      membershipGeneration: 1,
     },
   };
   const delegate = async (
     title: string,
-    workspaceId: WorkspaceId = f.workspace.id,
     origin: Parameters<StoreFixture["store"]["delegateThread"]>[0]["origin"] = {
       kind: "run",
       parentRunId: f.run.id,
@@ -59,9 +57,13 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
       idempotencyKey: `${suffix}-${title}`,
       modelSelection: testModelSelection,
       origin,
-      task: [{ type: "text", text: title }],
+      task: [
+        {
+          type: "text",
+          text: title,
+        },
+      ],
       title,
-      workspaceId,
     });
     await store.claimCommand(task.command.id, `${suffix}-${title}-dispatcher`);
     const binding = await store.acquireExecutionBinding({
@@ -69,7 +71,6 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: f.harnessInstance.id,
       leaseTokenHash: `${suffix}-${title}-lease`,
-      membershipGeneration: 1,
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
       runId: task.run.id,
@@ -87,9 +88,15 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
       bindingGeneration: binding.bindingGeneration,
       runId: task.run.id,
       threadId: task.thread.id,
-      workspaceId,
     };
-    await commit({ ...event, ordinal: 0, type: "run.started", data: { status: "running" } });
+    await commit({
+      ...event,
+      ordinal: 0,
+      type: "run.started",
+      data: {
+        status: "running",
+      },
+    });
     return {
       ...task,
       settle: async (text: string) => {
@@ -98,7 +105,12 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
           ordinal: 1,
           type: "assistant.message",
           data: {
-            content: [{ type: "text", text }],
+            content: [
+              {
+                type: "text",
+                text,
+              },
+            ],
             messageId: createId("message"),
           },
         });
@@ -106,7 +118,9 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
           ...event,
           ordinal: 2,
           type: "run.completed",
-          data: { status: "completed" },
+          data: {
+            status: "completed",
+          },
         });
       },
     };
@@ -122,7 +136,10 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
       .orderBy("messages.sequence", "asc")
       .execute();
   const read = (assignmentId: AssignmentId) =>
-    readAssignmentResult(database, { assignmentId, authority });
+    readAssignmentResult(database, {
+      assignmentId,
+      authority,
+    });
   const begin = (assignmentId: AssignmentId) =>
     beginAssignmentResultWait(database, {
       assignmentId,
@@ -133,12 +150,7 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const blocker = database.transaction().execute(async (tx) => {
-      await tx
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", f.workspace.id)
-        .forNoKeyUpdate()
-        .execute();
+      await lockDeploymentEvents(tx);
       held.resolve();
       await byDeadline(
         release.promise,
@@ -147,12 +159,14 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
     });
     let operations: Promise<unknown>[] = [];
     try {
-      await byDeadline(held.promise, "Return race never acquired the Workspace fence");
+      await byDeadline(held.promise, "Return race never acquired the Deployment fence");
       operations = [first(), second()];
       for (const operation of operations) void operation.catch(() => {});
       await vi.waitFor(
         async () => {
-          const { rows } = await sql<{ waiting: number }>`select count(*)::integer as waiting
+          const { rows } = await sql<{
+            waiting: number;
+          }>`select count(*)::integer as waiting
           from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`.execute(
             database,
           );
@@ -161,7 +175,9 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
             "Both return transactions never reached the fence",
           ).toBeGreaterThanOrEqual(2);
         },
-        { timeout: 2_000 },
+        {
+          timeout: 2_000,
+        },
       );
     } finally {
       release.resolve();
@@ -169,9 +185,17 @@ async function deliveryFixture(storeFixture: StoreFixture, suffix: string) {
     }
     return byDeadline(Promise.all(operations), "Concurrent return transactions never settled");
   };
-  return { ...storeFixture, f, authority, delegate, returns, read, begin, race };
+  return {
+    ...storeFixture,
+    f,
+    authority,
+    delegate,
+    returns,
+    read,
+    begin,
+    race,
+  };
 }
-
 describeStore("Assignment result delivery", (it) => {
   for (const kind of ["trigger", "watch"] as const) {
     it(`groups ${kind} siblings by their occurrence or observation`, async ({ storeFixture }) => {
@@ -188,9 +212,11 @@ describeStore("Assignment result delivery", (it) => {
               createdBy: s.f.userId,
               idempotencyKey: "return-watch",
               name: "Watch returns",
-              source: { kind: "watch" },
+              source: {
+                kind: "watch",
+              },
               program: {
-                toolContractVersion: 2,
+                toolContractVersion: 3,
                 language: "javascript",
                 source: "export default async () => null",
               },
@@ -222,7 +248,7 @@ describeStore("Assignment result delivery", (it) => {
                 occurrenceId: (index === 2 ? nextOccurrence! : occurrence!).id,
                 parentThreadId: s.f.thread.id,
               };
-        const task = await s.delegate(title, s.f.workspace.id, origin);
+        const task = await s.delegate(title, origin);
         await task.settle(`${title} result`);
         await s.store.drainAssignmentReturn(task.assignment.id);
       }
@@ -234,7 +260,6 @@ describeStore("Assignment result delivery", (it) => {
       expect(JSON.stringify(messages[1]!.content)).toContain("Different source result");
     });
   }
-
   it("joins three settled siblings, bounds their notice, and seals it when taken", async ({
     storeFixture,
   }) => {
@@ -278,9 +303,10 @@ describeStore("Assignment result delivery", (it) => {
         ordinal: 1,
         runId: s.f.run.id,
         threadId: s.f.thread.id,
-        workspaceId: s.f.workspace.id,
         type: "run.completed",
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
       }),
     });
     const next = await s.database
@@ -291,7 +317,11 @@ describeStore("Assignment result delivery", (it) => {
       .where("status", "=", "pending")
       .executeTakeFirstOrThrow();
     await s.store.claimCommand(next.id, "take-grouped-results");
-    expect(await s.returns()).toMatchObject([{ state: "claimed" }]);
+    expect(await s.returns()).toMatchObject([
+      {
+        state: "claimed",
+      },
+    ]);
     await tasks[3]!.settle("Late result");
     await s.store.drainAssignmentReturn(tasks[3]!.assignment.id);
     const after = await s.returns();
@@ -300,7 +330,6 @@ describeStore("Assignment result delivery", (it) => {
     expect(JSON.stringify(after[1]!.content)).toContain("Late result");
     expect((await s.returns())[0]!.content).toEqual(sealedContent);
   });
-
   it("keeps every result when sibling returns race, and reading removes only its member", async ({
     storeFixture,
   }) => {
@@ -366,65 +395,6 @@ describeStore("Assignment result delivery", (it) => {
     expect(text.split("Answer F")).toHaveLength(resultRead === "Answer F" ? 1 : 2);
   });
 
-  it("rechecks every sibling's source access when a waiting return is rewritten", async ({
-    storeFixture,
-  }) => {
-    const s = await deliveryFixture(storeFixture, "return-source-access");
-    const project = await createTestWorkspace(s.store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        storageAuthorityId: createId("storageAuthority"),
-        ownerEnvironmentId: s.f.environmentId,
-      },
-      createdBy: s.f.userId,
-      idempotencyKey: "return-source-project",
-      name: "Result source",
-      status: "ready",
-    });
-    const otherOwner = await s.store.createUser("Project owner");
-    await s.database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: project.id,
-        userId: otherOwner,
-        role: "owner",
-        state: "active",
-        generation: 1,
-        joinedAt: new Date(),
-        invitedBy: s.f.userId,
-      })
-      .execute();
-    const a = await s.delegate("Project result", project.id);
-    const b = await s.delegate("Main result");
-    await a.settle("Project private result");
-    await b.settle("Main readable result");
-    await s.store.drainAssignmentReturn(a.assignment.id);
-    await s.store.changeWorkspaceMembership({
-      actorId: otherOwner,
-      targetUserId: s.f.userId,
-      workspaceId: project.id,
-      state: "revoked",
-    });
-    await s.store.drainAssignmentReturn(b.assignment.id);
-    expect(await s.returns()).toHaveLength(1);
-    expect(JSON.stringify((await s.returns())[0]!.content)).toContain("Main readable result");
-    expect(JSON.stringify((await s.returns())[0]!.content)).not.toContain("Project private result");
-    expect(
-      await s.database
-        .selectFrom("delegations")
-        .select(["resultStatus", "resultReason", "resultMessageId"])
-        .where("id", "=", a.assignment.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({
-      resultStatus: "undeliverable",
-      resultReason: "execution-authority-unavailable",
-      resultMessageId: null,
-    });
-  });
-
   it("holds a result for concurrent live waits and returns it once after their last release", async ({
     storeFixture,
   }) => {
@@ -435,7 +405,10 @@ describeStore("Assignment result delivery", (it) => {
     await task.settle("Waited result");
     expect(await s.store.drainAssignmentReturn(task.assignment.id)).toEqual([]);
     expect(await s.returns()).toEqual([]);
-    await endAssignmentResultWait(s.database, { assignmentId: task.assignment.id, waitId });
+    await endAssignmentResultWait(s.database, {
+      assignmentId: task.assignment.id,
+      waitId,
+    });
     expect(await s.returns()).toEqual([]);
     await endAssignmentResultWait(s.database, {
       assignmentId: task.assignment.id,
@@ -448,7 +421,6 @@ describeStore("Assignment result delivery", (it) => {
     });
     expect(await s.returns()).toHaveLength(1);
   });
-
   for (const ending of ["restart", "deadline", "run-end"] as const) {
     it(`recovers exactly one return when a persistent wait ends by ${ending}`, async ({
       storeFixture,
@@ -475,9 +447,10 @@ describeStore("Assignment result delivery", (it) => {
             ordinal: 1,
             runId: s.f.run.id,
             threadId: s.f.thread.id,
-            workspaceId: s.f.workspace.id,
             type: "run.completed",
-            data: { status: "completed" },
+            data: {
+              status: "completed",
+            },
           }),
         });
       }

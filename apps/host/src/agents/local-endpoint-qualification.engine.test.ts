@@ -28,11 +28,17 @@ import {
 const qualification =
   process.env.OPENSTEER_LOCAL_ENDPOINT_QUALIFY === "1" ? describe : describe.skip;
 const omlxSettingsSchema = z.object({
-  auth: z.object({ api_key: z.string().min(1) }),
-  sampling: z.object({ max_context_window: z.number().int().positive() }),
-  server: z.object({ host: z.string().min(1), port: z.number().int().positive() }),
+  auth: z.object({
+    api_key: z.string().min(1),
+  }),
+  sampling: z.object({
+    max_context_window: z.number().int().positive(),
+  }),
+  server: z.object({
+    host: z.string().min(1),
+    port: z.number().int().positive(),
+  }),
 });
-
 interface Endpoint {
   readonly baseUrl: string;
   readonly apiKey?: string | undefined;
@@ -40,7 +46,6 @@ interface Endpoint {
   readonly nativeModelId?: string | undefined;
   readonly runtime: "generic" | "ollama" | "lmstudio" | "omlx";
 }
-
 async function endpoint(): Promise<Endpoint> {
   const settingsPath = process.env.OPENSTEER_LOCAL_ENDPOINT_OMLX_SETTINGS;
   if (settingsPath) {
@@ -61,7 +66,11 @@ async function endpoint(): Promise<Endpoint> {
     throw new Error("Set an oMLX settings path or endpoint URL and context window");
   }
   return {
-    ...(apiKey ? { apiKey } : {}),
+    ...(apiKey
+      ? {
+          apiKey,
+        }
+      : {}),
     baseUrl,
     contextWindow,
     nativeModelId: process.env.OPENSTEER_LOCAL_ENDPOINT_MODEL_ID,
@@ -70,7 +79,6 @@ async function endpoint(): Promise<Endpoint> {
       .parse(process.env.OPENSTEER_LOCAL_ENDPOINT_RUNTIME ?? "generic"),
   };
 }
-
 function evidencePreview(value: unknown, apiKey: string | undefined): string {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return (apiKey ? text.replaceAll(apiKey, "[redacted]") : text)
@@ -78,14 +86,12 @@ function evidencePreview(value: unknown, apiKey: string | undefined): string {
     .replace(/Bearer\s+\S+/giu, "Bearer [redacted]")
     .slice(0, 2_000);
 }
-
 interface WireRequest {
   readonly authorization: string | undefined;
   readonly model: string | undefined;
   readonly path: string;
   readonly status: number;
 }
-
 interface WireFixture {
   readonly baseUrl: string;
   readonly completionModels: string[];
@@ -123,12 +129,19 @@ async function startWireFixture(requiredKey?: string): Promise<WireFixture> {
       const authorization = request.headers.authorization;
       const path = request.url ?? "";
       const answer = (status: number, value?: unknown) => {
-        requests.push({ authorization, model, path, status });
+        requests.push({
+          authorization,
+          model,
+          path,
+          status,
+        });
         if (value === undefined) {
           response.writeHead(status).end();
           return;
         }
-        response.writeHead(status, { "content-type": "application/json" });
+        response.writeHead(status, {
+          "content-type": "application/json",
+        });
         response.end(JSON.stringify(value));
       };
       if (requiredKey && authorization !== `Bearer ${requiredKey}`) return answer(401);
@@ -136,48 +149,106 @@ async function startWireFixture(requiredKey?: string): Promise<WireFixture> {
         return answer(200, {
           object: "list",
           data: [
-            { id: "local-chat:1", object: "model" },
-            { id: "local-embed:1", object: "model", type: "embedding" },
+            {
+              id: "local-chat:1",
+              object: "model",
+            },
+            {
+              id: "local-embed:1",
+              object: "model",
+              type: "embedding",
+            },
           ],
         });
       }
       if (path === "/api/tags" && request.method === "GET") {
-        return answer(200, { models: Object.keys(ollamaModels).map((id) => ({ model: id })) });
+        return answer(200, {
+          models: Object.keys(ollamaModels).map((id) => ({
+            model: id,
+          })),
+        });
       }
       if (path === "/api/ps" && request.method === "GET") {
-        return answer(200, { models: [{ model: "local-loaded:1", context_length: 12_288 }] });
+        return answer(200, {
+          models: [
+            {
+              model: "local-loaded:1",
+              context_length: 12_288,
+            },
+          ],
+        });
       }
       if (path === "/api/show" && request.method === "POST" && model && model in ollamaModels) {
         const parameters = ollamaModels[model];
         return answer(200, {
           capabilities: ["completion", "tools"],
-          ...(parameters ? { parameters } : {}),
+          ...(parameters
+            ? {
+                parameters,
+              }
+            : {}),
         });
       }
       if (path !== "/v1/chat/completions" || request.method !== "POST" || !model) {
         return answer(404);
       }
       const input = z
-        .object({ messages: z.array(z.object({ role: z.string(), content: z.unknown() })) })
+        .object({
+          messages: z.array(
+            z.object({
+              role: z.string(),
+              content: z.unknown(),
+            }),
+          ),
+        })
         .parse(body);
-      requests.push({ authorization, model, path, status: 200 });
+      requests.push({
+        authorization,
+        model,
+        path,
+        status: 200,
+      });
       completionModels.push(model);
-      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      });
       const row = (delta: Record<string, unknown>, finishReason: string | null) =>
         `data: ${JSON.stringify({
           id: "chatcmpl-wire-only",
           object: "chat.completion.chunk",
           created: 1,
           model,
-          choices: [{ index: 0, delta, finish_reason: finishReason }],
+          choices: [
+            {
+              index: 0,
+              delta,
+              finish_reason: finishReason,
+            },
+          ],
         })}\n\n`;
       const latestUserMessage = input.messages.findLast((message) => message.role === "user");
       if (JSON.stringify(latestUserMessage?.content).includes("WAIT_FOR_INTERRUPT")) {
-        response.write(row({ role: "assistant", content: "PARTIAL" }, null));
+        response.write(
+          row(
+            {
+              role: "assistant",
+              content: "PARTIAL",
+            },
+            null,
+          ),
+        );
         holdingRequestStarted();
         return;
       }
-      response.write(row({ role: "assistant", content: "WIRE_ONLY_READY" }, null));
+      response.write(
+        row(
+          {
+            role: "assistant",
+            content: "WIRE_ONLY_READY",
+          },
+          null,
+        ),
+      );
       response.write(row({}, "stop"));
       response.end("data: [DONE]\n\n");
     })().catch(() => {
@@ -200,7 +271,6 @@ async function startWireFixture(requiredKey?: string): Promise<WireFixture> {
     },
   };
 }
-
 interface OmlxFixture {
   readonly origin: string;
   readonly requests: WireRequest[];
@@ -226,22 +296,35 @@ async function startOmlxFixture(initialKey: string): Promise<OmlxFixture> {
       const authorization = request.headers.authorization;
       const path = request.url ?? "";
       const answer = (status: number, value?: unknown) => {
-        requests.push({ authorization, model, path, status });
+        requests.push({
+          authorization,
+          model,
+          path,
+          status,
+        });
         if (value === undefined) {
           response.writeHead(status).end();
           return;
         }
-        response.writeHead(status, { "content-type": "application/json" });
+        response.writeHead(status, {
+          "content-type": "application/json",
+        });
         response.end(JSON.stringify(value));
       };
       if (path === "/health" && request.method === "GET") {
         return answer(200, {
           default_model: "local-chat",
-          engine_pool: { loaded_count: 0, model_count: 1 },
+          engine_pool: {
+            loaded_count: 0,
+            model_count: 1,
+          },
           status: "healthy",
         });
       }
-      if (authorization !== `Bearer ${key}`) return answer(401, { detail: "API key required" });
+      if (authorization !== `Bearer ${key}`)
+        return answer(401, {
+          detail: "API key required",
+        });
       if (path === "/v1/models/status" && request.method === "GET") {
         return answer(200, {
           models: [
@@ -260,17 +343,38 @@ async function startOmlxFixture(initialKey: string): Promise<OmlxFixture> {
       if (path !== "/v1/chat/completions" || request.method !== "POST" || !model) {
         return answer(404);
       }
-      requests.push({ authorization, model, path, status: 200 });
-      response.writeHead(200, { "content-type": "text/event-stream" });
+      requests.push({
+        authorization,
+        model,
+        path,
+        status: 200,
+      });
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      });
       const row = (delta: Record<string, unknown>, finishReason: string | null) =>
         `data: ${JSON.stringify({
           id: "chatcmpl-omlx-wire-only",
           object: "chat.completion.chunk",
           created: 1,
           model,
-          choices: [{ index: 0, delta, finish_reason: finishReason }],
+          choices: [
+            {
+              index: 0,
+              delta,
+              finish_reason: finishReason,
+            },
+          ],
         })}\n\n`;
-      response.write(row({ role: "assistant", content: "SERVER_KEY_READY" }, null));
+      response.write(
+        row(
+          {
+            role: "assistant",
+            content: "SERVER_KEY_READY",
+          },
+          null,
+        ),
+      );
       response.write(row({}, "stop"));
       response.end("data: [DONE]\n\n");
     })().catch(() => {
@@ -294,16 +398,16 @@ async function startOmlxFixture(initialKey: string): Promise<OmlxFixture> {
     },
   };
 }
-
 interface WireImage {
   readonly base64Bytes: number;
   readonly height: number;
   readonly mediaType: string;
   readonly width: number;
 }
-
 const WireImagePartSchema = z.object({
-  image_url: z.object({ url: z.string() }),
+  image_url: z.object({
+    url: z.string(),
+  }),
   type: z.literal("image_url"),
 });
 
@@ -326,11 +430,19 @@ async function startVisionWireFixture(): Promise<{
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const path = request.url ?? "";
       if (path === "/v1/models" && request.method === "GET") {
-        response.writeHead(200, { "content-type": "application/json" });
+        response.writeHead(200, {
+          "content-type": "application/json",
+        });
         response.end(
           JSON.stringify({
             object: "list",
-            data: [{ id: "local-vision:1", input_modalities: ["text", "image"], object: "model" }],
+            data: [
+              {
+                id: "local-vision:1",
+                input_modalities: ["text", "image"],
+                object: "model",
+              },
+            ],
           }),
         );
         return;
@@ -341,7 +453,12 @@ async function startVisionWireFixture(): Promise<{
       }
       const body = z
         .object({
-          messages: z.array(z.object({ content: z.unknown(), role: z.string() })),
+          messages: z.array(
+            z.object({
+              content: z.unknown(),
+              role: z.string(),
+            }),
+          ),
           model: z.string(),
         })
         .parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
@@ -366,14 +483,22 @@ async function startVisionWireFixture(): Promise<{
         }
       }
       requests.push(images);
-      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+      });
       const row = (delta: Record<string, unknown>, finishReason: string | null) =>
         `data: ${JSON.stringify({
           id: "chatcmpl-vision-wire",
           object: "chat.completion.chunk",
           created: 1,
           model: body.model,
-          choices: [{ index: 0, delta, finish_reason: finishReason }],
+          choices: [
+            {
+              index: 0,
+              delta,
+              finish_reason: finishReason,
+            },
+          ],
         })}\n\n`;
       const sleeper = body.messages.findLastIndex(
         (message) =>
@@ -392,7 +517,12 @@ async function startVisionWireFixture(): Promise<{
               role: "assistant",
               tool_calls: [
                 {
-                  function: { arguments: JSON.stringify({ command: "sleep 8" }), name: "bash" },
+                  function: {
+                    arguments: JSON.stringify({
+                      command: "sleep 8",
+                    }),
+                    name: "bash",
+                  },
                   id: `call_${randomUUID()}`,
                   index: 0,
                   type: "function",
@@ -404,7 +534,15 @@ async function startVisionWireFixture(): Promise<{
         );
         response.write(row({}, "tool_calls"));
       } else {
-        response.write(row({ role: "assistant", content: `IMAGES ${newest}` }, null));
+        response.write(
+          row(
+            {
+              role: "assistant",
+              content: `IMAGES ${newest}`,
+            },
+            null,
+          ),
+        );
         response.write(row({}, "stop"));
       }
       response.end("data: [DONE]\n\n");
@@ -433,7 +571,10 @@ async function startVisionWireFixture(): Promise<{
  * uses its whole share of a transport budget.
  */
 async function phonePhoto(
-  grain: { readonly sigma: number; readonly quality: number } = {
+  grain: {
+    readonly sigma: number;
+    readonly quality: number;
+  } = {
     sigma: 24,
     quality: 94,
   },
@@ -444,23 +585,40 @@ async function phonePhoto(
       height: 4284,
       channels: 3,
       background: "#808080",
-      noise: { type: "gaussian", mean: 128, sigma: grain.sigma },
+      noise: {
+        type: "gaussian",
+        mean: 128,
+        sigma: grain.sigma,
+      },
     },
   })
-    .jpeg({ quality: grain.quality })
+    .jpeg({
+      quality: grain.quality,
+    })
     .toBuffer();
 }
 
 /** oMLX's settings as its Mac app writes them: its port, its key, its admin secret. */
 async function writeOmlxSettings(home: string, port: number, key: string): Promise<void> {
-  await mkdir(join(home, ".omlx"), { recursive: true });
+  await mkdir(join(home, ".omlx"), {
+    recursive: true,
+  });
   await writeFile(
     join(home, ".omlx", "settings.json"),
     JSON.stringify({
-      auth: { api_key: key, secret_key: "never-read", skip_api_key_verification: false },
-      server: { host: "127.0.0.1", port },
+      auth: {
+        api_key: key,
+        secret_key: "never-read",
+        skip_api_key_verification: false,
+      },
+      server: {
+        host: "127.0.0.1",
+        port,
+      },
     }),
-    { mode: 0o600 },
+    {
+      mode: 0o600,
+    },
   );
 }
 
@@ -468,31 +626,38 @@ async function writeOmlxSettings(home: string, port: number, key: string): Promi
 async function modelServerHome(omlxPort: number, key: string, lmStudioPort: number) {
   const home = await mkdtemp(join(tmpdir(), "opensteer-model-server-home-"));
   await writeOmlxSettings(home, omlxPort, key);
-  await mkdir(join(home, ".lmstudio", ".internal"), { recursive: true });
+  await mkdir(join(home, ".lmstudio", ".internal"), {
+    recursive: true,
+  });
   await writeFile(
     join(home, ".lmstudio", ".internal", "http-server-config.json"),
-    JSON.stringify({ port: lmStudioPort }),
+    JSON.stringify({
+      port: lmStudioPort,
+    }),
   );
   return home;
 }
-
 function wireArtifactDirectory(): string {
   return (
     process.env.OPENSTEER_LOCAL_ENDPOINT_ARTIFACT_DIR ??
     join(tmpdir(), "opensteer-local-endpoint-qualification")
   );
 }
-
 async function writeWireArtifact(name: string, evidence: Record<string, unknown>): Promise<void> {
   const directory = wireArtifactDirectory();
   const path = join(directory, `${name}-${randomUUID()}.json`);
-  await mkdir(directory, { recursive: true });
-  await writeFile(path, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+  await mkdir(directory, {
+    recursive: true,
+  });
+  await writeFile(path, `${JSON.stringify(evidence, null, 2)}\n`, {
+    mode: 0o600,
+  });
   process.stdout.write(`Local endpoint wire-only artifact: ${path}\n`);
 }
-
 async function stagedPiModelsText(stack: VerticalStack): Promise<string> {
-  const files = await readdir(stack.runnerDataDirectory, { recursive: true });
+  const files = await readdir(stack.runnerDataDirectory, {
+    recursive: true,
+  });
   // Pi's own file sits at its profile's home; other engines keep caches of
   // the same name deeper in theirs, and the listing order is not stable.
   const modelsFile = files.find((file) => file.endsWith("/provider-home/models.json"));
@@ -510,15 +675,19 @@ async function stackCatalog(stack: VerticalStack) {
   if (!catalog) throw new Error("The account has no catalog");
   return catalog;
 }
-
 const wireEngines = [
-  { driverKind: "opencode", methodId: "opencode-api-key" },
-  { driverKind: "pi", methodId: "pi-api-key" },
+  {
+    driverKind: "opencode",
+    methodId: "opencode-api-key",
+  },
+  {
+    driverKind: "pi",
+    methodId: "pi-api-key",
+  },
 ] as const;
 
 /** Pi's `models.json` placeholder; a keyless server ignores it and a stored key replaces it. */
 const piKeylessBearer = "Bearer opensteer-keyless-endpoint";
-
 qualification("local endpoint qualification", () => {
   for (const engine of wireEngines) {
     it(`wire-only ${engine.driverKind}: keyless discovery, embedding exclusion, explicit limits and reset`, async () => {
@@ -539,7 +708,10 @@ qualification("local endpoint qualification", () => {
           cleanupTimeoutMs: 120_000,
           databaseUrl,
           harnessInstance: {
-            config: { baseUrl: fixture.baseUrl, runtime: "generic" },
+            config: {
+              baseUrl: fixture.baseUrl,
+              runtime: "generic",
+            },
             driverKind: engine.driverKind,
             sourceId: "openai-compatible",
             stateKind: "isolated",
@@ -556,7 +728,9 @@ qualification("local endpoint qualification", () => {
         });
         expect(stack.initialCatalog.status).toBe("ready");
         expect(fixture.requests.every((request) => request.authorization === undefined)).toBe(true);
-        expect(stack.catalog.connections[0]).toMatchObject({ authKind: "none" });
+        expect(stack.catalog.connections[0]).toMatchObject({
+          authKind: "none",
+        });
         expect(stack.catalog.connections[0]?.logoutSupported).not.toBe(true);
         expect(stack.catalog.models).toHaveLength(1);
         const model = stack.catalog.models[0]!;
@@ -564,7 +738,9 @@ qualification("local endpoint qualification", () => {
         expect(model.contextWindow).toBeUndefined();
         expect(model.unavailableReason).toMatch(/context window is unknown/iu);
         expect(model.needsContextWindow).toBe(true);
-        const configured = await stack.configureModel("local-chat:1", { contextWindow: 8_192 });
+        const configured = await stack.configureModel("local-chat:1", {
+          contextWindow: 8_192,
+        });
         expect(configured.unavailableReason).toBeUndefined();
         expect(configured.needsContextWindow).toBeUndefined();
         expect(configured.contextWindow).toBe(8_192);
@@ -576,19 +752,16 @@ qualification("local endpoint qualification", () => {
             providerId: configured.providerId,
           }),
           title: `Wire-only native provider ${randomUUID()}`,
-          workspaceId: workspace.id,
         });
         const turn = await stack.sendMessage({
           text: "Reply with WIRE_ONLY_READY.",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(turn.assistantText).toContain("WIRE_ONLY_READY");
         expect(fixture.completionModels).toEqual(["local-chat:1"]);
         const interrupted = await stack.sendMessage({
           text: "WAIT_FOR_INTERRUPT",
           threadId,
-          workspaceId: workspace.id,
           onQueued: async (runId) => {
             await fixture.holdingRequest;
             await stack!.interruptRun(threadId, runId);
@@ -600,13 +773,15 @@ qualification("local endpoint qualification", () => {
             const snapshot = await stack!.host.store.workspaceSnapshot(workspace.id);
             expect(snapshot.threads.find((thread) => thread.id === threadId)?.status).toBe("idle");
           },
-          { interval: 100, timeout: 5_000 },
+          {
+            interval: 100,
+            timeout: 5_000,
+          },
         );
         await stack.resumeThreadInputQueue(threadId);
         const resumed = await stack.sendMessage({
           text: "Continue after the interrupted turn and reply WIRE_ONLY_READY.",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(resumed.assistantText).toContain("WIRE_ONLY_READY");
         expect(fixture.completionModels).toEqual(["local-chat:1", "local-chat:1", "local-chat:1"]);
@@ -623,7 +798,11 @@ qualification("local endpoint qualification", () => {
         if (engine.driverKind === "pi") {
           const staged = z
             .object({
-              providers: z.object({ opensteer: z.object({ apiKey: z.string() }) }),
+              providers: z.object({
+                opensteer: z.object({
+                  apiKey: z.string(),
+                }),
+              }),
             })
             .parse(JSON.parse(await stagedPiModelsText(stack)));
           expect(`Bearer ${staged.providers.opensteer.apiKey}`).toBe(piKeylessBearer);
@@ -640,7 +819,6 @@ qualification("local endpoint qualification", () => {
               providerId: reset.providerId,
             }),
             title: `Unavailable model ${randomUUID()}`,
-            workspaceId: workspace.id,
           }),
         ).rejects.toThrow();
         evidence.connection = stack.catalog.connections[0];
@@ -671,7 +849,6 @@ qualification("local endpoint qualification", () => {
         }
       }
     }, 300_000);
-
     it(`wire-only ${engine.driverKind}: fits full-resolution photos to what the model receives`, async () => {
       const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
       if (!databaseUrl) throw new Error("Run through pnpm test:engines");
@@ -703,7 +880,10 @@ qualification("local endpoint qualification", () => {
           cleanupTimeoutMs: 120_000,
           databaseUrl,
           harnessInstance: {
-            config: { baseUrl: fixture.baseUrl, runtime: "generic" },
+            config: {
+              baseUrl: fixture.baseUrl,
+              runtime: "generic",
+            },
             driverKind: engine.driverKind,
             sourceId: "openai-compatible",
             stateKind: "isolated",
@@ -712,7 +892,9 @@ qualification("local endpoint qualification", () => {
           harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
           runTimeoutMs: 180_000,
         });
-        const configured = await stack.configureModel("local-vision:1", { contextWindow: 131_072 });
+        const configured = await stack.configureModel("local-vision:1", {
+          contextWindow: 131_072,
+        });
         expect(configured.acceptsImages).toBe(true);
         const workspace = await stack.createWorkspace("Wire-only photo delivery");
         const threadId = await stack.createThread({
@@ -722,7 +904,6 @@ qualification("local endpoint qualification", () => {
             providerId: configured.providerId,
           }),
           title: `Wire-only photos ${randomUUID()}`,
-          workspaceId: workspace.id,
         });
         // Three photos of more than 5 MiB each: together far past the 4 MiB
         // an engine protocol line carries.
@@ -733,7 +914,6 @@ qualification("local endpoint qualification", () => {
               bytes: await phonePhoto(),
               mediaType: "image/jpeg",
               name,
-              workspaceId: workspace.id,
             }),
           );
         expect(photos.every((photo) => photo.sizeBytes > 5 * 1_024 * 1_024)).toBe(true);
@@ -741,14 +921,12 @@ qualification("local endpoint qualification", () => {
           attachments: photos.map(attachmentReference),
           text: "How many photos are attached?",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(counted.assistantText).toContain("IMAGES 3");
         const prompted = fixture.requests.at(-1) ?? [];
         expect(prompted).toHaveLength(3);
         expect(fits(prompted)).toBe(true);
         evidence.prompt = prompted;
-
         if (
           harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))?.messageAttachments
             ?.nativeImages?.steering === true
@@ -758,7 +936,6 @@ qualification("local endpoint qualification", () => {
             bytes: await phonePhoto(),
             mediaType: "image/jpeg",
             name: "IMG_8006.jpeg",
-            workspaceId: workspace.id,
           });
           const active = stack;
           const steered = await active.sendMessage({
@@ -772,7 +949,6 @@ qualification("local endpoint qualification", () => {
             },
             text: "RUN_SLEEP_1",
             threadId,
-            workspaceId: workspace.id,
           });
           expect(steered.assistantText).toContain("IMAGES 1");
           const followed = fixture.requests.at(-1) ?? [];
@@ -795,7 +971,6 @@ qualification("local endpoint qualification", () => {
         }
       }
     }, 600_000);
-
     if (engine.driverKind === "pi")
       it("wire-only pi: images from a prompt and two steers share one run", async () => {
         const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -813,7 +988,10 @@ qualification("local endpoint qualification", () => {
             cleanupTimeoutMs: 120_000,
             databaseUrl,
             harnessInstance: {
-              config: { baseUrl: fixture.baseUrl, runtime: "generic" },
+              config: {
+                baseUrl: fixture.baseUrl,
+                runtime: "generic",
+              },
               driverKind: engine.driverKind,
               sourceId: "openai-compatible",
               stateKind: "isolated",
@@ -840,7 +1018,6 @@ qualification("local endpoint qualification", () => {
               providerId: configured.providerId,
             }),
             title: `Wire-only one-run photos ${randomUUID()}`,
-            workspaceId: workspace.id,
           });
           // Six heavy photos, two per command: each command fits its own line,
           // but Pi echoes the whole run's messages once more when it ends.
@@ -848,10 +1025,12 @@ qualification("local endpoint qualification", () => {
           for (let index = 0; index < 6; index++)
             photos.push(
               await active.uploadAttachment({
-                bytes: await phonePhoto({ sigma: 80, quality: 80 }),
+                bytes: await phonePhoto({
+                  sigma: 80,
+                  quality: 80,
+                }),
                 mediaType: "image/jpeg",
                 name: `IMG_81${index}.jpeg`,
-                workspaceId: workspace.id,
               }),
             );
           const run = await active.sendMessage({
@@ -868,7 +1047,6 @@ qualification("local endpoint qualification", () => {
             },
             text: "RUN_SLEEP_2",
             threadId,
-            workspaceId: workspace.id,
           });
           expect(run.assistantText).toContain("IMAGES 2");
           const last = fixture.requests.at(-1) ?? [];
@@ -892,7 +1070,6 @@ qualification("local endpoint qualification", () => {
           }
         }
       }, 600_000);
-
     if (engine.driverKind === "pi")
       it("wire-only pi: a person's Chat follow-ups reach the reply under way, once", async () => {
         const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -910,7 +1087,10 @@ qualification("local endpoint qualification", () => {
             cleanupTimeoutMs: 120_000,
             databaseUrl,
             harnessInstance: {
-              config: { baseUrl: fixture.baseUrl, runtime: "generic" },
+              config: {
+                baseUrl: fixture.baseUrl,
+                runtime: "generic",
+              },
               driverKind: engine.driverKind,
               sourceId: "openai-compatible",
               stateKind: "isolated",
@@ -937,7 +1117,6 @@ qualification("local endpoint qualification", () => {
               providerId: configured.providerId,
             }),
             title: "Chat",
-            workspaceId: active.mainWorkspaceId,
           });
           const database = active.host.store.database;
           const input = (messageId: string) =>
@@ -946,9 +1125,22 @@ qualification("local endpoint qualification", () => {
               .select(["runId", "state"])
               .where("messageId", "=", messageId as never)
               .executeTakeFirstOrThrow();
-          const phases = (events: readonly { readonly type: string; readonly data: unknown }[]) =>
+          const phases = (
+            events: readonly {
+              readonly type: string;
+              readonly data: unknown;
+            }[],
+          ) =>
             events.flatMap((event) =>
-              event.type === "run.phase" ? [(event.data as { readonly phase: string }).phase] : [],
+              event.type === "run.phase"
+                ? [
+                    (
+                      event.data as {
+                        readonly phase: string;
+                      }
+                    ).phase,
+                  ]
+                : [],
             );
 
           // Sent while Pi waits on its tool: Pi takes it before its next model
@@ -957,16 +1149,24 @@ qualification("local endpoint qualification", () => {
           const toolRun = await active.sendMessage({
             onQueued: async (runId) => {
               await active.waitForToolStart(runId);
-              const followUp = await active.queueMessage({ text: "While the tool runs", threadId });
+              const followUp = await active.queueMessage({
+                text: "While the tool runs",
+                threadId,
+              });
               expect(followUp.runId).toBe(runId);
               duringTool = followUp.messageId;
             },
             text: "RUN_SLEEP_1",
             threadId,
-            workspaceId: active.mainWorkspaceId,
           });
-          expect(await input(duringTool)).toEqual({ runId: toolRun.runId, state: "delivered" });
-          evidence.duringTool = { phases: phases(toolRun.events), reply: toolRun.assistantText };
+          expect(await input(duringTool)).toEqual({
+            runId: toolRun.runId,
+            state: "delivered",
+          });
+          evidence.duringTool = {
+            phases: phases(toolRun.events),
+            reply: toolRun.assistantText,
+          };
 
           // Sent as Pi answers at once: answered in this Run or, refused before
           // Pi took it, by the next one. Never accepted and left unanswered.
@@ -974,12 +1174,15 @@ qualification("local endpoint qualification", () => {
           const quick = await active.sendMessage({
             onQueued: async (runId) => {
               await waitForRunning(active, runId);
-              late = (await active.queueMessage({ text: "Right after you start", threadId }))
-                .messageId;
+              late = (
+                await active.queueMessage({
+                  text: "Right after you start",
+                  threadId,
+                })
+              ).messageId;
             },
             text: "Answer at once",
             threadId,
-            workspaceId: active.mainWorkspaceId,
           });
           const lateInput = await input(late);
           if (lateInput.runId === quick.runId) {
@@ -1025,7 +1228,6 @@ qualification("local endpoint qualification", () => {
           }
         }
       }, 600_000);
-
     if (engine.driverKind === "pi")
       it("wire-only pi: a small configured transport still carries a small image", async () => {
         const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -1039,7 +1241,11 @@ qualification("local endpoint qualification", () => {
             databaseUrl,
             harnessInstance: {
               // Far below the default 4 MiB, yet ample for a thumbnail.
-              config: { baseUrl: fixture.baseUrl, maxWriteBufferBytes: 49_152, runtime: "generic" },
+              config: {
+                baseUrl: fixture.baseUrl,
+                maxWriteBufferBytes: 49_152,
+                runtime: "generic",
+              },
               driverKind: engine.driverKind,
               sourceId: "openai-compatible",
               stateKind: "isolated",
@@ -1065,23 +1271,25 @@ qualification("local endpoint qualification", () => {
               providerId: configured.providerId,
             }),
             title: `Wire-only small transport ${randomUUID()}`,
-            workspaceId: workspace.id,
           });
           const thumbnail = await stack.uploadAttachment({
             bytes: await sharp({
-              create: { width: 64, height: 64, channels: 3, background: "#3a6" },
+              create: {
+                width: 64,
+                height: 64,
+                channels: 3,
+                background: "#3a6",
+              },
             })
               .png()
               .toBuffer(),
             mediaType: "image/png",
             name: "thumbnail.png",
-            workspaceId: workspace.id,
           });
           const turn = await stack.sendMessage({
             attachments: [attachmentReference(thumbnail)],
             text: "How many images?",
             threadId,
-            workspaceId: workspace.id,
           });
           expect(turn.assistantText).toContain("IMAGES 1");
         } finally {
@@ -1092,7 +1300,6 @@ qualification("local endpoint qualification", () => {
           }
         }
       }, 300_000);
-
     it(`wire-only ${engine.driverKind}: key requested on refusal, Ollama Modelfile context`, async () => {
       const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
       if (!databaseUrl) throw new Error("Run through pnpm test:engines");
@@ -1112,8 +1319,15 @@ qualification("local endpoint qualification", () => {
           cleanupTimeoutMs: 120_000,
           databaseUrl,
           harnessInstance: {
-            apiKey: { connectionSlot: "primary", methodId: engine.methodId, value: requiredKey },
-            config: { baseUrl: fixture.baseUrl, runtime: "ollama" },
+            apiKey: {
+              connectionSlot: "primary",
+              methodId: engine.methodId,
+              value: requiredKey,
+            },
+            config: {
+              baseUrl: fixture.baseUrl,
+              runtime: "ollama",
+            },
             driverKind: engine.driverKind,
             sourceId: "openai-compatible",
             stateKind: "isolated",
@@ -1132,18 +1346,30 @@ qualification("local endpoint qualification", () => {
         expect(refused.status).toBe("authentication-required");
         expect(refused.detail).toMatch(/needs an API key/iu);
         expect(refused.setupMethods).toEqual([
-          expect.objectContaining({ kind: "secret-input", methodId: engine.methodId }),
+          expect.objectContaining({
+            kind: "secret-input",
+            methodId: engine.methodId,
+          }),
         ]);
-        expect(fixture.requests[0]).toMatchObject({ authorization: undefined, status: 401 });
+        expect(fixture.requests[0]).toMatchObject({
+          authorization: undefined,
+          status: 401,
+        });
         expect(stack.catalog.connections[0]).toMatchObject({
           authKind: "api-key",
           logoutSupported: true,
         });
         const byId = new Map(stack.catalog.models.map((model) => [model.nativeModelId, model]));
-        expect(byId.get("local-chat:1")).toMatchObject({ needsContextWindow: true });
-        expect(byId.get("local-ctx:1")).toMatchObject({ contextWindow: 16_384 });
+        expect(byId.get("local-chat:1")).toMatchObject({
+          needsContextWindow: true,
+        });
+        expect(byId.get("local-ctx:1")).toMatchObject({
+          contextWindow: 16_384,
+        });
         expect(byId.get("local-ctx:1")?.unavailableReason).toBeUndefined();
-        expect(byId.get("local-loaded:1")).toMatchObject({ contextWindow: 12_288 });
+        expect(byId.get("local-loaded:1")).toMatchObject({
+          contextWindow: 12_288,
+        });
         const selected = byId.get("local-ctx:1")!;
         const workspace = await stack.createWorkspace("Keyed endpoint qualification");
         const threadId = await stack.createThread({
@@ -1153,13 +1379,11 @@ qualification("local endpoint qualification", () => {
             providerId: selected.providerId,
           }),
           title: `Keyed native provider ${randomUUID()}`,
-          workspaceId: workspace.id,
         });
         const beforeRun = fixture.requests.length;
         const turn = await stack.sendMessage({
           text: "Reply with WIRE_ONLY_READY.",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(turn.assistantText).toContain("WIRE_ONLY_READY");
         expect(fixture.completionModels).toEqual(["local-ctx:1"]);
@@ -1181,7 +1405,10 @@ qualification("local endpoint qualification", () => {
           expect(stagedText).not.toContain(requiredKey);
           expect(stagedText).toContain(piKeylessBearer.replace("Bearer ", ""));
         }
-        evidence.refused = { detail: refused.detail, setupMethods: refused.setupMethods };
+        evidence.refused = {
+          detail: refused.detail,
+          setupMethods: refused.setupMethods,
+        };
         evidence.connection = stack.catalog.connections[0];
         evidence.models = stack.catalog.models.map((model) => ({
           nativeModelId: model.nativeModelId,
@@ -1241,8 +1468,13 @@ qualification("local endpoint qualification", () => {
           databaseUrl,
           // Connect: nothing is typed or pasted; the key is oMLX's own.
           harnessInstance: {
-            apiKey: { methodId: "model-server-settings" },
-            config: { baseUrl, runtime: "omlx" },
+            apiKey: {
+              methodId: "model-server-settings",
+            },
+            config: {
+              baseUrl,
+              runtime: "omlx",
+            },
             driverKind: engine.driverKind,
             sourceId: "openai-compatible",
             stateKind: "isolated",
@@ -1270,7 +1502,12 @@ qualification("local endpoint qualification", () => {
         // Discovery never sends a key: oMLX's own `/health` says what it is and
         // how many models it has; its list stays behind the key until Connect.
         expect(discovered.data.servers).toEqual([
-          { baseUrl, models: 1, runtime: "omlx", status: "ready" },
+          {
+            baseUrl,
+            models: 1,
+            runtime: "omlx",
+            status: "ready",
+          },
           {
             baseUrl: `http://127.0.0.1:${lmStudioPort}/v1`,
             runtime: "lmstudio",
@@ -1284,23 +1521,34 @@ qualification("local endpoint qualification", () => {
         });
         if (!identified.ok) throw new Error(identified.error.message);
         expect(identified.data.servers).toEqual([
-          { baseUrl: fixture.origin, models: 1, runtime: "omlx", status: "ready" },
+          {
+            baseUrl: fixture.origin,
+            models: 1,
+            runtime: "omlx",
+            status: "ready",
+          },
         ]);
         evidence.discovered = discovered.data.servers;
         evidence.identified = identified.data.servers;
 
         // The server refused without a key, and its own settings hold one: the
         // account offers that first, and it was used.
-        expect(stack.initialCatalog).toMatchObject({ status: "authentication-required" });
+        expect(stack.initialCatalog).toMatchObject({
+          status: "authentication-required",
+        });
         expect(stack.initialCatalog.setupMethods[0]).toMatchObject({
           kind: "local-import",
           methodId: "model-server-settings",
         });
-        expect(stack.catalog.connections[0]).toMatchObject({ authKind: "api-key" });
+        expect(stack.catalog.connections[0]).toMatchObject({
+          authKind: "api-key",
+        });
         const model = stack.catalog.models[0]!;
-        expect(model).toMatchObject({ contextWindow: 32_768, nativeModelId: "local-chat" });
+        expect(model).toMatchObject({
+          contextWindow: 32_768,
+          nativeModelId: "local-chat",
+        });
         evidence.initialSetupMethods = stack.initialCatalog.setupMethods;
-
         const workspace = await stack.createWorkspace("Model server settings key");
         const threadId = await stack.createThread({
           modelSelection: ModelSelectionSchema.parse({
@@ -1309,12 +1557,10 @@ qualification("local endpoint qualification", () => {
             providerId: model.providerId,
           }),
           title: `Server settings key ${randomUUID()}`,
-          workspaceId: workspace.id,
         });
         const turn = await stack.sendMessage({
           text: "Reply with SERVER_KEY_READY.",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(turn.assistantText).toContain("SERVER_KEY_READY");
         const completions = () =>
@@ -1334,7 +1580,9 @@ qualification("local endpoint qualification", () => {
           detail: expect.stringMatching(/rejected the API key/u),
           status: "authentication-required",
         });
-        expect(rejected.setupMethods[0]).toMatchObject({ kind: "local-import" });
+        expect(rejected.setupMethods[0]).toMatchObject({
+          kind: "local-import",
+        });
         const begun = await api["commands.dispatch"]({
           connectionSlot: "primary",
           environmentId: stack.environmentId,
@@ -1348,16 +1596,21 @@ qualification("local endpoint qualification", () => {
           async () => {
             expect((await stackCatalog(stack!)).status).toBe("ready");
           },
-          { interval: 250, timeout: 60_000 },
+          {
+            interval: 250,
+            timeout: 60_000,
+          },
         );
         const afterRotation = await stack.sendMessage({
           text: "Reply with SERVER_KEY_READY again.",
           threadId,
-          workspaceId: workspace.id,
         });
         expect(afterRotation.assistantText).toContain("SERVER_KEY_READY");
         expect(completions().at(-1)?.authorization).toBe(`Bearer ${rotatedKey}`);
-        evidence.rotation = { rejected: redact(rejected), recovered: true };
+        evidence.rotation = {
+          rejected: redact(rejected),
+          recovered: true,
+        };
         evidence.turns = [turn, afterRotation].map((entry) => ({
           assistantText: entry.assistantText,
           events: entry.events.map((event) => event.type),
@@ -1374,22 +1627,22 @@ qualification("local endpoint qualification", () => {
           await stack?.close();
         } finally {
           await fixture.close();
-          await rm(home, { force: true, recursive: true });
+          await rm(home, {
+            force: true,
+            recursive: true,
+          });
           await writeWireArtifact(`wire-only-server-settings-key-${engine.driverKind}`, evidence);
         }
       }
     }, 300_000);
   }
-
   for (const engine of wireEngines) {
     describe(engine.driverKind, () => {
       let stack: VerticalStack | undefined;
-
       afterEach(async () => {
         await stack?.close();
         stack = undefined;
       }, 180_000);
-
       it("lists a native model, runs a tool, saves an artifact and continues", async () => {
         const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
         if (!databaseUrl) throw new Error("Run through pnpm test:engines");
@@ -1408,7 +1661,9 @@ qualification("local endpoint qualification", () => {
         try {
           if (process.env.OPENSTEER_LOCAL_ENDPOINT_OMLX_SETTINGS) {
             const wrongKey = await fetch(`${target.baseUrl.replace(/\/+$/u, "")}/models`, {
-              headers: { authorization: "Bearer invalid-opensteer-qualification-key" },
+              headers: {
+                authorization: "Bearer invalid-opensteer-qualification-key",
+              },
             });
             evidence.wrongKeyStatus = wrongKey.status;
             await wrongKey.body?.cancel();
@@ -1424,7 +1679,12 @@ qualification("local endpoint qualification", () => {
             databaseUrl,
             harnessInstance: {
               ...(omlxSettings
-                ? { apiKey: { connectionSlot: "primary", methodId: "model-server-settings" } }
+                ? {
+                    apiKey: {
+                      connectionSlot: "primary",
+                      methodId: "model-server-settings",
+                    },
+                  }
                 : target.apiKey
                   ? {
                       apiKey: {
@@ -1434,7 +1694,10 @@ qualification("local endpoint qualification", () => {
                       },
                     }
                   : {}),
-              config: { baseUrl: target.baseUrl, runtime: target.runtime },
+              config: {
+                baseUrl: target.baseUrl,
+                runtime: target.runtime,
+              },
               driverKind: engine.driverKind,
               sourceId: "openai-compatible",
               stateKind: "isolated",
@@ -1456,20 +1719,26 @@ qualification("local endpoint qualification", () => {
             });
             if (!discovered.ok) throw new Error(discovered.error.message);
             expect(discovered.data.servers).toContainEqual(
-              expect.objectContaining({ runtime: "omlx", status: "ready" }),
+              expect.objectContaining({
+                runtime: "omlx",
+                status: "ready",
+              }),
             );
             expect(JSON.stringify(discovered.data)).not.toContain(target.apiKey);
             evidence.discovered = discovered.data.servers;
           }
           if (process.env.OPENSTEER_LOCAL_ENDPOINT_OMLX_SETTINGS) {
             // oMLX refuses keyless requests, so the key is requested rather than assumed.
-            expect(stack.initialCatalog).toMatchObject({ status: "authentication-required" });
+            expect(stack.initialCatalog).toMatchObject({
+              status: "authentication-required",
+            });
           }
           if (!target.apiKey) {
             // A keyless server is usable as soon as it answers; nothing asks for a key.
-            expect(stack.initialCatalog).toMatchObject({ status: "ready" });
+            expect(stack.initialCatalog).toMatchObject({
+              status: "ready",
+            });
           }
-
           const model = target.nativeModelId
             ? stack.catalog.models.find((entry) => entry.nativeModelId === target.nativeModelId)
             : stack.catalog.models[0];
@@ -1488,7 +1757,6 @@ qualification("local endpoint qualification", () => {
           expect(configured.unavailableReason).toBeUndefined();
           expect(configured.contextWindow).toBe(target.contextWindow);
           evidence.configuredContextWindow = configured.contextWindow;
-
           const workspace = await stack.createWorkspace(`${engine.driverKind} local qualification`);
           const threadId = await stack.createThread({
             modelSelection: ModelSelectionSchema.parse({
@@ -1497,7 +1765,6 @@ qualification("local endpoint qualification", () => {
               providerId: configured.providerId,
             }),
             title: `${engine.driverKind} local qualification ${evidenceId}`,
-            workspaceId: workspace.id,
           });
           await stack.updateThreadAccess(threadId, "full-access");
           const marker = `LOCAL_MODEL_QUALIFIED_${evidenceId.replaceAll("-", "")}`;
@@ -1507,7 +1774,6 @@ qualification("local endpoint qualification", () => {
           const first = await stack.sendMessage({
             text: prompt,
             threadId,
-            workspaceId: workspace.id,
           });
           evidence.firstTurn = {
             assistantText: first.assistantText,
@@ -1543,13 +1809,14 @@ qualification("local endpoint qualification", () => {
           });
           const artifact = (await readFile(artifactPath, "utf8")).trim();
           expect(artifact).toBe(marker);
-          evidence.artifact = { name: artifactName, content: artifact };
-
+          evidence.artifact = {
+            name: artifactName,
+            content: artifact,
+          };
           const secondPrompt = `Read the file at this exact absolute path: ${artifactPath}. Repeat the marker you find there.`;
           const second = await stack.sendMessage({
             text: secondPrompt,
             threadId,
-            workspaceId: workspace.id,
           });
           evidence.secondTurn = {
             assistantText: second.assistantText,
@@ -1603,15 +1870,18 @@ qualification("local endpoint qualification", () => {
           throw error;
         } finally {
           delete process.env.OMLX_BASE_PATH;
-          await mkdir(evidenceDirectory, { recursive: true });
-          await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+          await mkdir(evidenceDirectory, {
+            recursive: true,
+          });
+          await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
+            mode: 0o600,
+          });
           process.stdout.write(`Local endpoint qualification artifact: ${evidencePath}\n`);
         }
       }, 900_000);
     });
   }
 });
-
 async function waitForRunning(active: VerticalStack, runId: string): Promise<void> {
   await vi.waitFor(
     async () => {
@@ -1622,10 +1892,12 @@ async function waitForRunning(active: VerticalStack, runId: string): Promise<voi
         .executeTakeFirstOrThrow();
       expect(["queued", "starting"], "The Run did not start").not.toContain(run.status);
     },
-    { interval: 20, timeout: 120_000 },
+    {
+      interval: 20,
+      timeout: 120_000,
+    },
   );
 }
-
 async function waitForRunEnd(active: VerticalStack, runId: string): Promise<void> {
   const status = await vi.waitFor(
     async () => {
@@ -1637,7 +1909,10 @@ async function waitForRunEnd(active: VerticalStack, runId: string): Promise<void
       expect(["completed", "failed", "interrupted"], "The Run did not end").toContain(run.status);
       return run.status;
     },
-    { interval: 100, timeout: 180_000 },
+    {
+      interval: 100,
+      timeout: 180_000,
+    },
   );
   if (status !== "completed") throw new Error(`The Run ended ${status}`);
 }
