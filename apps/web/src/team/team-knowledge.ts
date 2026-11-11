@@ -19,7 +19,10 @@ function factView(view: TeamView, fact: TeamFact): FactView {
     id: fact.id,
     property: fact.property,
     value: valueText(fact.value),
-    writer: fact.writerKind === "agent" ? { kind: "agent", owner: writer } : { kind: "person", person: writer },
+    writer:
+      fact.writerKind === "agent"
+        ? { kind: "agent", owner: writer }
+        : { kind: "person", person: writer },
     at: fact.writtenAt,
     sourceLabel: fact.source ? "From a message" : null,
   };
@@ -34,7 +37,8 @@ export function thingsOf(view: TeamView, facts: readonly TeamFact[]): ThingView[
     if (!held || BigInt(fact.id) > BigInt(held.id)) latest.set(key, fact);
   }
   const things = new Map<string, TeamFact[]>();
-  for (const fact of latest.values()) things.set(fact.thing, [...(things.get(fact.thing) ?? []), fact]);
+  for (const fact of latest.values())
+    things.set(fact.thing, [...(things.get(fact.thing) ?? []), fact]);
   return [...things.entries()].map(([thing, rows]) => ({
     id: thing,
     name: thing,
@@ -44,7 +48,11 @@ export function thingsOf(view: TeamView, facts: readonly TeamFact[]): ThingView[
 }
 
 /** One topic list and the selected topic's facts, for a channel's tab or the team page. */
-export function useKnowledge(view: TeamView, channelId: TeamChannelId | null, topicId: string | null) {
+export function useKnowledge(
+  view: TeamView,
+  channelId: TeamChannelId | null,
+  topicId: string | null,
+) {
   const toast = useToast();
   const topics = useTeamRead(
     () =>

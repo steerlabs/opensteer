@@ -50,7 +50,8 @@ function TeamPage({
   const view = useTeamView(teamId, noPreviews);
   const { hostClient } = useShell();
   if (!view) return <TeamUnavailable teamId={teamId} />;
-  const title = (name: string) => `${name} · ${view.snapshot.bootstrap?.teamName ?? view.team.name}`;
+  const title = (name: string) =>
+    `${name} · ${view.snapshot.bootstrap?.teamName ?? view.team.name}`;
   const body =
     section === "knowledge" ? (
       <TeamKnowledge topicId={rest[0] ?? null} view={view} />
@@ -78,7 +79,13 @@ function TeamPage({
 }
 
 /** Every topic the reader can read: channel topics and shared ones, with managers' settings. */
-function TeamKnowledge({ topicId, view }: { readonly topicId: string | null; readonly view: TeamView }) {
+function TeamKnowledge({
+  topicId,
+  view,
+}: {
+  readonly topicId: string | null;
+  readonly view: TeamView;
+}) {
   const navigate = useNavigate();
   const knowledge = useKnowledge(view, null, topicId);
   return (
@@ -96,7 +103,9 @@ function TeamKnowledge({ topicId, view }: { readonly topicId: string | null; rea
       {knowledge.current?.can.manage ? (
         <TopicSettings onChanged={knowledge.reloadTopics} topic={knowledge.current} view={view} />
       ) : null}
-      {view.snapshot.bootstrap?.can.manageGroups ? <NewTopic onCreated={knowledge.reloadTopics} view={view} /> : null}
+      {view.snapshot.bootstrap?.can.manageGroups ? (
+        <NewTopic onCreated={knowledge.reloadTopics} view={view} />
+      ) : null}
     </div>
   );
 }
@@ -121,7 +130,10 @@ function TopicSettings({
   const toast = useToast();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
   const access = useTeamRead(
-    () => view.client.rpc["team.knowledge.topic.access.get"]({ topicId: topic.id }).then(unwrapRpcResult),
+    () =>
+      view.client.rpc["team.knowledge.topic.access.get"]({ topicId: topic.id }).then(
+        unwrapRpcResult,
+      ),
     `topic-access:${topic.id}`,
   );
   const groups = useTeamRead(
@@ -144,8 +156,9 @@ function TopicSettings({
   const subjectName = (entry: (typeof entries)[number]) =>
     entry.subject.kind === "person"
       ? person(view.words, entry.subject.userId).name
-      : (groups.value?.groups.find((group) => group.id === (entry.subject.kind === "group" ? entry.subject.groupId : ""))?.name ??
-        "Group");
+      : (groups.value?.groups.find(
+          (group) => group.id === (entry.subject.kind === "group" ? entry.subject.groupId : ""),
+        )?.name ?? "Group");
   return (
     <SettingsGroup heading={`${topic.name}: access`} headingId={`topic-${topic.id}`}>
       <SettingsRow
@@ -227,7 +240,13 @@ function TopicSettings({
   );
 }
 
-function NewTopic({ onCreated, view }: { readonly onCreated: () => void; readonly view: TeamView }) {
+function NewTopic({
+  onCreated,
+  view,
+}: {
+  readonly onCreated: () => void;
+  readonly view: TeamView;
+}) {
   const [name, setName] = useState("");
   const toast = useToast();
   const create = (event: FormEvent) => {
@@ -273,12 +292,17 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
     channelId: params.get("in"),
   });
   const run = (next: string, nextFilters: SearchFilters) => {
-    setParams(next ? { q: next, ...(nextFilters.channelId ? { in: nextFilters.channelId } : {}) } : {}, { replace: true });
+    setParams(
+      next ? { q: next, ...(nextFilters.channelId ? { in: nextFilters.channelId } : {}) } : {},
+      { replace: true },
+    );
     if (!next.trim()) return;
     const author = nextFilters.authorId?.replace(/^agent:/u, "") ?? null;
     void view.client.search({
       query: next.trim(),
-      ...(nextFilters.channelId ? { channelId: TeamChannelIdSchema.parse(nextFilters.channelId) } : {}),
+      ...(nextFilters.channelId
+        ? { channelId: TeamChannelIdSchema.parse(nextFilters.channelId) }
+        : {}),
       ...(author ? { authorUserId: UserIdSchema.parse(author) } : {}),
       ...(nextFilters.hasFile ? { hasFile: true } : {}),
     });
@@ -400,7 +424,10 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
                 <button
                   className="btn btn--small"
                   onClick={() =>
-                    void view.client.rpc["commands.dispatch"]({ type: "team.channel.join", channelId: channel.id })
+                    void view.client.rpc["commands.dispatch"]({
+                      type: "team.channel.join",
+                      channelId: channel.id,
+                    })
                       .then(unwrapRpcResult)
                       .then(() => void navigate(channelPath(view.team.teamId, channel.id)))
                       .catch(report)
@@ -435,7 +462,9 @@ function NewMessage({ view }: { readonly view: TeamView }) {
     (member) =>
       member.state === "active" &&
       member.userId !== view.words.viewerUserId &&
-      (!words || member.displayName.toLocaleLowerCase().includes(words) || member.handle.includes(words)),
+      (!words ||
+        member.displayName.toLocaleLowerCase().includes(words) ||
+        member.handle.includes(words)),
   );
   return (
     <div className="team-browse">
@@ -457,7 +486,10 @@ function NewMessage({ view }: { readonly view: TeamView }) {
             <button
               className="btn btn--small"
               onClick={() =>
-                void view.client.rpc["commands.dispatch"]({ type: "team.dm.open", participants: [member.userId] })
+                void view.client.rpc["commands.dispatch"]({
+                  type: "team.dm.open",
+                  participants: [member.userId],
+                })
                   .then(unwrapRpcResult)
                   .then((result) => {
                     if (result.type === "team.dm.open")

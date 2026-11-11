@@ -286,15 +286,7 @@ export function ThreadPane({
     if (list && atEnd.current) list.scrollTop = list.scrollHeight;
   }, [replies]);
   return (
-    <div
-      className="thread-pane"
-      onKeyDown={(event) => {
-        if (event.key === "Escape" && !event.defaultPrevented) {
-          event.preventDefault();
-          onClose();
-        }
-      }}
-    >
+    <div className="thread-pane">
       <PaneHeader detail={channelLabel(channel)} onClose={onClose} title="Thread" />
       <div
         aria-label="Thread"

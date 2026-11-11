@@ -57,11 +57,7 @@ export function useWorkspaceShortcuts({
           onNewTab();
           return;
         case "reopen-closed-tab": {
-          if (
-            !hostClient.getSnapshot().tabReopenAvailable ||
-            !hostClient.reopenPersonalTab
-          )
-            return;
+          if (!hostClient.getSnapshot().tabReopenAvailable || !hostClient.reopenPersonalTab) return;
           const show = nav.beginPlaceOperation();
           void hostClient.reopenPersonalTab().then(
             (result) =>

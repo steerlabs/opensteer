@@ -167,7 +167,9 @@ export function AllTasksPage({
         <ul aria-label="Tasks" className="home-tasks all-tasks__list" ref={list}>
           {plan.map((item) => {
             if ("spacer" in item)
-              return <li aria-hidden key={`spacer:${item.spacer}`} style={{ height: item.spacer }} />;
+              return (
+                <li aria-hidden key={`spacer:${item.spacer}`} style={{ height: item.spacer }} />
+              );
             const row = rows[item.index]!;
             return (
               <li data-motion-key={row.id} key={row.id}>

@@ -37,8 +37,8 @@ const pickerLimit = 7;
 
 /**
  * The team composer: words, files, @ mentions and the viewer's own agent.
- * "Ask my agent" is one state with three ways in — the pill, "My agent" in
- * the @ list, and ⌘⇧Enter — and while it is on the message goes to the
+ * "Ask my agent" is one state with two ways in — the pill, or "My agent" in
+ * the @ list — and while it is on the message goes to the
  * thread and asks the viewer's agent. Nobody else's agent can be woken from
  * here; naming one is a reference.
  */
@@ -178,11 +178,6 @@ export function TeamComposer({
         setMention(null);
         return;
       }
-    }
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && event.shiftKey) {
-      event.preventDefault();
-      send(true);
-      return;
     }
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
@@ -345,7 +340,7 @@ export function TeamComposer({
               className={toAgent ? "ask-pill ask-pill--on" : "ask-pill"}
               onClick={() => (toAgent ? setToAgent(false) : askAgent())}
               ref={pill}
-              title={toAgent ? "Don’t ask my agent" : "Ask my agent · ⌘⇧↵"}
+              title={toAgent ? "Don’t ask my agent" : "Ask my agent"}
               type="button"
             >
               <AgentOrb size={16} />

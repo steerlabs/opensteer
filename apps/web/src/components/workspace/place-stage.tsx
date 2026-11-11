@@ -142,8 +142,7 @@ function SelectedPlace({
     selection.kind === "place" && selection.destination.kind === "browser" && selectedTab
       ? { sessionId: selection.destination.sessionId, tabId: selectedTab }
       : null;
-  const dockedThread =
-    !phone && dock.open ? conversationAt(pathname) : null;
+  const dockedThread = !phone && dock.open ? conversationAt(pathname) : null;
   const showBrowserTab = useCallback(
     (
       destination: { readonly sessionId: string; readonly tabId: string },

@@ -74,9 +74,7 @@ export function sidebarView(input: {
     .map(row);
   const dms = rows
     .filter((entry) => directKinds.has(entry.channel.kind))
-    .sort((left, right) =>
-      compareIds(right.channel.latestMessageId, left.channel.latestMessageId),
-    )
+    .sort((left, right) => compareIds(right.channel.latestMessageId, left.channel.latestMessageId))
     .map(row);
   return {
     id: input.teamId,
@@ -187,8 +185,7 @@ export function threadFact(
   const waiting = live.find((request) => request.state === "needs_you");
   if (waiting) return { kind: "waiting-owner", owner: person(words, waiting.ownerUserId) };
   const queued = live.find(
-    (request) =>
-      request.state === "queued" && words.linkOnline.get(request.ownerUserId) === false,
+    (request) => request.state === "queued" && words.linkOnline.get(request.ownerUserId) === false,
   );
   if (queued) return { kind: "waiting-computer", owner: person(words, queued.ownerUserId) };
   const replied = live.find((request) => request.state === "done" && request.finishedAt);
@@ -228,7 +225,9 @@ export function fileView(words: TeamWords, file: TeamFile): FileView {
 
 export function author(words: TeamWords, message: TeamMessage): AuthorView {
   const owner = person(words, message.authorUserId);
-  return message.authorKind === "agent" ? { kind: "agent", owner } : { kind: "person", person: owner };
+  return message.authorKind === "agent"
+    ? { kind: "agent", owner }
+    : { kind: "person", person: owner };
 }
 
 export function messageView(
@@ -325,7 +324,9 @@ export function timelineItems(
 ): TimelineItem[] {
   const items: TimelineItem[] = [];
   const replied = new Set(
-    timeline.messages.flatMap((message) => (message.agentRequestId ? [message.agentRequestId] : [])),
+    timeline.messages.flatMap((message) =>
+      message.agentRequestId ? [message.agentRequestId] : [],
+    ),
   );
   const asks = new Map<string, TeamAgentRequest[]>();
   if (cards)

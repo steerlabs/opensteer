@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import { DesktopWebLinkDeliverySchema } from "@opensteer/protocol/desktop";
 import { VoiceContext } from "@opensteer/client/react";
@@ -200,22 +199,16 @@ export type LocalExecutionAction =
  * computer: there the local Runner is its Main, which the Deployment owns
  * rather than a computer anybody adds or removes.
  */
-export function localEnrollmentModules(snapshot: Parameters<typeof hostDeploymentPolicy>[0]) {
-  return [...(hostDeploymentPolicy(snapshot)?.localRunnerDefaultModules ?? ["shell"])];
-}
+export const localEnrollmentModules = ["shell"] as const;
 
 export function localRunnerSlotDeploymentId(input: {
   readonly desktopBridge: OpensteerDesktopBridge | null;
   readonly desktopDeployment: DesktopDeploymentSummary | null;
-  readonly deploymentPolicy: import("@opensteer/core").DeploymentClientPolicy | undefined;
 }): DesktopDeploymentSummary["id"] | null {
   const { desktopBridge, desktopDeployment } = input;
   if (desktopBridge === null || desktopDeployment === null) return null;
-  if (
-    input.deploymentPolicy?.deploymentOwnsMainComputer === true &&
-    desktopDeployment.onThisComputer
-  )
-    return null;
+  // A Personal Deployment owns the computer it runs on.
+  if (desktopDeployment.onThisComputer) return null;
   return desktopDeployment.id;
 }
 
@@ -367,7 +360,7 @@ export function AppShell({
     actions: WebLinkFailureActions;
   } | null>(null);
   const webLinkReady = desktopWebLinksReady(
-    hostDeploymentPolicy(snapshot)?.nativeWebLinks === true,
+    true,
     snapshot,
   );
   useEffect(() => {
@@ -463,7 +456,6 @@ export function AppShell({
   const localExecutionDeploymentId = localRunnerSlotDeploymentId({
     desktopBridge: localBridge,
     desktopDeployment,
-    deploymentPolicy: hostDeploymentPolicy(snapshot),
   });
   const viewedLocalExecutionStatus =
     localExecutionStatus?.deploymentId === localExecutionDeploymentId ? localExecutionStatus : null;
@@ -478,7 +470,7 @@ export function AppShell({
   // other computers with browser, integrations, messaging and shell.
   const localGrant = useMemo<
     readonly ("agents" | "browser" | "integrations" | "messaging" | "shell")[]
-  >(() => localEnrollmentModules(snapshot), [hostDeploymentPolicy(snapshot)]);
+  >(() => localEnrollmentModules, []);
   // Every navigation closes the drawer; the destination is on screen now.
   useEffect(() => {
     setMobileNavigationOpen(false);
@@ -502,7 +494,6 @@ export function AppShell({
   const personalSetup = deploymentAccess?.personalSetup ?? null;
   const hostedEnvironmentId =
     localBridge !== null &&
-    hostDeploymentPolicy(snapshot)?.deploymentOwnsMainComputer === true &&
     desktopDeployment?.onThisComputer &&
     personalSetup?.deploymentId === snapshot.deploymentId
       ? personalSetup.environmentId
@@ -989,8 +980,7 @@ export function AppShell({
     navigationDrawerElement,
   );
   const overlayOpen =
-    accountSignIn !== null ||
-    (!fullWindow && mobileNavigation && mobileNavigationOpen);
+    accountSignIn !== null || (!fullWindow && mobileNavigation && mobileNavigationOpen);
   const shellClassName = setupMode
     ? "app-shell app-shell--settings app-shell--setup"
     : fullWindow
@@ -1231,10 +1221,7 @@ function WorkspaceKeys({
   const deploymentId = useHostSelector(hostClient, selectDeploymentId);
   const userId = useHostSelector(hostClient, selectUserId);
   const canonicalized = useRef<string | null>(null);
-  const restoreVersion = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.tabRestoreVersion,
-  );
+  const restoreVersion = useHostSelector(hostClient, (snapshot) => snapshot.tabRestoreVersion);
   useEffect(() => {
     if (!known || !deploymentId || !userId || restoreVersion !== 1) return;
     const viewer = `${deploymentId}:${userId}`;

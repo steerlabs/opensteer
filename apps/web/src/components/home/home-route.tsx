@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { TaskFolderSchema, type TaskFolder, type ThreadAccessMode } from "@opensteer/core";
 import {
@@ -44,11 +44,11 @@ export function HomeRoute() {
   const { hostClient, snapshot } = useShell();
   const navigate = useNavigate();
   const draftId = useTaskDraftId();
-  const [suggestion, setSuggestion] = useState<{ readonly key: number; readonly text: string } | null>(
-    null,
-  );
-  const firstRun =
-    (snapshot.tasks?.entries.length ?? 0) === 0 && snapshot.activeTasks.length === 0;
+  const [suggestion, setSuggestion] = useState<{
+    readonly key: number;
+    readonly text: string;
+  } | null>(null);
+  const firstRun = (snapshot.tasks?.entries.length ?? 0) === 0 && snapshot.activeTasks.length === 0;
   return (
     <TasksHome
       composer={<NewTaskComposer draftId={draftId} key={draftId} suggestion={suggestion} />}
@@ -297,7 +297,10 @@ function NewTaskComposer({
                 ...held,
                 entries: page.entries
                   .filter((entry) => entry.kind === "directory" && !entry.hidden)
-                  .map((entry) => ({ name: entry.name, path: `${at.replace(/\/$/u, "")}/${entry.name}` })),
+                  .map((entry) => ({
+                    name: entry.name,
+                    path: `${at.replace(/\/$/u, "")}/${entry.name}`,
+                  })),
               }
             : held,
         ),
@@ -305,7 +308,11 @@ function NewTaskComposer({
       .catch((error: unknown) =>
         setBrowsing((held) =>
           held?.path === at
-            ? { ...held, entries: [], error: error instanceof Error ? error.message : "Can’t read this folder." }
+            ? {
+                ...held,
+                entries: [],
+                error: error instanceof Error ? error.message : "Can’t read this folder.",
+              }
             : held,
         ),
       );
@@ -413,9 +420,10 @@ function NewTaskComposer({
               current={currentView}
               onBrowse={browse}
               onChoose={(view) => {
-                const next = [...(agentHome ? [agentHome] : []), ...snapshot.threads.map((thread) => thread.folder)].find(
-                  (candidate) => taskFolderKey(candidate) === view.id,
-                );
+                const next = [
+                  ...(agentHome ? [agentHome] : []),
+                  ...snapshot.threads.map((thread) => thread.folder),
+                ].find((candidate) => taskFolderKey(candidate) === view.id);
                 if (next) setFolder(next);
               }}
               onUse={(computerId, path) => setFolder(TaskFolderSchema.parse({ computerId, path }))}

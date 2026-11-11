@@ -35,7 +35,6 @@ import type {
   StagedFileView,
   TeamSend,
 } from "../components/team/team-models.js";
-import { firstName } from "../components/team/team-models.js";
 import { ConnectionBanner } from "../components/team/team-status.js";
 import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
@@ -68,11 +67,18 @@ interface ChannelPlace {
 function placeOf(rest: readonly string[]): ChannelPlace {
   const [first, second, third, fourth] = rest;
   if (first === "t" && second)
-    return { tab: "messages", threadId: second, messageId: third === "m" ? (fourth ?? null) : null, topicId: null };
-  if (first === "m" && second) return { tab: "messages", threadId: null, messageId: second, topicId: null };
+    return {
+      tab: "messages",
+      threadId: second,
+      messageId: third === "m" ? (fourth ?? null) : null,
+      topicId: null,
+    };
+  if (first === "m" && second)
+    return { tab: "messages", threadId: null, messageId: second, topicId: null };
   if (first === "files" || first === "pinned")
     return { tab: first, threadId: null, messageId: null, topicId: null };
-  if (first === "knowledge") return { tab: "knowledge", threadId: null, messageId: null, topicId: second ?? null };
+  if (first === "knowledge")
+    return { tab: "knowledge", threadId: null, messageId: null, topicId: second ?? null };
   return { tab: "messages", threadId: null, messageId: null, topicId: null };
 }
 
@@ -103,7 +109,13 @@ function usePreviews() {
   return { previews, want };
 }
 
-export function ChannelRoute({ teamId, rest }: { readonly teamId: string; readonly rest: readonly string[] }) {
+export function ChannelRoute({
+  teamId,
+  rest,
+}: {
+  readonly teamId: string;
+  readonly rest: readonly string[];
+}) {
   const channelId = TeamChannelIdSchema.safeParse(rest[0]).data ?? null;
   const place = placeOf(rest.slice(1));
   const { previews, want } = usePreviews();
@@ -114,17 +126,21 @@ export function ChannelRoute({ teamId, rest }: { readonly teamId: string; readon
     client.selectChannel(channelId);
     return () => client.selectChannel(null);
   }, [channelId, client]);
-  const threadRoot = place.threadId ? (TeamMessageIdSchema.safeParse(place.threadId).data ?? null) : null;
+  const threadRoot = place.threadId
+    ? (TeamMessageIdSchema.safeParse(place.threadId).data ?? null)
+    : null;
   useEffect(() => {
     if (client && channelId) client.selectThread(channelId, threadRoot);
   }, [channelId, client, threadRoot]);
   const channelTimeline = view?.snapshot.channel ?? null;
   const threadTimeline = view?.snapshot.thread ?? null;
   useEffect(() => {
-    want(view, [
-      ...(channelTimeline?.messages ?? []),
-      ...(threadTimeline?.messages ?? []),
-    ].flatMap((message) => message.attachments));
+    want(
+      view,
+      [...(channelTimeline?.messages ?? []), ...(threadTimeline?.messages ?? [])].flatMap(
+        (message) => message.attachments,
+      ),
+    );
   }, [channelTimeline, threadTimeline, view, want]);
   if (!channelId) return <p className="team-empty">This channel link isn’t valid.</p>;
   if (!view) return <TeamUnavailable teamId={teamId} />;
@@ -154,7 +170,9 @@ export function TeamUnavailable({ teamId }: { readonly teamId: string }) {
 }
 
 function channelView(view: TeamView, channel: TeamChannel | null, channelId: string): ChannelView {
-  const entry = view.snapshot.sidebar?.channels.find((row) => row.channel.id === channelId)?.channel;
+  const entry = view.snapshot.sidebar?.channels.find(
+    (row) => row.channel.id === channelId,
+  )?.channel;
   const summary = channel ?? entry;
   return {
     id: channelId,
@@ -220,17 +238,31 @@ function ChannelScreenFor({
       const id = crypto.randomUUID();
       setStaged((current) => [
         ...current,
-        { id, name: file.name, mediaType: file.type, sizeBytes: file.size, status: "uploading", file: null, previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null },
+        {
+          id,
+          name: file.name,
+          mediaType: file.type,
+          sizeBytes: file.size,
+          status: "uploading",
+          file: null,
+          previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+        },
       ]);
       const done = prepareTeamUpload(channelId, file)
         .then((upload) => client.upload(upload))
         .then((uploaded) => {
-          setStaged((current) => current.map((row) => (row.id === id ? { ...row, status: "ready", file: uploaded } : row)));
+          setStaged((current) =>
+            current.map((row) =>
+              row.id === id ? { ...row, status: "ready", file: uploaded } : row,
+            ),
+          );
           return uploaded;
         })
         .catch((error: unknown) => {
           setStaged((current) =>
-            current.map((row) => (row.id === id ? { ...row, status: "failed", error: actionErrorMessage(error) } : row)),
+            current.map((row) =>
+              row.id === id ? { ...row, status: "failed", error: actionErrorMessage(error) } : row,
+            ),
           );
           return null;
         });
@@ -250,7 +282,10 @@ function ChannelScreenFor({
         channelId,
         threadRootId: threadRootId ? TeamMessageIdSchema.parse(threadRootId) : null,
         bodyMarkdown: message.bodyMarkdown,
-        mentions: message.mentions.map((mention) => ({ ...mention, userId: UserIdSchema.parse(mention.userId) })),
+        mentions: message.mentions.map((mention) => ({
+          ...mention,
+          userId: UserIdSchema.parse(mention.userId),
+        })),
         attachmentIds: files.flatMap((file) => (file ? [file.id] : [])),
       });
     } catch (error) {
@@ -261,9 +296,7 @@ function ChannelScreenFor({
   /* ---- Rows ---- */
   const pendingFor = (rootId: string | null): MessageView[] =>
     snapshot.pending
-      .filter(
-        (row) => row.command.channelId === channelId && row.command.threadRootId === rootId,
-      )
+      .filter((row) => row.command.channelId === channelId && row.command.threadRootId === rootId)
       .filter(
         (row) =>
           !(rootId ? thread : timeline)?.messages.some(
@@ -316,7 +349,7 @@ function ChannelScreenFor({
       })
       .catch(report);
   };
-  const dispatch = (command: Parameters<typeof client.rpc["commands.dispatch"]>[0]) =>
+  const dispatch = (command: Parameters<(typeof client.rpc)["commands.dispatch"]>[0]) =>
     void client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
   const messageActions = {
     onOpenThread: (rootId: string) => go(channelPath(team.teamId, channelId, { threadId: rootId })),
@@ -349,11 +382,18 @@ function ChannelScreenFor({
         channelId,
         messageId: TeamMessageIdSchema.parse(messageId),
         bodyMarkdown: message.bodyMarkdown,
-        mentions: message.mentions.map((mention) => ({ ...mention, userId: UserIdSchema.parse(mention.userId) })),
+        mentions: message.mentions.map((mention) => ({
+          ...mention,
+          userId: UserIdSchema.parse(mention.userId),
+        })),
       });
     },
     onDelete: (messageId: string) =>
-      dispatch({ type: "team.message.delete", channelId, messageId: TeamMessageIdSchema.parse(messageId) }),
+      dispatch({
+        type: "team.message.delete",
+        channelId,
+        messageId: TeamMessageIdSchema.parse(messageId),
+      }),
     onOpenFile: openFile,
     onOpenTask: links ? (messageId: string) => void openTask(threadRoot(messageId)) : undefined,
   };
@@ -371,9 +411,15 @@ function ChannelScreenFor({
         }
       : undefined,
     onStop: (requestId: string) =>
-      dispatch({ type: "team.agent.request.cancel", requestId: TeamAgentRequestIdSchema.parse(requestId) }),
+      dispatch({
+        type: "team.agent.request.cancel",
+        requestId: TeamAgentRequestIdSchema.parse(requestId),
+      }),
     onCancel: (requestId: string) =>
-      dispatch({ type: "team.agent.request.cancel", requestId: TeamAgentRequestIdSchema.parse(requestId) }),
+      dispatch({
+        type: "team.agent.request.cancel",
+        requestId: TeamAgentRequestIdSchema.parse(requestId),
+      }),
     onAnswer: links
       ? (requestId: string) => {
           const root = requestRoot(requestId);
@@ -390,7 +436,10 @@ function ChannelScreenFor({
       : { kind: "not-linked" };
   const me = person(words, words.viewerUserId);
   const people = useMemo(
-    () => [...view.members.values()].filter((member) => member.state === "active").map((member) => person(words, member.userId)),
+    () =>
+      [...view.members.values()]
+        .filter((member) => member.state === "active")
+        .map((member) => person(words, member.userId)),
     [view.members, words],
   );
   const typingFor = (rootId: string | null) =>
@@ -408,13 +457,19 @@ function ChannelScreenFor({
         key={rootId ?? "channel"}
         me={me}
         onAddFiles={addFiles}
-        onConnect={surface === "desktop" ? () => go(`/join?team=${encodeURIComponent(team.teamId)}`) : undefined}
+        onConnect={
+          surface === "desktop"
+            ? () => go(`/join?team=${encodeURIComponent(team.teamId)}`)
+            : undefined
+        }
         onRemoveFile={(id) => {
           uploads.current.delete(id);
           setStaged((current) => current.filter((row) => row.id !== id));
         }}
         onSend={(input) => void send(rootId)(input)}
-        onTyping={() => client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)}
+        onTyping={() =>
+          client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)
+        }
         people={people}
         placeholder={
           rootId
@@ -429,13 +484,17 @@ function ChannelScreenFor({
     );
 
   /* ---- Thread ---- */
-  const threadRootMessage = thread?.messages.find((message) => message.id === place.threadId) ?? null;
+  const threadRootMessage =
+    thread?.messages.find((message) => message.id === place.threadId) ?? null;
   const replies = useMemo(
     () =>
       thread && place.threadId
         ? timelineItems(
             words,
-            { ...thread, messages: thread.messages.filter((message) => message.id !== place.threadId) },
+            {
+              ...thread,
+              messages: thread.messages.filter((message) => message.id !== place.threadId),
+            },
             pendingFor(place.threadId),
             true,
           )
@@ -446,12 +505,13 @@ function ChannelScreenFor({
     thread?.requests.some(
       (request) =>
         request.ownerUserId === words.viewerUserId &&
-        (request.state === "queued" || request.state === "working" || request.state === "needs_you"),
+        (request.state === "queued" ||
+          request.state === "working" ||
+          request.state === "needs_you"),
     ) ?? false;
   // Reading your agent's reply in the thread reads its task.
   const repliedToMe = thread?.messages.some(
-    (message) =>
-      message.authorKind === "agent" && message.authorUserId === words.viewerUserId,
+    (message) => message.authorKind === "agent" && message.authorUserId === words.viewerUserId,
   );
   useEffect(() => {
     if (!repliedToMe || !place.threadId || !links) return;
@@ -509,7 +569,9 @@ function ChannelScreenFor({
               if (latest) void client.markRead(channelId, latest).catch(report);
             }}
             onReadThrough={(messageId) =>
-              void client.markRead(channelId, TeamMessageIdSchema.parse(messageId)).catch(() => undefined)
+              void client
+                .markRead(channelId, TeamMessageIdSchema.parse(messageId))
+                .catch(() => undefined)
             }
             openThreadId={place.threadId}
           />
@@ -526,7 +588,8 @@ function ChannelScreenFor({
           onClick={() => go(channelPath(team.teamId, channelId))}
           type="button"
         >
-          ‹ {channel.kind === "dm" || channel.kind === "group-dm" ? channel.name : `#${channel.name}`}
+          ‹{" "}
+          {channel.kind === "dm" || channel.kind === "group-dm" ? channel.name : `#${channel.name}`}
         </button>
         {threadPane}
       </div>
@@ -544,7 +607,12 @@ function ChannelScreenFor({
         view={view}
       />
     ) : pane === "members" ? (
-      <ChannelMembersPane channel={channel} channelId={channelId} onClose={() => setPane(null)} view={view} />
+      <ChannelMembersPane
+        channel={channel}
+        channelId={channelId}
+        onClose={() => setPane(null)}
+        view={view}
+      />
     ) : (
       threadPane
     );
@@ -556,12 +624,15 @@ function ChannelScreenFor({
         : ({ kind: "unreachable" } as const);
   return (
     <ChannelScreen
-      banner={<ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />}
+      banner={
+        <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
+      }
       channel={channel}
       menu={{
         onOpenDetails: () => setPane("details"),
         onOpenMembers: () => setPane("members"),
-        onSearch: () => go(`/teams/${encodeURIComponent(team.teamId)}/search?in=${channelId}`, false),
+        onSearch: () =>
+          go(`/teams/${encodeURIComponent(team.teamId)}/search?in=${channelId}`, false),
         onMarkRead: () => {
           const latest = timeline?.messages.at(-1)?.id;
           if (latest) void client.markRead(channelId, latest).catch(report);
@@ -604,7 +675,13 @@ function ChannelFiles({
     <FilesTab
       channel={channel}
       files={(files.value?.files ?? []).map(({ file, messageId }) => ({
-        file: { id: file.id, name: file.filename, mediaType: file.mediaType, sizeBytes: file.sizeBytes, previewUrl: view.words.previews.get(file.id) ?? null },
+        file: {
+          id: file.id,
+          name: file.filename,
+          mediaType: file.mediaType,
+          sizeBytes: file.sizeBytes,
+          previewUrl: view.words.previews.get(file.id) ?? null,
+        },
         sharedBy: { kind: "person", person: person(view.words, view.words.viewerUserId) },
         at: "",
         excerpt: "",
@@ -674,7 +751,9 @@ function ChannelKnowledge({
       actions={{
         ...knowledge.actions,
         onSelectTopic: (next) =>
-          void navigate(`${channelPath(view.team.teamId, channelId, { tab: "knowledge" })}/${next}`),
+          void navigate(
+            `${channelPath(view.team.teamId, channelId, { tab: "knowledge" })}/${next}`,
+          ),
       }}
       history={knowledge.history}
       selectedTopicId={knowledge.selectedTopicId}
@@ -704,17 +783,20 @@ function ChannelDetailsPane({
   const toast = useToast();
   const navigate = useNavigate();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
-  const dispatch = (command: Parameters<typeof view.client.rpc["commands.dispatch"]>[0]) =>
+  const dispatch = (command: Parameters<(typeof view.client.rpc)["commands.dispatch"]>[0]) =>
     view.client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
   const topics = useTeamRead(
     () => view.client.rpc["team.knowledge.topics.list"]({ channelId }).then(unwrapRpcResult),
     `topics:${channelId}`,
   );
-  const level: NotifyLevel = notify === "all" ? "everything" : notify === "muted" ? "nothing" : "mentions";
+  const level: NotifyLevel =
+    notify === "all" ? "everything" : notify === "muted" ? "nothing" : "mentions";
   const live = timeline?.channel ?? null;
   const manage = live?.can.manage === true;
   const workingAgents =
-    timeline?.requests.filter((request) => request.state === "working" || request.state === "queued").length ?? 0;
+    timeline?.requests.filter(
+      (request) => request.state === "working" || request.state === "queued",
+    ).length ?? 0;
   return (
     <ChannelDetails
       actions={{
@@ -724,15 +806,25 @@ function ChannelDetailsPane({
           void dispatch({
             type: "team.channel.preferences.set",
             channelId,
-            notificationLevel: next === "everything" ? "all" : next === "nothing" ? "muted" : "mentions",
+            notificationLevel:
+              next === "everything" ? "all" : next === "nothing" ? "muted" : "mentions",
           }),
         onOpenTopic: (topicId) =>
-          void navigate(`${channelPath(view.team.teamId, channelId, { tab: "knowledge" })}/${topicId}`),
-        onLeave: live?.can.leave ? () => void dispatch({ type: "team.channel.leave", channelId }) : undefined,
+          void navigate(
+            `${channelPath(view.team.teamId, channelId, { tab: "knowledge" })}/${topicId}`,
+          ),
+        onLeave: live?.can.leave
+          ? () => void dispatch({ type: "team.channel.leave", channelId })
+          : undefined,
         ...(manage && live
           ? {
               onSaveAbout: (about: { readonly name: string }) =>
-                void dispatch({ type: "team.channel.update", channelId, name: about.name, peopleOnly: live.peopleOnly }),
+                void dispatch({
+                  type: "team.channel.update",
+                  channelId,
+                  name: about.name,
+                  peopleOnly: live.peopleOnly,
+                }),
               onSaveInstructions: (text: string) =>
                 void dispatch({
                   type: "team.channel.instructions.set",
@@ -741,14 +833,20 @@ function ChannelDetailsPane({
                   instructionsMarkdown: text,
                 }),
               onSetPeopleOnly: (peopleOnly: boolean) =>
-                void dispatch({ type: "team.channel.update", channelId, name: live.name, peopleOnly }),
+                void dispatch({
+                  type: "team.channel.update",
+                  channelId,
+                  name: live.name,
+                  peopleOnly,
+                }),
               onDetachTopic: (topicId: string) =>
                 void dispatch({
                   type: "team.channel.topic.detach",
                   channelId,
                   topicId: KnowledgeTopicIdSchema.parse(topicId),
                 }).then(topics.reload),
-              onAttachTopic: () => void navigate(`/teams/${encodeURIComponent(view.team.teamId)}/knowledge`),
+              onAttachTopic: () =>
+                void navigate(`/teams/${encodeURIComponent(view.team.teamId)}/knowledge`),
               onArchive: () => void dispatch({ type: "team.channel.archive", channelId }),
             }
           : {}),
@@ -794,7 +892,11 @@ function ChannelMembersPane({
       channel={channel}
       members={entries.map((entry) => {
         if (entry.subject.kind === "person")
-          return { kind: "person" as const, person: person(view.words, entry.subject.userId), manager: entry.manage };
+          return {
+            kind: "person" as const,
+            person: person(view.words, entry.subject.userId),
+            manager: entry.manage,
+          };
         const groupId = entry.subject.groupId;
         const group = groups.value?.groups.find((candidate) => candidate.id === groupId);
         return {
@@ -808,4 +910,3 @@ function ChannelMembersPane({
     />
   );
 }
-

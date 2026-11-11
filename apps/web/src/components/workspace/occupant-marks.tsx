@@ -155,7 +155,7 @@ function OccupantMark({
     return () => window.clearTimeout(timer);
   }, [acting]);
   const row = directory.rows.get(threadId);
-  const name = (threadInDirectory(threadId, directory.snapshot)?.title ?? "Task");
+  const name = threadInDirectory(threadId, directory.snapshot)?.title ?? "Task";
   const state = row?.tone ?? "working";
   const words = taskStateWords(state);
   const mark = threadMark(threadId, directory.snapshot);

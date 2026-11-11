@@ -45,10 +45,7 @@ export function TabMenu({
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
   const hereId = useHereId();
-  const reopenAvailable = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.tabReopenAvailable,
-  );
+  const reopenAvailable = useHostSelector(hostClient, (snapshot) => snapshot.tabReopenAvailable);
   const toast = useToast();
   const requestClose = useTabCloser();
   if (place.destination.kind !== "browser" || !place.destination.tabId) return null;

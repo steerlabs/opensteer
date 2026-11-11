@@ -647,7 +647,12 @@ export function Sidebar({
           </button>
         )}
       </div>
-      <TasksBadgeSwitch hostClient={hostClient} onNavigate={onCloseMobile} onSide={setSide} side={side} />
+      <TasksBadgeSwitch
+        hostClient={hostClient}
+        onNavigate={onCloseMobile}
+        onSide={setSide}
+        side={side}
+      />
 
       <SidebarSearch
         badges={presentations.badges}
@@ -696,7 +701,12 @@ export function Sidebar({
                 ) : null}
               </div>
               <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
-                <RowMotion snap={false} list={tasksList} signature={rowKeys.join(",")} lifted={false}>
+                <RowMotion
+                  snap={false}
+                  list={tasksList}
+                  signature={rowKeys.join(",")}
+                  lifted={false}
+                >
                   {[
                     ...live.map((row) => taskRow(row)),
                     <li className="side-task side-all" data-motion-key="all-tasks" key="all-tasks">
@@ -711,7 +721,9 @@ export function Sidebar({
                       >
                         <Icon name="list" />
                         <span className="side-task__text">All tasks</span>
-                        {openCount > 0 ? <span className="side-all__count">{openCount}</span> : null}
+                        {openCount > 0 ? (
+                          <span className="side-all__count">{openCount}</span>
+                        ) : null}
                         <Icon className="side-all__chevron" name="chevron-right" />
                       </Link>
                     </li>,

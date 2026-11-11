@@ -42,7 +42,8 @@ export function TeamSettingsRoute() {
   const view = useTeamView(teamId, noPreviews);
   if (!view) return <p className="team-empty">You aren’t in this team on this computer.</p>;
   const can = view.snapshot.bootstrap?.can;
-  const admin = !!can && (can.manageMembers || can.manageGroups || can.manageInvites || can.viewAudit);
+  const admin =
+    !!can && (can.manageMembers || can.manageGroups || can.manageInvites || can.viewAudit);
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
   const nav = (
     <nav aria-label={`${name} settings`} className="team-settings-nav">
@@ -106,7 +107,11 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
         icon="user"
         title={me.displayName}
       />
-      <SettingsRow detail="Admins can see what agents read, searched and posted here." icon="shield" title="Agent activity is logged" />
+      <SettingsRow
+        detail="Admins can see what agents read, searched and posted here."
+        icon="shield"
+        title="Agent activity is logged"
+      />
       {view.team.link ? (
         <SettingsRow
           action={
@@ -223,13 +228,23 @@ function GroupsPage({ view }: { readonly view: TeamView }) {
           onCreate: () => {
             const value = name();
             if (value)
-              run({ type: "team.group.create", id: TeamGroupIdSchema.parse(createId("teamGroup")), name: value });
+              run({
+                type: "team.group.create",
+                id: TeamGroupIdSchema.parse(createId("teamGroup")),
+                name: value,
+              });
           },
           onRename: (groupId) => {
             const value = name(all.find((group) => group.id === groupId)?.name);
-            if (value) run({ type: "team.group.rename", groupId: TeamGroupIdSchema.parse(groupId), name: value });
+            if (value)
+              run({
+                type: "team.group.rename",
+                groupId: TeamGroupIdSchema.parse(groupId),
+                name: value,
+              });
           },
-          onDelete: (groupId) => run({ type: "team.group.delete", groupId: TeamGroupIdSchema.parse(groupId) }),
+          onDelete: (groupId) =>
+            run({ type: "team.group.delete", groupId: TeamGroupIdSchema.parse(groupId) }),
           onAddMembers: (groupId) => setAdding(groupId),
           onRemoveMember: (groupId, memberId) =>
             run(
@@ -246,20 +261,38 @@ function GroupsPage({ view }: { readonly view: TeamView }) {
                   },
             ),
         }}
-        groups={all.map((group) => ({ id: group.id, name: group.name, peopleCount: group.people.length }))}
+        groups={all.map((group) => ({
+          id: group.id,
+          name: group.name,
+          peopleCount: group.people.length,
+        }))}
         selected={
           selected
             ? {
                 id: selected.id,
                 name: selected.name,
                 peopleCount: selected.people.length,
-                parents: all.filter((group) => group.children.includes(selected.id)).map((group) => group.name),
+                parents: all
+                  .filter((group) => group.children.includes(selected.id))
+                  .map((group) => group.name),
                 members: [
-                  ...selected.people.map((userId) => ({ kind: "person" as const, person: person(view.words, userId) })),
+                  ...selected.people.map((userId) => ({
+                    kind: "person" as const,
+                    person: person(view.words, userId),
+                  })),
                   ...selected.children.flatMap((childId) => {
                     const child = all.find((group) => group.id === childId);
                     return child
-                      ? [{ kind: "group" as const, group: { id: child.id, name: child.name, peopleCount: child.people.length } }]
+                      ? [
+                          {
+                            kind: "group" as const,
+                            group: {
+                              id: child.id,
+                              name: child.name,
+                              peopleCount: child.people.length,
+                            },
+                          },
+                        ]
                       : [];
                   }),
                 ],
@@ -303,14 +336,19 @@ function InvitesPage({ view }: { readonly view: TeamView }) {
     () => view.client.rpc["team.invites.list"]({}).then(unwrapRpcResult),
     `invites:${view.team.teamId}`,
   );
-  const [made, setMade] = useState<{ readonly url: string; readonly expiresAt: string } | null>(null);
+  const [made, setMade] = useState<{ readonly url: string; readonly expiresAt: string } | null>(
+    null,
+  );
   const [copied, setCopied] = useState(false);
   const active = (invites.value?.invites ?? []).filter(
     (invite) => invite.revokedAt === null && Date.parse(invite.expiresAt) > Date.now(),
   );
   const newLink = async () => {
     for (const invite of active)
-      await view.client.rpc["commands.dispatch"]({ type: "team.invite.revoke", inviteId: invite.id }).then(unwrapRpcResult);
+      await view.client.rpc["commands.dispatch"]({
+        type: "team.invite.revoke",
+        inviteId: invite.id,
+      }).then(unwrapRpcResult);
     const result = unwrapRpcResult(
       await view.client.rpc["commands.dispatch"]({
         type: "team.invite.create",
@@ -319,12 +357,16 @@ function InvitesPage({ view }: { readonly view: TeamView }) {
         expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
       }),
     );
-    if (result.type === "team.invite.create") setMade({ url: result.url, expiresAt: result.invite.expiresAt });
+    if (result.type === "team.invite.create")
+      setMade({ url: result.url, expiresAt: result.invite.expiresAt });
     invites.reload();
   };
   return (
     <InvitesAdmin
-      channels={(view.snapshot.sidebar?.channels ?? []).map((row) => ({ id: row.channel.id, name: row.channel.name }))}
+      channels={(view.snapshot.sidebar?.channels ?? []).map((row) => ({
+        id: row.channel.id,
+        name: row.channel.name,
+      }))}
       copied={copied}
       invite={{
         enabled: active.length > 0,
@@ -347,7 +389,10 @@ function InvitesPage({ view }: { readonly view: TeamView }) {
         else
           void Promise.all(
             active.map((invite) =>
-              view.client.rpc["commands.dispatch"]({ type: "team.invite.revoke", inviteId: invite.id }),
+              view.client.rpc["commands.dispatch"]({
+                type: "team.invite.revoke",
+                inviteId: invite.id,
+              }),
             ),
           )
             .then(() => {
@@ -427,7 +472,9 @@ function ChannelsPage({ view }: { readonly view: TeamView }) {
                 )}
               </span>
             }
-            detail={channel.archivedAt ? "Archived" : channel.kind === "private" ? "Private" : "Public"}
+            detail={
+              channel.archivedAt ? "Archived" : channel.kind === "private" ? "Private" : "Public"
+            }
             icon={channel.kind === "private" ? "lock" : "hash"}
             key={channel.id}
             title={channel.name}
@@ -458,8 +505,8 @@ function ChannelsPage({ view }: { readonly view: TeamView }) {
           onClose={() => setGate(null)}
           title={`Add yourself to #${gate.name}?`}
         >
-          You can manage its members without joining. To read it, you have to be a member. This
-          goes in the team’s audit log, and #{gate.name}’s managers are told.
+          You can manage its members without joining. To read it, you have to be a member. This goes
+          in the team’s audit log, and #{gate.name}’s managers are told.
         </Dialog>
       ) : null}
     </>
@@ -482,7 +529,11 @@ function AuditPage({ view }: { readonly view: TeamView }) {
     `audit:${view.team.teamId}`,
   );
   const rows = list.items.filter((entry) =>
-    only === "all" ? true : only === "agents" ? entry.actor?.kind === "agent" : entry.actor?.kind === "human",
+    only === "all"
+      ? true
+      : only === "agents"
+        ? entry.actor?.kind === "agent"
+        : entry.actor?.kind === "human",
   );
   return (
     <SettingsGroup

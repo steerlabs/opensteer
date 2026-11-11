@@ -161,8 +161,6 @@ class StagedFiles {
     for (const localId of waiting) this.#check(localId);
   }
 
-
-
   get aside(): boolean {
     return this.#asideFromDraft;
   }

@@ -106,7 +106,8 @@ function notifyTeam(
   // Nothing for what is on screen.
   if (document.hasFocus() && window.location.pathname.includes(`/c/${entry.channel.id}`)) return;
   if (Notification.permission === "granted") show();
-  else void Notification.requestPermission().then((permission) => permission === "granted" && show());
+  else
+    void Notification.requestPermission().then((permission) => permission === "granted" && show());
 }
 
 export function TeamsProvider({

@@ -1,5 +1,3 @@
-import type { TeamMember } from "@opensteer/protocol";
-
 export interface TeamMention {
   readonly userId: string;
   readonly kind: "person" | "agent";
@@ -15,11 +13,12 @@ const mentionLimit = 20;
  */
 export function teamMessage(
   input: { readonly body: string; readonly toMyAgent: boolean },
-  me: Pick<TeamMember, "userId" | "handle">,
-  members: ReadonlyMap<string, Pick<TeamMember, "userId" | "handle">>,
+  me: { readonly userId: string; readonly handle: string },
+  members: ReadonlyMap<string, { readonly userId: string; readonly handle: string }>,
 ): { readonly bodyMarkdown: string; readonly mentions: readonly TeamMention[] } {
   const ownAgent = `@${me.handle}-agent`;
-  const named = new RegExp(`(^|\\s)${ownAgent.replace(/[-]/gu, "\\-")}(?=$|[\\s.,;:!?])`, "u");
+  // Handles are [a-z0-9-], so the handle needs no escaping in a pattern.
+  const named = new RegExp(`(^|\\s)${ownAgent}(?=$|[\\s.,;:!?])`, "u");
   const bodyMarkdown =
     input.toMyAgent && !named.test(input.body) ? `${ownAgent} ${input.body}`.trim() : input.body;
   const byHandle = new Map([...members.values(), me].map((member) => [member.handle, member]));
