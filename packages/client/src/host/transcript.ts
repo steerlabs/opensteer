@@ -15,7 +15,7 @@ import {
   type LiveStreamKey,
   type MessageKind,
   type MessageView,
-  type Request,
+  type RequestView as Request,
   type RunUsage,
   type ThreadInputPolicy,
   type ThreadInputQueue,
@@ -412,6 +412,7 @@ function foldTranscriptOwnEvent(
         id,
         kind: "request",
         outcome: `Cancelled · ${event.data.reason}`,
+        ...(event.data.cancelledFor ? { cancelledFor: event.data.cancelledFor } : {}),
         requestId: event.data.requestId,
         requestKind: null,
         runId: event.runId,
@@ -1176,6 +1177,7 @@ export function requestReceipt(
 ): RequestReceiptEntry {
   const passwordsOffer = browserSignInPasswordsOffer(request);
   return {
+    ...(request.resolvedByName !== undefined ? { resolvedByName: request.resolvedByName } : {}),
     createdAt: request.resolvedAt,
     ...(request.status === "declined" ? { declined: true } : {}),
     id: `request:${request.id}`,

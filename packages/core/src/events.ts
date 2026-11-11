@@ -1,3 +1,4 @@
+import { RequestCancelledForSchema } from "./team-display.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { AppIdSchema, AppTitleSchema } from "./apps.js";
@@ -486,7 +487,10 @@ const eventDataViewSchemas = {
   }),
   "assignment.created": z.object({ assignment: AssignmentSummarySchema }),
   "assignment.updated": z.object({ assignment: AssignmentSummarySchema }),
-  "request.cancelled": z.object(eventDataSchemas["request.cancelled"].shape),
+  "request.cancelled": z.object({
+    ...eventDataSchemas["request.cancelled"].shape,
+    cancelledFor: RequestCancelledForSchema.optional(),
+  }),
   "request.opened": z.object({ request: PendingRequestViewSchema }),
   "request.updated": z.object({ request: PendingRequestViewSchema }),
   "request.resolved": z.object({ request: ResolvedRequestEventViewSchema }),

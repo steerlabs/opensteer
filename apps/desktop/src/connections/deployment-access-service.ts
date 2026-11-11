@@ -277,6 +277,7 @@ export class DeploymentAccessService {
             hasAccountConnectRoute: _hasAccountConnectRoute,
             hasVerifiedAccountRoute: _hasVerifiedAccountRoute,
             key: _key,
+            policy: _policy,
             ...publicDeployment
           } = deployment;
           return {
@@ -892,7 +893,7 @@ export class DeploymentAccessService {
       const unavailable = this.#unavailable.find(
         ({ deploymentId }) => deploymentId === deployment.id,
       );
-      if (unavailable) return placeStatus.unavailable(unavailable.reason, name);
+      if (unavailable) return placeStatus.unavailable(unavailable.reason, name, deployment.policy);
       if (deployment.kind !== "personal") return placeStatus.ready();
       if (!deployment.hasAccountConnectRoute) return placeStatus.remoteAccessOff(name);
       const lease = deployment.hasVerifiedAccountRoute ? deployment.accountLivenessExpiresAt : null;
@@ -905,15 +906,15 @@ export class DeploymentAccessService {
       // this app is not: the repair lives over there, so the sentence says so.
       return deployment.kind === "personal"
         ? placeStatus.remoteAccessOff(name)
-        : placeStatus.unavailable("host-unavailable", name);
+        : placeStatus.unavailable("host-unavailable", name, deployment.policy);
     }
     const probe = this.#probes.get(deployment.id);
     if (!probe || this.#now() - probe.at >= checkedAnswerLifetimeMilliseconds) {
       return placeStatus.checking();
     }
     if (probe.outcome === "reachable") return placeStatus.ready();
-    if (probe.outcome === "unreachable") return placeStatus.notResponding(name);
-    return placeStatus.unavailable(probe.outcome, name);
+    if (probe.outcome === "unreachable") return placeStatus.notResponding(name, deployment.policy);
+    return placeStatus.unavailable(probe.outcome, name, deployment.policy);
   }
 
   #checkDirectory(): Promise<void> {

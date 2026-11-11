@@ -130,6 +130,7 @@ export type JsonColumn<T> = ColumnType<T, T, T>;
 /** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
 
 export interface DeploymentTable {
+  trustedMembersAcknowledgedAt: NullableTimestamp;
   authorityModelVersion: Generated<number>;
   id: DeploymentId;
   singletonKey: "primary";

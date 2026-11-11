@@ -38,6 +38,12 @@ export function initialsOf(name: string): string {
 /** One plain sentence for each reason the Host gives. */
 export function teamReasonText(reason: TeamReason, team = "the team"): string {
   switch (reason) {
+    case "team-not-implemented":
+      return "This team feature isn’t available yet.";
+    case "requester-only":
+      return "Only the person who started this task can answer.";
+    case "manager-only":
+      return "Only a manager of this project can answer.";
     case "team-unavailable":
       return "Team administration isn’t available here.";
     case "human-session-required":

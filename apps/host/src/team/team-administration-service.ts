@@ -221,6 +221,11 @@ export class TeamAdministrationService {
     input: unknown,
     context: HostApiServerContext,
   ): Promise<unknown> {
+    if (procedure === "team.projects.list" || procedure === "team.computer.get") {
+      this.#session(context);
+      await this.#authority();
+      refuse("team-not-implemented");
+    }
     if (procedure === "team.invitation.preview" || procedure === "team.invitation.exchange") {
       if (context.headers.authorization !== undefined) this.#session(context);
       await this.#authority();
@@ -517,6 +522,11 @@ export class TeamAdministrationService {
   }
 
   async command(input: TeamCommand, context: HostApiServerContext) {
+    if (input.type === "team.computer.replace") {
+      this.#session(context);
+      await this.#authority();
+      refuse("team-not-implemented");
+    }
     const { actor, user } = await this.#human(context);
     const command = TeamCommandSchema.parse(input);
     const identity = `${actor.userId}:${command.type}:${command.idempotencyKey}`;
@@ -571,6 +581,8 @@ export class TeamAdministrationService {
     let projectId: WorkspaceId | undefined;
     const entryId = uuidFor(`${identity}:entry`);
     switch (command.type) {
+      case "team.computer.replace":
+        refuse("team-not-implemented");
       case "team.project.create": {
         if (user.memberKind !== "full") refuse("team-admin-required");
         const environments = await this.#database

@@ -1,3 +1,4 @@
+import { deploymentClientPolicy, deploymentPolicy } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   DeploymentStatusInfoSchema,
@@ -17,10 +18,10 @@ import {
 
 describe("deployment status vocabulary", () => {
   it("keeps an unanswered place openable and names how to try again", () => {
-    const info = placeStatus.notResponding("Lab server");
+    const info = placeStatus.notResponding("Lab server", { ownership: "members" });
     expect(DeploymentStatusInfoSchema.parse(info)).toStrictEqual({
-      label: "Not responding",
-      reason: "Lab server didn’t answer just now. Make sure it’s on and reachable, then try again.",
+      label: "Can’t reach Lab server",
+      reason: "Lab server's server isn't answering. It may be stopped or updating.",
       status: "attention",
     });
     expect(deploymentStatusSelectable(info.status)).toBe(true);
@@ -161,3 +162,37 @@ function personalStack(
     step: null,
   };
 }
+
+it("names the side to update from Host policy while retaining the same attention state", () => {
+  const personal = deploymentClientPolicy(
+    deploymentPolicy({ kind: "personal", defaultWorkspaceBacking: "local-directory" }),
+  );
+  const team = deploymentClientPolicy(
+    deploymentPolicy({ kind: "server", defaultWorkspaceBacking: "local-directory" }),
+  );
+  expect(placeStatus.unavailable("host-too-old", "Studio Mac", personal)).toEqual({
+    status: "attention",
+    label: "Needs update",
+    reason: "Update Opensteer on Studio Mac to open it from here.",
+  });
+  expect(placeStatus.unavailable("host-too-old", "Acme", team)).toEqual({
+    status: "attention",
+    label: "Needs update",
+    reason: "This app is newer than Acme's server. Whoever runs Acme's server needs to update it.",
+  });
+  expect(placeStatus.unavailable("client-too-old", "Acme", team)).toEqual({
+    status: "attention",
+    label: "Update Opensteer",
+    reason: "Acme runs a newer Opensteer than this app.",
+  });
+  expect(placeStatus.unavailable("host-unavailable", "Acme", team)).toEqual({
+    status: "offline",
+    label: "Can’t reach Acme",
+    reason: "Acme's server isn't answering. It may be stopped or updating.",
+  });
+  expect(placeStatus.notResponding("Studio Mac", personal)).toEqual({
+    status: "attention",
+    label: "Not responding",
+    reason: "Studio Mac didn’t answer just now. Make sure it’s on and reachable, then try again.",
+  });
+});

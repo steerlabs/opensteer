@@ -15,6 +15,8 @@ const uuid = "00000000-0000-4000-8000-000000000001";
 const changes = [{ kind: "revoke", entryId: uuid }];
 const base = { idempotencyKey: "dormant-team", expectedRevision: 1 };
 const procedures = {
+  "team.projects.list": {},
+  "team.computer.get": {},
   "team.summary.get": {},
   "team.people.list": {},
   "team.invitations.list": {},
@@ -34,6 +36,7 @@ const procedures = {
   "team.invitation.accept": {},
 };
 const commands = [
+  { ...base, type: "team.computer.replace", expectedComputerId: null },
   { ...base, type: "team.project.create", name: "Support", color: "blue" },
   { ...base, type: "team.access.apply", changes },
   { ...base, type: "team.access.selfGrant", workspaceId },

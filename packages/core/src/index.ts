@@ -1,3 +1,4 @@
+export * from "./team-display.js";
 export * from "./collections.js";
 export * from "./access.js";
 export * from "./work-authority.js";

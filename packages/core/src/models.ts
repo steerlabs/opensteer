@@ -1,3 +1,10 @@
+import {
+  ThreadRequestWaitsSchema,
+  ThreadRequestOutcomesSchema,
+  SnapshotAudienceSchema,
+  TaskStartedBySchema,
+  TaskStoppedSchema,
+} from "./team-display.js";
 import { z } from "zod";
 import { deploymentPolicy } from "./deployment-policy.js";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
@@ -498,6 +505,11 @@ export const ThreadSchema = z.object({
   workspaceId: WorkspaceIdSchema,
 });
 export const ThreadViewSchema = z.object({
+  requestWaits: ThreadRequestWaitsSchema.optional().catch(undefined),
+  requestOutcomes: ThreadRequestOutcomesSchema.optional().catch(undefined),
+  audience: SnapshotAudienceSchema.optional().catch(undefined),
+  startedBy: TaskStartedBySchema.optional().catch(undefined),
+  stopped: TaskStoppedSchema.optional().catch(undefined),
   ...ThreadSchema.shape,
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
@@ -506,6 +518,10 @@ export const ThreadViewSchema = z.object({
   modelSelection: ModelSelectionViewSchema,
 });
 export type Thread = z.infer<typeof ThreadSchema>;
+export type ThreadDisplayFacts = Pick<
+  z.infer<typeof ThreadViewSchema>,
+  "audience" | "startedBy" | "stopped" | "requestWaits" | "requestOutcomes"
+>;
 
 /** Display-only epoch-48 projection; current clients use the Thread's doneAt. */
 export const TaskPlacementSchema = z.object({
@@ -702,9 +718,13 @@ export const MessageAuthorViewSchema = z.discriminatedUnion("kind", [
   z.object(messageAuthorVariants[2].shape),
   z.object(messageAuthorVariants[3].shape),
   z.object(messageAuthorVariants[4].shape),
-  z.object(messageAuthorVariants[5].shape),
+  z.object({
+    ...messageAuthorVariants[5].shape,
+    ownerName: z.string().trim().min(1).max(160).optional(),
+  }),
 ]);
 export type MessageAuthor = z.infer<typeof MessageAuthorSchema>;
+export type MessageAuthorView = z.infer<typeof MessageAuthorViewSchema>;
 
 /** Host-resolved attribution for an earlier message explicitly quoted by a person. */
 export const MessageQuoteSchema = z.object({

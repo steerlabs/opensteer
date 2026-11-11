@@ -36,6 +36,8 @@ const hostApiScopes = {
   "attachment.content": "session",
   "auth.config": "public",
   "team.summary.get": "session",
+  "team.projects.list": "session",
+  "team.computer.get": "session",
   "team.invitations.list": "session",
   "team.people.list": "session",
   "team.member.get": "session",

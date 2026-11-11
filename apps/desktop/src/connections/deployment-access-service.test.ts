@@ -1294,7 +1294,7 @@ describe("DeploymentAccessService", () => {
       await service.initialize();
 
       expect(service.snapshot().deployments[0]?.statusInfo).toEqual({
-        reason: "Team server can’t be reached right now.",
+        reason: "Team server isn't answering. It may be stopped or updating.",
         status: "offline",
       });
       service.dispose();
@@ -1328,7 +1328,7 @@ describe("DeploymentAccessService", () => {
         { reason: null, status: "ready" },
         {
           label: "Needs update",
-          reason: "Old server needs an Opensteer update to work with this app.",
+          reason: "This app is newer than Old server. Update Opensteer there to open it from here.",
           status: "attention",
         },
         {
@@ -1337,9 +1337,8 @@ describe("DeploymentAccessService", () => {
           status: "attention",
         },
         {
-          label: "Not responding",
-          reason:
-            "Gone server didn’t answer just now. Make sure it’s on and reachable, then try again.",
+          label: "Can’t reach Gone server",
+          reason: "Gone server isn't answering. It may be stopped or updating.",
           status: "attention",
         },
       ]);

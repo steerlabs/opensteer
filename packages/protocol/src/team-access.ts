@@ -1,3 +1,5 @@
+import { CanSchema, LevelSchema, TeamReasonSchema, RunnerIdSchema } from "@opensteer/core";
+export { CanSchema, LevelSchema, TeamReasonSchema } from "@opensteer/core";
 import { z } from "zod";
 import {
   CommandIdSchema,
@@ -29,35 +31,8 @@ export const PageSchema = z.strictObject({
   cursor: cursor.optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
-export const TeamReasonSchema = z.enum([
-  "team-unavailable",
-  "human-session-required",
-  "team-admin-required",
-  "project-manage-required",
-  "member-suspended",
-  "member-removed",
-  "membership-lost",
-  "connection-revoked",
-  "sign-in-required",
-  "member-generation-changed",
-  "team-object-unavailable",
-  "access-revision-changed",
-  "last-active-admin",
-  "immutable-everyone",
-  "invite-unavailable",
-  "idempotency-conflict",
-  "settings-revision-changed",
-  "access-cycle",
-  "access-depth",
-  "invalid-subject",
-  "invalid-level",
-  "unsupported-target",
-  "invalid-selection",
-  "access-capacity",
-]);
 export const MemberKindSchema = z.enum(["full", "guest"]);
 export const MemberStateSchema = z.enum(["active", "suspended", "removed"]);
-export const LevelSchema = z.enum(["use", "manage"]);
 export const SubjectSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("person"), userId: UserIdSchema }),
   z.strictObject({ kind: z.literal("group"), groupId: uuid }),
@@ -115,7 +90,6 @@ export const MemberChangeSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("set-administrator"), value: z.boolean() }),
 ]);
 
-export const CanSchema = z.object({ allowed: z.boolean(), reason: TeamReasonSchema.optional() });
 export const PersonRefSchema = z.object({ id: UserIdSchema, name });
 export const GroupRefSchema = z.object({
   id: uuid,
@@ -211,6 +185,7 @@ export const ProjectAccessViewSchema = z.object({
     editInstructions: CanSchema,
     appointManager: CanSchema,
     selfGrant: CanSchema,
+    delete: CanSchema.optional(),
   }),
 });
 export const TeamSummarySchema = z.object({
@@ -234,6 +209,7 @@ export const TeamSummarySchema = z.object({
         needsYou: count,
         lastActivity: timestamp.nullable(),
         canOpen: CanSchema,
+        runtime: z.lazy(() => RuntimeStateSchema).optional(),
       }),
     )
     .max(128),
@@ -244,6 +220,7 @@ export const TeamSummarySchema = z.object({
     groups: CanSchema,
     audit: CanSchema,
     invite: CanSchema,
+    computer: CanSchema.optional(),
   }),
 });
 export const ModelSelectionInputSchema = ModelSelectionSchema.omit({ nativeModelId: true });
@@ -431,7 +408,31 @@ export const InvitePreviewViewSchema = z.discriminatedUnion("state", [
   InvitePreviewSchema.options[2].strip(),
 ]);
 
+export const TeamProjectListRowSchema = z.object({
+  id: WorkspaceIdSchema,
+  name,
+  color: MarkColorSchema,
+  people: count,
+  myLevel: LevelSchema.nullable(),
+});
+export const TeamComputerViewSchema = z.object({
+  computer: z
+    .object({
+      id: RunnerIdSchema,
+      name,
+      state: z.enum(["connected", "offline", "update-required"]),
+      lastSeenAt: timestamp.nullable(),
+    })
+    .nullable(),
+  can: z.object({ replace: CanSchema }),
+});
+
 export const teamReadSchemas = {
+  "team.projects.list": {
+    input: PageSchema.extend({ query: query.optional() }),
+    output: pageResultSchema(TeamProjectListRowSchema).extend({ accessRevision: RevisionSchema }),
+  },
+  "team.computer.get": { input: z.strictObject({}), output: TeamComputerViewSchema },
   "team.invitations.list": {
     input: PageSchema,
     output: pageResultSchema(
@@ -567,7 +568,22 @@ export const teamReadSchemas = {
   },
 } as const;
 
+export const TeamInvitationCreateCommandSchema = MutationBaseSchema.extend({
+  type: z.literal("team.invitation.create"),
+  id: uuid,
+  selector: TeamInvitationSelectorSchema,
+  tokenHash: z.string().regex(/^[0-9a-f]{64}$/),
+  intendedEmail: z.email().max(320),
+  memberKind: MemberKindSchema,
+  validFor: z.enum(["1d", "7d"]),
+  trustedComputerConfirmed: z.boolean().optional(),
+});
+
 export const TeamCommandSchema = z.discriminatedUnion("type", [
+  MutationBaseSchema.extend({
+    type: z.literal("team.computer.replace"),
+    expectedComputerId: RunnerIdSchema.nullable(),
+  }),
   MutationBaseSchema.extend({
     type: z.literal("team.project.create"),
     name,
@@ -590,20 +606,17 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     expectedSettingsRevision: RevisionSchema.nullable(),
     settings: SettingsInputSchema,
   }),
-  MutationBaseSchema.extend({
-    type: z.literal("team.invitation.create"),
-    id: uuid,
-    selector: TeamInvitationSelectorSchema,
-    tokenHash: z.string().regex(/^[0-9a-f]{64}$/),
-    intendedEmail: z.email().max(320),
-    memberKind: MemberKindSchema,
-    validFor: z.enum(["1d", "7d"]),
-    trustedComputerConfirmed: z.boolean().optional(),
-  }),
+  TeamInvitationCreateCommandSchema,
   MutationBaseSchema.extend({ type: z.literal("team.invitation.revoke"), invitationId: uuid }),
 ]);
 const resultBase = z.object({ accessRevision: RevisionSchema, commandId: CommandIdSchema });
 export const TeamCommandResultSchema = z.discriminatedUnion("type", [
+  resultBase.extend({
+    type: z.literal("team.computer.replace"),
+    enrollmentId: z.string().min(1).max(256),
+    token: z.string().min(16).max(4096),
+    expiresAt: timestamp,
+  }),
   resultBase.extend({ type: z.literal("team.project.create"), projectId: WorkspaceIdSchema }),
   resultBase.extend({
     type: z.literal("team.access.apply"),
@@ -669,3 +682,9 @@ export type MembershipTransition = z.infer<typeof MembershipTransitionSchema>;
 export type InvitePreview = z.infer<typeof InvitePreviewSchema>;
 export type TeamCommand = z.infer<typeof TeamCommandSchema>;
 export type TeamCommandResult = z.infer<typeof TeamCommandResultSchema>;
+
+export const ConfirmedTeamInvitationCommandSchema = TeamInvitationCreateCommandSchema.extend({
+  trustedComputerConfirmed: z.literal(true),
+});
+export type TeamComputerView = z.infer<typeof TeamComputerViewSchema>;
+export type TeamProjectListRow = z.infer<typeof TeamProjectListRowSchema>;

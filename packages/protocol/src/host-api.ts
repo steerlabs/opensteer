@@ -1645,6 +1645,16 @@ export const hostApi = defineRpc({
     BrowserSourceInspectionSchema,
   ),
   "auth.config": declaration("GET", emptyInputSchema, IdentityConfigViewSchema),
+  "team.projects.list": declaration(
+    "GET",
+    teamReadSchemas["team.projects.list"].input,
+    teamReadSchemas["team.projects.list"].output,
+  ),
+  "team.computer.get": declaration(
+    "GET",
+    teamReadSchemas["team.computer.get"].input,
+    teamReadSchemas["team.computer.get"].output,
+  ),
   "team.invitations.list": declaration(
     "GET",
     teamReadSchemas["team.invitations.list"].input,
@@ -1751,6 +1761,7 @@ export const hostApi = defineRpc({
       oauthQuery: oauthQuerySchema.optional(),
       providerId: oidcProviderIdSchema,
       returnPath: oidcReturnPathSchema,
+      trustedMembersAcknowledged: z.literal(true).optional(),
     }),
     z.object({ redirectUrl: z.url() }),
   ),
@@ -1783,6 +1794,7 @@ export const hostApi = defineRpc({
         email: emailSchema,
         kind: z.literal("password"),
         password: submittedPasswordSchema,
+        trustedMembersAcknowledged: z.literal(true).optional(),
       }),
       z.strictObject({
         kind: z.literal("local-machine-owner"),
@@ -2273,3 +2285,11 @@ export interface HostApiServerContext {
 export type HostApiHandlers = RpcHandlers<typeof hostApi, HostApiServerContext>;
 
 export type HostApiScope = "exact-origin" | "mutation" | "public" | "session";
+
+export const TeamOwnerSetupClaimSchema = hostApi["auth.setup.claim"].payload.options[0].extend({
+  trustedMembersAcknowledged: z.literal(true),
+});
+
+export const TeamOwnerOidcBeginSchema = hostApi["auth.oidc.begin"].payload.extend({
+  trustedMembersAcknowledged: z.literal(true),
+});

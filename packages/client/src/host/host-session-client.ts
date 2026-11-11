@@ -1,3 +1,4 @@
+import type { ThreadDisplayFacts } from "@opensteer/core";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
@@ -7511,6 +7512,7 @@ function toWorkspaceSummary(
   const environment = preferredEnvironment(environments) ?? environments[0];
   const harness = preferredHarness(harnesses) ?? harnesses[0];
   return {
+    ...(workspace.audience ? { audience: workspace.audience } : {}),
     description: workspaceDescription(workspace),
     homeThreadId: workspace.homeThreadId,
     voiceThreadId: workspace.voiceThreadId,
@@ -7530,13 +7532,18 @@ function toWorkspaceSummary(
 }
 
 function toThreadSummary(
-  thread: Thread,
+  thread: Thread & ThreadDisplayFacts,
   environments: readonly EnvironmentSummary[],
   harnesses: readonly HarnessSummary[],
 ): ThreadSummary {
   const environment = environments.find((item) => item.id === thread.environmentId);
   const harness = harnesses.find((item) => item.id === thread.harnessInstanceId);
   return {
+    ...(thread.requestWaits ? { requestWaits: thread.requestWaits } : {}),
+    ...(thread.requestOutcomes ? { requestOutcomes: thread.requestOutcomes } : {}),
+    ...(thread.audience ? { audience: thread.audience } : {}),
+    ...(thread.startedBy ? { startedBy: thread.startedBy } : {}),
+    ...(thread.stopped ? { stopped: thread.stopped } : {}),
     doneAt: thread.doneAt,
     doneReason: thread.doneReason,
     accessMode: thread.accessMode,

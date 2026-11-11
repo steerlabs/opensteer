@@ -1,7 +1,8 @@
 import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
-import { hostApi } from "./host-api.js";
+import { hostApi, TeamOwnerSetupClaimSchema, TeamOwnerOidcBeginSchema } from "./host-api.js";
 import {
+  ConfirmedTeamInvitationCommandSchema,
   AccessChangeSchema,
   AccessChangesSchema,
   AccessExplanationSchema,
@@ -216,6 +217,15 @@ const audit = {
   ],
 };
 const reads = {
+  "team.projects.list": {
+    input: { limit: 10 },
+    output: {
+      items: [{ id: workspaceId, name: "Support", color: "blue", people: 6, myLevel: null }],
+      nextCursor: null,
+      accessRevision: 1,
+    },
+  },
+  "team.computer.get": { input: {}, output: { computer: null, can: { replace: allowed } } },
   "team.invitations.list": { input: {}, output: { ...page, accessRevision: 1 } },
   "team.summary.get": { input: { knownRevision: "private-revision" }, output: summary },
   "team.people.list": {
@@ -528,4 +538,57 @@ describe("team administration wire contract", () => {
       }).success,
     ).toBe(true);
   });
+});
+
+it("requires confirmed trust in the team-only claim schemas while keeping old installs' inputs valid", () => {
+  const invitation = commands.find((command) => command.type === "team.invitation.create")!;
+  expect(TeamCommandSchema.safeParse(invitation).success).toBe(true);
+  expect(ConfirmedTeamInvitationCommandSchema.safeParse(invitation).success).toBe(false);
+  expect(
+    ConfirmedTeamInvitationCommandSchema.safeParse({
+      ...invitation,
+      trustedComputerConfirmed: false,
+    }).success,
+  ).toBe(false);
+  expect(
+    ConfirmedTeamInvitationCommandSchema.safeParse({
+      ...invitation,
+      trustedComputerConfirmed: true,
+    }).success,
+  ).toBe(true);
+  const claim = {
+    kind: "password",
+    email: "owner@example.test",
+    password: "correct test password",
+  };
+  expect(hostApi["auth.setup.claim"].payload.safeParse(claim).success).toBe(true);
+  expect(TeamOwnerSetupClaimSchema.safeParse(claim).success).toBe(false);
+  expect(
+    TeamOwnerSetupClaimSchema.safeParse({ ...claim, trustedMembersAcknowledged: true }).success,
+  ).toBe(true);
+  expect(
+    TeamOwnerSetupClaimSchema.safeParse({ ...claim, trustedMembersAcknowledged: false }).success,
+  ).toBe(false);
+  const oidc = { providerId: "test", returnPath: "/" };
+  expect(hostApi["auth.oidc.begin"].payload.safeParse(oidc).success).toBe(true);
+  expect(TeamOwnerOidcBeginSchema.safeParse(oidc).success).toBe(false);
+  expect(
+    TeamOwnerOidcBeginSchema.safeParse({ ...oidc, trustedMembersAcknowledged: true }).success,
+  ).toBe(true);
+});
+it("returns an operator connection code without accepting modules or a member-owned computer", () => {
+  const command = { ...base, type: "team.computer.replace", expectedComputerId: null };
+  expect(TeamCommandSchema.safeParse(command).success).toBe(true);
+  expect(TeamCommandSchema.safeParse({ ...command, modules: ["browser"] }).success).toBe(false);
+  expect(TeamCommandSchema.safeParse({ ...command, ownerUserId: userId }).success).toBe(false);
+  expect(
+    TeamCommandResultSchema.parse({
+      ...command,
+      commandId: createId("command"),
+      accessRevision: 2,
+      enrollmentId: "enr_operator",
+      token: "s".repeat(32),
+      expiresAt: timestamp,
+    }),
+  ).not.toHaveProperty("expectedComputerId");
 });

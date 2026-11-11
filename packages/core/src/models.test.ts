@@ -4,6 +4,8 @@ import {
   AssignmentSchema,
   MessageContentSchema,
   MessageSchema,
+  MessageAuthorSchema,
+  MessageAuthorViewSchema,
   ProviderContinuationIdentitySchema,
   runnerRunsItsDeployment,
   WorkspaceSchema,
@@ -188,4 +190,14 @@ describe("Assignment result receipts", () => {
         .success,
     ).toBe(false);
   });
+});
+
+it("adds the connection owner's name only to the tolerant client author", () => {
+  const author = { kind: "connection", connectionId: "mcn_example", displayName: "Claude Code" };
+  expect(MessageAuthorSchema.parse(author)).toEqual(author);
+  expect(MessageAuthorViewSchema.parse({ ...author, ownerName: "Maya", future: true })).toEqual({
+    ...author,
+    ownerName: "Maya",
+  });
+  expect(MessageAuthorSchema.safeParse({ ...author, ownerName: "Maya" }).success).toBe(false);
 });

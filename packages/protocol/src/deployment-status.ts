@@ -1,4 +1,4 @@
-import type { DeploymentDisplayKind } from "@opensteer/core";
+import type { DeploymentClientPolicy, DeploymentDisplayKind } from "@opensteer/core";
 import type {
   DeploymentStatus,
   DeploymentStatusInfo,
@@ -81,13 +81,23 @@ export function deploymentKindLabel(kind: DeploymentDisplayKind): string {
  */
 export function deploymentUnavailableReasonExplanation(
   reason: DesktopDeploymentUnavailableReason,
+  name = "This Opensteer",
+  policy?: Pick<DeploymentClientPolicy, "ownership">,
 ): string {
-  if (reason === "client-too-old") return "Update this app to connect to this Opensteer.";
-  if (reason === "host-too-old") return "This Opensteer needs updating to work with this app.";
-  if (reason === "host-unavailable") return "This deployment did not answer.";
-  if (reason === "identity-mismatch") {
-    return "This deployment did not match the identity your Account has on file. The deployment refreshes that record the next time it starts.";
+  if (reason === "client-too-old") return `${name} runs a newer Opensteer than this app.`;
+  if (reason === "host-too-old") {
+    if (policy?.ownership === "single-user")
+      return `Update Opensteer on ${name} to open it from here.`;
+    if (policy?.ownership === "members")
+      return `This app is newer than ${name}'s server. Whoever runs ${name}'s server needs to update it.`;
+    return `This app is newer than ${name}. Update Opensteer there to open it from here.`;
   }
+  if (reason === "host-unavailable")
+    return policy?.ownership === "members"
+      ? `${name}'s server isn't answering. It may be stopped or updating.`
+      : `${name} isn't answering. It may be stopped or updating.`;
+  if (reason === "identity-mismatch")
+    return "This deployment did not match the identity your Account has on file. The deployment refreshes that record the next time it starts.";
   return "This deployment is no longer active.";
 }
 
@@ -108,9 +118,17 @@ export const placeStatus = {
       "Opensteer couldn’t check this just now. Check your internet connection, then try again.",
     status: "attention",
   }),
-  notResponding: (name: string): DeploymentStatusInfo => ({
-    label: "Not responding",
-    reason: `${name} didn’t answer just now. Make sure it’s on and reachable, then try again.`,
+  notResponding: (
+    name: string,
+    policy?: Pick<DeploymentClientPolicy, "ownership">,
+  ): DeploymentStatusInfo => ({
+    label: policy?.ownership === "single-user" ? "Not responding" : `Can’t reach ${name}`,
+    reason:
+      policy?.ownership === "single-user"
+        ? `${name} didn’t answer just now. Make sure it’s on and reachable, then try again.`
+        : policy?.ownership === "members"
+          ? `${name}'s server isn't answering. It may be stopped or updating.`
+          : `${name} isn't answering. It may be stopped or updating.`,
     status: "attention",
   }),
   /**
@@ -147,18 +165,22 @@ export const placeStatus = {
     status: "attention",
   }),
   /** Why a place that was checked could not be used, by what the check found. */
-  unavailable: (reason: DesktopDeploymentUnavailableReason, name: string): DeploymentStatusInfo => {
+  unavailable: (
+    reason: DesktopDeploymentUnavailableReason,
+    name: string,
+    policy?: Pick<DeploymentClientPolicy, "ownership">,
+  ): DeploymentStatusInfo => {
     if (reason === "host-too-old") {
       return {
         label: hostNeedsUpdateLabel,
-        reason: `${name} needs an Opensteer update to work with this app.`,
+        reason: deploymentUnavailableReasonExplanation(reason, name, policy),
         status: "attention",
       };
     }
     if (reason === "client-too-old") {
       return {
-        label: "Update this app",
-        reason: `Update this app to open ${name}.`,
+        label: "Update Opensteer",
+        reason: deploymentUnavailableReasonExplanation(reason, name, policy),
         status: "attention",
       };
     }
@@ -172,7 +194,11 @@ export const placeStatus = {
     if (reason === "not-active") {
       return { reason: `${name} is no longer active.`, status: "offline" };
     }
-    return { reason: `${name} can’t be reached right now.`, status: "offline" };
+    return {
+      ...(policy?.ownership === "members" ? { label: `Can’t reach ${name}` } : {}),
+      reason: deploymentUnavailableReasonExplanation(reason, name, policy),
+      status: "offline",
+    };
   },
 } as const;
 

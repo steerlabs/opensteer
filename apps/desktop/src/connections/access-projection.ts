@@ -1,3 +1,5 @@
+import type { DeploymentClientPolicy } from "@opensteer/core";
+import { hostDeploymentPolicy } from "@opensteer/client/host";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
@@ -15,6 +17,7 @@ import type {
  * this person may drop.
  */
 export interface DeploymentAccessCatalogDeployment extends DesktopDeploymentSummary {
+  readonly policy?: Pick<DeploymentClientPolicy, "ownership">;
   readonly capabilities?: readonly HostCapability[] | null;
   readonly accountAccess: "owner" | "member" | null;
   readonly accountLivenessExpiresAt: string | null;
@@ -68,6 +71,7 @@ export class DesktopAccessProjection {
         const onThisComputer = document.deploymentId === supervisedDeploymentId;
         const fromAccount = connection.source.kind === "account";
         return {
+          policy: hostDeploymentPolicy({ deploymentShape: document.deploymentShape }),
           access: facts.access,
           capabilities: facts.key === null ? null : (connection.capabilities ?? null),
           // The Account relation, not a route: it says what this Account may do

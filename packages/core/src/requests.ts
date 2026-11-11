@@ -1,3 +1,11 @@
+import { RequestCancellationReasonSchema } from "./request-lifecycle.js";
+export { RequestCancellationReasonSchema } from "./request-lifecycle.js";
+import {
+  CanSchema,
+  RequestCancelledForSchema,
+  AutomationSourceSchema,
+  RequestWaitingOnSchema,
+} from "./team-display.js";
 import { z } from "zod";
 import { BrowserSiteSchema, BrowserSourceSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
@@ -59,17 +67,6 @@ export const RequestStatusSchema = z.enum([
   "cancelled",
 ]);
 
-export const RequestCancellationReasonSchema = z.enum([
-  "run-ended",
-  "process-lost",
-  "source-closed",
-  // Shared Done puts a task away using the reason released readers know.
-  "thread-archived",
-  "workspace-deleted",
-  "membership-revoked",
-  "resource-deleted",
-  "authority-revoked",
-]);
 export type RequestCancellationReason = z.infer<typeof RequestCancellationReasonSchema>;
 
 export const RequestRequiredActorSchema = z.enum(["requester", "workspace-owner", "administrator"]);
@@ -495,6 +492,11 @@ const requestBaseShape = {
   targetWorkspaceId: WorkspaceIdSchema,
 } as const;
 const requestViewBaseShape = {
+  source: AutomationSourceSchema.optional().catch(undefined),
+  answer: CanSchema.optional().catch(undefined),
+  waitingOn: RequestWaitingOnSchema.nullable().optional().catch(undefined),
+  resolvedByName: z.string().trim().min(1).max(160).nullable().optional(),
+  cancelledFor: RequestCancelledForSchema.optional(),
   ...requestBaseShape,
   settlementProvenance: z
     .object({ deviceLabel: RequestSettlementProvenanceSchema.shape.deviceLabel })
@@ -682,6 +684,7 @@ export const RequestViewSchema = z.union([
   CancelledRequestViewSchema,
 ]);
 export type Request = z.infer<typeof RequestSchema>;
+export type RequestView = z.infer<typeof RequestViewSchema>;
 
 /** One piece of handed-out work a pending Request is holding up. */
 export const HeldAssignmentSchema = z.object({
@@ -728,6 +731,7 @@ export const WaitingRequestViewSchema = z.object({
   request: PendingRequestViewSchema,
 });
 export type WaitingRequest = z.infer<typeof WaitingRequestSchema>;
+export type WaitingRequestView = z.infer<typeof WaitingRequestViewSchema>;
 
 export function hasSecretRequestFields(request: Pick<Request, "presentation">): boolean {
   return (

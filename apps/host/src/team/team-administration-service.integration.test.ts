@@ -203,6 +203,21 @@ describeStore("team administration Host boundary", (it) => {
           context,
         ),
       ).rejects.toMatchObject({ reason: "team-unavailable" });
+      for (const procedure of ["team.projects.list", "team.computer.get"] as const)
+        await expect(service.read(procedure, {}, context)).rejects.toMatchObject({
+          reason: "team-unavailable",
+        });
+      await expect(
+        service.command(
+          {
+            type: "team.computer.replace",
+            expectedComputerId: null,
+            expectedRevision: 1,
+            idempotencyKey: "replace",
+          },
+          context,
+        ),
+      ).rejects.toMatchObject({ reason: "team-unavailable" });
       expect(transactions).not.toHaveBeenCalled();
     }
   });

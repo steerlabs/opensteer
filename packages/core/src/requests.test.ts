@@ -45,6 +45,31 @@ function pendingApproval() {
 }
 
 describe("Request contracts", () => {
+  it("projects optional Host audience facts without widening the strict engine or nullable requester contract", () => {
+    const legacy = pendingApproval();
+    const facts = {
+      source: { kind: "watch", name: "Inbox" },
+      answer: { allowed: false, reason: "manager-only" },
+      waitingOn: { kind: "managers" },
+      resolvedByName: null,
+    };
+    expect(RequestViewSchema.parse({ ...legacy, ...facts })).toMatchObject(facts);
+    expect(JSON.stringify(RequestViewSchema.parse(legacy))).toBe(
+      JSON.stringify(PendingRequestSchema.parse(legacy)),
+    );
+    expect(PendingRequestSchema.safeParse({ ...legacy, ...facts }).success).toBe(false);
+    expect(RequestViewSchema.safeParse({ ...legacy, requestedBy: null, ...facts }).success).toBe(
+      false,
+    );
+    expect(
+      RequestViewSchema.safeParse({
+        ...legacy,
+        status: "cancelled",
+        resolvedAt: createdAt,
+        cancellationReason: "no-eligible-manager",
+      }).success,
+    ).toBe(false);
+  });
   it("keeps the settlement session server-side while projecting its device label", () => {
     const request = {
       ...pendingApproval(),

@@ -24,7 +24,7 @@ import type {
   IdentityConfig,
   IntegrationCallSubject,
   MarkColor,
-  MessageAuthor,
+  MessageAuthorView as MessageAuthor,
   MessageKind,
   MessageQuote,
   ModelSelection,
@@ -32,7 +32,7 @@ import type {
   PhoneContentPart,
   PlaceEnteredEventView,
   ProviderContinuationIdentity,
-  Request,
+  RequestView as Request,
   RequestResponse,
   Run,
   RunFailure,
@@ -48,7 +48,9 @@ import type {
   ThreadStatus,
   ToolIdentity,
   ToolOutput,
-  WaitingRequest,
+  WaitingRequestView as WaitingRequest,
+  ThreadDisplayFacts,
+  SnapshotAudience,
   WorkspaceBackingKind,
   WorkspaceIconName,
 } from "@opensteer/core";
@@ -157,6 +159,7 @@ type TranscriptWindow = Omit<ThreadMessageWindow, "threadId"> & {
 };
 
 export interface WorkspaceSummary {
+  audience?: SnapshotAudience;
   homeThreadId: string | null;
   voiceThreadId: string | null;
   description: string;
@@ -258,7 +261,7 @@ export interface HarnessSummary {
   automaticEligible?: boolean | undefined;
 }
 
-export interface ThreadSummary {
+export interface ThreadSummary extends ThreadDisplayFacts {
   /** When a person last asked for work; task lists order by this time. */
   askedAt: string;
   doneAt: string | null;
@@ -473,6 +476,8 @@ export interface ToolEntry {
 }
 
 export interface RequestReceiptEntry {
+  resolvedByName?: string | null;
+  cancelledFor?: { name: string };
   createdAt: string;
   /** It was declined, so nothing it asked for was given. */
   declined?: true;

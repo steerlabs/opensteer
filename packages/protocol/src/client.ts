@@ -1,3 +1,4 @@
+import { SnapshotAudienceSchema } from "@opensteer/core";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
@@ -82,6 +83,7 @@ export const ThreadMessageWindowSchema = DurableWindowSchema.extend({
 export type ThreadMessageWindow = z.infer<typeof ThreadMessageWindowSchema>;
 
 export const WorkspaceViewSchema = z.object({
+  audience: SnapshotAudienceSchema.optional().catch(undefined),
   homeThreadId: ThreadIdSchema.nullable(),
   voiceThreadId: ThreadIdSchema.nullable(),
   capacity: z.object({ kind: z.literal("host-filesystem") }),

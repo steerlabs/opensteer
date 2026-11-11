@@ -1557,6 +1557,69 @@ describe("HttpHostClient authentication and onboarding", () => {
     client.dispose();
   });
 
+  it("retains optional Host audience and task-origin facts in public summaries", async () => {
+    const audience = { people: 6, myLevel: "manage" as const };
+    const workspace = { ...makeWorkspace("Support"), audience, kind: "project" as const };
+    const requestId = createId("request");
+    const facts = {
+      requestWaits: {
+        items: [
+          {
+            requestId,
+            class: "question" as const,
+            since: "2026-11-10T12:00:00.000Z",
+            waitingOn: { kind: "managers" as const },
+          },
+        ],
+        total: 1,
+      },
+      requestOutcomes: [
+        {
+          requestId: createId("request"),
+          status: "fulfilled" as const,
+          at: "2026-11-10T11:00:00.000Z",
+          resolvedByName: "Dev Patel",
+        },
+      ],
+      audience,
+      startedBy: { kind: "watch" as const, name: "Inbox" },
+      stopped: { reason: "authority-revoked" as const, starterName: "Sam" },
+    };
+    const thread = { ...makeThread(workspace.id), ...facts };
+    const client = createHttpHostClient({
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+      fetch: async (input) =>
+        new URL(String(input)).pathname.endsWith("thread.events.list")
+          ? json({
+              thread,
+              threadId: thread.id,
+              events: [],
+              window: {
+                threadId: thread.id,
+                byteCount: 2,
+                hasMore: false,
+                itemCount: 0,
+                nextBefore: null,
+                totalItems: 0,
+              },
+            })
+          : json(bootstrap([workspace])),
+    });
+    try {
+      await client.load();
+      await client.loadLatestTranscript(thread.id);
+      expect(
+        client.getSnapshot().workspaces.find((item) => item.id === workspace.id)?.audience,
+      ).toEqual(audience);
+      expect(client.getSnapshot().threads.find((item) => item.id === thread.id)).toMatchObject(
+        facts,
+      );
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("remembers the account and model a Thread was moved onto", async () => {
     const workspace = makeWorkspace("Switch account");
     const thread = makeThread(workspace.id);

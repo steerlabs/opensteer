@@ -39,6 +39,9 @@ export const projectAuthorityCutoverMigration: Migration = {
     }
     await sql.raw(PROJECT_AUTHORITY_GUARDS_SQL).execute(database);
     await sql.raw(HUMAN_AUTHORITY_GUARDS_SQL).execute(database);
+    await sql`alter table public.deployments add column trusted_members_acknowledged_at timestamptz`.execute(
+      database,
+    );
     await sql`alter table public.team_invitations add column trusted_computer_confirmed_at timestamptz`.execute(
       database,
     );

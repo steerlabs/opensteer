@@ -40,6 +40,18 @@ export function createTeamAccessHandlers(service?: TeamAdministrationService) {
       context: HostApiServerContext,
     ) => service.read(name, input, context);
     return {
+      "team.projects.list": async (input, context) =>
+        rpcSuccess(
+          hostApi["team.projects.list"].success.parse(
+            await read("team.projects.list", input, context),
+          ),
+        ),
+      "team.computer.get": async (input, context) =>
+        rpcSuccess(
+          hostApi["team.computer.get"].success.parse(
+            await read("team.computer.get", input, context),
+          ),
+        ),
       "team.invitations.list": async (input, context) =>
         rpcSuccess(
           hostApi["team.invitations.list"].success.parse(
@@ -133,6 +145,8 @@ export function createTeamAccessHandlers(service?: TeamAdministrationService) {
     } satisfies Pick<HostApiHandlers, `team.${string}` & keyof HostApiHandlers>;
   }
   return {
+    "team.projects.list": refuseAuthenticated,
+    "team.computer.get": refuseAuthenticated,
     "team.invitations.list": refuseAuthenticated,
     "team.summary.get": refuseAuthenticated,
     "team.people.list": refuseAuthenticated,

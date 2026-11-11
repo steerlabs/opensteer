@@ -359,19 +359,27 @@ describe("foldTranscriptEvent", () => {
     ]);
     expect(visibleTranscript(opened, null)).toEqual([]);
     expect(
-      fold([event("request.cancelled", { requestId: pending.id, reason: "source-closed" })]),
+      fold([
+        event("request.cancelled", {
+          requestId: pending.id,
+          reason: "source-closed",
+          cancelledFor: { name: "Sam" },
+        }),
+      ]),
     ).toEqual([
       expect.objectContaining({
         outcome: "Cancelled · source-closed",
+        cancelledFor: { name: "Sam" },
         requestId: pending.id,
         title: "Request",
       }),
     ]);
 
-    const resolved: Request = {
+    const resolved: Request & { resolvedByName: string } = {
       ...pending,
       resolvedAt: now,
       resolvedBy: pending.requestedBy,
+      resolvedByName: "Maya",
       response: { kind: "choice", optionId: "reject" },
       status: "declined",
     };
@@ -379,6 +387,7 @@ describe("foldTranscriptEvent", () => {
       expect.objectContaining({
         kind: "request",
         outcome: "Declined",
+        resolvedByName: "Maya",
         requestId: pending.id,
         title: "Publish externally",
         waitedSince: pending.createdAt,
