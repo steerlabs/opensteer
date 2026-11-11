@@ -135,6 +135,7 @@ export class RunnerAuthenticator {
   }
 
   async createEnrollment(input: {
+    readonly expectedTeamAccessRevision?: number;
     readonly allowedModules: readonly RunnerModuleName[];
     readonly createdBy: UserId;
     readonly idempotencyKey: string;
@@ -247,6 +248,7 @@ export class RunnerAuthenticator {
   }
 
   async #createEnrollment(input: {
+    readonly expectedTeamAccessRevision?: number;
     readonly allowedModules: readonly RunnerModuleName[];
     readonly createdBy: UserId | null;
     readonly idempotencyKey: string;
@@ -309,6 +311,9 @@ export class RunnerAuthenticator {
     const token = sign(null, issuanceTranscript, this.#issuancePrivateKey).toString("base64url");
     const expiresAt = new Date(this.#now() + input.lifetimeSeconds * 1_000);
     const enrollment = await this.#store.createRunnerEnrollment({
+      ...(input.expectedTeamAccessRevision !== undefined
+        ? { expectedTeamAccessRevision: input.expectedTeamAccessRevision }
+        : {}),
       issuanceModules:
         input.purpose === "phone" || input.purpose === "iphone"
           ? ["integrations"]

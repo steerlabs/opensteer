@@ -1206,7 +1206,10 @@ export async function createHostServer(
             deploymentId: dependencies.discovery.document.deploymentId,
             deploymentShape: dependencies.discovery.document.deploymentShape,
             deploymentPolicy: deploymentClientPolicy(
-              deploymentPolicy(dependencies.discovery.document.deploymentShape),
+              deploymentPolicy({
+                kind: dependencies.discovery.document.deploymentShape.kind,
+                defaultWorkspaceBacking: "local-directory",
+              }),
             ),
             environments: [],
             harnesses: [],

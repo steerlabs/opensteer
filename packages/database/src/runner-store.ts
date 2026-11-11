@@ -1550,6 +1550,7 @@ export async function createRunnerEnrollment(
      * The exact modules the computer redeeming this token may advertise.
      * Issuance chooses the grant; installing newer software cannot widen it.
      */
+    readonly expectedTeamAccessRevision?: number;
     readonly allowedModules: readonly RunnerModuleName[];
     readonly issuanceModules?: readonly RunnerModuleName[];
     /** Null when the deployment authored this enrollment for its own Main Runner. */
@@ -1573,6 +1574,20 @@ export async function createRunnerEnrollment(
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
   return withDatabaseTransaction(database, async (transaction) => {
+    if (input.expectedTeamAccessRevision !== undefined) {
+      const authority = await transaction
+        .selectFrom("accessState")
+        .select("revision")
+        .where("singletonKey", "=", "primary")
+        .forShare()
+        .executeTakeFirstOrThrow();
+      if (Number(authority.revision) !== input.expectedTeamAccessRevision)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "access-revision-changed",
+          message: "The team computer replacement changed",
+        });
+    }
     if (input.ownerUserId && input.runnerKind !== "managed") {
       throw new OpensteerError({
         code: "bad_request",

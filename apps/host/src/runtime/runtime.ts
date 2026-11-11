@@ -2551,6 +2551,17 @@ export async function createHostRuntime(
       {
         teamAdministration: new TeamAdministrationService({
           database,
+          revokeComputer: (id) => requiredService(runnerRegistry, "Runner registry").revoke(id),
+          enrollComputer: (revision, actor, key) =>
+            runnerAuthenticator.createEnrollment({
+              expectedTeamAccessRevision: revision,
+              allowedModules: ["agents", "shell"],
+              createdBy: actor,
+              idempotencyKey: key,
+              lifetimeSeconds: 600,
+              name: "Team computer",
+              runnerKind: "managed",
+            }),
           provisionProject: async (id) => {
             const workspace = await store.getWorkspace(id);
             if (workspace && !["ready", "deleting", "deleted"].includes(workspace.status))
