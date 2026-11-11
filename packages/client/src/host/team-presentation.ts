@@ -1,6 +1,7 @@
 import {
   TeamReasonSchema,
   type AccessExplanation,
+  type Can,
   type AccessPreview,
   type EntryView,
   type GroupRef,
@@ -10,6 +11,7 @@ import {
   type MemberPreview,
   type MemberState,
   type RuntimeState,
+  type TeamComputerView,
   type TeamReason,
 } from "@opensteer/protocol";
 import { HostClientRequestError } from "./client.js";
@@ -405,4 +407,95 @@ export function invitationTrustNote(team: string): string {
 
 export function invitationTrustConfirmation(email: string, team: string): string {
   return `I trust ${email.trim() || "this person"} with ${team}’s computer and its network.`;
+}
+
+/** A Project row's short state when the Host says it can't run tasks. */
+export function runtimeRowLabel(state: RuntimeState | undefined): string | null {
+  if (!state || state.state === "ready") return null;
+  return `Can’t run tasks · ${
+    {
+      "not-configured": "not set up",
+      "computer-offline": "computer offline",
+      "engine-unavailable": "engine unavailable",
+      "model-unavailable": "model unavailable",
+      "runner-update-required": "computer needs an update",
+    }[state.reason]
+  }`;
+}
+
+/** A row in an administrator's list of every Project. */
+export function otherProjectLine(row: {
+  readonly people: number;
+  readonly myLevel: Level | null;
+}): string {
+  const people = row.people === 1 ? "1 person" : `${row.people} people`;
+  return `${people} · ${
+    row.myLevel === null
+      ? "You’re not on it"
+      : row.myLevel === "manage"
+        ? "You manage it"
+        : "You use it"
+  }`;
+}
+
+/** What a team's Projects page says when this person is on none. */
+export function teamHomeEmpty(input: { readonly canCreate: boolean }): {
+  readonly title: string;
+  readonly body: string;
+} {
+  // True whether or not the team has other Projects: an admin's list of those says so itself.
+  return {
+    title: "You’re not on a project yet",
+    body: input.canCreate
+      ? "When you start a project or someone adds you to one, it appears here."
+      : "When someone adds you to a project, it appears here.",
+  };
+}
+
+/** Whether this person may list every Project in the team. Missing means not. */
+export function canListAllProjects(
+  summary: { readonly can: { readonly projects?: Can | undefined } } | null,
+): boolean {
+  return summary?.can.projects?.allowed === true;
+}
+
+/** Whether this person may delete a shared Project. Missing means not. */
+export function canDeleteProject(
+  access: { readonly can: { readonly delete?: Can | undefined } } | null,
+): boolean {
+  return access?.can.delete?.allowed === true;
+}
+
+/** The team computer's state, in the words of its settings page. */
+export function teamComputerState(
+  computer: TeamComputerView["computer"],
+  team: string,
+): { readonly title: string; readonly detail: string } {
+  if (computer === null)
+    return {
+      title: "No computer yet",
+      detail: `Projects can’t run tasks until ${team} has a computer. It must be a Linux machine with Docker that whoever runs ${team}’s server sets up.`,
+    };
+  switch (computer.state) {
+    case "connected":
+      return {
+        title: `${computer.name} · Connected`,
+        detail: `Every project in ${team} runs its tasks here.`,
+      };
+    case "offline":
+      return {
+        title: `${computer.name} · Offline`,
+        detail: `Tasks wait until it’s back. Whoever runs ${team}’s server can restart it.`,
+      };
+    case "update-required":
+      return {
+        title: `${computer.name} · Needs an update`,
+        detail: `It’s running an older Opensteer than ${team}’s server, so it can’t run tasks. Whoever runs it needs to update it.`,
+      };
+  }
+}
+
+/** The trusted-members statement, as a footnote where nothing is being confirmed. */
+export function teamComputerTrustNote(team: string): string {
+  return `${team} runs every project on one computer. People in ${team}, and the agents working for them, can reach that computer and anything on its network.`;
 }

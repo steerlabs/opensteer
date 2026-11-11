@@ -2,6 +2,7 @@ import {
   accessModeOptions,
   accessPathSentence,
   accessPaths,
+  canDeleteProject,
   changeLevelChanges,
   levelLabel,
   peopleCount,
@@ -259,6 +260,35 @@ export function TeamProjectSection(props: {
       </TeamSection>
       {view.can.manage.allowed ? (
         <RuntimeSummary deploymentId={deploymentId} hostClient={hostClient} view={view} />
+      ) : null}
+      {canDeleteProject(view) ? (
+        <TeamSection
+          footer={`Removes ${project.name}, its tasks and its files, for everyone on it. This can’t be undone.`}
+          label="Delete project"
+        >
+          <SecondaryButton
+            label={`Delete ${project.name}…`}
+            onPress={() =>
+              Alert.alert(
+                `Delete ${project.name}?`,
+                `${project.name}, its tasks and its files are deleted for everyone in ${teamName} who uses it. This can’t be undone.`,
+                [
+                  { style: "cancel", text: "Cancel" },
+                  {
+                    style: "destructive",
+                    text: "Delete",
+                    onPress: () =>
+                      void team
+                        .deleteProject(view.accessRevision, project.id)
+                        .then(() => navigation.navigate("Home", { deploymentId }))
+                        .catch((error: unknown) => showError(error, teamName)),
+                  },
+                ],
+              )
+            }
+            tone="danger"
+          />
+        </TeamSection>
       ) : null}
     </>
   );

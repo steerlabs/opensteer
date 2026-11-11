@@ -37,6 +37,9 @@ function TeamSettingsHome(props: { readonly deploymentId: string; readonly host:
   const rows = [
     ...(summary?.can.people.allowed ? [{ title: "People", route: "TeamPeople" as const }] : []),
     ...(summary?.can.groups.allowed ? [{ title: "Groups", route: "TeamGroups" as const }] : []),
+    ...(summary?.can.computer?.allowed
+      ? [{ title: "Team computer", route: "TeamComputer" as const }]
+      : []),
   ];
   return (
     <SettingsHome

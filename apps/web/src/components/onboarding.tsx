@@ -161,13 +161,16 @@ export function HostAccessOnboarding({
   onOidc,
   onSignIn,
   pending,
+  team = null,
 }: AsyncFormProps & {
+  /** A team server's name when this is its owner's setup, which asks for the trusted-members statement. */
+  readonly team?: string | null;
   /** True once a setup code has been accepted for this browser. */
   readonly admitted: boolean;
   readonly config: IdentityConfig;
   readonly onAdmit: (token: string) => Promise<void>;
-  readonly onClaim: (input: InitialOwnerClaimInput) => Promise<void>;
-  readonly onOidc: (providerId: string) => Promise<void>;
+  readonly onClaim: (input: InitialOwnerClaimInput, acknowledged: boolean) => Promise<void>;
+  readonly onOidc: (providerId: string, acknowledged: boolean) => Promise<void>;
   readonly onSignIn: (input: PasswordSignInInput) => Promise<void>;
 }) {
   const [admissionError, setAdmissionError] = useState<string | null>(null);
@@ -180,6 +183,8 @@ export function HostAccessOnboarding({
   // provider redirect needs the admission settled first — so the code is its
   // own step there, on the same Door.
   const codeOnly = needsCode && !config.localPasswordEnabled;
+  const teamClaim = claiming && team !== null;
+  const [trusted, setTrusted] = useState(false);
 
   async function submit(values: FormData) {
     if (needsCode) {
@@ -200,20 +205,26 @@ export function HostAccessOnboarding({
     const email = String(values.get("email") ?? "").trim();
     const password = String(values.get("password") ?? "");
     if (!email || !password) return;
-    if (active === "claim") await onClaim({ email, password });
+    if (teamClaim && !trusted) return;
+    if (active === "claim") await onClaim({ email, password }, teamClaim && trusted);
     else await onSignIn({ email, password });
   }
 
   return (
     <OnboardingCard
-      description={doorContext(config, active, admitted)}
+      description={
+        teamClaim
+          ? `You’ll be ${team}’s first admin. ${team} holds shared projects; everyone keeps their own Opensteer for their own work.`
+          : doorContext(config, active, admitted)
+      }
       eyebrow={active === "claim" ? "First run" : "Welcome back"}
       footnote={
         needsCode ? (
           <>
             <Icon name="key" />
             <span>
-              This code can authorize only the first administrator. It is not an account password.
+              This code can authorize only the first {teamClaim ? "admin" : "administrator"}. It is
+              not an account password.
             </span>
           </>
         ) : (
@@ -225,7 +236,7 @@ export function HostAccessOnboarding({
           </>
         )
       }
-      title={doorName(config)}
+      title={teamClaim ? `Set up ${team}` : doorName(config)}
       titleId="host-access-heading"
     >
       <CredentialForm
@@ -234,41 +245,75 @@ export function HostAccessOnboarding({
         credentials={config.localPasswordEnabled}
         error={admissionError ?? error}
         fields={
-          needsCode ? (
-            <div className="field">
-              <label className="field__label" htmlFor="host-setup-token">
-                One-time setup code
-              </label>
-              <input
-                autoComplete="off"
-                autoFocus
-                className="text-input"
-                disabled={busy}
-                id="host-setup-token"
-                maxLength={4_096}
-                minLength={16}
-                name="setupToken"
-                required
-                spellCheck={false}
-                type="password"
-              />
-            </div>
-          ) : null
+          <>
+            {needsCode ? (
+              <div className="field">
+                <label className="field__label" htmlFor="host-setup-token">
+                  One-time setup code
+                </label>
+                <input
+                  autoComplete="off"
+                  autoFocus
+                  className="text-input"
+                  disabled={busy}
+                  id="host-setup-token"
+                  maxLength={4_096}
+                  minLength={16}
+                  name="setupToken"
+                  required
+                  spellCheck={false}
+                  type="password"
+                />
+              </div>
+            ) : null}
+            {teamClaim ? (
+              <div className="team-trust">
+                <strong>A team you trust</strong>
+                <p>
+                  {team} runs every project on one computer. People you invite, and the agents
+                  working for them, can reach that computer and anything on its network. Opensteer
+                  keeps people out of projects they aren’t on, but it doesn’t yet wall agents off
+                  from the network. Invite people you’d trust with that computer.
+                </p>
+                <label className="team-trust__confirm">
+                  <input
+                    checked={trusted}
+                    className="team-check"
+                    disabled={busy}
+                    onChange={(event) => setTrusted(event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span>
+                    I’ll invite only people I trust with {team}’s computer and its network.
+                  </span>
+                </label>
+              </div>
+            ) : null}
+          </>
         }
         idPrefix="host"
         mode={active === "claim" ? "create" : "sign-in"}
-        onOidc={(providerId) => void onOidc(providerId)}
+        onOidc={(providerId) => void onOidc(providerId, teamClaim && trusted)}
         onSubmit={(values) => void submit(values)}
         pendingLabel={
           codeOnly
             ? "Checking code…"
             : active === "claim"
-              ? "Creating the owner account…"
+              ? teamClaim
+                ? "Creating the admin account…"
+                : "Creating the owner account…"
               : "Signing in…"
         }
-        providers={!needsCode}
+        providers={!needsCode && (!teamClaim || trusted)}
+        submitDisabled={teamClaim && !trusted && !codeOnly}
         submitLabel={
-          codeOnly ? "Continue" : active === "claim" ? "Create the owner account" : "Sign in"
+          codeOnly
+            ? "Continue"
+            : active === "claim"
+              ? teamClaim
+                ? "Create the admin account"
+                : "Create the owner account"
+              : "Sign in"
         }
       />
     </OnboardingCard>

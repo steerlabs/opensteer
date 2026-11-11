@@ -288,15 +288,15 @@ function HeadlessEnrollment({
  * can reach, so the labels say that and the hint states the one thing each
  * needs installed before the command works.
  */
-const containerLabel = "Runs in a container: agents get only what you mount";
-const containerPrerequisite = "Needs Docker on that computer.";
+export const containerLabel = "Runs in a container: agents get only what you mount";
+export const containerPrerequisite = "Needs Docker on that computer.";
 const bareHostLabel = "Runs on this machine as you: agents get your files and sign-ins";
 const bareHostPrerequisite =
   "Needs curl and tar on that computer; the command installs Opensteer itself.";
 const bareHostUnavailable =
   "This build of Opensteer has no published runner download, so only the container setup is offered here.";
 
-function CopyBlock({
+export function CopyBlock({
   hint,
   label,
   value,
@@ -331,7 +331,7 @@ function CopyBlock({
   );
 }
 
-function useCountdown(expiresAt: string | null): string {
+export function useCountdown(expiresAt: string | null): string {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!expiresAt) return;

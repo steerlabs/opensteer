@@ -11,6 +11,7 @@ import { useHostRead } from "@opensteer/client/react";
 import type { ThreadAccessMode } from "@opensteer/core";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
+import { AreaLink } from "../workspace/area-link.js";
 import { TeamError, TeamSection, useShellTeam } from "./team-ui.js";
 
 const zones = (() => {
@@ -80,7 +81,7 @@ function RuntimeForm({
   readonly onSaved: () => void;
   readonly teamName: string;
 }) {
-  const { team } = useShellTeam();
+  const { team, summary } = useShellTeam();
   const workspaceId = access.project.id;
   const choices = useHostRead(
     team ? () => team.runtimeChoices(workspaceId) : null,
@@ -161,6 +162,16 @@ function RuntimeForm({
             <p>{runtime}</p>
           </div>
         </div>
+      ) : null}
+      {summary?.can.computer?.allowed &&
+      ((choices.data !== null && instances.length === 0) ||
+        (initial.runtime.state === "unavailable" &&
+          (initial.runtime.reason === "computer-offline" ||
+            initial.runtime.reason === "runner-update-required"))) ? (
+        <p className="team-runtime__computer">
+          {instances.length === 0 ? `Connect ${teamName}’s computer first. ` : null}
+          <AreaLink to="/settings/team/computer">Team computer</AreaLink>
+        </p>
       ) : null}
       <form
         className="card card__form team-runtime"

@@ -72,7 +72,7 @@ import {
   MessageSchema,
   ModelSelectionSchema,
   NotificationViewSchema,
-  PendingRequestSchema,
+  PendingRequestViewSchema,
   ProviderContinuationIdentitySchema,
   RequestIdSchema,
   RequestSchema,
@@ -124,6 +124,8 @@ import {
   type ModelSelection,
   type NotificationView,
   type Request,
+  type RequestView,
+  type ThreadDisplayFacts,
   type RequestResponse,
   type Run,
   type Sequence,
@@ -2098,13 +2100,15 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       ),
     "auth.native.complete": async (input) =>
       rpcSuccess({ url: await client.completeNativeAuthorization(input.oauthQuery, input.accept) }),
-    "auth.oidc.begin": async (input) =>
-      rpcSuccess({
+    "auth.oidc.begin": async (input) => {
+      client.requireTeamOwnerAcknowledgement(input);
+      return rpcSuccess({
         redirectUrl: await client.beginOidcSignIn(input.providerId, {
           ...(input.oauthQuery ? { oauthQuery: input.oauthQuery } : {}),
           ...(input.returnPath ? { returnPath: input.returnPath } : {}),
         }),
-      }),
+      });
+    },
     "auth.password.recover": async (input) => {
       await client.resetPasswordWithRecovery(input.token, input.newPassword);
       return rpcSuccess({});
@@ -2129,7 +2133,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "auth.setup.claim": async (_input) => {
+    "auth.setup.claim": async (input) => {
+      if (input.kind === "password") client.requireTeamOwnerAcknowledgement(input);
       await client.claimInitialOwner();
       return rpcSuccess(
         hostApi["auth.setup.claim"].success.parse({
@@ -2766,12 +2771,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "team.connection.revoke":
     case "team.project.settings.set":
     case "team.invitation.create":
-    case "team.invitation.revoke":
-      return rpcSuccess(
-        await client.team.command(command, async (name) =>
-          WorkspaceIdSchema.parse((await client.createWorkspace({ name })).id),
-        ),
+    case "team.invitation.revoke": {
+      const result = await client.team.command(command, async (name) =>
+        WorkspaceIdSchema.parse((await client.createWorkspace({ name })).id),
       );
+      if (command.type === "team.project.delete") client.forgetTeamProject(command.workspaceId);
+      return rpcSuccess(result);
+    }
     case "phone.tab.close":
       client.closePhoneTab(command.machineId);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
@@ -6511,7 +6517,7 @@ class MockHostState {
     const firstRun = options.world === "first-run";
     const teamPlace = this.team.available;
     this.snapshot = teamPlace
-      ? teamPlaceWorld(initial)
+      ? teamPlaceWorld(initial, this.team)
       : firstRun
         ? firstRunWorld(initial)
         : options.initialHome === "absent"
@@ -6683,7 +6689,12 @@ class MockHostState {
         });
       }
     }
-    if (!firstRun && options.initialHome !== "absent" && options.subagents !== "absent") {
+    if (
+      !firstRun &&
+      options.initialHome !== "absent" &&
+      options.subagents !== "absent" &&
+      !teamPlace
+    ) {
       const fixture = seedMockSubagents(this.snapshot);
       this.snapshot = fixture.snapshot;
       this.nodeEvents = fixture.events;
@@ -6733,6 +6744,19 @@ class MockHostState {
         ];
       }),
     );
+    if (teamPlace) this.snapshot = withTeamFacts(this.snapshot, this.team);
+    // A fresh team server waits for its owner; its first screen is the claim.
+    if (this.team.scenario === "fresh" && this.snapshot.identityConfig)
+      this.snapshot = {
+        ...this.snapshot,
+        identityConfig: {
+          ...this.snapshot.identityConfig,
+          exposure: "networked",
+          localPasswordEnabled: true,
+          setupState: "required",
+        },
+        session: "authentication-required",
+      };
     // What `requests.list` and `tasks.list` would answer for what is seeded above.
     this.snapshot = {
       ...this.snapshot,
@@ -6823,6 +6847,8 @@ class MockHostState {
     return this.now().toISOString();
   }
   seedPlaces(world: MockPlacesWorld = "seeded"): void {
+    // A team server has no browsers, apps or phones to place.
+    if (this.team.available) return;
     this.update(seedMockPlaces(this.snapshot, this.now(), world));
     // A trip planned on two Macs: one group whose tabs run on both.
     if (world !== "seeded")
@@ -8354,6 +8380,29 @@ class MockHostState {
 
   async claimInitialOwner(): Promise<void> {
     await this.load();
+    const config = this.snapshot.identityConfig;
+    if (config?.setupState === "required")
+      this.update({
+        ...this.snapshot,
+        identityConfig: { ...config, setupState: "complete" },
+        session: "authenticated",
+      });
+  }
+
+  /** A fresh team server's owner sets it up only having acknowledged who it is for. */
+  requireTeamOwnerAcknowledgement(input: {
+    readonly trustedMembersAcknowledged?: true | undefined;
+  }): void {
+    if (
+      this.team.available &&
+      this.snapshot.identityConfig?.setupState === "required" &&
+      input.trustedMembersAcknowledged !== true
+    )
+      throw new HostClientRequestError({
+        code: "invalid_request",
+        message: "Acknowledge who this team server is for before setting it up.",
+        status: 400,
+      });
   }
 
   async beginOidcSignIn(
@@ -10400,6 +10449,29 @@ class MockHostState {
     return this.setWorkspaceStatus(workspaceId, "deleting");
   }
 
+  /** A deleted team Project goes from every snapshot, with its tasks; a repeat finds nothing. */
+  forgetTeamProject(workspaceId: string): void {
+    const gone = new Set(
+      this.snapshot.threads
+        .filter((thread) => thread.workspaceId === workspaceId)
+        .map(({ id }) => id),
+    );
+    const keep = <T>(record: Record<string, T>) =>
+      Object.fromEntries(Object.entries(record).filter(([threadId]) => !gone.has(threadId)));
+    this.update({
+      ...this.snapshot,
+      requests: keep(this.snapshot.requests),
+      runQueue: this.snapshot.runQueue.filter(({ threadId }) => !gone.has(threadId)),
+      threads: this.snapshot.threads.filter(({ id }) => !gone.has(id)),
+      transcripts: keep(this.snapshot.transcripts),
+      transcriptWindows: keep(this.snapshot.transcriptWindows),
+      waitingRequests: this.snapshot.waitingRequests.filter(
+        ({ request }) => !gone.has(request.originatingThreadId),
+      ),
+      workspaces: this.snapshot.workspaces.filter(({ id }) => id !== workspaceId),
+    });
+  }
+
   async recoverWorkspace(workspaceId: string): Promise<WorkspaceSummary> {
     return this.setWorkspaceStatus(workspaceId, "ready");
   }
@@ -12014,12 +12086,56 @@ class MockHostState {
     });
   }
 
+  /**
+   * The team preview's race: Dev Patel's answer lands first, so the Host
+   * settles the Request for him and refuses this one.
+   */
+  private answeredFirstByAnotherManager(request: RequestView): HostClientRequestError {
+    const at = this.now().toISOString();
+    this.snapshot = {
+      ...this.snapshot,
+      requests: {
+        ...this.snapshot.requests,
+        [request.originatingThreadId]: (
+          this.snapshot.requests[request.originatingThreadId] ?? []
+        ).filter(({ id }) => id !== request.id),
+      },
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === request.originatingThreadId
+          ? {
+              ...thread,
+              status: "idle" as const,
+              requestWaits: { items: [], total: 0 },
+              requestOutcomes: [
+                ...(thread.requestOutcomes ?? []),
+                {
+                  requestId: request.id,
+                  status: "fulfilled" as const,
+                  at,
+                  resolvedByName: "Dev Patel",
+                },
+              ],
+            }
+          : thread,
+      ),
+    };
+    this.snapshot = { ...this.snapshot, waitingRequests: this.waitingRequests() };
+    this.emit();
+    return new HostClientRequestError({
+      code: "conflict",
+      message: "Dev Patel answered this first.",
+      reason: "request-already-settled",
+      status: 409,
+    });
+  }
+
   async resolveRequest(input: ResolveRequestInput): Promise<void> {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === input.requestId);
     if (!request) throw new Error("The mock Host does not have that pending Request.");
     if (request.status !== "pending") throw new Error("The mock Request is no longer pending.");
+    if (request.id === mockTeamManagersRequestId) throw this.answeredFirstByAnotherManager(request);
     if (request.kind === "harness.approval" && this.openAssignmentOf(request.originatingThreadId)) {
       this.resolveTaskRequest(request, input.response);
       return;
@@ -12914,9 +13030,12 @@ class MockHostState {
       .filter(
         (request) =>
           request.status === "pending" &&
-          (request.requiredActor === "requester"
-            ? request.requestedBy === user.id
-            : request.requiredActor === "workspace-owner" || user.instanceRole === "administrator"),
+          (request.answer
+            ? request.answer.allowed
+            : request.requiredActor === "requester"
+              ? request.requestedBy === user.id
+              : request.requiredActor === "workspace-owner" ||
+                user.instanceRole === "administrator"),
       )
       .map((request) => {
         const held: WaitingRequest["assignments"] = [];
@@ -12955,7 +13074,7 @@ class MockHostState {
         return {
           assignments: held,
           presentation,
-          request: PendingRequestSchema.parse(request),
+          request: PendingRequestViewSchema.parse(request),
           subagent: null,
         };
       })
@@ -13215,9 +13334,12 @@ function firstRunWorld(snapshot: HostSnapshot): HostSnapshot {
  * A team server as the Host serves it: no Main, no Chat, no Voice, only the
  * shared Projects and their Threads.
  */
-function teamPlaceWorld(snapshot: HostSnapshot): HostSnapshot {
+function teamPlaceWorld(snapshot: HostSnapshot, team: MockTeamAccess): HostSnapshot {
+  const reachable = team.reachableProjects();
   const projects = new Set(
-    snapshot.workspaces.filter(({ kind }) => kind === "project").map(({ id }) => id),
+    snapshot.workspaces
+      .filter(({ kind, id }) => kind === "project" && reachable.has(id))
+      .map(({ id }) => id),
   );
   const threads = snapshot.threads.filter((thread) => projects.has(thread.workspaceId));
   const kept = new Set(threads.map(({ id }) => id));
@@ -13255,8 +13377,300 @@ function teamPlaceWorld(snapshot: HostSnapshot): HostSnapshot {
     threads,
     transcripts: keep(snapshot.transcripts),
     transcriptWindows: keep(snapshot.transcriptWindows),
-    workspaces: snapshot.workspaces.filter(({ id }) => projects.has(id)),
+    workspaces: snapshot.workspaces
+      .filter(({ id }) => projects.has(id))
+      .map((workspace) => {
+        const audience = team.audience(workspace.id);
+        return audience ? { ...workspace, audience } : workspace;
+      }),
   };
+}
+
+/**
+ * The facts a team Host puts on each task and Request, applied once the
+ * preview's tasks are all seeded: every task carries its Project's audience,
+ * and only a Request this person may answer stays readable.
+ */
+function withTeamFacts(snapshot: HostSnapshot, team: MockTeamAccess): HostSnapshot {
+  const manages = (workspaceId: string) => team.audience(workspaceId)?.myLevel === "manage";
+  const launch = snapshot.threads.find(({ id }) => id === mockTeamThreads.launch);
+  const added = launch ? mockTeamAddedThreads(launch, manages(launch.workspaceId)) : [];
+  const threads = [...added.map(({ thread }) => thread), ...snapshot.threads].map((thread) => {
+    const audience = team.audience(thread.workspaceId);
+    return { ...thread, ...(audience ? { audience } : {}), ...mockTeamTaskFacts[thread.id] };
+  });
+  const next = {
+    ...snapshot,
+    threads,
+    transcripts: {
+      ...snapshot.transcripts,
+      ...Object.fromEntries(added.map(({ thread, transcript }) => [thread.id, transcript])),
+    },
+    transcriptWindows: {
+      ...snapshot.transcriptWindows,
+      ...Object.fromEntries(
+        added.map(({ thread, transcript }) => [
+          thread.id,
+          {
+            byteCount: 2,
+            hasMore: false,
+            itemCount: transcript.length,
+            nextBefore: null,
+            threadId: thread.id,
+            totalItems: transcript.length,
+          },
+        ]),
+      ),
+    },
+  };
+  return { ...next, requests: teamPlaceRequests(next, manages) };
+}
+
+/**
+ * Two tasks only a team has: one Maya started, whose question only she can
+ * answer, and one a schedule started, whose question any manager can.
+ */
+function mockTeamAddedThreads(
+  launch: ThreadSummary,
+  /** A manager may read the managers' questions, so their history shows where each was asked. */
+  managesLaunch: boolean,
+): { thread: ThreadSummary; transcript: TranscriptEntry[] }[] {
+  const at = "2026-11-10T09:12:00.000Z";
+  const maya = {
+    displayName: "Maya Chen",
+    kind: "human",
+    principalId: `user:${mockTeamMaya}`,
+    userId: UserIdSchema.parse(mockTeamMaya),
+  } as const;
+  const message = (
+    id: string,
+    author: MessageEntry["author"],
+    body: string,
+    createdAt: string,
+  ): MessageEntry => ({
+    author,
+    body,
+    createdAt,
+    id,
+    kind: "message",
+    messageKind: "input",
+    runId: null,
+  });
+  return [
+    {
+      thread: {
+        ...launch,
+        id: mockTeamThreads.mayas,
+        title: "Draft the pricing page",
+        status: "waiting",
+        unread: false,
+        askedAt: at,
+        updatedAt: at,
+      },
+      transcript: [
+        message(
+          "msg_00000000-0000-4000-8000-0000000009b1",
+          maya,
+          "Draft the pricing page from the plan we agreed. Ask me before you pick the annual discount.",
+          at,
+        ),
+        message(
+          "msg_00000000-0000-4000-8000-0000000009b2",
+          {
+            connectionId: "mcn_00000000-0000-4000-8000-0000000000d2",
+            displayName: "Codex on Mac mini",
+            kind: "connection",
+            ownerName: "Maya Chen",
+          },
+          "Attached the plan from the shared drive: pricing-plan.md.",
+          "2026-11-10T09:14:00.000Z",
+        ),
+      ],
+    },
+    {
+      thread: {
+        ...launch,
+        id: mockTeamThreads.review,
+        title: "Nightly release notes",
+        status: "waiting",
+        unread: false,
+        askedAt: "2026-11-10T07:00:00.000Z",
+        updatedAt: "2026-11-10T07:00:00.000Z",
+      },
+      transcript: [
+        message(
+          "msg_00000000-0000-4000-8000-0000000009c1",
+          {
+            displayName: "Nightly release notes",
+            kind: "trigger",
+            occurrenceId: "toc_00000000-0000-4000-8000-0000000009c1",
+            source: "schedule",
+            triggerId: "trg_00000000-0000-4000-8000-0000000009c1",
+          } as MessageEntry["author"],
+          "Draft tonight’s release notes from the changes merged today, and ask before publishing them.",
+          "2026-11-09T07:00:00.000Z",
+        ),
+        ...(managesLaunch
+          ? [
+              {
+                createdAt: "2026-11-09T07:04:00.000Z",
+                id: "request:req_0192f4a1-1111-4000-8000-0000000000a8",
+                kind: "request" as const,
+                outcome: "Fulfilled · Publish",
+                requestId: "req_0192f4a1-1111-4000-8000-0000000000a8",
+                requestKind: "harness.approval" as const,
+                resolvedByName: "Dev Patel",
+                runId: null,
+                title: "Publish last night’s release notes to the changelog?",
+              },
+            ]
+          : []),
+        message(
+          "msg_00000000-0000-4000-8000-0000000009c2",
+          {
+            displayName: "Nightly release notes",
+            kind: "trigger",
+            occurrenceId: "toc_00000000-0000-4000-8000-0000000009c2",
+            source: "schedule",
+            triggerId: "trg_00000000-0000-4000-8000-0000000009c1",
+          } as MessageEntry["author"],
+          "Draft tonight’s release notes from the changes merged today, and ask before publishing them.",
+          "2026-11-10T07:00:00.000Z",
+        ),
+      ],
+    },
+  ];
+}
+
+export const mockTeamThreads = {
+  launch: "thr_00000000-0000-4000-8000-000000000003",
+  mayas: "thr_00000000-0000-4000-8000-0000000009a1",
+  review: "thr_00000000-0000-4000-8000-0000000009a2",
+  reconcile: "thr_00000000-0000-4000-8000-000000000004",
+  download: "thr_00000000-0000-4000-8000-000000000007",
+} as const;
+/** The managers' question a scheduled task asks; another manager answers it first. */
+export const mockTeamManagersRequestId = "req_0192f4a1-1111-4000-8000-0000000000a9";
+const mockTeamMaya = "usr_00000000-0000-4000-8000-0000000000a1";
+const mockTeamViewer = "usr_0192f4a1-0000-4000-8000-000000000001";
+
+/** What a team Host says about each seeded task: who started it, what it waits on, how it ended. */
+const mockTeamTaskFacts: Readonly<Record<string, ThreadDisplayFacts>> = {
+  [mockTeamThreads.launch]: {
+    startedBy: { kind: "person", userId: UserIdSchema.parse(mockTeamViewer), name: "Alex Rivera" },
+  },
+  [mockTeamThreads.mayas]: {
+    startedBy: { kind: "person", userId: UserIdSchema.parse(mockTeamMaya), name: "Maya Chen" },
+    requestWaits: {
+      items: [
+        {
+          requestId: RequestIdSchema.parse("req_4891d2c1-64d9-4305-b5d1-dcdc42502cb3"),
+          class: "question",
+          since: "2026-11-09T14:12:00.000Z",
+          waitingOn: { kind: "person", name: "Maya Chen" },
+        },
+      ],
+      total: 1,
+    },
+  },
+  [mockTeamThreads.review]: {
+    startedBy: { kind: "trigger", name: "Nightly release notes" },
+    requestWaits: {
+      items: [
+        {
+          requestId: RequestIdSchema.parse(mockTeamManagersRequestId),
+          class: "approval",
+          since: "2026-11-10T07:00:00.000Z",
+          waitingOn: { kind: "managers" },
+        },
+      ],
+      total: 1,
+    },
+    requestOutcomes: [
+      {
+        requestId: RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-0000000000a8"),
+        status: "fulfilled",
+        at: "2026-11-09T07:04:00.000Z",
+        resolvedByName: "Dev Patel",
+      },
+    ],
+  },
+  [mockTeamThreads.reconcile]: {
+    startedBy: {
+      kind: "person",
+      userId: UserIdSchema.parse("usr_00000000-0000-4000-8000-0000000000a7"),
+      name: "Leo Park",
+    },
+    stopped: { reason: "membership-revoked", starterName: "Leo Park" },
+    requestOutcomes: [
+      {
+        requestId: RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-0000000000a7"),
+        status: "cancelled",
+        at: "2026-11-08T16:20:00.000Z",
+        reason: "membership-revoked",
+        cancelledFor: { name: "Leo Park" },
+      },
+    ],
+  },
+  [mockTeamThreads.download]: {
+    startedBy: { kind: "watch", name: "Card statements inbox" },
+    stopped: { reason: "no-eligible-manager" },
+    requestOutcomes: [
+      {
+        requestId: RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-0000000000a6"),
+        status: "cancelled",
+        at: "2026-11-09T11:05:00.000Z",
+        reason: "no-eligible-manager",
+      },
+    ],
+  },
+};
+
+/**
+ * The Requests a team Host lets this person read: only the ones they may
+ * answer, each saying so. Everyone else learns of a wait from the Thread.
+ */
+function teamPlaceRequests(
+  snapshot: HostSnapshot,
+  manages: (workspaceId: string) => boolean,
+): Record<string, RequestView[]> {
+  const { requests } = snapshot;
+  const out: Record<string, RequestView[]> = {};
+  for (const [threadId, list] of Object.entries(requests)) {
+    out[threadId] = list.map((request) => ({
+      ...request,
+      answer: { allowed: true },
+      waitingOn: { kind: "person" as const, name: "Alex Rivera" },
+    }));
+  }
+  const own = requests[mockTeamThreads.launch]?.find(({ status }) => status === "pending");
+  const review = snapshot.threads.find(({ id }) => id === mockTeamThreads.review);
+  if (own && own.status === "pending" && review && manages(review.workspaceId)) {
+    out[mockTeamThreads.review] = [
+      {
+        ...own,
+        id: RequestIdSchema.parse(mockTeamManagersRequestId),
+        createdAt: "2026-11-10T07:00:00.000Z",
+        originatingThreadId: ThreadIdSchema.parse(mockTeamThreads.review),
+        originatingWorkspaceId: review.workspaceId as RequestView["originatingWorkspaceId"],
+        requestedBy: UserIdSchema.parse(mockTeamMaya),
+        requiredActor: "workspace-owner",
+        presentation: {
+          kind: "choice",
+          options: [
+            { hint: "allow-once", id: "allow", label: "Publish" },
+            { hint: "reject-once", id: "reject", label: "Don’t publish" },
+          ],
+          risk: "medium",
+          title: "Publish tonight’s release notes to the changelog?",
+        },
+        source: { kind: "trigger", name: "Nightly release notes" },
+        answer: { allowed: true },
+        waitingOn: { kind: "managers" },
+      },
+    ];
+  }
+  return out;
 }
 
 function withoutInitialHome(snapshot: HostSnapshot): HostSnapshot {

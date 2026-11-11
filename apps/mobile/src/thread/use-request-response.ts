@@ -4,6 +4,7 @@ import {
   browserSignInProblemMessage,
   HostClientRequestError,
   mutationIdempotencyKey,
+  requestAnswerRefusalText,
   type HostClient,
   type PasswordSignInAccount,
   type SurfaceModel,
@@ -27,6 +28,8 @@ import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 export const unconfirmedDetail = "Could not confirm your answer was sent.";
 
 function requestFailureDetail(error: unknown): string {
+  const lost = requestAnswerRefusalText(error);
+  if (lost !== null) return lost;
   return error instanceof HostClientRequestError
     ? operationDetail(error, unconfirmedDetail)
     : unconfirmedDetail;

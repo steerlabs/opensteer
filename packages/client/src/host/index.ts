@@ -100,3 +100,6 @@ export * from "./team-settings.js";
 export * from "./subagent-model.js";
 export * from "./node-detail.js";
 export * from "./team-place.js";
+export * from "./team-thread.js";
+export * from "./team-setup.js";
+export * from "./team-computer.js";

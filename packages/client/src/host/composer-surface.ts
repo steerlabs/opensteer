@@ -1,4 +1,8 @@
-import { requestTitleText, type AuthenticatedUser, type Request } from "@opensteer/core";
+import {
+  requestTitleText,
+  type AuthenticatedUser,
+  type RequestView as Request,
+} from "@opensteer/core";
 
 /**
  * What the one input surface at the bottom of a Thread is for, right now.
@@ -15,7 +19,8 @@ export type SurfaceTextRole = "hidden" | "message";
 
 export interface SurfaceModel {
   request: Request;
-  denied: "administrator" | "requester" | null;
+  /** Who may answer instead of this reader; `manager` and `other` come only from the Host's `answer`. */
+  denied: "administrator" | "requester" | "manager" | "other" | null;
   /** Pending Requests waiting behind the focused one. */
   queued: number;
   /** Title of the oldest waiting Request, so a preempted card is still named. */
@@ -45,10 +50,17 @@ export function deriveSurface(
     request.payload.kind === "integration.access" &&
     request.payload.installationId === null &&
     user?.instanceRole === "administrator";
-  const denied =
-    request.requiredActor === "requester" &&
-    request.requestedBy !== user?.id &&
-    !administratorMayInstall
+  const denied = request.answer
+    ? request.answer.allowed
+      ? null
+      : request.answer.reason === "requester-only"
+        ? ("requester" as const)
+        : request.answer.reason === "manager-only"
+          ? ("manager" as const)
+          : ("other" as const)
+    : request.requiredActor === "requester" &&
+        request.requestedBy !== user?.id &&
+        !administratorMayInstall
       ? ("requester" as const)
       : request.requiredActor === "administrator" && user?.instanceRole !== "administrator"
         ? ("administrator" as const)

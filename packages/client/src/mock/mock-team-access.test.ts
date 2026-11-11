@@ -57,11 +57,7 @@ describe("the shared team mock", () => {
           input: unknown,
         ) => Promise<{ ok: boolean; data?: unknown; error?: { reason?: string } }>;
         const result = await call(input);
-        if (scenario === "admin") {
-          if (name === "team.projects.list" || name === "team.computer.get")
-            expect(result.error?.reason, name).toBe("team-not-implemented");
-          else expect(result.ok ? null : result.error, name).toBeNull();
-        }
+        if (scenario === "admin") expect(result.ok ? null : result.error, name).toBeNull();
         if (result.ok) {
           expect(() => teamReadSchemas[name].output.parse(result.data), name).not.toThrow();
         } else {
@@ -97,6 +93,19 @@ describe("the shared team mock", () => {
         timeZone: "Europe/London",
       }),
     ];
+    // A screen that still shows the computer it read is fenced off once that computer is replaced.
+    const shown = (await team.computer()).computer!.id;
+    results.push(await team.replaceComputer(await revision(), shown));
+    expect((await team.computer()).computer).toBeNull();
+    await expect(team.replaceComputer(await revision(), shown)).rejects.toMatchObject({
+      reason: "team-object-unavailable",
+    });
+    // Deleting a Project takes it from everyone's snapshot, and asking again changes nothing.
+    const { finance } = mockTeamProjects;
+    expect(host.getSnapshot().workspaces.some(({ id }) => id === finance)).toBe(true);
+    results.push(await team.deleteProject(await revision(), finance));
+    await team.deleteProject(await revision(), finance);
+    expect(host.getSnapshot().workspaces.some(({ id }) => id === finance)).toBe(false);
     const draft = createTeamInvitationDraft();
     const created = await team.createInvitation(await revision(), draft, {
       email: "nina2@acme.example",
@@ -114,8 +123,28 @@ describe("the shared team mock", () => {
     expect(await listed()).toMatchObject({ state: "revoked", can: { revoke: { allowed: false } } });
     for (const result of results) expect(() => TeamCommandResultSchema.parse(result)).not.toThrow();
     expect(new Set(results.map((result) => TeamCommandResultSchema.parse(result).type)).size).toBe(
-      8,
+      10,
     );
+    host.dispose();
+  });
+
+  it("sets up a fresh team server only once its owner acknowledges who it is for", async () => {
+    const host = client("fresh");
+    expect(host.getSnapshot()).toMatchObject({
+      session: "authentication-required",
+      identityConfig: { setupState: "required" },
+    });
+    const claim = { email: "alex@acme.example", kind: "password", password: "correct horse 42" };
+    const refused = await host.rpc["auth.setup.claim"](claim as never).catch(
+      (error: unknown) => error,
+    );
+    expect(refused instanceof Error || (refused as { ok?: boolean }).ok === false).toBe(true);
+    expect(host.getSnapshot().identityConfig?.setupState).toBe("required");
+    await host.rpc["auth.setup.claim"]({ ...claim, trustedMembersAcknowledged: true } as never);
+    expect(host.getSnapshot()).toMatchObject({
+      session: "authenticated",
+      identityConfig: { setupState: "complete" },
+    });
     host.dispose();
   });
 

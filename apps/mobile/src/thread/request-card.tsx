@@ -1,7 +1,12 @@
-import type { HostClient, HostSnapshot, SurfaceModel } from "@opensteer/client/host";
+import {
+  requestAnswerNote,
+  type HostClient,
+  type HostSnapshot,
+  type SurfaceModel,
+} from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { requestAgentProposedLabel, requestTitleText, type Request } from "@opensteer/core";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccessibilityInfo,
   ActivityIndicator,
@@ -147,6 +152,18 @@ function AnswerCard(props: RequestCardProps): ReactNode {
   const title = requestTitle(request);
   const { context, question } = requestCardHeading(request, title);
   const proposed = presentation.agentProposed === true;
+  const projectName = useHostSelector(
+    props.hostClient,
+    useCallback(
+      // Only a Request the Host says who may answer is named by its Project.
+      (snapshot: HostSnapshot) =>
+        (request.answer &&
+          snapshot.workspaces.find(({ id }) => id === request.originatingWorkspaceId)?.name) ||
+        "this project",
+      [request.answer, request.originatingWorkspaceId],
+    ),
+  );
+  const answerNote = requestAnswerNote(request, projectName);
   const risky = answers.kind === "approve" && answers.highRisk;
 
   // Nothing about a card that hasn't been measured yet says it fits, so its
@@ -243,6 +260,11 @@ function AnswerCard(props: RequestCardProps): ReactNode {
               {requestAgentProposedLabel}
             </AppText>
           ) : null}
+          {answerNote === null ? null : (
+            <AppText role="caption" tone="muted">
+              {answerNote}
+            </AppText>
+          )}
           {props.subagentTitle && request.originatingNodeId !== undefined ? (
             <AskedBySubagent
               onOpen={() => {
@@ -337,7 +359,11 @@ function CardAnswers(props: {
             ? "Answer this on a computer."
             : props.denied === "administrator"
               ? "A Host administrator has to answer this."
-              : "The person who started this task has to answer this."}
+              : props.denied === "manager"
+                ? "A manager of this project has to answer this."
+                : props.denied === "other"
+                  ? "You can’t answer this."
+                  : "The person who started this task has to answer this."}
         </AppText>
         {overflows ? (
           <AnswerRow>

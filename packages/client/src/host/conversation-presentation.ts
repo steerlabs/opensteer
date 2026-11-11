@@ -1,4 +1,8 @@
-import { CHAT_THREAD_TITLE, type MessageAuthor, type MessageKind } from "@opensteer/core";
+import {
+  CHAT_THREAD_TITLE,
+  type MessageAuthorView as MessageAuthor,
+  type MessageKind,
+} from "@opensteer/core";
 import type { TranscriptGroup } from "./agent-activity-model.js";
 import type { MessageEntry } from "./client.js";
 import { formatClockTime } from "./thread-list-model.js";
@@ -29,6 +33,9 @@ export function messageAuthorName(
   if (author.kind === "platform") return "Opensteer";
   if (author.kind === "agent" && kind === "input" && author.threadId === homeThreadId)
     return CHAT_THREAD_TITLE;
+  // A connected agent speaks for a person; on a team that person is named.
+  if (author.kind === "connection" && author.ownerName)
+    return `${author.displayName} · ${author.ownerName}`;
   return author.displayName;
 }
 

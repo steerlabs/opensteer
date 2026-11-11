@@ -1,5 +1,11 @@
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
-import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
+import {
+  isTeamPlace,
+  placeHas,
+  teamEmptyThreadLine,
+  threadMark,
+  type PasswordsSetupOffer,
+} from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
 import { useCallback, useId, useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useLocation, useParams, useSearchParams } from "react-router";
@@ -72,6 +78,7 @@ import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, ChatOrb, taskStateWords } from "./workspace/task-mark.js";
 import { homeThreadKind, useTaskDirectory } from "./workspace/task-directory.js";
+import { TeamTaskFacts, useTeamRuntimeNotice } from "./team/team-task.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -252,6 +259,7 @@ function ThreadView({
   // composer: its draft, files and unsent message never follow the reader to
   // another one, and nothing that finishes late lands in the wrong one.
   const composerKey = `${snapshot.deploymentId ?? ""}:${snapshot.user?.id ?? ""}:${thread.id}`;
+  const teamRuntime = useTeamRuntimeNotice(thread);
   useEffect(() => {
     // Handed over once; opening this conversation again starts from its own draft.
     setRestoredDraft(null);
@@ -1031,8 +1039,29 @@ function ThreadView({
                   </span>
                 </button>
               ) : null}
-              {conversation.length === 0 && historyState === undefined ? (
-                <EmptyThread home={home} voice={voiceThread} />
+              {conversation.length === 0 &&
+              historyState === undefined &&
+              // A task with a question open or a team's account of it is not empty.
+              dockedRequests.length === 0 &&
+              !(
+                thread.startedBy ||
+                thread.requestWaits?.total ||
+                thread.requestOutcomes?.length
+              ) ? (
+                <EmptyThread
+                  home={home}
+                  team={
+                    isTeamPlace(snapshot)
+                      ? {
+                          project:
+                            snapshot.workspaces.find(({ id }) => id === thread.workspaceId)?.name ??
+                            "This project",
+                          name: snapshot.identityConfig?.deployment.name ?? "the team",
+                        }
+                      : null
+                  }
+                  voice={voiceThread}
+                />
               ) : null}
               <AgentTranscript
                 revealMessage={revealMessage}
@@ -1132,6 +1161,7 @@ function ThreadView({
           ) : null}
         </div>
         <ThreadServerApprovals threadId={thread.id} />
+        <TeamTaskFacts runtime={teamRuntime} thread={thread} />
         <RequestStack
           disabled={!canRespond}
           items={dockedRequests}
@@ -1220,36 +1250,40 @@ function ThreadView({
             }
             restoredDraft={restoredDraft?.composer === composerKey ? restoredDraft.restore : null}
             running={stopTarget !== null}
+            sendBlocked={teamRuntime ? "Can’t send yet." : null}
             stopping={activity === "stopping"}
             threadId={thread.id}
             footerExtras={
-              <>
-                {/* The picker opens while a response runs. What it cannot do is
+              // A team Project's settings choose how it runs; a person's choice is never used.
+              placeHas(snapshot, "execution-choice") ? (
+                <>
+                  {/* The picker opens while a response runs. What it cannot do is
                   apply — and it says why, instead of being a dead control. */}
-                <ExecutionControls
-                  access={{
-                    engine: threadPlacement,
-                    mode: thread.accessMode,
-                    onApply: async (accessMode) => {
-                      try {
-                        await hostClient.updateThreadAccess(thread.id, accessMode);
-                      } catch (error) {
-                        reportActionError(error);
-                      }
-                    },
-                  }}
-                  disabled={!canRespond || thread.status === "archived"}
-                  onAuthenticate={openHarnessAuthentication ?? undefined}
-                  onRefresh={refreshHarnessCatalog}
-                  onApply={applyExecution}
-                  placements={executionPlacements}
-                  preferences={executionPreferences}
-                  returnFocusRef={composerInputRef}
-                  review={reviewSelection}
-                  reviewFresh={reviewFresh}
-                  selection={threadSelection}
-                />
-              </>
+                  <ExecutionControls
+                    access={{
+                      engine: threadPlacement,
+                      mode: thread.accessMode,
+                      onApply: async (accessMode) => {
+                        try {
+                          await hostClient.updateThreadAccess(thread.id, accessMode);
+                        } catch (error) {
+                          reportActionError(error);
+                        }
+                      },
+                    }}
+                    disabled={!canRespond || thread.status === "archived"}
+                    onAuthenticate={openHarnessAuthentication ?? undefined}
+                    onRefresh={refreshHarnessCatalog}
+                    onApply={applyExecution}
+                    placements={executionPlacements}
+                    preferences={executionPreferences}
+                    returnFocusRef={composerInputRef}
+                    review={reviewSelection}
+                    reviewFresh={reviewFresh}
+                    selection={threadSelection}
+                  />
+                </>
+              ) : null
             }
           />
         )}
@@ -1484,9 +1518,11 @@ function ConversationSheetHandle({
 
 function EmptyThread({
   home = false,
+  team = null,
   voice = false,
 }: {
   readonly home?: boolean;
+  readonly team?: { readonly project: string; readonly name: string } | null;
   readonly voice?: boolean;
 }) {
   return (
@@ -1496,9 +1532,11 @@ function EmptyThread({
       <p className="hero__subtitle">
         {voice
           ? "Say what you need. It gets on with it, starts tasks for bigger work, and tells you when it needs you."
-          : home
-            ? "Ask here. Updates from your tasks will arrive here too."
-            : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
+          : team
+            ? teamEmptyThreadLine(team.project, team.name)
+            : home
+              ? "Ask here. Updates from your tasks will arrive here too."
+              : "Describe the outcome you want. Opensteer works in your Workspace and checks in when it needs you."}
       </p>
     </div>
   );

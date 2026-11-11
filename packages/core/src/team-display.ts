@@ -87,12 +87,14 @@ export const ThreadRequestWaitsSchema = z
 export const ThreadRequestOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
     requestId: RequestIdSchema,
+    class: ThreadRequestWaitSchema.shape.class.optional(),
     status: z.enum(["fulfilled", "declined", "withdrawn"]),
     at: z.iso.datetime({ offset: true }),
     resolvedByName: name,
   }),
   z.object({
     requestId: RequestIdSchema,
+    class: ThreadRequestWaitSchema.shape.class.optional(),
     status: z.literal("cancelled"),
     at: z.iso.datetime({ offset: true }),
     reason: ProjectRequestCancellationReasonSchema,

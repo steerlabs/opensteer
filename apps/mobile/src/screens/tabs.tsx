@@ -1,4 +1,4 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
+import { hostDeploymentPolicy, placeHas } from "@opensteer/client/host";
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
   allTabs,
@@ -89,7 +89,23 @@ export function TabsScreen(props: TabsScreenProps): ReactNode {
   const hostClient = useAttachedHost(deploymentId);
   useSidebarMenu(hostClient);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
-  return <AttachedTabs deploymentId={deploymentId} hostClient={hostClient} />;
+  return <TabsOrHome deploymentId={deploymentId} hostClient={hostClient} />;
+}
+
+const selectHasTabs = (snapshot: HostSnapshot) => placeHas(snapshot, "tabs");
+
+/** A place without Tabs, such as a team, sends a restored or direct Tabs route to its home. */
+function TabsOrHome(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+}): ReactNode {
+  const navigation = useNavigation();
+  const hasTabs = useHostSelector(props.hostClient, selectHasTabs);
+  useLayoutEffect(() => {
+    if (!hasTabs)
+      navigation.dispatch(StackActions.replace("Home", { deploymentId: props.deploymentId }));
+  }, [hasTabs, navigation, props.deploymentId]);
+  return hasTabs ? <AttachedTabs {...props} /> : null;
 }
 
 const selectReader = (snapshot: HostSnapshot) =>

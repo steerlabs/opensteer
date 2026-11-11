@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { mockTeamScenarios } from "../mock/mock-team-access.js";
-import { isTeamPlace } from "./team-place.js";
+import { awaitsFirstWorkspace, isTeamPlace } from "./team-place.js";
 
 describe("which shell a place gets", () => {
   it.each(["seeded", "first-run", "busy"] as const)(
@@ -15,6 +15,15 @@ describe("which shell a place gets", () => {
     },
   );
 
+  it("waits for Main on a Personal place, and not for Projects a team place may not have", () => {
+    const empty = { workspaces: [], deploymentId: "dep_00000000-0000-4000-8000-0000000000e1" };
+    expect(awaitsFirstWorkspace({ ...empty, teamAdministrationAvailable: false })).toBe(true);
+    expect(awaitsFirstWorkspace({ ...empty, teamAdministrationAvailable: true })).toBe(false);
+    expect(
+      awaitsFirstWorkspace({ ...empty, deploymentId: null, teamAdministrationAvailable: true }),
+    ).toBe(true);
+  });
+
   it("takes the team path only when the Host offers team administration", () => {
     expect(isTeamPlace({})).toBe(false);
     expect(isTeamPlace({ teamAdministrationAvailable: false })).toBe(false);
@@ -22,14 +31,19 @@ describe("which shell a place gets", () => {
   });
 
   it.each(mockTeamScenarios.filter((scenario) => scenario !== "absent"))(
-    "serves the %s team scenario as a team server: no Main, no Chat, only Projects",
+    "serves the %s team scenario as a team server: no Main, no Chat, only its own Projects",
     (team) => {
       const host = new MockHostClient({ team });
       const snapshot = host.getSnapshot();
       expect(isTeamPlace(snapshot)).toBe(true);
       expect(snapshot).toMatchObject({ homeWorkspaceId: null, homeThreadId: null });
       expect(snapshot.workspaces.every(({ kind }) => kind === "project")).toBe(true);
-      expect(snapshot.workspaces.length).toBeGreaterThan(0);
+      // Only Projects this person is on; a paused, removed or unplaced person has none.
+      expect(snapshot.workspaces.length > 0).toBe(
+        ["admin", "admin-stale", "member", "guest"].includes(team),
+      );
+      // A team with no Projects for this person still opens.
+      expect(awaitsFirstWorkspace(snapshot)).toBe(false);
       host.dispose();
     },
   );

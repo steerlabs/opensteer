@@ -3,6 +3,7 @@ import {
   sameStableHostSnapshot,
   unwrapRpcResult,
   type HostClient,
+  audienceLabel,
   isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
@@ -227,6 +228,11 @@ function ProjectDetail(props: {
                     {`Its folder is in Main on ${workspace.machineName}`}
                   </AppText>
                 )}
+                {workspace.audience && isTeamPlace(snapshot) ? (
+                  <AppText role="caption" tone="soft">
+                    {`Who can see this: ${audienceLabel(workspace.audience, workspace.name)}`}
+                  </AppText>
+                ) : null}
               </View>
             </View>
             <ProjectHealthNotice

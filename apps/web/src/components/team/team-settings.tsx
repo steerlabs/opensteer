@@ -3,6 +3,7 @@ import { Icon } from "../icon.js";
 import { PageTopbar } from "../page-header.js";
 import { Navigate, NavLink } from "react-router";
 import { TeamGroupPage, TeamGroupsPage } from "./team-groups.js";
+import { TeamComputerPage } from "./team-computer.js";
 import { TeamPeoplePage, TeamPersonPage } from "./team-people.js";
 import { teamReasonOf, isTeamPlace } from "@opensteer/client/host";
 import { TeamError, TeamMark, TeamStateNotice, useShellTeam } from "./team-ui.js";
@@ -10,13 +11,15 @@ import { TeamError, TeamMark, TeamStateNotice, useShellTeam } from "./team-ui.js
 /** The team's own group in the Settings rail, drawn only from what the Host allows. */
 export function TeamSettingsNavigation() {
   const { summary } = useShellTeam();
-  if (!summary || (!summary.can.people.allowed && !summary.can.groups.allowed)) return null;
+  const computer = summary?.can.computer?.allowed === true;
+  if (!summary || (!summary.can.people.allowed && !summary.can.groups.allowed && !computer))
+    return null;
   const link = (to: string, label: string) => (
     <NavLink
       className={({ isActive }) => `settings-navigation__link${isActive ? " is-active" : ""}`}
       to={to}
     >
-      <Icon name={to.endsWith("people") ? "user" : "users"} />
+      <Icon name={to.endsWith("people") ? "user" : to.endsWith("computer") ? "server" : "users"} />
       <span>
         <span className="settings-navigation__label">{label}</span>
       </span>
@@ -36,6 +39,7 @@ export function TeamSettingsNavigation() {
       </span>
       {summary.can.people.allowed ? link("/settings/team/people", "People") : null}
       {summary.can.groups.allowed ? link("/settings/team/groups", "Groups") : null}
+      {computer ? link("/settings/team/computer", "Team computer") : null}
     </div>
   );
 }
@@ -43,15 +47,22 @@ export function TeamSettingsNavigation() {
 export function TeamSettingsRoute({
   page,
 }: {
-  readonly page: "people" | "person" | "groups" | "group";
+  readonly page: "people" | "person" | "groups" | "group" | "computer";
 }) {
   const { openMobileNavigation, snapshot } = useShell();
   const { summary, error, identity, loading, refresh } = useShellTeam();
   if (!isTeamPlace(snapshot)) return <Navigate replace to="/settings" />;
   const people = page === "people" || page === "person";
-  const title = people ? "People" : "Groups";
+  const title = people ? "People" : page === "computer" ? "Team computer" : "Groups";
   // The Host's answer for this person decides; until it arrives, nothing team-shaped renders.
-  const can = summary ? (people ? summary.can.people : summary.can.groups) : null;
+  // A Host that doesn't say whether this person may see the computer hasn't allowed it.
+  const can = summary
+    ? people
+      ? summary.can.people
+      : page === "computer"
+        ? (summary.can.computer ?? { allowed: false })
+        : summary.can.groups
+    : null;
   if (can && !can.allowed) return <Navigate replace to="/settings" />;
   return (
     <div className="page settings">
@@ -74,6 +85,8 @@ export function TeamSettingsRoute({
             <TeamPeoplePage />
           ) : page === "person" ? (
             <TeamPersonPage />
+          ) : page === "computer" ? (
+            <TeamComputerPage />
           ) : page === "groups" ? (
             <TeamGroupsPage />
           ) : (

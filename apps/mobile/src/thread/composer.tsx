@@ -112,6 +112,8 @@ export function Composer(props: {
   readonly deploymentId: string;
   /** What stops this Thread accepting anything, in words, or null. */
   readonly disabledReason: string | null;
+  /** The Host can't take a message here now; the draft stays editable and kept. */
+  readonly sendBlockedReason?: string | null;
   /** An archived Thread keeps its transcript; its bar keeps only a sentence. */
   readonly readOnly?: boolean;
   readonly drafts: ThreadDraftStore;
@@ -123,6 +125,8 @@ export function Composer(props: {
   readonly hostClient: HostClient;
   /** What the next message will run on, in the words the settings sheet uses. */
   readonly modelLabel: string;
+  /** False where a person's engine and model choice is never used: a team Project's settings decide them. */
+  readonly executionChoice?: boolean;
   readonly model: HarnessModelDescriptor | null;
   readonly modelOptions: ModelSelection["options"];
   readonly mutationGate: ThreadMutationGate;
@@ -314,7 +318,8 @@ export function Composer(props: {
     voice: voiceReady,
   });
   const canSend =
-    view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady);
+    (props.sendBlockedReason ?? null) === null &&
+    (view.canSend || (dictating && !disabled && !sending && pending === null && attachmentsReady));
   const requestBlocked = disabled || sending || pending !== null;
   const changeText = (next: string): void => {
     draftText.current = next;
@@ -714,12 +719,16 @@ export function Composer(props: {
       label: "Attach photo…",
       onPress: () => void staged.pick("photo"),
     },
-    {
-      icon: "gearshape",
-      id: "model",
-      label: props.variant === "conversation" ? "AI settings" : "Change model…",
-      onPress: () => props.onChangeModel(),
-    },
+    ...(props.executionChoice === false
+      ? []
+      : [
+          {
+            icon: "gearshape" as const,
+            id: "model",
+            label: props.variant === "conversation" ? "AI settings" : "Change model…",
+            onPress: () => props.onChangeModel(),
+          },
+        ]),
     ...props.conversationActions,
     ...(props.running
       ? [
@@ -987,7 +996,13 @@ export function Composer(props: {
                             busy={sending}
                             disabled={!canSend}
                             kind="send"
-                            label={sending ? "Sending" : "Send message"}
+                            label={
+                              sending
+                                ? "Sending"
+                                : (props.sendBlockedReason ?? null) !== null
+                                  ? "Can’t send yet"
+                                  : "Send message"
+                            }
                             onPress={() => void send()}
                           />
                         )}
@@ -1008,7 +1023,7 @@ export function Composer(props: {
                   />
                 ),
               }
-            : view.showPills
+            : view.showPills && props.executionChoice !== false
               ? {
                   accessory: (
                     <View>

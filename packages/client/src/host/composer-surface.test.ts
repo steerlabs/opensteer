@@ -41,6 +41,20 @@ function pendingRequest(
 }
 
 describe("deriveSurface", () => {
+  it("takes who may answer from the Host's answer when it sends one, over the client's rule", () => {
+    const someoneElses = pendingRequest({ requestedBy: createId("user") });
+    expect(deriveSurface([someoneElses], viewer)?.denied).toBe("requester");
+    expect(
+      deriveSurface([{ ...someoneElses, answer: { allowed: true } }], viewer)?.denied,
+    ).toBeNull();
+    expect(
+      deriveSurface(
+        [{ ...pendingRequest(), answer: { allowed: false, reason: "manager-only" } }],
+        viewer,
+      )?.denied,
+    ).toBe("manager");
+  });
+
   it("shows the Request a person asked to see, and ignores one no longer waiting", () => {
     const first = pendingRequest({ mode: "live" });
     const second = pendingRequest({ mode: "durable" });
