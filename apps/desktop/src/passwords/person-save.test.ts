@@ -44,6 +44,7 @@ describe("person save authority", () => {
       kind: "offer",
       transactionId: expect.any(String),
       expiresAt: Date.parse("2026-11-11T10:02:00.000Z"),
+      ended: expect.any(AbortSignal),
     });
     expect(broker.saveBegin).toHaveBeenCalledWith(
       {
@@ -94,6 +95,17 @@ describe("person save authority", () => {
     authority.close();
     expect(broker.cancel).toHaveBeenCalledWith(begun.transactionId);
     expect(await authority.begin(candidate)).toEqual({ kind: "skip" });
+  });
+
+  it("passes on the broker's lifetime, and drops a begin whose answer never came", async () => {
+    const { authority, broker, lifetime } = fixture();
+    const begun = await authority.begin(candidate);
+    if (begun.kind !== "offer") throw new Error("expected an offer");
+    expect(begun.ended).toBe(lifetime.signal);
+    broker.saveBegin.mockRejectedValueOnce(new Error("synthetic-password timed out"));
+    expect(await authority.begin(candidate)).toEqual({ kind: "skip" });
+    const lost = broker.saveBegin.mock.calls[1]![0].transactionId;
+    expect(broker.cancel).toHaveBeenCalledWith(lost);
   });
 
   it("saves nothing over a connection that predates saving", async () => {

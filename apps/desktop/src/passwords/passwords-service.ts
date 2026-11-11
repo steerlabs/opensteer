@@ -551,7 +551,9 @@ export class PasswordsService {
       const enabled =
         transaction.credential === "person"
           ? status.broker.personFill === "on"
-          : status.broker.agentSignIns === "on";
+          : transaction.credential === "save"
+            ? status.broker.personSave === "on"
+            : status.broker.agentSignIns === "on";
       if (!enabled || status.broker.vault !== "ready") transaction.lifetime.abort("denied");
     }
     const key = JSON.stringify(status);

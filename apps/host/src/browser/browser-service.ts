@@ -5347,6 +5347,7 @@ class HostedBrowserBroker {
           type: "input.cancel",
           producerId: outlet.clipboardToken,
           inputGeneration: outlet.inputGeneration,
+          ...(this.#snapshot.personFillVersion === 2 ? { ended: true as const } : {}),
         }).catch(() => undefined);
       if (wasSubscribed) {
         void this.#reconcileStreaming().catch(() => undefined);

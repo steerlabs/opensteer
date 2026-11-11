@@ -58,9 +58,16 @@ export class PasswordsPersonSaveAuthority {
       }
       this.#held.add(transactionId);
       lifetime.addEventListener("abort", () => this.#held.delete(transactionId), { once: true });
-      return { kind: "offer", transactionId, expiresAt: Date.parse(decision.expiresAt) };
+      return {
+        kind: "offer",
+        transactionId,
+        expiresAt: Date.parse(decision.expiresAt),
+        ended: lifetime,
+      };
     } catch {
-      // A broker failure can carry the login in its cause; only `skip` leaves here.
+      // The broker may hold it all the same, so it is told to drop it. A failure
+      // can carry the login in its cause; only `skip` leaves here.
+      void broker.cancel(transactionId).catch(() => undefined);
       return skip;
     }
   }

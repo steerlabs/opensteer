@@ -17,7 +17,26 @@ const viewer = randomUUID();
 /** A verdict waits two seconds for a password field to come back; this leaves room inside the test timeout. */
 const step = { timeout: 8_000 };
 
-/** A sign-in that goes home, and one whose form comes back as a failed sign-in does. */
+/**
+ * A sign-in inside a shadow root that, like an app's, answers without a
+ * navigation: it leaves, or on a wrong password draws its form again.
+ */
+const shadowForm = (
+  signedIn: boolean,
+) => `<!doctype html><title>App sign in</title><div id="host"></div><script>
+const root = host.attachShadow({ mode: "open" });
+const form = '<form><input id="u" autocomplete="username"><input id="p" type="password"><button>Sign in</button></form>';
+root.innerHTML = form;
+root.querySelector("form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  setTimeout(() => ${signedIn} ? root.replaceChildren(Object.assign(document.createElement("p"), { textContent: "Signed in" })) : (root.innerHTML = form), 50);
+});
+</script>`;
+
+/**
+ * A sign-in that goes home on another host of the site, one whose form comes
+ * back as a failed sign-in does, and one in a shadow root.
+ */
 async function signInSite() {
   const form = (action: string, password = "password") =>
     `<!doctype html><title>Sign in</title><form method="post" action="${action}"><input id="u" name="username" autocomplete="username"><input id="p" name="${password}" type="password" autocomplete="current-password"><button>Sign in</button></form>`;
@@ -26,14 +45,19 @@ async function signInSite() {
     (request, response) => {
       const path = new URL(request.url ?? "/", "https://fixture").pathname;
       response.setHeader("content-type", "text/html");
+      const host = request.headers.host ?? "";
       response.end(
         path === "/login"
-          ? form("/home")
-          : path === "/pin"
-            ? form("/home", "card-pin")
-            : path === "/retry"
-              ? form("/retry")
-              : "<!doctype html><title>Home</title><p>Signed in</p>",
+          ? form(`https://app.example.test:${host.split(":")[1]}/home`)
+          : path === "/shadow" || path === "/shadow-retry"
+            ? shadowForm(path === "/shadow")
+            : path === "/plain"
+              ? form("/home")
+              : path === "/pin"
+                ? form("/home", "card-pin")
+                : path === "/retry"
+                  ? form("/retry")
+                  : "<!doctype html><title>Home</title><p>Signed in</p>",
       );
     },
   );
@@ -59,7 +83,12 @@ function recordingAuthority() {
       begun.push(candidate);
       const transactionId = randomUUID();
       transactions.push(transactionId);
-      return { kind: "offer", transactionId, expiresAt: Date.now() + 120_000 };
+      return {
+        kind: "offer",
+        transactionId,
+        expiresAt: Date.now() + 120_000,
+        ended: new AbortController().signal,
+      };
     },
     personSaveCommit: async (transactionId) => {
       committed.push(transactionId);
@@ -106,7 +135,10 @@ async function signInPage() {
       });
   };
   const type = async (field: "u" | "p", text: string) => {
-    await session.read(id, `document.querySelector("#${field}").focus()`);
+    await session.read(
+      id,
+      `(document.querySelector("#host")?.shadowRoot ?? document).querySelector("#${field}").focus()`,
+    );
     for (const character of text) await key(character);
   };
   const saveMessages = (type: "browser.passwordSave.offer" | "browser.passwordSave.ended") =>
@@ -170,6 +202,45 @@ describe("saving a login a person typed", () => {
   it("drops a login whose form comes back, as a failed sign-in's does", async () => {
     const page = await signInPage();
     await page.open("/retry");
+    await page.type("u", "maya@example.test");
+    await page.type("p", "wrong-pw");
+    await page.key("Enter");
+    await vi.waitFor(() => {
+      expect(page.transactions, "the login was held").toHaveLength(1);
+      expect(page.cancelled, "the held login was dropped").toEqual(page.transactions);
+    }, step);
+    expect(page.saveMessages("browser.passwordSave.offer")).toEqual([]);
+  });
+
+  it("ends a save when its viewer leaves before the sign-in settles", async () => {
+    const page = await signInPage();
+    await page.open("/login");
+    await page.type("u", "maya@example.test");
+    await page.type("p", "synthetic-pw");
+    await page.key("Enter");
+    await vi.waitFor(() => expect(page.transactions, "the login was held").toHaveLength(1), step);
+    await page.controller.handle({ type: "input.cancel", producerId: viewer, ended: true });
+    expect(page.cancelled, "the held login was dropped").toEqual(page.transactions);
+    await page.landed("/home");
+    expect(page.saveMessages("browser.passwordSave.offer")).toEqual([]);
+  });
+
+  it("offers a sign-in made in a shadow root once its form leaves the page", async () => {
+    const page = await signInPage();
+    await page.open("/shadow");
+    await page.type("u", "maya@example.test");
+    await page.type("p", "synthetic-pw");
+    await page.key("Enter");
+    await vi.waitFor(
+      () => expect(page.saveMessages("browser.passwordSave.offer"), "the offer").toHaveLength(1),
+      step,
+    );
+    expect(page.begun.map(({ username }) => username)).toEqual(["maya@example.test"]);
+  });
+
+  it("drops a shadow-root sign-in whose form comes back", async () => {
+    const page = await signInPage();
+    await page.open("/shadow-retry");
     await page.type("u", "maya@example.test");
     await page.type("p", "wrong-pw");
     await page.key("Enter");

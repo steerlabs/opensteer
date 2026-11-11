@@ -1015,10 +1015,24 @@ it("names the viewer whose input a page edit followed, judged by when the edit h
       consumerToken: "viewer",
       native: false,
     });
+    // A window the trimmed timeline no longer covers is nobody's: it could have held an agent.
+    now.mockReturnValue(16_000);
+    ledger.recordAgentCommand(targetId);
+    for (let key = 1; key <= 64; key++) {
+      now.mockReturnValue(16_000 + key);
+      ledger.recordViewerInput(surfaceId, "viewer");
+    }
+    expect(ledger.viewerInputAt(surfaceId, 16_065)).toBeNull();
+    now.mockReturnValue(21_100);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 21_101), "once the lost window is old").toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
     // Input that names no viewer is nobody's.
-    now.mockReturnValue(15_050);
+    now.mockReturnValue(21_150);
     ledger.recordViewerInput(surfaceId, null);
-    expect(ledger.viewerInputAt(surfaceId, 15_051)).toBeNull();
+    expect(ledger.viewerInputAt(surfaceId, 21_151)).toBeNull();
   } finally {
     now.mockRestore();
     await ledger.close();

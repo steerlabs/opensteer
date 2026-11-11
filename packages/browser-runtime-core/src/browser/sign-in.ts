@@ -60,7 +60,13 @@ export interface PersonSaveCandidate {
  * Mac and the person typed here. `skip`: nothing to ask.
  */
 export type PersonSaveBegin =
-  | { readonly kind: "offer"; readonly transactionId: string; readonly expiresAt: number }
+  | {
+      readonly kind: "offer";
+      readonly transactionId: string;
+      readonly expiresAt: number;
+      /** Aborted once the broker no longer holds it: its connection went or saving turned off. */
+      readonly ended: AbortSignal;
+    }
   | { readonly kind: "setup" }
   | { readonly kind: "skip" };
 

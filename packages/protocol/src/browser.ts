@@ -617,6 +617,11 @@ const BaselineBrowserClientMessageSchema = z
       ...browserBase,
       type: z.literal("input.cancel"),
       surfaceId: BrowserSurfaceIdSchema.optional(),
+      /**
+       * The producer's viewer left for good, not just its stream. Sent only to a
+       * runtime with person fill 2, which ends that viewer's save offers.
+       */
+      ended: z.literal(true).optional(),
     }),
     z.strictObject({
       ...browserBase,

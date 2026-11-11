@@ -197,6 +197,8 @@ interface SurfaceRecord {
     readonly consumerToken: string | null;
     readonly native: boolean;
   }[];
+  /** When the newest input dropped from the timeline arrived: nothing after it is missing. */
+  inputTimelineFloor: number;
   popupInputSequence: number;
 }
 
@@ -734,8 +736,11 @@ export class SurfaceLedger {
     at: number,
   ): { readonly consumerToken: string; readonly native: boolean } | null {
     const since = at - userActivationLifespanMs;
+    const record = this.records.get(surfaceId);
+    // A window the timeline no longer covers could have held an agent's command.
+    if (!record || record.inputTimelineFloor > since) return null;
     let input: SurfaceRecord["inputTimeline"][number] | undefined;
-    for (const entry of this.records.get(surfaceId)?.inputTimeline ?? []) {
+    for (const entry of record.inputTimeline) {
       if (entry.at > at || entry.at <= since) continue;
       if (!entry.consumerToken) return null;
       input = entry;
@@ -747,7 +752,8 @@ export class SurfaceLedger {
 
   #recordInput(record: SurfaceRecord, entry: SurfaceRecord["inputTimeline"][number]): void {
     record.inputTimeline.push(entry);
-    if (record.inputTimeline.length > 64) record.inputTimeline.shift();
+    if (record.inputTimeline.length > 64)
+      record.inputTimelineFloor = record.inputTimeline.shift()!.at;
   }
 
   recordAgentCommand(targetId: string): void {
@@ -1280,6 +1286,7 @@ export class SurfaceLedger {
           userActivitySequence: 0,
           viewerInput: null,
           inputTimeline: [],
+          inputTimelineFloor: 0,
           popupInputSequence: 0,
         };
         announce = () => {

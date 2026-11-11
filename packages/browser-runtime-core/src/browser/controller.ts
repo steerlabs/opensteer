@@ -240,6 +240,8 @@ interface SaveOffer {
 }
 /** Who typed into a password field, or null once anyone else may have. */
 type SaveAuthor = { readonly consumerToken: string; readonly native: boolean } | null;
+/** Password fields whose authorship one tab keeps; past it, taints alone fill it. */
+const personSaveFieldLimit = 256;
 /** A setup offer is not backed by a broker deadline. */
 const personSaveSetupOfferMs = 2 * 60_000;
 
@@ -248,6 +250,8 @@ export class BrowserController {
   private readonly saveAuthority: BrowserLoginAuthority | undefined;
   private readonly saveOffers = new Map<BrowserSurfaceId, SaveOffer>();
   private readonly saveAuthors = new Map<BrowserSurfaceId, Map<string, SaveAuthor>>();
+  /** Tabs whose taints outgrew what is kept: nothing there is offered again. */
+  private readonly saveRefused = new Set<BrowserSurfaceId>();
   private readonly nativePresentation: BrowserControllerOptions["nativePresentation"];
   private readonly personOffers = new Map<BrowserSurfaceId, PersonOffer>();
 
@@ -723,6 +727,8 @@ export class BrowserController {
   private enqueue(message: BrowserClientMessage): Promise<void> {
     if (message.type === "autofill.fill") return this.fillPersonOffer(message);
     if (message.type === "passwordSave.answer") return this.answerPersonSave(message);
+    if (message.type === "input.cancel" && message.ended && message.producerId)
+      this.viewerLeftSave(message.producerId);
     if (
       (message.type === "navigation.go" || message.type === "cdp.command") &&
       message.navigationId !== undefined &&
@@ -2449,12 +2455,27 @@ export class BrowserController {
           ? null
           : { consumerToken: input.consumerToken, native: input.native },
       );
-      if (authors.size > 16) authors.delete(authors.keys().next().value!);
+      // A field's taint is never forgotten: only attributed fields make room.
+      if (authors.size > personSaveFieldLimit) {
+        const attributed = [...authors].find(([, author]) => author !== null)?.[0];
+        if (attributed) authors.delete(attributed);
+        else this.saveRefused.add(surfaceId);
+      }
       return;
     }
+    if (this.saveRefused.has(surfaceId)) return;
     const [first, ...others] = event.snapshot.fieldIds.map((fieldId) => authors?.get(fieldId));
     if (!first || others.some((author) => author?.consumerToken !== first.consumerToken)) return;
     void this.beginPersonSave(surfaceId, event.snapshot, first);
+  }
+
+  /** A viewer that left can answer nothing, and nothing it typed counts any more. */
+  private viewerLeftSave(consumerToken: string): void {
+    for (const authors of this.saveAuthors.values())
+      for (const [fieldId, author] of authors)
+        if (author?.consumerToken === consumerToken) authors.set(fieldId, null);
+    for (const [surfaceId, offer] of this.saveOffers)
+      if (offer.consumerToken === consumerToken) this.endPersonSave(surfaceId, offer, "ended");
   }
 
   private agentActedOnSave(surfaceId: BrowserSurfaceId): void {
@@ -2485,10 +2506,8 @@ export class BrowserController {
       ended: false,
     };
     this.saveOffers.set(surfaceId, offer);
-    const { username, verdict } = snapshot;
+    const { origin, username, verdict } = snapshot;
     try {
-      const origin = await snapshot.origin();
-      if (!origin || offer.ended) return this.endPersonSave(surfaceId, offer, "ended");
       const begun = await authority.personSaveBegin!({
         targetId: surface.targetId,
         origin,
@@ -2499,6 +2518,9 @@ export class BrowserController {
       if (begun.kind === "offer") {
         if (offer.ended) return authority.personSaveCancel!(begun.transactionId);
         offer.transactionId = begun.transactionId;
+        begun.ended.addEventListener("abort", () => this.endPersonSave(surfaceId, offer, "ended"), {
+          once: true,
+        });
       }
       if (begun.kind === "skip" || offer.ended)
         return this.endPersonSave(surfaceId, offer, "ended");
@@ -2784,11 +2806,13 @@ export class BrowserController {
       for (const [surfaceId, offer] of this.saveOffers)
         this.endPersonSave(surfaceId, offer, "ended");
       this.saveAuthors.clear();
+      this.saveRefused.clear();
     }
     if (event.type === "changed" && event.change === "closed") {
       this.withdrawPersonOffer(event.surface.id);
       this.endPersonSave(event.surface.id, this.saveOffers.get(event.surface.id), "ended");
       this.saveAuthors.delete(event.surface.id);
+      this.saveRefused.delete(event.surface.id);
     }
 
     if (event.type === "navigation.committed") {

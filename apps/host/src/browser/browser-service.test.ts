@@ -7184,6 +7184,7 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     targetedStreaming: true,
+    inputLanes: true,
   });
   const ownerId = createId("user"),
     workspaceId = createId("workspace");
@@ -7338,4 +7339,14 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
   expect(
     runtime.receivedCommands().filter((command) => command.type === "passwordSave.answer"),
   ).toEqual([expect.objectContaining({ ...answer, producerId: actor.token })]);
+  // A viewer that leaves for good says so, which ends its save offers.
+  actor.attachment.close();
+  await vi.waitFor(
+    () =>
+      expect(
+        runtime.receivedCommands().filter((command) => command.type === "input.cancel"),
+        "Runtime never heard the viewer left",
+      ).toContainEqual(expect.objectContaining({ producerId: actor.token, ended: true })),
+    { timeout: 2_000 },
+  );
 });

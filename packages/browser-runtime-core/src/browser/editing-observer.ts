@@ -63,6 +63,16 @@ const frameTree = z.object({
   frame: z.object({ id: z.string(), securityOrigin: z.string().optional() }),
   childFrames: z.array(z.unknown()).optional(),
 });
+/** An exact HTTPS origin, or null for an opaque, insecure or malformed one. */
+function exactHttpsOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.origin === value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function committedOrigin(tree: unknown, frameId: string): string | null {
   const parsed = frameTree.safeParse(tree);
   if (!parsed.success) return null;
@@ -87,6 +97,7 @@ const saveSnapshotReport = z.object({
   fieldIds: z.array(z.uuid()).min(1).max(2),
   username: z.string().min(1).max(1_024),
   password: z.string().min(1).max(4_096),
+  origin: z.string().max(2_048),
 });
 const saveEditReport = z.object({
   kind: z.literal("person-save-edit"),
@@ -106,8 +117,8 @@ export interface PersonSaveSnapshot {
   readonly fieldIds: readonly string[];
   readonly username: string;
   readonly password: string;
-  /** The submitting frame's committed HTTPS origin, or null. */
-  origin(): Promise<string | null>;
+  /** The submitting document's HTTPS origin, read in the page as it submitted. */
+  readonly origin: string;
   /**
    * Whether the sign-in looks done: its form left the page, or the frame
    * moved on, and no password field is shown there `personSaveSettleMs`
@@ -545,23 +556,11 @@ export class PageEditingObserver {
     const report = saveSnapshotReport.safeParse(payload);
     if (!report.success) return true;
     const { snapshotId, fieldIds, username, password } = report.data;
+    const origin = exactHttpsOrigin(report.data.origin);
+    if (!origin) return true;
     // Watched from the report on: the page can move on before anyone asks for the verdict.
     const verdict = this.#watchSave(snapshotId, frame);
-    this.#save({
-      type: "snapshot",
-      snapshot: {
-        fieldIds,
-        username,
-        password,
-        origin: async () => {
-          const tree = await this.#cdp
-            .send<{ frameTree?: unknown }>("Page.getFrameTree")
-            .catch(() => null);
-          return committedOrigin(tree?.frameTree, frame);
-        },
-        verdict,
-      },
-    });
+    this.#save({ type: "snapshot", snapshot: { fieldIds, username, password, origin, verdict } });
     return true;
   }
 
@@ -974,10 +973,14 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       }
     });
   }
-  const passwordShown = () =>
-    Array.from(document.querySelectorAll('input[type="password"]')).some(writable);
-  const saveFields = new Map(), pendingSaves = new Map();
-  let lastSave = null, saveWatch = null;
+  // Every password field this document shows, open shadow roots included.
+  const passwordShown = (root = document) =>
+    Array.from(root.querySelectorAll('input[type="password"]')).some(writable) ||
+    Array.from(root.querySelectorAll("*")).some(element => element.shadowRoot && passwordShown(element.shadowRoot));
+  // Held weakly, so a field the page drops takes the typed value with it.
+  let saveFields = new WeakMap();
+  const pendingSaves = new Map();
+  let saveWatch = null;
   if (${personSave}) {
     const report = (message) => globalThis[${JSON.stringify(binding)}](JSON.stringify(message));
     const eventTarget = (event) => event.composedPath()[0];
@@ -1013,9 +1016,8 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       field.value = element.value;
       report({ kind: "person-save-edit", fieldId: field.id, at: Date.now() });
     });
-    const watchSaves = () => {
-      if (saveWatch) return;
-      saveWatch = new MutationObserver(() => {
+    const watchSaves = (roots) => {
+      saveWatch ??= new MutationObserver(() => {
         for (const [snapshotId, fields] of pendingSaves) {
           if (fields.some(field => writable(field.deref()))) continue;
           pendingSaves.delete(snapshotId);
@@ -1026,7 +1028,8 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
           saveWatch = null;
         }
       });
-      saveWatch.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class", "hidden"] });
+      for (const root of roots)
+        saveWatch.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class", "hidden"] });
     };
     const takeSave = (node) => {
       if (!(node instanceof Node)) return;
@@ -1048,14 +1051,15 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
       const password = filled[0].value;
       if (!username) return;
       const fieldIds = filled.map(input => saveFields.get(input).id);
-      const key = JSON.stringify([fieldIds, username, password]);
-      if (lastSave === key) return;
-      lastSave = key;
+      // Read once: the copy is dropped, so the same attempt's next submit signal
+      // finds nothing new until the person types again.
+      for (const input of filled) saveFields.get(input).value = null;
       const snapshotId = crypto.randomUUID();
-      report({ kind: "person-save", snapshotId, fieldIds, username, password });
+      // The origin is the submitting document's own, read before it can navigate.
+      report({ kind: "person-save", snapshotId, fieldIds, username, password, origin: location.origin });
       pendingSaves.set(snapshotId, filled.map(input => new WeakRef(input)));
       setTimeout(() => pendingSaves.delete(snapshotId), 30000);
-      watchSaves();
+      watchSaves(new Set([document, ...filled.map(input => input.getRootNode())]));
     };
     on(document, "submit", event => takeSave(eventTarget(event)));
     on(document, "keydown", event => {
@@ -1314,7 +1318,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
     prepare,
     stop: () => {
       personBindings.clear();
-      saveFields.clear();
+      saveFields = new WeakMap();
       pendingSaves.clear();
       saveWatch?.disconnect();
       listeners.forEach((fn) => fn());
