@@ -25,10 +25,7 @@ import {
   type LoginSealResult,
   type PasswordSignInCard,
 } from "@opensteer/protocol";
-import {
-  PasswordsBrokerSignInRequestParamsSchema,
-  PasswordsBrokerSignInRequestV6ParamsSchema,
-} from "@opensteer/protocol/passwords-broker";
+import { PasswordsBrokerSignInRequestParamsSchema } from "@opensteer/protocol/passwords-broker";
 import {
   PasswordsBrokerFailure,
   type PasswordsBrokerSession,
@@ -50,7 +47,7 @@ interface Operation {
   readonly expiresAt: number;
   readonly authority: AbortController;
   readonly close: () => void;
-  readonly modern: boolean;
+  readonly referenceBound: boolean;
   readonly credential: "login" | "card";
   readonly broker: PasswordsBrokerSession;
   queue: Promise<void>;
@@ -73,7 +70,6 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
   readonly #unobserveStatus: (() => void) | undefined;
   readonly #cardBroker: (PasswordsBrokerSession & PasswordsBrokerCardSession) | undefined;
   readonly #epochs = new WeakMap<Electron.WebContents, { value: number }>();
-  readonly #legacyBroker: PasswordsBrokerSession;
   readonly #ownOrigins: () => readonly string[];
   readonly #operations = new Map<string, Operation>();
   readonly #references = new Map<string, string>();
@@ -81,7 +77,6 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
 
   constructor(options: {
     broker: PasswordsBrokerSession;
-    legacyBroker?: PasswordsBrokerSession;
     ownOrigins: () => readonly string[];
     observeStatus?: (listener: (status: DesktopPasswordsStatus) => void) => () => void;
   }) {
@@ -104,7 +99,6 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       "cardProbe" in options.broker
     )
       this.#cardBroker = options.broker as PasswordsBrokerSession & PasswordsBrokerCardSession;
-    this.#legacyBroker = options.legacyBroker ?? options.broker;
     this.#ownOrigins = options.ownOrigins;
   }
 
@@ -138,8 +132,8 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     signal: AbortSignal,
     needs: (need: "approval" | null) => void,
   ): Promise<Authorization> {
-    const modern = "loginRef" in input;
-    const broker = modern ? this.#broker : this.#legacyBroker;
+    const referenceBound = "loginRef" in input;
+    const broker = this.#broker;
     const { promise, resolve } = Promise.withResolvers<Authorization>();
     const authority = new AbortController();
     let settled = false;
@@ -168,7 +162,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     };
     const operation: Operation = {
       authority,
-      modern,
+      referenceBound,
       credential: "login",
       broker,
       queue: Promise.resolve(),
@@ -254,7 +248,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
           state = {
             stage: "approval",
             accounts: result.accounts,
-            permissionVersion: 5 as const,
+            permissionVersion: 6 as const,
           };
           return { ok: false, card: state, message: result.message };
         } catch (error) {
@@ -275,25 +269,15 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
     try {
       if (!settled) {
         const grant = await broker.request(
-          operation.modern
-            ? PasswordsBrokerSignInRequestV6ParamsSchema.parse({
-                ...input.requester,
-                expiresAt: input.expiresAt.toISOString(),
-                protocolVersion: 6,
-                permissionVersion: 5,
-                site: input.site,
-                transactionId: input.operationId,
-                workspaceId: input.workspaceId,
-              })
-            : PasswordsBrokerSignInRequestParamsSchema.parse({
-                ...input.requester,
-                expiresAt: input.expiresAt.toISOString(),
-                runtimeId: "runtimeId" in input ? input.runtimeId : undefined,
-                sessionId: "sessionId" in input ? input.sessionId : undefined,
-                site: input.site,
-                transactionId: input.operationId,
-                workspaceId: input.workspaceId,
-              }),
+          PasswordsBrokerSignInRequestParamsSchema.parse({
+            ...input.requester,
+            deploymentId: input.deploymentId,
+            expiresAt: input.expiresAt.toISOString(),
+            protocolVersion: 10,
+            permissionVersion: 6,
+            site: input.site,
+            transactionId: input.operationId,
+          }),
           signal,
         );
         if (signal.aborted || this.#operations.get(input.operationId) !== operation)
@@ -315,7 +299,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
             state = {
               stage: "approval",
               accounts: decision.accounts,
-              permissionVersion: 5 as const,
+              permissionVersion: 6 as const,
             };
             needs("approval");
           }
@@ -487,7 +471,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       authority,
       broker,
       credential: "card",
-      modern: true,
+      referenceBound: true,
       queue: Promise.resolve(),
       authorized: false,
       committed: false,
@@ -569,11 +553,11 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       .cardRequest(
         {
           ...input.requester,
+          deploymentId: input.deploymentId,
           transactionId: input.operationId,
           expiresAt: new Date(expiresAt).toISOString(),
           site: input.site,
-          workspaceId: input.workspaceId,
-          protocolVersion: 7,
+          protocolVersion: 10,
           permissionVersion: 7,
         },
         authority.signal,
@@ -754,7 +738,7 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
       operation.credential === "card" ||
       !operation.authorized ||
       !operation.committed ||
-      !operation.modern
+      !operation.referenceBound
     )
       return expired();
     if (
@@ -895,10 +879,10 @@ export class PasswordsLoginAuthority implements BrowserLoginAuthority {
           transactionId: input.operationId,
           field: input.field === "code" ? "totp" : input.field,
           origin,
-          ...(operation.modern ? { kind: "browser" as const } : {}),
+          kind: "browser",
         },
         // Broker cancellation ends the shared transaction. A detached browser
-        // only discards this fill after release; Workspace authority still cancels it.
+        // only discards this fill after release; Personal authority still cancels it.
         operation.authority.signal,
       );
       releasing = false;

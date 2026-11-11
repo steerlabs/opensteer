@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserListTabsParametersSchema,
   BrowserResumeTabParametersSchema,
@@ -28,7 +29,7 @@ import {
   browserStateImportRuntimeTimeoutMs,
   BrowserSurfaceIdSchema,
   browserTabOpenClosedReason,
-  browserWorkspaceTabUrlMaxLength,
+  browserPersonalTabUrlMaxLength,
   LoginFieldSchema,
   CardRefSchema,
   personFillMaxAccounts,
@@ -2065,7 +2066,7 @@ export class BrowserController {
         requester: message.requester,
         sessionId: this.claims.sessionId,
         site: message.site,
-        workspaceId: message.workspaceId,
+        deploymentId: DeploymentIdSchema.parse(message.requester.deploymentId),
       },
       (outcome) =>
         this.closed
@@ -3547,12 +3548,12 @@ export class BrowserController {
         sessionId: true,
       }).extend({ operationAuthority: z.string().max(16384).optional() });
       const parsed = (
-        this.claims.workspaceTabRestoreVersion === 1
+        this.claims.tabRestoreVersion === 1
           ? z.union([
               fields,
               fields.extend({
                 surfaceId: BrowserSurfaceIdSchema,
-                url: z.url().max(browserWorkspaceTabUrlMaxLength).optional(),
+                url: z.url().max(browserPersonalTabUrlMaxLength).optional(),
               }),
             ])
           : fields
@@ -3602,7 +3603,7 @@ export class BrowserController {
       let tabId = previous?.tabId;
       if (!tabId) {
         const surfaceId =
-          this.claims.workspaceTabRestoreVersion === 1
+          this.claims.tabRestoreVersion === 1
             ? BrowserSurfaceIdSchema.safeParse(parameters?.surfaceId).data
             : undefined;
         this.openOperations.add(opening);
@@ -3648,8 +3649,7 @@ export class BrowserController {
     const surfaceId = parameters?.surfaceId;
     if (typeof surfaceId !== "string")
       throw new BrowserRuntimeError("bad_message", "A surface is required.");
-    const durableClose =
-      this.claims.workspaceTabRestoreVersion === 1 && parameters?.durable === true;
+    const durableClose = this.claims.tabRestoreVersion === 1 && parameters?.durable === true;
     if (
       durableClose &&
       message.command.method === browserHostMethods.closeTab &&

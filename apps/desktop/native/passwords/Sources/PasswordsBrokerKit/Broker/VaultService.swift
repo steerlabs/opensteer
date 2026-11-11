@@ -81,7 +81,7 @@ enum Approval: Sendable {
 
 /// What a sign-in request finds for its site.
 public enum SiteLookup: Sendable {
-  /// A grant for the request's Deployment, Workspace and site names this
+  /// A grant for the request's personal Deployment and site names this
   /// login, which still has an origin within the site.
   case granted(Item)
   /// The site's logins to choose from, without passwords.
@@ -89,7 +89,7 @@ public enum SiteLookup: Sendable {
 }
 
 /// A saved login as the window lists it and the card offers it: no
-/// password, no TOTP secret. `grants` are the Workspaces allowed to use it.
+/// password, no TOTP secret. `grants` are the personal Deployments allowed to use it.
 public struct LoginSummary: Equatable, Sendable, Identifiable {
   public let id: String
   public let revision: Int64
@@ -554,7 +554,7 @@ public final class VaultService: @unchecked Sendable {
       }
       switch params.destination {
       case .app:
-        guard permissionVersion == 5 else { return .refused(.revoked) }
+        guard permissionVersion == 6 else { return .refused(.revoked) }
       case .browser(let origin):
         guard Origins.isWithinSite(origin, site: site) else { return .refused(.wrongSite) }
       }

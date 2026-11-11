@@ -61,7 +61,12 @@ export const fakePasswordsLogin: FakePasswordsLogin = {
 /** The same authorization/release policy as the Swift broker, with synthetic values. */
 export class FakePasswordsBrokerSession implements PasswordsBrokerSession {
   availability: PasswordsBrokerSignInProbeResult["passwords"] = "has-login";
-  status: PasswordsBrokerStatus = { agentSignIns: "on", vault: "ready" };
+  status: PasswordsBrokerStatus = {
+    agentSignIns: "on",
+    personFill: "off",
+    personSave: "off",
+    vault: "ready",
+  };
   cancelAuthentication = false;
   approvalLogin: Extract<PasswordsBrokerSignInApproveResult, { decision: "authorized" }> | null =
     null;
@@ -91,15 +96,13 @@ export class FakePasswordsBrokerSession implements PasswordsBrokerSession {
   setLogin(login: FakePasswordsLogin): void {
     this.logins.set(login.id, login);
   }
-  grantKey(
-    params: Pick<PasswordsBrokerSignInRequestParams, "deploymentId" | "workspaceId" | "site">,
-  ): string {
-    return JSON.stringify([params.deploymentId, params.workspaceId, params.site]);
+  grantKey(params: Pick<PasswordsBrokerSignInRequestParams, "deploymentId" | "site">): string {
+    return JSON.stringify([params.deploymentId, params.site]);
   }
   remember(
     params: PasswordsBrokerSignInRequestParams,
     login: PasswordsBrokerLogin,
-    permissionVersion = 4,
+    permissionVersion = 6,
   ): void {
     this.grants.set(this.grantKey(params), {
       id: login.id,
@@ -147,7 +150,7 @@ export class FakePasswordsBrokerSession implements PasswordsBrokerSession {
     };
     this.#transactions.set(params.transactionId, transaction);
     const grant = this.grants.get(this.grantKey(params));
-    const item = grant && grant.permissionVersion === 4 ? this.logins.get(grant.id) : undefined;
+    const item = grant && grant.permissionVersion === 6 ? this.logins.get(grant.id) : undefined;
     const decision =
       this.#decisions.shift() ??
       (this.status.vault !== "ready"
@@ -227,12 +230,13 @@ export class FakePasswordsBrokerSession implements PasswordsBrokerSession {
       const grant = this.grants.get(this.grantKey(transaction.params));
       if (
         !grant ||
-        grant.permissionVersion !== 4 ||
+        grant.permissionVersion !== 6 ||
         grant.id !== pinned.id ||
         grant.revision !== pinned.revision
       )
         return { released: false, reason: "revoked" };
     }
+    if (params.kind !== "browser") return { released: false, reason: "wrong-site" };
     let withinSite = false;
     try {
       const origin = new URL(params.origin);

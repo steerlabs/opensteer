@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { createECDH, randomUUID } from "node:crypto";
 import { webContents } from "electron";
 import { createId } from "@opensteer/core";
@@ -17,7 +18,7 @@ afterEach(async () => {
 function fixture() {
   const lifetime = new AbortController();
   const broker: PasswordsBrokerSession = {
-    protocolVersion: 6,
+    protocolVersion: 10,
     commit: vi.fn(async () => ({ committed: true })),
     probe: vi.fn<PasswordsBrokerSession["probe"]>(async () => ({ passwords: "has-login" })),
     request: vi.fn<PasswordsBrokerSession["request"]>(async () => ({
@@ -36,7 +37,6 @@ function fixture() {
   };
   const authority = new PasswordsLoginAuthority({
     broker,
-    legacyBroker: { ...broker, protocolVersion: 4 },
     ownOrigins: () => [],
   });
   const events: PasswordSignInAuthorityEvent[] = [];
@@ -48,15 +48,14 @@ function fixture() {
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
   const command = {
     type: "login.authorize",
+    deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
     operationId,
     loginRef,
     site: "https://example.com",
-    workspaceId: createId("workspace"),
     expiresAt,
     requester: {
-      deploymentId: "personal",
+      deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
       deploymentName: "Personal",
-      workspaceName: "Main",
       threadTitle: "Login",
       reason: "Sign in",
     },
@@ -139,13 +138,13 @@ describe("desktop-lifetime Passwords authority", () => {
       await f.authority.control({ type: "login.get", operationId: f.operationId }, f.emit),
     ).toEqual({
       type: "login.get.result",
-      card: { stage: "approval", accounts: [account], permissionVersion: 5 },
+      card: { stage: "approval", accounts: [account], permissionVersion: 6 },
     });
     const choice = {
       loginId: account.id,
       revision: 3,
       remember: true,
-      permissionVersion: 5,
+      permissionVersion: 6,
     } as const;
     expect(
       await f.authority.control(
@@ -200,32 +199,11 @@ describe("desktop-lifetime Passwords authority", () => {
     }
   });
 
-  it("keeps previous-release browser authorizations on origin-only broker protocol4", async () => {
-    const f = fixture();
-    const { loginRef: _loginRef, ...legacy } = f.command;
-    const result = await f.authority.authorize(
-      {
-        ...legacy,
-        runtimeId: "legacy-runtime",
-        sessionId: "legacy-session",
-        expiresAt: new Date(legacy.expiresAt),
-      },
-      new AbortController().signal,
-      () => undefined,
-    );
-    expect(result.kind).toBe("authorized");
-    expect(vi.mocked(f.broker.request).mock.calls[0]?.[0]).toMatchObject({
-      runtimeId: "legacy-runtime",
-      sessionId: "legacy-session",
-    });
-    expect(vi.mocked(f.broker.request).mock.calls[0]?.[0]).not.toHaveProperty("permissionVersion");
-  });
-
   it("authorizes without a browser or helper and seals only to the final receiver", async () => {
     const f = fixture();
     await f.authorize();
     expect(f.broker.request).toHaveBeenCalledWith(
-      expect.objectContaining({ protocolVersion: 6, permissionVersion: 5 }),
+      expect.objectContaining({ protocolVersion: 10, permissionVersion: 6 }),
       expect.any(AbortSignal),
     );
     const request = vi.mocked(f.broker.request).mock.calls[0]?.[0];

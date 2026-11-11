@@ -152,7 +152,7 @@ extension ItemV2Tests {
       _ = try unlocked.commit(VaultChanges(replace: [CredentialReplacement(itemID: saved.id, password: "replacement", totp: nil)]))
     }
     try fixture.withUnlocked { unlocked in
-      let grant = GrantChange(key: GrantKey(deploymentId: "d", workspaceId: "w", site: "https://example.com"), login: .saved(id: saved.id), deploymentName: "D", workspaceName: "W")
+      let grant = GrantChange(key: GrantKey(deploymentId: "d", site: "https://example.com"), login: .saved(id: saved.id), deploymentName: "D", )
       _ = try unlocked.commit(VaultChanges(grant: [grant]))
     }
     let edited = try XCTUnwrap(fixture.items().first { $0.id == saved.id })

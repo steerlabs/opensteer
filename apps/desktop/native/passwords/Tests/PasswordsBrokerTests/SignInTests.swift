@@ -53,7 +53,7 @@ final class SignInTests: BrokerTestCase {
     XCTAssertEqual(entries.map(\.outcome), [.used])
     XCTAssertEqual(entries.first?.account, "a•••@example.com")
     XCTAssertEqual(entries.first?.automatic, false)
-    XCTAssertEqual(entries.first?.workspace, "Main")
+    XCTAssertEqual(entries.first?.deployment, "Personal")
   }
 
   /// X2: a cancelled, failed or impossible authentication releases nothing,
@@ -376,6 +376,6 @@ final class SignInTests: BrokerTestCase {
       "the history still masks")
   }
 
-  /// P3, U2: the broker writes what the prompt allows, naming the Workspace,
+  /// P3, U2: the broker writes what the prompt allows, naming the personal Deployment,
   /// site and whole username, cleaned of text that could reorder it.
 }

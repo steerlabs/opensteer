@@ -122,10 +122,10 @@ final class PasswordsAnywhereTests: BrokerTestCase {
   }
   func testOldProtocolsCannotApproveAndConsentCannotDowngrade() async throws {
     try await harness.ready(items: [Fixtures.login()])
-    for version in [Int64(4), 5] {
-      let desktop = try await harness.client("old", greet: false)
-      _ = try await desktop.hello(version: version)
-      same(try await desktop.call("signin.approve", .object([:])).errorCode, "invalid")
+    for version: Int64 in [4, 5, 6, 7, 8, 9] {
+      let old = try await harness.client("old", greet: false)
+      same(try await old.hello(version: version).result?["protocolVersion"], .integer(10))
+      try await old.waitUntilClosed()
     }
     let desktop = try await harness.client()
     let id = UUID().uuidString.lowercased()
@@ -138,46 +138,15 @@ final class PasswordsAnywhereTests: BrokerTestCase {
     same(try await desktop.call("signin.approve", .object(params)).errorCode, "invalid")
     XCTAssertTrue(try harness.savedGrants().isEmpty)
   }
-  func testLegacyGrantsKeepOriginOnlyScopeAcrossModernConsent() async throws {
-    try await harness.ready(items: [Fixtures.login()])
-    let item = try unwrap(try await harness.savedItems().first)
-    let owner = try harness.keys.load(from: harness.protected)
-    let unlocked = try Vault.open(root: harness.paths.vault, protectedStore: harness.protected)
-      .unlock(owner: owner)
-    _ = try unlocked.commit(
-      VaultChanges(
-        grant: [Fixtures.workspace, Fixtures.otherWorkspace].map { workspace in
-          GrantChange(
-            key: Fixtures.grantKey(workspace: workspace.0), login: .saved(id: item.id),
-            deploymentName: "Personal", workspaceName: workspace.1, permissionVersion: 4)
-        }))
-    unlocked.close()
-    await broker.reload()
-    let modern = try await harness.client()
-    let id = UUID().uuidString.lowercased()
-    _ = try await prepare(modern, id)
-    _ = try await modern.call("signin.commit", Fixtures.transaction(id))
-    XCTAssertEqual(try harness.savedGrants().map(\.permissionVersion).sorted(), [4, 5])
-    let legacy = try await harness.client("legacy", greet: false)
-    _ = try await legacy.hello(version: 4)
-    let oldID = UUID().uuidString.lowercased()
-    guard case .object(var fields) = Fixtures.request(oldID) else { return XCTFail("fixture") }
-    fields.removeValue(forKey: "protocolVersion")
-    fields.removeValue(forKey: "permissionVersion")
-    fields["runtimeId"] = .string("legacy")
-    fields["sessionId"] = .string("browser")
-    same(
-      try await legacy.call("signin.request", .object(fields)).result?["decision"],
-      .string("authorized"))
-    same(try await legacy.call("signin.release", release(oldID)).errorCode, "invalid")
-    same(
-      try await legacy.call(
-        "signin.release",
-        .object([
-          "transactionId": .string(oldID), "field": .string("password"),
-          "origin": .string("https://example.com"),
-        ])
-      ).result?["released"], .bool(true))
+  func testOldConsentShapesAreRefused() throws {
+    guard case .object(var fields) = Fixtures.request() else { return XCTFail("fixture") }
+    for version: Int64 in [4, 5, 6, 7, 8, 9] {
+      fields["protocolVersion"] = .integer(version)
+      XCTAssertThrowsError(try Wire.SignInRequestParams(json: .object(fields)))
+    }
+    fields["protocolVersion"] = .integer(10)
+    fields["workspaceId"] = .string("wsp_00000000-0000-4000-8000-000000000003")
+    XCTAssertThrowsError(try Wire.SignInRequestParams(json: .object(fields)))
   }
 
   func testVaultManagementStillRequiresPresence() async throws {

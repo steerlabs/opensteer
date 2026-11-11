@@ -14,7 +14,7 @@ import XCTest
 final class WireFixtureTests: XCTestCase {
   private static let transactionId = "6f1c2a4b-5d6e-4f80-9a1b-2c3d4e5f6071"
   private static let loginId = "8d1c2a4b-5d6e-4f80-9a1b-2c3d4e5f6071"
-  private static let workspaceId = "wsp_00000000-0000-4000-8000-000000000003"
+  private static let workspaceId = "dep_00000000-0000-4000-8000-000000000003"
 
   static var fixtureURL: URL {
     URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -31,7 +31,7 @@ final class WireFixtureTests: XCTestCase {
 
   private static var cardRequest: JSONValue {
     Fixtures.request(transactionId, site: "https://github.com", expiresAt: "2026-10-11T17:00:00.000Z",
-      extra: ["protocolVersion": .integer(7), "permissionVersion": .integer(7)])
+      extra: ["protocolVersion": .integer(10), "permissionVersion": .integer(7)])
   }
   private static var cardApproval: JSONValue {
     .object(["transactionId": .string(transactionId), "cardId": .string(loginId),
@@ -56,26 +56,8 @@ final class WireFixtureTests: XCTestCase {
   }
 
   private static func requests() throws -> [String: [JSONValue]] {
-    let request = try Wire.SignInRequestParams(
-      json: .object([
-        "deploymentId": .string("dep_personal"),
-        "deploymentName": .string("Personal"),
-        "expiresAt": .string("2026-10-11T17:00:00.000Z"),
-        "reason": .string("Check the latest invoice"),
-        "runtimeId": .string("desktop-browser"),
-        "sessionId": .string("bsn_00000000-0000-4000-8000-000000000007"),
-        "site": .string("https://github.com"),
-        "threadTitle": .string("Invoices"),
-        "transactionId": .string(transactionId),
-        "workspaceId": .string(workspaceId),
-        "workspaceName": .string("Main"),
-      ]))
-    guard case .object(var modernFields) = request.json else { preconditionFailure("request") }
-    modernFields.removeValue(forKey: "runtimeId")
-    modernFields.removeValue(forKey: "sessionId")
-    modernFields["protocolVersion"] = .integer(6)
-    modernFields["permissionVersion"] = .integer(5)
-    let modern = try Wire.SignInRequestParams(json: .object(modernFields), protocolVersion: 6)
+    let request = try Wire.SignInRequestParams(json: Fixtures.request(
+      transactionId, site: "https://github.com", expiresAt: "2026-10-11T17:00:00.000Z"))
     let modernReleases = try Wire.ReleaseField.allCases.flatMap { field -> [JSONValue] in
       try [
         Wire.ReleaseParams(
@@ -95,12 +77,7 @@ final class WireFixtureTests: XCTestCase {
     let transaction = Wire.TransactionParams(transactionId: transactionId)
     return [
       Wire.Method.hello.rawValue: [
-        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 4).json,
-        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 5).json,
-        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 6).json,
-        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 7).json,
-        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 8).json,
-        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 9).json,
+        Wire.HelloParams(clientVersion: "0.1.117", protocolVersion: 10).json,
       ],
       Wire.Method.saveBegin.rawValue: [try Wire.SaveBeginParams(json: saveBegin()).json,
         try Wire.SaveBeginParams(json: saveBegin(origin: "https://gist.github.com:8443")).json],
@@ -115,7 +92,7 @@ final class WireFixtureTests: XCTestCase {
       Wire.Method.status.rawValue: [.object([:])],
       Wire.Method.windowOpen.rawValue: [.object([:])],
       Wire.Method.signInProbe.rawValue: [Wire.ProbeParams(site: "https://github.com").json],
-      Wire.Method.signInRequest.rawValue: [request.json, modern.json],
+      Wire.Method.signInRequest.rawValue: [request.json],
       Wire.Method.signInApprove.rawValue: [true, false].map {
         Wire.ApproveParams(
           loginId: loginId, remember: $0, revision: 3, transactionId: transactionId
@@ -143,13 +120,8 @@ final class WireFixtureTests: XCTestCase {
     ]
     return [
       Wire.Method.hello.rawValue: [
-        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 4).json,
-        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 5).json,
-        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 6).json,
         Wire.HelloResult(brokerVersion: "0.1.117", development: true).json,
-        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 7).json,
-        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 8).json,
-        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 9).json,
+        Wire.HelloResult(brokerVersion: "0.1.117", development: false, protocolVersion: 10).json,
       ],
       Wire.Method.saveBegin.rawValue: [Wire.SaveDecision.offer(Date(timeIntervalSince1970: 1_800_000_000)).json]
         + Wire.SaveSkipReason.allCases.map { Wire.SaveDecision.skip($0).json },
@@ -175,8 +147,8 @@ final class WireFixtureTests: XCTestCase {
         Wire.Status(vault: .notSetUp, agentSignIns: false).json,
         Wire.Status(vault: .unsupported, agentSignIns: false).json,
         Wire.Status(vault: .needsReset, agentSignIns: false).json,
-        Wire.Status(vault: .ready, agentSignIns: true, personFill: true).json(protocolVersion: 8),
-        Wire.Status(vault: .ready, agentSignIns: false, personFill: false).json(protocolVersion: 8),
+        Wire.Status(vault: .ready, agentSignIns: true, personFill: true).json(protocolVersion: 10),
+        Wire.Status(vault: .ready, agentSignIns: false, personFill: false).json(protocolVersion: 10),
         Wire.Status(vault: .ready, agentSignIns: true, personFill: true, personSave: true).json(protocolVersion: 9),
         Wire.Status(vault: .notSetUp, agentSignIns: false).json(protocolVersion: 9),
       ],
@@ -210,7 +182,7 @@ final class WireFixtureTests: XCTestCase {
     let error = try CanonicalJSON.parse(
       Wire.error(id: 7, Wire.Failure(.invalid, "There is no open sign-in with that ID.")))
     let event = try CanonicalJSON.parse(
-      Wire.statusChanged(Wire.Status(vault: .ready, agentSignIns: true)))
+      Wire.statusChanged(Wire.Status(vault: .ready, agentSignIns: true, personFill: true, personSave: true)))
     let fixture = JSONValue.object([
       "rejected": .array([
         .object(["method": .string("fill.begin"), "params": cardApproval]),
@@ -226,9 +198,6 @@ final class WireFixtureTests: XCTestCase {
       ]),
       "error": error,
       "event": event,
-      "eventV8": try CanonicalJSON.parse(Wire.statusChanged(Wire.Status(vault: .ready, agentSignIns: false, personFill: true), protocolVersion: 8)),
-      "eventV9": try CanonicalJSON.parse(Wire.statusChanged(
-        Wire.Status(vault: .ready, agentSignIns: false, personFill: true, personSave: true), protocolVersion: 9)),
       "requests": .object(try requests().mapValues(JSONValue.array)),
       "results": .object(results().mapValues(JSONValue.array)),
     ])
@@ -264,7 +233,7 @@ final class WireFixtureTests: XCTestCase {
       case "card.approve": XCTAssertThrowsError(try Wire.CardApproveParams(json: params))
       case "card.release": XCTAssertThrowsError(try Wire.CardReleaseParams(json: params))
       case "signin.release":
-        for version: Int64 in [4, 5, 6, 7, 8, 9] { XCTAssertThrowsError(try Wire.ReleaseParams(json: params, protocolVersion: version)) }
+        for version: Int64 in [10] { XCTAssertThrowsError(try Wire.ReleaseParams(json: params, protocolVersion: version)) }
       case "signin.approve": XCTAssertThrowsError(try Wire.ApproveParams(json: params))
       case "fill.begin": XCTAssertThrowsError(try Wire.FillBeginParams(json: params))
       case "fill.accounts": XCTAssertThrowsError(try Wire.FillAccountsParams(json: params))
@@ -307,9 +276,6 @@ final class WireFixtureTests: XCTestCase {
         case .signInProbe:
           XCTAssertEqual(try Wire.ProbeParams(json: params).site, "https://github.com")
         case .signInRequest:
-          if params["protocolVersion"] == .integer(6) {
-            for version: Int64 in [6, 7, 8, 9] { XCTAssertNoThrow(try Wire.SignInRequestParams(json: params, protocolVersion: version)) }
-          }
           XCTAssertEqual(try Wire.SignInRequestParams(json: params).siteHost, "github.com")
         case .signInApprove: XCTAssertNoThrow(try Wire.ApproveParams(json: params))
         case .signInCancel, .signInCommit:

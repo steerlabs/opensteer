@@ -1,6 +1,6 @@
+import type { DeploymentId } from "@opensteer/core";
 import type {
   CardField,
-  BrowserClientMessage,
   LoginAuthorizationOutcome,
   LoginField,
   LoginFillStatus,
@@ -71,13 +71,13 @@ export type PersonSaveBegin =
   | { readonly kind: "skip" };
 
 export interface BrowserLoginAuthorizeInput {
+  readonly deploymentId: DeploymentId;
   readonly expiresAt: Date;
   readonly operationId: string;
   readonly requester: PasswordSignInRequester;
   readonly runtimeId: string;
   readonly sessionId: string;
   readonly site: string;
-  readonly workspaceId: Extract<BrowserClientMessage, { type: "login.authorize" }>["workspaceId"];
 }
 
 /** Only the desktop's Personal runtime on macOS supplies this authority. */

@@ -13,7 +13,7 @@ final class VaultStateTests: BrokerTestCase {
   }
 
   private func statusJSON(_ vault: String, _ agents: String) -> JSONValue {
-    .object(["agentSignIns": .string(agents), "vault": .string(vault)])
+    .object(["agentSignIns": .string(agents), "vault": .string(vault), "personFill": .string(vault == "ready" ? "on" : "off"), "personSave": .string(vault == "ready" ? "on" : "off")])
   }
 
   /// X16.
@@ -42,7 +42,7 @@ final class VaultStateTests: BrokerTestCase {
     _ = try await desktop.allow(Fixtures.approve(id, account, remember: false))
     let pending = UUID().uuidString.lowercased()
     let choice = try unwrap(
-      try await request(desktop, pending, workspace: Fixtures.otherWorkspace)["accounts"]?[0])
+      try await request(desktop, pending, deployment: Fixtures.otherDeployment)["accounts"]?[0])
     _ = try await desktop.call("signin.approve", Fixtures.approve(pending, choice, remember: true))
     try await broker.setAgentSignIns(false)
     let commit = try await desktop.call("signin.commit", Fixtures.transaction(pending))

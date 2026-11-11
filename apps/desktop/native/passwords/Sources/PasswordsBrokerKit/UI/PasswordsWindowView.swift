@@ -404,7 +404,7 @@ private struct AccentSwitchStyle: ToggleStyle {
   }
 }
 
-/// A saved login, with one line for each Workspace whose agents may use it
+/// A saved login, with one line for each personal Deployment whose agent may use it
 /// and Remove beside each.
 private struct LoginRow: View {
   let login: LoginSummary
@@ -443,7 +443,7 @@ private struct LoginRow: View {
       ForEach(login.grants, id: \.key) { grant in
         HStack(spacing: 6) {
           Image(systemName: "person.badge.key").foregroundStyle(.secondary).font(.callout)
-          Text(Copy.allowedIn(Display.clean(grant.workspaceName, limit: 60), site: Self.otherSite(grant, of: login)))
+          Text(Copy.allowedIn(Display.clean(grant.deploymentName, limit: 60), site: Self.otherSite(grant, of: login)))
             .font(.callout)
             .foregroundStyle(.secondary)
           Spacer(minLength: 8)
@@ -542,7 +542,7 @@ private struct ActivityRow: View {
           }
         }
         if let brand = entry.brand, let last = entry.lastFour { Text("\(brand) ending \(last)").font(.callout) }
-        Text(([entry.account].compactMap { $0 } + [entry.workspace, "“\(entry.thread)”"]).joined(separator: " · "))
+        Text(([entry.account].compactMap { $0 } + [entry.deployment, "“\(entry.thread)”"]).joined(separator: " · "))
           .font(.callout)
           .foregroundStyle(.secondary)
       }

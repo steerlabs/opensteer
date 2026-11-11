@@ -1,12 +1,11 @@
 import { release } from "node:os";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import {
-  passwordsBrokerLatestProtocolVersion,
+  passwordsBrokerProtocolVersion,
   type PasswordsBrokerProtocolVersion,
 } from "@opensteer/protocol/passwords-broker";
 import type {
   PasswordsBrokerSignInRequestParams,
-  PasswordsBrokerSignInRequestV6Params,
   PasswordsBrokerSignInProbeParams,
   PasswordsBrokerSignInProbeResult,
   PasswordsBrokerStatus,
@@ -92,7 +91,6 @@ export class PasswordsService {
   readonly #now: () => number;
   readonly #listeners = new Set<(status: DesktopPasswordsStatus) => void>();
   readonly #transactions = new Map<string, Transaction>();
-  readonly #compatibilityServices = new Map<PasswordsBrokerProtocolVersion, PasswordsService>();
   #client: PasswordsBrokerClient | null = null;
   #clientPromise: Promise<PasswordsBrokerClient> | null = null;
   #last: string | null = null;
@@ -135,22 +133,10 @@ export class PasswordsService {
   /** The narrow surface the login authority uses. */
   broker(
     protocolVersion: PasswordsBrokerProtocolVersion = this.#options.protocolVersion ??
-      passwordsBrokerLatestProtocolVersion,
+      passwordsBrokerProtocolVersion,
   ): PasswordsBrokerSession &
     PasswordsBrokerCardSession &
     Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> {
-    // Browser-only consent from a previous-release Host must stay on protocol4.
-    if (
-      protocolVersion !== (this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion)
-    ) {
-      let compatibility = this.#compatibilityServices.get(protocolVersion);
-      if (!compatibility) {
-        compatibility = new PasswordsService({ ...this.#options, protocolVersion });
-        this.#compatibilityServices.set(protocolVersion, compatibility);
-        if (this.#stopped) void compatibility.stop();
-      }
-      return compatibility.broker();
-    }
     const session: PasswordsBrokerSession &
       PasswordsBrokerCardSession &
       Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> = {
@@ -254,10 +240,7 @@ export class PasswordsService {
     this.#client = null;
     this.#clientPromise = null;
     if (client) this.#connectionLost(client);
-    await Promise.all([
-      client?.close(),
-      ...Array.from(this.#compatibilityServices.values(), (service) => service.stop()),
-    ]);
+    await client?.close();
   }
 
   async #probe(
@@ -273,7 +256,7 @@ export class PasswordsService {
   }
 
   async #request(
-    params: PasswordsBrokerSignInRequestParams | PasswordsBrokerSignInRequestV6Params,
+    params: PasswordsBrokerSignInRequestParams,
     signal: AbortSignal,
   ): Promise<PasswordsBrokerSignInGrant> {
     return await this.#startTransaction("signin.request", params, signal);
@@ -495,7 +478,7 @@ export class PasswordsService {
     const client = new PasswordsBrokerClient({
       ...this.#options.client,
       appVersion: this.#options.appVersion,
-      protocolVersion: this.#options.protocolVersion ?? passwordsBrokerLatestProtocolVersion,
+      protocolVersion: this.#options.protocolVersion ?? passwordsBrokerProtocolVersion,
       brokerAppPath: installed.path,
       development,
       launchFreshInstance: installed.launchFreshInstance,
