@@ -14,23 +14,14 @@ rewrite an existing Thread, and accounts never invent model defaults.
 
 ## Automatic model selection
 
-Work a person didn't place by hand (naming, memory passes, specialists, empty-choice defaults) goes
-through one [resolver](../packages/core/src/model-candidates.ts). It preserves declared preferences,
-considers authorized configured accounts, and treats usage exhaustion as advisory ordering, because
-cached readings can be wrong. An eligible original stays once, last. Eligibility and endpoint checks
-always prevail, so a switched-off account stays off even for a task's own model. Selection never
-replays accepted or uncertain work: naming may advance after a contained generation failure, while
-memory and specialists choose before admission and freeze that choice. Admission checks the account
-revision it resolved under the account's row lock, and refuses a changed endpoint rather than adopt
-it: a specialist reports the error, and a memory pass resolves again at its next wake. From then on
-the account's queued Run holds the endpoint, because its config can't change under one. The person's
-list and excluded accounts are the only consent; an unbound entry never reaches an
-`openai-compatible` account, and a manifest can't bind one. Runs record no account revision, so
-naming's fallback to a task's own model skips such an account: it may no longer be the endpoint that
-saw the request. Client empty-choice defaults use only accounts bootstrap reports as
-`automaticEligible`, which the Host computes per viewer. This differs from T3, which reaches other
-accounts only after a known exhaustion: here declared order holds, default account first within each
-entry.
+Work the person did not place by hand uses the shared
+[resolver](../packages/core/src/model-candidates.ts). Declared preferences and authorized account
+eligibility decide; cached usage exhaustion only affects ordering. The Host computes eligibility
+for the viewer, and an unbound preference never reaches an `openai-compatible` endpoint.
+
+Selection happens before admission and freezes the endpoint for accepted work. Account changes
+must not silently redirect it. Naming can advance after a contained generation failure; memory and
+specialists never replay accepted or uncertain work on another account.
 
 ## What a driver declares
 
@@ -100,9 +91,8 @@ an updater may echo its environment
 
 A new private Codex account starts Codex once on its empty home, then links the shared session store
 ([materializeOnce](../packages/harness-codex/src/codex-driver.ts)). Codex blocks `initialize` while it
-indexes whatever store it finds at its first start, which took over 100 seconds on 15 GB, and adding
-an account must not wait for that. It indexes only then, and a resume finds an unindexed session by
-file search, so nothing is lost. A Codex release that opens a new state database re-indexes linked
+indexes the store it finds at first start, which can block adding an account. A resume finds an
+unindexed session by file search, so linking the store after initialization loses nothing. A Codex release that opens a new state database re-indexes linked
 homes; that is what the `preparing` state is for.
 
 Antigravity is neither shipped nor taken from `PATH`: its driver downloads Google's pinned archive,
@@ -163,10 +153,6 @@ cancellation, so each driver declares its own rather than inferring it from the 
 
 ## Thread names and symbols
 
-Names and symbols have independent provenance: a late generated candidate never replaces a person's
-choice, even an identical one. Chat is identified by `homeThreadId` and cannot be renamed through
-ordinary Thread commands. Naming is Host-owned background work, so a Run's teardown and engine reuse
-never wait on it ([thread-naming.ts](../apps/host/src/agents/thread-naming.ts)). Generation runs
-contained with no tools, ambient instructions, hooks, plugins or history, using the exact model it's
-given with no discovery. A result counts only for its live attempt on that Runner connection, and
-the Host finds the Thread itself.
+A generated name or symbol never replaces a person's choice, even an identical one. Naming runs
+contained without tools, ambient instructions, plugins or history, and never delays Run teardown
+or engine reuse ([thread-naming.ts](../apps/host/src/agents/thread-naming.ts)).

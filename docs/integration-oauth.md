@@ -90,23 +90,14 @@ creation, never chosen by the browser:
   and the page never names the expected Account. A web origin cannot be the proof, because an
   attacker's Host serves a real Opensteer origin.
 
-A hostile Host chooses the port of its own attempts, which is why three things hold. The port is
-limited to a reserved block, so it can never name a service a person happens to run. The proof
-travels only in the form body, because the attacker is that Host: a proof left in an address bar or
-history after a failed return would be one paste away from redemption. And a second opaque token
-would change nothing, since the attacker owns the initiating app; the app's own registry of attempts
-it started is what refuses the proof.
+A hostile Host owns its attempt's launch ticket and chosen return port. Ports therefore stay in a
+reserved block, proofs travel only in POST bodies, and the app must match its own in-memory
+registry of initiated attempts. Another opaque token cannot establish trust in a hostile initiator.
 
-Every login on a computer shares loopback ports, and nothing a listener can see says which login's
-browser connected, while the operating system routes an app link to the current login's app. A
-person on a virtual display approves in a browser that reaches a listener in the console's login, so
-checking the receiving app's own session proves nothing. A desktop return therefore uses loopback
-only when the Mac has exactly one GUI login, which is the app's and on the console. That is read
-from the IORegistry when the attempt is prepared and again for every return, and anything that
-cannot establish it means the app link. Only macOS reports it, so other desktops always use the app
-link. The resign notification only closes the listener sooner; pending attempts keep their authority
-and get their sealed port back if it is still free. The app's attempts live in memory, so a
-restarted app refuses them and the person starts again.
+Loopback is shared across OS logins and cannot identify the consenting browser's login. Use it only
+when macOS proves the initiating app is the sole GUI login and owns the console, checked at setup
+and return. Otherwise use the OS app link. Restart loses pending app attempts, requiring fresh
+consent.
 
 This covers links from Deployments the person does not belong to, not a hostile operator of a joined
 server Deployment, malware on the device, or a deliberately hostile process under another login on

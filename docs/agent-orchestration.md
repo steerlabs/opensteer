@@ -42,25 +42,15 @@ Assignment, engine and model; Stop cancels their untaken inputs without pausing 
 ordinary message never answers a Request. Live harness Requests hold their native turn; a new
 person message can start work normally after a Run ends with durable Requests still pending.
 
-A foreground Run outside voice holds a tool call that opens its own durable Request until the
-person answers, then receives the real outcome. The runtime enforces this boundary rather than
-asking the model to stop. Work already running beside the call (native subagents, parallel calls
-and background shells) is not frozen until the Run stops.
+Foreground Runs hold Request-opening tool calls so the model receives the person's outcome; the
+runtime enforces this rather than asking the model to stop. Already-running parallel work is not
+frozen. Releasing or losing the call never settles the durable Request. A queued message or an
+expired hold can stop the Run while leaving its Request answerable.
 
-If the hold reaches its limit or a person's message queues behind the Run, the runtime stops the
-Run without pausing the Thread. The Request stays open; its later answer wakes the agent. A message
-steered into the Run releases the call as still open so the agent can read it; the message never
-answers the Request. Leaving the foreground also releases the call as still open. Stop, restart,
-lease loss or disconnect can end the call without settling the Request. A live harness Request in
-parallel does not end the hold.
-
-Voice and background Runs receive pending immediately. Pending grants nothing; agents must not
-poll, repeat, approve or route around a Request. pending_request shows status, not the answer. Outcomes
-returned in the held call need no later wake-up. Otherwise, eligible outcomes from one Run arrive
-together after its durable siblings settle. A newer Run can also release older settled outcomes,
-so an abandoned ask cannot hold up later work. Different Runs stay independent. Requests and
-Assignments outlive a Run. Programs receive pending with no continuation: Trigger Occurrences have
-no native turn to resume.
+Voice and background Runs receive pending immediately. Pending grants nothing: agents must not
+poll, repeat, approve or route around it. Outcomes already delivered in a held call must not also
+wake the agent. Requests and Assignments outlive Runs; programs have no native turn to resume.
+Hold sequencing lives in [request-hold.ts](../apps/host/src/mcp/request-hold.ts).
 
 Thread state is a stored projection; pending Requests drive Needs you independently of whether a
 Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the
@@ -71,22 +61,16 @@ contracts; never relabel v3 source as v2.
 
 ## Input context and attachments
 
-Dispatch adds Thread and Assignment context, which provider history cannot describe
-([`run-thread-state.ts`](../packages/database/src/run-thread-state.ts)). The Host keeps immutable
-attachment originals and PostgreSQL their authorization, so back up the database and Host data
-directory together. Filenames never become Host paths, and clients upload bytes, never a local path.
-An original belongs to one human message and is never deleted while bound; editing queued input
-moves attachments only after explicit withdrawal, and unknown delivery is not withdrawal
-([`attachment-store.ts`](../packages/database/src/attachment-store.ts)). Images are validated by
-actual bytes and full decoding. Image input needs native engine transport and catalog-confirmed
-model support, rechecked at dispatch and steer; unknown support refuses, never converts or switches
-models. Engines fit images themselves, so there are no per-model size tables. Web HEIC decoding uses
-`heic-to` (LGPL-3.0) in a blob worker, hence the CSP's blob workers. Dispatch sends references and a
-scoped download capability, never bytes; downloads recheck membership or the Run's binding, and
-never expose waiting inputs or unselected reports. The Runner cache is disposable, hash-verified and
-outside private state, Workspaces and system temp. Isolated Linux services see only the active
-Thread's directory, read-only; shared-service macOS offers attachments only to engines whose sandbox
-enforces that (Codex, Claude); shared-service Windows offers none, as that isolation is unverified.
+Provider history cannot supply live Thread or Assignment authority. The Host owns attachment
+originals and PostgreSQL their authorization, so back up Host data and the database together.
+A filename is never a Host path, and unknown delivery never authorizes removing a bound original
+([attachment store](../packages/database/src/attachment-store.ts)).
+
+Image input requires decoded valid bytes, native engine transport and confirmed model support;
+unknown support refuses rather than converting or switching models. Downloads recheck current
+membership or Run binding. Runner caches are disposable, hash-verified and outside private state
+and Workspaces. Shared Runners expose attachments only where their engine sandbox has qualified
+isolation; an unverified platform offers none.
 
 ## Runs across connection loss and restarts
 
@@ -97,38 +81,27 @@ unfinished effects, never a replay of uncertain instructions. Only provably neve
 unacknowledged same-boot work with a live lease is requeued unchanged; dispatched unknowns are never
 resent. Cross-boot dispatch waits until reaping proves old processes gone. Events are journaled
 until acknowledged ([`execution-recovery.ts`](../packages/database/src/execution-recovery.ts)).
-Restart steering makes a new attempt of the same Run; revocation stops the old attempt's tools, and
-its interrupt cannot kill the replacement. Native subagents are nodes of the current attempt and
-cannot outlive it. Their own messages, reasoning and tools are retained separately from the
-parent transcript and delivered only while a client watches that node or an agent reads it with
-`thread_read`. The parent carries the node's lifecycle and a short live progress line. A node's
-Stop uses its engine's per-child control, never the parent's interrupt. Only someone allowed to
-stop its Run, or that Run's own agent, can ask, and both admission and dispatch fence the current
-attempt and authority. Engine confirmation ends the node; acceptance alone says Stopping. Engine background work stays with its Run, since one engine process cannot
-attribute later tool calls to another task. Warm engines are reused only after a successful Run
-released every turn, Request, grant and terminal, with all processes proven one contained tree;
-Windows cannot prove that and keeps none. Idle engines have no authority. Reuse needs the same
-authority, session, launch configuration, sandbox and tool plan, and relays are suspended first, so
-a connection accepted by one Run never proceeds under the next
-([`warm-engine-pool.ts`](../apps/runner/src/runtime/warm-engine-pool.ts)).
+Restart creates a new attempt of the same Run. Old interrupts cannot kill its replacement.
+Native subagents and background work belong to that attempt and cannot outlive it; stopping a
+native child uses child control, never the parent's interrupt. Acceptance is not proof it stopped.
+
+Warm engines are reusable only after all turns, Requests, grants and terminals end and containment
+proves every process belongs to one tree. Idle engines have no authority; reuse must match the
+session, authority, launch configuration, sandbox and tool plan. Windows does not qualify this
+containment. [The pool](../apps/runner/src/runtime/warm-engine-pool.ts) owns reuse.
 
 Each Run pins its ProviderSession before admission. Failed execution proves neither that a provider
 conversation exists nor that none does: startup repeats only when earlier attempts prove it never
 happened, and resume returns the exact native reference, never a fresh conversation or replayed Host
 messages ([Runner runtime](../apps/runner/src/runtime/runtime.ts)).
 
-Voice is a permanent Thread beside Chat, the person's spoken manager, and a call is one
-non-recoverable Run on it. Codex hands each utterance to a turn on that same Thread, so a call has
-Chat's whole tool set: it opens Requests, starts tasks and hears what they return. Because a call's
-Run stays open between turns, everything sent to its Thread is handed in at once, as a steer, and a
-Request's answer is released without waiting for the Run to end. What arrives after hang-up wakes an
-ordinary text Run on the Thread, which notifies the person. A call takes the Thread only once
-nothing else runs there, so the Host stops what is running and tries again. The Thread's model is
-its own and must be a Codex model; tasks it starts can use any engine.
-The person's side of a call is stored from the realtime transcript, so memory hears asides the
-voice answers alone, not only what it hands to Codex.
-Context for the agent waits between turns: Codex samples again for anything injected into a running
-turn, and that second answer would replace the reply.
+Voice has a durable Thread, but each call is a non-recoverable Run. Its model must be Codex;
+delegated tasks may use other engines. Request answers and incoming work reach the live call,
+while arrivals after hang-up can wake a text Run. The person's realtime transcript is stored too,
+so memory can include speech that never became a delegated task.
+
+Inject context between turns: Codex samples again when context arrives during a running turn,
+which can replace the reply.
 
 ## Run tool authority
 
@@ -167,45 +140,23 @@ goes in both.
 
 ## Conversation roles and Assignments
 
-Role controls instructions and presentation, never access. Only a Run answering the person directly
-may use `person_message` or `person_show`; a task answers its assigner, which shows what the task
-reports. A completed Run's last substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
-Assignment spans Runs, one open per worker, and its identity travels with inputs so a late approval
-cannot attach to a new task. Completion is derived transactionally, never declared by an agent;
-results return only if the requester can still read the worker Workspace. Siblings started by one
-Run, program occurrence or Watch observation share one waiting return under the same requester,
-reply target and Assignment authority. Each keeps its title and id; long results are shortened
-with a pointer to `task_status` or `thread_read`. Taking the message for a Run, steering it or
-offering it to an engine seals its contents; later results start another return. Rewriting a
-waiting return rechecks access to every included result. A settled result read by its assigner
-through `thread_wait`, `delegate_task` mode `wait` or `task_status` is delivery: the same locked
-transaction removes only that result from a waiting return, withdrawing the message when none
-remain. A return already claimed by a Run owns delivery instead. Only the originating Run or
-program source consumes a result; other readers consume nothing. A live assigner's wait holds
-automatic return in PostgreSQL until it reads the result or ends. Timeout, cancellation, lost
-authority and source settlement release the hold; Host startup releases waits lost on restart.
-Unconsumed results stay in the return outbox for reconciliation. An empty result wakes nobody unless a
-parent Assignment needs it, but a waiter still receives its settlement. Bounded waits subscribe
-before reading, pin their observed Run and recheck live authority on wakes and before return; a
-timeout cancels no work. Cancellation follows Assignments, not Thread lineage.
-An ordinary question is answerable by any agent whose live reach, access ceiling and membership
-allow writing to the conversation that asked it, except the asking Run itself. The direct assigner
-alone receives a Host-authored notice, unless its wait already delivers the question; program tasks
-and native engine subagents send no such notice. A person can always answer too, and the first answer
-wins. Native engine subagent questions, secret fields, approvals, access, sign-ins, credentials and
-other consent remain human-only. Agent answers
-name the answering Run and conversation, never the person. An accepted answer outlives the Run that
-gave it: delivery rechecks the person's membership, reach and access and the Request's revision, not
-that the answering Run is still live. Done is shared and needs active membership plus the task's
-creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
-open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
-revokes grants; Reopen starts nothing. A person's own message reopens a Done task they could reopen
-by hand, in the same transaction; other writers are still refused. The Host itself moves its
-creator's finished, read, idle tasks to Done (`doneReason: "quiet"`) after the days they chose,
-through the same Done command re-checked under its locks
-([quiet-tasks.ts](../packages/database/src/quiet-tasks.ts)); a Host change to the task or its
-creator reading it restarts that clock. A task moves in lists only when a person asks it for
-something (`askedAt`). Clients never link to Workspaces the reader cannot open.
+Role changes instructions and presentation, never access. An Assignment spans Runs, and its
+identity must prevent a late approval attaching to another task. Completion is derived
+transactionally; results return only while the requester can still read the worker Workspace.
+Cancellation follows Assignments, not Thread lineage.
+
+A result consumed by its assigner must not also arrive as an automatic return. Other readers do
+not consume it. Waits recheck authority, and timeout or disconnect cancels no work. Delivery and
+return reconciliation live in the [Inbox](../packages/database/src/thread-inbox.ts).
+
+Agents can answer ordinary questions only with live authority to write to the asking conversation;
+the asking Run cannot answer itself. Native child questions, secrets, approvals and consent stay
+human-only. Answers identify the answering agent, never impersonate a person. An accepted answer
+outlives its Run but still needs valid membership, reach and Request revision at delivery.
+
+Done needs active membership and creator or Workspace-owner authority. It stops the Assignment
+subtree, withdraws inputs and Requests, pauses anchored Triggers and revokes grants. Reopen starts
+nothing. Chat and active channel conversations cannot be Done.
 
 Giving a finished task more work is a separate `delegate_task`, never an effect of
 `thread_send`: choosing delegate or join must be one atomic decision, and a retry after the
@@ -214,33 +165,19 @@ to resubmit, since an unassigned queue may already have started a Run.
 
 ## Reading another Thread's work
 
-The platform gives agents tools to get context and the agent decides what it needs. Nothing about a
-task's progress is injected or pushed; its final result and ordinary questions reach its assigner.
+Agents choose what context to read; a task's final result and ordinary questions reach its assigner.
+Progress is not injected into its parent.
 
-The `activity` view of `thread_read` is summary-first. Events give one ordering, and message text
-comes from published rows, so waiting inputs never appear. Tool text is clipped and arguments are
-absent unless the call names that item. Only the person a Run acted for reads its tool text: other
-members get title and status, because tool output can hold a page, mail or a code that presence
-rules alone would not cover. Node items carry title and status, Request items kind and title, never
-a prompt, result or payload. `sign_in`, `use_card`, `trigger_write` and `computer` keep status and
-title even by item, because they can carry a credential, a webhook secret, typed values or a phone
-PIN, and so does a completion with no resolvable start. A tool call naming a Mac app or phone is
-hidden unless the reader is that machine's effective owner, and a place attached to a message
-becomes a plain label for a reader who couldn't open it.
+Tool output can hold mail, pages or credentials. Workspace membership alone does not grant that
+text: only the person a Run acted for can read it, and machine operations also require effective
+ownership. Sensitive Request payloads remain hidden even on an item read. Integration output is
+stored verbatim, so these restrictions reduce exposure without making transcripts secret from
+agents authorized to read them. The [activity reader](../apps/host/src/mcp/thread-items.ts)
+owns the projection.
 
-This reduces exposure and does not remove it: integration output is stored verbatim, so the person
-a Run acted for, through any agent that reaches the Thread, can read an SMS code it returned.
-
-`recentPlaces` means recent, never live. It comes from durable `place.entered` events, filtered for
-the reader as [`latestPlaces`](../apps/host/src/browser/browser-service.ts) filters, and nothing is
-drained before reading. It never proves a place is still open.
-
-`person_show` with a `runId` shows another Run's place after the same Assignment refusal as any
-show. It needs reach to the target Thread, not write access, so a read-write voice Run can show a
-full-access task's page. It runs the `current` path against the target Run: a Mac app needs a live
-session of that Run and is refused rather than substituted, a phone needs its effective owner, and a
-browser is authorized with the caller's actor, never the target Run's. The place names the target
-Run while the message stays the caller's.
+Recent places are durable history, never proof a place is open. Showing another Run's place needs
+the caller's current authority and the target's live binding; it never borrows the target Run's
+power or substitutes another place.
 
 ## Pages and apps in a conversation
 
@@ -253,21 +190,12 @@ navigates the person's selected place. See [Browser sessions](browser-sessions.m
 
 ## Personal memory
 
-Memory is ordinary files in Main reaching Runs through Main's `AGENTS.md`, with no memory store or
-tool. Projects never see it, since Project members read what reaches a Project. Memory is evidence,
-never permission: nothing remembered authorizes an action, and inbound content or an agent's own
-refusal never becomes a standing rule. The person's standing instructions sit in their own section
-of `AGENTS.md`, outside `## Memory`; only the Run that heard the person writes one, and they direct
-work without answering a Request or granting access. Only the nightly pass curates; others write
-only what the person asks for or raw inbox scraps, and each nightly pass reapplies recorded forgets.
-The Host, not a pass's notes, knows what each pass must read: each wake lists every Main-inheriting
-conversation with anything new since that pass last completed, which covers Voice and tasks however
-they started and leaves out shared channels and Projects. A light pass with nothing new starts no
-model unless two hours have passed, since only a model can read connected sources. Opensteer creates each Main's two
-background passes (the Trigger's `systemRole`); the Host refuses archive, reprogramming and manual
-runs, and inserts them paused when memory is off. Stopping memory writes the off line first, pauses
-both workers and marks them Done, and erases files only once neither is running or waiting. Each pass
-chooses its model at admission on Main's computer, keeps it for that pass, and starts a fresh native
-session with no replayed history, since continuity lives in the files. With no usable model a pass waits, which is neither a
-pause nor memory off, so recovery can't undo either. Main is not yet a private boundary: a shared channel routed into Main receives its `AGENTS.md`. See
-[`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
+Memory is ordinary files in Main reaching eligible Runs through Main's `AGENTS.md`; Projects and
+shared channel conversations do not inherit it. The [channel admission rule](../packages/database/src/channel-store.ts)
+allows Main inheritance only for an owner-linked DM routed to that owner's Main.
+
+Memory is evidence, never permission. Remembered content cannot grant access or answer a Request.
+Standing instructions belong outside `## Memory`, and only the Run that heard the person writes
+one. Nightly curation reapplies recorded forgets; disabling memory must stop its workers before
+erasing files. Continuity lives in files rather than replayed provider history. Procedures and
+writing rules live in the shipped [memory skill](../apps/runner/agent-skills/skills/memory/SKILL.md).

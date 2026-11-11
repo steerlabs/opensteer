@@ -27,19 +27,13 @@ never claim the Host was unreachable. Deadlines and size limits live in the tran
 
 ## What a person is told
 
-Reconnecting resumes from the cursor and loses nothing, so a connection that returns within
-[the hold](../packages/client/src/host/lifecycle.ts) never happened as far as a person can tell, and
-`describeHostConnection` keeps saying Connected. `canRespondToRequests` does not hold: decisions
-still need a synchronized Host, so controls may dim through a drop nobody is told about. Stopping is
-said at once, and nothing counts while hidden, because a frozen timer fires mid-reconnect on return.
+Brief reconnects keep the Connected presentation and resume from the cursor, while answering
+Requests still needs a synchronized Host. Hidden surfaces must not accrue outage time. Report
+connection state without moving content; unrelated Workspace retries stay quiet.
+[The lifecycle](../packages/client/src/host/lifecycle.ts) owns presentation timing.
 
-Only the Workspaces being read decide the connection; the others retry quietly. An outage settles on
-Unavailable with Retry, and the sockets keep trying behind it. Saying it never moves content: a new
-surface reads this state in existing chrome or floats over the page.
-
-A phone also reports network paths that did not move, so `same` costs a ping and only `changed`
-replaces sockets. A socket that does not answer shows a move the phone could
-not see, such as between two Wi-Fi networks, and everything on that path is replaced with it.
+A phone can report the same network path after an actual move. Probe unchanged paths before
+replacing sockets; a failed probe invalidates the whole path.
 
 ## MCP routes
 
@@ -66,51 +60,36 @@ operation identity. Unlink keeps its credential until the Account acknowledges r
 refusal with a validated reason retires only the rejected step and keeps the credential; unknown,
 malformed, reasonless and temporary failures stay journaled and visible.
 
-Account deletion needs no Host, so a lost computer can't block it: the Account revokes Connect, then
-one transaction removes the Deployments it owns. There is no ownership transfer, so deleting a
-server's owner ends Account sign-in there for every member. The Host learns on its next call, when
-its credential answers 401, which alone could be a proxy. Activation is the probe, because it
-changes nothing and an ended link answers not-found or cancelled; never probe with unlink, which
-deletes a link that still works. Only revoke and a `disabled` projection accept that answer, since
-`ready` would report a tunnel that is gone, and revoke or unlink may replace a stuck projection. The
-link row stays until the person unlinks, so an empty Account database can't make Macs discard their
-credentials. Apple's token is revoked only after the commit, because Apple must not hear of a
-deletion that was refused. The Sign in with Apple client secret is minted at startup and lasts 180
-days, so the Account service must restart within that.
+Account deletion must work without a reachable Host. It revokes Connect and removes the owned
+Deployments; there is no ownership transfer. A 401 alone may come from a proxy, so only the
+Account's validated terminal response proves a link ended. Probe with activation, never unlink:
+a diagnostic must not delete a working link. Keep local credentials until removal is confirmed.
+Apple token revocation follows the deletion commit. The Sign in with Apple client secret expires,
+so the Account must restart before its startup-minted secret does.
 
-For Account linking, the Host signs a per-challenge encryption key into its proof, and the Account
-seals completion to that key only after verifying the pinned Host signature, so the courier and
-desktop recovery journal hold only ciphertext. The Host verifies completion outside its transaction,
-then atomically revalidates the session and challenge, deletes the key and stores the credential.
-Expired and cancelled keys are erased. Connector credentials stay on the Host computer and reach
-only the supervisor's private executor channel; owner sessions request intents and read status,
-which clients read only while Settings or first-run setup is open.
+Account linking seals completion to a per-challenge Host key after verifying Host identity. The
+courier and recovery journal hold only ciphertext. Commit rechecks the session and challenge, then
+erases the key. Connector credentials reach only the supervisor's private executor, never owner
+status payloads.
 
-Desktop updates reach only the installation supervising its own Personal Host, never a borrowed
-Runner or a server Deployment. The epoch-independent [maintenance v1 contract](../packages/protocol/src/maintenance.ts)
-is its sole browser API. A page its Host served calls it same-origin. Phones and the desktop's main
-process verify identity and reuse session authentication below ordinary attachment, so they can
-update a Host they can't attach to. All of them long-poll only while Updates is visible. An
-already-shipped desktop without this contract needs one local update first. The target is journaled before native staging, since any
-quit can apply it; only a new desktop process incarnation reconciles the installed version.
-Failed install handoff relaunches the desktop to restore the Personal stack and reconcile the journal.
+Desktop updates target only the installation supervising its Personal Host. The
+[maintenance contract](../packages/protocol/src/maintenance.ts) works below normal attachment and
+independently of its epoch, with verified identity and session authentication. A desktop without
+that contract needs one local update. Journal the target before native staging: any quit can
+apply it, and only a new process can confirm installation. A failed handoff must restore the
+Personal stack.
 
 First-run setup's phone step composes these steps and adds no authority. With Connect its QR code
 is `<portal>/open#d=<DeploymentId>`: a destination, never a pairing code, Host origin or grant. The
 phone signs in to its own Account and opens that ID only from its authenticated directory.
 
-Tailscale and an own address are the existing Private mode. For Tailscale, desktop main serves the
-Host's loopback port with `tailscale serve` (tailnet only, never Funnel); Tailscale keeps `Host`
-and sends `X-Forwarded-Proto: https`, which the session exchange needs to see the signed route.
-Main records exactly the handler it created and removes or re-points only that one, whenever the
-Host route stops being that origin or its port moves, from any device's mode change; a handler it
-did not create is never touched. Private mode's QR is the [pairing link](../packages/core/src/deep-links.ts):
-it carries the origin and a ten-minute one-time code, so the phone fills them in and pairs only
-after the person confirms. Issuing a code deletes the session's previous one, so setup issues a
-new code only after the shown one expires and the person asks.
+Private mode uses Tailscale or the person's own address. Tailscale serves only the tailnet, never
+Funnel, and must preserve route headers needed by session exchange. Manage only the handler this
+installation created; never remove another process's handler.
 
-A phone paired privately gets push only if the computer is also Account-linked and the phone is
-signed in to that Account; push is published through the Account.
+A Connect QR names a destination; a private pairing QR carries a short-lived one-use secret and
+needs confirmation. Neither bypasses Host authentication. Private pairing gets push only when the
+computer is Account-linked and the phone is signed in to that Account.
 
 ## Durable stream and live progress
 
@@ -119,30 +98,15 @@ discard the lower events it overtook; the [hub](../packages/orchestration/src/re
 publication holes from the store. Readers skip unknown kinds and Thread statuses, validate every
 event's Workspace before changing batch state, and advance cursors in order.
 
-A frame a client cannot read costs what [losing it costs](../packages/client/src/host/realtime-frames.ts),
-and never strands the channel. A notice is dropped with the socket up and repaired by the read that
-answers for it, which is not always a bootstrap: a cache the bootstrap does not touch is invalidated
-directly. A replay or sync frame is never applied or acknowledged: the channel reconnects from the
-same cursor, and only `host.synchronized` forgets the failures, so a frame that fails on every
-connect keeps backing off. Not everything a subscribe sends follows the cursor, though: read states
-come only with replayed events and a resync only with a live condition, so losing one starts over
-from a snapshot at once. Replay also cannot get past an event this build will never read, so a
-position that keeps failing starts over from a snapshot too. If the snapshot is unreadable too, the
-connection reads Unavailable with Retry while it keeps trying on a long cap: each try can cost a
-whole snapshot over cellular, and a later Host or app update must recover it unattended. Network and
-foreground signals wait for that retry's time as well; only Retry skips it.
+Unreadable notices may be dropped only when an authoritative read repairs their state. Never
+acknowledge an unreadable durable event: reconnect from the cursor or take a fresh snapshot when
+replay cannot repair it. An unreadable snapshot backs off rather than repeatedly downloading over
+cellular; explicit Retry can bypass the delay. A snapshot may omit an unreadable Thread, but an
+event cannot silently leave stale state behind. The
+[frame policy](../packages/client/src/host/realtime-frames.ts) owns recovery decisions.
 
-A snapshot may skip a Thread this build cannot read, because a snapshot is state at a position. An
-event may not: acknowledging past a malformed Thread event would leave what the client holds stale
-with nothing to repair it, so only an unknown status is skipped there. Only a Host's `host.error`
-refusal stops a channel until Retry.
-
-A browser viewer's snapshot and subscription are the whole of its state, so a viewer that cannot read
-a frame reconnects on the same backoff, keeping its last picture and taking no input. Failures are
-forgotten only once a socket has stayed up a while: every connect brings a snapshot, a dialog reply
-and often a picture, so a frame read fine proves nothing about the next one.
-Everything else stays final: a Host refusal, a Host's 4002 for what the client sent, ended access and
-a frame for the wrong target.
+A browser viewer keeps its last picture and refuses input while recovering. Recovery never
+reroutes an ended target or converts lost access into a transient network error.
 
 Wire schemas must answer the same in Node, Chromium and Hermes, and `URL` does not: Chromium treats
 `chrome-error:`, `chrome:` and `devtools:` as standard schemes and refuses them bare, which Node and
@@ -150,22 +114,14 @@ Hermes accept. So a Host-side parse proves nothing about a client's, and a check
 receives reads the text instead. A client view does not repeat a rule the Host enforces before
 sending; rejecting a frame after it arrives protects nothing.
 
-A failed acknowledgement send reconnects, keeping applied state. Diagnostics never log payloads,
-discriminator values or validator messages, only envelope metadata and issue paths, which name
-fields the wire schemas declare and mask a peer's record keys. The renderer reports its own failures
-to the desktop log; the main process does not read realtime frames, but it does check that what it
-is told to log names only that vocabulary, because the bridge can be called directly.
+Diagnostics must never persist frame contents, arbitrary discriminator values or validator
+messages; even a peer's record keys can be secret. Desktop main validates renderer diagnostics
+against the fixed log vocabulary, because callers can invoke the bridge directly.
 
-Thread and Run state are absolute and sequenced: only newer state replaces event-owned fields, and
-an ended Run never returns active. Request counts come from the Host's projection, not client
-inference. A response older than a retained event does not prove coverage across a reconnect
-snapshot that omitted it
-([Host session client](../packages/client/src/host/host-session-client.ts)).
-
-Unopened Threads get state updates without accumulating a transcript; opening one reads fresh
-history. Reconnect keeps a shown transcript and its cursor until a history read succeeds, and
-rereads only when the snapshot's sequence exceeds the page's `readState.asOfSequence`. A snapshot
-with `messagesOmitted` means history was not loaded, not that it is empty.
+Newer events own Thread and Run state; a late RPC cannot overwrite them or revive an ended Run.
+Request counts come from the Host. Keep a shown transcript until a successful history read replaces
+it; omitted history is unknown, never empty. [The session client](../packages/client/src/host/host-session-client.ts)
+owns reconciliation.
 
 Streaming text is live progress, never durable state. It never advances a cursor or notifies and can
 be lost, so complete durable text must not depend on it. Reconnect replaces old progress with whole
@@ -174,12 +130,9 @@ open streams; gaps need a reread, not invented appends
 
 ## Viewer state synchronization
 
-Read and mute state is private, sent only to that person's connections behind the matching snapshot
-or replay cut. Every subscription, including cursor resume, resynchronizes it, since shared replay
-cannot recover private changes made elsewhere. Read markers merge monotonically; mute and catalog
-revisions stop late reads undoing a choice. Pages carry their own bounded viewer metadata, so never
-send returned IDs back in bulk reads. Pending inputs set no read position until received, and
-Assignment continuations never set one.
+Read and mute state belongs to one person and must resynchronize even on cursor resume: shared
+event replay cannot recover private changes from another device. Late reads never undo newer
+choices, and pending inputs are not read messages.
 
 ## Conversation history
 
