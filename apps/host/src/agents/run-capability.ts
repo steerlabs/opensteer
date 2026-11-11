@@ -1,4 +1,11 @@
 import {
+  ProjectCapabilityClaimsSchema,
+  ProjectCapabilityScopeSchema,
+  type ProjectCapabilityClaims,
+  type ProjectCapabilityScope,
+} from "@opensteer/protocol";
+import {
+  OpensteerError,
   EnvironmentIdSchema,
   GrantIdSchema,
   RunIdSchema,
@@ -97,6 +104,11 @@ export class RunCapabilityTokenService<Audience extends string> {
   }
 
   async authenticate(token: string): Promise<RunCapabilityClaims<Audience>> {
+    if (isProjectRunCapabilityEnvelope(token))
+      throw new OpensteerError({
+        code: "unauthorized",
+        message: "Project capabilities require their Project consumer",
+      });
     const claims = this.#tokens.verify(token, this.#schema);
     await this.#authorizer.assertActiveGrant(claims);
     return claims;
@@ -137,5 +149,67 @@ export function isProjectRunCapabilityEnvelope(token: string): boolean {
     );
   } catch {
     return false;
+  }
+}
+
+export interface ProjectCapabilityBindingAuthorizer {
+  assertProjectBinding(scope: ProjectCapabilityScope): Promise<void>;
+}
+
+export function projectCapabilityBinding(claims: ProjectCapabilityClaims): ProjectCapabilityScope {
+  const {
+    aud: _aud,
+    deploymentId: _deployment,
+    hostInstanceId: _host,
+    exp: _exp,
+    iat: _iat,
+    iss: _iss,
+    jti: _jti,
+    ...binding
+  } = claims;
+  return ProjectCapabilityScopeSchema.parse(binding);
+}
+
+export class ProjectCapabilityTokenService {
+  readonly #authorizer: ProjectCapabilityBindingAuthorizer;
+  readonly #tokens: SignedTokenService;
+  readonly lifetimeSeconds: number;
+
+  constructor(options: {
+    readonly authorizer: ProjectCapabilityBindingAuthorizer;
+    readonly tokens: SignedTokenService;
+    readonly lifetimeSeconds?: number;
+  }) {
+    this.#authorizer = options.authorizer;
+    this.#tokens = options.tokens;
+    this.lifetimeSeconds = options.lifetimeSeconds ?? runCapabilityLifetimeSeconds;
+  }
+
+  async assertProjectBinding(scope: ProjectCapabilityScope): Promise<void> {
+    await this.#authorizer.assertProjectBinding(ProjectCapabilityScopeSchema.parse(scope));
+  }
+
+  async issue(
+    scope: ProjectCapabilityScope,
+    audience: ProjectCapabilityClaims["aud"],
+  ): Promise<string> {
+    const binding = ProjectCapabilityScopeSchema.parse(scope);
+    const aud = ProjectCapabilityClaimsSchema.shape.aud.parse(audience);
+    await this.assertProjectBinding(binding);
+    return this.#tokens.issue({ ...binding, aud }, this.lifetimeSeconds);
+  }
+
+  async verify(
+    token: string,
+    audience: ProjectCapabilityClaims["aud"],
+  ): Promise<ProjectCapabilityClaims> {
+    const claims = this.#tokens.verify(token, ProjectCapabilityClaimsSchema);
+    if (claims.aud !== audience)
+      throw new OpensteerError({
+        code: "unauthorized",
+        message: "Project capability audience does not match this consumer",
+      });
+    await this.assertProjectBinding(projectCapabilityBinding(claims));
+    return claims;
   }
 }
