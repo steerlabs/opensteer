@@ -3,6 +3,7 @@ import { runFromRow } from "./thread-row-mappers.js";
 import { Migrator } from "kysely/migration";
 import {
   createProjectIdentityFixture,
+  prepareProjectAdmission,
   insertProjectRunFixture,
 } from "./project-work.test-support.js";
 import { createId } from "@opensteer/core";
@@ -109,6 +110,78 @@ describeStore("additive Project authority preparation", (it) => {
     )`.execute(storeFixture.database);
     expect(constraints.rows).toHaveLength(10);
     expect(constraints.rows.every((constraint) => !constraint.convalidated)).toBe(true);
+  });
+
+  it("refuses a Project event receipt on model 1 and leaves legacy ledger writes outside the model helper", async ({
+    storeFixture,
+  }) => {
+    const fixture = await storeFixture.startRunFixture("legacy-project-receipt", "project");
+    const database = storeFixture.database;
+    await expect(
+      database
+        .insertInto("agentControlRequests")
+        .values({
+          runId: fixture.run.id,
+          sourceThreadId: fixture.thread.id,
+          requestId: randomUUID(),
+          action: "project.event",
+          actionClass: "project.event",
+          requestFingerprint: "f".repeat(64),
+        })
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514" });
+    await database.transaction().execute(async (tx) => {
+      await sql`set local track_functions = 'all'`.execute(tx);
+      await tx
+        .insertInto("agentControlRequests")
+        .values({
+          runId: fixture.run.id,
+          sourceThreadId: fixture.thread.id,
+          requestId: randomUUID(),
+          action: "thread.read",
+          actionClass: "thread.read",
+          requestFingerprint: "b".repeat(64),
+        })
+        .execute();
+      const calls = await sql<{
+        calls: string;
+      }>`select calls from pg_stat_xact_user_functions where funcid='public.opensteer_stored_execution_authority()'::regprocedure`.execute(
+        tx,
+      );
+      expect(Number(calls.rows[0]?.calls ?? 0)).toBe(0);
+    });
+  });
+
+  it("accepts only the matching Project receipt pair on a live Project source", async ({
+    storeFixture,
+  }) => {
+    const { database, prepared, project } = await prepareProjectAdmission(storeFixture, true);
+    const receipt = {
+      runId: prepared.run.id,
+      sourceThreadId: prepared.thread.id,
+      requestId: randomUUID(),
+      action: "project.event" as const,
+      actionClass: "project.event" as const,
+      requestFingerprint: "a".repeat(64),
+    };
+    await database.insertInto("agentControlRequests").values(receipt).execute();
+    await expect(
+      database
+        .insertInto("agentControlRequests")
+        .values({ ...receipt, requestId: randomUUID(), actionClass: "thread.read" })
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514" });
+    await database
+      .updateTable("users")
+      .set({ authorityGeneration: "2" })
+      .where("id", "=", project.userId)
+      .execute();
+    await expect(
+      database
+        .insertInto("agentControlRequests")
+        .values({ ...receipt, requestId: randomUUID() })
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514" });
   });
 
   it("enforces Project principal identity and scope by direct SQL without touching legacy identities", async ({
@@ -398,17 +471,19 @@ describeStore("additive Project authority preparation", (it) => {
                   await sql`
         select 'column:' || table_name || ':' || column_name as name,
           data_type || ':' || is_nullable || ':' || coalesce(column_default, '') as definition
-        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations')
+        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests')
         union all select 'constraint:' || conrelid::regclass::text || ':' || conname, pg_get_constraintdef(oid)
-          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass)
-        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations')
-        union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname = 'opensteer_project_principal_scope'
-        union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where tgrelid = 'principals'::regclass and tgname = 'project_principal_scope'
+          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass)
+        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests')
+        union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('opensteer_project_principal_scope', 'opensteer_enforce_project_event_receipt')
+        union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where (tgrelid = 'principals'::regclass and tgname = 'project_principal_scope') or (tgrelid = 'agent_control_requests'::regclass and tgname = 'agent_control_requests_project_event')
         order by name
       `.execute(transaction)
                 ).rows;
               const freshDefinitions = await definitions();
-              await sql`drop index thread_inputs_unattended_idempotency; drop index commands_unattended_idempotency;
+              await sql`drop trigger agent_control_requests_project_event on agent_control_requests;
+        drop function opensteer_enforce_project_event_receipt();
+        drop index thread_inputs_unattended_idempotency; drop index commands_unattended_idempotency;
         drop trigger runs_execution_authority on runs; drop trigger commands_execution_authority on commands;
         drop trigger runs_admitted_project_settings on runs; drop function opensteer_project_run_settings_immutable();
         drop trigger thread_inputs_execution_authority on thread_inputs; drop function opensteer_enforce_input_execution_authority();
@@ -430,10 +505,29 @@ describeStore("additive Project authority preparation", (it) => {
                 (
                   await sql<{ relname: string; relfilenode: number; scans: string | null }>`
         select relname, relfilenode, case when relname <> 'principals' then pg_stat_get_xact_numscans(oid) end as scans
-        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass)
+        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass)
         order by relname
       `.execute(transaction)
                 ).rows;
+              const checks = await sql<{
+                name: string;
+                definition: string;
+              }>`select conname as name, pg_get_constraintdef(oid) as definition from pg_constraint where conrelid='public.agent_control_requests'::regclass and conname in ('agent_control_requests_action_check','agent_control_requests_action_class_check')`.execute(
+                transaction,
+              );
+              for (const check of checks.rows) {
+                const legacy = check.definition
+                  .replace(/\s+NOT VALID$/u, "")
+                  .replace(", 'project.event'::text", "");
+                await sql
+                  .raw(`alter table public.agent_control_requests drop constraint ${check.name}`)
+                  .execute(transaction);
+                await sql
+                  .raw(
+                    `alter table public.agent_control_requests add constraint ${check.name} ${legacy}`,
+                  )
+                  .execute(transaction);
+              }
               const before = await facts();
               await projectAuthorityCutoverMigration.up(transaction);
               expect(await facts()).toEqual(
@@ -449,7 +543,7 @@ describeStore("additive Project authority preparation", (it) => {
               const locks = (
                 await sql<{ relname: string; mode: string }>`
         select distinct c.relname, l.mode from pg_locks l join pg_class c on c.oid = l.relation
-        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_connections', 'workspaces')
+        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'agent_connections', 'workspaces')
         order by c.relname, l.mode
       `.execute(transaction)
               ).rows;
@@ -461,6 +555,7 @@ describeStore("additive Project authority preparation", (it) => {
                 "triggers",
                 "trigger_revisions",
                 "trigger_watch_activations",
+                "agent_control_requests",
               ])
                 expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
               expect(locks).toContainEqual({
