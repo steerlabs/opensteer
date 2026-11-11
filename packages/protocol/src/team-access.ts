@@ -221,6 +221,7 @@ export const TeamSummarySchema = z.object({
     audit: CanSchema,
     invite: CanSchema,
     computer: CanSchema.optional(),
+    projects: CanSchema.optional(),
   }),
 });
 export const ModelSelectionInputSchema = ModelSelectionSchema.omit({ nativeModelId: true });
