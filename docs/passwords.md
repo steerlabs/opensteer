@@ -160,7 +160,8 @@ Deployment's own sites are refused like any sign-in.
 The broker adds the login it holds, built inside the broker, with no grant, after checking in the
 same commit that no login for that site has the username. It never edits or deletes anything, and
 it drops what it holds on expiry, a closed connection, the setting turning off, a reset, lock or
-sleep. Before Passwords is set up, only a person typing on the Mac itself is told how to set it up,
+sleep. Saving still works while the screen is locked, as remembered sign-ins do: a person away
+from the Mac signs in from their phone, and the vault keys need no presence. Before Passwords is set up, only a person typing on the Mac itself is told how to set it up,
 once each launch; nothing else asks.
 
 ## Typing in apps

@@ -169,6 +169,8 @@ export class PageEditingObserver {
   readonly #person: ((event: PersonFillObservation) => void) | undefined;
   readonly #personBindings = new Map<string, { binding: PersonFillBinding; context: number }>();
   readonly #save: ((event: PersonSaveObservation) => void) | undefined;
+  /** The page's own observer, which holds every verdict so one outlives its frame's renderer. */
+  #root: PageEditingObserver | null = null;
   readonly #saveWatchers = new Map<
     string,
     { frame: string; left: () => void; end: (done: boolean) => void }
@@ -220,6 +222,7 @@ export class PageEditingObserver {
           this.#person,
           this.#save,
         );
+        child.#root = this.#root ?? this;
         this.#children.set(session, child);
         void session
           .send("Page.enable")
@@ -435,7 +438,7 @@ export class PageEditingObserver {
   #navigated = (value: unknown): void => {
     const frame = z.object({ frame: z.object({ id: z.string() }) }).safeParse(value);
     if (frame.success) {
-      for (const watcher of this.#saveWatchers.values())
+      for (const watcher of (this.#root ?? this).#saveWatchers.values())
         if (watcher.frame === frame.data.frame.id) watcher.left();
       this.#withdrawBindings((entry) => entry.binding.frame === frame.data.frame.id);
       if (this.#focused?.frame === frame.data.frame.id) this.#clear();
@@ -549,7 +552,7 @@ export class PageEditingObserver {
     }
     if (kind === "person-save-gone") {
       const gone = saveGoneReport.safeParse(payload);
-      if (gone.success) this.#saveWatchers.get(gone.data.snapshotId)?.left();
+      if (gone.success) (this.#root ?? this).#saveWatchers.get(gone.data.snapshotId)?.left();
       return true;
     }
     if (kind !== "person-save") return false;
@@ -565,6 +568,7 @@ export class PageEditingObserver {
   }
 
   #watchSave(snapshotId: string, frame: string): PersonSaveSnapshot["verdict"] {
+    const owner = this.#root ?? this;
     let resolve: (done: boolean) => void = () => {};
     const result = new Promise<boolean>((settle) => (resolve = settle));
     let settling: ReturnType<typeof setTimeout> | undefined;
@@ -574,23 +578,34 @@ export class PageEditingObserver {
       ended = true;
       clearTimeout(settling);
       clearTimeout(expiry);
-      this.#saveWatchers.delete(snapshotId);
+      owner.#saveWatchers.delete(snapshotId);
       resolve(done);
     };
     const left = () => {
-      if (settling !== undefined || ended || this.#closed) return;
+      if (settling !== undefined || ended || owner.#closed) return;
       settling = setTimeout(
-        () => void this.#passwordShown(frame).then((shown) => end(shown === false)),
+        () => void owner.#passwordShownAnywhere(frame).then((shown) => end(shown === false)),
         personSaveSettleMs,
       );
     };
     const expiry = setTimeout(() => end(false), personSaveVerdictMaxMs);
-    this.#saveWatchers.set(snapshotId, { frame, left, end });
+    owner.#saveWatchers.set(snapshotId, { frame, left, end });
     return (signal) => {
       if (signal.aborted) end(false);
       else signal.addEventListener("abort", () => end(false), { once: true });
       return result;
     };
+  }
+
+  /** Asks whichever renderer holds the frame now; a frame keeps its id across renderers. */
+  async #passwordShownAnywhere(frame: string): Promise<boolean | null> {
+    const own = await this.#passwordShown(frame);
+    if (own !== null) return own;
+    for (const child of this.#children.values()) {
+      const shown = await child.#passwordShownAnywhere(frame);
+      if (shown !== null) return shown;
+    }
+    return null;
   }
 
   /** Null when the frame has no private world to ask, such as one that left this renderer. */
@@ -722,7 +737,14 @@ export class PageEditingObserver {
   async close(): Promise<void> {
     this.#closed = true;
     this.#withdrawBindings(() => true);
-    for (const watcher of this.#saveWatchers.values()) watcher.end(false);
+    // A frame's renderer going is its document leaving it: the page's observer
+    // judges what comes next. The page's own closing ends every verdict.
+    const frames = new Set(this.#contexts.values());
+    if (this.#root)
+      for (const watcher of this.#root.#saveWatchers.values()) {
+        if (frames.has(watcher.frame)) watcher.left();
+      }
+    else for (const watcher of this.#saveWatchers.values()) watcher.end(false);
     await Promise.all([...this.#children.values()].map((child) => child.close()));
     await this.#frames.close();
     this.#children.clear();

@@ -401,6 +401,98 @@ it("routes cross-process bindings and writes through their owning private world,
   }
 });
 
+it("keeps a frame's sign-in verdict when the frame moves to another renderer", async () => {
+  vi.useFakeTimers();
+  const cdp = new FakeCdpSession();
+  cdp.responses.set("Page.getFrameTree", { frameTree: { frame: { id: "main" } } });
+  cdp.responses.set("Page.addScriptToEvaluateOnNewDocument", { identifier: "root" });
+  const bindings = new Map<string, Record<string, unknown>>();
+  cdp.responses.set(
+    "Target.sendMessageToTarget",
+    (parameters: Record<string, unknown> | undefined) => {
+      const sessionId = String(parameters?.sessionId);
+      const command = JSON.parse(String(parameters?.message)) as {
+        id: number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      if (command.method === "Runtime.addBinding") bindings.set(sessionId, command.params!);
+      const result =
+        command.method === "Page.getFrameTree"
+          ? { frameTree: { frame: { id: "child" } } }
+          : command.method === "Page.addScriptToEvaluateOnNewDocument"
+            ? { identifier: "child-script" }
+            : command.method === "Runtime.evaluate"
+              ? { result: { value: false } }
+              : {};
+      queueMicrotask(() =>
+        cdp.emit("Target.receivedMessageFromTarget", {
+          sessionId,
+          message: JSON.stringify({ id: command.id, result }),
+        }),
+      );
+      return {};
+    },
+  );
+  const saves: import("./editing-observer.js").PersonSaveObservation[] = [];
+  const observer = new PageEditingObserver(
+    cdp,
+    () => {},
+    () => {},
+    undefined,
+    undefined,
+    (event) => saves.push(event),
+  );
+  await observer.start();
+  const renderer = async (sessionId: string, contextId: number) => {
+    cdp.emit("Target.attachedToTarget", { sessionId, targetInfo: { type: "iframe" } });
+    await vi.waitFor(() => expect(bindings.has(sessionId), "the frame's world").toBe(true));
+    const world = bindings.get(sessionId)!;
+    const emit = (method: string, params: unknown) =>
+      cdp.emit("Target.receivedMessageFromTarget", {
+        sessionId,
+        message: JSON.stringify({ method, params }),
+      });
+    emit("Runtime.executionContextCreated", {
+      context: {
+        id: contextId,
+        uniqueId: randomUUID(),
+        name: world.executionContextName,
+        origin: "https://frame.example.test",
+        auxData: { frameId: "child", isDefault: false },
+      },
+    });
+    return (payload: unknown) =>
+      emit("Runtime.bindingCalled", {
+        name: world.name,
+        executionContextId: contextId,
+        payload: JSON.stringify(payload),
+      });
+  };
+  try {
+    const report = await renderer("first-renderer", 8);
+    report({
+      kind: "person-save",
+      snapshotId: randomUUID(),
+      fieldIds: [randomUUID()],
+      username: "person@example.test",
+      password: "synthetic-password",
+      origin: "https://frame.example.test",
+    });
+    const snapshot = saves.find((event) => event.type === "snapshot");
+    if (snapshot?.type !== "snapshot") throw new Error("The frame's snapshot never arrived");
+    const verdict = snapshot.snapshot.verdict(new AbortController().signal);
+    // The submit moved the frame to a new renderer, whose document has no password field.
+    cdp.emit("Target.detachedFromTarget", { sessionId: "first-renderer" });
+    await renderer("second-renderer", 9);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(verdict).resolves.toBe(true);
+  } finally {
+    await observer.close();
+    vi.useRealTimers();
+  }
+});
+
 it.each([3, 4, 8, 9])(
   "recognizes only contiguous code groups of four to eight inputs (%s)",
   async (count) => {
