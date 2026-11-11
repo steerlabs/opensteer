@@ -1,3 +1,7 @@
+import { setProjectRuntimeSettings } from "./project-runtime-settings-store.js";
+import { ProjectBindingStore } from "./project-execution-store.js";
+import { testModelSelection } from "./store.integration.test-support.js";
+import { jsonValue } from "./store-primitives.js";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 import { createId } from "@opensteer/core";
@@ -159,5 +163,169 @@ describeStore("Project task reuse and local titles", (it) => {
     expect(await store.nameProjectThread(child.threadId)).toEqual([]);
     expect(await store.nameProjectThread(prepared.thread.id)).toEqual([]);
     expect(project.workspace.id).toBe(saved.binding.workspaceId);
+  });
+  it("keeps a source Run's access ceiling after settings become stronger and rejects a snapshotless forged Run", async ({
+    storeFixture,
+  }) => {
+    const { database, project, prepared, store, origin } =
+      await prepareProjectAdmission(storeFixture);
+    const configure = (accessMode: "approval-required" | "full-access", revision: number) =>
+      setProjectRuntimeSettings(
+        database,
+        { userId: origin.userId, authorityGeneration: 1 },
+        {
+          workspaceId: project.workspace.id,
+          expectedAccessRevision: 1,
+          expectedSettingsRevision: revision,
+          commandIdentity: createId("command"),
+          harnessInstanceId: prepared.harnessInstance.id,
+          modelSelection: testModelSelection,
+          accessMode,
+          instructions: "Project only",
+          timeZone: "UTC",
+        },
+      );
+    await configure("approval-required", 1);
+    const admitted = await store.admitProjectWork({
+      threadId: prepared.thread.id,
+      origin,
+      source: { kind: "human" },
+      content: [{ type: "text", text: "Ask before acting" }],
+      policy: "queue",
+      idempotencyKey: "restricted-source",
+    });
+    if (!admitted.runId || !admitted.commandId) throw new Error("Restricted source Run is missing");
+    const bound = await new ProjectBindingStore(database, { runnerIsAttached: () => true }).acquire(
+      {
+        commandId: admitted.commandId,
+        runnerId: project.runnerId,
+        runnerBootId: `rbt_${randomUUID()}`,
+        dispatcherId: "restricted-source",
+        leaseTokenHash: "restricted-source",
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    );
+    await configure("full-access", 2);
+    await expect(
+      store.delegateProjectWork({
+        binding: bound.binding,
+        title: "Stronger child",
+        content: [{ type: "text", text: "Act without asking" }],
+        idempotencyKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ reason: "project-access-ceiling-exceeded" });
+    await expect(
+      store.admitProjectWork({
+        threadId: prepared.thread.id,
+        origin,
+        source: { kind: "agent", runId: admitted.runId },
+        content: [{ type: "text", text: "Start stronger work" }],
+        policy: "report",
+        idempotencyKey: "stronger-message",
+      }),
+    ).rejects.toMatchObject({ reason: "project-access-ceiling-exceeded" });
+    const parent = await database
+      .selectFrom("runs")
+      .selectAll()
+      .where("id", "=", admitted.runId)
+      .executeTakeFirstOrThrow();
+    const seed = await database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("messageId", "=", parent.seedInputId)
+      .executeTakeFirstOrThrow();
+    const thread = await database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", parent.threadId)
+      .executeTakeFirstOrThrow();
+    const { projectRuntime: _runtime, ...identity } = parent.authoritySource;
+    const source = { ...identity, parentRunId: parent.id };
+    const messageId = createId("message");
+    let seedInserted = false;
+    await expect(
+      database.transaction().execute(async (tx) => {
+        await tx
+          .insertInto("messages")
+          .values({
+            id: messageId,
+            threadId: thread.id,
+            runId: null,
+            sequence: thread.nextMessageSequence,
+            actorPrincipalId: parent.actorPrincipalId,
+            kind: "input",
+            author: jsonValue({
+              kind: "agent",
+              runId: parent.id,
+              threadId: thread.id,
+              workspaceId: thread.workspaceId,
+              workspaceName: project.workspace.name,
+              displayName: "Restricted source",
+            }),
+            content: jsonValue([{ type: "text", text: "Forged stronger work" }]),
+          })
+          .execute();
+        await tx
+          .insertInto("threadInputs")
+          .values({
+            ...seed,
+            authoritySource: jsonValue(source),
+            messageId,
+            runId: null,
+            state: "pending",
+            policy: "queue",
+            queueRank: thread.nextMessageSequence,
+            idempotencyKey: "snapshotless-forgery",
+          })
+          .execute();
+        seedInserted = true;
+        await tx
+          .insertInto("runs")
+          .values({
+            threadId: parent.threadId,
+            environmentId: parent.environmentId,
+            harnessInstanceId: parent.harnessInstanceId,
+            providerSessionId: parent.providerSessionId,
+            actorPrincipalId: parent.actorPrincipalId,
+            requestedBy: parent.requestedBy,
+            membershipGeneration: parent.membershipGeneration,
+            initiatorGeneration: parent.initiatorGeneration,
+            originConnectionId: parent.originConnectionId,
+            causalChainId: parent.causalChainId,
+            replyTarget: null,
+            createdAt: new Date(),
+            startedAt: null,
+            completedAt: null,
+            id: createId("run"),
+            status: "queued",
+            bindingGeneration: null,
+            accessMode: "full-access",
+            authoritySource: jsonValue(source),
+            modelSelection: jsonValue(parent.modelSelection),
+            activationInputId: messageId,
+            seedInputId: messageId,
+            runOrdinal: thread.nextRunOrdinal,
+            reportContext: null,
+            initialContext: null,
+            nextRunnerOrdinal: 0,
+          })
+          .execute();
+      }),
+    ).rejects.toMatchObject({ code: "23514" });
+    expect(seedInserted).toBe(true);
+    expect(
+      await database
+        .selectFrom("messages")
+        .select("id")
+        .where("id", "=", messageId)
+        .executeTakeFirst(),
+    ).toBeUndefined();
+    expect(
+      await database
+        .selectFrom("delegations")
+        .select("id")
+        .where("parentRunId", "=", parent.id)
+        .execute(),
+    ).toEqual([]);
   });
 });

@@ -212,6 +212,26 @@ describeStore("Project captured-root revocation", (it) => {
         idempotencyKey: "connection-thread",
       })
     ).thread;
+    await database
+      .updateTable("agentConnections")
+      .set({ accessMode: "approval-required" })
+      .where("id", "=", connectionId)
+      .execute();
+    await expect(
+      store.admitProjectWork({
+        threadId: target.id,
+        origin: { ...origin, originConnectionId: connectionId },
+        source: { kind: "connection", connectionId },
+        content: [{ type: "text", text: "Stronger than the connection" }],
+        policy: "queue",
+        idempotencyKey: "restricted-connection",
+      }),
+    ).rejects.toMatchObject({ reason: "project-access-ceiling-exceeded" });
+    await database
+      .updateTable("agentConnections")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", connectionId)
+      .execute();
     const connected = await store.admitProjectWork({
       threadId: target.id,
       origin: { ...origin, originConnectionId: connectionId },

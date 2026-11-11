@@ -22,6 +22,8 @@ import { sql, type Selectable, type Kysely } from "kysely";
 import { z } from "zod";
 import {
   createId,
+  threadAccessModeAtMost,
+  type ThreadAccessMode,
   provisionalThreadTitle,
   HumanRootSchema,
   ProjectRunBindingSchema,
@@ -1769,6 +1771,8 @@ export class ProjectWorkStore {
           [parent.harnessInstanceId],
         );
         await assertActiveProjectBinding(transaction, binding, this.dependencies);
+        if (!threadAccessModeAtMost(snapshot.accessMode, parent.accessMode))
+          admissionUnavailable("project-access-ceiling-exceeded");
         const threads = await transaction
           .selectFrom("threads")
           .selectAll()
@@ -1990,12 +1994,13 @@ export class ProjectWorkStore {
     if (source.kind === "human" && origin?.originConnectionId !== null)
       admissionUnavailable("source-origin-mismatch");
     let connectionScope: WorkspaceId | undefined;
+    let connectionAccessMode: ThreadAccessMode | undefined;
     if (source.kind === "connection") {
       if (!origin || origin.originConnectionId !== source.connectionId)
         admissionUnavailable("source-origin-mismatch");
       const connection = await transaction
         .selectFrom("agentConnections")
-        .select(["id", "workspaceId"])
+        .select(["id", "workspaceId", "accessMode"])
         .where("id", "=", source.connectionId)
         .where("userId", "=", origin.userId)
         .where("memberGeneration", "=", String(origin.initiatorGeneration))
@@ -2005,6 +2010,7 @@ export class ProjectWorkStore {
         .executeTakeFirst();
       if (!connection || !connection.workspaceId) admissionUnavailable("captured-root-unavailable");
       connectionScope = connection.workspaceId ?? undefined;
+      connectionAccessMode = connection.accessMode;
     }
     const parentId =
       source.kind === "agent"
@@ -2145,6 +2151,11 @@ export class ProjectWorkStore {
       inheritedRuntime?.success ? inheritedRuntime.data : undefined,
       parent ? [parent.harnessInstanceId] : [],
     );
+    if (
+      (parent && !threadAccessModeAtMost(snapshot.accessMode, parent.accessMode)) ||
+      (connectionAccessMode && !threadAccessModeAtMost(snapshot.accessMode, connectionAccessMode))
+    )
+      admissionUnavailable("project-access-ceiling-exceeded");
     const senderPrincipalId =
       (source.kind === "human" || source.kind === "connection") && origin
         ? await principalIdForUser(transaction, origin.userId)
@@ -2383,7 +2394,8 @@ export class ProjectWorkStore {
     };
     if (
       thread.harnessInstanceId !== snapshot.harnessInstanceId ||
-      !isDeepStrictEqual(thread.modelSelection, snapshot.modelSelection)
+      !isDeepStrictEqual(thread.modelSelection, snapshot.modelSelection) ||
+      thread.accessMode !== snapshot.accessMode
     )
       await transaction
         .updateTable("threads")
