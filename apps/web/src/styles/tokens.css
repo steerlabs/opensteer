@@ -71,6 +71,9 @@
   --red-wash: color-mix(in srgb, var(--red) 9%, transparent);
   --red-line: color-mix(in srgb, var(--red) 34%, transparent);
   --red-text: color-mix(in srgb, var(--red) 55%, var(--text));
+  /* People only: the one blue mark, wherever agents are kept out. */
+  --blue-wash: color-mix(in srgb, var(--blue) 10%, transparent);
+  --blue-line: color-mix(in srgb, var(--blue) 30%, transparent);
 
   /* Focus/attention rings: one shape, tinted per state. */
   --ring-ember: 0 0 0 3px color-mix(in srgb, var(--ember) 9%, transparent);
