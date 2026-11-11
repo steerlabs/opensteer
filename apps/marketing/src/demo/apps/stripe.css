@@ -1,0 +1,545 @@
+/* Stripe Dashboard: one customer, its payments, and the refund dialog */
+.st {
+  position: relative;
+  display: flex;
+  height: 100%;
+  background: #fff;
+  color: #353a44;
+  font: 13px/1.4 var(--mac-font);
+  font-variant-numeric: tabular-nums;
+}
+.st svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+.st-side {
+  width: 146px;
+  padding: 12px 8px;
+  border-right: 1px solid #ebeef1;
+  flex: none;
+}
+.st-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.st-account i {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: #0b7f6b;
+  color: #fff;
+  font: 700 11px/1 var(--mac-font);
+  font-style: normal;
+}
+.st-account svg {
+  width: 12px;
+  height: 12px;
+  color: #6c7688;
+}
+.st-side nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.st-side nav span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: #414552;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.st-side nav svg {
+  color: #6c7688;
+}
+.st-side nav .is-on,
+.st-side nav .is-on svg {
+  color: #635bff;
+  font-weight: 600;
+}
+.st-side h6 {
+  margin: 14px 6px 4px;
+  color: #6c7688;
+  font-size: 12px;
+  font-weight: 600;
+}
+.st-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.st-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 46px;
+  padding: 0 16px;
+  flex: none;
+}
+.st-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 230px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #f5f6f8;
+  color: #6c7688;
+}
+.st-search svg {
+  width: 14px;
+  height: 14px;
+}
+.st-top__end {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: #6c7688;
+}
+.st-create {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #635bff;
+  color: #fff;
+}
+.st-create svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+.st-page {
+  flex: 1;
+  min-height: 0;
+  padding: 2px 14px 0;
+}
+.st-crumb {
+  margin: 0 0 6px;
+  color: #635bff;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.st-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.st-tile {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #ebeef1;
+  color: #6c7688;
+  flex: none;
+}
+.st-tile svg {
+  width: 22px;
+  height: 22px;
+}
+.st-head div {
+  flex: 1;
+  min-width: 0;
+}
+.st-head h4 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+.st-head p {
+  margin: 0;
+  color: #6c7688;
+  white-space: nowrap;
+}
+.st-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px #d5dbe1,
+    0 1px 1px rgb(0 0 0 / 6%);
+  color: #353a44;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.st-btn svg {
+  width: 13px;
+  height: 13px;
+}
+.st-btn--sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+.st-btn--go {
+  background: #635bff;
+  box-shadow: 0 1px 1px rgb(0 0 0 / 12%);
+  color: #fff;
+  transition: box-shadow 400ms;
+}
+.grp[data-held] .st-btn--go {
+  box-shadow: 0 0 0 4px rgb(223 179 107 / 65%);
+}
+.st-cols {
+  display: flex;
+  gap: 16px;
+}
+.st-pay {
+  flex: 1;
+  min-width: 0;
+}
+.st-pay h5 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.st-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 58px 94px minmax(0, 1fr) 96px 20px;
+  gap: 5px;
+  align-items: center;
+  height: 37px;
+  padding: 0 4px;
+  border-bottom: 1px solid #ebeef1;
+  white-space: nowrap;
+  transition: background-color 400ms;
+}
+.st-row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.st-row--head {
+  height: 28px;
+  border-bottom-color: #d5dbe1;
+  color: #6c7688;
+  font-size: 12px;
+  font-weight: 600;
+}
+.st-row b {
+  font-weight: 600;
+}
+.st-status {
+  display: flex;
+}
+.st-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  font-style: normal;
+}
+.st-badge svg {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2;
+}
+.st-badge--ok {
+  background: #d7f7c2;
+  color: #05690d;
+}
+.st-badge--back {
+  display: none;
+  background: #ebeef1;
+  color: #545969;
+}
+.st .st-more {
+  display: grid;
+  place-items: center;
+  height: 22px;
+  border-radius: 4px;
+  color: #6c7688;
+  overflow: visible;
+}
+.st-more svg {
+  fill: currentColor;
+  stroke: none;
+}
+.grp[data-menu] .st-row--second .st-more {
+  background: #ebeef1;
+  color: #353a44;
+}
+.st-count {
+  margin: 8px 0 0;
+  color: #6c7688;
+  font-size: 12.5px;
+}
+.grp[data-dup]:not([data-refunded]) .st-row--dup {
+  background: color-mix(in srgb, var(--ac) 22%, #fff);
+}
+.grp[data-refunded] .st-row--second {
+  animation: st-ok 1400ms ease-out;
+}
+.grp[data-refunded] .st-row--second .st-badge--ok {
+  display: none;
+}
+.grp[data-refunded] .st-row--second .st-badge--back {
+  display: inline-flex;
+}
+.grp[data-refunded] .st-row--second b {
+  color: #6c7688;
+  text-decoration: line-through;
+}
+@keyframes st-ok {
+  from {
+    background: #c9f5d9;
+  }
+}
+
+/* The row's overflow menu */
+.st-menu {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: 196px;
+  padding: 4px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgb(64 68 82 / 10%),
+    0 8px 24px rgb(64 68 82 / 18%);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity 160ms,
+    transform 200ms var(--ease-out);
+}
+.grp[data-menu] .st-menu {
+  opacity: 1;
+  transform: none;
+}
+.st-menu span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 5px;
+  color: #353a44;
+}
+.st-menu span svg {
+  color: #6c7688;
+}
+.st-menu span:first-child {
+  background: #f5f6f8;
+  color: #635bff;
+  font-weight: 600;
+}
+.st-menu span:first-child svg {
+  color: #635bff;
+}
+.st-menu i {
+  height: 1px;
+  margin: 4px 0;
+  background: #ebeef1;
+}
+
+/* Details column */
+.st-details {
+  width: 120px;
+  flex: none;
+}
+.st-details h6 {
+  margin: 0 0 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #ebeef1;
+  font-size: 16px;
+  font-weight: 700;
+}
+.st-detail {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+.st-detail > span {
+  display: flex;
+  justify-content: space-between;
+  color: #6c7688;
+  font-size: 12.5px;
+}
+.st-detail b {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.st-detail b span {
+  color: inherit;
+  font-size: inherit;
+}
+.st-detail a {
+  color: #635bff;
+  font-size: 13px;
+  font-weight: 600;
+}
+.st-visa {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 18px;
+  border-radius: 3px;
+  background: #1a1f71;
+  color: #fff;
+  font: italic 800 9px/1 var(--mac-font);
+  letter-spacing: 0.02em;
+}
+.st-now {
+  display: none;
+}
+.grp[data-refunded] .st-detail:not(.st-detail--credit) .st-was,
+.grp[data-credit] .st-detail--credit .st-was {
+  display: none;
+}
+.grp[data-refunded] .st-detail:not(.st-detail--credit) .st-now,
+.grp[data-credit] .st-detail--credit .st-now {
+  display: inline;
+}
+.grp[data-credit] .st-detail--credit {
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  animation: st-in 1200ms ease-out both;
+}
+.grp[data-credit] .st-detail--credit .st-now::after {
+  content: " credit";
+  color: #05690d;
+  font-size: 12.5px;
+}
+@keyframes st-in {
+  from {
+    background: #d9d6ff;
+  }
+  to {
+    background: #f5f6f8;
+  }
+}
+
+/* Refund dialog */
+.st-scrim {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(48 49 61 / 42%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 260ms;
+}
+.grp[data-modal] .st-scrim {
+  opacity: 1;
+}
+.st-modal {
+  width: 360px;
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 24px 60px rgb(0 0 0 / 30%);
+  transform: translateY(8px) scale(0.97);
+  transition: transform 360ms var(--ease-bubble);
+}
+.grp[data-modal] .st-modal {
+  transform: none;
+}
+.st-modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #6c7688;
+}
+.st-modal h5 {
+  margin: 0;
+  color: #353a44;
+  font-size: 18px;
+  font-weight: 700;
+}
+.st-modal p {
+  margin: 6px 0 12px;
+  color: #6c7688;
+  font-size: 13px;
+}
+.st-modal label {
+  display: block;
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.st-modal label em {
+  color: #6c7688;
+  font-style: normal;
+  font-weight: 400;
+}
+.st-input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  margin-bottom: 10px;
+  padding: 0 10px;
+  border-radius: 6px;
+  box-shadow:
+    0 0 0 1px #d5dbe1,
+    0 1px 1px rgb(0 0 0 / 5%);
+  font-size: 14px;
+}
+.st-input em {
+  color: #6c7688;
+  font-style: normal;
+}
+.st-input svg {
+  width: 13px;
+  height: 13px;
+  color: #6c7688;
+}
+.st-input--area {
+  align-items: flex-start;
+  height: 44px;
+  padding-top: 6px;
+  font-size: 13px;
+}
+.st-modal__btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}

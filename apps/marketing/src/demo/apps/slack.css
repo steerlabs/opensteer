@@ -1,0 +1,414 @@
+/* Slack: one channel, in the default aubergine theme */
+.sl {
+  display: flex;
+  flex-direction: column;
+  background: #3b0d3c;
+  color: #1d1c1d;
+  font: 13.5px/1.45 var(--mac-font);
+}
+.sl svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+.sl-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 38px;
+  padding: 0 13px;
+  color: rgb(255 255 255 / 75%);
+  flex: none;
+}
+.sl-nav {
+  display: flex;
+  gap: 10px;
+  margin-left: 6px;
+}
+.sl-search {
+  position: absolute;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 250px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 16%);
+  color: rgb(255 255 255 / 82%);
+  font-size: 12.5px;
+  transform: translateX(-50%);
+}
+.sl-search svg {
+  width: 13px;
+  height: 13px;
+}
+.sl-help {
+  margin-left: auto;
+}
+.sl-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.sl-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 56px;
+  padding: 4px 0;
+  color: rgb(255 255 255 / 82%);
+  font-size: 11px;
+  flex: none;
+}
+.sl-ws {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  background: #e8912d;
+  color: #fff;
+  font: 800 16px/1 var(--mac-font);
+}
+.sl-rail__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.sl-rail__item i {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+.sl-rail__item svg {
+  width: 18px;
+  height: 18px;
+}
+.sl-rail__item.is-on i {
+  background: rgb(255 255 255 / 22%);
+  color: #fff;
+}
+.sl-side {
+  width: 150px;
+  padding: 8px 6px;
+  border-radius: 8px 0 0;
+  background: rgb(255 255 255 / 7%);
+  color: rgb(255 255 255 / 72%);
+  flex: none;
+}
+.sl-side h6 {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 2px 6px 8px 8px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.sl-side h6 svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+.sl-side h6 span {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border-radius: 7px;
+  background: rgb(255 255 255 / 14%);
+}
+.sl-side h6 span svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.6;
+}
+.sl-row,
+.sl-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.sl-row svg {
+  width: 15px;
+  height: 15px;
+}
+.sl-row.is-on {
+  background: #f9edff;
+  color: #39063a;
+  font-weight: 700;
+}
+.sl-group {
+  gap: 4px;
+  margin-top: 8px;
+  padding-left: 4px;
+}
+.sl-group svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+.sl-pic {
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  flex: none;
+}
+.sl-pic svg {
+  width: 100%;
+  height: 100%;
+  filter: blur(0.3px);
+}
+.sl-row .sl-pic--dm {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+.sl-dot {
+  width: 8px;
+  height: 8px;
+  margin: 0 -3px 0 -11px;
+  align-self: flex-end;
+  margin-bottom: 3px;
+  border: 2px solid #4a1e4b;
+  border-radius: 50%;
+  background: #2bac76;
+  flex: none;
+}
+.sl-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  border-radius: 8px 0 0;
+  background: #fff;
+}
+.sl-main > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 12px 0 14px;
+  white-space: nowrap;
+  flex: none;
+}
+.sl-main > header b {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: auto;
+  font-size: 16px;
+  font-weight: 800;
+}
+.sl-main > header b svg:first-child {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2;
+}
+.sl-main > header b svg:last-child {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+.sl-members {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 7px 0 4px;
+  border: 1px solid #ddd;
+  border-radius: 7px;
+  color: #616061;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.sl-members .sl-pic {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #fff;
+  border-radius: 5px;
+}
+.sl-members .sl-pic + .sl-pic {
+  margin-left: -10px;
+}
+.sl-huddle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid #ddd;
+  border-radius: 7px;
+  color: #454245;
+}
+.sl-huddle svg:last-child {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2;
+}
+.sl-tabs {
+  display: flex;
+  gap: 16px;
+  height: 30px;
+  padding: 0 14px;
+  border-bottom: 1px solid #e3e3e3;
+  color: #616061;
+  font-size: 13px;
+  flex: none;
+}
+.sl-tabs span {
+  display: flex;
+  align-items: center;
+}
+.sl-tabs .is-on {
+  box-shadow: inset 0 -2px 0 #1d1c1d;
+  color: #1d1c1d;
+  font-weight: 700;
+}
+.sl-thread {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  flex: 1;
+  min-height: 0;
+  padding: 6px 14px;
+  overflow: hidden;
+}
+.sl-msg {
+  display: flex;
+  gap: 9px;
+  padding: 6px 0;
+}
+.sl-msg b {
+  font-weight: 800;
+}
+.sl-msg time {
+  margin-left: 8px;
+  color: #616061;
+  font-size: 12px;
+}
+.sl-msg p {
+  margin: 0;
+}
+.sl-msg--new {
+  display: none;
+}
+.grp[data-posted] .sl-msg--new {
+  display: flex;
+  animation: fadein 360ms var(--ease-out) both;
+}
+.sl-composer {
+  margin: 0 14px 12px;
+  border: 1px solid #bbbabb;
+  border-radius: 8px;
+  color: #616061;
+  flex: none;
+}
+.sl-format,
+.sl-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 5px;
+}
+.sl-format {
+  border-radius: 8px 8px 0 0;
+  background: #f8f8f8;
+}
+.sl-format > i,
+.sl-actions > i {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: #dddddd;
+}
+.sl-tool {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 5px;
+}
+.sl-format .sl-tool svg {
+  width: 15px;
+  height: 15px;
+}
+.sl-composer p {
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 10px 0;
+  color: #1d1c1d;
+}
+.sl-composer p:empty::before {
+  content: "Message #support";
+  color: #868686;
+}
+.sl-plus {
+  margin-right: 2px;
+  border-radius: 50%;
+  background: #ececec;
+}
+.sl-plus svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+.sl-aa {
+  color: #616061;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.sl-send {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0 6px 0 8px;
+  border-radius: 5px;
+  color: #a5a5a5;
+  transition:
+    background-color 200ms,
+    color 200ms;
+}
+.sl-send svg:first-child {
+  width: 15px;
+  height: 15px;
+}
+.sl-send svg:last-child {
+  width: 11px;
+  height: 11px;
+  stroke-width: 2;
+}
+.sl-send i {
+  width: 1px;
+  height: 16px;
+  background: currentColor;
+  opacity: 0.35;
+}
+.sl-composer:has(p:not(:empty)) .sl-send {
+  background: #007a5a;
+  color: #fff;
+}

@@ -1,0 +1,143 @@
+/* Chrome, dark */
+.br {
+  display: flex;
+  flex-direction: column;
+  background: #202124;
+}
+.br-strip {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  height: 38px;
+  padding: 0 10px 0 13px;
+  background: #202124;
+  flex: none;
+}
+.br-strip .tl {
+  align-self: center;
+  margin-right: 14px;
+}
+.br-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 176px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px 0 11px;
+  border-radius: 9px 9px 0 0;
+  color: #9aa0a6;
+  font-size: 12px;
+}
+.br-tab span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.br-tab > svg:last-child {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  opacity: 0.7;
+}
+.br-tab.is-on {
+  background: #35363a;
+  color: #e8eaed;
+}
+.br-fav {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 3.5px;
+  flex: none;
+  color: #fff;
+  font: 700 9px/1 var(--mac-font);
+}
+.br-new {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 30px;
+  color: #9aa0a6;
+}
+.br-new svg {
+  width: 12px;
+  height: 12px;
+}
+.br-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 38px;
+  padding: 0 12px;
+  background: #35363a;
+  color: #9aa0a6;
+  flex: none;
+}
+.br-bar > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.br-omni {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #202124;
+  color: #e8eaed;
+  font-size: 12.5px;
+}
+.br-omni svg {
+  width: 10px;
+  height: 10px;
+  color: #9aa0a6;
+  flex: none;
+}
+.br-url {
+  display: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.br-url.is-on {
+  display: block;
+}
+.br-url em {
+  color: #9aa0a6;
+  font-style: normal;
+}
+.br-me {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #8ab4f8;
+  color: #202124;
+  font: 700 9.5px/1 var(--mac-font);
+  flex: none;
+}
+.br-pages {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+.br-page {
+  position: absolute;
+  inset: 0;
+  display: none;
+  overflow: hidden;
+}
+.br-page.is-on {
+  display: block;
+}

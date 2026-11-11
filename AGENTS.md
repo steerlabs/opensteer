@@ -254,6 +254,7 @@ for macOS app control and Passwords.
 | Domain types, wire contracts and persistence   | `packages/core`, `packages/protocol`, `packages/database`       |
 | Shared client, scheduling and engine contracts | `packages/client`, `packages/orchestration`, `packages/harness` |
 | Agent tool-use behavioral evals                | `evals/agent-tools`                                             |
+| Public landing page and its hero demo          | `apps/marketing`                                                |
 | Repository tooling and cross-package guards    | `scripts`, `tests`                                              |
 
 ## Taste

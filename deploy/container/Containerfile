@@ -100,6 +100,7 @@ COPY apps/channel-runtime/package.json ./apps/channel-runtime/package.json
 COPY apps/control-plane/package.json ./apps/control-plane/package.json
 COPY apps/desktop/package.json ./apps/desktop/package.json
 COPY apps/host/package.json ./apps/host/package.json
+COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
 COPY apps/web/package.json ./apps/web/package.json
@@ -228,6 +229,7 @@ COPY apps/channel-runtime/package.json ./apps/channel-runtime/package.json
 COPY apps/control-plane/package.json ./apps/control-plane/package.json
 COPY apps/desktop/package.json ./apps/desktop/package.json
 COPY apps/host/package.json ./apps/host/package.json
+COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
 COPY apps/web/package.json ./apps/web/package.json
