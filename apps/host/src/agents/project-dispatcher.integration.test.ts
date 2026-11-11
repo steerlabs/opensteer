@@ -166,8 +166,13 @@ describeStore("Project protocol dispatch", (it) => {
     expect(commands).toEqual([]);
     loseGateDuringPlacement = false;
     identity = { ...identity, capabilities: ["project-authority-v1"] };
+    // A reconstructed Host dispatcher discovers the durable command instead of relying on an in-memory wake.
+    expect(await dispatcher.drainPending()).toContainEqual({
+      commandId: admitted.commandId,
+      state: "dispatched",
+    });
     const binding = await dispatcher.dispatchQueued(admitted.commandId);
-    expect(commands).toHaveLength(1);
+    expect(commands).toHaveLength(2);
     const command = commands[0];
     if (command?.type !== "run.execute.project")
       throw new Error("A legacy command reached the fake Runner");

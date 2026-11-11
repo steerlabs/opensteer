@@ -518,7 +518,10 @@ const ProjectThreadCreationSchema = z.strictObject({
   idempotencyKey: z.string().min(1).max(4096),
 });
 
-async function fenceProjectHumanRoot(transaction: Transaction<DatabaseSchema>, origin: HumanRoot) {
+export async function fenceProjectHumanRoot(
+  transaction: Transaction<DatabaseSchema>,
+  origin: HumanRoot,
+) {
   const user = await transaction
     .selectFrom("users")
     .select("id")
@@ -535,6 +538,8 @@ async function fenceProjectHumanRoot(transaction: Transaction<DatabaseSchema>, o
 export class ProjectWorkStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly dependencies: {
+    readonly cancelRunRequests?:
+      import("./run-finalization.js").ProjectRunRequestCancellation | undefined;
     readonly runnerIsConnected: (runnerId: RunnerId) => boolean;
     readonly runnerIsAttached: (runnerId: RunnerId, runnerBootId: string) => boolean;
   };
@@ -587,6 +592,8 @@ export class ProjectWorkStore {
       binding.authority.principal,
       binding.runId,
       binding.bindingGeneration,
+      input.query ?? null,
+      input.parentThreadId ?? null,
     ]);
     const anchor = input.before ? decodeWindowCursor(input.before, "agent-thread", scopeId) : null;
     let query = this.database
@@ -843,6 +850,7 @@ export class ProjectWorkStore {
               status: "interrupted",
               completedAt: now,
               deferAttemptCleanup: true,
+              cancelRequests: this.dependencies.cancelRunRequests,
             })),
           );
         const stoppedIds = reserved.runs.map((row) => row.id);

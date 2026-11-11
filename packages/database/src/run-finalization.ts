@@ -370,6 +370,33 @@ export async function finalizeRunTransaction(
   // Pending work remains queued until an explicit engine selection repairs it.
   const followOn = await ensureQueuedRun(transaction, thread, { onInvalidSelection: "defer" });
   events.push(...followOn.events);
+  if (run.doneWhenFinished) {
+    await transaction
+      .updateTable("runs")
+      .set({ doneWhenFinished: false })
+      .where("id", "=", run.id)
+      .execute();
+    if (!(await threadOrAssignmentHasPendingWork(transaction, { threadId: run.threadId }))) {
+      const triggers = await transaction
+        .selectFrom("triggers")
+        .selectAll()
+        .where("anchorThreadId", "=", run.threadId)
+        .where("status", "=", "active")
+        .execute();
+      for (const trigger of triggers) await pauseTriggerInTransaction(transaction, trigger);
+      await transaction
+        .updateTable("threads")
+        .set({
+          doneAt: input.completedAt,
+          doneReason: null,
+          inputQueuePaused: false,
+          inputQueuePausedBy: null,
+        })
+        .where("id", "=", run.threadId)
+        .execute();
+      events.push(await appendDoneState(transaction, run.threadId));
+    }
+  }
   events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt)));
   // Nodes and attempts rank last; the Run's lock already orders these writes.
   await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
@@ -428,6 +455,7 @@ export async function cleanupRunAttemptTransaction(
     readonly failure?: RunFailure | undefined;
     readonly requestCancellationReason: RequestCancellationReason;
     readonly retireBinding?: boolean;
+    readonly cancelRequests?: (() => Promise<readonly AgentEvent[]>) | undefined;
     readonly run: Pick<RunRow, "id" | "providerSessionId" | "bindingGeneration" | "status">;
     readonly source: "host" | "runner";
     readonly status: "completed" | "failed" | "interrupted";
@@ -441,11 +469,13 @@ export async function cleanupRunAttemptTransaction(
     ...(await settleOutstandingSteersForRun(transaction, run.id, input.retireBinding)),
   ];
   events.push(
-    ...(await cancelPending(transaction, {
-      reason: input.requestCancellationReason,
-      resolvedAt: input.completedAt,
-      runId: run.id,
-    })),
+    ...(input.cancelRequests
+      ? await input.cancelRequests()
+      : await cancelPending(transaction, {
+          reason: input.requestCancellationReason,
+          resolvedAt: input.completedAt,
+          runId: run.id,
+        })),
   );
   // A terminal Run proves that its execute command ran, but it does not prove
   // delivery of unrelated controls.  Steers were settled above; unresolved
@@ -526,6 +556,37 @@ export async function cleanupRunAttemptTransaction(
   };
 }
 
+export type ProjectRunRequestCancellation = (
+  transaction: Transaction<DatabaseSchema>,
+  input: {
+    readonly runId: RunId;
+    readonly reason: RequestCancellationReason;
+    readonly resolvedAt: Date;
+  },
+) => Promise<readonly AgentEvent[]>;
+
+export async function cancelProjectRunRequests(
+  transaction: Transaction<DatabaseSchema>,
+  input: Parameters<ProjectRunRequestCancellation>[1],
+  cancel?: ProjectRunRequestCancellation,
+): Promise<readonly AgentEvent[]> {
+  const events = cancel ? await cancel(transaction, input) : [];
+  if (
+    await transaction
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", input.runId)
+      .where("status", "=", "pending")
+      .executeTakeFirst()
+  )
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "project-request-cancellation-unavailable",
+      message: "Project Run termination requires Q's Request cancellation boundary",
+    });
+  return events;
+}
+
 export interface ProjectRunFinalization {
   readonly runId: RunId;
   readonly source: "host" | "runner";
@@ -534,6 +595,7 @@ export interface ProjectRunFinalization {
   readonly failure?: RunFailure | undefined;
   readonly stopReason?: "authority-revoked" | "no-eligible-manager";
   readonly deferAttemptCleanup?: boolean;
+  readonly cancelRequests?: ProjectRunRequestCancellation | undefined;
 }
 
 /** The caller reserves the complete projection prefix before Q cancellation or late person fences. */
@@ -615,19 +677,6 @@ export async function finalizeProjectRunTransaction(
       message: "Project terminal work crosses a Workspace boundary",
     });
   await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds });
-  if (
-    input.stopReason &&
-    (await transaction
-      .selectFrom("requests")
-      .select("id")
-      .where("originatingRunId", "=", run.id)
-      .where("status", "=", "pending")
-      .executeTakeFirst())
-  )
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Q must cancel lost-root Requests before Project work is stopped",
-    });
   const grant =
     run.bindingGeneration === null
       ? null
@@ -647,6 +696,16 @@ export async function finalizeProjectRunTransaction(
     completedAt: input.completedAt,
     failure: input.failure,
     requestCancellationReason: input.stopReason ? "authority-revoked" : "run-ended",
+    cancelRequests: () =>
+      cancelProjectRunRequests(
+        transaction,
+        {
+          runId: run.id,
+          reason: input.stopReason ? "authority-revoked" : "run-ended",
+          resolvedAt: input.completedAt,
+        },
+        input.cancelRequests,
+      ),
   });
   const events: AgentEvent[] = [...cleanup.events];
   const sourceCurrent =
@@ -732,7 +791,7 @@ export async function finalizeProjectRunTransaction(
     .where("runId", "=", run.id)
     .where("type", "=", "run.control.project")
     .where(sql<string>`payload->'control'->>'kind'`, "!=", "run.interrupt")
-    .where("status", "in", ["pending", "dispatched", "unknown"])
+    .where("status", "in", ["pending", "dispatched"])
     .execute();
   await transaction
     .updateTable("runs")

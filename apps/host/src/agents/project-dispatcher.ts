@@ -44,7 +44,7 @@ import {
   type RunAgentToolsPlan,
   type RunnerConnectionFence,
 } from "@opensteer/protocol";
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import type { ProjectDispatchPort } from "../runtime/project-runtime-ports.js";
 import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import type { ProjectCapabilityTokenService } from "./run-capability.js";
@@ -335,7 +335,81 @@ export class ProjectCommandDispatcher implements ProjectDispatchPort {
   async deliverControl(commandId: CommandId) {
     const delivery = await this.options.controls.claim(commandId, this.options.dispatcherId);
     if (delivery.state === "ready") await this.control(delivery);
+    else this.options.publish(await this.options.controls.settleUnavailable(commandId));
     return delivery;
+  }
+
+  /** Called at startup and after queue/connection wakes; commands is the only durable outbox. */
+  async drainPending(limit = 100) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Invalid Project dispatch batch limit",
+      });
+    await assertProjectAuthority(this.options.database);
+    const commands = await this.options.database
+      .selectFrom("commands")
+      .innerJoin("runs", "runs.id", "commands.runId")
+      .select(["commands.id", "commands.type"])
+      .where((eb) =>
+        eb.or([
+          eb.and([
+            eb("commands.type", "=", "run.execute.project"),
+            eb("commands.status", "in", ["pending", "dispatched"]),
+            eb("runs.status", "in", ["queued", "starting"]),
+          ]),
+          eb.and([
+            eb("commands.type", "=", "run.control.project"),
+            eb.or([
+              eb("commands.status", "in", ["pending", "dispatched"]),
+              eb.and([
+                eb("commands.status", "in", ["failed", "unknown"]),
+                eb("runs.status", "in", ["queued", "starting", "running", "waiting"]),
+                eb(sql<string>`commands.payload->'control'->>'kind'`, "in", [
+                  "request.resolve",
+                  "request.refuse",
+                ]),
+              ]),
+            ]),
+          ]),
+        ]),
+      )
+      .orderBy("commands.createdAt")
+      .orderBy("commands.id")
+      .limit(limit)
+      .execute();
+    const results: {
+      commandId: CommandId;
+      state:
+        | "dispatched"
+        | "ready"
+        | "offline"
+        | "settled"
+        | "disposed"
+        | "uncertain"
+        | "absent"
+        | "unavailable";
+      reason?: string;
+    }[] = [];
+    for (const command of commands) {
+      try {
+        if (command.type === "run.execute.project") {
+          await this.dispatchQueued(command.id);
+          results.push({ commandId: command.id, state: "dispatched" });
+        } else {
+          const delivery = await this.deliverControl(command.id);
+          results.push({ commandId: command.id, state: delivery.state });
+        }
+      } catch (error) {
+        if (!(error instanceof OpensteerError)) throw error;
+        results.push({
+          commandId: command.id,
+          state: "unavailable",
+          reason: error.reason ?? error.code,
+        });
+      }
+    }
+    return results;
   }
 
   async control(input: {
@@ -448,6 +522,7 @@ export class ProjectRunnerFrameService {
       case "runner.project.control-result": {
         const result = await this.options.controls.recordResult(peer, frame);
         if ("events" in result) this.options.publish(result.events);
+        this.options.publish(await this.options.controls.settleUnavailable(frame.commandId));
         return;
       }
       case "runner.project.live":

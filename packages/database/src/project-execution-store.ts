@@ -1,4 +1,9 @@
-import { finishTerminalProjectRunTransaction } from "./run-finalization.js";
+import {
+  finishTerminalProjectRunTransaction,
+  finalizeProjectRunTransaction,
+  reserveProjectWorkStop,
+  type ProjectRunRequestCancellation,
+} from "./run-finalization.js";
 import { currentRunAttempt, recordAttemptDispatch } from "./run-attempts.js";
 import {
   ProjectRunnerToHostMessageSchema,
@@ -849,6 +854,7 @@ export class ProjectControlDeliveryStore {
   readonly dependencies: {
     readonly currentPeerIsProjectCapable: (peer: RunnerConnectionFence) => boolean;
     readonly currentRunnerBootId: (runnerId: RunnerId) => string | null;
+    readonly cancelRunRequests?: ProjectRunRequestCancellation | undefined;
     readonly canContinue: (
       transaction: Transaction<DatabaseSchema>,
       requestId: import("@opensteer/core").RequestId,
@@ -986,6 +992,54 @@ export class ProjectControlDeliveryStore {
         .executeTakeFirst();
       if (command?.runId) await finishTerminalProjectRunTransaction(transaction, command.runId);
       return outcome;
+    });
+  }
+
+  async settleUnavailable(
+    commandId: import("@opensteer/core").CommandId,
+  ): Promise<readonly AgentEvent[]> {
+    CommandIdSchema.parse(commandId);
+    await assertProjectAuthority(this.database);
+    return withDatabaseTransaction(this.database, async (transaction) => {
+      const command = await transaction
+        .selectFrom("commands")
+        .selectAll()
+        .where("id", "=", commandId)
+        .where("type", "=", "run.control.project")
+        .executeTakeFirst();
+      if (!command || !["failed", "unknown"].includes(command.status)) return [];
+      const stored = StoredProjectControlSchema.parse(command.payload);
+      if (stored.control.kind !== "request.resolve" && stored.control.kind !== "request.refuse")
+        return [];
+      await reserveProjectWorkStop(transaction, { runIds: [stored.binding.runId] });
+      const current = await readProjectRunBinding(transaction, {
+        runId: stored.binding.runId,
+        grantId: stored.binding.grantId,
+      });
+      if (
+        !current ||
+        !isDeepStrictEqual(current.binding, stored.binding) ||
+        current.row.bindingGeneration !== stored.binding.bindingGeneration ||
+        current.row.sessionGeneration !== stored.binding.bindingGeneration ||
+        !new Set<string>(nonTerminalRunStatuses).has(current.row.status)
+      )
+        return [];
+      return finalizeProjectRunTransaction(transaction, {
+        runId: stored.binding.runId,
+        source: "host",
+        status: "failed",
+        completedAt: new Date(),
+        cancelRequests: this.dependencies.cancelRunRequests,
+        failure: {
+          code: "project_request_control_unavailable",
+          message:
+            command.status === "unknown"
+              ? "Project Request delivery is uncertain; the original Run was stopped"
+              : "Project Request could not be delivered to its original binding",
+          retryable: false,
+          status: "failed",
+        },
+      });
     });
   }
 

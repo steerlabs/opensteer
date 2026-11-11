@@ -68,6 +68,8 @@ export class ProjectProposalAcceptanceStore {
   readonly dependencies: {
     readonly currentPeerIsProjectCapable: (peer: RunnerConnectionFence) => boolean;
     readonly requests: ProjectRequestProposalPort;
+    readonly cancelRunRequests?:
+      import("./run-finalization.js").ProjectRunRequestCancellation | undefined;
     readonly links?: ChannelLinks | undefined;
     readonly cancelRequest?:
       | ((
@@ -225,7 +227,11 @@ export class ProjectProposalAcceptanceStore {
           {
             project: (tx, item, channelLinks, attempt) =>
               applyEventProjection(tx, item, channelLinks, attempt, {
-                finalize: (tx, finalization) => finalizeProjectRunTransaction(tx, finalization),
+                finalize: (tx, finalization) =>
+                  finalizeProjectRunTransaction(tx, {
+                    ...finalization,
+                    cancelRequests: this.dependencies.cancelRunRequests,
+                  }),
                 // A post-freeze queue admission already has its own Project Run; only an explicit steer controls this one.
                 deliverConversation: async () => ({ events: [], revokedGrants: [] }),
                 cancelRequest: async (tx, cancelled) => {

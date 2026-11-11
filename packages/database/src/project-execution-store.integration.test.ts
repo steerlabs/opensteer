@@ -5,6 +5,7 @@ import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 import {
   createProjectIdentityFixture,
+  prepareProjectAdmission,
   insertProjectRunFixture,
 } from "./project-work.test-support.js";
 import { ProjectExecutionStore, ProjectControlDeliveryStore } from "./project-execution-store.js";
@@ -289,5 +290,95 @@ describeStore("Project durable controls", (it) => {
         .where("id", "=", stored[0]?.id ?? createId("command"))
         .execute(),
     ).rejects.toMatchObject({ code: "23514" });
+  });
+  it("stops a waiting Run after a restart finds an uncertain Request control without losing its disposition", async ({
+    storeFixture,
+  }) => {
+    const { readProjectRunBinding } = await import("./execution-authority.js");
+    const { database, project, prepared } = await prepareProjectAdmission(storeFixture, true);
+    const grant = await database
+      .selectFrom("grants")
+      .select("id")
+      .where("runId", "=", prepared.run.id)
+      .executeTakeFirstOrThrow();
+    const saved = await readProjectRunBinding(database, {
+      runId: prepared.run.id,
+      grantId: grant.id,
+    });
+    if (!saved) throw new Error("Project fixture binding is missing");
+    const { binding } = saved;
+    const peer = RunnerConnectionFenceSchema.parse({
+      runnerId: binding.runnerId,
+      bootId: binding.runnerBootId,
+      connectionId: `rcn_${randomUUID()}`,
+      connectionLeaseId: `rls_${randomUUID()}`,
+      connectionGeneration: 1,
+    });
+    const makeDelivery = () =>
+      new ProjectControlDeliveryStore(database, {
+        currentRunnerBootId: () => binding.runnerBootId,
+        currentPeerIsProjectCapable: () => true,
+        canContinue: async () => false,
+      });
+    const stored = await database
+      .transaction()
+      .execute((transaction) =>
+        new ProjectExecutionStore().enqueueCommand(transaction, {
+          binding,
+          idempotencyKey: "uncertain-proposal",
+          control: {
+            kind: "request.refuse",
+            requestId: createId("request"),
+            callId: "uncertain-call",
+            reason: "unsupported-request-kind",
+          },
+        }),
+      );
+    const delivery = await makeDelivery().claim(stored.commandId, "before-crash");
+    if (delivery.state !== "ready") throw new Error("Project refusal was not ready");
+    await makeDelivery().recordResult(peer, {
+      ...peer,
+      type: "runner.project.control-result",
+      binding,
+      commandId: stored.commandId,
+      correlationId: delivery.correlationId,
+      result: { status: "uncertain", message: "Engine receipt lost" },
+    });
+    // A new Host worker reads only durable state after the receipt transaction committed.
+    const events = await makeDelivery().settleUnavailable(stored.commandId);
+    expect(events.filter((event) => event.type === "run.failed")).toHaveLength(1);
+    expect(
+      (
+        await database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", binding.runId)
+          .executeTakeFirstOrThrow()
+      ).status,
+    ).toBe("failed");
+    expect(
+      await database
+        .selectFrom("commands")
+        .select(["status", "lastError", "originatingGrantId"])
+        .where("id", "=", stored.commandId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      status: "unknown",
+      lastError: { projectControlResult: { status: "uncertain", message: "Engine receipt lost" } },
+      originatingGrantId: binding.grantId,
+    });
+    expect(await makeDelivery().settleUnavailable(stored.commandId)).toEqual([]);
+    expect(
+      (
+        await database
+          .selectFrom("commands")
+          .select("payload")
+          .where("runId", "=", binding.runId)
+          .where("type", "=", "run.control.project")
+          .where("status", "=", "pending")
+          .executeTakeFirstOrThrow()
+      ).payload,
+    ).toMatchObject({ binding, control: { kind: "run.interrupt" } });
+    expect(project.workspace.id).toBe(binding.workspaceId);
   });
 });

@@ -354,6 +354,7 @@ export async function readProjectRunBinding(
     .selectAll("runs")
     .select([
       "threads.workspaceId",
+      "threads.status as threadStatus",
       "principals.kind as principalKind",
       "principals.workspaceId as principalWorkspaceId",
       "grants.id as grantId",
@@ -418,6 +419,7 @@ export async function assertActiveProjectBinding(
     });
   const { row } = saved;
   if (
+    row.threadStatus === "archived" ||
     row.grantStatus !== "active" ||
     !["starting", "running", "waiting"].includes(row.status) ||
     row.bindingGeneration !== binding.bindingGeneration ||
