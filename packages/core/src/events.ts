@@ -258,7 +258,16 @@ const eventDataSchemas = {
     home: z.literal(true).optional(),
     voice: z.literal(true).optional(),
   }),
-  "thread.execution-updated": z.object({ thread: ThreadSchema }),
+  "thread.execution-updated": z.object({
+    thread: ThreadSchema,
+    requestFact: z
+      .object({
+        requestId: RequestIdSchema,
+        runId: RunIdSchema.nullable(),
+        type: z.enum(["opened", "resolved"]),
+      })
+      .optional(),
+  }),
   /**
    * A conversation gave an unlisted Thread work of its own, so it is now one
    * of its person's tasks. It carries the whole Thread because a client that
