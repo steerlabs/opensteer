@@ -225,6 +225,8 @@ describe("selection actions own exactly their axis, one history entry each", () 
           workspaceTabs: [],
         };
         vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
+        // Outside the bounded catalog, the client holds none of this browser's rows.
+        source.browserTabs.clear();
         const listeners = new Set<() => void>();
         vi.spyOn(source, "subscribe").mockImplementation((listener) => {
           listeners.add(listener);

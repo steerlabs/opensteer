@@ -2,10 +2,13 @@ import { memo, useCallback, useMemo, useState } from "react";
 import {
   readFoldedTabSections,
   writeFoldedTabSections,
+  type HostClient,
   type PlaceItem,
   type PlaceOccupant,
+  type PlaceSlot,
   type TabSection,
 } from "@opensteer/client/host";
+import { usePlaces } from "@opensteer/client/react";
 import { computerIcon } from "./computers/device-art.js";
 import { Icon } from "./icon.js";
 import { OccupantMarks } from "./workspace/occupant-marks.js";
@@ -41,7 +44,7 @@ export function useFoldedTabSections(
 }
 
 /** A section's places, as the list draws them when it is open. */
-export function sectionPlaces(section: TabSection): readonly PlaceItem[] {
+export function sectionPlaces<P extends PlaceSlot>(section: TabSection<P>): readonly P[] {
   return [
     ...section.web.flatMap((row) => (row.kind === "place" ? [row.place] : row.places)),
     ...section.native,
@@ -52,7 +55,7 @@ export function sectionPlaces(section: TabSection): readonly PlaceItem[] {
  * Groups standing under more than one device: each of their headers needs a
  * key of its own. A group under one device keeps its id as its key.
  */
-export function splitGroups(sections: readonly TabSection[]): ReadonlySet<string> {
+export function splitGroups(sections: readonly TabSection<PlaceSlot>[]): ReadonlySet<string> {
   const seen = new Set<string>();
   const split = new Set<string>();
   for (const section of sections)
@@ -74,13 +77,13 @@ export function groupRowKey(groupId: string, section: string, split: ReadonlySet
  * stays inside its own section.
  */
 export function sortRowsOfSections(
-  sections: readonly TabSection[],
+  sections: readonly TabSection<PlaceSlot>[],
   folded: ReadonlySet<string>,
 ): SortRow[] {
   const split = splitGroups(sections);
   return sections.flatMap((section): SortRow[] => {
     if (folded.has(section.key)) return [];
-    const tab = (place: PlaceItem, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
+    const tab = (place: PlaceSlot, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
       place.workspaceTab && place.destination.kind === "browser" && place.destination.tabId
         ? [
             {
@@ -120,23 +123,28 @@ export const TabSectionHead = memo(function TabSectionHead({
   active,
   directory,
   folded,
+  hostClient,
   onOpenMark,
   onToggle,
-  places,
+  places: slots,
   section,
 }: {
   /** A folded section holds the place in the middle. */
   readonly active: boolean;
   readonly directory: TaskDirectory;
   readonly folded: boolean;
+  readonly hostClient: HostClient;
   readonly onOpenMark: (place: PlaceItem, threadId: string) => void;
   readonly onToggle: (key: string) => void;
-  readonly places: readonly PlaceItem[];
-  readonly section: TabSection;
+  readonly places: readonly PlaceSlot[];
+  readonly section: TabSection<PlaceSlot>;
 }) {
   const { device } = section;
   const name = device?.name ?? "Apps";
   const offline = device !== null && !device.online;
+  // Folded, it wears its places' marks: only then does it read them live.
+  const keys = useMemo(() => (folded ? slots.map((slot) => slot.key) : []), [folded, slots]);
+  const places = usePlaces(hostClient, keys);
   const occupants = useMemo(() => {
     if (!folded) return [];
     const members = new Map<string, PlaceOccupant>();
@@ -148,7 +156,7 @@ export const TabSectionHead = memo(function TabSectionHead({
       }
     return [...members.values()].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
   }, [folded, places]);
-  const count = places.length + section.pending.length;
+  const count = slots.length + section.pending.length;
   const classes = ["side-device", folded ? "is-folded" : "", folded && active ? "holds-open" : ""];
   return (
     <li

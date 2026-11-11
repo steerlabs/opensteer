@@ -227,6 +227,41 @@ describe("place catalog", () => {
       client.dispose();
     }
   });
+  it("lists a tab its browser put to sleep as suspended, so selecting it wakes it", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const snapshot = client.getSnapshot();
+      const group = snapshot.workspaceTabs!.find((candidate) => {
+        const session = snapshot.browserSessions.find(({ id }) => id === candidate.session.id);
+        return session?.state === "ready" && session.tabCatalog?.tabs.length;
+      })!;
+      const session = snapshot.browserSessions.find(({ id }) => id === group.session.id)!;
+      // A sleeping page keeps its last document: the catalog still lists it.
+      const asleep = session.tabCatalog!.tabs[0]!.id;
+      const source = {
+        ...snapshot,
+        workspaceTabs: snapshot.workspaceTabs!.map((candidate) =>
+          candidate === group
+            ? {
+                ...candidate,
+                tabs: candidate.tabs!.map((tab) =>
+                  tab.id === asleep ? { ...tab, state: "suspended" as const } : tab,
+                ),
+              }
+            : candidate,
+        ),
+      };
+      const states = new Map(
+        placeList(source).flatMap((place) =>
+          place.workspaceTab ? [[place.workspaceTab.id, place.workspaceTab.state] as const] : [],
+        ),
+      );
+      expect(states.get(asleep)).toBe("suspended");
+      expect([...states.values()]).toContain("live");
+    } finally {
+      client.dispose();
+    }
+  });
   it("does not treat a browser missing from the bounded durable catalog as closed", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {

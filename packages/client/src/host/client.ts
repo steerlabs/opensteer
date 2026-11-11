@@ -1159,6 +1159,16 @@ export type MachineAccessUpdateOutcome =
 
 export interface HostClient {
   readonly browserTabs: import("./browser-tab-store.js").BrowserTabStore;
+  /**
+   * The page a viewer of this tab holds now, exactly (its address, icon and
+   * size owner); undefined until a viewer of it is admitted. A list row reads
+   * the tab's row instead, which carries only its site. The same object
+   * returns until the page changes.
+   */
+  browserViewerSurface(
+    sessionId: string,
+    surfaceId: string,
+  ): import("@opensteer/protocol/browser-tabs").BrowserViewerSurface | undefined;
   /** A Host without a network supplies its own; every other client reaches updates by route. */
   readonly desktopUpdates?: DesktopUpdates;
   readonly browserPasskeys?: BrowserPasskeys;

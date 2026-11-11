@@ -10,6 +10,8 @@ import {
 } from "@opensteer/client/host";
 import {
   useBrowserPopupFollow,
+  useBrowserSessionGroupId,
+  useBrowserTabs,
   useBrowserTabStrip,
   useHostSelector,
   usePlaceList,
@@ -92,14 +94,12 @@ export function usePlaceSuccession(hostClient: HostClient): void {
   useBrowserPopupFollow(hostClient, browser, (tabId) => {
     if (browser) nav.showPlace({ kind: "browser", sessionId: browser.sessionId, tabId });
   });
-  const group = browser
-    ? source.workspaceTabs?.find(
-        (group) =>
-          group.id === browser.sessionId ||
-          group.session.id === browser.sessionId ||
-          group.tabs?.some((tab) => tab.id === browser.tabId),
-      )
-    : undefined;
+  const sessionGroupId = useBrowserSessionGroupId(hostClient, browser?.sessionId);
+  const groupId =
+    sessionGroupId ??
+    (browser && hostClient.browserTabs.group(browser.sessionId) ? browser.sessionId : undefined);
+  // Only a group the client holds whole proves its tab is listed or gone.
+  const whole = useBrowserTabs(hostClient, groupId ?? "").whole && groupId !== undefined;
   const selectedSessionId = browser?.sessionId;
   const legacy = source.browserSessions.some(
     (session) =>
@@ -113,8 +113,8 @@ export function usePlaceSuccession(hostClient: HostClient): void {
       !known ||
       !selectedSessionId ||
       source.workspaceTabRestoreVersion !== 1 ||
-      (group?.tabs && group.whole !== false) ||
-      (!group && legacy) ||
+      whole ||
+      (!groupId && legacy) ||
       !hostClient.readWorkspaceTabs
     )
       return;
@@ -143,7 +143,8 @@ export function usePlaceSuccession(hostClient: HostClient): void {
     known,
     selectedSessionId,
     source.workspaceTabRestoreVersion,
-    group,
+    groupId,
+    whole,
     legacy,
     hostClient,
     viewer,

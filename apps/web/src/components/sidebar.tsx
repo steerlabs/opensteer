@@ -40,16 +40,24 @@ import {
   requestsWaitingOn,
   taskRowLabel,
   type HostClient,
+  type PendingBrowserTab,
   type PlaceItem,
+  type PlaceSlot,
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
   VoiceContext,
+  readPlaceIndex,
+  useBrowserGroups,
   useHostSelector,
-  usePlaceList,
+  usePlace,
+  usePlaceSlots,
+  useSyncingPlaceholder,
   useVoiceValue,
 } from "@opensteer/client/react";
+import { LoadingRows } from "./loading-rows.js";
+import { useWindowedRows } from "./workspace/windowed-rows.js";
 import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { VoiceClock } from "./voice.js";
 import { voiceRowKey } from "./voice-cursor.js";
@@ -73,7 +81,7 @@ import { TaskMark, TaskState, ChatOrb, UnsentMark, taskStateWords } from "./work
 import {
   ProfileAvatar,
   browserWords,
-  useBrowserPresentations,
+  useListedBrowserPresentations,
   type BrowserPresentation,
 } from "./workspace/identity.js";
 import { OccupantMarks, useFocusRescue } from "./workspace/occupant-marks.js";
@@ -178,13 +186,17 @@ export function Sidebar({
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
   const drafts = useComposerDraftIndex(deploymentId, userId);
-  const places = usePlaceList(hostClient);
+  // The list arranges slots; each row reads its own place, so a title repaints one row.
+  const slots = usePlaceSlots(hostClient);
+  const groupList = useBrowserGroups(hostClient);
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const hereId = useHereId();
   const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
   const pendingTabs = useHostSelector(hostClient, (snapshot) => snapshot.pendingBrowserTabs);
   const profiles = useHostSelector(hostClient, (snapshot) => snapshot.browserProfiles);
   const [foldedSections, toggleSection] = useFoldedTabSections(deploymentId, userId);
+  // A list still syncing with nothing to show shows its skeleton, never an empty state.
+  const tabsSyncing = useSyncingPlaceholder(groupList.syncing, slots.length);
   const [filter, setFilter] = useState<TabFilterValue>(allTabs);
   const [heldTabs, setHeldTabs] = useState<{
     readonly height: number;
@@ -200,28 +212,26 @@ export function Sidebar({
   const filterTabs = (next: TabFilterValue) => {
     if (!tabFilterActive(next)) setHeldTabs(null);
     else if (!tabFilterActive(filter) && tabsSection.current)
-      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: places.length });
+      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: slots.length });
     setFilter(next);
   };
   const shownPlaceKey =
     workspace.selection.kind === "place"
       ? destinationPlaceKey(workspace.selection.destination)
       : null;
+  const matched = useFilterMatches(hostClient, filter);
   // The tab in front stays listed whatever the filter, so opening one never hides where you are.
-  const filteredPlaces = useMemo(
+  const filteredSlots = useMemo(
     () =>
-      tabFilterActive(filter)
-        ? places.filter((place) => place.key === shownPlaceKey || tabMatchesFilter(place, filter))
-        : places,
-    [places, filter, shownPlaceKey],
+      matched ? slots.filter((slot) => slot.key === shownPlaceKey || matched.has(slot.key)) : slots,
+    [slots, matched, shownPlaceKey],
   );
-  const liveStrip = browserTabStrip(filteredPlaces, layout);
-  const searchStrip = browserTabStrip(places, layout);
+  const liveStrip = browserTabStrip(filteredSlots, layout);
   const toast = useToast();
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
   const announcer = useRef<HTMLParagraphElement | null>(null);
-  const sectionsOf = (from: BrowserTabStrip) =>
+  const sectionsOf = (from: BrowserTabStrip<PlaceSlot>) =>
     browserTabSections({ strip: from, machines, hereId, pending: pendingTabs, profiles });
   const liveSections = useMemo(
     () =>
@@ -248,7 +258,7 @@ export function Sidebar({
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;
     },
-    title: (row) => rowTitle(liveStrip, row),
+    title: (row) => rowTitle(hostClient, liveStrip, row),
   });
   // A lifted row must draw and take the pointer above a native page.
   useNativeBrowserOverlay(sort.lift !== null);
@@ -261,7 +271,7 @@ export function Sidebar({
     [tabSections.ordered],
   );
   const [editingGroup, editGroup] = useState<string | null>(null);
-  const presentations = useBrowserPresentations(places);
+  const presentations = useListedBrowserPresentations(hostClient);
   const deployment = selectedDeploymentFrom(deploymentAccess, desktopDeployment);
   const connection = describeHostConnection(snapshot);
   const placeName = deploymentNameFrom(deployment, snapshot) ?? "Opensteer";
@@ -325,9 +335,8 @@ export function Sidebar({
       tasks: allTasks,
       attention: directory.attentionByThread,
       snapshot,
-      strip: searchStrip,
     }),
-    [allTasks, directory.attentionByThread, snapshot, searchStrip],
+    [allTasks, directory.attentionByThread, snapshot],
   );
 
   const openSearch = useCallback(() => {
@@ -602,34 +611,150 @@ export function Sidebar({
     onCloseMobile();
     onNewTab();
   };
-  const tabRow = (place: PlaceItem, index: number, groupColor?: BrowserTabGroupColor) => {
-    const presentation = place.browser
-      ? (presentations.bySession.get(place.browser.sessionId) ?? null)
-      : null;
-    return (
-      <TabRowItem
-        sort={place.workspaceTab ? sort.handle : null}
-        groupColor={groupColor}
-        onEditGroup={editGroup}
-        active={place.key === shownPlaceKey}
-        headed={tabSections.headed}
-        badge={presentations.badges ? place.identity : null}
-        directory={directory}
-        hostClient={hostClient}
-        index={index}
-        hereId={hereId}
-        key={place.key}
-        onOpen={openPlace}
-        onOpenMark={openMark}
-        place={place}
-        highlight={workspace.highlight}
-        localMachine={workspace.localMachine}
-        presentation={presentation}
-      />
-    );
+  const tabRow = (slot: PlaceSlot, index: number, groupColor?: BrowserTabGroupColor) => (
+    <TabRowItem
+      sort={slot.workspaceTab ? sort.handle : null}
+      groupColor={groupColor}
+      onEditGroup={editGroup}
+      active={slot.key === shownPlaceKey}
+      headed={tabSections.headed}
+      badges={presentations.badges}
+      directory={directory}
+      hostClient={hostClient}
+      index={index}
+      hereId={hereId}
+      key={slot.key}
+      onOpen={openPlace}
+      onOpenMark={openMark}
+      placeKey={slot.key}
+      highlight={workspace.highlight}
+      localMachine={workspace.localMachine}
+      presentation={
+        slot.browser ? (presentations.bySession.get(slot.browser.sessionId) ?? null) : null
+      }
+    />
+  );
+  const devices = new Set(slots.flatMap((slot) => (slot.device ? [slot.device.machineId] : [])));
+  // Every row the tab list has, in order; the window draws those in view.
+  const tabEntries: TabEntry[] = [];
+  const entry = (key: string, size: number, render: () => ReactNode) =>
+    tabEntries.push({ key, size, render });
+  if (matched && matched.size === 0)
+    entry("filter-empty", rowSize, () => (
+      <li
+        className="sidebar__empty"
+        data-motion-key="filter-empty"
+        key="filter-empty"
+        role="status"
+      >
+        {tabFilterEmptyWords(filter)}
+      </li>
+    ));
+  if (tabsSyncing)
+    entry("syncing", rowSize * 3, () => (
+      <li className="side-list__loading" data-motion-key="syncing" key="syncing">
+        <LoadingRows label="Loading tabs" />
+      </li>
+    ));
+  const pendingEntries = (rows: readonly PendingBrowserTab[]) => {
+    for (const pending of rows)
+      entry(`pending:${pending.idempotencyKey}`, rowSize, () => (
+        <PendingBrowserTabRows
+          hostClient={hostClient}
+          key={`pending:${pending.idempotencyKey}`}
+          onOpen={onCloseMobile}
+          rows={[pending]}
+        />
+      ));
   };
-  const devices = new Set(
-    places.flatMap((place) => (place.device ? [place.device.machineId] : [])),
+  pendingEntries(tabSections.unplaced);
+  for (const section of tabSections.sections) {
+    const shut = folded.has(section.key);
+    if (tabSections.headed) {
+      const listed = sectionPlaces(section);
+      entry(`device:${section.key}`, rowSize + 4, () => (
+        <TabSectionHead
+          active={listed.some((place) => place.key === shownPlaceKey)}
+          directory={directory}
+          folded={shut}
+          hostClient={hostClient}
+          key={`device:${section.key}`}
+          onOpenMark={openMark}
+          onToggle={toggleSection}
+          places={listed}
+          section={section}
+        />
+      ));
+    }
+    if (shut) continue;
+    for (const row of section.web) {
+      if (row.kind === "place") {
+        const slot = row.place;
+        entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!));
+        continue;
+      }
+      const key = groupRowKey(row.group.id, section.key, split);
+      // A group on the move folds its tabs under its header until it lands.
+      const moving = key === sort.lift?.key;
+      entry(key, rowSize, () => (
+        <TabGroupHeader
+          active={row.places.some((place) => place.key === shownPlaceKey)}
+          directory={directory}
+          editing={editingGroup === key}
+          group={moving ? { ...row.group, collapsed: true } : row.group}
+          groupPlaces={groupMembers.get(row.group.id) ?? row.places}
+          hostClient={hostClient}
+          key={key}
+          onEdit={editGroup}
+          onOpenMark={openMark}
+          places={row.places}
+          rowKey={key}
+          sort={sort.handle}
+        />
+      ));
+      if (!row.group.collapsed && !moving)
+        for (const slot of row.places)
+          entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!, row.group.color));
+    }
+    pendingEntries(section.pending);
+    for (const slot of section.native)
+      entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!));
+  }
+  entry(startPageOpen ? "start" : "new", rowSize, () =>
+    startPageOpen ? (
+      <li className="side-tab side-tab--start is-active" data-motion-key="start" key="start">
+        <button
+          aria-current="true"
+          className="side-tab__main"
+          onClick={() => {
+            onCloseMobile();
+            newTab();
+          }}
+          type="button"
+        >
+          <span aria-hidden className="place-mark place-mark--glyph">
+            <Icon name="plus" />
+          </span>
+          <span className="side-tab__title">New tab</span>
+        </button>
+        <button
+          aria-label="Close New tab"
+          className="side-row-action side-tab__close"
+          onClick={() => workspace.startPage.leave()}
+          title="Close"
+          type="button"
+        >
+          <Icon name="close" />
+        </button>
+      </li>
+    ) : (
+      <li className="side-new" data-motion-key="new" key="new">
+        <button className="side-new__main" onClick={newTab} type="button">
+          <Icon name="plus" />
+          <span>New tab</span>
+        </button>
+      </li>
+    ),
   );
   const namedDevices = devices.size >= 2;
 
@@ -945,14 +1070,14 @@ export function Sidebar({
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
           ref={tabsSection}
-          style={{ ...sectionFloor(heldTabs?.rows ?? places.length), maxHeight: heldTabs?.height }}
+          style={{ ...sectionFloor(heldTabs?.rows ?? slots.length), maxHeight: heldTabs?.height }}
         >
           <div className="side-head">
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
               Tabs
             </h2>
-            <TabFilter onChange={filterTabs} places={places} value={filter} />
-            {places.length > 0 ? (
+            <TabFilter hostClient={hostClient} onChange={filterTabs} value={filter} />
+            {slots.length > 0 ? (
               <button
                 aria-label="New tab"
                 className="icon-btn icon-btn--small side-head__action"
@@ -971,110 +1096,24 @@ export function Sidebar({
               ref={motion}
               signature={motionSignature}
             >
-              {tabFilterActive(filter) &&
-              !filteredPlaces.some((place) => tabMatchesFilter(place, filter)) ? (
-                <li className="sidebar__empty" data-motion-key="filter-empty" role="status">
-                  {tabFilterEmptyWords(filter)}
-                </li>
-              ) : null}
-              <PendingBrowserTabRows
-                hostClient={hostClient}
-                onOpen={onCloseMobile}
-                rows={tabSections.unplaced}
+              <WindowedTabRows
+                all={sort.lift !== null}
+                entries={tabEntries}
+                list={tabsList}
+                pinned={[
+                  shownPlaceKey ?? "",
+                  editingGroup ?? "",
+                  ...tabEntries.flatMap(({ key }) =>
+                    key.startsWith("pending:") ||
+                    key === "filter-empty" ||
+                    key === "syncing" ||
+                    key === "start" ||
+                    key === "new"
+                      ? [key]
+                      : [],
+                  ),
+                ]}
               />
-              {tabSections.sections.flatMap((section) => {
-                const shut = folded.has(section.key);
-                const listed = sectionPlaces(section);
-                return [
-                  ...(tabSections.headed
-                    ? [
-                        <TabSectionHead
-                          active={listed.some((place) => place.key === shownPlaceKey)}
-                          directory={directory}
-                          folded={shut}
-                          key={`device:${section.key}`}
-                          onOpenMark={openMark}
-                          onToggle={toggleSection}
-                          places={listed}
-                          section={section}
-                        />,
-                      ]
-                    : []),
-                  ...(shut
-                    ? []
-                    : [
-                        ...section.web.flatMap((row) => {
-                          if (row.kind === "place")
-                            return [tabRow(row.place, tabIndices.get(row.place.key)!)];
-                          const key = groupRowKey(row.group.id, section.key, split);
-                          // A group on the move folds its tabs under its header until it lands.
-                          const moving = key === sort.lift?.key;
-                          return [
-                            <TabGroupHeader
-                              active={row.places.some((place) => place.key === shownPlaceKey)}
-                              directory={directory}
-                              editing={editingGroup === key}
-                              group={moving ? { ...row.group, collapsed: true } : row.group}
-                              groupPlaces={groupMembers.get(row.group.id) ?? row.places}
-                              hostClient={hostClient}
-                              key={key}
-                              onEdit={editGroup}
-                              onOpenMark={openMark}
-                              places={row.places}
-                              rowKey={key}
-                              sort={sort.handle}
-                            />,
-                            ...(row.group.collapsed || moving
-                              ? []
-                              : row.places.map((place) =>
-                                  tabRow(place, tabIndices.get(place.key)!, row.group.color),
-                                )),
-                          ];
-                        }),
-                        <PendingBrowserTabRows
-                          hostClient={hostClient}
-                          key={`pending:${section.key}`}
-                          onOpen={onCloseMobile}
-                          rows={section.pending}
-                        />,
-                        ...section.native.map((place) => tabRow(place, tabIndices.get(place.key)!)),
-                      ]),
-                ];
-              })}
-              {startPageOpen ? (
-                <li className="side-tab side-tab--start is-active" data-motion-key="start">
-                  <button
-                    aria-current="true"
-                    className="side-tab__main"
-                    onClick={() => {
-                      onCloseMobile();
-                      newTab();
-                    }}
-                    type="button"
-                  >
-                    <span aria-hidden className="place-mark place-mark--glyph">
-                      <Icon name="plus" />
-                    </span>
-                    <span className="side-tab__title">New tab</span>
-                  </button>
-                  <button
-                    aria-label="Close New tab"
-                    className="side-row-action side-tab__close"
-                    onClick={() => workspace.startPage.leave()}
-                    title="Close"
-                    type="button"
-                  >
-                    <Icon name="close" />
-                  </button>
-                </li>
-              ) : (
-                <li className="side-new" data-motion-key="new">
-                  <button className="side-new__main" onClick={newTab} type="button">
-                    <Icon name="plus" />
-                    <span>New tab</span>
-                  </button>
-                </li>
-              )}
             </RowMotion>
           </SideList>
           <p aria-live="polite" className="visually-hidden" ref={announcer} />
@@ -1090,6 +1129,77 @@ export function Sidebar({
         workspace={workspace}
       />
     </nav>
+  );
+}
+
+/** One row of the tab list, drawn only while the window holds it. */
+interface TabEntry {
+  readonly key: string;
+  /** Its size before it is measured. */
+  readonly size: number;
+  readonly render: () => ReactNode;
+}
+
+/** A tab row's height and the list's gap after it, before one is measured. */
+const rowSize =
+  typeof window !== "undefined" && window.matchMedia?.("(any-pointer: coarse)").matches ? 45 : 33;
+
+/**
+ * The tab list's rows, windowed: a long list draws the rows in view and the
+ * ones a person is on (the tab in the middle, the focused row, an open
+ * editor), so scrolling renders only this and a title repaints only its row.
+ */
+function WindowedTabRows({
+  all,
+  entries,
+  list,
+  pinned,
+}: {
+  /** A drag measures every row, so all are drawn until it drops. */
+  readonly all: boolean;
+  readonly entries: readonly TabEntry[];
+  readonly list: RefObject<HTMLUListElement | null>;
+  readonly pinned: readonly string[];
+}) {
+  const [focused, setFocused] = useState<string | null>(null);
+  useEffect(() => {
+    const node = list.current;
+    if (!node) return;
+    const keyOf = (target: EventTarget | null) =>
+      target instanceof HTMLElement
+        ? (target.closest<HTMLElement>("[data-motion-key]")?.dataset.motionKey ?? null)
+        : null;
+    const focus = (event: FocusEvent) => setFocused(keyOf(event.target));
+    const blur = (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node) || !node.contains(event.relatedTarget))
+        setFocused(null);
+    };
+    node.addEventListener("focusin", focus);
+    node.addEventListener("focusout", blur);
+    return () => {
+      node.removeEventListener("focusin", focus);
+      node.removeEventListener("focusout", blur);
+    };
+  }, [list]);
+  const keys = useMemo(() => entries.map(({ key }) => key), [entries]);
+  const plan = useWindowedRows({
+    list,
+    keys,
+    estimate: (index) => entries[index]!.size,
+    pinned: focused === null ? pinned : [...pinned, focused],
+    all,
+  });
+  return plan.map((item, order) =>
+    "index" in item ? (
+      entries[item.index]!.render()
+    ) : (
+      <li
+        aria-hidden
+        className="side-list__spacer"
+        key={`spacer:${order}`}
+        style={{ height: item.spacer }}
+      />
+    ),
   );
 }
 
@@ -1539,7 +1649,19 @@ const TaskRowItem = memo(function TaskRowItem({
 
 /* ---- Tabs ---- */
 
-const TabRowItem = memo(function TabRowItem({
+type TabRowProps = Omit<Parameters<typeof TabRow>[0], "badge" | "place"> & {
+  /** Two or more identities are in use: site icons wear profile badges. */
+  readonly badges: boolean;
+  readonly placeKey: string;
+};
+
+/** A tab row reads its own place, so one tab's title or loading repaints only it. */
+const TabRowItem = memo(function TabRowItem({ badges, placeKey, ...props }: TabRowProps) {
+  const place = usePlace(props.hostClient, placeKey);
+  return place ? <TabRow {...props} badge={badges ? place.identity : null} place={place} /> : null;
+});
+
+const TabRow = memo(function TabRow({
   sort,
   active,
   badge,
@@ -2009,12 +2131,31 @@ function SidebarFooter({
 
 const noFolds: ReadonlySet<string> = new Set();
 
-function rowTitle(strip: BrowserTabStrip, row: SortRow): string {
+function rowTitle(hostClient: HostClient, strip: BrowserTabStrip<PlaceSlot>, row: SortRow): string {
   if (row.kind === "group") {
     const group = strip.web.find(
       (entry) => entry.kind === "group" && entry.group.id === row.groupId,
     );
     return (group?.kind === "group" && group.group.title) || "Untitled group";
   }
-  return strip.ordered.find((place) => place.key === row.key)?.title ?? "tab";
+  return readPlaceIndex(hostClient).byKey.get(row.key)?.title ?? "tab";
+}
+
+/**
+ * The places an active filter lists, by key; null while it lists them all.
+ * Only a change of who matches renders the list, never a title.
+ */
+function useFilterMatches(hostClient: HostClient, filter: TabFilterValue) {
+  const select = useCallback(
+    () =>
+      tabFilterActive(filter)
+        ? readPlaceIndex(hostClient)
+            .items.filter((place) => tabMatchesFilter(place, filter))
+            .map((place) => place.key)
+            .join("\n")
+        : null,
+    [filter, hostClient],
+  );
+  const keys = useHostSelector(hostClient, select);
+  return useMemo(() => (keys === null ? null : new Set(keys ? keys.split("\n") : [])), [keys]);
 }

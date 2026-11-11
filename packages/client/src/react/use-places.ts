@@ -3,35 +3,52 @@ import { runPlaceDestination, runPlaceSessionId } from "../host/run-place.js";
 import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { placeList, samePlaceListSource, type PlaceItem } from "../host/places.js";
+import { hostSnapshotStore } from "../host/host-snapshot-store.js";
+import type { PlaceItem, PlaceSlot } from "../host/places.js";
+import { readPlaceIndex } from "./place-index.js";
 import { useHostSelector } from "./use-host-snapshot.js";
 const selectSource = (snapshot: HostSnapshot) => snapshot;
 /**
- * The place list, keeping each unchanged item's object from the last one: one
- * tab's catalog change re-renders that tab's row, not every row beside it.
+ * The place list, keeping each unchanged item's object from the last one.
+ * A reader of the whole list re-renders when any place changes; a list that
+ * only arranges rows reads `usePlaceSlots`, and each row its own `usePlace`.
+ * Not `enabled`, it reads and subscribes to nothing.
  */
-export function usePlaceList(hostClient: HostClient) {
-  const source = useHostSelector(hostClient, selectSource, samePlaceListSource);
-  const previous = useRef<{
-    readonly items: readonly PlaceItem[];
-    readonly byKey: ReadonlyMap<string, { readonly item: PlaceItem; readonly json: string }>;
-  }>({ items: [], byKey: new Map() });
-  return useMemo(() => {
-    const byKey = new Map<string, { readonly item: PlaceItem; readonly json: string }>();
-    let changed = false;
-    const items = placeList(source).map((item, index) => {
-      const json = JSON.stringify(item);
-      const held = previous.current.byKey.get(item.key);
-      const kept = held?.json === json ? held.item : item;
-      byKey.set(item.key, { item: kept, json });
-      if (kept !== previous.current.items[index]) changed = true;
-      return kept;
-    });
-    const list =
-      changed || items.length !== previous.current.items.length ? items : previous.current.items;
-    previous.current = { items: list, byKey };
-    return list;
-  }, [source]);
+export function usePlaceList(hostClient: HostClient, enabled = true): readonly PlaceItem[] {
+  const subscribe = enabled ? hostSnapshotStore(hostClient).subscribe : subscribeNothing;
+  const get = useCallback(
+    () => (enabled ? readPlaceIndex(hostClient).items : noPlaces),
+    [enabled, hostClient],
+  );
+  return useSyncExternalStore(subscribe, get, get);
+}
+const noPlaces: readonly PlaceItem[] = [];
+const subscribeNothing = () => () => {};
+/** The places as a list arranges them: changes only when one comes, goes, moves or changes device. */
+export function usePlaceSlots(hostClient: HostClient): readonly PlaceSlot[] {
+  const get = useCallback(() => readPlaceIndex(hostClient).slots, [hostClient]);
+  return useSyncExternalStore(hostSnapshotStore(hostClient).subscribe, get, get);
+}
+/** One place, live: its reader re-renders when this place changes, never for another. */
+export function usePlace(hostClient: HostClient, key: string | null): PlaceItem | null {
+  const get = useCallback(
+    () => (key === null ? null : (readPlaceIndex(hostClient).byKey.get(key) ?? null)),
+    [hostClient, key],
+  );
+  return useSyncExternalStore(hostSnapshotStore(hostClient).subscribe, get, get);
+}
+/** These places, live, in this order; the array is kept while none of them changes. */
+export function usePlaces(hostClient: HostClient, keys: readonly string[]): readonly PlaceItem[] {
+  const held = useRef<readonly PlaceItem[]>([]);
+  const get = useCallback(() => {
+    const { byKey } = readPlaceIndex(hostClient);
+    const next = keys.flatMap((key) => byKey.get(key) ?? []);
+    const previous = held.current;
+    if (next.length !== previous.length || next.some((place, i) => place !== previous[i]))
+      held.current = next;
+    return held.current;
+  }, [hostClient, keys]);
+  return useSyncExternalStore(hostSnapshotStore(hostClient).subscribe, get, get);
 }
 export function usePlaceActivity(hostClient: HostClient, placeKey: string) {
   const subscribe = useCallback(

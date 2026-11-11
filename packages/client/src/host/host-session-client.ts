@@ -495,6 +495,12 @@ export class HttpHostClient {
   readonly #browserWaiters = new Set<() => void>();
   readonly #browserTabs = new BrowserTabStore((groupId) => this.#resyncBrowser(groupId));
   readonly browserTabs = this.#browserTabs;
+  browserViewerSurface(sessionId: string, surfaceId: string) {
+    return (
+      this.#targetedControl.surface(sessionId, surfaceId) ??
+      this.#targetedWatch.surface(sessionId, surfaceId)
+    );
+  }
   readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();

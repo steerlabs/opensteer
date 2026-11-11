@@ -7,9 +7,11 @@ import { MockHostClient } from "@opensteer/client/mock";
 import {
   HostClientRequestError,
   placeList,
+  type BrowserTabStore,
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
+import type { BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import { startPageLink } from "./navigation.js";
@@ -286,6 +288,34 @@ describe("the draft's places", () => {
       const catalogTitles = new Map<string, string>();
       const readTitles = new Map<string, string>();
       const listeners = new Set<() => void>();
+      const titled = new WeakMap<BrowserTabRow, Map<string, BrowserTabRow>>();
+      const retitle = (row: BrowserTabRow | undefined) => {
+        const title = row ? catalogTitles.get(row.id) : undefined;
+        if (!row || title === undefined) return row;
+        const held = titled.get(row) ?? new Map<string, BrowserTabRow>();
+        titled.set(row, held);
+        if (!held.has(title)) held.set(title, { ...row, title });
+        return held.get(title);
+      };
+      let tabsProxy: BrowserTabStore | null = null;
+      const titledTabs = (store: BrowserTabStore) =>
+        (tabsProxy ??= new Proxy(store, {
+          get(target, name) {
+            if (name === "tab")
+              return (groupId: string, tabId: string) => retitle(target.tab(groupId, tabId));
+            if (name === "subscribeTab")
+              return (groupId: string, tabId: string, listener: () => void) => {
+                listeners.add(listener);
+                const stop = target.subscribeTab(groupId, tabId, listener);
+                return () => {
+                  listeners.delete(listener);
+                  stop();
+                };
+              };
+            const value: unknown = Reflect.get(target, name);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }));
       let source: HostSnapshot | null = null;
       let shown: HostSnapshot | null = null;
       let readCandidate!: MockHostClient["readBrowserContextCandidate"];
@@ -345,6 +375,8 @@ describe("the draft's places", () => {
                       stop();
                     };
                   };
+                // The tab's own row says the same as its catalog row, and changes with it.
+                if (name === "browserTabs") return titledTabs(target.browserTabs);
                 const value: unknown = Reflect.get(target, name);
                 return typeof value === "function" ? value.bind(target) : value;
               },

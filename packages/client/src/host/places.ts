@@ -69,6 +69,15 @@ export interface PlaceItem {
   readonly closable: boolean;
 }
 /**
+ * Where a place stands in a list, without what changes while it is open:
+ * lists arrange these, and each row reads its own live place by `key`.
+ */
+export interface PlaceSlot extends Pick<PlaceItem, "key" | "kind" | "destination" | "device"> {
+  readonly browser: { readonly sessionId: string } | null;
+  /** A saved web tab, which a person can move. */
+  readonly workspaceTab?: { readonly id: string };
+}
+/**
  * A task or Chat is in the place: it holds it, or worked there moments ago.
  * These are the places that wear task marks, and what "Tabs with agents" shows.
  */
@@ -202,7 +211,8 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
             order: row.order,
             lineageId: group.id,
             unavailableReason: group.unavailableReason,
-            state: live ? "live" : row.state === "live" ? "suspended" : row.state,
+            // A sleeping page keeps its last document, so the catalog alone cannot say it is awake.
+            state: row.state !== "live" ? row.state : live ? "live" : "suspended",
           },
           key: `browser:${row.sessionId}:${row.id}`,
           destination,

@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
+import { hostSnapshotStore } from "../host/host-snapshot-store.js";
 
 export function useBrowserGroups(client: HostClient) {
   return useSyncExternalStore(
@@ -70,4 +71,23 @@ export function useBrowserTabStructure(client: HostClient) {
     client.browserTabs.structure,
     client.browserTabs.structure,
   );
+}
+
+/**
+ * The exact page a viewer of this tab holds (its address and icon), for the
+ * page's own chrome; undefined until one is admitted. Rows read `useBrowserTab`.
+ */
+export function useBrowserViewerSurface(
+  client: HostClient,
+  sessionId: string | undefined,
+  surfaceId: string | undefined,
+) {
+  const get = useCallback(
+    () =>
+      sessionId === undefined || surfaceId === undefined
+        ? undefined
+        : client.browserViewerSurface(sessionId, surfaceId),
+    [client, sessionId, surfaceId],
+  );
+  return useSyncExternalStore(hostSnapshotStore(client).subscribe, get, get);
 }

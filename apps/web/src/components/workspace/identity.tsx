@@ -1,9 +1,11 @@
-import { useMemo, useRef, type CSSProperties } from "react";
+import { useCallback, useMemo, useRef, type CSSProperties } from "react";
 import {
   profileBadgesVisible,
+  type HostClient,
   type PlaceBrowserIdentity,
   type PlaceItem,
 } from "@opensteer/client/host";
+import { readPlaceIndex, useHostSelector } from "@opensteer/client/react";
 
 /**
  * Who a page browses as, drawn: a profile's initial in its tinted disc, or
@@ -71,24 +73,45 @@ export function browserPresentations(places: readonly PlaceItem[]): BrowserPrese
 }
 
 export function useBrowserPresentations(places: readonly PlaceItem[]): BrowserPresentations {
-  // Unchanged words keep their objects, so their rows do not re-render.
   const previous = useRef<BrowserPresentations | null>(null);
   return useMemo(() => {
-    const next = browserPresentations(places);
-    const held = previous.current;
-    if (held) {
-      const bySession = new Map<string, BrowserPresentation>();
-      for (const [sessionId, presentation] of next.bySession) {
-        const before = held.bySession.get(sessionId);
-        bySession.set(
-          sessionId,
-          before && JSON.stringify(before) === JSON.stringify(presentation) ? before : presentation,
-        );
-      }
-      previous.current = { badges: next.badges, bySession };
-    } else previous.current = next;
+    previous.current = keptPresentations(previous.current, browserPresentations(places));
     return previous.current;
   }, [places]);
+}
+
+/**
+ * Every listed tab's presentation, read beside a list that arranges slots:
+ * a tab's title or loading changes none of it, so the list does not render.
+ */
+export function useListedBrowserPresentations(hostClient: HostClient): BrowserPresentations {
+  const previous = useRef<BrowserPresentations | null>(null);
+  const select = useCallback(() => {
+    previous.current = keptPresentations(
+      previous.current,
+      browserPresentations(readPlaceIndex(hostClient).items),
+    );
+    return previous.current;
+  }, [hostClient]);
+  return useHostSelector(hostClient, select);
+}
+
+/** Unchanged words keep their objects, so their rows do not re-render. */
+function keptPresentations(
+  held: BrowserPresentations | null,
+  next: BrowserPresentations,
+): BrowserPresentations {
+  if (!held) return next;
+  let changed = held.badges !== next.badges || held.bySession.size !== next.bySession.size;
+  const bySession = new Map<string, BrowserPresentation>();
+  for (const [sessionId, presentation] of next.bySession) {
+    const before = held.bySession.get(sessionId);
+    const kept =
+      before && JSON.stringify(before) === JSON.stringify(presentation) ? before : presentation;
+    if (kept !== before) changed = true;
+    bySession.set(sessionId, kept);
+  }
+  return changed ? { badges: next.badges, bySession } : held;
 }
 
 /**

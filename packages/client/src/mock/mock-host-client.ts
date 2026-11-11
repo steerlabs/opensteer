@@ -1,3 +1,4 @@
+import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import { BrowserSessionIdSchema } from "@opensteer/core";
 import type { WorkspaceTabLineage } from "../host/client.js";
 import { mockBrowserRows } from "./mock-browser-stream.js";
@@ -4093,6 +4094,16 @@ export class MockHostClient implements HostClient {
 
   get browserTabs() {
     return this.#state.browserTabs;
+  }
+  readonly #viewerSurfaces = new Map<string, BrowserViewerSurface>();
+  browserViewerSurface(sessionId: string, surfaceId: string) {
+    const key = `${sessionId}\u0000${surfaceId}`;
+    const next = this.#state.places?.viewerSurface(sessionId, surfaceId);
+    const held = this.#viewerSurfaces.get(key);
+    if (!next) this.#viewerSurfaces.delete(key);
+    else if (held && JSON.stringify(held) === JSON.stringify(next)) return held;
+    else this.#viewerSurfaces.set(key, next);
+    return next;
   }
   readonly getSnapshot = (): HostSnapshot => {
     this.#ownerViews.expire();

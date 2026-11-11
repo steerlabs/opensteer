@@ -1,35 +1,36 @@
 import type { BrowserTabGroup, BrowserTabLayout } from "@opensteer/protocol";
-import type { PlaceItem } from "./places.js";
+import type { PlaceItem, PlaceSlot } from "./places.js";
 
-export type BrowserTabStripRow =
+export type BrowserTabStripRow<P extends PlaceSlot = PlaceItem> =
   | {
       readonly kind: "group";
       readonly group: BrowserTabGroup;
-      readonly places: readonly PlaceItem[];
+      readonly places: readonly P[];
     }
-  | { readonly kind: "place"; readonly place: PlaceItem };
-export interface BrowserTabStrip {
-  readonly web: readonly BrowserTabStripRow[];
-  readonly native: readonly PlaceItem[];
-  readonly ordered: readonly PlaceItem[];
-  readonly visible: readonly PlaceItem[];
+  | { readonly kind: "place"; readonly place: P };
+export interface BrowserTabStrip<P extends PlaceSlot = PlaceItem> {
+  readonly web: readonly BrowserTabStripRow<P>[];
+  readonly native: readonly P[];
+  readonly ordered: readonly P[];
+  readonly visible: readonly P[];
 }
 const strips = new WeakMap<
-  readonly PlaceItem[],
-  { layout: BrowserTabLayout | undefined; strip: BrowserTabStrip }
+  readonly PlaceSlot[],
+  { layout: BrowserTabLayout | undefined; strip: BrowserTabStrip<PlaceSlot> }
 >();
 
 /** A group's first known member anchors its block; the catalog orders everything inside it. */
-export function browserTabStrip(
-  places: readonly PlaceItem[],
+export function browserTabStrip<P extends PlaceSlot = PlaceItem>(
+  places: readonly P[],
   layout?: BrowserTabLayout,
-): BrowserTabStrip {
-  const previous = strips.get(places);
+): BrowserTabStrip<P> {
+  const previous = strips.get(places) as
+    { layout: BrowserTabLayout | undefined; strip: BrowserTabStrip<P> } | undefined;
   if (previous && previous.layout === layout) return previous.strip;
   const membership = new Map<string, BrowserTabGroup>();
   for (const group of layout?.groups ?? [])
     for (const id of group.tabIds) membership.set(id, group);
-  const members = new Map<string, PlaceItem[]>();
+  const members = new Map<string, P[]>();
   for (const place of places) {
     if (place.kind !== "browser" || place.destination.kind !== "browser") continue;
     const group = membership.get(place.destination.tabId ?? "");
@@ -42,8 +43,8 @@ export function browserTabStrip(
   const held = new Map(
     previous?.strip.web.map((row) => [row.kind === "group" ? row.group.id : row.place.key, row]),
   );
-  const web: BrowserTabStripRow[] = [];
-  const native: PlaceItem[] = [];
+  const web: BrowserTabStripRow<P>[] = [];
+  const native: P[] = [];
   const emitted = new Set<string>();
   for (const place of places) {
     if (place.kind !== "browser") {
@@ -71,7 +72,7 @@ export function browserTabStrip(
       );
     }
   }
-  const strip = {
+  const strip: BrowserTabStrip<P> = {
     web,
     native,
     ordered: [

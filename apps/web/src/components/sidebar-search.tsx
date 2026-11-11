@@ -1,4 +1,5 @@
 import {
+  browserTabStrip,
   matchSearch,
   placeSearchFields,
   rankSearch,
@@ -15,7 +16,14 @@ import {
   type TaskAttention,
   type TaskRow,
 } from "@opensteer/client/host";
+import {
+  useBrowserGroups,
+  useHostSelector,
+  usePlaceList,
+  useSyncingPlaceholder,
+} from "@opensteer/client/react";
 import type { BrowserTabGroup } from "@opensteer/protocol";
+import { LoadingRows } from "./loading-rows.js";
 import {
   useEffect,
   useMemo,
@@ -38,7 +46,6 @@ export interface SidebarSearchSources {
   readonly attention: ReadonlyMap<string, TaskAttention>;
   /** Where each task's harness and runner labels come from. */
   readonly snapshot: Pick<HostSnapshot, "tasks" | "workspaces">;
-  readonly strip: BrowserTabStrip;
 }
 
 interface Found<T> {
@@ -122,7 +129,15 @@ export function SidebarSearch({
   });
   const words = useMemo(() => searchQuery(query), [query]);
   const showing = open && words.length > 0;
-  const { attention, snapshot, strip, tasks } = sources;
+  const { attention, snapshot, tasks } = sources;
+  // Tabs are read live, and only while there is a query: the lists underneath arrange slots.
+  const places = usePlaceList(hostClient, showing);
+  const layout = useHostSelector(hostClient, selectLayout);
+  const strip = browserTabStrip(places, layout);
+  const groupList = useBrowserGroups(hostClient);
+  // Tabs still syncing never say they hold nothing; past a moment, their skeleton shows.
+  const tabsSyncing = groupList.syncing && places.length === 0;
+  const loadingTabs = useSyncingPlaceholder(showing && groupList.syncing, places.length);
   // Prepared once each time what it reads changes, and only while there is a query.
   const index = useMemo(
     () => (showing ? searchIndex(tasks, attention, snapshot, strip) : null),
@@ -245,11 +260,17 @@ export function SidebarSearch({
           <section aria-label="Search results" className="side-results">
             <div className="side-results__scroll" data-scroll-edges="" ref={scrollRef}>
               {results.length === 0 ? (
-                <p className="sidebar__empty">
-                  {hasMore
-                    ? `Nothing in your tabs or loaded tasks matches “${query.trim()}”.`
-                    : `Nothing matches “${query.trim()}”.`}
-                </p>
+                tabsSyncing ? (
+                  loadingTabs ? (
+                    <LoadingRows label="Loading tabs" />
+                  ) : null
+                ) : (
+                  <p className="sidebar__empty">
+                    {hasMore
+                      ? `Nothing in your tabs or loaded tasks matches “${query.trim()}”.`
+                      : `Nothing matches “${query.trim()}”.`}
+                  </p>
+                )
               ) : (
                 <div id="sidebar-results" role="listbox">
                   {groups.map((group, order) => {
@@ -313,6 +334,8 @@ export function SidebarSearch({
     </>
   );
 }
+
+const selectLayout = (snapshot: HostSnapshot) => snapshot.browserTabGroups;
 
 interface Index {
   readonly tasks: readonly Found<{ readonly row: TaskRow; readonly ask: string | null }>[];
