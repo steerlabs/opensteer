@@ -45,7 +45,7 @@ export async function reportFolderSkills(
       .select("runners.id")
       .where("runners.id", "=", authenticated.runnerId)
       .where("runners.revokedAt", "is", null)
-      .where("runners.connectionGeneration", "=", authenticated.connectionGeneration)
+      .where("runners.connectionGeneration", "=", String(authenticated.connectionGeneration))
       .where("executionEnvironments.id", "=", authenticated.environmentId)
       .forShare(["runners", "executionEnvironments"])
       .executeTakeFirst();

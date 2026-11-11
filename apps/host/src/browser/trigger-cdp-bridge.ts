@@ -1,3 +1,4 @@
+import type {} from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
 import {
   BrowserActionRequestSchema,

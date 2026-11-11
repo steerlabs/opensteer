@@ -121,7 +121,7 @@ describe("PasswordsService off the platforms the broker runs on", () => {
 
 // Unix sockets, the lifecycle lock and peer credentials: the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsService end to end", () => {
-  it("exposes person calls at v8 and keeps person and agent lifetimes separate", async () => {
+  it("keeps person and agent lifetimes separate on the current wire", async () => {
     const harness = await serviceHarness("person lifetime separation", {
       clientProtocolVersion: 10,
       status: { personSave: "on", agentSignIns: "on", personFill: "on", vault: "ready" },

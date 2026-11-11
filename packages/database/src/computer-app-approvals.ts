@@ -1,3 +1,4 @@
+import { ResolvedRequestSchema } from "@opensteer/core";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
@@ -425,7 +426,7 @@ async function resolveComputerAppAccessRequest(
     .returningAll()
     .executeTakeFirst();
   if (!resolvedRow) return null;
-  const request = requestFromRow(resolvedRow);
+  const request = ResolvedRequestSchema.parse(requestFromRow(resolvedRow));
   await transaction
     .insertInto("requestContinuations")
     .values({

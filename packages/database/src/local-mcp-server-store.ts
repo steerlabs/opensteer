@@ -518,7 +518,7 @@ async function answeredRequest(
 
 /**
  * The computer's own row only. A server approval settles no task's Request,
- * so it takes none of the Runs and Workspaces a computer app approval does.
+ * so it takes none of the Runs a computer app approval does.
  */
 async function lockComputer(
   transaction: Transaction<DatabaseSchema>,

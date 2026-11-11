@@ -49,13 +49,13 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.server.secrets.list"
 > {
   return {
-    "specialist.list": async (input, context) =>
+    "specialist.list": async (_input, context) =>
       rpcSuccess({
         specialists: await options.platform.store.specialists.list(
           (await requirePersonalSession(context, options.platform.store.connections)).user.id,
         ),
       }),
-    "plugin.list": async (input, context) => {
+    "plugin.list": async (_input, context) => {
       return rpcSuccess({
         plugins: await options.platform.store.plugins.listForUser(
           (await requirePersonalSession(context, options.platform.store.connections)).user.id,

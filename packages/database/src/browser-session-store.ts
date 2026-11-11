@@ -129,6 +129,7 @@ export async function insertBrowserProfileOnLockedHome(
     readonly homeRunnerId: RunnerId | null;
   },
 ): Promise<BrowserProfileRecord> {
+  await assertPersonalOwner(transaction, input.ownerId);
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
     transaction,
     databaseOperationOptions(),
@@ -250,6 +251,7 @@ export async function getBrowserProfile(
   profileId: BrowserProfileId,
   ownerId: UserId,
 ): Promise<BrowserProfileRecord | null> {
+  await assertPersonalOwner(database, ownerId);
   const row = await database
     .selectFrom("browserProfiles")
     .select(["id", "name", "ownerId", "homeRunnerId"])
@@ -264,6 +266,7 @@ export async function listBrowserProfiles(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
 ): Promise<readonly BrowserProfileRecord[]> {
+  await assertPersonalOwner(database, ownerId);
   return database
     .selectFrom("browserProfiles")
     .select(["id", "name", "ownerId", "homeRunnerId"])
@@ -286,6 +289,7 @@ export async function renameBrowserProfile(
 ): Promise<BrowserProfileRecord> {
   return withPersonalTransaction(database, (transaction) =>
     administrationCommand(transaction, input.administration, async () => {
+      await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
         .updateTable("browserProfiles")
         .set({ name: input.name, updatedAt: new Date() })
@@ -328,6 +332,7 @@ export async function deleteBrowserProfileInTransaction(
     readonly binding?: LocalProfileBinding;
   },
 ): Promise<NativeProfileDeletionResult> {
+  await assertPersonalOwner(transaction, input.ownerId);
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
     transaction,
     databaseOperationOptions(),

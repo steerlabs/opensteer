@@ -23,8 +23,8 @@ import { PersonFillPresenceSchema } from "./person-fill.js";
  * UTF-8 JSON, over a Unix socket both ends verify by code signature. The Swift
  * side mirrors these shapes; `passwords-wire.json` pins both.
  *
- * Version 4 authorizes a pinned login without releasing credentials. Each
- * field release revalidates the live transaction, login, grant and origin.
+ * Each field release revalidates the live transaction, selected login,
+ * personal deployment/site consent and origin.
  */
 export const passwordsBrokerProtocolVersion = 10;
 export const PasswordsBrokerProtocolVersionSchema = z.literal(10);

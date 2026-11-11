@@ -1,3 +1,4 @@
+import { ResolvedRequestSchema } from "@opensteer/core";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
 import {
@@ -73,7 +74,7 @@ export async function fulfillPendingIntegrationAccessRequestsInTransaction(
       .returningAll()
       .executeTakeFirst();
     if (!resolvedRow) continue;
-    const request = requestFromRow(resolvedRow);
+    const request = ResolvedRequestSchema.parse(requestFromRow(resolvedRow));
     if (request.mode === "durable") {
       await transaction
         .insertInto("requestContinuations")

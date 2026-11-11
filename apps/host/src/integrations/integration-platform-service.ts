@@ -373,7 +373,6 @@ export class IntegrationPlatformService {
     ownerUserId?: UserId;
   }) => Promise<void>;
   readonly #onRequestsChanged: () => void;
-  readonly #deploymentName: string | null;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
   readonly #computerUse: ComputerUseGateway | null;
   readonly computerRepl: ComputerReplService;
@@ -414,7 +413,6 @@ export class IntegrationPlatformService {
      * a Host built without it should answer rather than pretending.
      */
     readonly computerUse?: ComputerUseGateway | null;
-    readonly deploymentName?: string | null;
     /**
      * Whether this Run's engine renders MCP image content blocks. An engine
      * that does not gets the tree and a sentence saying the picture is not
@@ -467,7 +465,6 @@ export class IntegrationPlatformService {
     ];
     this.#adapters = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
     this.#credentialMaterializer = options.credentialMaterializer;
-    this.#deploymentName = options.deploymentName ?? null;
     this.#definitions = options.definitions ?? integrationDefinitions;
     this.#mcpOauth = options.mcpOauth;
     this.#onDeploymentEvent = options.onDeploymentEvent;
@@ -499,7 +496,6 @@ export class IntegrationPlatformService {
       computerApps: options.computerApps,
       computerUse: this.#computerUse,
       definitions: this.#definitions,
-      deploymentName: this.#deploymentName,
       installCatalogDefinition: (input) => this.installCatalogDefinition(input),
       listCallableTools: (scope) => this.listCallableTools(scope),
       listConnections: this.#listConnections,

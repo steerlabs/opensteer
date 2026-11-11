@@ -11,9 +11,7 @@ import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { resolveChannelAuthority } from "./channel-authority.js";
 
-/** Callers own the complete Workspace set; pending input identities are stable under it.
- * Fence all queued channel authority before Thread/projection rows (./lock-order.ts).
- */
+/** Fence queued Messaging authority before task/projection rows (./lock-order.ts). */
 export async function lockThreadChannelAuthorities(
   transaction: Transaction<DatabaseSchema>,
   threadIds: readonly ThreadId[],

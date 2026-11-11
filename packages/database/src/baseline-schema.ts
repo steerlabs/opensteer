@@ -1500,7 +1500,8 @@ create table browser_profile_deletions (
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now(),
   "deleted_at" timestamptz,
-  primary key ("deletion_id")
+  primary key ("deletion_id"),
+  unique ("profile_id")
 );
 
 create table browser_history_entries (

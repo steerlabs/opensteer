@@ -1535,23 +1535,15 @@ export class ChannelStore {
 
           const observedIdentity = await transaction
             .selectFrom("channelIdentities")
-            .select(["id", "linkedUserId"])
+            .select("id")
             .where("accountId", "=", ingress.accountId)
             .where("externalUserId", "=", event.actor.externalUserId)
             .executeTakeFirst();
-          const commandUsers = [
-            ...new Set(
-              [binding.createdBy, observedIdentity?.linkedUserId].filter(
-                (id): id is UserId => id != null,
-              ),
-            ),
-          ].sort();
           const commandKey = `channel:${ingress.accountId}:${event.eventId}`;
-          for (const userId of commandUsers)
-            await lockCommandIdempotency(transaction, userId, commandKey);
+          await lockCommandIdempotency(transaction, binding.createdBy, commandKey);
           const observedFolder = binding.folder;
 
-          // Thread Inbox steering locks a target Run before Workspace/Thread rows.
+          // Thread Inbox steering locks a target Run before task rows.
           // Existing channel conversations participate in that same order so the
           // later atomic inbox admission can safely re-lock the observed Run.
           let activeThreadIds: ThreadId[] = [];
@@ -1668,7 +1660,7 @@ export class ChannelStore {
           if (
             lockedBinding.folderComputerId !== observedFolder.computerId ||
             lockedBinding.folderPath !== observedFolder.path ||
-            !commandUsers.includes(lockedBinding.createdBy)
+            lockedBinding.createdBy !== binding.createdBy
           ) {
             throw new ChannelAdmissionFenceChanged(
               "Channel route authority changed during discovery",
@@ -1700,9 +1692,6 @@ export class ChannelStore {
             displayName: event.actor.displayName,
             externalUserId: event.actor.externalUserId,
           });
-          if (identity.linkedUserId && !commandUsers.includes(identity.linkedUserId)) {
-            throw new ChannelAdmissionFenceChanged("Channel identity changed during discovery");
-          }
           if (
             senderPolicy.mode === "approved" &&
             identity.linkedUserId !== binding.createdBy &&
@@ -2086,8 +2075,31 @@ export class ChannelStore {
         .where("id", "=", deliveryId)
         .executeTakeFirst();
       if (!delivery) throw staleClaim("delivery");
-      // The source app first, then the channel: the order revocation takes
-      // them in. Whether this may start is read under both.
+      const observed = await transaction
+        .selectFrom("channelAccounts")
+        .innerJoin(
+          "integrationConnections",
+          "integrationConnections.id",
+          "channelAccounts.connectionId",
+        )
+        .select(["integrationConnections.id", "integrationConnections.sourceConnectionId"])
+        .where("channelAccounts.id", "=", delivery.accountId)
+        .executeTakeFirst();
+      if (!observed) throw staleClaim("delivery");
+      // Reserve both connection fences before checking the reply's sender authority.
+      const connections = await transaction
+        .selectFrom("integrationConnections")
+        .select(["id", "status"])
+        .where("id", "in", [
+          observed.id,
+          ...(observed.sourceConnectionId ? [observed.sourceConnectionId] : []),
+        ])
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute();
+      if (connections.find((row) => row.id === observed.id)?.status !== "connected")
+        throw staleClaim("delivery");
+      const sourceAllowed = await channelSourceAllows(transaction, delivery.accountId, false);
       const reply =
         delivery.kind === "reply" && delivery.messageId
           ? await transaction
@@ -2101,22 +2113,7 @@ export class ChannelStore {
         (reply?.runId !== null &&
           reply?.runId !== undefined &&
           (await channelRunAuthorityIsCurrent(transaction, reply.runId)));
-      const allowed = replyAllowed && (await channelSourceAllows(transaction, delivery.accountId));
-      // Revocation and attempt-start use the connection row as their fence.
-      // Whichever owns it first decides whether the delivery is known not to
-      // have started (`dead`) or may have reached the provider (`unknown`).
-      const connection = await transaction
-        .selectFrom("channelAccounts")
-        .innerJoin(
-          "integrationConnections",
-          "integrationConnections.id",
-          "channelAccounts.connectionId",
-        )
-        .select("integrationConnections.status")
-        .where("channelAccounts.id", "=", delivery.accountId)
-        .forNoKeyUpdate("integrationConnections")
-        .executeTakeFirst();
-      if (connection?.status !== "connected") throw staleClaim("delivery");
+      const allowed = sourceAllowed && replyAllowed;
       // Nothing left the Host yet, so a delivery whose channel lost the use it
       // was set up on ends here, known not to have been sent.
       if (!allowed) {

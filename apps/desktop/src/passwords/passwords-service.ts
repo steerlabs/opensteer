@@ -136,10 +136,29 @@ export class PasswordsService {
       passwordsBrokerProtocolVersion,
   ): PasswordsBrokerSession &
     PasswordsBrokerCardSession &
-    Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> {
+    PasswordsBrokerPersonFillSession &
+    PasswordsBrokerPersonSaveSession {
     const session: PasswordsBrokerSession &
       PasswordsBrokerCardSession &
-      Partial<PasswordsBrokerPersonFillSession & PasswordsBrokerPersonSaveSession> = {
+      PasswordsBrokerPersonFillSession &
+      PasswordsBrokerPersonSaveSession = {
+      fillAccounts: async (params, signal) => {
+        const client = await this.#ready();
+        return await this.#guard(client.call("fill.accounts", params, signal ? { signal } : {}));
+      },
+      fillBegin: async (params, signal) =>
+        await this.#startTransaction("fill.begin", params, signal),
+      saveBegin: async (params, signal) =>
+        await this.#startTransaction("save.begin", params, signal),
+      saveCommit: async (transactionId) => {
+        try {
+          return await this.#bound(transactionId, "save.commit", (client, connection) =>
+            client.call("save.commit", { transactionId }, { connection }),
+          );
+        } finally {
+          this.#transactions.delete(transactionId);
+        }
+      },
       cardProbe: async () => {
         try {
           return await this.#call("card.probe", {});
@@ -187,49 +206,6 @@ export class PasswordsService {
       enumerable: true,
       get: () => this.#client?.connection?.protocolVersion ?? protocolVersion,
     });
-    if (protocolVersion >= 8) {
-      const fillAccounts: PasswordsBrokerPersonFillSession["fillAccounts"] = async (
-        params,
-        signal,
-      ) => {
-        const client = await this.#ready();
-        return await this.#guard(client.call("fill.accounts", params, signal ? { signal } : {}));
-      };
-      const fillBegin: PasswordsBrokerPersonFillSession["fillBegin"] = async (params, signal) =>
-        await this.#startTransaction("fill.begin", params, signal);
-      Object.defineProperties(session, {
-        fillAccounts: {
-          get: () =>
-            (this.#client?.connection?.protocolVersion ?? protocolVersion) >= 8
-              ? fillAccounts
-              : undefined,
-        },
-        fillBegin: {
-          get: () =>
-            (this.#client?.connection?.protocolVersion ?? protocolVersion) >= 8
-              ? fillBegin
-              : undefined,
-        },
-      });
-    }
-    if (protocolVersion >= 9) {
-      const saveBegin: PasswordsBrokerPersonSaveSession["saveBegin"] = async (params, signal) =>
-        await this.#startTransaction("save.begin", params, signal);
-      const saveCommit: PasswordsBrokerPersonSaveSession["saveCommit"] = async (transactionId) => {
-        try {
-          return await this.#bound(transactionId, "save.commit", (client, connection) =>
-            client.call("save.commit", { transactionId }, { connection }),
-          );
-        } finally {
-          this.#transactions.delete(transactionId);
-        }
-      };
-      const saving = () => (this.#client?.connection?.protocolVersion ?? protocolVersion) >= 9;
-      Object.defineProperties(session, {
-        saveBegin: { get: () => (saving() ? saveBegin : undefined) },
-        saveCommit: { get: () => (saving() ? saveCommit : undefined) },
-      });
-    }
     return session;
   }
 
