@@ -62,6 +62,7 @@ export interface HarnessCapabilities {
     } | null;
   };
   readonly interruption: boolean;
+  readonly subagentStop?: true;
   /**
    * The provider renders an MCP image content block to the model.
    *
@@ -488,6 +489,7 @@ export interface HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
   execute(run: HarnessRunInput): Promise<void>;
   interrupt(): Promise<void>;
+  stopNode?(nodeId: ExecutionNodeId): Promise<void>;
   /**
    * Present only when the adapter advertises `steering`. It resolves once the
    * provider accepted the injection and rejects with a conflict-style error

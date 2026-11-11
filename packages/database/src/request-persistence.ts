@@ -2,6 +2,23 @@ import { RequestSchema, type EnvironmentId, type Request } from "@opensteer/core
 import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "@opensteer/shared/canonicalJson";
+
+export function requestRevision(request: Request): string {
+  return createHash("sha256")
+    .update(
+      canonicalJson({
+        id: request.id,
+        kind: request.kind,
+        status: request.status,
+        createdAt: request.createdAt,
+        originatingNodeId: request.originatingNodeId ?? null,
+        presentation: request.presentation,
+      }),
+    )
+    .digest("base64url");
+}
 
 /**
  * Workspace events are stamped with the environment the work ran in, and a

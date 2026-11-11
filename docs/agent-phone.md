@@ -23,6 +23,12 @@ kills the person's ADB server. A setup session binds the selected transport and 
 cannot survive a replug, server replacement or withdrawn USB permission. Trusted ADB keys persist in
 the browser profile and may authenticate silently.
 
+OEM builds and device policy can withhold that authority: some OnePlus, OPPO and realme versions
+refuse the shell's settings and app-op writes until Developer options → Disable permission
+monitoring is on, and Xiaomi needs Install via USB and USB debugging (Security settings). So setup
+writes only what does not already hold, which keeps a phone set up before an OEM update passing,
+and names those options when Android refuses.
+
 [setup-agent-phone.ts](../packages/agent-phone-setup/src/setup-agent-phone.ts) owns the sequence.
 Verify the artifact's manifest, size and digest before touching the phone, and the installed signer
 before pairing; a foreign signer needs explicit consent to uninstall and erase app data. Resolve a
@@ -165,7 +171,11 @@ distribution, and the phone independently checks receipt, manifest and APK agree
 newer version, non-debuggability and the permanent signer
 ([update](../apps/agent-phone/app/src/main/kotlin/com/opensteer/agentphone/update)). A phone on an
 older proof format needs one same-signer USB update. Android still decides install consent, and
-waiting for it is not an install failure.
+waiting for it is not an install failure. Agent Phone's self-update never needs it to be the
+installer of record: on Android 12+ an app holding `UPDATE_PACKAGES_WITHOUT_USER_ACTION` may update
+itself silently, and
+OEMs rewrite that record for USB installs (OnePlus's Android 12 records `pc`), so setup neither sets
+nor reads it.
 
 ## Verification
 

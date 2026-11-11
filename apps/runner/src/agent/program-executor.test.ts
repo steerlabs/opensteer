@@ -108,7 +108,7 @@ describe("TriggerProgramExecutor", () => {
           console.log("price", event.payload.price);
           const response = await fetch(${JSON.stringify(`http://127.0.0.1:${address.port}/data`)});
           if (!response.ok) throw new Error("fetch failed");
-          const delivered = await opensteer.callTool("thread_message", { message: "done" });
+          const delivered = await opensteer.callTool("thread_send", { message: "done" });
           const integrationDelivered = await opensteer.integrations.callTool(
             "integration_tool",
             { value: 42 },
@@ -163,7 +163,7 @@ describe("TriggerProgramExecutor", () => {
         stdout: "price 42\n",
       });
       expect(requests.filter(({ method }) => method === "tools/call")).toEqual([
-        { method: "tools/call", name: "thread_message" },
+        { method: "tools/call", name: "thread_send" },
         { method: "tools/call", name: "integration_tool" },
       ]);
       expect(requests.filter(({ method }) => method === "DELETE")).toHaveLength(2);

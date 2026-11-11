@@ -201,6 +201,18 @@ it("executes schema-valid Project work with no person input and rejects mismatch
       },
     }),
   ).resolves.toMatchObject({ status: "rejected" });
+  await expect(
+    f.runtime.dispatch({
+      type: "node.stop",
+      commandId: createId("command"),
+      correlationId: "person-node-stop",
+      environmentId: f.command.environmentId,
+      runId: f.binding.runId,
+      threadId: f.binding.threadId,
+      nodeId: createId("executionNode"),
+      bindingGeneration: f.binding.bindingGeneration,
+    } as unknown as ProjectExecuteRun),
+  ).resolves.toMatchObject({ status: "rejected", error: { code: "forbidden" } });
   expect(f.start).not.toHaveBeenCalled();
   await expect(f.runtime.dispatch(f.command)).resolves.toEqual({ status: "accepted" });
   await vi.waitFor(() => expect(f.session.execute).toHaveBeenCalled(), { timeout: 1000 });

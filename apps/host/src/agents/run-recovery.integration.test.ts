@@ -481,7 +481,7 @@ integration.sequential("Run recovery acceptance", () => {
           }) as Transport,
         );
         const result = await client.callTool({
-          name: "thread_delegate",
+          name: "delegate_task",
           arguments: {
             task: "Keep working through a restart",
             title: "Recovery worker",

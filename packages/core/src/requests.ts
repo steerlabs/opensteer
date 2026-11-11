@@ -22,6 +22,8 @@ import {
   TriggerOccurrenceIdSchema,
   UserIdSchema,
   WorkspaceIdSchema,
+  type UserId,
+  type ExecutionNodeId,
 } from "./ids.js";
 import { causalChainMaxDelegations, IsoDateTimeSchema } from "./models.js";
 
@@ -463,10 +465,26 @@ export const RequestSettlementProvenanceSchema = z.strictObject({
 });
 export type RequestSettlementProvenance = z.infer<typeof RequestSettlementProvenanceSchema>;
 
+export const RequestAgentAnswererSchema = z.strictObject({
+  kind: z.literal("agent"),
+  runId: RunIdSchema,
+  threadId: ThreadIdSchema,
+  title: z.string().min(1).max(240),
+});
+
+export const RequestAnswererViewSchema = z.union([
+  z.object({ deviceLabel: RequestSettlementProvenanceSchema.shape.deviceLabel }),
+  z.object(RequestAgentAnswererSchema.shape),
+]);
+
 const requestBaseShape = {
-  settlementProvenance: RequestSettlementProvenanceSchema.extend({
-    sessionId: RequestSettlementProvenanceSchema.shape.sessionId.optional(),
-  })
+  settlementProvenance: z
+    .union([
+      RequestSettlementProvenanceSchema.extend({
+        sessionId: RequestSettlementProvenanceSchema.shape.sessionId.optional(),
+      }),
+      RequestAgentAnswererSchema,
+    ])
     .nullable()
     .optional(),
   callId: RequestIdentifierSchema,
@@ -498,10 +516,7 @@ const requestViewBaseShape = {
   resolvedByName: z.string().trim().min(1).max(160).nullable().optional(),
   cancelledFor: RequestCancelledForSchema.optional(),
   ...requestBaseShape,
-  settlementProvenance: z
-    .object({ deviceLabel: RequestSettlementProvenanceSchema.shape.deviceLabel })
-    .nullable()
-    .optional(),
+  settlementProvenance: RequestAnswererViewSchema.nullable().optional(),
   payload: RequestPayloadViewSchema,
   presentation: RequestPresentationViewSchema,
 } as const;
@@ -513,9 +528,28 @@ function validateRequestInvariants(
     readonly originatingOccurrenceId: string | null;
     readonly originatingRunId: string | null;
     readonly payload: RequestPayload;
+    readonly resolvedBy?: UserId | null;
+    readonly status?: string;
+    readonly settlementProvenance?: unknown;
+    readonly originatingNodeId?: ExecutionNodeId | undefined;
+    readonly presentation: RequestPresentation;
   },
   context: z.RefinementCtx,
 ): void {
+  if (request.status === "fulfilled" || request.status === "declined") {
+    const answerer = RequestAgentAnswererSchema.safeParse(request.settlementProvenance);
+    const agent = answerer.success;
+    if (
+      (request.resolvedBy === null) !== agent ||
+      (agent &&
+        (!requestIsAgentAnswerable(request) || answerer.data.runId === request.originatingRunId))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "An agent answer names its Run, never a person",
+      });
+    }
+  }
   if ((request.originatingRunId === null) === (request.originatingOccurrenceId === null)) {
     context.addIssue({
       code: "custom",
@@ -588,7 +622,7 @@ export const FulfilledRequestSchema = z
     ...requestBaseShape,
     cancellationReason: z.null(),
     resolvedAt: IsoDateTimeSchema,
-    resolvedBy: UserIdSchema,
+    resolvedBy: UserIdSchema.nullable(),
     response: RequestResponseSchema,
     status: z.literal("fulfilled"),
   })
@@ -598,7 +632,7 @@ const FulfilledRequestViewSchema = z
     ...requestViewBaseShape,
     cancellationReason: z.null(),
     resolvedAt: IsoDateTimeSchema,
-    resolvedBy: UserIdSchema,
+    resolvedBy: UserIdSchema.nullable(),
     response: RequestResponseViewSchema,
     status: z.literal("fulfilled"),
   })
@@ -609,7 +643,7 @@ export const DeclinedRequestSchema = z
     ...requestBaseShape,
     cancellationReason: z.null(),
     resolvedAt: IsoDateTimeSchema,
-    resolvedBy: UserIdSchema,
+    resolvedBy: UserIdSchema.nullable(),
     response: RequestResponseSchema,
     status: z.literal("declined"),
   })
@@ -619,7 +653,7 @@ const DeclinedRequestViewSchema = z
     ...requestViewBaseShape,
     cancellationReason: z.null(),
     resolvedAt: IsoDateTimeSchema,
-    resolvedBy: UserIdSchema,
+    resolvedBy: UserIdSchema.nullable(),
     response: RequestResponseViewSchema,
     status: z.literal("declined"),
   })
@@ -738,6 +772,26 @@ export function hasSecretRequestFields(request: Pick<Request, "presentation">): 
     request.presentation.kind === "form" &&
     request.presentation.fields.some((field) => field.secret)
   );
+}
+
+export function requestIsAgentAnswerable(
+  request: Pick<Request, "kind" | "presentation" | "originatingNodeId">,
+): boolean {
+  const ordinary: Record<RequestKind, boolean> = {
+    "harness.input": true,
+    "harness.approval": false,
+    "browser.access": false,
+    "browser.profile.save": false,
+    "browser.profile.import": false,
+    "browser.sign-in": false,
+    "browser.password-sign-in": false,
+    "integration.access": false,
+    "integration.install": false,
+    "machine.full-disk-access": false,
+    "computer.app.access": false,
+    "integration.input": false,
+  };
+  return ordinary[request.kind] && !request.originatingNodeId && !hasSecretRequestFields(request);
 }
 
 /** Durable events may acknowledge a secret field, but never contain its value. */

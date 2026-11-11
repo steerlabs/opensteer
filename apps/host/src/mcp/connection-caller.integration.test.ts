@@ -413,10 +413,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       reach: { kind: "workspace", workspaceId: f.workspace.id },
     });
     const result = await agent.client.callTool({
-      name: "thread_delegate",
+      name: "delegate_task",
       arguments: {
         workspaceId: f.workspace.id,
-        environmentId: f.environmentId,
+
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         title: "External work",
@@ -452,10 +452,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       (await storeFixture.database.introspection.getTables()).map((t) => t.name),
     ).not.toContain("agent_tool_operations");
     const replay = await agent.client.callTool({
-      name: "thread_delegate",
+      name: "delegate_task",
       arguments: {
         workspaceId: f.workspace.id,
-        environmentId: f.environmentId,
+
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         title: "External work",
@@ -465,10 +465,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     expect(replay.structuredContent).toEqual(result.structuredContent);
     const conflicting = await agent.client.callTool({
-      name: "thread_delegate",
+      name: "delegate_task",
       arguments: {
         workspaceId: f.workspace.id,
-        environmentId: f.environmentId,
+
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         title: "External work",
@@ -478,7 +478,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     expect(errorText(conflicting)).toMatch(/idempotency|different input/i);
     const message = await agent.client.callTool({
-      name: "thread_message",
+      name: "thread_send",
       arguments: {
         threadId,
         delivery: "report",
@@ -496,7 +496,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         .executeTakeFirstOrThrow(),
     ).toMatchObject({ author: { kind: "connection", connectionId: agent.id } });
     const messageReplay = await agent.client.callTool({
-      name: "thread_message",
+      name: "thread_send",
       arguments: {
         threadId,
         delivery: "report",
@@ -506,7 +506,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     expect(messageReplay.structuredContent).toEqual(message.structuredContent);
     const messageConflict = await agent.client.callTool({
-      name: "thread_message",
+      name: "thread_send",
       arguments: { threadId, delivery: "report", message: "Changed", operationKey: "report-retry" },
     });
     expect(errorText(messageConflict)).toMatch(/idempotency|different input/i);
@@ -547,11 +547,11 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(
       errorText(
         await agent.client.callTool({
-          name: "thread_delegate",
+          name: "delegate_task",
           arguments: {
             workspaceId: other.id,
             task: "Escalate",
-            environmentId: f.environmentId,
+
             harnessInstanceId: f.harnessInstance.id,
             model: { ...testModelSelection, options: {} },
           },
@@ -574,10 +574,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
           reach === "user" ? { kind: "user" } : { kind: "workspace", workspaceId: f.workspace.id },
       });
       const delegated = await agent.client.callTool({
-        name: "thread_delegate",
+        name: "delegate_task",
         arguments: {
           workspaceId: f.workspace.id,
-          environmentId: f.environmentId,
+
           harnessInstanceId: f.harnessInstance.id,
           model: { ...testModelSelection, options: {} },
           title: `Connected work with ${reach} reach`,
@@ -700,10 +700,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     // The model is left to the person's remembered choice.
     const call = (title: string) =>
       agent.client.callTool({
-        name: "thread_delegate",
+        name: "delegate_task",
         arguments: {
           workspaceId: f.workspace.id,
-          environmentId: f.environmentId,
+
           harnessInstanceId: f.harnessInstance.id,
           title,
           task: "Inspect the project",
@@ -748,10 +748,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       storeFixture.store.setAutomaticModelConfig(f.userId, { roles: {}, excludedAccounts });
     const call = (operationKey: string) =>
       agent.client.callTool({
-        name: "thread_delegate",
+        name: "delegate_task",
         arguments: {
           workspaceId: f.workspace.id,
-          environmentId: f.environmentId,
+
           title: "Automatic work",
           task: "Inspect the project",
           operationKey,
@@ -838,7 +838,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     for (const name of [
       "environment_list",
-      "request_list",
+      "pending_request",
       "trigger_read",
       "app_list",
       "integration_search",
@@ -958,7 +958,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     const send = async (message: string) => {
       const result = await agent.client.callTool({
-        name: "thread_message",
+        name: "thread_send",
         arguments: { threadId: f.thread.id, delivery: "queue", message },
       });
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
@@ -1186,7 +1186,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     });
     const send = (message: string) =>
       agent.client.callTool({
-        name: "thread_message",
+        name: "thread_send",
         arguments: { threadId: f.thread.id, delivery: "report", message },
       });
     const anchor = await send("Already seen");

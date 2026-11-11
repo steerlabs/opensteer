@@ -1,4 +1,5 @@
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
+import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { agentTools, requestToolNames } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import {
@@ -334,11 +335,13 @@ describe("Codex app-server harness", () => {
   it.each([
     ["host_only_tool"],
     ["thread_read", "integration_call", "computer"],
-    ["thread_read", ...requestToolNames],
+    ["thread_read", "thread_wait", ...requestToolNames],
+    ["thread_wait"],
     [...requestToolNames],
   ])("enables exactly the Host plan %j", async (...tools) => {
     const fixture = await setup("happy");
     expect(fixture.adapter.capabilities.longRequestHold).toBe(true);
+    expect(heldToolCallTimeoutMs).toBeGreaterThan(threadWaitMaxMs);
     try {
       const session = await fixture.adapter.startSession({
         ...fixture.context,
@@ -349,7 +352,9 @@ describe("Codex app-server harness", () => {
         const threadStart = captured.find((message) => message.method === "thread/start");
         const config =
           (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
-        const directTools = tools.filter((tool) => requestToolNames.some((name) => name === tool));
+        const directTools = tools.filter(
+          (tool) => tool === "thread_wait" || requestToolNames.some((name) => name === tool),
+        );
         expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
           tools.filter((tool) => !directTools.includes(tool)),
         );
@@ -2518,6 +2523,53 @@ describe("Codex app-server harness", () => {
     const session = await fixture.adapter.startSession(fixture.context);
     await session.stop();
     await fixture.adapter.close();
+  });
+
+  it("interrupts only the named child turn and leaves the Codex Run live", async () => {
+    const fixture = await setup("subagents-hold");
+    const adapter = fixture.adapter;
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      const executing = session.execute(fixture.turn("Inspect notes"));
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) => event.type === "node.updated" && event.data.stopSupported,
+          ),
+        ).toBe(true),
+      );
+      const node = observer.events.find((event) => event.type === "node.started");
+      if (node?.type !== "node.started") throw new Error("Codex child never started");
+      await session.stopNode!(node.data.nodeId);
+      await vi.waitFor(() =>
+        expect(
+          observer.events.some(
+            (event) =>
+              event.type === "node.completed" &&
+              event.data.nodeId === node.data.nodeId &&
+              event.data.status === "interrupted",
+          ),
+        ).toBe(true),
+      );
+      expect(
+        observer.events.some(
+          (event) => event.type === "run.interrupted" || event.type === "run.completed",
+        ),
+      ).toBe(false);
+      const interruptions = (await fixture.capture()).filter(
+        (message) => message.method === "turn/interrupt",
+      );
+      expect(interruptions).toHaveLength(1);
+      expect(interruptions[0]).toMatchObject({
+        params: { threadId: node.data.sessionRef, turnId: "child-turn-1" },
+      });
+      await session.interrupt();
+      await executing;
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
   });
 
   it("interrupts the exact active Codex turn and waits for its terminal event", async () => {

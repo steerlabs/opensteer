@@ -8,9 +8,64 @@ import {
   ResolvedRequestEventSchema,
   createId,
   requestReasonMaxLength,
+  requestIsAgentAnswerable,
+  RequestKindSchema,
 } from "./index.js";
 
 const createdAt = "2026-08-22T12:00:00.000Z";
+
+describe("agent answer classification", () => {
+  const decisions = {
+    "harness.approval": false,
+    "harness.input": true,
+    "browser.access": false,
+    "browser.profile.save": false,
+    "browser.profile.import": false,
+    "browser.sign-in": false,
+    "browser.password-sign-in": false,
+    "integration.access": false,
+    "integration.install": false,
+    "machine.full-disk-access": false,
+    "computer.app.access": false,
+    "integration.input": false,
+  };
+  it("deliberately classifies every Request kind", () => {
+    expect(Object.keys(decisions).sort()).toEqual([...RequestKindSchema.options].sort());
+    for (const kind of RequestKindSchema.options) {
+      expect(
+        requestIsAgentAnswerable({
+          kind,
+          presentation: {
+            kind: "form",
+            title: "Question",
+            fields: [{ id: "answer", prompt: "Which?", multiSelect: false, secret: false }],
+          },
+        }),
+      ).toBe(decisions[kind]);
+    }
+  });
+  it("keeps secret fields and native subagent questions human-only", () => {
+    const question = {
+      kind: "harness.input" as const,
+      presentation: {
+        kind: "form" as const,
+        title: "Question",
+        fields: [{ id: "answer", prompt: "Which?", multiSelect: false, secret: true }],
+      },
+    };
+    expect(requestIsAgentAnswerable(question)).toBe(false);
+    expect(
+      requestIsAgentAnswerable({
+        ...question,
+        presentation: {
+          ...question.presentation,
+          fields: [{ ...question.presentation.fields[0]!, secret: false }],
+        },
+        originatingNodeId: createId("executionNode"),
+      }),
+    ).toBe(false);
+  });
+});
 
 function pendingApproval() {
   const workspaceId = createId("workspace");

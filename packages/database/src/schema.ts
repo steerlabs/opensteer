@@ -1,4 +1,5 @@
 import type { AutomaticModelConfig } from "@opensteer/core";
+import type { ThreadCallerAuthority } from "./thread-caller.js";
 import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
 import type {
   ChannelAccountId,
@@ -1076,6 +1077,8 @@ export interface RunAttemptTable {
  * which the Run's usage already includes.
  */
 export interface ExecutionNodeTable {
+  stopSupported: Generated<boolean>;
+  stopping: Generated<boolean>;
   id: ExecutionNodeId;
   runId: RunId;
   attemptId: RunAttemptId;
@@ -1129,6 +1132,13 @@ export interface DelegationTable {
   parentAssignmentId: Generated<AssignmentId | null>;
   status: Generated<AssignmentStatus>;
   resultText: Generated<string | null>;
+  resultWaits: Generated<
+    readonly {
+      readonly id: string;
+      readonly authority: ThreadCallerAuthority;
+      readonly expiresAt: number;
+    }[]
+  >;
   resultRunId: Generated<RunId | null>;
   finishedAt: NullableTimestamp;
   revision: Generated<number>;
@@ -2264,6 +2274,10 @@ export interface DatabaseSchema extends KnowledgeTables {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  taskQuestionNotices: {
+    requestId: RequestId;
+    messageId: MessageId | null;
+  };
   integrationRequestDetails: IntegrationRequestDetailTable;
   requestCallJoins: RequestCallJoinTable;
   requestContinuations: RequestContinuationTable;

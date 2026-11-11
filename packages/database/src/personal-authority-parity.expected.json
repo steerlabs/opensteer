@@ -65,6 +65,10 @@
       "parameters": ["id-2", "pending", "claimed", "unknown"]
     },
     {
+      "sql": "select \"id\" from \"requests\" where \"id\" in (select authority_source->>'referenceId' as \"request_id\" from \"thread_inputs\" where \"thread_id\" in ($1) and authority_source->>'cause' = 'task-question' and \"state\" in ($2, $3)) and \"status\" = $4 order by \"id\" asc for no key update",
+      "parameters": ["id-2", "pending", "claimed", "pending"]
+    },
+    {
       "sql": "select \"id\" from \"delegations\" where ((\"child_thread_id\" in ($1) and \"status\" = $2) or \"id\" in (select \"assignment_id\" from \"thread_inputs\" where \"thread_id\" in ($3) and \"state\" in ($4, $5, $6))) order by \"id\" asc for no key update",
       "parameters": ["id-2", "open", "id-2", "pending", "claimed", "unknown"]
     },
@@ -188,6 +192,10 @@
       "parameters": ["id-2", "pending", "claimed", "unknown"]
     },
     {
+      "sql": "select \"id\" from \"requests\" where \"id\" in (select authority_source->>'referenceId' as \"request_id\" from \"thread_inputs\" where \"thread_id\" in ($1) and authority_source->>'cause' = 'task-question' and \"state\" in ($2, $3)) and \"status\" = $4 order by \"id\" asc for no key update",
+      "parameters": ["id-2", "pending", "claimed", "pending"]
+    },
+    {
       "sql": "select \"id\" from \"delegations\" where ((\"child_thread_id\" in ($1) and \"status\" = $2) or \"id\" in (select \"assignment_id\" from \"thread_inputs\" where \"thread_id\" in ($3) and \"state\" in ($4, $5, $6))) order by \"id\" asc for no key update",
       "parameters": ["id-2", "open", "id-2", "pending", "claimed", "unknown"]
     },
@@ -210,6 +218,10 @@
     {
       "sql": "select \"thread_inputs\".*, \"messages\".\"kind\" as \"message_kind\" from \"thread_work_inputs\" as \"thread_inputs\" inner join \"messages\" on \"messages\".\"id\" = \"thread_inputs\".\"message_id\" where \"thread_inputs\".\"message_id\" = $1 and \"thread_inputs\".\"state\" = $2 for no key update of \"thread_inputs\"",
       "parameters": ["id-6", "pending"]
+    },
+    {
+      "sql": "select \"authority_source\", \"requested_by\", \"thread_id\" from \"thread_inputs\" where \"message_id\" = $1",
+      "parameters": ["id-6"]
     },
     {
       "sql": "select \"threads\".\"environment_id\", \"threads\".\"workspace_id\", \"workspace_memberships\".\"generation\" from \"threads\" inner join \"workspace_memberships\" on \"workspace_memberships\".\"workspace_id\" = \"threads\".\"workspace_id\" where \"threads\".\"id\" = $1 and \"workspace_memberships\".\"user_id\" = $2 and \"workspace_memberships\".\"state\" = $3",

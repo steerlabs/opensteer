@@ -13,6 +13,7 @@ export * from "./automation-failure-store.js";
 export * from "./browser-source-store.js";
 export * from "./channel-store.js";
 export * from "./command-delivery.js";
+export * from "./node-control.js";
 export * from "./connection.js";
 export * from "./deployment-authority.js";
 export * from "./deployment-execution-authority.js";
@@ -52,6 +53,12 @@ export * from "./agent-connection-store.js";
 export * from "./thread-caller.js";
 
 export { readThreadWaitSnapshot } from "./thread-wait.js";
+export {
+  readAssignmentResult,
+  beginAssignmentResultWait,
+  endAssignmentResultWait,
+  recoverAssignmentResultWaits,
+} from "./thread-inbox.js";
 
 export * from "./plugin-settings-store.js";
 export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
@@ -68,3 +75,5 @@ export { personalDeploymentOwner } from "./machine-store.js";
 export { knowledgeExecutorRole } from "./knowledge-schema.js";
 
 export { listEligibleBrowserRunners } from "./browser-home-store.js";
+export * from "./request-agent-response.js";
+export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";

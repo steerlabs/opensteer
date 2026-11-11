@@ -36,6 +36,37 @@ import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
+const taskQuestionNoticesMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table requests drop constraint requests_terminal_check;
+      alter table requests add constraint requests_terminal_check check (
+        (status = 'pending' and response is null and cancellation_reason is null and resolved_at is null and resolved_by is null)
+        or (status in ('fulfilled', 'declined') and jsonb_typeof(response) = 'object'
+          and response_command_id is null and cancellation_reason is null and resolved_at is not null
+          and ((resolved_by is not null and coalesce(settlement_provenance->>'kind', '') <> 'agent')
+            or (resolved_by is null and kind = 'harness.input' and originating_node_id is null
+              and coalesce(settlement_provenance->>'kind', '') = 'agent'
+              and coalesce(settlement_provenance->>'runId', '') ~ '^run_[0-9a-f-]{36}$'
+              and coalesce(settlement_provenance->>'threadId', '') ~ '^thr_[0-9a-f-]{36}$')))
+        or (status = 'withdrawn' and response is null and response_command_id is null
+          and cancellation_reason is null and resolved_at is not null and resolved_by is not null)
+        or (status = 'cancelled' and response is null and response_command_id is null
+          and cancellation_reason is not null and resolved_at is not null and resolved_by is null)
+      )
+    `.execute(database);
+    await database.schema
+      .createTable("taskQuestionNotices")
+      .addColumn("requestId", "text", (column) =>
+        column.primaryKey().references("requests.id").onDelete("cascade"),
+      )
+      .addColumn("messageId", "text", (column) =>
+        column.unique().references("messages.id").onDelete("set null"),
+      )
+      .execute();
+  },
+};
+
 export const projectExecutionPreparationMigration: Migration = {
   async up(database) {
     await sql`
@@ -4849,6 +4880,11 @@ export function migrationProvider() {
         "0171_project_execution_preparation": projectExecutionPreparationMigration,
         "0172_team_administration": teamAdministrationMigration,
         "0173_node_detail": nodeDetailMigration,
+        "0174_assignment_result_reads": assignmentResultReadsMigration,
+        "0175_program_tool_names": programToolNamesMigration,
+        "0176_assignment_result_waits": assignmentResultWaitsMigration,
+        "0177_task_question_notices": taskQuestionNoticesMigration,
+        "0178_node_stop": nodeStopMigration,
         [projectAuthorityCutoverMigrationName]: projectAuthorityCutoverMigration,
       };
     },
@@ -7963,6 +7999,115 @@ const nodeDetailMigration: Migration = {
         on public.workspace_events (node_detail_id, sequence desc) where node_detail_id is not null;
       create index workspace_events_thread_own_history
         on public.workspace_events (thread_id, sequence) include (type) where node_detail_id is null;
+    `.execute(database);
+  },
+};
+
+const assignmentResultReadsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.delegations drop constraint delegations_result_check,
+        add constraint delegations_result_check check (
+          (result_status = 'pending' and completed_at is null and result_message_id is null and result_reason is null)
+          or (result_status = 'delivered' and completed_at is not null and (
+            ((result_message_id is not null or result_text is not distinct from '') and result_reason is null)
+            or result_reason is not distinct from 'read-by-assigner'))
+          or (result_status = 'undeliverable' and completed_at is not null
+            and result_message_id is null and result_reason is not null));
+    `.execute(database);
+  },
+};
+
+/**
+ * A saved Trigger program runs unchanged for as long as it exists, so the
+ * tools it names are renamed where it is stored. Whole names only: a longer
+ * name that merely contains one is someone else's.
+ */
+export const programToolNamesMigration: Migration = {
+  async up(database) {
+    await sql`
+      update public.trigger_revisions
+      set program = jsonb_set(program, '{source}', to_jsonb(
+        regexp_replace(regexp_replace(regexp_replace(program->>'source',
+          '\\mthread_delegate\\M', 'delegate_task', 'g'),
+          '\\mthread_message\\M', 'thread_send', 'g'),
+          '\\mrequest_list\\M', 'pending_request', 'g')))
+      where program->>'source' ~ '\\m(thread_delegate|thread_message|request_list)\\M';
+    `.execute(database);
+  },
+};
+
+const assignmentResultWaitsMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.delegations drop constraint delegations_result_message_id_key,
+        add column result_waits jsonb not null default '[]'::jsonb
+        check (jsonb_typeof(result_waits) = 'array');
+      create index delegations_result_message on public.delegations (result_message_id)
+        where result_message_id is not null;
+    `.execute(database);
+  },
+};
+
+/**
+ * Stopping one subagent is commanded under the same rule as stopping its Run:
+ * the Run's requester, or an owner of its Workspace. The rest of the check is
+ * unchanged.
+ */
+const nodeStopMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.execution_nodes
+        add column stop_supported boolean not null default false,
+        add column stopping boolean not null default false;
+
+      create or replace function public.opensteer_enforce_command_execution_authority()
+      returns trigger
+      language plpgsql
+      as $function$
+      begin
+        if new.type not in (
+          'run.execute',
+          'trigger.execute',
+          'run.steer',
+          'run.restart',
+          'run.interrupt',
+          'node.stop',
+          'request.respond'
+        ) then
+          return new;
+        end if;
+        if new.type in ('run.interrupt', 'node.stop') and exists (
+          select 1
+          from public.runs target_run
+          join public.threads thread on thread.id = target_run.thread_id
+          join public.workspace_memberships membership
+            on membership.workspace_id = thread.workspace_id
+           and membership.user_id = new.requested_by
+           and membership.state = 'active'
+          where target_run.id = new.run_id
+            and thread.id = new.thread_id
+            and thread.environment_id = new.environment_id
+            and (
+              target_run.requested_by = new.requested_by
+              or membership.role = 'owner'
+            )
+        ) then
+          return new;
+        end if;
+        if new.thread_id is null
+           or new.environment_id is null
+           or not exists (
+             select 1 from public.threads thread
+             where thread.id = new.thread_id
+               and thread.environment_id = new.environment_id
+               and public.opensteer_user_can_execute_thread(thread.id, new.requested_by)
+           ) then
+          raise exception 'command requester cannot execute the thread environment';
+        end if;
+        return new;
+      end;
+      $function$;
     `.execute(database);
   },
 };

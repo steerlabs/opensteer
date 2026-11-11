@@ -806,6 +806,14 @@ describe("Opensteer's own steps", () => {
   const opensteer = (name: string, args: Record<string, unknown> = {}) =>
     toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
 
+  it.each([
+    ["thread_delegate", "delegate_task"],
+    ["thread_message", "thread_send"],
+    ["request_list", "pending_request"],
+  ])("keeps stored %s calls readable after the %s cutover", (old, current) => {
+    expect(opensteer(old, { title: "Review" })).toEqual(opensteer(current, { title: "Review" }));
+  });
+
   it.each(["opensteer", "opensteer.integrations", "mcp:opensteer_integrations"])(
     "keeps integration summaries and model-only details consistent in %s",
     (namespace) => {
@@ -863,7 +871,7 @@ describe("Opensteer's own steps", () => {
       label: "Renamed a task",
     });
     expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
-    expect(opensteer("thread_message").label).toBe("Sent a message");
+    expect(opensteer("thread_send").label).toBe("Sent a message");
   });
 });
 

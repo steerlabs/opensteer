@@ -46,6 +46,14 @@ type HostWorkspaceEventInput =
       "type" | "data" | "environmentId" | "runId" | "threadId" | "workspaceId"
     >
   | {
+      readonly data: import("@opensteer/core").EventData<"node.updated">;
+      readonly environmentId: EnvironmentId;
+      readonly runId: RunId;
+      readonly threadId: ThreadId;
+      readonly type: "node.updated";
+      readonly workspaceId: WorkspaceId;
+    }
+  | {
       readonly data: {
         readonly status: ThreadStatus;
         readonly title: string;

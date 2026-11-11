@@ -55,7 +55,7 @@ lease loss or disconnect can end the call without settling the Request. A live h
 parallel does not end the hold.
 
 Voice and background Runs receive pending immediately. Pending grants nothing; agents must not
-poll, repeat, approve or route around a Request. request_list shows status, not the answer. Outcomes
+poll, repeat, approve or route around a Request. pending_request shows status, not the answer. Outcomes
 returned in the held call need no later wake-up. Otherwise, eligible outcomes from one Run arrive
 together after its durable siblings settle. A newer Run can also release older settled outcomes,
 so an abandoned ask cannot hold up later work. Different Runs stay independent. Requests and
@@ -100,8 +100,11 @@ until acknowledged ([`execution-recovery.ts`](../packages/database/src/execution
 Restart steering makes a new attempt of the same Run; revocation stops the old attempt's tools, and
 its interrupt cannot kill the replacement. Native subagents are nodes of the current attempt and
 cannot outlive it. Their own messages, reasoning and tools are retained separately from the
-parent transcript and delivered only while a client watches that node; the parent carries the
-node's lifecycle and a short live progress line. Engine background work stays with its Run, since one engine process cannot
+parent transcript and delivered only while a client watches that node or an agent reads it with
+`thread_read`. The parent carries the node's lifecycle and a short live progress line. A node's
+Stop uses its engine's per-child control, never the parent's interrupt. Only someone allowed to
+stop its Run, or that Run's own agent, can ask, and both admission and dispatch fence the current
+attempt and authority. Engine confirmation ends the node; acceptance alone says Stopping. Engine background work stays with its Run, since one engine process cannot
 attribute later tool calls to another task. Warm engines are reused only after a successful Run
 released every turn, Request, grant and terminal, with all processes proven one contained tree;
 Windows cannot prove that and keeps none. Idle engines have no authority. Reuse needs the same
@@ -169,10 +172,31 @@ may use `person_message` or `person_show`; a task answers its assigner, which sh
 reports. A completed Run's last substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
 Assignment spans Runs, one open per worker, and its identity travels with inputs so a late approval
 cannot attach to a new task. Completion is derived transactionally, never declared by an agent;
-results return only if the requester can still read the worker Workspace, and an empty result wakes
-nobody unless a parent Assignment needs it. Cancellation follows Assignments, not Thread lineage.
-Pending Requests are scoped to who may answer; a question docked in another conversation is answered
-through its own Thread's authority. Done is shared and needs active membership plus the task's
+results return only if the requester can still read the worker Workspace. Siblings started by one
+Run, program occurrence or Watch observation share one waiting return under the same requester,
+reply target and Assignment authority. Each keeps its title and id; long results are shortened
+with a pointer to `task_status` or `thread_read`. Taking the message for a Run, steering it or
+offering it to an engine seals its contents; later results start another return. Rewriting a
+waiting return rechecks access to every included result. A settled result read by its assigner
+through `thread_wait`, `delegate_task` mode `wait` or `task_status` is delivery: the same locked
+transaction removes only that result from a waiting return, withdrawing the message when none
+remain. A return already claimed by a Run owns delivery instead. Only the originating Run or
+program source consumes a result; other readers consume nothing. A live assigner's wait holds
+automatic return in PostgreSQL until it reads the result or ends. Timeout, cancellation, lost
+authority and source settlement release the hold; Host startup releases waits lost on restart.
+Unconsumed results stay in the return outbox for reconciliation. An empty result wakes nobody unless a
+parent Assignment needs it, but a waiter still receives its settlement. Bounded waits subscribe
+before reading, pin their observed Run and recheck live authority on wakes and before return; a
+timeout cancels no work. Cancellation follows Assignments, not Thread lineage.
+An ordinary question is answerable by any agent whose live reach, access ceiling and membership
+allow writing to the conversation that asked it, except the asking Run itself. The direct assigner
+alone receives a Host-authored notice, unless its wait already delivers the question; program tasks
+and native engine subagents send no such notice. A person can always answer too, and the first answer
+wins. Native engine subagent questions, secret fields, approvals, access, sign-ins, credentials and
+other consent remain human-only. Agent answers
+name the answering Run and conversation, never the person. An accepted answer outlives the Run that
+gave it: delivery rechecks the person's membership, reach and access and the Request's revision, not
+that the answering Run is still live. Done is shared and needs active membership plus the task's
 creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
 open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
 revokes grants; Reopen starts nothing. A person's own message reopens a Done task they could reopen
@@ -183,15 +207,15 @@ through the same Done command re-checked under its locks
 creator reading it restarts that clock. A task moves in lists only when a person asks it for
 something (`askedAt`). Clients never link to Workspaces the reader cannot open.
 
-Giving a finished task more work is a separate `thread_delegate`, never an effect of
-`thread_message`: choosing delegate or join must be one atomic decision, and a retry after the
+Giving a finished task more work is a separate `delegate_task`, never an effect of
+`thread_send`: choosing delegate or join must be one atomic decision, and a retry after the
 Assignment finishes could start the work twice. For the same reason a message result carries no hint
 to resubmit, since an unassigned queue may already have started a Run.
 
 ## Reading another Thread's work
 
 The platform gives agents tools to get context and the agent decides what it needs. Nothing about a
-task's progress is injected or pushed; only its final result returns on its own.
+task's progress is injected or pushed; its final result and ordinary questions reach its assigner.
 
 The `activity` view of `thread_read` is summary-first. Events give one ordering, and message text
 comes from published rows, so waiting inputs never appear. Tool text is clipped and arguments are

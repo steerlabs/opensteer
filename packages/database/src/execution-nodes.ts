@@ -30,6 +30,7 @@ export async function startExecutionNode(
     .insertInto("executionNodes")
     .values({
       attemptId: input.attemptId,
+      stopSupported: node.stopSupported ?? false,
       endedAt: null,
       effort: node.effort ?? null,
       phaseIndex: node.phaseIndex ?? null,
@@ -57,6 +58,11 @@ export async function updateExecutionNode(
   update: EventData<"node.updated">,
 ): Promise<void> {
   await requireRunNode(transaction, runId, update.nodeId);
+  if (update.stopping !== undefined)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Runner event cannot say a subagent is stopping",
+    });
   if (update.parentNodeId !== undefined) {
     await requireRunNode(transaction, runId, update.parentNodeId);
     const node = await transaction
@@ -83,6 +89,7 @@ export async function updateExecutionNode(
     .updateTable("executionNodes")
     .set({
       ...(update.effort === undefined ? {} : { effort: update.effort }),
+      ...(update.stopSupported === undefined ? {} : { stopSupported: update.stopSupported }),
       ...(update.parentNodeId === undefined ? {} : { parentNodeId: update.parentNodeId }),
       ...(update.phaseIndex === undefined ? {} : { phaseIndex: update.phaseIndex }),
       ...(update.phases === undefined

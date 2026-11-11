@@ -14,7 +14,7 @@ A reminder is a one-shot schedule anchored to Chat, the Thread the person asked 
 
 ```ts
 export default async function ({ opensteer }) {
-  await opensteer.callTool("thread_message", {
+  await opensteer.callTool("thread_send", {
     delivery: "queue",
     message: `Reminder: buy groceries (set for 6:00 PM).`,
     threadId: "home",
@@ -34,7 +34,7 @@ For a recurring or conditional update, such as a morning summary or a price aler
 the same way and use the person's zone as a cron `timezone`. Queue to `home` only when there is
 something worth telling: compare with the last handled result in code and return without queueing
 when nothing changed, because each reply in Chat can notify the person. When the update needs
-judgment or real work, have the program call `thread_delegate` instead; the task's result returns
+judgment or real work, have the program call `delegate_task` instead; the task's result returns
 to the anchor, Chat, whose agent tells the person. Tell the task to end with no reply when
 nothing is worth passing on; an empty final reply returns nothing.
 

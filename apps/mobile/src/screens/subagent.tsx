@@ -34,6 +34,7 @@ import Animated from "react-native-reanimated";
 import { Markdown } from "../markdown/markdown.js";
 import { barHeight, color, headerFontScaleLimit, material, radius, space } from "../theme.js";
 import { WorkflowCard, dotProps, useClock, type AgentScope } from "../thread/agent-cards.js";
+import { SubagentStop } from "../thread/subagent-stop.js";
 import { samePlain } from "../thread/agent-select.js";
 import { barOverContentOptions } from "../thread/around-button.js";
 import { AnswerPill } from "../thread/answer-pill.js";
@@ -178,6 +179,7 @@ function AttachedSubagent(props: {
   const agentScope = useMemo<AgentScope>(
     () => ({
       live,
+      hostClient,
       onOpen: (card: AgentCard) => {
         if (card.opens === null) return;
         navigation.dispatch(
@@ -191,7 +193,7 @@ function AttachedSubagent(props: {
         );
       },
     }),
-    [deploymentId, live, navigation],
+    [deploymentId, hostClient, live, navigation],
   );
   const openStep = useCallback(
     (entryId: string) =>
@@ -205,6 +207,7 @@ function AttachedSubagent(props: {
     navigation.setOptions({
       ...barOverContentOptions(glass),
       headerTransparent: true,
+      headerRight: () => (card ? <SubagentStop card={card} hostClient={hostClient} /> : null),
       headerTitle: () =>
         card === null ? (
           <AppText maxFontSizeMultiplier={headerFontScaleLimit} numberOfLines={1} role="title">
@@ -215,7 +218,7 @@ function AttachedSubagent(props: {
         ),
       title: card?.title ?? "Subagent",
     });
-  }, [card, glass, live, navigation]);
+  }, [card, glass, hostClient, live, navigation]);
 
   const question = useHostSelector(
     hostClient,

@@ -381,6 +381,7 @@ const eventDataSchemas = {
    * is a new node with the same `sessionRef`.
    */
   "node.started": z.strictObject({
+    stopSupported: z.boolean().optional(),
     effort: executionNodeEffort.nullable().optional(),
     kind: ExecutionNodeKindSchema,
     model: executionNodeModel.nullable(),
@@ -397,6 +398,9 @@ const eventDataSchemas = {
   }),
   /** What the engine said about a subagent after it was first seen. */
   "node.updated": z.strictObject({
+    stopSupported: z.boolean().optional(),
+    /** Host-set: a stop was asked for and has not ended the subagent yet. */
+    stopping: z.boolean().optional(),
     effort: executionNodeEffort.optional(),
     model: executionNodeModel.optional(),
     nodeId: ExecutionNodeIdSchema,

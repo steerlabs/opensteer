@@ -182,6 +182,7 @@ export class DesktopHostTransport extends HostTransport {
           hasAccountConnectRoute: _hasAccountConnectRoute,
           hasVerifiedAccountRoute: _hasVerifiedAccountRoute,
           key: _key,
+          policy: _policy,
           source: _source,
           ...summary
         }) => summary,

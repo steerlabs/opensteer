@@ -2026,6 +2026,10 @@ export async function createHostServer(
           type: command.type,
         };
       }
+      case "node.stop": {
+        const result = await dependencies.commands.stopNode({ ...command, requestedBy: userId });
+        return { type: command.type, wasDuplicate: result.wasDuplicate };
+      }
       case "run.interrupt":
         return {
           ...(await threadService.interrupt({ kind: "person", userId }, command)),

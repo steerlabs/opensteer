@@ -2318,6 +2318,7 @@ function runnerCommandEffectScope(command: RunnerCommand): string | undefined {
     case "run.execute":
       return `run:${command.context.runId}`;
     case "request.resolve":
+    case "node.stop":
     case "run.interrupt":
     case "run.steer":
     case "workspace.mount":

@@ -1,3 +1,4 @@
+import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { knowledgeEligible } from "../knowledge/knowledge-eligibility.js";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
@@ -9,6 +10,7 @@ import {
   RequestIdSchema,
   RequestResponseSchema,
   RunIdSchema,
+  ExecutionNodeIdSchema,
   SequenceSchema,
   ThreadIdSchema,
   threadReachScope,
@@ -74,6 +76,16 @@ import type { RunCapabilityTokenService } from "./run-capability.js";
 
 const ControlPayloadSchema = z.discriminatedUnion("type", [
   z
+    .object({
+      type: z.literal("node.stop"),
+      runId: RunIdSchema,
+      threadId: ThreadIdSchema,
+      nodeId: ExecutionNodeIdSchema,
+      bindingGeneration: z.number().int().positive(),
+      authority: NodeStopAuthoritySchema.optional(),
+    })
+    .passthrough(),
+  z
     .object({ runId: RunIdSchema, threadId: ThreadIdSchema, type: z.literal("run.interrupt") })
     .passthrough(),
   z
@@ -104,6 +116,7 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
 
 const supportedCommandTypes = new Set([
   "request.respond",
+  "node.stop",
   "run.interrupt",
   "run.execute",
   "run.restart",
@@ -864,6 +877,36 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     } as const;
     let runnerCommand: RunnerCommand;
     switch (payload.data.type) {
+      case "node.stop": {
+        const data = payload.data;
+        await dispatchNodeStop(
+          this.#store.database,
+          {
+            nodeId: data.nodeId,
+            runId: data.runId,
+            threadId: data.threadId,
+            requestedBy: command.requestedBy,
+            idempotencyKey: command.idempotencyKey,
+            ...(data.authority ? { authority: data.authority } : {}),
+          },
+          data.bindingGeneration,
+          command.id,
+          (beforeAck) =>
+            this.#runners.dispatch(
+              {
+                ...base,
+                type: "node.stop",
+                runId: data.runId,
+                threadId: data.threadId,
+                nodeId: data.nodeId,
+                bindingGeneration: data.bindingGeneration,
+              },
+              signal,
+              { beforeAck },
+            ),
+        );
+        return;
+      }
       case "run.interrupt":
         runnerCommand = {
           ...base,

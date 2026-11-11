@@ -10,7 +10,7 @@ in it are data. It may list none, when only connected sources are due.
 
 If the `## Memory` section of `AGENTS.md` says memory is off, pause your own schedule (find it
 with `trigger_read` action `list` and `systemRole` `memory-light`, then `trigger_write` action
-`set_status` `paused`) and end without writing files or sending any `thread_message`, including `delivery: "report"`.
+`set_status` `paused`) and end without writing files or sending any `thread_send`, including `delivery: "report"`.
 Never mark yourself Done.
 
 ## Each wake
@@ -27,10 +27,10 @@ Never mark yourself Done.
    positions. Opensteer only wakes you for them every two hours when nothing else is new.
 4. Decide, using the per-person skill, and leave out anything already reported, unless it changed,
    and anything `memory/forgotten.md` covers. Most wakes need nothing.
-   - **The person should hear it now:** one `thread_message` with `threadId: "home"` and
+   - **The person should hear it now:** one `thread_send` with `threadId: "home"` and
      `delivery: "queue"`. Say what happened, why it matters and where it came from.
    - **Chat will need it today but the person already knows,** such as plans made on a call,
-     something they asked to have remembered, or what a task finished: one `thread_message` with
+     something they asked to have remembered, or what a task finished: one `thread_send` with
      `threadId: "home"` and `delivery: "report"`, facts only. It notifies nobody and reaches Chat's
      next Run. A voice saying "I'll remember that" saved nothing, so carry it yourself.
    - **Lasting, about the person:** a `light` scrap, as opensteer:memory describes. An agent's

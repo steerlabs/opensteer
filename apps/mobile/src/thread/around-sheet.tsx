@@ -68,6 +68,7 @@ import {
   type AroundSection,
 } from "./around-model.js";
 import { TaskStatus } from "./task-status.js";
+import { SubagentStop } from "./subagent-stop.js";
 import { AgentCardRow, AgentMemoryContext, WorkflowCard, type AgentScope } from "./agent-cards.js";
 import { aroundAgentsSelector, samePlain } from "./agent-select.js";
 
@@ -248,7 +249,7 @@ function Around(props: {
   );
   const rows = useMemo(
     () => ({
-      agents: { live, onOpen: openAgent },
+      agents: { live, onOpen: openAgent, hostClient },
       blocked,
       hostClient,
       openPlace,
@@ -716,12 +717,22 @@ const Page = memo(function Page(props: {
                 workflow={item.card.workflow}
               />
             ) : (
-              <AgentCardRow
-                card={item.card}
-                live={rows.agents.live}
-                onOpen={rows.agents.onOpen}
-                ended={item.earlier}
-              />
+              <SubagentStop card={item.card} hostClient={rows.hostClient}>
+                {(onStop) => (
+                  <AgentCardRow
+                    accessibilityActions={
+                      item.card.stop ? [{ name: "stop", label: "Stop subagent" }] : []
+                    }
+                    onAccessibilityAction={(name) => {
+                      if (name === "stop") onStop();
+                    }}
+                    card={item.card}
+                    live={rows.agents.live}
+                    onOpen={rows.agents.onOpen}
+                    ended={item.earlier}
+                  />
+                )}
+              </SubagentStop>
             )
           ) : item.kind === "task" ? (
             <TaskRow onOpen={rows.openThread} task={item.task} />

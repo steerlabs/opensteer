@@ -1,8 +1,8 @@
 import { defineAgentTool } from "../registry.js";
 import {
   AssignmentIdSchema,
+  ExecutionNodeIdSchema,
   DelegationModelChoiceSchema,
-  EnvironmentIdSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
   RunIdSchema,
@@ -19,6 +19,7 @@ import { z } from "zod";
 import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import {
   TaskSchema,
+  SubagentCancelOutputSchema,
   ThreadReadOutputSchema,
   ThreadListOutputSchema,
   ThreadMessageOutputSchema,
@@ -28,15 +29,19 @@ import {
   ThreadConfigureOutputSchema,
   ThreadQueueOutputSchema,
 } from "./outputs.js";
+export const threadWaitMaxMs = 100_000;
+const ThreadWaitTimeoutSchema = z.number().int().min(1).max(threadWaitMaxMs).default(50_000);
+
 export const thread_read = defineAgentTool({
   name: "thread_read",
   targetFields: ["threadId"],
   title: "Read a Thread",
   description:
-    "Read a reachable Thread; `home` means Chat, `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
+    "Read a reachable Thread or subagentId; `home` means Chat, `self` this Thread. `messages` (default): published messages, newest first. `activity`: also its tools, places, apps and Requests. A subagent returns its own messages and tools, without reasoning. `recentRuns` and `recentPlaces` always come back; a place is recent, never proof it is still open, and its `runId` goes to `person_show`. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `before=nextBefore`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Tool text is clipped unless you name its `itemId`; sign-in, card and `computer` calls show status only.",
   input: z
     .strictObject({
-      threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]),
+      threadId: z.union([ThreadIdSchema, z.literal("home"), z.literal("self")]).optional(),
+      subagentId: ExecutionNodeIdSchema.optional(),
       view: z.enum(["messages", "activity"]).default("messages"),
       limit: z.number().int().min(1).max(100).default(20).describe("Max items."),
       runLimit: z.number().int().min(1).max(50).default(10).describe("Max recent Runs."),
@@ -56,6 +61,10 @@ export const thread_read = defineAgentTool({
       ),
     })
     .superRefine((input, context) => {
+      if (!!input.threadId === !!input.subagentId)
+        context.addIssue({ code: "custom", message: "Name exactly one threadId or subagentId" });
+      if (input.subagentId && (input.query || input.aroundMessageId))
+        context.addIssue({ code: "custom", message: "query and aroundMessageId require threadId" });
       if (input.textOffset !== undefined && !input.itemId)
         context.addIssue({ code: "custom", message: "textOffset needs itemId" });
       if (input.itemId && (input.before || input.query || input.aroundMessageId))
@@ -91,20 +100,21 @@ export const thread_list = defineAgentTool({
   callers: ["run", "program", "connection"] as const,
 });
 
-export const thread_delegate = defineAgentTool({
-  name: "thread_delegate",
+export const delegate_task = defineAgentTool({
+  name: "delegate_task",
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task, or give a finished one more work with `threadId`, which keeps its engine and model. Omit `workspaceId` for this Workspace; connections must name it. It gets only `task` and `places`, no history. No secrets in `task`. Returns the task; keep `assignmentId` for `task_status` and `task_cancel`. Runs and programs get its result automatically: do other work or end your turn. A task that ends with no reply returns nothing, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: use `thread_wait`. Change active work with `thread_message`.",
+    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. The Host places it. Omit `workspaceId` for this Workspace; connections must name it. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
   input: z
     .strictObject({
-      environmentId: EnvironmentIdSchema.optional().describe("New task computer; omit to inherit."),
+      mode: z.enum(["async", "wait"]).default("async"),
+      timeoutMs: ThreadWaitTimeoutSchema,
       harnessInstanceId: HarnessInstanceIdSchema.optional().describe(
-        "New task engine account from environment_list.",
+        "New task engine account from orchestrator_capabilities.",
       ),
       model: DelegationModelChoiceSchema.optional().describe(
-        "New task model selectors/options from environment_list.",
+        "New task model selectors/options from orchestrator_capabilities.",
       ),
       observationId: z
         .string()
@@ -151,7 +161,7 @@ export const thread_delegate = defineAgentTool({
           message: "Choose workspaceId for a new task or threadId to reuse a task",
         });
       }
-      if (input.threadId && (input.environmentId || input.harnessInstanceId || input.model)) {
+      if (input.threadId && (input.harnessInstanceId || input.model)) {
         context.addIssue({
           code: "custom",
           message: "An existing Thread keeps its execution selection",
@@ -159,7 +169,7 @@ export const thread_delegate = defineAgentTool({
       }
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: TaskSchema,
+  output: TaskSchema.extend({ wait: ThreadWaitOutputSchema.optional() }),
   access: "write",
   callers: ["run", "program", "connection"] as const,
 });
@@ -168,7 +178,7 @@ export const task_status = defineAgentTool({
   name: "task_status",
   title: "Read a task",
   description:
-    "Read one task. In a Run or program, results of tasks you delegated reach you automatically, so do not poll. Check once when someone asks or you need its state now.",
+    "Read one task. A settled result read by its assigner counts as delivery and suppresses its automatic return. A result already claimed for a return arrives in the assigner’s inbox instead.",
   input: z.strictObject({ assignmentId: AssignmentIdSchema }),
   output: TaskSchema,
   access: "read",
@@ -179,22 +189,29 @@ export const task_cancel = defineAgentTool({
   name: "task_cancel",
   title: "Cancel a task",
   description:
-    "Stop one task for good: its Runs, its Requests and the tasks it delegated. A finished task keeps its result; its Thread stays reusable. Confirm the returned `status` before saying it stopped. To stop and resume later: `thread_interrupt`.",
+    "Name assignmentId for a task, or subagentId for one child of this Run. A subagent stop needs engine support and never stops the parent; stopping means requested, interrupted confirms it ended. Stop one task for good: its Runs, its Requests and the tasks it delegated. A finished task keeps its result; its Thread stays reusable. Confirm the returned `status` before saying it stopped. To stop and resume later: `thread_interrupt`.",
   input: z
-    .strictObject({ assignmentId: AssignmentIdSchema })
+    .strictObject({
+      assignmentId: AssignmentIdSchema.optional(),
+      subagentId: ExecutionNodeIdSchema.optional(),
+    })
+    .refine(
+      (input) => !!input.assignmentId !== !!input.subagentId,
+      "Name exactly one assignmentId or subagentId",
+    )
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
-  output: TaskSchema,
+  output: z.union([TaskSchema, SubagentCancelOutputSchema]),
   access: "write",
   callers: ["run"] as const,
   destructive: true,
 });
 
-export const thread_message = defineAgentTool({
-  name: "thread_message",
+export const thread_send = defineAgentTool({
+  name: "thread_send",
   targetFields: ["threadId"],
   title: "Message a Thread",
   description:
-    "Send to a Thread; `home` means Chat. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `thread_delegate` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
+    "Send to a Thread; `home` means Chat. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `delegate_task` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
   input: z
     .strictObject({
       delivery: z.enum(["report", "queue", "steer"]).describe("report, queue or steer."),
@@ -261,30 +278,34 @@ export const thread_wait = defineAgentTool({
   targetFields: ["threadId"],
   title: "Wait for a Thread",
   description:
-    "Wait for a Run to settle, a pending Request, or a message after `afterMessageId`, up to 100 seconds. A timeout stops nothing; call again. `hasMore`: wait again with `afterMessageId` set to the last item's `itemId`.",
-  input: z.strictObject({
-    threadId: ThreadIdSchema,
-    afterMessageId: MessageIdSchema.optional().describe(
-      "Return published messages after this ID; omit to wait for Run settlement.",
-    ),
-    timeoutMs: z
-      .number()
-      .int()
-      .min(1)
-      .max(100_000)
-      .default(50_000)
-      .describe("Maximum wait in milliseconds; timeout never cancels work."),
-  }),
+    "Wait on a conversation’s pinned Run or one assignmentId until settlement, a pending Request or timeout. afterMessageId observes new conversation messages. A settled task result read by its assigner suppresses automatic return. Cannot wait on yourself or a conversation you work for. Timeout stops nothing; hasMore resumes after the last itemId.",
+  input: z
+    .strictObject({
+      threadId: ThreadIdSchema.optional(),
+      assignmentId: AssignmentIdSchema.optional(),
+      afterMessageId: MessageIdSchema.optional().describe(
+        "Return published messages after this ID; omit to wait for Run settlement.",
+      ),
+      timeoutMs: ThreadWaitTimeoutSchema.describe(
+        "Maximum wait in milliseconds; timeout never cancels work.",
+      ),
+    })
+    .superRefine((input, context) => {
+      if (!!input.threadId === !!input.assignmentId)
+        context.addIssue({ code: "custom", message: "Name exactly one threadId or assignmentId" });
+      if (input.assignmentId && input.afterMessageId)
+        context.addIssue({ code: "custom", message: "afterMessageId requires threadId" });
+    }),
   output: ThreadWaitOutputSchema,
   access: "read",
-  callers: ["program", "connection"] as const,
+  callers: ["run", "program", "connection"] as const,
 });
 export const thread_configure = defineAgentTool({
   name: "thread_configure",
   targetFields: ["threadId"],
   title: "Configure a Thread",
   description:
-    "Read a Thread's engine and model, or set them with `harnessInstanceId` or `modelSelection`. Omit `threadId` for this Thread. Access mode stays. Values from `environment_list`; never substitute after a refusal. `continuation` confirms a known native-session switch.",
+    "Read a Thread's engine and model, or set them with `harnessInstanceId` or `modelSelection`. Omit `threadId` for this Thread. Access mode stays. Values from `orchestrator_capabilities`; never substitute after a refusal. `continuation` confirms a known native-session switch.",
   input: z
     .strictObject({
       threadId: ThreadIdSchema.optional(),

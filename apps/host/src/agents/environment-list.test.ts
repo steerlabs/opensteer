@@ -1,4 +1,4 @@
-import { EnvironmentListInputSchema } from "@opensteer/agent-tools/tools";
+import { OrchestratorCapabilitiesInputSchema } from "@opensteer/agent-tools/tools";
 import { createId, HarnessIdSchema } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { agentTools } from "@opensteer/agent-tools";
@@ -72,8 +72,23 @@ describe("environment model discovery", () => {
       canRun: () => true,
     });
     expect(discovery[0]).toMatchObject({ lightModel, models: [] });
-    const tool = agentTools.find(({ name }) => name === "environment_list")!;
-    expect(tool.output.parse({ environments: [], harnesses: discovery })).toMatchObject({
+    const tool = agentTools.find(({ name }) => name === "orchestrator_capabilities")!;
+    expect(
+      tool.output.parse({
+        harnesses: discovery,
+        accessCeiling: "full-access",
+        limits: {
+          maxDepth: 4,
+          remainingDepth: 4,
+          maxTasks: 32,
+          remainingTasks: 32,
+          maxAutonomousRuns: 64,
+          remainingAutonomousRuns: 64,
+          maxWaitMs: 100000,
+          taskDeadlineAt: null,
+        },
+      }),
+    ).toMatchObject({
       harnesses: [{ lightModel }],
     });
     expect((await delegationEngines(f.store, f.accounts))[0]).toMatchObject({ lightModel });
@@ -95,16 +110,16 @@ describe("environment model discovery", () => {
   it("normalizes blank search at both boundaries and shares unfiltered cursors", async () => {
     const tool = agentTools
       .filter((tool) => tool.callers.some((kind) => kind === "run"))
-      .find(({ name }) => name === "environment_list")!;
+      .find(({ name }) => name === "orchestrator_capabilities")!;
     const variants = [{}, { query: "" }, { query: " \t\n " }];
     const f = fixture();
     const id = f.accounts[0]!.id;
-    const discover = (input: ReturnType<typeof EnvironmentListInputSchema.parse>) =>
+    const discover = (input: ReturnType<typeof OrchestratorCapabilitiesInputSchema.parse>) =>
       delegationEngines(f.store, f.accounts, { input, connected: () => true, canRun: () => true });
     const firstPages: Awaited<ReturnType<typeof delegationEngines>> = [];
     for (const variant of variants) {
       const input = { ...variant, harnessInstanceId: id };
-      const parsed = EnvironmentListInputSchema.parse(input);
+      const parsed = OrchestratorCapabilitiesInputSchema.parse(input);
       expect(parsed.query).toBeUndefined();
       expect(tool.input.parse(input)).toEqual(parsed);
       firstPages.push((await discover(parsed))[0]!);
@@ -115,7 +130,7 @@ describe("environment model discovery", () => {
       expect(page.modelsOmitted).toBe(42);
       for (const variant of variants) {
         const input = { ...variant, harnessInstanceId: id, cursor: page.modelsNextCursor };
-        const parsed = EnvironmentListInputSchema.parse(input);
+        const parsed = OrchestratorCapabilitiesInputSchema.parse(input);
         expect(parsed.query).toBeUndefined();
         expect(tool.input.parse(input)).toEqual(parsed);
         const next = (await discover(parsed))[0]!;
@@ -124,12 +139,12 @@ describe("environment model discovery", () => {
       }
     }
     for (const query of [null, 42, {}, "x".repeat(257)]) {
-      expect(EnvironmentListInputSchema.safeParse({ query }).success).toBe(false);
+      expect(OrchestratorCapabilitiesInputSchema.safeParse({ query }).success).toBe(false);
       expect(tool.input.safeParse({ query }).success).toBe(false);
     }
     for (const variant of variants) {
       expect(
-        EnvironmentListInputSchema.safeParse({
+        OrchestratorCapabilitiesInputSchema.safeParse({
           ...variant,
           cursor: firstPages[0]!.modelsNextCursor,
         }).success,

@@ -1,4 +1,3 @@
-import { agentPhonePackageName } from "@opensteer/protocol";
 import { escapeArg, type Adb } from "@yume-chan/adb";
 import { PackageManager } from "@yume-chan/android-bin";
 import { ConcatBufferStream, ReadableStream, TransformStream } from "@yume-chan/stream-extra";
@@ -58,7 +57,6 @@ export function agentPhoneAdb(adb: Adb): AgentPhoneAdb {
               controller.close();
             },
           }),
-          { installerPackageName: agentPhonePackageName },
         );
         return { ok: true };
       } catch (error) {

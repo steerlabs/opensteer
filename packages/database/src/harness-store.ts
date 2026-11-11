@@ -329,6 +329,7 @@ export async function listAgentHarnessInstancesForUser(
   userId: UserId,
   options: {
     readonly includeDisabled?: boolean;
+    readonly environmentId?: EnvironmentId;
     readonly afterId?: HarnessInstanceId;
     readonly id?: HarnessInstanceId;
     readonly limit?: number;
@@ -359,6 +360,8 @@ export async function listAgentHarnessInstancesForUser(
     .orderBy("harnessInstances.id", "asc")
     .limit(boundedLimit(options.limit ?? 65, 1_000));
   if (!options.includeDisabled) query = query.where("harnessInstances.enabled", "=", true);
+  if (options.environmentId)
+    query = query.where("harnessInstances.environmentId", "=", options.environmentId);
   if (options.afterId) query = query.where("harnessInstances.id", ">", options.afterId);
   if (options.id) query = query.where("harnessInstances.id", "=", options.id);
   return query.execute();

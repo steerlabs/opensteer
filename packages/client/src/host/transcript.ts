@@ -304,6 +304,8 @@ function foldTranscriptOwnEvent(
         model: prior?.model ?? event.data.model,
         effort: prior?.effort ?? event.data.effort ?? null,
         nodeKind: event.data.kind,
+        stopSupported: prior?.stopSupported ?? event.data.stopSupported ?? false,
+        stopping: prior?.stopping ?? false,
         sequence: prior?.sequence ?? event.sequence,
         phaseIndex: prior?.phaseIndex ?? event.data.phaseIndex ?? null,
         phases: prior?.phases ?? [],
@@ -324,6 +326,10 @@ function foldTranscriptOwnEvent(
       if (!prior) return [...entries];
       return upsertEntry(entries, {
         ...prior,
+        ...(event.data.stopSupported === undefined
+          ? {}
+          : { stopSupported: event.data.stopSupported }),
+        ...(event.data.stopping === undefined ? {} : { stopping: event.data.stopping }),
         ...(event.data.model === undefined ? {} : { model: event.data.model }),
         ...(event.data.effort === undefined ? {} : { effort: event.data.effort }),
         ...(event.data.parentNodeId === undefined || prior.parentNodeId !== null
@@ -1203,6 +1209,8 @@ function requestOutcome(request: Request): string {
   if (request.status === "pending") return "Pending";
   if (request.status === "cancelled") return `Cancelled · ${request.cancellationReason}`;
   if (request.status === "withdrawn") return "Withdrawn";
+  if (request.settlementProvenance && "kind" in request.settlementProvenance)
+    return requestSettlementLabel(request)!;
   if (request.kind === "browser.sign-in") return browserSignInReceipt(request);
   if (request.kind === "browser.password-sign-in") return passwordSignInReceipt(request);
   if (request.kind === "computer.app.access") {

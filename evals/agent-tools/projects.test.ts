@@ -10,8 +10,8 @@ const cases = parseCases(
 
 describe("Project decision corpus", () => {
   it.each([
-    ["work-personal-separation-creates-project", "project_create", "thread_delegate"],
-    ["one-off-task-does-not-create-project", "thread_delegate", "project_create"],
+    ["work-personal-separation-creates-project", "project_create", "delegate_task"],
+    ["one-off-task-does-not-create-project", "delegate_task", "project_create"],
   ])("requires the intended boundary in %s", (id, required, wrong) => {
     const testCase = cases.find((value) => value.id === id)!;
     const expected = testCase.expect.calls.find((value) => value.tool === required)!;
@@ -19,7 +19,7 @@ describe("Project decision corpus", () => {
       .filter((tool) => tool.callers.some((kind) => kind === "run"))
       .find((value) => value.name === required)!;
     const args =
-      required === "thread_delegate"
+      required === "delegate_task"
         ? { workspaceId: "wsp_00000000-0000-4000-8000-000000000001", task: "Compare vendors" }
         : expected.args;
     expect(tool.input.safeParse(args).success).toBe(true);
