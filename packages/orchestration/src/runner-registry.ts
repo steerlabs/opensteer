@@ -635,6 +635,9 @@ export class RunnerRegistry {
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
         serverTime: new Date(now).toISOString(),
+        ...(isProjectDeploymentAuthority(identity.deploymentAuthority ?? null)
+          ? { projectStorage: true as const }
+          : {}),
         type: "host.welcome",
       });
     } catch (error) {
@@ -1624,6 +1627,27 @@ export class RunnerRegistry {
         retryable: true,
       });
     }
+    if (
+      request.type === "host.workspace.project.provision" &&
+      (!isProjectDeploymentAuthority(connection.identity.deploymentAuthority ?? null) ||
+        !connection.identity.capabilities.includes("project-authority-v1") ||
+        connection.identity.allowedModules.length !== 2 ||
+        !connection.identity.allowedModules.includes("agents") ||
+        !connection.identity.allowedModules.includes("shell"))
+    )
+      throw new OpensteerError({
+        code: "workspace_unavailable",
+        reason: "runner-update-required",
+        message: "Team Project storage requires an admitted team computer",
+      });
+    if (
+      request.type === "host.workspace.local.provision" &&
+      isProjectDeploymentAuthority(connection.identity.deploymentAuthority ?? null)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team storage refuses legacy provisioning",
+      });
     const authority = connection.identity.modules.agents?.localStorage?.storageAuthorityId;
     if (authority === undefined) {
       throw new OpensteerError({

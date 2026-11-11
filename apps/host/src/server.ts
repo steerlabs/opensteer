@@ -445,6 +445,7 @@ export async function createHostServer(
   dependencies: HostServerDependencies,
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
+  const storageAuthority = await dependencies.store.securityEffectAuthority();
   const threadService = new ThreadService(dependencies);
   const publishWorkspaceEvent =
     dependencies.publishWorkspaceEvent ??
@@ -2840,6 +2841,7 @@ export async function createHostServer(
           notifyMachinesChanged(dependencies.realtime, "machine.command");
         }
       },
+      storageAuthority,
     );
   });
 
@@ -3191,6 +3193,7 @@ function attachRunnerSocket(
     readonly connectionGeneration: number;
     readonly reason: "agent-phone-outdated" | "runner-outdated";
   }) => Promise<void>,
+  storageAuthority: { readonly kind: "personal" | "server"; readonly model: 1 | 2 } | null,
 ): void {
   const peer = jsonPeer<HostToRunnerMessage>(socket, `runner-peer:${randomUUID()}`);
   // A Run can stream many small events at once, for example a command's output
@@ -3208,7 +3211,12 @@ function attachRunnerSocket(
   });
   /** The proven identity behind this socket, once it has proven one. */
   let runner: RunnerIdentity | undefined;
-  const challenge = authenticator.issueChallenge();
+  const challenge = {
+    ...authenticator.issueChallenge(),
+    ...(storageAuthority?.kind === "server" && storageAuthority.model === 2
+      ? { projectStorage: true as const }
+      : {}),
+  };
   const challengeTimeout = setTimeout(
     () => {
       if (!runner && socket.readyState === socket.OPEN) {

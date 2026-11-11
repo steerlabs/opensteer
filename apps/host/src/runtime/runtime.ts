@@ -1158,7 +1158,10 @@ export async function createHostRuntime(
     };
     // Every Deployment can hold the directories of machines lent to it, whatever
     // its own default backing is.
-    const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({ runners: runnerStorage });
+    const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({
+      runners: runnerStorage,
+      database,
+    });
     const localWorkspaceFiles = new RunnerLocalWorkspaceFilesDriver({ runners: runnerStorage });
     const workspaces = new WorkspaceService({
       providerAuthorizations: (owner) => integrations.providerAuthorizations(owner),
