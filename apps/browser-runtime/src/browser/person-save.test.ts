@@ -50,7 +50,7 @@ function recordingAuthority() {
   const cancelled: string[] = [];
   const authority: BrowserLoginAuthority = {
     probe: async () => "no-login",
-    authorize: async () => ({ kind: "ended", outcome: { kind: "cancelled" } }),
+    authorize: async () => ({ kind: "ended", outcome: { kind: "cancelled", reason: "declined" } }),
     fill: async () => "unavailable",
     end: async () => undefined,
     personFillAccounts: async () => [],
