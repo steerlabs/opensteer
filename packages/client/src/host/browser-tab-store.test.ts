@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { BrowserTabStore } from "./browser-tab-store.js";
 import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import { BrowserSessionIdSchema } from "@opensteer/core";
 const group = { id: "g", createdAt: "2026-01-01", sessionId: "s" } as BrowserGroupRow;
 const tab = (id: string): BrowserTabRow => ({ id, order: Number(id), title: id }) as BrowserTabRow;
 const commit = (store: BrowserTabStore) => {
@@ -18,12 +19,53 @@ describe("BrowserTabStore", () => {
       groups: { rows: [group], complete: false },
       tabs: [{ groupId: "g", rows: [tab("3")], complete: false }],
     });
-    expect(store.tabs("g")).toEqual({ ids: ["3"], syncing: true });
+    expect(store.tabs("g")).toEqual({ ids: ["3"], syncing: true, whole: false });
     store.applyTabs("g", { op: "begin", generation: "t" });
     store.applyTabs("g", { op: "rows", rows: [tab("1")] });
     expect(store.tabs("g").ids).toEqual(["3"]);
     store.applyTabs("g", { op: "end", revision: 0, count: 1, meta: {} });
-    expect(store.tabs("g")).toEqual({ ids: ["1"], syncing: false });
+    expect(store.tabs("g")).toEqual({ ids: ["1"], syncing: false, whole: true });
+  });
+  it("makes a complete seed whole, and keeps it whole through interrupted replacement", () => {
+    const store = new BrowserTabStore();
+    const row = vi.fn();
+    store.subscribeTab("g", "3", row);
+    store.seed({
+      groups: { rows: [group], complete: true },
+      tabs: [{ groupId: "g", rows: [tab("3")], complete: true }],
+    });
+    expect(store.groups().whole).toBe(true);
+    expect(store.tabs("g")).toEqual({ ids: ["3"], syncing: true, whole: true });
+    expect(row).toHaveBeenCalledTimes(1);
+    store.applyTabs("g", { op: "begin", generation: "interrupted" });
+    store.applyTabs("g", { op: "rows", rows: [tab("4")] });
+    store.disconnected();
+    store.applyTabs("g", { op: "end", revision: 0, count: 1, meta: {} });
+    expect(store.tabs("g")).toEqual({ ids: ["3"], syncing: true, whole: true });
+    store.applyTabs("g", { op: "begin", generation: "replacement" });
+    store.applyTabs("g", { op: "rows", rows: [tab("5")] });
+    store.applyTabs("g", { op: "end", revision: 0, count: 1, meta: {} });
+    expect(store.tabs("g")).toEqual({ ids: ["5"], syncing: false, whole: true });
+  });
+  it("indexes session replacement and clears it when access to the group ends", () => {
+    const replacement = BrowserSessionIdSchema.parse("bsn_11111111-1111-4111-8111-111111111111");
+    const store = new BrowserTabStore();
+    commit(store);
+    expect(store.groupForSession("s")).toBe("g");
+    const observed: (string | undefined)[] = [];
+    store.subscribeGroup("g", () => observed.push(store.groupForSession(replacement)));
+    store.applyGroups({
+      op: "change",
+      generation: "g",
+      base: 0,
+      revision: 1,
+      update: [{ id: "g", sessionId: replacement }],
+    });
+    expect(store.groupForSession("s")).toBeUndefined();
+    expect(store.groupForSession(replacement)).toBe("g");
+    expect(observed).toEqual(["g"]);
+    store.applyGroups({ op: "change", generation: "g", base: 1, revision: 2, remove: ["g"] });
+    expect(store.groupForSession(replacement)).toBeUndefined();
   });
   it("notifies just the changed row and preserves order and siblings across resync", () => {
     const store = new BrowserTabStore();

@@ -279,11 +279,36 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
     return this.#state;
   }
   seed(rows: readonly Row[], meta: Meta): void {
-    this.#rows = new Map(rows.map((row) => [row.id, row]));
+    const changed = this.#replace(rows);
     this.#meta = meta;
     this.#state = "empty";
     this.#staged = null;
     this.#generation = null;
+    for (const listener of this.#listeners) listener(changed);
+  }
+  stale(): void {
+    this.#state = "resyncing";
+    this.#staged = null;
+  }
+  #replace(rows: Iterable<Row>): KeyedStreamChanges {
+    const changed: KeyedStreamChanges = { added: [], updated: [], removed: [], structural: false };
+    const next = new Map<string, Row>();
+    for (const row of rows) {
+      const before = this.#rows.get(row.id);
+      if (before && equal(before, row)) next.set(row.id, before);
+      else {
+        next.set(row.id, row);
+        if (!before) changed.added.push(row.id);
+        else {
+          changed.updated.push(row.id);
+          changed.structural ||= Reflect.get(before, "order") !== Reflect.get(row, "order");
+        }
+      }
+    }
+    for (const id of this.#rows.keys()) if (!next.has(id)) changed.removed.push(id);
+    changed.structural ||= changed.added.length > 0 || changed.removed.length > 0;
+    this.#rows = next;
+    return changed;
   }
   onChange(listener: (changed: KeyedStreamChanges) => void): () => void {
     this.#listeners.add(listener);
@@ -311,7 +336,7 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
       }
       return "staged";
     }
-    const changed: KeyedStreamChanges = { added: [], updated: [], removed: [], structural: false };
+    let changed: KeyedStreamChanges = { added: [], updated: [], removed: [], structural: false };
     const put = (row: Row) => {
       const before = this.#rows.get(row.id);
       if (before && equal(before, row)) return before;
@@ -326,11 +351,7 @@ export class KeyedStreamReceiver<Row extends { id: string }, Meta extends object
     };
     if (message.op === "end") {
       if (!this.#staged || message.count !== this.#staged.size) return this.#gap();
-      const next = new Map<string, Row>();
-      for (const row of this.#staged.values()) next.set(row.id, put(row));
-      for (const id of this.#rows.keys()) if (!next.has(id)) changed.removed.push(id);
-      changed.structural ||= changed.removed.length > 0;
-      this.#rows = next;
+      changed = this.#replace(this.#staged.values());
       this.#staged = null;
       this.#meta = message.meta;
     } else {

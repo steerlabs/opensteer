@@ -6,9 +6,9 @@ import {
 } from "@opensteer/protocol/keyed-stream";
 
 type Listener = () => void;
-type List = { readonly ids: readonly string[]; readonly syncing: boolean };
+type List = { readonly ids: readonly string[]; readonly syncing: boolean; readonly whole: boolean };
 type Meta = Record<string, never>;
-const empty: List = { ids: [], syncing: true };
+const empty: List = { ids: [], syncing: true, whole: false };
 class Rows<Row extends { id: string }> {
   readonly receiver = new KeyedStreamReceiver<Row, Meta>();
   list: List = empty;
@@ -18,29 +18,34 @@ class Rows<Row extends { id: string }> {
   readonly #changed: Listener;
   readonly #removed: ((id: string) => void) | undefined;
   #changes: KeyedStreamChanges | null = null;
+  #whole = false;
   constructor(
     order: (a: Row, b: Row) => number,
     changed: Listener,
     removed?: (id: string) => void,
+    received?: (change: KeyedStreamChanges) => void,
   ) {
     this.#order = order;
     this.#changed = changed;
     this.#removed = removed;
     this.receiver.onChange((change) => {
       this.#changes = change;
+      received?.(change);
     });
   }
   #flush() {
     const change = this.#changes;
     this.#changes = null;
     const syncing = this.receiver.state !== "committed";
-    const listChanged = change?.structural || syncing !== this.list.syncing;
+    const listChanged =
+      change?.structural || syncing !== this.list.syncing || this.#whole !== this.list.whole;
     if (listChanged)
       this.list = {
         ids: change?.structural
           ? [...this.receiver.rows.values()].sort(this.#order).map((row) => row.id)
           : this.list.ids,
         syncing,
+        whole: this.#whole,
       };
     if (change) {
       for (const id of change.removed) this.#removed?.(id);
@@ -56,18 +61,17 @@ class Rows<Row extends { id: string }> {
   }
   apply(message: KeyedStreamMessage<Row, Meta>) {
     const result = this.receiver.apply(message);
+    if (result === "applied") this.#whole = true;
     this.#flush();
     return result;
   }
-  seed(rows: readonly Row[]) {
-    this.receiver.apply({ op: "begin", generation: "seed" });
-    if (rows.length) this.receiver.apply({ op: "rows", rows: [...rows] });
-    this.receiver.apply({ op: "end", revision: 0, count: rows.length, meta: {} });
-    this.receiver.seed([...this.receiver.rows.values()], {});
+  seed(rows: readonly Row[], complete = false) {
+    this.#whole = complete;
+    this.receiver.seed(rows, {});
     this.#flush();
   }
   disconnected() {
-    this.receiver.seed([...this.receiver.rows.values()], {});
+    this.receiver.stale();
     this.#flush();
   }
 }
@@ -93,10 +97,24 @@ function rowSubscribe<Row extends { id: string }>(rows: Rows<Row>, id: string, l
 export class BrowserTabStore {
   readonly #listeners = new Set<Listener>();
   readonly #tabs = new Map<string, Rows<BrowserTabRow>>();
+  readonly #sessionGroups = new Map<string, string>();
+  readonly #groupSessions = new Map<string, string>();
   readonly #groups = new Rows<BrowserGroupRow>(
     (a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
     () => this.#changed(),
     (id) => this.#drop(id),
+    (change) => {
+      for (const id of [...change.removed, ...change.updated]) {
+        const sessionId = this.#groupSessions.get(id);
+        if (sessionId) this.#sessionGroups.delete(sessionId);
+        this.#groupSessions.delete(id);
+      }
+      for (const id of [...change.added, ...change.updated]) {
+        const sessionId = this.group(id)!.sessionId;
+        this.#sessionGroups.set(sessionId, id);
+        this.#groupSessions.set(id, sessionId);
+      }
+    },
   );
   readonly resync: (groupId?: string) => void;
   constructor(resync: (groupId?: string) => void = () => {}) {
@@ -152,23 +170,16 @@ export class BrowserTabStore {
     return id ? this.tabs(id).ids.map((tabId) => this.tab(id, tabId)!) : [];
   }
   groupForSession(sessionId: string) {
-    return this.groups().ids.find((id) => this.group(id)?.sessionId === sessionId);
-  }
-  findTab(tabId: string) {
-    for (const id of this.groups().ids) {
-      const row = this.tab(id, tabId);
-      if (row) return { group: this.group(id)!, tab: row };
-    }
-    return undefined;
+    return this.#sessionGroups.get(sessionId);
   }
   seed(prefix: {
     groups: { rows: readonly BrowserGroupRow[]; complete: boolean };
     tabs: readonly { groupId: string; rows: readonly BrowserTabRow[]; complete: boolean }[];
   }) {
     if (this.#groups.receiver.state !== "empty" || this.#groups.receiver.rows.size) return;
-    this.#groups.seed(prefix.groups.rows);
+    this.#groups.seed(prefix.groups.rows, prefix.groups.complete);
     for (const group of prefix.tabs)
-      if (this.group(group.groupId)) this.#ensure(group.groupId).seed(group.rows);
+      if (this.group(group.groupId)) this.#ensure(group.groupId).seed(group.rows, group.complete);
   }
   applyGroups(message: KeyedStreamMessage<BrowserGroupRow, Meta>) {
     if (this.#groups.apply(message) === "resync") this.resync();
