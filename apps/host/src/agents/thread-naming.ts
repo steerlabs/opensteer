@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "@opensteer/database";
 import { randomUUID } from "node:crypto";
 import {
   automaticModelWants,
@@ -110,7 +111,7 @@ export class ThreadNaming {
     const { candidates: resolved } = await resolveAutomaticModels(
       { store, runners },
       {
-        userId: input.requestedBy,
+        userId: requireHumanRequester(input.requestedBy),
         wants: (config) => automaticModelWants(config, "light"),
         original: { ...input, fromPastRun: true },
         canRun: backgroundTextSupport(runners),
@@ -138,7 +139,7 @@ export class ThreadNaming {
         const [current, harness, config] = await Promise.all([
           store.getThreadNamingInput(threadId),
           store.getHarnessInstance(candidate.harnessInstanceId),
-          store.getAutomaticModelConfig(input.requestedBy),
+          store.getAutomaticModelConfig(requireHumanRequester(input.requestedBy)),
         ]);
         if (
           !current ||
@@ -151,7 +152,10 @@ export class ThreadNaming {
           harness.removedAt ||
           harness.runtimeRevision !== candidate.harnessRevision ||
           config.excludedAccounts.includes(candidate.harnessInstanceId) ||
-          !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
+          !(await store.environmentIsAvailableToUser(
+            candidate.environmentId,
+            requireHumanRequester(input.requestedBy),
+          ))
         )
           return { failure: "account-changed" as const };
         deadline ??= Date.now() + 120_000;
@@ -217,5 +221,46 @@ export class ThreadNaming {
       return;
     }
     unnamed();
+  }
+}
+
+/** Local title projection never invokes a person's automatic model. */
+export class ProjectThreadNaming {
+  readonly options: {
+    readonly work: import("@opensteer/database").ProjectWorkStore;
+    readonly publish: (events: readonly AgentEvent[]) => void;
+    readonly onError: (error: unknown) => void;
+  };
+  readonly pending = new Map<ThreadId, Promise<void>>();
+  private stopped = false;
+  constructor(options: ProjectThreadNaming["options"]) {
+    this.options = options;
+  }
+  request(threadId: ThreadId): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const prior = this.pending.get(threadId);
+    if (prior) return prior;
+    const job = this.options.work
+      .nameProjectThread(threadId)
+      .then(this.options.publish)
+      .catch(this.options.onError)
+      .finally(() => this.pending.delete(threadId));
+    this.pending.set(threadId, job);
+    return job;
+  }
+  async reconcile(): Promise<void> {
+    let after: ThreadId | undefined;
+    while (!this.stopped) {
+      const rows = await this.options.work.projectNamingCandidates(100, after);
+      for (const row of rows) if (!this.stopped) await this.request(row.id);
+      if (rows.length < 100) return;
+      const last = rows.at(-1);
+      if (!last) return;
+      after = last.id;
+    }
+  }
+  async stop(): Promise<void> {
+    this.stopped = true;
+    await Promise.all(this.pending.values());
   }
 }

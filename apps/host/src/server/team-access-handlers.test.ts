@@ -72,6 +72,22 @@ const commands = [
     validFor: "1d",
   },
   { ...base, type: "team.invitation.revoke", invitationId: uuid },
+  {
+    ...base,
+    type: "team.invitation.create",
+    id: uuid,
+    selector: "s".repeat(24),
+    tokenHash: "a".repeat(64),
+    intendedEmail: "guest@example.test",
+    memberKind: "guest",
+    validFor: "1d",
+  },
+  {
+    ...base,
+    type: "team.member.change",
+    userId,
+    change: { kind: "set-kind", value: "guest" },
+  },
 ];
 
 describe("dormant team Host boundary", () => {

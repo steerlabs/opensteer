@@ -3,8 +3,8 @@ import { storedProjectDeployment } from "./deployment-execution-authority.js";
 import { OpensteerError, sameStringSet } from "@opensteer/core";
 import type { RunnerDescriptor, RunnerModules, RunnerModuleName } from "@opensteer/protocol";
 
-/** Storage control is carried by agents' environment/localStorage, not a sixth module. */
-export const teamComputerModules = ["agents", "shell"] as const;
+import { teamComputerModules } from "@opensteer/protocol";
+export { teamComputerModules } from "@opensteer/protocol";
 const capabilities = new Set([
   "project-authority-v1",
   "assignments-v1",
@@ -88,6 +88,16 @@ export function teamComputerHasExecutionGrant(input: {
     !input.device.app &&
     teamComputerGrantIsCurrent(input.allowedModules)
   );
+}
+
+export function teamComputerExecutionSql(alias: "r"): string {
+  const modules = JSON.stringify(teamComputerModules);
+  return `(${alias}.owner_kind = 'deployment' and ${alias}.owner_user_id is null
+    and ${alias}.allowed_modules @> '${modules}'::jsonb
+    and jsonb_array_length(${alias}.allowed_modules) = ${teamComputerModules.length}
+    and ${alias}.device->>'platform' = 'linux'
+    and coalesce(${alias}.device->>'form', '') <> 'phone'
+    and ${alias}.device->>'app' is null)`;
 }
 
 export function teamComputerInventoryCondition(table: "runners" | "runnerEnrollments") {

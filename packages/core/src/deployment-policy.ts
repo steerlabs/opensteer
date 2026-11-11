@@ -36,6 +36,9 @@ export interface DeploymentPolicy {
     readonly localBrowserProfileInventory: boolean;
     readonly managedBrowserEnrollment: boolean;
   };
+  readonly team: {
+    readonly guests: boolean;
+  };
   readonly integrationAccountBinding: "personal-link" | "identity-provider";
   readonly runnerEnrollment:
     | {
@@ -113,6 +116,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
         localBrowserProfileInventory: true,
         managedBrowserEnrollment: false,
       },
+      team: { guests: false },
       integrationAccountBinding: "personal-link",
       runnerEnrollment: {
         mode: "reach-only",
@@ -160,6 +164,7 @@ export function deploymentPolicy(shape: DeploymentShape): DeploymentPolicy {
         localBrowserProfileInventory: false,
         managedBrowserEnrollment: true,
       },
+      team: { guests: false },
       integrationAccountBinding: "identity-provider",
       runnerEnrollment: { mode: "unrestricted" },
       localRunnerDefaultModules: ["agents", "browser", "shell"],

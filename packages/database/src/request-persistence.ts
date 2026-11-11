@@ -1,4 +1,4 @@
-import { RequestSchema, type EnvironmentId, type Request } from "@opensteer/core";
+import { OpensteerError, RequestSchema, type EnvironmentId, type Request } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
@@ -49,6 +49,18 @@ export async function requestOriginEnvironment(
 }
 
 export function requestFromRow(row: RequestRow): Request {
+  if (row.cancellationReason === "no-eligible-manager")
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "no-eligible-manager",
+      message: "A no-eligible-manager cancellation cannot be mapped to this Request API version",
+    });
+  if (row.requestedBy === null)
+    throw new OpensteerError({
+      code: "conflict",
+      reason: "unattended-project-request-unsupported",
+      message: "Unattended Project Requests require the next Request API version",
+    });
   return RequestSchema.parse({
     callId: row.callId,
     cancellationReason: row.cancellationReason,

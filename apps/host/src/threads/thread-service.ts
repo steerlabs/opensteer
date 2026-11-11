@@ -26,7 +26,7 @@ import {
   storedModelSelection,
 } from "../agents/model-selection.js";
 import type { HostApiCommand } from "@opensteer/protocol";
-import type { AgentCaller } from "../mcp/agent-caller.js";
+import type { HumanAgentCaller as AgentCaller } from "../mcp/agent-caller.js";
 import { threadCallerAuthority, messageSource } from "../mcp/operations.js";
 import { write as assertThreadAccess } from "../mcp/tool-access.js";
 import type { PlaceContextService } from "../computer-use/place-context-service.js";

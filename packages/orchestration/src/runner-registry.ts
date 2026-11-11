@@ -18,7 +18,7 @@ import type {
   WorkspaceId,
   UserId,
 } from "@opensteer/core";
-import { createId, OpensteerError, placeInputFailure } from "@opensteer/core";
+import { createId, OpensteerError, placeInputFailure, sameStringSet } from "@opensteer/core";
 import {
   type HostAppRequest,
   type HostRunFileRequest,
@@ -29,6 +29,7 @@ import {
   computerAppMaxTimeoutMs,
   CorrelationIdSchema,
   RunnerCommandSchema,
+  teamComputerModules,
   sameRunnerConnectionFence,
   type HostToRunnerMessage,
   type RunnerAuxiliaryFrameFence,
@@ -1631,9 +1632,7 @@ export class RunnerRegistry {
       request.type === "host.workspace.project.provision" &&
       (!isProjectDeploymentAuthority(connection.identity.deploymentAuthority ?? null) ||
         !connection.identity.capabilities.includes("project-authority-v1") ||
-        connection.identity.allowedModules.length !== 2 ||
-        !connection.identity.allowedModules.includes("agents") ||
-        !connection.identity.allowedModules.includes("shell"))
+        !sameStringSet(connection.identity.allowedModules, teamComputerModules))
     )
       throw new OpensteerError({
         code: "workspace_unavailable",

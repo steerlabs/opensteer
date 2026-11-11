@@ -1371,6 +1371,9 @@ export const RunnerModulesSchema = z
   });
 export type RunnerModules = z.infer<typeof RunnerModulesSchema>;
 
+/** Team storage control travels through agents.localStorage. */
+export const teamComputerModules = ["agents", "shell"] as const;
+
 export function advertisedRunnerModules(modules: RunnerModules): readonly RunnerModuleName[] {
   return RunnerModuleNameSchema.options.filter((name) => modules[name] !== undefined);
 }

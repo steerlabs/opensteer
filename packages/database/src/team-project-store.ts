@@ -22,6 +22,7 @@ import { teamComputerHasExecutionGrant } from "./team-computer.js";
 export interface ProjectHomeChatPort {
   ensureHomeChat(input: {
     readonly workspaceId: WorkspaceId;
+    /** The acting person, never an execution identity or a stored-creator fallback. */
     readonly createdBy: UserId;
     readonly settingsRevision: number | null;
     readonly inheritsMain: false;
@@ -145,6 +146,24 @@ export interface ProjectComputerRevocationPort {
   ): Promise<{ cancel(): Promise<void> }>;
 }
 
+export async function teamComputerReplacementCan(database: Kysely<DatabaseSchema>) {
+  const project = await database
+    .selectFrom("workspaces")
+    .select("id")
+    .where("kind", "=", "project")
+    .where("status", "!=", "deleted")
+    .limit(1)
+    .executeTakeFirst();
+  return project
+    ? { allowed: false as const, reason: "projects-prevent-replacement" as const }
+    : { allowed: true as const };
+}
+
+export async function requireTeamComputerReplacementAvailable(database: Kysely<DatabaseSchema>) {
+  const can = await teamComputerReplacementCan(database);
+  if (!can.allowed) teamRefusal(can.reason);
+}
+
 export async function prepareTeamComputerReplacement(
   database: Kysely<DatabaseSchema>,
   actor: AuthenticatedHuman,
@@ -167,6 +186,7 @@ export async function prepareTeamComputerReplacement(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     await requireTeamHuman(transaction, actor, true);
+    await requireTeamComputerReplacementAvailable(transaction);
     const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
     const receipt = await transaction
       .selectFrom("securityAudit")
@@ -253,7 +273,26 @@ export async function prepareTeamComputerReplacement(
         .where("desired", "=", "active")
         .limit(1)
         .executeTakeFirst();
-      if (work || pending || watch)
+      const queuedInput = await transaction
+        .selectFrom("threadInputs")
+        .innerJoin("threads", "threads.id", "threadInputs.threadId")
+        .innerJoin("executionEnvironments as e", "e.id", "threads.environmentId")
+        .select("threadInputs.messageId")
+        .where("e.runnerId", "=", input.expectedComputerId)
+        .where("threadInputs.state", "in", ["pending", "claimed", "unknown"])
+        .limit(1)
+        .executeTakeFirst();
+      const continuation = await transaction
+        .selectFrom("requestContinuations")
+        .innerJoin("requests", "requests.id", "requestContinuations.requestId")
+        .innerJoin("runs", "runs.id", "requests.originatingRunId")
+        .innerJoin("executionEnvironments as e", "e.id", "runs.environmentId")
+        .select("requestContinuations.requestId")
+        .where("e.runnerId", "=", input.expectedComputerId)
+        .where("requestContinuations.status", "in", ["waiting", "queued"])
+        .limit(1)
+        .executeTakeFirst();
+      if (work || pending || watch || queuedInput || continuation)
         throw new OpensteerError({
           code: "workspace_unavailable",
           reason: "team-not-implemented",

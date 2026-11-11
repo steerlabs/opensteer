@@ -1,4 +1,5 @@
 import {
+  teamComputerModules,
   ProjectHostToRunnerMessageSchema,
   ProjectRunnerToHostMessageSchema,
 } from "@opensteer/protocol";
@@ -676,11 +677,7 @@ export class ReconnectingHostConnection {
     if (!!response.projectStorage !== !!first.projectStorage)
       throw new Error("Host changed Project storage authority during admission");
     if (response.projectStorage) {
-      if (
-        response.allowedModules.length !== 2 ||
-        !response.allowedModules.includes("agents") ||
-        !response.allowedModules.includes("shell")
-      )
+      if (!sameStringSet(response.allowedModules, teamComputerModules))
         throw new Error("Team Project storage requires the team-computer grant");
       local?.service.admitProjectStorage(true);
     }

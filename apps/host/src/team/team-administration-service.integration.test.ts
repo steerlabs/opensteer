@@ -1,3 +1,4 @@
+import { prepareProjectAdmission } from "@opensteer/database/test-support/project";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
@@ -5,10 +6,16 @@ import { createId } from "@opensteer/core";
 import {
   OpensteerStore,
   mutateAccess,
+  mutateTeamInvitation,
   TeamAccessReadStore,
   type ProjectHomeChatPort,
+  ProjectWorkStore,
 } from "@opensteer/database";
-import { describeStore, type StoreFixture } from "@opensteer/database/test-support/store";
+import {
+  describeStore,
+  testModelSelection,
+  type StoreFixture,
+} from "@opensteer/database/test-support/store";
 import { IdentityService } from "@opensteer/identity";
 import {
   TeamSummarySchema,
@@ -22,13 +29,23 @@ import { HostAuthenticator } from "../identity/auth.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import { hostServerTestDependencies } from "../server/host-server-test-harness.js";
 import { injectRpcRequest } from "../server/test-host-api-request.js";
+import { handleTeamCommand } from "../server/team-access-handlers.js";
 import { testHostApiContext } from "../server/test-host-api-context.js";
 import { TeamAdministrationService } from "./team-administration-service.js";
 
 const origin = "http://127.0.0.1:4310";
-async function setup(fixture: StoreFixture) {
-  const run = await fixture.createRunFixture("team-host", null, "project");
-  const database = fixture.database;
+async function setup(fixture: StoreFixture, queries?: string[]) {
+  const projectWork = await prepareProjectAdmission(fixture);
+  const run = projectWork.project;
+  const database = fixture.database.withPlugin({
+    transformQuery(args) {
+      queries?.push(fixture.database.getExecutor().compileQuery(args.node, args.queryId).sql);
+      return args.node;
+    },
+    async transformResult(args) {
+      return args.result;
+    },
+  });
   const createIdentity = () =>
     new IdentityService(database, {
       deployment: { kind: "self-hosted", name: null },
@@ -54,7 +71,6 @@ async function setup(fixture: StoreFixture) {
   const admin = await signup("administrator");
   const manager = await signup("manager");
   const pending = await signup("pending");
-  await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
   await database
     .updateTable("runnerEnrollments")
     .set({
@@ -158,6 +174,7 @@ async function setup(fixture: StoreFixture) {
   });
   return {
     ...run,
+    projectWork,
     database,
     app,
     service,
@@ -171,6 +188,245 @@ async function setup(fixture: StoreFixture) {
 }
 
 describeStore("team administration Host boundary", (it) => {
+  it("refuses guest commands at dispatch and service entry before reading a target or writing", async ({
+    storeFixture,
+  }) => {
+    const queries: string[] = [];
+    const f = await setup(storeFixture, queries);
+    try {
+      const commands = [
+        {
+          type: "team.invitation.create" as const,
+          id: randomUUID(),
+          selector: randomBytes(24).toString("base64url"),
+          tokenHash: "a".repeat(64),
+          intendedEmail: "guest@team.test",
+          memberKind: "guest" as const,
+          trustedComputerConfirmed: true as const,
+          validFor: "1d" as const,
+          expectedRevision: 2,
+          idempotencyKey: "guest-invitation",
+        },
+        {
+          type: "team.member.change" as const,
+          userId: createId("user"),
+          change: { kind: "set-kind" as const, value: "guest" as const },
+          expectedRevision: 2,
+          idempotencyKey: "guest-member",
+        },
+      ];
+      for (const command of commands) {
+        for (const dispatch of [true, false]) {
+          queries.length = 0;
+          const called = vi.spyOn(f.service, "command");
+          await expect(
+            dispatch
+              ? handleTeamCommand(command, f.context(f.admin), f.service)
+              : f.service.command(command, f.context(f.admin)),
+          ).rejects.toMatchObject({ code: "forbidden", reason: "guests-unavailable" });
+          expect(called).toHaveBeenCalledTimes(dispatch ? 0 : 1);
+          called.mockRestore();
+          expect(queries).toHaveLength(1);
+          expect(queries[0]).toContain('from "deployments"');
+        }
+      }
+      await expect(
+        f.service.read(
+          "team.member.preview",
+          { userId: createId("user"), change: { kind: "set-kind", value: "guest" } },
+          f.context(f.admin),
+        ),
+      ).rejects.toMatchObject({ reason: "guests-unavailable" });
+      expect(
+        await f.service.read(
+          "team.member.get",
+          { userId: f.manager.session.user.id },
+          f.context(f.admin),
+        ),
+      ).toMatchObject({ can: { setKind: { allowed: false, reason: "guests-unavailable" } } });
+      expect(await f.service.read("team.summary.get", {}, f.context(f.admin))).toMatchObject({
+        can: { invite: { allowed: true } },
+      });
+    } finally {
+      await f.app.close();
+    }
+  });
+
+  it("keeps fixture guests unable to create Projects but available for promotion or removal", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    try {
+      const seeded = await mutateAccess(f.database, {
+        actor: { userId: f.admin.session.user.id, sessionId: f.admin.session.id },
+        expectedRevision: 2,
+        commandIdentity: createId("command"),
+        changes: [{ kind: "member", userId: f.manager.session.user.id, memberKind: "guest" }],
+      });
+      const guest = await f.identity.signInPassword(
+        { email: f.manager.session.user.email, password: "a correct test password" },
+        new Headers({ origin }),
+      );
+      await expect(
+        f.service.command(
+          {
+            type: "team.project.create",
+            name: "Forbidden guest Project",
+            color: "blue",
+            expectedRevision: seeded.revision,
+            idempotencyKey: "fixture-guest-project",
+          },
+          { ...f.context(f.manager), session: guest.data.session },
+        ),
+      ).rejects.toMatchObject({ reason: "team-admin-required" });
+      expect(
+        await f.service.read(
+          "team.member.get",
+          { userId: f.manager.session.user.id },
+          f.context(f.admin),
+        ),
+      ).toMatchObject({
+        kind: "guest",
+        can: { setKind: { allowed: true }, setState: { allowed: true } },
+      });
+      const promoted = await f.service.command(
+        {
+          type: "team.member.change",
+          userId: f.manager.session.user.id,
+          change: { kind: "set-kind", value: "full" },
+          expectedRevision: seeded.revision,
+          idempotencyKey: "promote-fixture-guest",
+        },
+        f.context(f.admin),
+      );
+      expect(promoted).toMatchObject({ member: { kind: "full" } });
+      const reseeded = await mutateAccess(f.database, {
+        actor: { userId: f.admin.session.user.id, sessionId: f.admin.session.id },
+        expectedRevision: promoted.accessRevision,
+        commandIdentity: createId("command"),
+        changes: [{ kind: "member", userId: f.manager.session.user.id, memberKind: "guest" }],
+      });
+      await expect(
+        f.service.command(
+          {
+            type: "team.member.change",
+            userId: f.manager.session.user.id,
+            change: { kind: "set-state", value: "removed" },
+            expectedRevision: reseeded.revision,
+            idempotencyKey: "remove-fixture-guest",
+          },
+          f.context(f.admin),
+        ),
+      ).resolves.toMatchObject({ member: { kind: "guest", state: "removed" } });
+    } finally {
+      await f.app.close();
+    }
+  });
+  it("attributes a post-crash settings retry to the acting manager after the Project creator left", async ({
+    storeFixture,
+  }) => {
+    const f = await setup(storeFixture);
+    try {
+      await f.database
+        .deleteFrom("projectRuntimeSettings")
+        .where("workspaceId", "=", f.workspace.id)
+        .execute();
+      const instance = f.projectWork.prepared.harnessInstance;
+      await f.database
+        .updateTable("users")
+        .set({ memberState: "removed" })
+        .where("id", "=", f.userId)
+        .execute();
+      const work = new ProjectWorkStore(f.database, {
+        runnerIsConnected: () => true,
+        runnerIsAttached: () => true,
+      });
+      const homeChat: ProjectHomeChatPort = {
+        ensureHomeChat: async (input) => {
+          const { events: _events, ...state } = await work.ensureHomeChat(input);
+          return state;
+        },
+      };
+      let failAfterSettingsCommit = true;
+      const service = new TeamAdministrationService({
+        database: f.database,
+        identity: f.identity,
+        teamName: "Team",
+        runnerIsConnected: () => true,
+        invalidate: () => undefined,
+        homeChat: {
+          ensureHomeChat: async (input) => {
+            if (failAfterSettingsCommit) throw new Error("Crash after settings commit");
+            return homeChat.ensureHomeChat(input);
+          },
+        },
+      });
+      const command = {
+        type: "team.project.settings.set" as const,
+        workspaceId: f.workspace.id,
+        expectedRevision: 2,
+        expectedSettingsRevision: null,
+        idempotencyKey: "configure-after-creator-left",
+        settings: {
+          harnessInstanceId: instance.id,
+          modelSelection: testModelSelection,
+          accessMode: "full-access" as const,
+          instructions: "Project only",
+          timeZone: "UTC",
+        },
+      };
+      await expect(service.command(command, f.context(f.manager))).rejects.toThrow(
+        "Crash after settings commit",
+      );
+      expect((await storeFixture.store.getWorkspace(f.workspace.id))?.homeThreadId).toBeNull();
+      expect(
+        await f.database
+          .selectFrom("projectRuntimeSettings")
+          .select("revision")
+          .where("workspaceId", "=", f.workspace.id)
+          .executeTakeFirst(),
+      ).toMatchObject({ revision: "1" });
+      expect(
+        await service.read(
+          "team.project.settings.get",
+          { workspaceId: f.workspace.id },
+          f.context(f.manager),
+        ),
+      ).toMatchObject({ runtime: { state: "unavailable", reason: "not-configured" } });
+      failAfterSettingsCommit = false;
+      await service.command(command, f.context(f.manager));
+      const project = await storeFixture.store.getWorkspace(f.workspace.id);
+      if (!project?.homeThreadId)
+        throw new Error("The settings retry did not create the home chat");
+      expect(
+        await f.database
+          .selectFrom("threads")
+          .select([
+            "createdBy",
+            "environmentId",
+            "harnessInstanceId",
+            "modelSelection",
+            "accessMode",
+            "inheritsMain",
+          ])
+          .where("id", "=", project.homeThreadId)
+          .executeTakeFirst(),
+      ).toMatchObject({
+        createdBy: f.manager.session.user.id,
+        environmentId: f.environmentId,
+        harnessInstanceId: instance.id,
+        modelSelection: testModelSelection,
+        accessMode: "full-access",
+        inheritsMain: false,
+      });
+      expect(
+        await storeFixture.store.findMainWorkspaceForOwner(f.manager.session.user.id),
+      ).toBeUndefined();
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("deletes failed-provisioning Projects through the writer, authorizes before target reads and repeats as a no-op", async ({
     storeFixture,
   }) => {
@@ -293,10 +549,71 @@ describeStore("team administration Host boundary", (it) => {
     }
   });
 
+  it("refuses replacement while Projects exist before teardown or enrollment", async ({
+    storeFixture,
+  }) => {
+    const queries: string[] = [];
+    const f = await setup(storeFixture, queries);
+    const revokeComputer = vi.fn(async () => undefined);
+    const enrollComputer = vi.fn(async () => ({
+      enrollmentId: `ren_${randomUUID()}`,
+      token: "not-issued",
+      expiresAt: new Date().toISOString(),
+    }));
+    const service = new TeamAdministrationService({
+      database: f.database,
+      identity: f.identity,
+      teamName: "Test team",
+      runnerIsConnected: () => true,
+      invalidate: () => undefined,
+      revokeComputer,
+      enrollComputer,
+    });
+    try {
+      expect(await service.read("team.computer.get", {}, f.context(f.admin))).toMatchObject({
+        can: { replace: { allowed: false, reason: "projects-prevent-replacement" } },
+      });
+      for (const boundary of [service, f.service]) {
+        queries.length = 0;
+        await expect(
+          boundary.command(
+            {
+              type: "team.computer.replace",
+              expectedRevision: 2,
+              expectedComputerId: f.runnerId,
+              idempotencyKey: "blocked-replacement",
+            },
+            f.context(f.admin),
+          ),
+        ).rejects.toMatchObject({ reason: "projects-prevent-replacement" });
+        expect(
+          queries.some((query) => /(?:from|update) "(?:runners|runner_enrollments)"/u.test(query)),
+        ).toBe(false);
+        expect(queries.some((query) => /^(?:insert|update|delete) /u.test(query))).toBe(false);
+      }
+      expect(revokeComputer).not.toHaveBeenCalled();
+      expect(enrollComputer).not.toHaveBeenCalled();
+      expect(
+        await f.database
+          .selectFrom("runners")
+          .select("revokedAt")
+          .where("id", "=", f.runnerId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ revokedAt: null });
+    } finally {
+      await f.app.close();
+    }
+  });
+
   it("does not issue an enrollment if the administrator's session ends during old-computer teardown", async ({
     storeFixture,
   }) => {
     const f = await setup(storeFixture);
+    await f.database
+      .updateTable("workspaces")
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where("kind", "=", "project")
+      .execute();
     const issuer = new RunnerAuthenticator({
       store: new OpensteerStore(f.database),
       issuancePrivateKey: generateKeyPairSync("ed25519").privateKey,
@@ -360,6 +677,11 @@ describeStore("team administration Host boundary", (it) => {
     storeFixture,
   }) => {
     const f = await setup(storeFixture);
+    await f.database
+      .updateTable("workspaces")
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where("kind", "=", "project")
+      .execute();
     const issued: number[] = [];
     const enrollmentIssuer = new RunnerAuthenticator({
       store: new OpensteerStore(f.database),
@@ -406,6 +728,18 @@ describeStore("team administration Host boundary", (it) => {
       if (result.type !== "team.computer.replace") throw new Error("Wrong replacement result");
       expect(result.accessRevision).toBe(3);
       expect(result.runnerImage).toBe(`registry.team.test/opensteer/runner:sha-${"b".repeat(40)}`);
+      await expect(
+        service.command(
+          {
+            type: "team.project.create",
+            expectedRevision: result.accessRevision,
+            idempotencyKey: "create-after-replacement",
+            name: "Cannot use the old computer",
+            color: "blue",
+          },
+          f.context(f.admin),
+        ),
+      ).rejects.toMatchObject({ reason: "team-object-unavailable" });
       const replay = await service.command(command, f.context(f.admin));
       if (replay.type !== "team.computer.replace") throw new Error("Wrong replacement replay");
       expect(replay.enrollmentId).toBe(result.enrollmentId);
@@ -521,25 +855,39 @@ describeStore("team administration Host boundary", (it) => {
     }
   });
 
-  it("refuses the real service on both model-1 kinds before a target lookup or read transaction", async ({
-    storeFixture,
-  }) => {
-    const run = await storeFixture.createRunFixture("team-dormancy", null, "project");
-    const database = storeFixture.database;
-    const service = new TeamAdministrationService({
-      database,
-      identity: {} as IdentityService,
-      teamName: "Dormant",
-      runnerIsConnected: () => false,
-      invalidate: () => undefined,
-    });
-    const transactions = vi.spyOn(database, "transaction");
-    const context = testHostApiContext(run.userId);
-    for (const kind of ["server", "personal"] as const) {
-      await database
-        .updateTable("deployments")
-        .set({ deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" } })
-        .execute();
+  for (const kind of ["server", "personal"] as const)
+    it(`refuses the real service on model-1 ${kind} before a target lookup or read transaction`, async ({
+      storeFixture,
+    }) => {
+      const run = await storeFixture.createRunFixture(
+        "team-dormancy",
+        {
+          deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
+          workspaceBacking: "local-directory",
+        },
+        "project",
+      );
+      const queries: string[] = [];
+      const database = storeFixture.database.withPlugin({
+        transformQuery(args) {
+          queries.push(
+            storeFixture.database.getExecutor().compileQuery(args.node, args.queryId).sql,
+          );
+          return args.node;
+        },
+        async transformResult(args) {
+          return args.result;
+        },
+      });
+      const service = new TeamAdministrationService({
+        database,
+        identity: {} as IdentityService,
+        teamName: "Dormant",
+        runnerIsConnected: () => false,
+        invalidate: () => undefined,
+      });
+      const transactions = vi.spyOn(database, "transaction");
+      const context = testHostApiContext(run.userId);
       await expect(
         service.read("team.member.get", { userId: createId("user") }, context),
       ).rejects.toMatchObject({ reason: "team-unavailable" });
@@ -570,9 +918,41 @@ describeStore("team administration Host boundary", (it) => {
           context,
         ),
       ).rejects.toMatchObject({ reason: "team-unavailable" });
+      const guestCommands = [
+        {
+          type: "team.member.change" as const,
+          userId: createId("user"),
+          change: { kind: "set-kind" as const, value: "guest" as const },
+          expectedRevision: 1,
+          idempotencyKey: "legacy-guest-member",
+        },
+        {
+          type: "team.invitation.create" as const,
+          id: randomUUID(),
+          selector: randomBytes(24).toString("base64url"),
+          tokenHash: "a".repeat(64),
+          intendedEmail: "guest@team.test",
+          memberKind: "guest" as const,
+          trustedComputerConfirmed: true as const,
+          validFor: "1d" as const,
+          expectedRevision: 1,
+          idempotencyKey: "legacy-guest-invitation",
+        },
+      ];
+      for (const command of guestCommands) {
+        for (const dispatch of [true, false]) {
+          queries.length = 0;
+          await expect(
+            dispatch
+              ? handleTeamCommand(command, context, service)
+              : service.command(command, context),
+          ).rejects.toMatchObject({ code: "forbidden", reason: "team-unavailable" });
+          expect(queries).toHaveLength(1);
+          expect(queries[0]).toContain('from "deployments"');
+        }
+      }
       expect(transactions).not.toHaveBeenCalled();
-    }
-  });
+    });
 
   it("separates metadata and content, scopes paging and summary revisions, and refuses agent credentials at both boundaries", async ({
     storeFixture,
@@ -974,7 +1354,11 @@ describeStore("team administration Host boundary", (it) => {
         memberKind: "guest" as const,
         idempotencyKey: "reinvite-person",
       };
-      await service.command(replacement, context(admin));
+      await mutateTeamInvitation(
+        database,
+        { userId: admin.session.user.id, sessionId: admin.session.id },
+        replacement,
+      );
       const replacementProof = await identity.exchangeTeamInvitation(
         replacement.selector,
         verifier,

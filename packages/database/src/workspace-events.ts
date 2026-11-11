@@ -1,3 +1,4 @@
+import { assertProjectAuthority } from "./deployment-execution-authority.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { assertRequestWorkspacesLocked } from "./request-workspace-locks.js";
 import { markThreadStatePending } from "./thread-status.js";
@@ -12,8 +13,6 @@ import {
   type Message,
   type ProviderContinuationIdentity,
   type Request,
-  type RequestCancellationReason,
-  type RequestId,
   type RunId,
   type Thread,
   type ThreadAccessMode,
@@ -211,7 +210,7 @@ type HostWorkspaceEventInput =
       readonly workspaceId: WorkspaceId;
     }
   | {
-      readonly data: { readonly reason: RequestCancellationReason; readonly requestId: RequestId };
+      readonly data: Extract<AgentEvent, { readonly type: "request.cancelled" }>["data"];
       readonly environmentId: EnvironmentId;
       /** A Trigger-originated Request has no Run to attribute its cancellation to. */
       readonly runId: RunId | null;
@@ -224,6 +223,8 @@ export async function appendHostWorkspaceEvent(
   transaction: Transaction<DatabaseSchema>,
   input: HostWorkspaceEventInput,
 ): Promise<AgentEvent> {
+  if (input.type === "request.cancelled" && input.data.reason === "no-eligible-manager")
+    await assertProjectAuthority(transaction);
   assertRequestWorkspacesLocked(transaction, [input.workspaceId]);
   const createdAt = new Date();
   const eventId = createId("event");

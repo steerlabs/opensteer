@@ -7,7 +7,12 @@ import type {
   ThreadMutationAdmission,
   ThreadCallerAuthority,
 } from "@opensteer/database";
-import { callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
+import {
+  callerThread,
+  type AgentCaller,
+  type HumanAgentCaller,
+  type RunCaller,
+} from "./agent-caller.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { assertCallerReach, write as assertThreadAccess } from "./tool-access.js";
 
@@ -26,7 +31,7 @@ export function requireRun(caller: AgentCaller): RunCaller {
     throw new OpensteerError({ code: "forbidden", message: "This tool requires a live Run" });
   return caller;
 }
-export function callerContext(caller: AgentCaller) {
+export function callerContext(caller: HumanAgentCaller) {
   const thread = callerThread(caller);
   return {
     requestedBy: caller.userId,
@@ -52,7 +57,7 @@ const actions = {
 } as const;
 type AdmittedTool = keyof typeof actions;
 export function runAdmission(
-  caller: AgentCaller,
+  caller: HumanAgentCaller,
   tool: AdmittedTool,
   input: unknown,
   requestId: string,
@@ -77,7 +82,7 @@ export function runAdmission(
   };
 }
 export function mutationAdmission(
-  caller: AgentCaller,
+  caller: HumanAgentCaller,
   tool: "delegate_task" | "thread_send",
   input: { readonly observationId?: string | undefined },
   requestId: string,
@@ -119,7 +124,7 @@ export function mutationAdmission(
 export function idempotencyKey(caller: AgentCaller, requestId: string, action: string): string {
   return `${caller.key}:${requestId}:${action}`;
 }
-export function delegationOrigin(caller: AgentCaller, observationId: string) {
+export function delegationOrigin(caller: HumanAgentCaller, observationId: string) {
   const parentThreadId = callerThread(caller).id;
   if (caller.kind === "run")
     return { kind: "run" as const, parentRunId: caller.claims.runId, parentThreadId };
@@ -140,7 +145,7 @@ export function delegationOrigin(caller: AgentCaller, observationId: string) {
         triggerId: p.triggerId,
       };
 }
-export function messageSource(caller: AgentCaller, observationId: string) {
+export function messageSource(caller: HumanAgentCaller, observationId: string) {
   if (caller.kind === "connection")
     return { kind: "connection" as const, connectionId: caller.connectionId };
   const origin = delegationOrigin(caller, observationId);
@@ -169,7 +174,7 @@ export function toolOperationKey(caller: AgentCaller, input: object, fallback: s
     : fallback;
 }
 
-export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {
+export function threadCallerAuthority(caller: HumanAgentCaller): ThreadCallerAuthority {
   const base = { userId: caller.userId, accessMode: caller.accessMode, reach: caller.reach };
   if (caller.kind === "connection")
     return { ...base, kind: "connection", connectionId: caller.connectionId };

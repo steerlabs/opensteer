@@ -1,3 +1,8 @@
+import {
+  createProjectIdentityFixture,
+  insertProjectRunFixture,
+  prepareProjectAdmission,
+} from "./project-work.test-support.js";
 import { randomUUID } from "node:crypto";
 import {
   createId,
@@ -14,7 +19,6 @@ import { migrateToLatest, migrationProvider } from "./migrations.js";
 import { expect } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { lockWorkspaceRow, requireActiveWorkspaceMembership } from "./store-primitives.js";
-import { testModelSelection } from "./store.integration.test-support.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -35,16 +39,17 @@ async function legacyMembershipLifecycle(
   phase: string,
 ) {
   const statements: string[] = [];
-  const observed = database.withPlugin({
-    transformQuery(args) {
-      statements.push(database.getExecutor().compileQuery(args.node, args.queryId).sql);
-      return args.node;
-    },
-    async transformResult(args) {
-      return args.result;
-    },
-  });
-  const store = new OpensteerStore(observed);
+  const observe = (connection: Kysely<DatabaseSchema>) =>
+    connection.withPlugin({
+      transformQuery(args) {
+        statements.push(connection.getExecutor().compileQuery(args.node, args.queryId).sql);
+        return args.node;
+      },
+      async transformResult(args) {
+        return args.result;
+      },
+    });
+  let store = new OpensteerStore(observe(database));
   const memberId = await new OpensteerStore(database).createUser(`Legacy ${phase}`);
   const invite = async (suffix: string) => {
     const selector = `${phase}-${suffix}`;
@@ -123,28 +128,69 @@ async function legacyMembershipLifecycle(
   ]);
   const serverStatements = [...statements];
   statements.length = 0;
-  await database
-    .updateTable("deployments")
-    .set({
-      deploymentShape: sql`'{"kind":"personal","defaultWorkspaceBacking":"local-directory"}'::jsonb`,
-    })
-    .execute();
-  await expect(invite("personal")).rejects.toMatchObject({ code: "forbidden" });
-  await expect(
-    store.changeWorkspaceMembership({
-      actorId: ownerId,
-      targetUserId: ownerId,
-      workspaceId,
-      state: "revoked",
-    }),
-  ).rejects.toThrow(/owner/i);
+  const clone = await cloneTestDatabase("host");
+  const owned = await ownTestDatabaseProducer(clone.url, async () => {
+    const database = createDatabase({ connectionString: clone.url });
+    return { database, close: () => database.destroy() };
+  });
+  try {
+    const personal = owned.database;
+    if (phase === "previous") {
+      await sql`drop schema public cascade; create schema public`.execute(personal);
+      const migrations = await migrationProvider().getMigrations();
+      const result = await new Migrator({
+        db: personal,
+        provider: { getMigrations: async () => migrations },
+      }).migrateTo("0168_devices");
+      if (result.error) throw result.error;
+    }
+    const deployment = await database
+      .selectFrom("deployments")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    const people = await database.selectFrom("users").selectAll().execute();
+    const environments = await database.selectFrom("executionEnvironments").selectAll().execute();
+    const workspace = await database
+      .selectFrom("workspaces")
+      .selectAll()
+      .where("id", "=", workspaceId)
+      .executeTakeFirstOrThrow();
+    const memberships = await database
+      .selectFrom("workspaceMemberships")
+      .selectAll()
+      .where("workspaceId", "=", workspaceId)
+      .execute();
+    await personal
+      .insertInto("deployments")
+      .values({
+        ...deployment,
+        canonicalOrigin: "http://127.0.0.1:4310",
+        deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      })
+      .execute();
+    await personal.insertInto("users").values(people).execute();
+    if (environments.length)
+      await personal.insertInto("executionEnvironments").values(environments).execute();
+    await personal.transaction().execute(async (transaction) => {
+      const { ownerEnvironmentId: _derived, ...storedWorkspace } = workspace;
+      await transaction.insertInto("workspaces").values(storedWorkspace).execute();
+      await transaction.insertInto("workspaceMemberships").values(memberships).execute();
+    });
+    store = new OpensteerStore(observe(personal));
+    await expect(invite("personal")).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      store.changeWorkspaceMembership({
+        actorId: ownerId,
+        targetUserId: ownerId,
+        workspaceId,
+        state: "revoked",
+      }),
+    ).rejects.toThrow(/owner/i);
+  } finally {
+    await owned.close();
+    await clone.drop();
+  }
   const personalStatements = [...statements];
-  await database
-    .updateTable("deployments")
-    .set({
-      deploymentShape: sql`'{"kind":"server","defaultWorkspaceBacking":"local-directory"}'::jsonb`,
-    })
-    .execute();
   return { serverStatements, personalStatements, effects: projectedEffects };
 }
 
@@ -201,8 +247,7 @@ async function setup(
     workspace: { id: WorkspaceId };
   },
 ) {
-  const run = existing ?? (await seedProject(fixture));
-  await fixture.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+  const run = existing ?? (await createProjectIdentityFixture(fixture, "access"));
   await fixture.database
     .updateTable("users")
     .set({ instanceRole: "administrator", admittedAt: new Date() })
@@ -410,13 +455,53 @@ describeStore("dormant Project access", (it) => {
       const cutoverObjects = new Map(
         (await legacyObjects(database)).rows.map((row) => [row.name, row.definition]),
       );
+      const extendedEventChecks = new Set([
+        "constraint:agent_control_requests:agent_control_requests_action_check",
+        "constraint:agent_control_requests:agent_control_requests_action_class_check",
+      ]);
       const extendedPrincipalChecks = new Set([
         "constraint:principals:principals_kind_check",
         "constraint:principals:principals_kind_shape_check",
       ]);
+      const replaced = new Set([
+        "function:opensteer_enforce_command_execution_authority()",
+        "function:opensteer_enforce_run_execution_authority()",
+        "function:opensteer_enforce_thread_execution_authority()",
+        "function:opensteer_enforce_thread_membership_and_parent()",
+        "trigger:commands:commands_execution_authority",
+        "trigger:runs:runs_execution_authority",
+        "trigger:threads:threads_execution_authority",
+        "trigger:threads:threads_membership_and_parent",
+      ]);
+      const nullable = new Set([
+        "constraint:requests:requests_requested_by_not_null",
+        "constraint:commands:commands_requested_by_not_null",
+        "constraint:runs:runs_requested_by_not_null",
+        "constraint:runs:runs_membership_generation_not_null",
+        "constraint:thread_inputs:thread_inputs_requested_by_not_null",
+        "constraint:thread_inputs:thread_inputs_membership_generation_not_null",
+      ]);
       for (const original of beforeCutover) {
         const definition = cutoverObjects.get(original.name);
-        if (extendedPrincipalChecks.has(original.name))
+        if (extendedEventChecks.has(original.name))
+          expect(definition, original.name).toBe(
+            original.definition
+              .replace(/\s+NOT VALID$/u, "")
+              .replace("'thread.read'::text", "'thread.read'::text, 'project.event'::text") +
+              " NOT VALID",
+          );
+        else if (original.name === "constraint:requests:requests_cancellation_reason_check")
+          expect(definition).toBe(
+            original.definition
+              .replace(/\s+NOT VALID$/u, "")
+              .replace(
+                "'authority-revoked'::text]",
+                "'authority-revoked'::text, 'no-eligible-manager'::text]",
+              ) + " NOT VALID",
+          );
+        else if (nullable.has(original.name)) expect(definition, original.name).toBeUndefined();
+        else if (replaced.has(original.name)) expect(definition, original.name).toBeDefined();
+        else if (extendedPrincipalChecks.has(original.name))
           expect(definition, original.name).toContain("'project'");
         else if (
           [
@@ -473,9 +558,15 @@ describeStore("dormant Project access", (it) => {
   it("applies an old Run cleanup while active again, without touching newly admitted work", async ({
     storeFixture,
   }) => {
-    const run = await storeFixture.startRunFixture("old-effect", "project");
+    const project = await createProjectIdentityFixture(storeFixture, "old-effect");
+    const run = await insertProjectRunFixture(
+      storeFixture,
+      project,
+      "old-effect",
+      project.userId,
+      "running",
+    );
     const { database, store } = storeFixture;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await database
       .updateTable("users")
       .set({ instanceRole: "administrator", admittedAt: new Date() })
@@ -528,21 +619,8 @@ describeStore("dormant Project access", (it) => {
         },
       ],
     });
-    const { thread } = await store.createThread({
-      createdBy: run.userId,
-      environmentId: run.environmentId,
-      harnessInstanceId: run.harnessInstance.id,
-      idempotencyKey: "new-incarnation-thread",
-      modelSelection: testModelSelection,
-      title: "New incarnation",
-      workspaceId: run.workspace.id,
-    });
-    const fresh = await storeFixture.enqueueHumanTrigger({
-      content: [{ type: "text", text: "New work" }],
-      idempotencyKey: "new-incarnation-input",
-      requestedBy: run.userId,
-      threadId: thread.id,
-    });
+    const freshFixture = await insertProjectRunFixture(storeFixture, project, "new-incarnation");
+    const fresh = freshFixture.turn;
     expect(
       (
         await database
@@ -1054,19 +1132,16 @@ describeStore("dormant Project access", (it) => {
       purgeAfter: new Date("2099-01-01"),
     });
     expect(await principalRows()).toEqual(principals);
-    await storeFixture.database
-      .updateTable("deployments")
-      .set({ authorityModelVersion: 1 })
-      .execute();
     await expect(
-      mutateAccess(storeFixture.database, { ...command, commandIdentity: createId("command") }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+      storeFixture.database.updateTable("deployments").set({ authorityModelVersion: 1 }).execute(),
+    ).rejects.toThrow("Deployment kind and authority model are immutable");
   });
 
   it("refuses global revocation of live work without its transaction adapter", async ({
     storeFixture,
   }) => {
-    const run = await storeFixture.createRunFixture("global-no-adapter", null, "project");
+    const context = await prepareProjectAdmission(storeFixture);
+    const run = context.project;
     const access = await setup(storeFixture, run);
     const userId = await access.member();
     await access.mutate({
@@ -1076,9 +1151,25 @@ describeStore("dormant Project access", (it) => {
       target: { kind: "project", workspaceId: run.workspace.id },
       level: "use",
     });
-    await storeFixture.enqueueHumanTrigger({
-      requestedBy: userId,
-      threadId: run.thread.id,
+    const origin = {
+      userId,
+      initiatorGeneration: 1,
+      membershipGeneration: 1,
+      originConnectionId: null,
+    };
+    const { thread } = await context.store.createProjectThread({
+      workspaceId: run.workspace.id,
+      origin,
+      role: "work",
+      home: false,
+      title: "Live work",
+      idempotencyKey: "global-live-work-thread",
+    });
+    await context.store.admitProjectWork({
+      origin,
+      threadId: thread.id,
+      source: { kind: "human" },
+      policy: "queue",
       idempotencyKey: "global-live-work",
       content: [{ type: "text", text: "Live work" }],
     });
@@ -1100,7 +1191,16 @@ describeStore("dormant Project access", (it) => {
   it("restarts with a Run admitted after prefix discovery instead of extending locks after Workspaces", async ({
     storeFixture,
   }) => {
-    const run = await storeFixture.createRunFixture("live-scope-race", null, "project");
+    const context = await prepareProjectAdmission(storeFixture);
+    const { thread } = await context.store.createProjectThread({
+      workspaceId: context.project.workspace.id,
+      origin: context.origin,
+      role: "work",
+      home: false,
+      title: "Concurrent work",
+      idempotencyKey: "live-scope-race-thread",
+    });
+    const run = { ...context.project, thread };
     const access = await setup(storeFixture, run);
     const entry = await storeFixture.database
       .selectFrom("accessEntries")
@@ -1162,13 +1262,15 @@ describeStore("dormant Project access", (it) => {
         },
       },
     );
-    let admitted: Awaited<ReturnType<typeof storeFixture.enqueueHumanTrigger>>;
+    let admitted: Awaited<ReturnType<typeof context.store.admitProjectWork>> | undefined;
     try {
       await withTimeout(ready.promise, 5000, {
         timeoutError: () => new Error("Access writer never discovered its prefix"),
       });
-      admitted = await storeFixture.enqueueHumanTrigger({
-        requestedBy: run.userId,
+      admitted = await context.store.admitProjectWork({
+        origin: context.origin,
+        source: { kind: "human" },
+        policy: "queue",
         threadId: run.thread.id,
         idempotencyKey: "concurrent-live-admission",
         content: [{ type: "text", text: "New work" }],
@@ -1177,8 +1279,9 @@ describeStore("dormant Project access", (it) => {
       release.resolve();
     }
     await mutation;
+    if (!admitted?.runId) throw new Error("Concurrent Project admission created no Run");
     expect(attempts).toBe(2);
-    expect(reservedRuns).toContain(admitted!.run.id);
+    expect(reservedRuns).toContain(admitted.runId);
     expect(recorded).toEqual([
       {
         kind: "membership",
@@ -1192,7 +1295,7 @@ describeStore("dormant Project access", (it) => {
       threadPathLinks,
       { userId: run.userId, workspaceId: run.workspace.id, membershipGenerationCutoff: 1 },
     );
-    expect(recovery.terminatedRuns.map((row) => row.runId)).toContain(admitted!.run.id);
+    expect(recovery.terminatedRuns.map((row) => row.runId)).toContain(admitted.runId);
     expect(await access.membership(run.userId)).toMatchObject({
       state: "revoked",
       generation: "2",
@@ -1865,8 +1968,8 @@ describeStore("dormant Project access", (it) => {
   it("refuses Request-scope growth but permits revocation of an oversized inherited scope", async ({
     storeFixture,
   }) => {
-    const run = await storeFixture.createRunFixture("access", null, "project");
-    const access = await setup(storeFixture, run);
+    const project = await createProjectIdentityFixture(storeFixture, "request-scope");
+    const access = await setup(storeFixture, project);
     const userId = await access.member();
     const entryId = randomUUID();
     await access.mutate({
@@ -1876,12 +1979,8 @@ describeStore("dormant Project access", (it) => {
       target: { kind: "project", workspaceId: access.workspace.id },
       level: "use",
     });
-    const turn = await storeFixture.enqueueHumanTrigger({
-      content: [{ type: "text", text: "Request origin" }],
-      idempotencyKey: "oversized-request-origin",
-      requestedBy: userId,
-      threadId: run.thread.id,
-    });
+    const run = await insertProjectRunFixture(storeFixture, project, "request-scope", userId);
+    const turn = run.turn;
     const targets = Array.from({ length: 256 }, () => createId("workspace"));
     await storeFixture.database.transaction().execute(async (transaction) => {
       await sql`insert into workspaces(id,name,color,kind,created_by,backing,status)

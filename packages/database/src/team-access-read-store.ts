@@ -1,4 +1,4 @@
-import { teamProjectRuntimes } from "./team-project-store.js";
+import { teamProjectRuntimes, teamComputerReplacementCan } from "./team-project-store.js";
 import { teamComputerHasExecutionGrant } from "./team-computer.js";
 import { isEveryoneMember } from "./everyone-membership.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -601,7 +601,7 @@ export class TeamAccessReadStore {
                     : ("offline" as const),
             }
           : null,
-        can: { replace: { allowed: true } },
+        can: { replace: await teamComputerReplacementCan(database) },
       };
     });
   }

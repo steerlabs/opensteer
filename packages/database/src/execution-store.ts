@@ -1,3 +1,8 @@
+import {
+  assertActiveProjectBinding,
+  requireHumanRequester,
+  requireHumanMembershipGeneration,
+} from "./execution-authority.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
@@ -329,6 +334,56 @@ export async function loadRunDispatchContext(
   commandId: CommandRow["id"],
   options: DurableWindowReadOptions = {},
 ): Promise<RunDispatchContext> {
+  const context = await loadStoredRunDispatchContext(database, commandId, options);
+  return {
+    ...context,
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(context.membershipGeneration),
+    ),
+  };
+}
+
+export async function loadProjectRunDispatchContext(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  binding: import("@opensteer/core").ProjectRunBinding,
+  runnerIsAttached: (runnerId: RunnerId, runnerBootId: string) => boolean,
+  options: DurableWindowReadOptions = {},
+): Promise<Omit<RunDispatchContext, "membershipGeneration" | "voiceCall">> {
+  await assertActiveProjectBinding(database, binding, { runnerIsAttached });
+  const command = await database
+    .selectFrom("commands")
+    .select(["runId", "type"])
+    .where("id", "=", commandId)
+    .executeTakeFirst();
+  if (command?.runId !== binding.runId || command.type !== "run.execute.project")
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Project dispatch command does not match its binding",
+    });
+  const {
+    membershipGeneration: _membership,
+    voiceCall,
+    ...context
+  } = await loadStoredRunDispatchContext(database, commandId, options);
+  if (voiceCall)
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "voice-not-supported",
+      message: "Project work does not support Voice",
+    });
+  return context;
+}
+
+async function loadStoredRunDispatchContext(
+  database: Kysely<DatabaseSchema>,
+  commandId: CommandRow["id"],
+  options: DurableWindowReadOptions = {},
+): Promise<
+  Omit<RunDispatchContext, "membershipGeneration"> & {
+    readonly membershipGeneration: string | null;
+  }
+> {
   const maxHistoryItems = boundedWindowLimit(options.maxItems, runHistoryMaxMessages);
   const maxHistoryBytes = boundedWindowBytes(options.maxBytes, runHistoryMaxSerializedBytes);
   const command = await database
@@ -439,6 +494,9 @@ export async function loadRunDispatchContext(
             .innerJoin("threadInputs", "threadInputs.messageId", "messages.id")
             .selectAll("messages")
             .where("messages.runId", "=", command.runId)
+            .$if(command.type === "run.execute.project", (query) =>
+              query.where("threadInputs.steerCommandId", "is", null),
+            )
             .where("threadInputs.policy", "!=", "report")
             .where("messages.kind", "in", ["input", "run-result", "continuation"])
             .orderBy("sequence", "asc")
@@ -515,7 +573,7 @@ export async function loadRunDispatchContext(
           omittedCount: runRow.reportContext.omittedCount,
           throughSequence: runRow.reportContext.throughSequence,
         },
-    membershipGeneration: safeGeneration(runRow.membershipGeneration),
+    membershipGeneration: runRow.membershipGeneration,
     firstOrdinal: runRow.nextRunnerOrdinal,
     run: runFromRow(runRow),
     ...(runRow.voiceSessionId
@@ -583,7 +641,10 @@ export async function acquireExecutionBinding(
         message: "Run is not awaiting an execution binding",
       });
     }
-    if (safeGeneration(run.membershipGeneration) !== input.membershipGeneration) {
+    if (
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)) !==
+      requireHumanMembershipGeneration(input.membershipGeneration)
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Run membership generation does not match its dispatch capability",
@@ -594,7 +655,7 @@ export async function acquireExecutionBinding(
       !(await threadExecutionIsAvailableToUser(
         transaction,
         run.threadId,
-        run.requestedBy,
+        requireHumanRequester(run.requestedBy),
         input.membershipGeneration,
       ))
     ) {
@@ -967,8 +1028,8 @@ export async function bindProviderSession(
       !(await threadExecutionIsAvailableToUser(
         transaction,
         run.threadId,
-        run.requestedBy,
-        safeGeneration(run.membershipGeneration),
+        requireHumanRequester(run.requestedBy),
+        safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
       ))
     ) {
       throw new OpensteerError({
@@ -1064,8 +1125,10 @@ export async function runCapabilityScope(
     ...(row.specialistId ? { specialistId: row.specialistId } : {}),
     environmentId: row.environmentId,
     grantId: row.grantId,
-    membershipGeneration: safeGeneration(row.membershipGeneration),
-    requestedBy: row.requestedBy,
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(row.membershipGeneration),
+    ),
+    requestedBy: requireHumanRequester(row.requestedBy),
     runId,
     runnerBootId: row.runnerBootId,
     runnerId: row.runnerId,
@@ -1100,8 +1163,8 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     !(await threadExecutionIsAvailableToUser(
       database,
       threadId,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
+      requireHumanRequester(run.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
     ))
   )
     return null;
@@ -1152,7 +1215,9 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
     sourceMessageId: firstAuthored.id,
     principalId: run.actorPrincipalId,
     requestedBy: run.requestedBy,
-    membershipGeneration: safeGeneration(run.membershipGeneration),
+    membershipGeneration: safeGeneration(
+      requireHumanMembershipGeneration(run.membershipGeneration),
+    ),
     environmentId: run.environmentId,
     harnessInstanceId: run.harnessInstanceId,
     modelSelection: run.modelSelection,

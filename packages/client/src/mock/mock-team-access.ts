@@ -8,6 +8,7 @@ import {
   RunnerIdSchema,
   UserIdSchema,
   WorkspaceIdSchema,
+  deploymentPolicy,
   type MarkColor,
   type UserId,
   type WorkspaceId,
@@ -38,6 +39,8 @@ import {
   type TeamCommandResult,
   type TeamReason,
 } from "@opensteer/protocol";
+
+const teamPolicy = deploymentPolicy({ kind: "server", defaultWorkspaceBacking: "local-directory" });
 import type { z } from "zod";
 import { HostClientRequestError } from "../host/client.js";
 import { rpcErrorStatus } from "../host/host-session-client.js";
@@ -624,7 +627,12 @@ export class MockTeamAccess {
       };
     const lastAdmin = p.administrator && p.state === "active" && this.#adminCount() === 1;
     return {
-      setKind: lastAdmin ? denied("last-active-admin") : allowed,
+      setKind:
+        p.kind === "full" && !teamPolicy.team.guests
+          ? denied("guests-unavailable")
+          : lastAdmin
+            ? denied("last-active-admin")
+            : allowed,
       setState: lastAdmin ? denied("last-active-admin") : allowed,
       setAdministrator: lastAdmin ? denied("last-active-admin") : allowed,
       revokeConnections: allowed,
@@ -990,6 +998,8 @@ export class MockTeamAccess {
 
   #memberPreview(id: UserId, change: MemberChange) {
     this.#requireAdmin();
+    if (change.kind === "set-kind" && change.value === "guest" && !teamPolicy.team.guests)
+      throw refusal("forbidden", "guests-unavailable", "Guests aren't available on this team yet.");
     const p = this.#person(id);
     const can = this.#memberCan(p);
     const gate =
@@ -1062,10 +1072,24 @@ export class MockTeamAccess {
     createProject: (name: string, color: MarkColor) => Promise<WorkspaceId>,
   ) {
     this.#requireMember();
+    if (
+      !teamPolicy.team.guests &&
+      ((command.type === "team.invitation.create" && command.memberKind === "guest") ||
+        (command.type === "team.member.change" &&
+          command.change.kind === "set-kind" &&
+          command.change.value === "guest"))
+    )
+      throw refusal("forbidden", "guests-unavailable", "Guests aren't available on this team yet.");
     const base = () => ({ accessRevision: this.#revision, commandId: this.#commandId() });
     switch (command.type) {
       case "team.computer.replace": {
         this.#requireAdmin();
+        if (this.#projects.size)
+          throw refusal(
+            "forbidden",
+            "projects-prevent-replacement",
+            "This team computer can't be replaced while projects exist.",
+          );
         this.#checkRevision(command.expectedRevision);
         if ((this.#computer?.id ?? null) !== command.expectedComputerId)
           throw refusal(
@@ -1352,7 +1376,7 @@ export class MockTeamAccess {
         return {
           computer: this.#computer ? { ...this.#computer } : null,
           // With none, replacing it is connecting the first one.
-          can: { replace: allowed },
+          can: { replace: this.#projects.size ? denied("projects-prevent-replacement") : allowed },
         };
       }),
       "team.invitations.list": (input) =>

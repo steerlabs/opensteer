@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "./execution-authority.js";
 import {
   createId,
   MessageAuthorSchema,
@@ -115,7 +116,7 @@ export async function publishPersonMessage(
       const message = messageFromRow(row);
       const event = await appendHostWorkspaceEvent(transaction, {
         type: "message.created",
-        data: { input: null, message, addressedToUserId: run.requestedBy },
+        data: { input: null, message, addressedToUserId: requireHumanRequester(run.requestedBy) },
         environmentId: admission.environmentId,
         runId: admission.runId,
         threadId: admission.sourceThreadId,

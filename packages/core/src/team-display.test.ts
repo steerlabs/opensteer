@@ -43,4 +43,22 @@ it("shares only the resolver or cancellation fact while leaving question content
       reason: "no-eligible-manager",
     }),
   ).toEqual({ ...common, status: "cancelled", reason: "no-eligible-manager" });
+  expect(
+    ThreadRequestOutcomeSchema.parse({
+      ...common,
+      class: "approval",
+      status: "fulfilled",
+      resolvedByName: "Dev Patel",
+      response: { kind: "text", text: "private" },
+    }),
+  ).toEqual({ ...common, class: "approval", status: "fulfilled", resolvedByName: "Dev Patel" });
+  expect(
+    ThreadRequestOutcomeSchema.parse({
+      ...common,
+      class: "question",
+      status: "cancelled",
+      reason: "no-eligible-manager",
+      payload: { secret: "private" },
+    }),
+  ).toEqual({ ...common, class: "question", status: "cancelled", reason: "no-eligible-manager" });
 });

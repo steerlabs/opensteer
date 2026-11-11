@@ -1,3 +1,5 @@
+import { assertProjectAuthority } from "./deployment-execution-authority.js";
+import { requireHumanRequester } from "./execution-authority.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
 import {
@@ -177,9 +179,13 @@ export async function assignmentEventsInTransaction(
     (await threadExecutionIsAvailableToUser(
       transaction,
       row.childThreadId,
-      requester.requestedBy,
+      requireHumanRequester(requester.requestedBy),
     )) &&
-    (await threadExecutionIsAvailableToUser(transaction, row.parentThreadId, requester.requestedBy))
+    (await threadExecutionIsAvailableToUser(
+      transaction,
+      row.parentThreadId,
+      requireHumanRequester(requester.requestedBy),
+    ))
   ) {
     events.push(
       await appendHostWorkspaceEvent(transaction, {
@@ -193,6 +199,52 @@ export async function assignmentEventsInTransaction(
     );
   }
   return events;
+}
+
+export async function projectAssignmentEventsInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  row: Selectable<DelegationTable>,
+  type: "assignment.created" | "assignment.updated",
+  runId: RunId | null = null,
+): Promise<readonly AgentEvent[]> {
+  await assertProjectAuthority(transaction);
+  const worker = await transaction
+    .selectFrom("runs")
+    .innerJoin("principals", "principals.id", "runs.actorPrincipalId")
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .select([
+      "threads.workspaceId",
+      "principals.kind",
+      "principals.workspaceId as principalWorkspaceId",
+    ])
+    .where("runs.id", "=", row.childRunId)
+    .where("runs.threadId", "=", row.childThreadId)
+    .executeTakeFirst();
+  if (!worker || worker.kind !== "project" || worker.principalWorkspaceId !== worker.workspaceId)
+    throw new OpensteerError({ code: "forbidden", message: "Assignment is not Project work" });
+  const parent = await transaction
+    .selectFrom("threads")
+    .select(["environmentId", "workspaceId"])
+    .where("id", "=", row.parentThreadId)
+    .where("workspaceId", "=", worker.workspaceId)
+    .executeTakeFirst();
+  if (!parent)
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Project Assignments must remain in their Project",
+    });
+  const assignment = await assignmentSummaryInTransaction(transaction, row);
+  return [
+    await appendAssignmentWorkerEvent(transaction, assignment, type, runId),
+    await appendHostWorkspaceEvent(transaction, {
+      data: { assignment },
+      environmentId: parent.environmentId,
+      workspaceId: parent.workspaceId,
+      threadId: row.parentThreadId,
+      runId: row.parentRunId,
+      type,
+    }),
+  ];
 }
 
 /** Reserve every summary destination before a name or symbol writer takes its Thread lock. */

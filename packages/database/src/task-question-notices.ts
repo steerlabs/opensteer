@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "./execution-authority.js";
 import {
   RequestIdSchema,
   requestIsAgentAnswerable,
@@ -73,6 +74,10 @@ export async function taskQuestionNoticeIsPending(
   return (
     !(reach.kind === "workspace" && reach.workspaceId !== worker.workspaceId) &&
     !(reach.kind === "lineage" && reach.lineageRootThreadId !== worker.lineageRootThreadId) &&
-    (await threadExecutionIsAvailableToUser(transaction, worker.id, input.requestedBy))
+    (await threadExecutionIsAvailableToUser(
+      transaction,
+      worker.id,
+      requireHumanRequester(input.requestedBy),
+    ))
   );
 }

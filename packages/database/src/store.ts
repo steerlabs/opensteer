@@ -1320,6 +1320,11 @@ export class OpensteerStore {
   }
 
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
+    if (isProjectDeploymentAuthority(await this.securityEffectAuthority()))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team Projects require the access writer",
+      });
     return this.#ensureProjectChat(await workspaceStore.createWorkspace(this.#database, input));
   }
 

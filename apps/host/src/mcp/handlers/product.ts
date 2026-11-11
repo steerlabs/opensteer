@@ -1,4 +1,8 @@
+import { assertProjectToolCall } from "../project-tool-access.js";
+import type { AgentCaller as AnyAgentCaller } from "../agent-caller.js";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
+import type { ProjectAgentToolPort } from "../opensteer-mcp-service.js";
+import * as projectSpecs from "@opensteer/agent-tools/tools";
 import { ThreadDetailSchema } from "@opensteer/agent-tools/outputs";
 import {
   readAgentThreadRecent,
@@ -88,7 +92,7 @@ import { environmentDiscovery } from "../../agents/environment-discovery.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { AgentWorkspaceMountService } from "../../agents/agent-workspace-mount-service.js";
 import type { MemoryPassService } from "../../agents/memory-pass-service.js";
-import { callerThread, type AgentCaller } from "../agent-caller.js";
+import { callerThread, type HumanAgentCaller as AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./index.js";
 import {
   sealRequestResponse,
@@ -1001,7 +1005,18 @@ export class ProductToolHandlers {
     };
   }
 
-  async assignmentTargets({ caller, input }: ToolCall<"task_cancel">) {
+  async assignmentTargets({
+    caller,
+    input,
+  }: Pick<ToolCall<"task_cancel">, "input"> & { readonly caller: AnyAgentCaller }) {
+    if (caller.kind === "project") {
+      assertProjectToolCall("task_cancel", input);
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "project-tool-route-required",
+        message: "Project tasks use Project target discovery",
+      });
+    }
     if (input.subagentId) {
       const node = await reachableNode(this.#store.database, input.subagentId, caller.userId);
       if (!node) throw forbidden("Subagent is unavailable");
@@ -2143,4 +2158,258 @@ function agentRequest(request: Request) {
         : { deviceLabel: request.settlementProvenance.deviceLabel }
       : request.settlementProvenance,
   };
+}
+
+/** Project tools use the stored Project binding; the optional root is only inherited attribution. */
+export class ProjectProductToolHandlers implements ProjectAgentToolPort {
+  readonly options: {
+    readonly work: import("@opensteer/database").ProjectWorkStore;
+    readonly publish: (events: readonly AgentEvent[]) => void;
+    readonly environmentConnected: (environmentId: EnvironmentId) => boolean;
+  };
+  constructor(options: ProjectProductToolHandlers["options"]) {
+    this.options = options;
+  }
+
+  async call(call: Parameters<ProjectAgentToolPort["call"]>[0]): Promise<unknown> {
+    const { caller, name, operationKey } = call;
+    const specs = projectSpecs;
+    assertProjectToolCall(name, call.input);
+    await call.checkLive();
+    const binding = caller.claims;
+    await this.options.work.resolveProjectCaller(binding);
+    const threadId = async (value: Thread["id"] | "home" | "self") => {
+      if (value === "self") return binding.threadId;
+      if (value !== "home") return value;
+      const workspace = await this.options.work.database
+        .selectFrom("workspaces")
+        .select("homeThreadId")
+        .where("id", "=", binding.workspaceId)
+        .executeTakeFirstOrThrow();
+      if (!workspace.homeThreadId) throw conflict("Project Chat has not been started yet");
+      return workspace.homeThreadId;
+    };
+    switch (name) {
+      case "delegate_task": {
+        const input = specs.delegate_task.input.parse(call.input);
+        if (input.workspaceId && input.workspaceId !== binding.workspaceId)
+          throw forbidden("Project tasks cannot cross Projects");
+        if (input.specialist || input.places?.length || input.harnessInstanceId || input.model)
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "project-task-selection-not-supported",
+            message:
+              "Project child tasks use their Project runtime; personal runtime selections are not supported",
+          });
+        const child = await this.options.work.delegateProjectWork({
+          binding,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          title: input.title ?? provisionalThreadTitle(input.task),
+          titleSource: input.title ? "chosen" : "provisional",
+          content: [{ type: "text", text: input.task }],
+          idempotencyKey: operationId(caller, operationKey, "delegate_task"),
+        });
+        this.options.publish(child.events);
+        const task = await this.options.work.projectTask(binding, child.assignmentId);
+        return taskItem(task.summary, task.result);
+      }
+      case "thread_send": {
+        const input = specs.thread_send.input.parse(call.input);
+        const destination = await threadId(input.threadId);
+        if (destination === binding.threadId)
+          throw badRequest("An agent cannot message its own active Thread");
+        const target = await this.options.work.projectThread(binding, destination);
+        assertMutableTarget(caller, target);
+        const admitted = await this.options.work.admitProjectWork({
+          threadId: destination,
+          origin: caller.origin,
+          source: { kind: "agent", runId: binding.runId },
+          content: [{ type: "text", text: input.message }],
+          policy: input.delivery,
+          idempotencyKey: operationId(caller, operationKey, "thread_send"),
+        });
+        this.options.publish(admitted.events);
+        return {
+          assignmentId: admitted.input.assignmentId,
+          disposition:
+            admitted.input.state === "cancelled"
+              ? "cancelled"
+              : admitted.input.policy === "steer"
+                ? "steering"
+                : admitted.runId
+                  ? "run-queued"
+                  : "pending",
+          messageId: admitted.input.messageId,
+          runId: admitted.runId,
+        };
+      }
+      case "task_status": {
+        const input = specs.task_status.input.parse(call.input);
+        const task = await this.options.work.projectTask(binding, input.assignmentId);
+        return taskItem(task.summary, task.result);
+      }
+      case "task_cancel": {
+        const input = specs.task_cancel.input.parse(call.input);
+        if (!input.assignmentId) throw forbidden("Project cancellation requires an Assignment");
+        const cancelled = await this.options.work.cancelProjectTask(binding, input.assignmentId);
+        this.options.publish(cancelled.events);
+        const task = await this.options.work.projectTask(binding, input.assignmentId);
+        return taskItem(task.summary, task.result);
+      }
+      case "thread_list": {
+        const input = specs.thread_list.input.parse(call.input);
+        if (input.workspaceId && input.workspaceId !== binding.workspaceId)
+          throw forbidden("Project threads cannot cross Projects");
+        const parentThreadId =
+          input.parentThreadId === "self" ? binding.threadId : input.parentThreadId;
+        const page = await this.options.work.projectThreads(binding, {
+          limit: input.limit,
+          ...(parentThreadId ? { parentThreadId } : {}),
+          ...(input.before ? { before: input.before } : {}),
+          ...(input.query ? { query: input.query } : {}),
+        });
+        return {
+          ...page,
+          threads: page.threads.map((thread) => ({
+            ...thread,
+            environmentConnected: this.options.environmentConnected(thread.environmentId),
+          })),
+        };
+      }
+      case "thread_read": {
+        const input = specs.thread_read.input.parse(call.input);
+        if (!input.threadId) throw forbidden("Project reads require a Thread");
+        const destination = await threadId(input.threadId);
+        const target = await this.options.work.projectThread(binding, destination);
+        const recentRuns = await this.options.work.database
+          .selectFrom("runs")
+          .select([
+            "id",
+            "status",
+            "assignmentId",
+            "modelSelection",
+            "createdAt",
+            "startedAt",
+            "completedAt",
+          ])
+          .where("threadId", "=", destination)
+          .orderBy("runOrdinal", "desc")
+          .limit(input.runLimit)
+          .execute();
+        const context = {
+          thread: ThreadDetailSchema.parse(target),
+          recentPlaces: [],
+          recentRuns: recentRuns.map((run) => ({
+            runId: run.id,
+            status: run.status,
+            assignmentId: run.assignmentId,
+            modelId: run.modelSelection.modelId,
+            createdAt: run.createdAt.toISOString(),
+            startedAt: run.startedAt?.toISOString() ?? null,
+            completedAt: run.completedAt?.toISOString() ?? null,
+          })),
+        };
+        if (
+          input.view === "activity" ||
+          (input.itemId && !MessageIdSchema.safeParse(input.itemId).success)
+        ) {
+          const page = await this.options.work.projectActivity(binding, {
+            threadId: destination,
+            limit: input.itemId ? 1 : input.limit,
+            ...(input.before ? { before: input.before } : {}),
+            ...(input.itemId ? { itemId: input.itemId } : {}),
+          });
+          const starts = new Map(page.starts.map((item) => [item.completionSequence, item.start]));
+          const mapped = page.items.map((item) => ({
+            sequence: item.sequence,
+            item:
+              item.type === "message"
+                ? messageItem(
+                    {
+                      ...item.message,
+                      content: item.message.content.map((part) =>
+                        isPlaceContentPart(part)
+                          ? { type: "text", text: "[Place unavailable]" }
+                          : part,
+                      ),
+                    },
+                    input.maxCharsPerItem,
+                    input.textOffset,
+                  )
+                : activityItem(item, {
+                    start:
+                      item.type === "tool.started"
+                        ? item
+                        : item.type === "tool.completed"
+                          ? starts.get(item.sequence)
+                          : undefined,
+                    nodeTitle:
+                      item.type === "node.completed"
+                        ? page.nodeTitles.get(item.data.nodeId)
+                        : undefined,
+                    ownRun:
+                      !!item.runId &&
+                      page.runPrincipals.get(item.runId) ===
+                        binding.authority.principal.principalId,
+                    named: !!input.itemId,
+                    maxChars: input.maxCharsPerItem,
+                    offset: input.textOffset,
+                  }),
+          }));
+          const items = boundedThreadItems(mapped.map((item) => item.item));
+          if (input.itemId && !items.length) throw forbidden("Item is unavailable in this Thread");
+          const trimmed = items.length < mapped.length;
+          return {
+            ...context,
+            items,
+            hasMore: trimmed || page.hasMore,
+            nextBefore: trimmed ? (mapped[items.length - 1]?.sequence ?? null) : page.nextBefore,
+          };
+        }
+        const page = await this.options.work.projectHistory(binding, {
+          threadId: destination,
+          maxItems: input.itemId ? 1 : input.limit,
+          maxBytes: 256 * 1024,
+          ...(input.before ? { before: input.before } : {}),
+          ...(input.query ? { query: input.query } : {}),
+          ...(input.itemId
+            ? { aroundMessageId: MessageIdSchema.parse(input.itemId) }
+            : input.aroundMessageId
+              ? { aroundMessageId: input.aroundMessageId }
+              : {}),
+        });
+        if (!page) throw forbidden("Thread is outside this Project");
+        const messages = [...page.messages].sort((a, b) => compareSequence(b.sequence, a.sequence));
+        const items = boundedThreadItems(
+          messages.map((message) =>
+            messageItem(
+              {
+                ...message,
+                content: message.content.map((part) =>
+                  isPlaceContentPart(part) ? { type: "text", text: "[Place unavailable]" } : part,
+                ),
+              },
+              input.maxCharsPerItem,
+              input.textOffset,
+            ),
+          ),
+        );
+        return {
+          ...context,
+          items,
+          hasMore: items.length < messages.length || page.window.hasMore,
+          nextBefore:
+            items.length < messages.length && items.length
+              ? encodeThreadHistoryCursor(
+                  destination,
+                  messages[items.length - 1]!.sequence,
+                  input.query,
+                )
+              : page.window.nextBefore,
+        };
+      }
+      default:
+        throw forbidden("This tool is unavailable to a Project caller");
+    }
+  }
 }

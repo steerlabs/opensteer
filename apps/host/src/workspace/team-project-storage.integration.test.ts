@@ -1,3 +1,4 @@
+import { createProjectIdentityFixture } from "@opensteer/database/test-support/project";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,7 +9,6 @@ import { OpensteerStore, mutateAccess } from "@opensteer/database";
 import { describeStore } from "@opensteer/database/test-support/store";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import { LocalWorkspaceAuthority } from "@opensteer/workspace-local";
-import { sql } from "kysely";
 import { expect } from "vitest";
 import { RunnerLocalWorkspaceDriver } from "./runner-local-workspace-driver.js";
 import { WorkspaceService } from "./workspace-service.js";
@@ -91,23 +91,14 @@ describeStore("team Project storage", (it) => {
   it("commits the Project, manage grant, principal and provisioning intent before filesystem work, with no Main", async ({
     storeFixture: f,
   }) => {
-    const run = await f.createRunFixture("team-storage", null, "project");
+    const run = await createProjectIdentityFixture(f, "team-storage");
     const root = await mkdtemp(join(tmpdir(), "team-host-storage-"));
     try {
-      await f.database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
       const userId = await f.store.createUser("Project creator without Main");
       await f.database
         .updateTable("users")
         .set({ admittedAt: new Date(), instanceRole: "administrator" })
         .where("id", "=", userId)
-        .execute();
-      await f.database
-        .updateTable("runners")
-        .set({
-          allowedModules: sql`'["agents","shell"]'::jsonb`,
-          device: sql`'{"platform":"linux","form":"server"}'::jsonb`,
-        })
-        .where("id", "=", run.runnerId)
         .execute();
       const authority = new LocalWorkspaceAuthority({
         namespace: { kind: "owner-scoped" },

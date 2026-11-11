@@ -1,3 +1,4 @@
+import { requireHumanRequester, requireHumanMembershipGeneration } from "./execution-authority.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
   isMemoryPassWake,
@@ -163,7 +164,7 @@ import {
 
 function canManageQueuedInput(
   row: {
-    readonly requestedBy: UserId;
+    readonly requestedBy: UserId | null;
     readonly authoritySource: Readonly<Record<string, unknown>>;
   },
   request: {
@@ -238,7 +239,8 @@ export async function readThreadInputQueue(
     active.requestedBy === request.requestedBy &&
     active.environmentId === thread.environmentId &&
     active.harnessInstanceId === thread.harnessInstanceId &&
-    safeGeneration(active.membershipGeneration) === safeGeneration(membership.generation) &&
+    safeGeneration(requireHumanMembershipGeneration(active.membershipGeneration)) ===
+      safeGeneration(membership.generation) &&
     (await steerRoute(transaction, active.id)) !== null &&
     (await threadExecutionIsAvailableToUser(
       transaction,
@@ -276,7 +278,8 @@ export async function readThreadInputQueue(
         canSteer: Boolean(
           steerable &&
           own &&
-          safeGeneration(row.membershipGeneration) === safeGeneration(membership.generation) &&
+          safeGeneration(requireHumanMembershipGeneration(row.membershipGeneration)) ===
+            safeGeneration(membership.generation) &&
           isDeepStrictEqual(row.replyTarget, active.replyTarget),
         ),
       };
@@ -545,8 +548,8 @@ export async function deliverConversationInputsInTransaction(
     !(await threadExecutionIsAvailableToUser(
       transaction,
       thread.id,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
+      requireHumanRequester(run.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)),
     ))
   )
     return none;
@@ -907,8 +910,10 @@ export async function steerThreadInputInTransaction(
     run.requestedBy !== request.requestedBy ||
     run.environmentId !== thread.environmentId ||
     run.harnessInstanceId !== thread.harnessInstanceId ||
-    safeGeneration(run.membershipGeneration) !== safeGeneration(membership.generation) ||
-    safeGeneration(row.membershipGeneration) !== safeGeneration(membership.generation) ||
+    safeGeneration(requireHumanMembershipGeneration(run.membershipGeneration)) !==
+      safeGeneration(membership.generation) ||
+    safeGeneration(requireHumanMembershipGeneration(row.membershipGeneration)) !==
+      safeGeneration(membership.generation) ||
     !isDeepStrictEqual(run.replyTarget, row.replyTarget) ||
     !(await threadExecutionIsAvailableToUser(
       transaction,
@@ -1342,6 +1347,39 @@ export async function claimRunInputBatch(
     throw new OpensteerError({ code: "conflict", message: "Run context changed while claiming" });
   await transaction.updateTable("messages").set({ runId }).where("id", "in", selected).execute();
   await recordPersonWaited(transaction, runId);
+  const initialContext = await freezeRunInitialContext(transaction, run, seed);
+  await transaction
+    .updateTable("runs")
+    .set({
+      initialContext: initialContext ? jsonValue(initialContext) : null,
+      reportContext: jsonValue({
+        messageIds: reportIds,
+        omittedCount: safeCount(total.count) - cancelledCount - reportIds.length,
+        throughSequence,
+      }),
+    })
+    .where("id", "=", runId)
+    .execute();
+  for (const row of claimed)
+    events.push(
+      await appendHostWorkspaceEvent(transaction, {
+        data: { input: threadInputFromRow(row) },
+        environmentId: thread.environmentId,
+        runId,
+        threadId: run.threadId,
+        type: "thread-input.updated",
+        workspaceId: thread.workspaceId,
+      }),
+    );
+  events.push(...(await claimConversationBatch(transaction, runId, runExecuteInputsMax - 1)));
+  return events;
+}
+
+export async function freezeRunInitialContext(
+  transaction: Transaction<DatabaseSchema>,
+  run: RunRow,
+  seed: Pick<RunRow, "authoritySource"> & { readonly messageId: MessageId },
+) {
   let initialContext: {
     readonly messageIds: readonly MessageId[];
     readonly omittedCount: number;
@@ -1405,31 +1443,7 @@ export async function claimRunInputBatch(
       }
     }
   }
-  await transaction
-    .updateTable("runs")
-    .set({
-      initialContext: initialContext ? jsonValue(initialContext) : null,
-      reportContext: jsonValue({
-        messageIds: reportIds,
-        omittedCount: safeCount(total.count) - cancelledCount - reportIds.length,
-        throughSequence,
-      }),
-    })
-    .where("id", "=", runId)
-    .execute();
-  for (const row of claimed)
-    events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { input: threadInputFromRow(row) },
-        environmentId: thread.environmentId,
-        runId,
-        threadId: run.threadId,
-        type: "thread-input.updated",
-        workspaceId: thread.workspaceId,
-      }),
-    );
-  events.push(...(await claimConversationBatch(transaction, runId, runExecuteInputsMax - 1)));
-  return events;
+  return initialContext;
 }
 
 /**
@@ -2091,7 +2105,7 @@ async function lockThreadInputPreconditions(
     executionValid,
     membershipGeneration: membership
       ? safeGeneration(membership.generation)
-      : safeGeneration(sourceRun!.membershipGeneration),
+      : safeGeneration(requireHumanMembershipGeneration(sourceRun!.membershipGeneration)),
     prelockedActiveRunId: observedActive?.id ?? null,
     thread,
   };
@@ -2150,7 +2164,7 @@ async function cancelStaleReportMemberships(
   return events;
 }
 
-async function assertThreadInputCapacity(
+export async function assertThreadInputCapacity(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   contentBytes: number,
@@ -2576,7 +2590,8 @@ export async function enqueueThreadInputInTransaction(
     activeRun !== undefined &&
     activeRun.id === prelockedActiveRunId &&
     activeRun.requestedBy === request.requestedBy &&
-    safeGeneration(activeRun.membershipGeneration) === membershipGeneration &&
+    safeGeneration(requireHumanMembershipGeneration(activeRun.membershipGeneration)) ===
+      membershipGeneration &&
     isDeepStrictEqual(activeRun.replyTarget, facts.replyTarget)
       ? await steerRoute(transaction, activeRun.id)
       : null;
@@ -3517,8 +3532,8 @@ export async function ensureQueuedRun(
     const authorityValid = await threadExecutionIsAvailableToUser(
       transaction,
       thread.id,
-      candidate.requestedBy,
-      safeGeneration(candidate.membershipGeneration),
+      requireHumanRequester(candidate.requestedBy),
+      safeGeneration(requireHumanMembershipGeneration(candidate.membershipGeneration)),
     );
     if (!authorityValid) {
       const cancelled = await transaction
@@ -3821,9 +3836,10 @@ async function assignmentReturnGroup(
     | "parentAssignmentId"
   > & {
     readonly causalChainId: CausalChainId;
-    readonly requestedBy: UserId;
+    readonly requestedBy: UserId | null;
   },
 ) {
+  const requestedBy = requireHumanRequester(assignment.requestedBy);
   return transaction
     .selectFrom("delegations")
     .innerJoin("runs as childRun", "childRun.id", "delegations.childRunId")
@@ -3853,7 +3869,7 @@ async function assignmentReturnGroup(
       assignment.parentAssignmentId,
     )
     .where("childRun.causalChainId", "=", assignment.causalChainId)
-    .where("childRun.requestedBy", "=", assignment.requestedBy)
+    .where("childRun.requestedBy", "=", requestedBy)
     .orderBy("delegations.createdAt", "asc")
     .orderBy("delegations.id", "asc")
     .execute();
@@ -4029,7 +4045,7 @@ async function rewriteAssignmentReturn(
       (await threadExecutionIsAvailableToUser(
         transaction,
         member.childThreadId,
-        member.requestedBy,
+        requireHumanRequester(member.requestedBy),
       ))
     ) {
       readable.push(member);
@@ -4214,7 +4230,7 @@ async function deliverAssignmentReturnTransaction(
     (await threadExecutionIsAvailableToUser(
       transaction,
       parent.id,
-      requester.requestedBy,
+      requireHumanRequester(requester.requestedBy),
       safeGeneration(membership.generation),
     ));
   if (!executionValid || !membership) {
@@ -4275,7 +4291,8 @@ async function deliverAssignmentReturnTransaction(
       !waiting ||
       waiting.policy !== policy ||
       waiting.requestedBy !== requester.requestedBy ||
-      safeGeneration(waiting.membershipGeneration) !== safeGeneration(membership.generation) ||
+      safeGeneration(requireHumanMembershipGeneration(waiting.membershipGeneration)) !==
+        safeGeneration(membership.generation) ||
       waiting.assignmentId !== (parentOpenAssignment?.id ?? null) ||
       !isDeepStrictEqual(waiting.replyTarget, assignment.replyTarget)
     )

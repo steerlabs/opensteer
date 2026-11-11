@@ -1,13 +1,60 @@
+import { TriggerStore } from "./trigger-store.js";
+import { runFromRow } from "./thread-row-mappers.js";
+import { Migrator } from "kysely/migration";
+import {
+  createProjectIdentityFixture,
+  prepareProjectAdmission,
+  insertProjectRunFixture,
+} from "./project-work.test-support.js";
 import { createId } from "@opensteer/core";
-import { createTestWorkspace } from "./workspace-fixture.test-support.js";
 import { projectAuthorityCutoverMigration } from "./project-authority-migration.js";
 import { sql } from "kysely";
-import { Migrator } from "kysely/migration";
 import { randomUUID } from "node:crypto";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
 
 describeStore("additive Project authority preparation", (it) => {
+  it("reads the stored selector through one trackable stable helper with a pinned search path", async ({
+    storeFixture,
+  }) => {
+    const database = storeFixture.database;
+    await database
+      .insertInto("deployments")
+      .values({
+        id: createId("deployment"),
+        singletonKey: "primary",
+        activeHostInstanceId: createId("hostInstance"),
+        authorityModelVersion: 2,
+        canonicalOrigin: "https://project.test.invalid",
+        lifecycle: "active",
+        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    await database.transaction().execute(async (transaction) => {
+      await sql`set local track_functions = 'all'`.execute(transaction);
+      const result = await sql<{
+        model: number;
+        kind: string;
+      }>`select * from public.opensteer_stored_execution_authority()`.execute(transaction);
+      expect(result.rows).toEqual([{ model: 2, kind: "server" }]);
+      const metadata = await sql<{
+        provolatile: string;
+        proconfig: string[];
+      }>`select provolatile, proconfig from pg_proc where oid = 'public.opensteer_stored_execution_authority()'::regprocedure`.execute(
+        transaction,
+      );
+      expect(metadata.rows).toEqual([{ provolatile: "s", proconfig: ["search_path=pg_catalog"] }]);
+      const statistics = await sql<{
+        calls: string;
+      }>`select calls from pg_stat_xact_user_functions where funcid = 'public.opensteer_stored_execution_authority()'::regprocedure`.execute(
+        transaction,
+      );
+      expect(statistics.rows).toEqual([{ calls: "1" }]);
+    });
+  });
+
   it("keeps legacy work shapes and writers while adding nullable metadata", async ({
     storeFixture,
   }) => {
@@ -21,43 +68,130 @@ describeStore("additive Project authority preparation", (it) => {
     expect(row.membershipGeneration).toBe("1");
     expect(row.initiatorGeneration).toBeNull();
     expect(row.originConnectionId).toBeNull();
+    const rollback = new Error("Roll back constraint-isolation DDL");
     for (const table of ["runs", "thread_inputs", "commands"] as const) {
-      const constraint = `${table}_initiator_generation_bounds`;
       await expect(
-        sql`update ${sql.id(table)} set initiator_generation = 0`.execute(storeFixture.database),
-      ).rejects.toMatchObject({ code: "23514", constraint });
+        storeFixture.database.transaction().execute(async (transaction) => {
+          // Isolate scalar constraints from the stricter model guard, then roll back the DDL.
+          await sql`alter table ${sql.id(table)} disable trigger ${sql.id(table === "thread_inputs" ? "thread_inputs_execution_authority" : `${table}_execution_authority`)}`.execute(
+            transaction,
+          );
+          await expect(
+            sql`update ${sql.id(table)} set initiator_generation = 0 ${table === "commands" ? sql`, membership_generation = 1` : sql``}`.execute(
+              transaction,
+            ),
+          ).rejects.toMatchObject({
+            code: "23514",
+            constraint: `${table}_initiator_generation_bounds`,
+          });
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
     }
     await expect(
-      sql`update runs set origin_connection_id = 'missing' where id = ${row.id}`.execute(
-        storeFixture.database,
-      ),
-    ).rejects.toMatchObject({ code: "23503" });
+      storeFixture.database.transaction().execute(async (transaction) => {
+        await sql`alter table runs disable trigger runs_execution_authority`.execute(transaction);
+        await expect(
+          sql`update runs set initiator_generation = 1, origin_connection_id = 'missing' where id = ${row.id}`.execute(
+            transaction,
+          ),
+        ).rejects.toMatchObject({ code: "23503" });
+        throw rollback;
+      }),
+    ).rejects.toBe(rollback);
     const constraints = await sql<{
       convalidated: boolean;
     }>`select convalidated from pg_constraint where conname in (
       'principals_kind_check', 'principals_kind_shape_check', 'principals_workspace_id_fkey',
       'runs_initiator_generation_bounds', 'runs_origin_connection_id_fkey',
-      'auth_sessions_member_generation_bounds', 'agent_connections_member_generation_bounds', 'agent_connections_membership_generation_bounds'
+      'auth_sessions_member_generation_bounds', 'agent_connections_member_generation_bounds', 'agent_connections_membership_generation_bounds',
+      'agent_control_requests_action_check', 'agent_control_requests_action_class_check'
     )`.execute(storeFixture.database);
-    expect(constraints.rows).toHaveLength(8);
+    expect(constraints.rows).toHaveLength(10);
     expect(constraints.rows.every((constraint) => !constraint.convalidated)).toBe(true);
+  });
+
+  it("refuses a Project event receipt on model 1 and leaves legacy ledger writes outside the model helper", async ({
+    storeFixture,
+  }) => {
+    const fixture = await storeFixture.startRunFixture("legacy-project-receipt", "project");
+    const database = storeFixture.database;
+    await expect(
+      database
+        .insertInto("agentControlRequests")
+        .values({
+          runId: fixture.run.id,
+          sourceThreadId: fixture.thread.id,
+          requestId: randomUUID(),
+          action: "project.event",
+          actionClass: "project.event",
+          requestFingerprint: "f".repeat(64),
+        })
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514" });
+    await database.transaction().execute(async (tx) => {
+      await sql`set local track_functions = 'all'`.execute(tx);
+      await tx
+        .insertInto("agentControlRequests")
+        .values({
+          runId: fixture.run.id,
+          sourceThreadId: fixture.thread.id,
+          requestId: randomUUID(),
+          action: "thread.read",
+          actionClass: "thread.read",
+          requestFingerprint: "b".repeat(64),
+        })
+        .execute();
+      const calls = await sql<{
+        calls: string;
+      }>`select calls from pg_stat_xact_user_functions where funcid='public.opensteer_stored_execution_authority()'::regprocedure`.execute(
+        tx,
+      );
+      expect(Number(calls.rows[0]?.calls ?? 0)).toBe(0);
+    });
+  });
+
+  it("accepts only the matching Project receipt pair on a live Project source", async ({
+    storeFixture,
+  }) => {
+    const { database, prepared, project } = await prepareProjectAdmission(storeFixture, true);
+    const receipt = {
+      runId: prepared.run.id,
+      sourceThreadId: prepared.thread.id,
+      requestId: randomUUID(),
+      action: "project.event" as const,
+      actionClass: "project.event" as const,
+      requestFingerprint: "a".repeat(64),
+    };
+    await database.insertInto("agentControlRequests").values(receipt).execute();
+    await expect(
+      database
+        .insertInto("agentControlRequests")
+        .values({ ...receipt, requestId: randomUUID(), actionClass: "thread.read" })
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514" });
+    await database
+      .updateTable("users")
+      .set({ authorityGeneration: "2" })
+      .where("id", "=", project.userId)
+      .execute();
+    await expect(
+      database
+        .insertInto("agentControlRequests")
+        .values({ ...receipt, requestId: randomUUID() })
+        .execute(),
+    ).rejects.toMatchObject({ code: "23514" });
   });
 
   it("enforces Project principal identity and scope by direct SQL without touching legacy identities", async ({
     storeFixture,
   }) => {
-    const fixture = await storeFixture.createRunFixture("cutover-principal", null, "project");
+    const fixture = await createProjectIdentityFixture(storeFixture, "cutover-principal");
     const database = storeFixture.database;
     const insert = (kind: string, userId: string | null, workspaceId: string | null) =>
-      sql`
-      insert into principals (id, kind, user_id, workspace_id, display_name)
-      values (${`pri_${randomUUID()}`}, ${kind}, ${userId}, ${workspaceId}, 'Principal')
-    `.execute(database);
-    await expect(insert("project", null, fixture.workspace.id)).rejects.toMatchObject({
-      code: "23514",
-    });
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-    await insert("project", null, fixture.workspace.id);
+      sql`insert into principals (id, kind, user_id, workspace_id, display_name) values (${`pri_${randomUUID()}`}, ${kind}, ${userId}, ${workspaceId}, 'Principal')`.execute(
+        database,
+      );
     await expect(insert("project", null, fixture.workspace.id)).rejects.toMatchObject({
       code: "23505",
     });
@@ -81,36 +215,287 @@ describeStore("additive Project authority preparation", (it) => {
     await expect(
       sql`update principals set workspace_id = null where kind = 'project'`.execute(database),
     ).rejects.toMatchObject({ code: "23514" });
+    const main = { id: createId("workspace") };
+    await database.transaction().execute(async (transaction) => {
+      await sql`insert into workspaces (id, kind, name, created_by, color, backing, status)
+        values (${main.id}, 'main', 'Main', ${fixture.userId}, 'blue', ${JSON.stringify({ ...fixture.workspace.backing, bindingId: createId("workspaceBinding") })}::jsonb, 'ready')`.execute(
+        transaction,
+      );
+      await sql`insert into workspace_memberships (id, workspace_id, user_id, role, state)
+        values (${createId("workspaceMembership")}, ${main.id}, ${fixture.userId}, 'owner', 'active')`.execute(
+        transaction,
+      );
+    });
+    await expect(insert("project", null, main.id)).rejects.toMatchObject({ code: "23514" });
   });
 
-  it("refuses Project principals on Main and on Personal model 2", async ({ storeFixture }) => {
-    const fixture = await storeFixture.createRunFixture("cutover-scope");
+  it("rejects Project principals on cold Personal model 2", async ({ storeFixture }) => {
+    await storeFixture.database
+      .insertInto("deployments")
+      .values({
+        id: createId("deployment"),
+        singletonKey: "primary",
+        activeHostInstanceId: createId("hostInstance"),
+        authorityModelVersion: 2,
+        canonicalOrigin: "http://127.0.0.1:4310",
+        lifecycle: "active",
+        deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    await expect(
+      sql`insert into principals (id, kind, workspace_id, display_name) values (${`pri_${randomUUID()}`}, 'project', ${createId("workspace")}, 'Project')`.execute(
+        storeFixture.database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("rejects either Project work shape on model 1 by direct inserts", async ({ storeFixture }) => {
+    await storeFixture.startRunFixture("legacy-project-forgery", "project");
+    for (const table of ["runs", "thread_inputs", "commands"]) {
+      for (const shape of [
+        sql`jsonb_build_object('initiator_generation', 1, 'membership_generation', 1)`,
+        sql`jsonb_build_object('requested_by', null, 'membership_generation', null)`,
+      ]) {
+        await expect(
+          sql`insert into ${sql.id(table)} select (jsonb_populate_record(null::${sql.id(table)}, to_jsonb(row) || ${shape})).* from ${sql.id(table)} row limit 1`.execute(
+            storeFixture.database,
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      }
+    }
+  });
+
+  it("rejects widened or foreign computer grants on Project work by direct SQL", async ({
+    storeFixture,
+  }) => {
+    const project = await createProjectIdentityFixture(storeFixture, "fixed-computer-sql");
+    const fixture = await insertProjectRunFixture(storeFixture, project, "fixed-computer-sql");
     const database = storeFixture.database;
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-    const insert = () =>
-      sql`insert into principals (id, kind, workspace_id, display_name) values (${`pri_${randomUUID()}`}, 'project', ${fixture.workspace.id}, 'Project')`.execute(
+    await sql`update runs set environment_id = environment_id where id = ${fixture.run.id}`.execute(
+      database,
+    );
+    const original = await database
+      .selectFrom("runners")
+      .select(["device", "allowedModules", "ownerKind", "ownerUserId"])
+      .where("id", "=", project.runnerId)
+      .executeTakeFirstOrThrow();
+    await expect(
+      sql`update runners set owner_kind = 'user', owner_user_id = ${project.userId} where id = ${project.runnerId}`.execute(
         database,
-      );
-    await expect(insert()).rejects.toMatchObject({ code: "23514" });
-    if (fixture.workspace.backing.kind !== "local-directory")
-      throw new Error("Expected local fixture");
-    const project = await createTestWorkspace(storeFixture.store, {
-      backing: { ...fixture.workspace.backing, bindingId: createId("workspaceBinding") },
+      ),
+    ).rejects.toThrow("runner execution ownership is immutable");
+    for (const mutation of [
+      sql`device = '{"platform":"android","form":"phone"}'::jsonb`,
+      sql`device = '{"platform":"darwin","form":"desktop"}'::jsonb`,
+      sql`allowed_modules = '["agents","shell","browser"]'::jsonb`,
+      sql`allowed_modules = '["agents"]'::jsonb`,
+    ]) {
+      await sql`update runners set ${mutation} where id = ${project.runnerId}`.execute(database);
+      try {
+        await expect(
+          sql`update runs set environment_id = environment_id where id = ${fixture.run.id}`.execute(
+            database,
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      } finally {
+        await sql`update runners set device = ${JSON.stringify(original.device)}::jsonb, allowed_modules = ${JSON.stringify(original.allowedModules)}::jsonb, owner_kind = ${original.ownerKind}, owner_user_id = ${original.ownerUserId} where id = ${project.runnerId}`.execute(
+          database,
+        );
+      }
+    }
+  });
+
+  it("guards Project work, captured roots and immutable authority directly in SQL", async ({
+    storeFixture,
+  }) => {
+    const project = await createProjectIdentityFixture(storeFixture, "guarded-work");
+    const fixture = await insertProjectRunFixture(storeFixture, project, "guarded-work");
+    const database = storeFixture.database;
+    for (const mutation of ["model_selection = '{}'::jsonb", "access_mode = 'approval-required'"]) {
+      await expect(
+        sql`update runs set ${sql.raw(mutation)} where id = ${fixture.run.id}`.execute(database),
+      ).rejects.toMatchObject({ code: "23514" });
+    }
+    for (const table of ["runs", "thread_inputs", "commands"]) {
+      await expect(
+        sql`insert into ${sql.id(table)} select (jsonb_populate_record(null::${sql.id(table)}, to_jsonb(row) || jsonb_build_object('initiator_generation', null, 'actor_principal_id', (select id from principals where user_id = ${fixture.userId})))).* from ${sql.id(table)} row ${table === "commands" ? sql`where type = 'run.execute.project'` : sql``} limit 1`.execute(
+          database,
+        ),
+        table,
+      ).rejects.toMatchObject({ code: "23514" });
+    }
+    const principal = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", fixture.userId)
+      .executeTakeFirstOrThrow();
+    await expect(
+      sql`update commands set type = 'run.interrupt', actor_principal_id = ${principal.id}, membership_generation = null, initiator_generation = null, payload = '{}'::jsonb where type = 'run.execute.project'`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    for (const type of ["run.interrupt", "run.steer"] as const) {
+      await database
+        .insertInto("commands")
+        .values({
+          id: createId("command"),
+          actorPrincipalId: principal.id,
+          requestedBy: fixture.userId,
+          authoritySource: sql`'{"kind":"workspace-membership"}'::jsonb`,
+          environmentId: fixture.environmentId,
+          threadId: fixture.thread.id,
+          runId: fixture.run.id,
+          idempotencyKey: type,
+          type,
+          payload: sql`'{}'::jsonb`,
+          status: "pending",
+          dispatcherId: null,
+          lastError: null,
+        })
+        .execute();
+    }
+    for (const table of ["runs", "thread_inputs", "commands"]) {
+      for (const mutation of [
+        "requested_by = null",
+        "initiator_generation = null",
+        "membership_generation = null",
+        "authority_source = '{}'::jsonb",
+        "actor_principal_id = 'principal:system'",
+      ]) {
+        await expect(
+          sql`update ${sql.id(table)} set ${sql.raw(mutation)} ${table === "commands" ? sql`where type = 'run.execute.project'` : sql``}`.execute(
+            database,
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      }
+    }
+    for (const mutation of [
+      "authority_model_version = 1",
+      `deployment_shape = '{"kind":"personal","defaultWorkspaceBacking":"local-directory"}'::jsonb`,
+    ]) {
+      await expect(
+        sql`update deployments set ${sql.raw(mutation)}`.execute(database),
+      ).rejects.toMatchObject({ code: "23514" });
+    }
+    await database
+      .updateTable("deployments")
+      .set({ activeHostInstanceId: createId("hostInstance") })
+      .execute();
+    expect(
+      (await database.selectFrom("runs").selectAll().executeTakeFirstOrThrow()).requestedBy,
+    ).toBe(fixture.userId);
+  });
+  it("stores unattended work as the Project and rejects a stale Watch incarnation", async ({
+    storeFixture,
+  }) => {
+    const project = await createProjectIdentityFixture(storeFixture, "unattended");
+    const fixture = await insertProjectRunFixture(storeFixture, project, "watch-anchor");
+    const database = storeFixture.database;
+    const created = await new TriggerStore(database).create({
+      actorThreadId: null,
+      anchorThreadId: fixture.thread.id,
       createdBy: fixture.userId,
-      idempotencyKey: "second-project",
-      kind: "project",
-      name: "Project",
-      status: "ready",
+      idempotencyKey: "unattended-watch",
+      name: "Files",
+      source: { kind: "watch" },
+      program: {
+        toolContractVersion: 2,
+        language: "javascript",
+        source: "export default async () => {}",
+      },
     });
-    await sql`update deployments set deployment_shape = '{"kind":"personal","defaultWorkspaceBacking":"local-directory"}'::jsonb`.execute(
+    await database
+      .updateTable("triggerWatchActivations")
+      .set({ executionGeneration: 1 })
+      .where("triggerId", "=", created.trigger.id)
+      .execute();
+    const activation = await database
+      .selectFrom("triggerWatchActivations")
+      .selectAll()
+      .where("triggerId", "=", created.trigger.id)
+      .executeTakeFirstOrThrow();
+    const source = {
+      kind: "watch-observation",
+      activationId: activation.id,
+      revisionId: activation.revisionId,
+      triggerId: activation.triggerId,
+      observationId: "observation-1",
+      incarnation: activation.executionGeneration,
+    };
+    const messageId = createId("message");
+    const runId = createId("run");
+    const causalChainId = createId("causalChain");
+    await database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", fixture.run.id)
+      .execute();
+    await database.transaction().execute(async (transaction) => {
+      await sql`insert into causal_chains(id, root_watch_activation_id, root_watch_observation_id, max_delegations, max_autonomous_runs) values (${causalChainId}, ${activation.id}, 'observation-1', 32, 32)`.execute(
+        transaction,
+      );
+      await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content)
+        values (${messageId}, ${fixture.thread.id}, 1, 'input', ${project.principalId},
+          ${JSON.stringify({ kind: "watch", activationId: activation.id, revisionId: activation.revisionId, triggerId: activation.triggerId, displayName: "Files" })}::jsonb, '[{"type":"text","text":"Changed"}]'::jsonb)`.execute(
+        transaction,
+      );
+      await sql`insert into thread_inputs select (jsonb_populate_record(null::thread_inputs,
+        to_jsonb(i) || jsonb_build_object('message_id', ${messageId}::text, 'causal_chain_id', ${causalChainId}::text,
+          'idempotency_key', 'unattended', 'requested_by', null, 'membership_generation', null, 'initiator_generation', null,
+          'authority_source', ${JSON.stringify(source)}::jsonb))).* from thread_inputs i where message_id = ${fixture.turn.input.messageId}`.execute(
+        transaction,
+      );
+      await sql`insert into runs select (jsonb_populate_record(null::runs,
+        to_jsonb(r) || jsonb_build_object('id', ${runId}::text, 'seed_input_id', ${messageId}::text,
+          'activation_input_id', ${messageId}::text, 'causal_chain_id', ${causalChainId}::text, 'run_ordinal', 1,
+          'requested_by', null, 'membership_generation', null, 'initiator_generation', null, 'status', 'queued', 'completed_at', null,
+          'authority_source', ${JSON.stringify(source)}::jsonb))).* from runs r where id = ${fixture.run.id}`.execute(
+        transaction,
+      );
+      await sql`insert into commands select (jsonb_populate_record(null::commands,
+        to_jsonb(c) || jsonb_build_object('id', ${createId("command")}::text, 'run_id', ${runId}::text,
+          'idempotency_key', 'unattended', 'requested_by', null, 'membership_generation', null, 'initiator_generation', null,
+          'payload', jsonb_build_object('type','run.execute.project','runId',${runId}::text,'threadId',${fixture.thread.id}::text),
+          'authority_source', ${JSON.stringify(source)}::jsonb))).* from commands c where id = ${fixture.turn.command.id}`.execute(
+        transaction,
+      );
+    });
+    const stored = await database
+      .selectFrom("runs")
+      .selectAll()
+      .where("id", "=", runId)
+      .executeTakeFirstOrThrow();
+    expect(runFromRow(stored).requestedBy).toBeNull();
+    expect(stored).toMatchObject({
+      actorPrincipalId: project.principalId,
+      requestedBy: null,
+      membershipGeneration: null,
+      initiatorGeneration: null,
+      originConnectionId: null,
+    });
+    const duplicateMessageId = createId("message");
+    await sql`insert into messages select (jsonb_populate_record(null::messages, to_jsonb(m) || jsonb_build_object('id', ${duplicateMessageId}::text, 'sequence', 2))).* from messages m where id = ${messageId}`.execute(
       database,
     );
     await expect(
-      sql`insert into principals (id, kind, workspace_id, display_name) values (${`pri_${randomUUID()}`}, 'project', ${project.id}, 'Project')`.execute(
+      sql`insert into thread_inputs select (jsonb_populate_record(null::thread_inputs, to_jsonb(i) || jsonb_build_object('message_id', ${duplicateMessageId}::text))).* from thread_inputs i where message_id = ${messageId}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23505", constraint: "thread_inputs_unattended_idempotency" });
+    await database
+      .updateTable("triggerWatchActivations")
+      .set({ executionGeneration: Number(activation.executionGeneration) + 1 })
+      .where("id", "=", activation.id)
+      .execute();
+    await expect(
+      sql`insert into thread_inputs select (jsonb_populate_record(null::thread_inputs, to_jsonb(i) || jsonb_build_object('idempotency_key','stale-incarnation'))).* from thread_inputs i where message_id = ${messageId}`.execute(
         database,
       ),
     ).rejects.toMatchObject({ code: "23514" });
   });
+
   it("adds root metadata without scans or heap rewrites and records the held DDL locks", async ({
     storeFixture,
   }) => {
@@ -128,45 +513,85 @@ describeStore("additive Project authority preparation", (it) => {
                   await sql`
         select 'column:' || table_name || ':' || column_name as name,
           data_type || ':' || is_nullable || ':' || coalesce(column_default, '') as definition
-        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'team_invitations', 'deployments')
+        from information_schema.columns where table_schema = 'public' and table_name in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'team_invitations', 'deployments', 'auth_admissions')
         union all select 'constraint:' || conrelid::regclass::text || ':' || conname, pg_get_constraintdef(oid)
-          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'team_invitations'::regclass, 'deployments'::regclass)
-        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'team_invitations', 'deployments')
-        union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('opensteer_project_principal_scope', 'opensteer_prevent_last_workspace_owner_removal', 'opensteer_require_workspace_owner', 'opensteer_project_membership_change', 'opensteer_refresh_account_directory_user')
-        union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where tgrelid = 'principals'::regclass and tgname = 'project_principal_scope'
+          from pg_constraint where connamespace = 'public'::regnamespace and conrelid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass, 'team_invitations'::regclass, 'deployments'::regclass, 'auth_admissions'::regclass)
+        union all select 'index:' || indexname, indexdef from pg_indexes where schemaname = 'public' and tablename in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'team_invitations', 'deployments', 'auth_admissions')
+        union all select 'function:' || proname, pg_get_functiondef(oid) from pg_proc where pronamespace = 'public'::regnamespace and proname in ('opensteer_project_principal_scope', 'opensteer_enforce_project_event_receipt', 'opensteer_prevent_last_workspace_owner_removal', 'opensteer_require_workspace_owner', 'opensteer_project_membership_change', 'opensteer_refresh_account_directory_user')
+        union all select 'trigger:' || tgname, pg_get_triggerdef(oid) from pg_trigger where (tgrelid = 'principals'::regclass and tgname = 'project_principal_scope') or (tgrelid = 'agent_control_requests'::regclass and tgname = 'agent_control_requests_project_event')
         order by name
       `.execute(transaction)
                 ).rows;
               const freshDefinitions = await definitions();
-              await sql`drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
+              await sql`drop trigger agent_control_requests_project_event on agent_control_requests;
+        drop function opensteer_enforce_project_event_receipt();
+        drop index thread_inputs_unattended_idempotency; drop index commands_unattended_idempotency;
+        drop trigger runs_execution_authority on runs; drop trigger commands_execution_authority on commands;
+        drop trigger runs_admitted_project_settings on runs; drop function opensteer_project_run_settings_immutable();
+        drop trigger thread_inputs_execution_authority on thread_inputs; drop function opensteer_enforce_input_execution_authority();
+        drop trigger deployments_immutable_authority on deployments; drop function opensteer_prevent_deployment_authority_change();
+        drop function opensteer_project_work_is_valid(text,text,text,bigint,bigint,text,jsonb);
+        drop function opensteer_user_can_execute_thread(text,text,text); drop function opensteer_user_can_execute_environment(text,text,text);
+        drop trigger request_grant_identity on grants; drop function opensteer_request_grant_identity();
+         drop trigger project_request_scope on requests; drop function opensteer_project_request_scope();
+         alter table requests drop column originating_grant_id, drop constraint requests_requester_audience;
+         drop trigger project_principal_scope on principals; drop function opensteer_project_principal_scope();
         alter table principals drop column workspace_id;
         alter table principals add constraint principals_kind_shape_check check ((kind = 'user' and user_id is not null) or (kind in ('channel-identity', 'system') and user_id is null));
         alter table runs drop column initiator_generation, drop column origin_connection_id;
         alter table thread_inputs drop column initiator_generation, drop column origin_connection_id;
-        alter table commands drop column initiator_generation, drop column origin_connection_id, drop column membership_generation;
+        alter table commands drop column initiator_generation, drop column origin_connection_id, drop column membership_generation, drop column originating_grant_id;
         alter table triggers drop column created_by_principal_id;
         alter table trigger_revisions drop column created_by_principal_id;
         alter table trigger_watch_activations drop column created_by_principal_id;
         alter table team_invitations drop column trusted_computer_confirmed_at;
         alter table deployments drop column trusted_members_acknowledged_at;
+        alter table auth_admissions drop column trusted_members_acknowledged_at;
         insert into principals (id, kind, display_name) select 'pri_ddl_' || item, 'system', 'System' from generate_series(1, 100) item
       `.execute(transaction);
               const facts = async () =>
                 (
-                  await sql`
+                  await sql<{ relname: string; relfilenode: number; scans: string | null }>`
         select relname, relfilenode, case when relname <> 'principals' then pg_stat_get_xact_numscans(oid) end as scans
-        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'team_invitations'::regclass, 'deployments'::regclass)
+        from pg_class where oid in ('principals'::regclass, 'runs'::regclass, 'thread_inputs'::regclass, 'commands'::regclass, 'triggers'::regclass, 'trigger_revisions'::regclass, 'trigger_watch_activations'::regclass, 'agent_control_requests'::regclass, 'team_invitations'::regclass, 'deployments'::regclass, 'auth_admissions'::regclass)
         order by relname
       `.execute(transaction)
                 ).rows;
+              const checks = await sql<{
+                name: string;
+                definition: string;
+              }>`select conname as name, pg_get_constraintdef(oid) as definition from pg_constraint where conrelid='public.agent_control_requests'::regclass and conname in ('agent_control_requests_action_check','agent_control_requests_action_class_check')`.execute(
+                transaction,
+              );
+              for (const check of checks.rows) {
+                const legacy = check.definition
+                  .replace(/\s+NOT VALID$/u, "")
+                  .replace(", 'project.event'::text", "");
+                await sql
+                  .raw(`alter table public.agent_control_requests drop constraint ${check.name}`)
+                  .execute(transaction);
+                await sql
+                  .raw(
+                    `alter table public.agent_control_requests add constraint ${check.name} ${legacy}`,
+                  )
+                  .execute(transaction);
+              }
               const before = await facts();
               await projectAuthorityCutoverMigration.up(transaction);
-              expect(await facts()).toEqual(before);
+              expect(await facts()).toEqual(
+                before.map((row) => ({
+                  ...row,
+                  scans:
+                    row.relname === "thread_inputs" || row.relname === "commands"
+                      ? String(Number(row.scans) + 1)
+                      : row.scans,
+                })),
+              );
               expect(await definitions()).toEqual(freshDefinitions);
               const locks = (
                 await sql<{ relname: string; mode: string }>`
         select distinct c.relname, l.mode from pg_locks l join pg_class c on c.oid = l.relation
-        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_connections', 'workspaces', 'team_invitations', 'deployments')
+        where l.pid = pg_backend_pid() and l.granted and c.relname in ('principals', 'runs', 'thread_inputs', 'commands', 'triggers', 'trigger_revisions', 'trigger_watch_activations', 'agent_control_requests', 'agent_connections', 'workspaces', 'team_invitations', 'deployments', 'auth_admissions')
         order by c.relname, l.mode
       `.execute(transaction)
               ).rows;
@@ -180,6 +605,8 @@ describeStore("additive Project authority preparation", (it) => {
                 "trigger_watch_activations",
                 "team_invitations",
                 "deployments",
+                "agent_control_requests",
+                "auth_admissions",
               ])
                 expect(locks).toContainEqual({ relname: table, mode: "AccessExclusiveLock" });
               expect(locks).toContainEqual({

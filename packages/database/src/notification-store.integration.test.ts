@@ -734,14 +734,17 @@ integration("notification decision boundary", () => {
         .where("id", "=", seed.seedInputId)
         .executeTakeFirstOrThrow();
     }
-    async function makePersonalDeployment(subject: string): Promise<void> {
-      await sql`
-      update public.deployments
-      set deployment_shape = jsonb_build_object(
-        'defaultWorkspaceBacking', 'local-directory', 'kind', 'personal'
-      )
-      where singleton_key = 'primary'
-    `.execute(database);
+    async function createPersonalAccountFixture(suffix: string): Promise<Pick<Fixture, "ownerId">> {
+      await store.ensureDeployment({
+        canonicalOrigin: "http://127.0.0.1:4310",
+        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        hostInstanceId: createId("hostInstance"),
+      });
+      const ownerId = await store.createUser(`Owner ${suffix}`);
+      await linkAccount(ownerId);
+      return { ownerId };
+    }
+    async function linkPersonalAccount(subject: string): Promise<void> {
       const linkedAt = new Date();
       await database
         .insertInto("personalRemoteAccountLink")
@@ -840,7 +843,8 @@ integration("notification decision boundary", () => {
       openRequest,
       appendPreinstallAccessOpened,
       setRunSeedAuthor,
-      makePersonalDeployment,
+      createPersonalAccountFixture,
+      linkPersonalAccount,
       observed,
       publications,
       readEvents,
@@ -2314,8 +2318,9 @@ integration("notification decision boundary", () => {
     it("reaches a Personal Host's owner through the Account they linked", async ({
       storeFixture,
     }) => {
-      const { createFixture, database, makePersonalDeployment, notifications } = storeFixture;
-      const fixture = await createFixture("personal");
+      const { createPersonalAccountFixture, database, linkPersonalAccount, notifications } =
+        storeFixture;
+      const fixture = await createPersonalAccountFixture("personal");
       const subject = `acct_${randomUUID()}`;
       // A Personal Host holds no Account OIDC provider at all: its owner is the
       // one administrator, and the link row is the only place that subject lives.
@@ -2325,32 +2330,34 @@ integration("notification decision boundary", () => {
         .set({ instanceRole: "administrator" })
         .where("id", "=", fixture.ownerId)
         .execute();
-      await makePersonalDeployment(subject);
+      await linkPersonalAccount(subject);
 
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([subject]);
     });
 
     it("never lends a Personal link to a member who is not the owner", async ({ storeFixture }) => {
-      const { createFixture, database, makePersonalDeployment, notifications } = storeFixture;
-      const fixture = await createFixture("personal-member");
+      const { createPersonalAccountFixture, database, linkPersonalAccount, notifications } =
+        storeFixture;
+      const fixture = await createPersonalAccountFixture("personal-member");
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
-      await makePersonalDeployment(`acct_${randomUUID()}`);
+      await linkPersonalAccount(`acct_${randomUUID()}`);
 
-      // The Workspace creator is an ordinary user here, so the owner's Account
+      // The person is an ordinary user here, so the owner's Account
       // link does not make this Deployment reachable by that member.
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
     });
 
     it("drops a Personal owner whose Account link is not active", async ({ storeFixture }) => {
-      const { createFixture, database, makePersonalDeployment, notifications } = storeFixture;
-      const fixture = await createFixture("personal-inactive");
+      const { createPersonalAccountFixture, database, linkPersonalAccount, notifications } =
+        storeFixture;
+      const fixture = await createPersonalAccountFixture("personal-inactive");
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
       await database
         .updateTable("users")
         .set({ instanceRole: "administrator" })
         .where("id", "=", fixture.ownerId)
         .execute();
-      await makePersonalDeployment(`acct_${randomUUID()}`);
+      await linkPersonalAccount(`acct_${randomUUID()}`);
       await database
         .updateTable("personalRemoteAccountLink")
         .set({ state: "activating" })

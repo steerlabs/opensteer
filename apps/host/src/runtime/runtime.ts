@@ -1,3 +1,4 @@
+import { requireHumanRequester, teamComputerModules } from "@opensteer/database";
 import { authorityPreflight } from "./authority-preflight.js";
 import { createExecutionRuntime } from "./execution-runtime.js";
 import { deploymentPolicy } from "@opensteer/core";
@@ -494,7 +495,13 @@ export async function createHostRuntime(
       deploymentShape: config.workspace.shape,
     });
 
-    const { store } = await createExecutionRuntime(database, deployment, storeDependencies);
+    const executionRuntime = await createExecutionRuntime(database, deployment, storeDependencies);
+    if (executionRuntime.kind !== "person")
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Project Host startup is not activated",
+      });
+    const { store } = executionRuntime;
 
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
@@ -2165,7 +2172,7 @@ export async function createHostRuntime(
         if (run.assignmentId)
           await commands.cancelAssignment({
             assignmentId: run.assignmentId,
-            requestedBy: run.requestedBy,
+            requestedBy: requireHumanRequester(run.requestedBy),
             idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
           });
       await localWorkspaceDriver.removeSpecialist(
@@ -2557,7 +2564,7 @@ export async function createHostRuntime(
             runnerAuthenticator.createEnrollment({
               expectedTeamAccessRevision: revision,
               expectedTeamActor: actor,
-              allowedModules: ["agents", "shell"],
+              allowedModules: teamComputerModules,
               createdBy: actor.userId,
               idempotencyKey: key,
               lifetimeSeconds: 600,

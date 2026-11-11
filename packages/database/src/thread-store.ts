@@ -1,3 +1,4 @@
+import { requireHumanRequester } from "./execution-authority.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
 import { environmentIsAvailableToUser } from "./environment-store.js";
@@ -2078,7 +2079,7 @@ export async function applyGeneratedThreadName(
           !(await environmentIsAvailableToUser(
             transaction,
             authority.environmentId,
-            authority.requestedBy,
+            requireHumanRequester(authority.requestedBy),
           ))
         )
           return null;

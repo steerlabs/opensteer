@@ -13,6 +13,8 @@ import {
   type Attachment,
   type ReadyAttachment,
   type UserId,
+  type RunId,
+  type ThreadId,
 } from "@opensteer/core";
 import { AttachmentStore, type AttachmentRow } from "@opensteer/database";
 import sharp from "sharp";
@@ -26,6 +28,10 @@ export class RunAttachmentsTokenService extends RunCapabilityTokenService<"opens
   }) {
     super({ ...options, audience: "opensteer-run-attachments" });
   }
+}
+
+export interface RunAttachmentAuthenticator {
+  authenticate(token: string): Promise<{ readonly runId: RunId; readonly threadId: ThreadId }>;
 }
 
 function attachmentView(row: AttachmentRow): Attachment {
@@ -63,12 +69,12 @@ function unavailable(): OpensteerError {
 export class AttachmentService {
   readonly #directory: string;
   readonly #store: AttachmentStore;
-  readonly #runTokens: RunAttachmentsTokenService;
+  readonly #runTokens: RunAttachmentAuthenticator;
 
   constructor(input: {
     readonly dataDirectory: string;
     readonly store: AttachmentStore;
-    readonly runTokens: RunAttachmentsTokenService;
+    readonly runTokens: RunAttachmentAuthenticator;
   }) {
     this.#directory = join(input.dataDirectory, "attachments");
     this.#store = input.store;

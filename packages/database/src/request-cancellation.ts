@@ -1,7 +1,6 @@
 import { lockRequestWorkspaces } from "./request-workspace-locks.js";
 import {
   type AgentEvent,
-  type Request,
   type RequestCancellationReason,
   type RequestId,
   type RunId,
@@ -11,8 +10,8 @@ import {
 } from "@opensteer/core";
 import type { Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
-import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
-import type { DatabaseSchema } from "./schema.js";
+import { requestOriginEnvironment } from "./request-persistence.js";
+import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
@@ -92,9 +91,7 @@ export async function cancelPending(
     .where("status", "=", "pending")
     .returningAll()
     .execute();
-  const events = await Promise.all(
-    rows.map((row) => cancellationEvent(transaction, requestFromRow(row))),
-  );
+  const events = await Promise.all(rows.map((row) => cancellationEvent(transaction, row)));
   if (input.reason === "resource-deleted" || input.reason === "authority-revoked") {
     for (const row of rows) {
       if (row.mode !== "durable" || row.kind === "integration.input") continue;
@@ -123,9 +120,19 @@ export async function cancelPending(
 
 async function cancellationEvent(
   transaction: Transaction<DatabaseSchema>,
-  request: Request,
+  request: Pick<
+    RequestRow,
+    | "id"
+    | "status"
+    | "cancellationReason"
+    | "originatingRunId"
+    | "originatingOccurrenceId"
+    | "originatingThreadId"
+    | "originatingWorkspaceId"
+  >,
 ): Promise<AgentEvent> {
-  if (request.status !== "cancelled") throw new Error("Cancellation event requires cancellation");
+  if (request.status !== "cancelled" || request.cancellationReason === null)
+    throw new Error("Cancellation event requires cancellation");
   return appendHostWorkspaceEvent(transaction, {
     data: { reason: request.cancellationReason, requestId: request.id },
     environmentId: await requestOriginEnvironment(transaction, request),

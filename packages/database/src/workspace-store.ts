@@ -145,11 +145,6 @@ export async function createWorkspace(
   database: Kysely<DatabaseSchema>,
   input: CreateWorkspaceInput,
 ): Promise<Workspace> {
-  if (isProjectDeploymentAuthority(await readInitializedDeploymentAuthority(database)))
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Team Projects require the access writer",
-    });
   return withDatabaseTransaction(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.createdBy, input.idempotencyKey);
     const existing = await findCommandByIdempotency(

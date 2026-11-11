@@ -5,9 +5,16 @@ import {
   type ThreadAccessMode,
   type ThreadReachScope,
   type UserId,
+  type ProjectAuthority,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
+import type { ProjectCapabilityScope } from "@opensteer/protocol";
 import type { RunToolScope, RunToolTokenService } from "../agents/run-tool-tokens.js";
+import {
+  projectCapabilityBinding,
+  type ProjectCapabilityTokenService,
+  isProjectRunCapabilityEnvelope,
+} from "../agents/run-capability.js";
 import type {
   TriggerControlScope,
   TriggerControlTokenService,
@@ -16,27 +23,38 @@ import type { WatchControlScope, WatchControlTokenService } from "../triggers/wa
 
 export interface AgentCallerBase {
   readonly key: string;
-  readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
   readonly reach: ThreadReachScope;
 }
-export interface RunCaller extends AgentCallerBase {
+export interface HumanAgentCallerBase extends AgentCallerBase {
+  readonly userId: UserId;
+}
+export interface ProjectCaller extends AgentCallerBase {
+  readonly kind: "project";
+  readonly principal: ProjectAuthority["principal"];
+  readonly origin: ProjectAuthority["origin"];
+  readonly reach: Extract<ThreadReachScope, { kind: "workspace" }>;
+  readonly thread: Thread;
+  readonly claims: ProjectCapabilityScope;
+}
+export interface RunCaller extends HumanAgentCallerBase {
   readonly kind: "run";
   readonly thread: Thread;
   readonly claims: RunToolScope;
 }
-export interface ProgramCaller extends AgentCallerBase {
+export interface ProgramCaller extends HumanAgentCallerBase {
   readonly kind: "program";
   readonly anchor: Thread;
   readonly program:
     | ({ readonly kind: "trigger" } & TriggerControlScope)
     | ({ readonly kind: "watch" } & WatchControlScope);
 }
-export interface ConnectionCaller extends AgentCallerBase {
+export interface ConnectionCaller extends HumanAgentCallerBase {
   readonly kind: "connection";
   readonly connectionId: string;
 }
-export type AgentCaller = RunCaller | ProgramCaller | ConnectionCaller;
+export type HumanAgentCaller = RunCaller | ProgramCaller | ConnectionCaller;
+export type AgentCaller = HumanAgentCaller | ProjectCaller;
 
 /** Connected agents' MCP-only credentials; browser and Runner credentials are never tried. */
 export interface ConnectionAuthenticator {
@@ -65,7 +83,10 @@ export class AgentCallerResolver {
   }) {
     this.options = options;
   }
-  async authenticate(bearer: string): Promise<AgentCaller> {
+  async authenticate(bearer: string): Promise<HumanAgentCaller> {
+    // Unverified routing can only refuse; this resolver authenticates human capabilities.
+    if (Buffer.byteLength(bearer, "utf8") > 64 * 1024 || isProjectRunCapabilityEnvelope(bearer))
+      throw unavailable();
     // Only token validation selects a credential family. A valid token whose live
     // anchor fails must never fall through to another family's authenticator.
     const run = await this.options.runs.authenticate(bearer).catch(() => null);
@@ -159,11 +180,44 @@ export class AgentCallerResolver {
 }
 export function callerThread(caller: AgentCaller): Thread {
   if (caller.kind === "connection") throw unavailable();
-  return caller.kind === "run" ? caller.thread : caller.anchor;
+  return caller.kind === "run" || caller.kind === "project" ? caller.thread : caller.anchor;
 }
 function unavailable() {
   return new OpensteerError({
     code: "forbidden",
     message: "MCP caller authority is unavailable or expired",
   });
+}
+
+export class ProjectCallerResolver {
+  readonly options: {
+    readonly capabilities: Pick<ProjectCapabilityTokenService, "verify">;
+    readonly resolve: (
+      binding: ProjectCapabilityScope,
+    ) => Promise<{ readonly thread: Thread; readonly accessMode: ThreadAccessMode }>;
+  };
+  constructor(options: ProjectCallerResolver["options"]) {
+    this.options = options;
+  }
+  async authenticate(bearer: string): Promise<ProjectCaller> {
+    const claims = await this.options.capabilities.verify(bearer, "opensteer-project-run-tools");
+    const binding = projectCapabilityBinding(claims);
+    const resolved = await this.options.resolve(binding);
+    if (
+      resolved.thread.workspaceId !== binding.workspaceId ||
+      resolved.thread.id !== binding.threadId ||
+      resolved.thread.environmentId !== binding.environmentId
+    )
+      throw unavailable();
+    return {
+      kind: "project",
+      key: `project-run:${binding.runId}:${binding.bindingGeneration}:${binding.grantId}`,
+      principal: binding.authority.principal,
+      origin: binding.authority.origin,
+      reach: { kind: "workspace", workspaceId: binding.workspaceId },
+      thread: resolved.thread,
+      accessMode: resolved.accessMode,
+      claims: binding,
+    };
+  }
 }

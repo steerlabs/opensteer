@@ -116,6 +116,74 @@ describe("Runner connection registry", () => {
     }
   });
 
+  it("gates separate Project provisioning on the authenticated authority, capability and fixed grant", async () => {
+    for (const mode of ["ready", "legacy", "old-runner", "widened"] as const) {
+      const registry = new RunnerRegistry({
+        hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+      });
+      try {
+        const environmentId = createId("environment");
+        const storageAuthorityId = createId("storageAuthority");
+        const base = hello(createId("runner"), environmentId, "boot-team");
+        if (!base.modules.agents) throw new Error("Fixture has no agents");
+        const identity: RunnerIdentity = {
+          ...base,
+          ...(mode === "legacy" ? {} : { deploymentAuthority: { kind: "server", model: 2 } }),
+          allowedModules: mode === "widened" ? ["agents", "shell", "browser"] : ["agents", "shell"],
+          capabilities: mode === "old-runner" ? [] : ["project-authority-v1"],
+          modules: {
+            ...base.modules,
+            agents: {
+              ...base.modules.agents,
+              localStorage: { storageAuthorityId, bindings: [], truncated: false },
+            },
+          },
+        };
+        const peer = new MemoryRunnerPeer(`team-${mode}`);
+        await registerAttached(registry, identity, peer);
+        const request = {
+          type: "host.workspace.project.provision" as const,
+          requestId: crypto.randomUUID(),
+          operationId: "team-provision",
+          binding: {
+            workspaceId: createId("workspace"),
+            bindingId: createId("workspaceBinding"),
+            ownerEnvironmentId: environmentId,
+            generation: 1,
+            storageAuthorityId,
+          },
+        };
+        const pending = registry.requestWorkspaceLocal(
+          environmentId,
+          request,
+          AbortSignal.timeout(1000),
+        );
+        if (mode !== "ready") {
+          await expect(pending).rejects.toMatchObject({ reason: "runner-update-required" });
+          expect(peer.messages.some((message) => message.type === request.type)).toBe(false);
+        } else {
+          const settled = expect(pending).resolves.toMatchObject({
+            type: "runner.workspace.local.provisioned",
+          });
+          const sent = peer.messages.findLast((message) => message.type === request.type);
+          if (!sent || sent.type !== request.type)
+            throw new Error("Team provision never reached the Runner");
+          await registry.handle(peer, {
+            type: "runner.workspace.local.provisioned",
+            requestId: request.requestId,
+            operationId: request.operationId,
+            binding: request.binding,
+            fence: sent.fence,
+            path: "/team/projects/project",
+          });
+          await settled;
+        }
+      } finally {
+        await registry.close();
+      }
+    }
+  });
+
   it("settles specialist folder removal when its owning Runner replies", async () => {
     const registry = new RunnerRegistry({
       hooks: { authorize: async () => undefined, onEvent: async () => undefined },

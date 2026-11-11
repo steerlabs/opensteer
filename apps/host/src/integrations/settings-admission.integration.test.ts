@@ -3,7 +3,7 @@ import { IntegrationPlatformStore } from "@opensteer/database";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { expect, vi } from "vitest";
 import { IntegrationToolHandlers } from "../mcp/handlers/integrations.js";
-import type { AgentCaller } from "../mcp/agent-caller.js";
+import type { HumanAgentCaller as AgentCaller } from "../mcp/agent-caller.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 
 describeStore("Settings invocation admission", (test) => {

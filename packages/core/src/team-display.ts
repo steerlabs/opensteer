@@ -6,6 +6,8 @@ import { UserIdSchema, RequestIdSchema } from "./ids.js";
 export const TeamReasonSchema = z.enum([
   "team-unavailable",
   "team-not-implemented",
+  "guests-unavailable",
+  "projects-prevent-replacement",
   "requester-only",
   "manager-only",
   "human-session-required",
@@ -87,12 +89,14 @@ export const ThreadRequestWaitsSchema = z
 export const ThreadRequestOutcomeSchema = z.discriminatedUnion("status", [
   z.object({
     requestId: RequestIdSchema,
+    class: ThreadRequestWaitSchema.shape.class.optional(),
     status: z.enum(["fulfilled", "declined", "withdrawn"]),
     at: z.iso.datetime({ offset: true }),
     resolvedByName: name,
   }),
   z.object({
     requestId: RequestIdSchema,
+    class: ThreadRequestWaitSchema.shape.class.optional(),
     status: z.literal("cancelled"),
     at: z.iso.datetime({ offset: true }),
     reason: ProjectRequestCancellationReasonSchema,

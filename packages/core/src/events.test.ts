@@ -4,6 +4,8 @@ import {
   AgentEventSchema,
   AgentEventViewSchema,
   runnerEventDataSchemas,
+  ThreadRequestOutcomeSchema,
+  ProjectRequestCancellationReasonSchema,
   createId,
 } from "./index.js";
 
@@ -212,4 +214,30 @@ it("requires the seed author durably, accepts older Host omissions, and keeps it
   ).toEqual({
     status: "completed",
   });
+});
+
+// The Host owns managerless cancellation; an engine cannot claim that decision.
+it("keeps the Request DTO epoch separate from the Host cancellation fact and engine input", () => {
+  const cancelled = event("request.cancelled", {
+    requestId: createId("request"),
+    reason: "no-eligible-manager",
+  });
+  expect(AgentEventSchema.safeParse(cancelled).success).toBe(true);
+  expect(AgentEventViewSchema.safeParse(cancelled).success).toBe(true);
+  expect(runnerEventDataSchemas["request.cancelled"].safeParse(cancelled.data).success).toBe(false);
+  const reason = ThreadRequestOutcomeSchema.options[1].shape.reason;
+  for (const value of [
+    "run-ended",
+    "process-lost",
+    "source-closed",
+    "thread-archived",
+    "workspace-deleted",
+    "membership-revoked",
+    "resource-deleted",
+    "authority-revoked",
+    "no-eligible-manager",
+  ])
+    expect(reason.safeParse(value).success).toBe(
+      ProjectRequestCancellationReasonSchema.safeParse(value).success,
+    );
 });

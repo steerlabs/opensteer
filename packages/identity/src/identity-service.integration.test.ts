@@ -1,3 +1,4 @@
+import { createTestDeploymentIdentity } from "@opensteer/database/test-support/deployment";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
   createId as createStorageFixtureId,
@@ -584,13 +585,11 @@ integration("IdentityService", () => {
       });
       expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
       expect(account.accessToken).not.toContain(accessToken);
-      await new OpensteerStore(database).ensureDeployment({
+      await createTestDeploymentIdentity(database, {
+        shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+        model: 2,
         canonicalOrigin: publicOrigin,
-        deploymentId: createId("deployment"),
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
       });
-      await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
       await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
         database,
       );
@@ -2041,12 +2040,11 @@ integration("IdentityService", () => {
 
   it("requires and durably records the first team administrator's trust without Main", async () => {
     const origin = "http://127.0.0.1:4310";
-    await new OpensteerStore(database).ensureDeployment({
+    await createTestDeploymentIdentity(database, {
+      shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+      model: 2,
       canonicalOrigin: origin,
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
     });
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     const token = "team-owner-enrollment-token-with-enough-entropy";
     const identity = identityService({
       initialOwnerEnrollment: { expiresAt: new Date(Date.now() + 3600000), token },
@@ -2091,13 +2089,11 @@ integration("IdentityService", () => {
       { displayName: "Owner", email: "owner@team.test", password: "correct horse battery staple" },
       new Headers({ origin }),
     );
-    await new OpensteerStore(database).ensureDeployment({
+    await createTestDeploymentIdentity(database, {
+      shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+      model: 2,
       canonicalOrigin: origin,
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
     });
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
     await sql`update auth_sessions s set member_generation = u.authority_generation from users u where u.id = s.user_id`.execute(
       database,
     );
