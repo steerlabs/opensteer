@@ -5,16 +5,25 @@ import { z } from "zod";
 
 import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import { RequestListOutputSchema, RequestWithdrawOutputSchema } from "./outputs.js";
-export const request_list = defineAgentTool({
-  name: "request_list",
+export const pending_request = defineAgentTool({
+  name: "pending_request",
   title: "Inspect Requests",
   description:
-    "Inspect outgoing Thread/incoming Workspace Requests, including pending/terminal status, newest first with a paging window. Never poll for approval; pending is not permission.",
-  input: z.strictObject({
-    before: CursorSchema.optional(),
-    limit: z.number().int().min(1).max(100).default(50),
-  }),
-  output: RequestListOutputSchema,
+    "Inspect reachable Requests. list: outgoing Thread/incoming Workspace Requests, newest first. read: one requestId, with status and safe details. Pending is not permission; this tool cannot answer or approve.",
+  input: z
+    .strictObject({
+      action: z.enum(["list", "read"]).default("list"),
+      requestId: RequestIdSchema.optional(),
+      before: CursorSchema.optional(),
+      limit: z.number().int().min(1).max(100).default(50),
+    })
+    .superRefine((input, context) => {
+      if ((input.action === "read") !== !!input.requestId)
+        context.addIssue({ code: "custom", message: "read requires requestId; list omits it" });
+      if (input.action === "read" && input.before)
+        context.addIssue({ code: "custom", message: "before is for list" });
+    }),
+  output: z.union([RequestListOutputSchema, RequestWithdrawOutputSchema]),
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });

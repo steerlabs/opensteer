@@ -1906,7 +1906,15 @@ export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const kind = identity ? toolKinds.get(`${identity.namespace}/${identity.name}`) : undefined;
 
   if (identity?.namespace === "opensteer") {
-    const present = opensteerSteps.get(identity.name);
+    const present = opensteerSteps.get(
+      (
+        {
+          thread_delegate: "delegate_task",
+          thread_message: "thread_send",
+          request_list: "pending_request",
+        } as Readonly<Record<string, string>>
+      )[identity.name] ?? identity.name,
+    );
     if (present) return present(tool, args);
   }
 
@@ -2230,12 +2238,13 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["browser_sign_in", signInPresentation],
   ["browser_tab_read", said(["Looking at saved tabs", "Looked at saved tabs"], "browser")],
   ["browser_tab_write", saidByAction(tabActions, ["Arranging tabs", "Arranged tabs"], "browser")],
+  ["orchestrator_capabilities", said(["Looking up engines", "Looked up engines"], "list")],
   ["environment_list", said(["Looking up computers", "Looked up computers"], "laptop")],
   [
     "machine_full_disk_access_request",
     said(["Asking for full access to a Mac", "Asked for full access to a Mac"], "laptop"),
   ],
-  ["request_list", said(["Checking its requests", "Checked its requests"], "list")],
+  ["pending_request", said(["Checking its requests", "Checked its requests"], "list")],
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
   ["sign_in", signInPresentation],
   [
@@ -2265,7 +2274,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     },
   ],
   [
-    "thread_delegate",
+    "delegate_task",
     (_tool, args) =>
       step({
         activeLabel: "Starting a task",
@@ -2282,7 +2291,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["person_message", said(["Sending a message", "Sent a message"], "share")],
   ["person_show", said(["Sending to your screen", "Sent to your screen"], "share")],
   ["thread_list", said(["Looking up conversations", "Looked up conversations"], "list")],
-  ["thread_message", said(["Sending a message", "Sent a message"], "share")],
+  ["thread_send", said(["Sending a message", "Sent a message"], "share")],
   ["thread_read", said(["Reading a conversation", "Read a conversation"], "list")],
   [
     "thread_update",

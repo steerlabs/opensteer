@@ -117,13 +117,11 @@ it("requires quiet home delivery and queued important items rather than report-o
   expect(grade(quiet, [mail], "", "").every((c) => c.pass)).toBe(true);
   expect(grade(quiet, [mail], "", "Done.").every((c) => c.pass)).toBe(true);
   expect(
-    grade(quiet, [mail, { tool: "thread_message", args: {}, valid: false }], "").every(
-      (c) => c.pass,
-    ),
+    grade(quiet, [mail, { tool: "thread_send", args: {}, valid: false }], "").every((c) => c.pass),
   ).toBe(false);
   const important = cases.find((c) => c.id === "memory-important-item")!.expect;
   const message = {
-    tool: "thread_message",
+    tool: "thread_send",
     args: { threadId: "home", delivery: "queue" },
     valid: true,
   };

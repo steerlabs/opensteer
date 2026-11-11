@@ -15,9 +15,12 @@ import {
   person_show,
   thread_configure,
   thread_queue,
-  thread_delegate,
+  delegate_task,
   task_status,
   thread_interrupt,
+  thread_wait,
+  pending_request,
+  orchestrator_capabilities,
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
@@ -25,12 +28,15 @@ import {
   withDatabaseTransaction,
   BrowserTabGroupStore,
   WorkspaceTabStore,
+  assignmentSummaryInTransaction,
+  AgentConnectionStore,
 } from "@opensteer/database";
 import {
   describeStore,
   testModelSelection,
   pendingEvent,
   enrollTestRunner,
+  testContinuationIdentity,
   type StoreFixture,
 } from "@opensteer/database/test-support/store";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
@@ -60,14 +66,14 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       maxQueuedCommands: 100,
     }),
     onExecutionQueued: () => {},
-    onWorkspaceEvent: () => {},
+    onWorkspaceEvent: (event) => realtime.publish(event),
   });
   const browser = new BrowserService({
     repository: store,
     signer: {} as never,
     hostOrigin: new URL("https://host.test"),
     onSessionsChanged: () => {},
-    onWorkspaceEvent: () => {},
+    onWorkspaceEvent: (event) => realtime.publish(event),
   });
   const computerUse = {
     sessionsForRunner: vi.fn<
@@ -152,7 +158,114 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       input: person_show.input.parse({ target }),
       operationKey: randomUUID(),
     });
-  return { product, caller, read, show, frames, browser, computerUse, commands };
+  return { product, caller, read, show, frames, browser, computerUse, commands, realtime };
+}
+
+async function waitingTask(storeFixture: StoreFixture, suffix: string) {
+  const f = await storeFixture.startRunFixture(suffix);
+  const s = setup(storeFixture, f);
+  const task = await s.product.delegate_task({
+    caller: s.caller,
+    input: delegate_task.input.parse({ task: "Find the answer" }),
+    operationKey: randomUUID(),
+  });
+  const assignmentId = task.assignmentId!;
+  const wake = async () => {
+    const event = await withDatabaseTransaction(storeFixture.database, async (tx) => {
+      const row = await tx
+        .selectFrom("delegations")
+        .selectAll()
+        .where("id", "=", assignmentId)
+        .executeTakeFirstOrThrow();
+      return appendHostWorkspaceEvent(tx, {
+        type: "assignment.updated",
+        threadId: task.threadId,
+        workspaceId: task.workspaceId,
+        environmentId: task.environmentId,
+        runId: null,
+        data: { assignment: await assignmentSummaryInTransaction(tx, row) },
+      });
+    });
+    s.realtime.publish(event);
+  };
+  const settle = async (result = "42") => {
+    await storeFixture.database
+      .updateTable("delegations")
+      .set({
+        status: "completed",
+        resultText: result,
+        resultRunId: task.runId,
+        finishedAt: new Date(),
+      })
+      .where("id", "=", assignmentId)
+      .execute();
+  };
+  const startWorker = async () => {
+    const command = await storeFixture.database
+      .selectFrom("commands")
+      .select("id")
+      .where("runId", "=", task.runId)
+      .where("type", "=", "run.execute")
+      .executeTakeFirstOrThrow();
+    await storeFixture.store.claimCommand(command.id, `${suffix}-child`);
+    const binding = await storeFixture.store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: testContinuationIdentity,
+      harnessInstanceId: f.harnessInstance.id,
+      leaseTokenHash: `${suffix}-child`,
+      membershipGeneration: 1,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      runId: task.runId!,
+      threadId: task.threadId,
+    });
+    await storeFixture.store.commitRunnerEvent({
+      environmentId: f.environmentId,
+      runnerBootId: f.runnerBootId,
+      runnerId: f.runnerId,
+      event: pendingEvent({
+        bindingGeneration: binding.bindingGeneration,
+        data: { status: "running" },
+        environmentId: f.environmentId,
+        ordinal: 0,
+        runId: task.runId!,
+        threadId: task.threadId,
+        type: "run.started",
+        workspaceId: f.workspace.id,
+      }),
+    });
+  };
+  const checkLive = vi.fn(async () => {});
+  const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller) =>
+    s.product.thread_wait({
+      caller,
+      input: thread_wait.input.parse({ assignmentId, timeoutMs }),
+      operationKey: randomUUID(),
+      checkLive,
+    });
+  const status = (caller: AgentCaller = s.caller) =>
+    s.product.task_status({ caller, input: { assignmentId }, operationKey: randomUUID() });
+  const returns = () =>
+    storeFixture.database
+      .selectFrom("threadInputs")
+      .selectAll()
+      .where("threadId", "=", f.thread.id)
+      .where("idempotencyKey", "=", `assignment-return:${assignmentId}`)
+      .where("state", "!=", "cancelled")
+      .execute();
+  return {
+    ...s,
+    f,
+    task,
+    assignmentId,
+    wake,
+    settle,
+    startWorker,
+    wait,
+    status,
+    returns,
+    checkLive,
+  };
 }
 async function share(storeFixture: StoreFixture, f: Fixture) {
   const reader = await storeFixture.store.createUser("Reader");
@@ -224,6 +337,264 @@ async function tool(
 }
 
 describeStore("shaped agent Thread tools", (it) => {
+  it("waits in a Run, reads the result and withdraws its unclaimed automatic return", async ({
+    storeFixture,
+  }) => {
+    const s = await waitingTask(storeFixture, "wait-result");
+    const pending = s.wait();
+    await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await s.settle();
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    await s.wake();
+    expect(await pending).toMatchObject({
+      status: "settled",
+      task: { result: "42", status: "completed" },
+    });
+    expect(await s.returns()).toEqual([]);
+    expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
+  });
+
+  it("leaves automatic return intact after a timeout and reports an empty settled result", async ({
+    storeFixture,
+  }) => {
+    const s = await waitingTask(storeFixture, "wait-timeout");
+    expect(await s.wait(1)).toMatchObject({ status: "timed_out" });
+    await s.settle();
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    expect(await s.returns()).toHaveLength(1);
+  });
+
+  it("returns an empty result after automatic silent settlement", async ({ storeFixture }) => {
+    const s = await waitingTask(storeFixture, "wait-empty");
+    await s.settle("");
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    expect(await s.wait()).toMatchObject({ status: "settled", task: { result: "" } });
+    expect(await s.returns()).toEqual([]);
+  });
+
+  it("serializes a result read racing automatic return so only one delivery remains", async ({
+    storeFixture,
+  }) => {
+    const s = await waitingTask(storeFixture, "wait-race");
+    await s.settle();
+    const [read] = await Promise.all([
+      s.status(),
+      storeFixture.store.drainAssignmentReturn(s.assignmentId),
+    ]);
+    expect(read.result).toBe("42");
+    expect(await s.returns()).toEqual([]);
+    const row = await storeFixture.database
+      .selectFrom("delegations")
+      .select(["resultStatus", "resultReason"])
+      .where("id", "=", s.assignmentId)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({ resultStatus: "delivered", resultReason: "read-by-assigner" });
+  });
+
+  it("does not consume a result for another caller", async ({ storeFixture }) => {
+    const s = await waitingTask(storeFixture, "wait-other-reader");
+    const connections = new AgentConnectionStore(storeFixture.database);
+    const connection = await connections.create({
+      userId: s.f.userId,
+      label: "Reader",
+      clientName: "Reader",
+      resource: "https://host.test/mcp",
+      accessMode: "full-access",
+      reach: { kind: "user" },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await connections.activate(connection.id, "1".repeat(64));
+    await s.settle();
+    expect(
+      (
+        await s.status({
+          kind: "connection",
+          key: `connection:${connection.id}`,
+          connectionId: connection.id,
+          userId: s.f.userId,
+          accessMode: "full-access",
+          reach: { kind: "user" },
+        })
+      ).result,
+    ).toBe("42");
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    expect(await s.returns()).toHaveLength(1);
+  });
+
+  it("refuses self and ancestor waits", async ({ storeFixture }) => {
+    const s = await waitingTask(storeFixture, "wait-ancestry");
+    const wait = (threadId: Fixture["thread"]["id"], caller = s.caller) =>
+      s.product.thread_wait({
+        caller,
+        input: thread_wait.input.parse({ threadId, timeoutMs: 1 }),
+        operationKey: randomUUID(),
+      });
+    await expect(wait(s.f.thread.id)).rejects.toThrow("Cannot wait on yourself");
+    const child = (await storeFixture.store.getThreadForOwner(s.task.threadId, s.f.userId))!;
+    await expect(wait(s.f.thread.id, { ...s.caller, thread: child })).rejects.toThrow(
+      "conversation you are working for",
+    );
+  });
+
+  it("ends a wait without its result after authority is revoked", async ({ storeFixture }) => {
+    const s = await waitingTask(storeFixture, "wait-authority");
+    const pending = s.wait();
+    const rejected = expect(pending).rejects.toThrow("Run tool authority has ended");
+    await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    await storeFixture.database
+      .updateTable("grants")
+      .set({ status: "revoked", revokedAt: new Date(), revokedReason: "stopped" })
+      .where("runId", "=", s.f.run.id)
+      .execute();
+    await s.settle();
+    await s.wake();
+    await rejected;
+    await storeFixture.store.drainAssignmentReturn(s.assignmentId);
+    expect(await s.returns()).toHaveLength(1);
+  });
+
+  it("uses the same waiter for delegate_task wait mode", async ({ storeFixture }) => {
+    const s = await waitingTask(storeFixture, "delegate-wait");
+    const input = delegate_task.input.parse({
+      task: "Another answer",
+      mode: "wait",
+      timeoutMs: 2_000,
+    });
+    const pending = s.product.delegate_task({
+      caller: s.caller,
+      input,
+      operationKey: randomUUID(),
+    });
+    let assignmentId: typeof s.assignmentId | undefined;
+    await vi.waitFor(
+      async () => {
+        const row = await storeFixture.database
+          .selectFrom("delegations")
+          .selectAll()
+          .where("parentRunId", "=", s.f.run.id)
+          .where("id", "!=", s.assignmentId)
+          .executeTakeFirst();
+        expect(row, "wait-mode delegation never created its Assignment").toBeDefined();
+        assignmentId = row!.id;
+      },
+      { timeout: 1000 },
+    );
+    const event = await withDatabaseTransaction(storeFixture.database, async (tx) => {
+      const row = await tx
+        .updateTable("delegations")
+        .set((eb) => ({
+          status: "completed",
+          resultText: "84",
+          resultRunId: eb.ref("childRunId"),
+          finishedAt: new Date(),
+        }))
+        .where("id", "=", assignmentId!)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return appendHostWorkspaceEvent(tx, {
+        type: "assignment.updated",
+        threadId: row.childThreadId,
+        workspaceId: s.f.workspace.id,
+        environmentId: s.f.environmentId,
+        runId: null,
+        data: { assignment: await assignmentSummaryInTransaction(tx, row) },
+      });
+    });
+    s.realtime.publish(event);
+    expect(await pending).toMatchObject({
+      result: "84",
+      status: "completed",
+      wait: { status: "settled" },
+    });
+    expect(await storeFixture.store.drainAssignmentReturn(assignmentId!)).toEqual([]);
+  });
+
+  it("returns a task's Request promptly and reads it without exposing its payload", async ({
+    storeFixture,
+  }) => {
+    const s = await waitingTask(storeFixture, "wait-request");
+    await s.startWorker();
+    const pending = s.wait();
+    await vi.waitFor(() => expect(s.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    const created = await storeFixture.store.requests.create({
+      callId: "child-browser",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: s.task.runId!,
+      originatingThreadId: s.task.threadId,
+      originatingWorkspaceId: s.f.workspace.id,
+      targetWorkspaceId: s.f.workspace.id,
+      requestedBy: s.f.userId,
+      requiredActor: "requester",
+      payload: {
+        kind: "browser.access",
+        reason: "Choose a browser",
+        suggestion: { kind: "user_choice" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Browser access",
+        subject: { kind: "workspace", id: s.f.workspace.id },
+      },
+    });
+    for (const event of created.events) s.realtime.publish(event);
+    expect(await pending).toMatchObject({
+      status: "running",
+      pendingRequest: { id: created.request.id },
+    });
+    const read = await s.product.pending_request({
+      caller: s.caller,
+      input: pending_request.input.parse({ action: "read", requestId: created.request.id }),
+      operationKey: randomUUID(),
+    });
+    expect(read).toMatchObject({
+      request: { id: created.request.id, status: "pending", title: "Browser access" },
+    });
+    expect(read).not.toHaveProperty("request.payload");
+    await expect(
+      s.product.pending_request({
+        caller: s.caller,
+        input: pending_request.input.parse({ action: "read", requestId: createId("request") }),
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toThrow("Request is unavailable");
+  });
+
+  it("discovers enforced budgets separately from computer tools", async ({ storeFixture }) => {
+    const s = await waitingTask(storeFixture, "orchestration-limits");
+    const run = await storeFixture.database
+      .selectFrom("runs")
+      .select("causalChainId")
+      .where("id", "=", s.f.run.id)
+      .executeTakeFirstOrThrow();
+    await storeFixture.database
+      .updateTable("causalChains")
+      .set({ maxDelegations: 7, usedDelegations: 2, maxAutonomousRuns: 12, usedAutonomousRuns: 4 })
+      .where("id", "=", run.causalChainId)
+      .execute();
+    const result = await s.product.orchestrator_capabilities({
+      caller: s.caller,
+      input: orchestrator_capabilities.input.parse({}),
+      operationKey: randomUUID(),
+    });
+    expect(result).toMatchObject({
+      accessCeiling: s.caller.accessMode,
+      limits: {
+        maxTasks: 7,
+        remainingTasks: 5,
+        maxAutonomousRuns: 12,
+        remainingAutonomousRuns: 8,
+        maxWaitMs: 100_000,
+      },
+    });
+    const computers = await s.product.environment_list({
+      caller: s.caller,
+      input: {},
+      operationKey: randomUUID(),
+    });
+    expect(computers.environments).toHaveLength(1);
+    expect(computers).not.toHaveProperty("harnesses");
+  });
   it("filters recent places and activity for each reader in a shared Workspace", async ({
     storeFixture,
   }) => {
@@ -623,10 +994,9 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", f.thread.id)
       .execute();
     expect((await s.read({ threadId: "self" })).thread.id).toBe(f.thread.id);
-    const here = await s.product.thread_delegate({
+    const here = await s.product.delegate_task({
       caller: s.caller,
-      input: thread_delegate.input.parse({
-        environmentId: f.environmentId,
+      input: delegate_task.input.parse({
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         task: "Work here",
@@ -684,23 +1054,23 @@ describeStore("shaped agent Thread tools", (it) => {
         storageAuthorityId: createId("storageAuthority"),
       },
     });
-    const input = thread_delegate.input.parse({
+    const input = delegate_task.input.parse({
       workspaceId: workspace.id,
-      environmentId: f.environmentId,
+
       harnessInstanceId: f.harnessInstance.id,
       model: { ...testModelSelection, options: {} },
       title: "Worker",
       task: "Do the work",
     });
     const operationKey = randomUUID();
-    const delegated = await s.product.thread_delegate({ caller: s.caller, input, operationKey });
+    const delegated = await s.product.delegate_task({ caller: s.caller, input, operationKey });
     expect(delegated).toMatchObject({
       assignmentId: expect.any(String),
       status: "open",
       threadId: expect.any(String),
       parentThreadId: f.thread.id,
     });
-    expect(await s.product.thread_delegate({ caller: s.caller, input, operationKey })).toEqual(
+    expect(await s.product.delegate_task({ caller: s.caller, input, operationKey })).toEqual(
       delegated,
     );
     const list = () =>
@@ -753,9 +1123,9 @@ describeStore("shaped agent Thread tools", (it) => {
       runId: f.run.id,
       target: { runId: delegated.runId, place: { surfaceId: tabId } },
     });
-    const next = await s.product.thread_delegate({
+    const next = await s.product.delegate_task({
       caller: s.caller,
-      input: thread_delegate.input.parse({ threadId: delegated.threadId, task: "Continue" }),
+      input: delegate_task.input.parse({ threadId: delegated.threadId, task: "Continue" }),
       operationKey: randomUUID(),
     });
     expect((await list()).threads.find((t) => t.id === delegated.threadId)).toMatchObject({
@@ -773,10 +1143,21 @@ describeStore("shaped agent Thread tools", (it) => {
       })
       .where("id", "=", next.assignmentId!)
       .execute();
+    const connections = new AgentConnectionStore(storeFixture.database);
+    const record = await connections.create({
+      userId: f.userId,
+      label: "Reader",
+      clientName: "Reader",
+      resource: "https://host.test/mcp",
+      accessMode: "approval-required",
+      reach: { kind: "user" },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    await connections.activate(record.id, "2".repeat(64));
     const connection: AgentCaller = {
       kind: "connection",
-      key: "connection:task",
-      connectionId: "task",
+      key: `connection:${record.id}`,
+      connectionId: record.id,
       userId: f.userId,
       reach: { kind: "user" },
       accessMode: "approval-required",
@@ -787,24 +1168,6 @@ describeStore("shaped agent Thread tools", (it) => {
       operationKey: randomUUID(),
     });
     expect(status.result).toBe(result);
-    const program: AgentCaller = {
-      kind: "program",
-      key: "program:test",
-      userId: f.userId,
-      reach: { kind: "user" },
-      accessMode: "approval-required",
-      anchor: f.thread,
-      program: {} as never,
-    };
-    expect(
-      (
-        await s.product.task_status({
-          caller: program,
-          input: { assignmentId: next.assignmentId! },
-          operationKey: randomUUID(),
-        })
-      ).result,
-    ).toBe(result);
     await expect(
       s.product.task_status({
         caller: { ...connection, reach: { kind: "workspace", workspaceId: f.workspace.id } },

@@ -181,6 +181,13 @@ describe("Assignment result receipts", () => {
         returnMessageId: createId("message"),
       }).success,
     ).toBe(true);
+    expect(
+      AssignmentSchema.safeParse({
+        ...finished,
+        resultText: "Found something",
+        returnReason: "read-by-assigner",
+      }).success,
+    ).toBe(true);
   });
   it("rejects empty failures", () => {
     expect(

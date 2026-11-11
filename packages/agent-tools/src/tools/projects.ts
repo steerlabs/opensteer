@@ -12,7 +12,7 @@ export const project_list = defineAgentTool({
   name: "project_list",
   title: "Find Projects",
   description:
-    "Find reachable Workspaces with IDs and paging window; pass window.nextBefore as before. Tasks use thread_list; engines/models use environment_list.",
+    "Find reachable Workspaces with IDs and paging window; pass window.nextBefore as before. Tasks use thread_list; engines/models use orchestrator_capabilities.",
   input: z.strictObject({
     before: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),

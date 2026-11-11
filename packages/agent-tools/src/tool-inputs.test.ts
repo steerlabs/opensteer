@@ -76,7 +76,7 @@ describe("Opensteer tool inputs", () => {
     }
   });
   it("requires an explicit thread message delivery policy", () => {
-    const schema = tool("thread_message").input;
+    const schema = tool("thread_send").input;
     const base = {
       message: "A self-contained update",
       threadId: "thr_00000000-0000-4000-a000-000000000000",

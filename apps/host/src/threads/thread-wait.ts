@@ -1,5 +1,7 @@
 import { OpensteerError, type Message, type RunId, type Run } from "@opensteer/core";
 
+import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
+
 export interface ThreadWaitSnapshot {
   readonly connected: boolean;
   readonly pendingRequest?: { readonly id: string; readonly kind: string };
@@ -8,6 +10,7 @@ export interface ThreadWaitSnapshot {
   readonly messages: readonly Message[];
   /** Messages after these were not read yet. */
   readonly hasMore?: boolean;
+  readonly settled?: boolean;
 }
 export class ThreadWaitService {
   readonly options: {
@@ -21,7 +24,7 @@ export class ThreadWaitService {
     return new Promise<
       ThreadWaitSnapshot & { readonly status: "running" | "settled" | "offline" | "timed_out" }
     >((resolve, reject) => {
-      const deadline = Date.now() + Math.min(100_000, Math.max(1, input.timeoutMs));
+      const deadline = Date.now() + Math.min(threadWaitMaxMs, Math.max(1, input.timeoutMs));
       let done = false;
       let reading = false;
       let dirty = false;
@@ -75,11 +78,14 @@ export class ThreadWaitService {
               Math.max(1, value.authorityExpiresAt - Date.now()),
             );
           reading = false;
-          if (!value.run || ["completed", "failed", "interrupted"].includes(value.run.status))
+          if (dirty) read();
+          else if (
+            value.settled ??
+            (!value.run || ["completed", "failed", "interrupted"].includes(value.run.status))
+          )
             finish("settled");
           else if (!value.connected) finish("offline");
           else if (value.pendingRequest || value.messages.length) finish("running");
-          else if (dirty) read();
         }, fail);
       };
       // Subscribe before reading: an event during the read marks a second read,
@@ -95,7 +101,7 @@ export class ThreadWaitService {
           snapshot ??= { connected: true, messages: [] };
           finish("timed_out");
         },
-        Math.min(100_000, Math.max(1, input.timeoutMs)),
+        Math.min(threadWaitMaxMs, Math.max(1, input.timeoutMs)),
       );
       read();
     });

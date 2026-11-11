@@ -493,7 +493,7 @@ integration("Notifications", () => {
       anchorThreadId: chat,
       name: "Morning summary",
       program: `export default async function ({ opensteer }) {
-        await opensteer.callTool("thread_delegate", {
+        await opensteer.callTool("delegate_task", {
           task: ${JSON.stringify("Summarize the inbox. " + toolCall("person_message", { message: "Inbox milestone ready." }) + " [[reply Inbox summary ready.]]")},
           title: "Inbox summary",
           workspaceId: ${JSON.stringify(stack.mainWorkspaceId)},
@@ -715,7 +715,7 @@ function toolCall(name: string, input: unknown): string {
 
 function programSending(delivery: "queue" | "report", threadId: string, message: string): string {
   return `export default async function ({ opensteer }) {
-    await opensteer.callTool("thread_message", ${JSON.stringify({ delivery, message, threadId })});
+    await opensteer.callTool("thread_send", ${JSON.stringify({ delivery, message, threadId })});
   }`;
 }
 

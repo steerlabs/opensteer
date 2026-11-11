@@ -1136,7 +1136,7 @@ function handleTurnStart(message) {
         threadConfig["mcp_servers.opensteer.url"],
         process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
       );
-      const listed = await sessionTools.call("request_list", { limit: 1 });
+      const listed = await sessionTools.call("pending_request", { limit: 1 });
       capture({ fakeMcpCall: { ok: true, pid: process.pid, sessionId: sessionTools.sessionId } });
       return JSON.stringify({ requests: listed.requests?.length ?? 0 });
     })().then(finishTurnWith, (error) => {
@@ -2627,7 +2627,7 @@ async function browserProfilesTurn(input) {
       return tools.call(name, args, replayId);
     };
     if (plan.delegate)
-      report.delegated = await call("thread_delegate", {
+      report.delegated = await call("delegate_task", {
         workspaceId: plan.delegate,
         task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",

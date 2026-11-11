@@ -104,13 +104,14 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     app_list: async () => unavailable(),
     app_fetch: async () => unavailable(),
     plugin_install: async () => unavailable(),
+    orchestrator_capabilities: async () => unavailable(),
     environment_list: async () => unavailable(),
     project_list: async () => unavailable(),
     project_create: async () => unavailable(),
     thread_read: async () => unavailable(),
     thread_list: async () => unavailable(),
-    thread_delegate: async () => unavailable(),
-    thread_message: async () => unavailable(),
+    delegate_task: async () => unavailable(),
+    thread_send: async () => unavailable(),
     thread_interrupt: async () => unavailable(),
     thread_update: async () => unavailable(),
     thread_wait: async () => unavailable(),
@@ -120,7 +121,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     task_cancel: async () => unavailable(),
     person_message: async () => unavailable(),
     person_show: async () => unavailable(),
-    request_list: async () => unavailable(),
+    pending_request: async () => unavailable(),
     request_withdraw: async () => unavailable(),
     browser_profile_list: async () => unavailable(),
     sign_in: async () => unavailable(),
@@ -432,7 +433,7 @@ function defaultResult(name: string): unknown {
       return { projects: [], window: { hasMore: false } };
     case "thread_list":
       return { threads: [], hasMore: false, nextBefore: null };
-    case "request_list":
+    case "pending_request":
       return { requests: [] };
     case "browser_profile_list":
       return { profiles: [] };

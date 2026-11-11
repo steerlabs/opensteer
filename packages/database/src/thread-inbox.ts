@@ -136,6 +136,11 @@ import {
   assignmentEventsInTransaction,
   assignmentSummaryInTransaction,
 } from "./assignment-store.js";
+import {
+  assertThreadCaller,
+  lockThreadCaller,
+  type ThreadCallerAuthority,
+} from "./thread-caller.js";
 
 function canManageQueuedInput(
   row: {
@@ -3630,10 +3635,10 @@ async function replayThreadInput(
   };
 }
 
-async function deliverAssignmentReturnTransaction(
+async function lockAssignmentReturn(
   transaction: Transaction<DatabaseSchema>,
   assignmentId: AssignmentId,
-): Promise<readonly AgentEvent[]> {
+) {
   const observed = await transaction
     .selectFrom("delegations")
     .innerJoin("threads as childThread", "childThread.id", "delegations.childThreadId")
@@ -3646,10 +3651,8 @@ async function deliverAssignmentReturnTransaction(
       "parentThread.workspaceId as parentWorkspaceId",
     ])
     .where("delegations.id", "=", assignmentId)
-    .where("delegations.status", "!=", "open")
-    .where("delegations.resultStatus", "=", "pending")
     .executeTakeFirst();
-  if (!observed) return [];
+  if (!observed) return null;
   const workspaces = await transaction
     .selectFrom("workspaces")
     .select(["id", "status"])
@@ -3679,6 +3682,16 @@ async function deliverAssignmentReturnTransaction(
     .where("id", "=", assignmentId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
+  return { assignment, workspaces, observed };
+}
+
+async function deliverAssignmentReturnTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  assignmentId: AssignmentId,
+): Promise<readonly AgentEvent[]> {
+  const locked = await lockAssignmentReturn(transaction, assignmentId);
+  if (!locked) return [];
+  const { assignment, workspaces, observed } = locked;
   if (assignment.status === "open" || assignment.resultStatus !== "pending") return [];
   // An empty result has nothing to return and wakes nobody. A parent task still
   // receives it below: it needs the completion to continue and settle.
@@ -3876,6 +3889,124 @@ async function deliverAssignmentReturnTransaction(
   if (policy === "queue") events.push(...(await ensureQueuedRun(transaction, parent)).events);
   events.push(...(await assignmentEventsInTransaction(transaction, updated, "assignment.updated")));
   return events;
+}
+
+/** Reading and automatic return share the same Workspace, Thread and Assignment fences. */
+export function readAssignmentResult(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly assignmentId: AssignmentId;
+    readonly authority: ThreadCallerAuthority;
+    readonly signal?: AbortSignal;
+  },
+) {
+  return withDatabaseTransaction(database, async (transaction) => {
+    await lockThreadCaller(transaction, input.authority);
+    const locked = await lockAssignmentReturn(transaction, input.assignmentId);
+    if (!locked)
+      throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
+    let { assignment } = locked;
+    const authority = input.authority;
+    await requireActiveWorkspaceMembership(
+      transaction,
+      locked.observed.childWorkspaceId,
+      authority.userId,
+    );
+    await assertThreadCaller(transaction, authority, {
+      threadId: assignment.childThreadId,
+      readOnly: true,
+    });
+    if (
+      !(await threadExecutionIsAvailableToUser(
+        transaction,
+        assignment.childThreadId,
+        authority.userId,
+      ))
+    )
+      throw new OpensteerError({ code: "forbidden", message: "Assignment is unavailable" });
+    const requester = await transaction
+      .selectFrom("runs")
+      .select("requestedBy")
+      .where("id", "=", assignment.childRunId)
+      .executeTakeFirstOrThrow();
+    const assigner =
+      requester.requestedBy === authority.userId &&
+      (authority.kind === "run"
+        ? assignment.origin === "run" && assignment.parentRunId === authority.scope.runId
+        : authority.kind === "trigger"
+          ? assignment.parentOccurrenceId === authority.scope.occurrenceId
+          : authority.kind === "watch"
+            ? assignment.parentWatchActivationId === authority.scope.activationId
+            : false);
+    const events: AgentEvent[] = [];
+    let result = assignment.resultText;
+    if (assigner && assignment.status !== "open") {
+      let canRead =
+        assignment.resultMessageId === null || assignment.resultReason === "read-by-assigner";
+      if (assignment.resultMessageId) {
+        const reserved = await transaction
+          .selectFrom("runs")
+          .select("id")
+          .where("seedInputId", "=", assignment.resultMessageId)
+          .executeTakeFirst();
+        const pending = reserved
+          ? undefined
+          : await transaction
+              .updateTable("threadInputs")
+              .set({ state: "cancelled", cancelReason: "withdrawn", updatedAt: new Date() })
+              .where("messageId", "=", assignment.resultMessageId)
+              .where("state", "=", "pending")
+              .returningAll()
+              .executeTakeFirst();
+        if (pending) {
+          canRead = true;
+          const parent = await transaction
+            .selectFrom("threads")
+            .select(["workspaceId", "environmentId"])
+            .where("id", "=", assignment.parentThreadId)
+            .executeTakeFirstOrThrow();
+          events.push(
+            await appendHostWorkspaceEvent(transaction, {
+              data: { input: threadInputFromRow(pending) },
+              environmentId: parent.environmentId,
+              runId: null,
+              threadId: assignment.parentThreadId,
+              type: "thread-input.updated",
+              workspaceId: parent.workspaceId,
+            }),
+          );
+        }
+      }
+      if (canRead && assignment.resultReason !== "read-by-assigner") {
+        assignment = await transaction
+          .updateTable("delegations")
+          .set((expression) => ({
+            completedAt: new Date(),
+            resultStatus: "delivered",
+            resultReason: "read-by-assigner",
+            revision: expression("revision", "+", 1),
+            updatedAt: new Date(),
+          }))
+          .where("id", "=", assignment.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        events.push(
+          ...(await assignmentEventsInTransaction(transaction, assignment, "assignment.updated")),
+        );
+      }
+      if (!canRead) result = null;
+    }
+    await assertThreadCaller(transaction, authority, {
+      threadId: assignment.childThreadId,
+      readOnly: true,
+    });
+    input.signal?.throwIfAborted();
+    return {
+      assignment: await assignmentSummaryInTransaction(transaction, assignment),
+      result,
+      events,
+    };
+  });
 }
 
 /**
@@ -4517,7 +4648,7 @@ export async function delegateThreadInTransaction(
       throw new OpensteerError({
         code: "conflict",
         details: { assignmentId: open.id },
-        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_message, or cancel that task with task_cancel before giving the Thread new work.`,
+        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_send, or cancel that task with task_cancel before giving the Thread new work.`,
       });
     }
     if (busy || queuedInput) {

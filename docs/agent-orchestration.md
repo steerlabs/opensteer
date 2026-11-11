@@ -55,7 +55,7 @@ lease loss or disconnect can end the call without settling the Request. A live h
 parallel does not end the hold.
 
 Voice and background Runs receive pending immediately. Pending grants nothing; agents must not
-poll, repeat, approve or route around a Request. request_list shows status, not the answer. Outcomes
+poll, repeat, approve or route around a Request. pending_request shows status, not the answer. Outcomes
 returned in the held call need no later wake-up. Otherwise, eligible outcomes from one Run arrive
 together after its durable siblings settle. A newer Run can also release older settled outcomes,
 so an abandoned ask cannot hold up later work. Different Runs stay independent. Requests and
@@ -169,8 +169,14 @@ may use `person_message` or `person_show`; a task answers its assigner, which sh
 reports. A completed Run's last substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
 Assignment spans Runs, one open per worker, and its identity travels with inputs so a late approval
 cannot attach to a new task. Completion is derived transactionally, never declared by an agent;
-results return only if the requester can still read the worker Workspace, and an empty result wakes
-nobody unless a parent Assignment needs it. Cancellation follows Assignments, not Thread lineage.
+results return only if the requester can still read the worker Workspace. A settled result read by
+its assigner through `thread_wait`, `delegate_task` mode `wait` or `task_status` is delivery: the
+same locked transaction withdraws an unclaimed automatic return. A return already claimed by a
+Run owns delivery instead. Only the originating Run or program source consumes a result; other
+readers consume nothing. An empty result wakes nobody unless a
+parent Assignment needs it, but a waiter still receives its settlement. Bounded waits subscribe
+before reading, pin their observed Run and recheck live authority on wakes and before return; a
+timeout cancels no work. Cancellation follows Assignments, not Thread lineage.
 Pending Requests are scoped to who may answer; a question docked in another conversation is answered
 through its own Thread's authority. Done is shared and needs active membership plus the task's
 creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
@@ -183,8 +189,8 @@ through the same Done command re-checked under its locks
 creator reading it restarts that clock. A task moves in lists only when a person asks it for
 something (`askedAt`). Clients never link to Workspaces the reader cannot open.
 
-Giving a finished task more work is a separate `thread_delegate`, never an effect of
-`thread_message`: choosing delegate or join must be one atomic decision, and a retry after the
+Giving a finished task more work is a separate `delegate_task`, never an effect of
+`thread_send`: choosing delegate or join must be one atomic decision, and a retry after the
 Assignment finishes could start the work twice. For the same reason a message result carries no hint
 to resubmit, since an unassigned queue may already have started a Run.
 

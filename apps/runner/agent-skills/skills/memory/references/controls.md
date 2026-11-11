@@ -37,7 +37,7 @@ with its date's offset. Declare `toolContractVersion: 3`; its program is:
 
 ```ts
 export default async function ({ opensteer }) {
-  await opensteer.callTool("thread_message", {
+  await opensteer.callTool("thread_send", {
     delivery: "queue",
     message: "Finish deleting memory",
     threadId: "home",

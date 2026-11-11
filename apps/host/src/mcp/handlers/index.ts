@@ -51,23 +51,21 @@ export function agentToolHandlers(options: {
     app_fetch: async (c) => await options.apps.fetch(requireRun(c.caller).claims, c.input),
     plugin_install: async (c) =>
       await options.pluginInstall(requireRun(c.caller).claims, c.input.directory),
+    orchestrator_capabilities: async (c) => await p.orchestrator_capabilities(c),
     environment_list: async (c) => await p.environment_list(c),
     project_list: async (c) => await p.project_list(c),
     project_create: async (c) => await p.project_create(c),
     thread_read: async (c) => await p.thread_read(c),
     thread_list: async (c) => await p.thread_list(c),
-    thread_delegate: Object.assign(
-      async (c: ToolCall<"thread_delegate">) => await p.thread_delegate(c),
-      {
-        authorize: async (c: ToolCall<"thread_delegate">) => {
-          await p.authorizeDelegation(c);
-        },
+    delegate_task: Object.assign(async (c: ToolCall<"delegate_task">) => await p.delegate_task(c), {
+      authorize: async (c: ToolCall<"delegate_task">) => {
+        await p.authorizeDelegation(c);
       },
-    ),
+    }),
     thread_wait: async (c) => await p.thread_wait(c),
     thread_configure: async (c) => await p.thread_configure(c),
     thread_queue: async (c) => await p.thread_queue(c),
-    thread_message: async (c) => await p.thread_message(c),
+    thread_send: async (c) => await p.thread_send(c),
     thread_update: async (c) => await p.thread_update(c),
     thread_interrupt: async (c) => await p.thread_interrupt(c),
     task_status: async (c) => await p.task_status(c),
@@ -82,7 +80,7 @@ export function agentToolHandlers(options: {
         await p.preparePersonShow(c);
       },
     }),
-    request_list: async (c) => await p.request_list(c),
+    pending_request: async (c) => await p.pending_request(c),
     request_withdraw: async (c) => await p.request_withdraw(c),
     browser_profile_list: async (c) => await p.browser_profile_list(c),
     use_card: async (c) => await p.use_card(c),

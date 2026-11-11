@@ -18,8 +18,8 @@ import {
   type AgentModelSummary,
 } from "@opensteer/agent-tools/outputs";
 import {
-  EnvironmentListInputSchema,
-  type EnvironmentListInput,
+  OrchestratorCapabilitiesInputSchema,
+  type OrchestratorCapabilitiesInput,
 } from "@opensteer/agent-tools/tools";
 import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
@@ -130,8 +130,8 @@ export async function delegationPlacement(
   if (candidates.length === 0) {
     throw badRequest(
       request.harnessInstanceId
-        ? `${request.harnessInstanceId} is not an enabled AI engine on ${environment.name}. environment_list names the engines each environment can run.`
-        : `${environment.name} has no enabled ${parentHarness.driverKind} AI engine on ${parentHarness.sourceId}. Name another engine with harnessInstanceId; environment_list names the engines each environment can run.`,
+        ? `${request.harnessInstanceId} is not an enabled AI engine on ${environment.name}. orchestrator_capabilities names the engines each environment can run.`
+        : `${environment.name} has no enabled ${parentHarness.driverKind} AI engine on ${parentHarness.sourceId}. Name another engine with harnessInstanceId; orchestrator_capabilities names the engines each environment can run.`,
     );
   }
   const inspected = await Promise.all(
@@ -203,7 +203,7 @@ type DelegationModelPage = {
 };
 type EngineCatalogStore = Pick<OpensteerStore, "listHarnessCatalogs">;
 interface EngineDiscovery {
-  readonly input: EnvironmentListInput;
+  readonly input: OrchestratorCapabilitiesInput;
   readonly connected: (id: EnvironmentId) => boolean;
   readonly canRun: (id: EnvironmentId, driverKind: HarnessId) => boolean;
 }
@@ -230,7 +230,10 @@ export async function delegationEngines(
     harnesses.map(({ id }) => id),
   );
   if (selection && "input" in selection) {
-    const discovery = { ...selection, input: EnvironmentListInputSchema.parse(selection.input) };
+    const discovery = {
+      ...selection,
+      input: OrchestratorCapabilitiesInputSchema.parse(selection.input),
+    };
     const query = [
       ...new Set(discovery.input.query?.toLowerCase().split(/\s+/).filter(Boolean) ?? []),
     ].sort();
