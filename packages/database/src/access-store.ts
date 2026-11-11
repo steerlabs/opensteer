@@ -1725,7 +1725,22 @@ async function coordinateAccess(
         )
         .limit(1)
         .executeTakeFirst();
-      if (projectRuns.length || pending)
+      const watch = await transaction
+        .selectFrom("triggerWatchActivations")
+        .select("id")
+        .where("workspaceId", "in", deletedProjects)
+        .where("desired", "=", "active")
+        .limit(1)
+        .executeTakeFirst();
+      const program = await transaction
+        .selectFrom("triggerOccurrences")
+        .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+        .select("triggerOccurrences.id")
+        .where("triggers.workspaceId", "in", deletedProjects)
+        .where("triggerOccurrences.status", "in", ["pending", "running"])
+        .limit(1)
+        .executeTakeFirst();
+      if (projectRuns.length || pending || watch || program)
         throw new OpensteerError({
           code: "workspace_unavailable",
           reason: "team-not-implemented",
