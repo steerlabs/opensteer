@@ -1,4 +1,5 @@
 import {
+  personSaveVerdictMaxMs,
   PersonFillRoleSchema,
   type PersonFillAnchor,
   type PersonFillRole,
@@ -87,7 +88,11 @@ const saveSnapshotReport = z.object({
   username: z.string().min(1).max(1_024),
   password: z.string().min(1).max(4_096),
 });
-const saveEditReport = z.object({ kind: z.literal("person-save-edit"), fieldId: z.uuid() });
+const saveEditReport = z.object({
+  kind: z.literal("person-save-edit"),
+  fieldId: z.uuid(),
+  at: z.number().finite().positive(),
+});
 const saveGoneReport = z.object({ kind: z.literal("person-save-gone"), snapshotId: z.uuid() });
 /** How long a page must stay without a password field before a sign-in looks done. */
 export const personSaveSettleMs = 2_000;
@@ -111,7 +116,9 @@ export interface PersonSaveSnapshot {
   verdict(signal: AbortSignal): Promise<boolean>;
 }
 export type PersonSaveObservation =
-  { type: "edit"; fieldId: string } | { type: "snapshot"; snapshot: PersonSaveSnapshot };
+  /** A trusted edit into a password field, at `at` by this machine's clock. */
+  | { type: "edit"; fieldId: string; at: number }
+  | { type: "snapshot"; snapshot: PersonSaveSnapshot };
 
 export interface PersonFillBinding {
   readonly bindingId: string;
@@ -526,7 +533,7 @@ export class PageEditingObserver {
     const kind = (payload as { kind: unknown }).kind;
     if (kind === "person-save-edit") {
       const edit = saveEditReport.safeParse(payload);
-      if (edit.success) this.#save({ type: "edit", fieldId: edit.data.fieldId });
+      if (edit.success) this.#save({ type: "edit", fieldId: edit.data.fieldId, at: edit.data.at });
       return true;
     }
     if (kind === "person-save-gone") {
@@ -538,6 +545,8 @@ export class PageEditingObserver {
     const report = saveSnapshotReport.safeParse(payload);
     if (!report.success) return true;
     const { snapshotId, fieldIds, username, password } = report.data;
+    // Watched from the report on: the page can move on before anyone asks for the verdict.
+    const verdict = this.#watchSave(snapshotId, frame);
     this.#save({
       type: "snapshot",
       snapshot: {
@@ -550,34 +559,39 @@ export class PageEditingObserver {
             .catch(() => null);
           return committedOrigin(tree?.frameTree, frame);
         },
-        verdict: (signal) => this.#saveVerdict(snapshotId, frame, signal),
+        verdict,
       },
     });
     return true;
   }
 
-  #saveVerdict(snapshotId: string, frame: string, signal: AbortSignal): Promise<boolean> {
-    return new Promise((resolve) => {
-      let settling: ReturnType<typeof setTimeout> | undefined;
-      const end = (done: boolean) => {
-        if (this.#saveWatchers.get(snapshotId)?.end !== end) return;
-        this.#saveWatchers.delete(snapshotId);
-        clearTimeout(settling);
-        signal.removeEventListener("abort", aborted);
-        resolve(done);
-      };
-      const aborted = () => end(false);
-      const left = () => {
-        if (settling !== undefined || this.#closed) return;
-        settling = setTimeout(
-          () => void this.#passwordShown(frame).then((shown) => end(shown === false)),
-          personSaveSettleMs,
-        );
-      };
-      this.#saveWatchers.set(snapshotId, { frame, left, end });
-      if (signal.aborted) aborted();
-      else signal.addEventListener("abort", aborted, { once: true });
-    });
+  #watchSave(snapshotId: string, frame: string): PersonSaveSnapshot["verdict"] {
+    let resolve: (done: boolean) => void = () => {};
+    const result = new Promise<boolean>((settle) => (resolve = settle));
+    let settling: ReturnType<typeof setTimeout> | undefined;
+    let ended = false;
+    const end = (done: boolean) => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(settling);
+      clearTimeout(expiry);
+      this.#saveWatchers.delete(snapshotId);
+      resolve(done);
+    };
+    const left = () => {
+      if (settling !== undefined || ended || this.#closed) return;
+      settling = setTimeout(
+        () => void this.#passwordShown(frame).then((shown) => end(shown === false)),
+        personSaveSettleMs,
+      );
+    };
+    const expiry = setTimeout(() => end(false), personSaveVerdictMaxMs);
+    this.#saveWatchers.set(snapshotId, { frame, left, end });
+    return (signal) => {
+      if (signal.aborted) end(false);
+      else signal.addEventListener("abort", () => end(false), { once: true });
+      return result;
+    };
   }
 
   /** Null when the frame has no private world to ask, such as one that left this renderer. */
@@ -997,7 +1011,7 @@ function editingObserverSource(binding: string, personFill: boolean, personSave:
         return;
       }
       field.value = element.value;
-      report({ kind: "person-save-edit", fieldId: field.id });
+      report({ kind: "person-save-edit", fieldId: field.id, at: Date.now() });
     });
     const watchSaves = () => {
       if (saveWatch) return;

@@ -981,3 +981,41 @@ it("reads native or remote viewer attribution without consuming it, after agent 
     await ledger.close();
   }
 });
+
+it("names the viewer whose input a page edit followed, judged by when the edit happened", async () => {
+  const page = new FakePage(),
+    context = new FakeContext([page]);
+  const ledger = new SurfaceLedger(context);
+  await ledger.start();
+  const surfaceId = ledger.active()!.surface.id;
+  const targetId = await page.targetId();
+  const now = vi.spyOn(Date, "now");
+  try {
+    now.mockReturnValue(10_000);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    now.mockReturnValue(10_010);
+    ledger.recordAgentCommand(targetId);
+    now.mockReturnValue(10_020);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    // An edit's report can arrive after later input: only when it happened decides.
+    expect(ledger.viewerInputAt(surfaceId, 10_005)).toEqual({
+      consumerToken: "viewer",
+      native: false,
+    });
+    expect(ledger.viewerInputAt(surfaceId, 10_015), "after the agent's command").toBeNull();
+    expect(ledger.viewerInputAt(surfaceId, 9_999), "before any input").toBeNull();
+    expect(ledger.viewerInputAt(surfaceId, 15_020), "past the activation lifetime").toBeNull();
+    // Input from two sources in one millisecond belongs to neither.
+    now.mockReturnValue(10_030);
+    ledger.recordAgentCommand(targetId);
+    ledger.recordViewerInput(surfaceId, "viewer");
+    expect(ledger.viewerInputAt(surfaceId, 10_031)).toBeNull();
+    // Input that names no viewer is nobody's.
+    now.mockReturnValue(10_040);
+    ledger.recordViewerInput(surfaceId, null);
+    expect(ledger.viewerInputAt(surfaceId, 10_041)).toBeNull();
+  } finally {
+    now.mockRestore();
+    await ledger.close();
+  }
+});

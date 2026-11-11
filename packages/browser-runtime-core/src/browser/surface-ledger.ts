@@ -188,6 +188,15 @@ interface SurfaceRecord {
   userActivitySequence: number;
   /** The viewer behind this page's latest person input, while it can still open a popup. */
   viewerInput: BrowserViewerInput | null;
+  /**
+   * When each recent input reached this page, and whose it was: a viewer's,
+   * or null for an agent's command or input from no known viewer.
+   */
+  inputTimeline: {
+    readonly at: number;
+    readonly consumerToken: string | null;
+    readonly native: boolean;
+  }[];
   popupInputSequence: number;
 }
 
@@ -679,9 +688,11 @@ export class SurfaceLedger {
   ): void {
     const record = this.records.get(surfaceId);
     if (!record) return;
+    const at = Date.now();
     record.viewerInput = consumerToken
-      ? { at: Date.now(), consumerToken, sequence: ++this.sequence, native }
+      ? { at, consumerToken, sequence: ++this.sequence, native }
       : null;
+    this.#recordInput(record, { at, consumerToken: consumerToken ?? null, native });
   }
 
   /**
@@ -711,9 +722,34 @@ export class SurfaceLedger {
       : null;
   }
 
+  /**
+   * The viewer whose input a page acted on at `at` (its own clock, which is
+   * this machine's): the latest input recorded at or before then, if a
+   * viewer's, recent, and not tied with any other source's. An event is
+   * judged by when it happened, never by when its report arrives.
+   */
+  viewerInputAt(
+    surfaceId: BrowserSurfaceId,
+    at: number,
+  ): { readonly consumerToken: string; readonly native: boolean } | null {
+    const timeline = this.records.get(surfaceId)?.inputTimeline ?? [];
+    const index = timeline.findLastIndex((entry) => entry.at <= at);
+    const input = timeline[index];
+    if (!input?.consumerToken || at - input.at >= userActivationLifespanMs) return null;
+    for (let earlier = index - 1; timeline[earlier]?.at === input.at; earlier--)
+      if (timeline[earlier]!.consumerToken !== input.consumerToken) return null;
+    return { consumerToken: input.consumerToken, native: input.native };
+  }
+
+  #recordInput(record: SurfaceRecord, entry: SurfaceRecord["inputTimeline"][number]): void {
+    record.inputTimeline.push(entry);
+    if (record.inputTimeline.length > 64) record.inputTimeline.shift();
+  }
+
   recordAgentCommand(targetId: string): void {
     const record = this.recordForTarget(targetId);
     if (record) {
+      this.#recordInput(record, { at: Date.now(), consumerToken: null, native: false });
       record.agentSequence = ++this.sequence;
       for (const listener of this.agentCommandListeners) listener(record.id);
     }
@@ -1239,6 +1275,7 @@ export class SurfaceLedger {
           },
           userActivitySequence: 0,
           viewerInput: null,
+          inputTimeline: [],
           popupInputSequence: 0,
         };
         announce = () => {

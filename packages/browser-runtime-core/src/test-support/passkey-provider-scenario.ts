@@ -22,6 +22,7 @@ import { PasskeyTestAuthenticator } from "./passkey-test-authenticator.js";
 import { key, cert, untrustedKey, untrustedCert } from "./fixtures/passkey-provider-tls.js";
 export {
   cert as passkeyProviderCertificate,
+  key as passkeyProviderKey,
   untrustedCert,
 } from "./fixtures/passkey-provider-tls.js";
 

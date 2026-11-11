@@ -21,10 +21,15 @@ import {
   type BrowserContext,
   type BrowserFrame,
   type BrowserPage,
+  type BrowserLoginAuthority,
   type CdpSession,
 } from "@opensteer/browser-runtime-core";
 import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
-import { type BrowserServerMessage, type BrowserSurfaceId } from "@opensteer/protocol";
+import {
+  type BrowserAttachTicketClaims,
+  type BrowserServerMessage,
+  type BrowserSurfaceId,
+} from "@opensteer/protocol";
 
 import { runHarness, sendAsAgent, startHarnessBridge } from "./browser-harness.test-support.js";
 import {
@@ -132,14 +137,22 @@ class FrameTap {
  * site. The ledger's page channels are observed, so each test can count the
  * size writes and casts a step caused, and see every frame each page sent.
  */
-async function startFollowSession(options: { readonly path?: string } = {}) {
+async function startFollowSession(
+  options: {
+    readonly path?: string;
+    readonly claims?: Partial<BrowserAttachTicketClaims>;
+    readonly loginAuthority?: BrowserLoginAuthority;
+    readonly args?: readonly string[];
+  } = {},
+) {
   const site = await serveFollowFixture();
   cleanup.push(() => site.close());
-  const claims = { ...validClaims(), popupFollowVersion: 1 as const };
+  const claims = { ...validClaims(), popupFollowVersion: 1 as const, ...options.claims };
   const browser = await new PlaywrightChromiumLauncher({
     chromiumSandbox: false,
     executablePath,
     headless: true,
+    ...(options.args ? { args: [...options.args] } : {}),
   }).launch({
     initialViewport: { devicePixelRatio: 1, ...defaultBrowserViewport },
     partitionKey: `session:${claims.sessionId}`,
@@ -182,6 +195,7 @@ async function startFollowSession(options: { readonly path?: string } = {}) {
     claims,
     files,
     ledger,
+    loginAuthority: options.loginAuthority,
     replaceSiteCookies: (target, cookies, deadline) =>
       browser.replaceSiteCookies(target, cookies, deadline),
     signIns: testSignIns(),

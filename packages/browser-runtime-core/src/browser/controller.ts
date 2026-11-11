@@ -2430,7 +2430,8 @@ export class BrowserController {
 
   /**
    * A password field counts as the person's only while every edit to it came
-   * from one viewer's input, newer than the tab's latest agent command.
+   * from one viewer's input, with no agent command between that input and the
+   * edit, judged by when the edit happened.
    */
   private observePersonSave(surfaceId: BrowserSurfaceId, event: PersonSaveObservation): void {
     let authors = this.saveAuthors.get(surfaceId);
@@ -2439,7 +2440,7 @@ export class BrowserController {
         authors = new Map();
         this.saveAuthors.set(surfaceId, authors);
       }
-      const input = this.ledger.latestViewerInput(surfaceId);
+      const input = this.ledger.viewerInputAt(surfaceId, event.at);
       const previous = authors.get(event.fieldId);
       authors.delete(event.fieldId);
       authors.set(
