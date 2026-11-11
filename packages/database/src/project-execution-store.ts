@@ -869,6 +869,52 @@ export class ProjectControlDeliveryStore {
     this.dependencies = dependencies;
   }
 
+  async pendingCommands(limit = 100) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Invalid Project dispatch batch limit",
+      });
+    await assertProjectAuthority(this.database);
+    return this.database
+      .selectFrom("commands")
+      .innerJoin("runs", "runs.id", "commands.runId")
+      .leftJoin("grants as originalGrant", "originalGrant.id", "commands.originatingGrantId")
+      .select(["commands.id", "commands.type"])
+      .where((eb) =>
+        eb.or([
+          eb.and([
+            eb("commands.type", "=", "run.execute.project"),
+            eb("commands.status", "in", ["pending", "dispatched"]),
+            eb("runs.status", "in", ["queued", "starting"]),
+          ]),
+          eb.and([
+            eb("commands.type", "=", "run.control.project"),
+            eb.or([
+              eb("commands.status", "in", ["pending", "dispatched"]),
+              eb.and([
+                eb("commands.status", "in", ["failed", "unknown"]),
+                eb("runs.status", "in", ["queued", "starting", "running", "waiting"]),
+                eb(
+                  eb.ref("originalGrant.bindingGeneration"),
+                  "=",
+                  eb.ref("runs.bindingGeneration"),
+                ),
+                eb(sql<string>`commands.payload->'control'->>'kind'`, "in", [
+                  "request.resolve",
+                  "request.refuse",
+                ]),
+              ]),
+            ]),
+          ]),
+        ]),
+      )
+      .orderBy("commands.createdAt")
+      .orderBy("commands.id")
+      .limit(limit)
+      .execute();
+  }
+
   async claim(commandId: import("@opensteer/core").CommandId, dispatcherId: string) {
     CommandIdSchema.parse(commandId);
     z.string().min(1).max(255).parse(dispatcherId);

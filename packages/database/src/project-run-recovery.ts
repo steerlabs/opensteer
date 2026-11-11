@@ -200,8 +200,18 @@ export class ProjectRunRecoveryStore {
                   updatedAt: new Date(),
                 })
                 .where("runId", "=", run.id)
-                .where("type", "in", ["run.execute.project", "run.control.project"])
-                .where("status", "in", ["pending", "dispatched"])
+                .where((eb) =>
+                  eb.or([
+                    eb.and([
+                      eb("type", "=", "run.execute.project"),
+                      eb("status", "in", ["pending", "dispatched", "unknown"]),
+                    ]),
+                    eb.and([
+                      eb("type", "=", "run.control.project"),
+                      eb("status", "in", ["pending", "dispatched"]),
+                    ]),
+                  ]),
+                )
                 .execute();
             },
             messageAuthority: (row) => ({

@@ -456,6 +456,7 @@ export async function cleanupRunAttemptTransaction(
     readonly requestCancellationReason: RequestCancellationReason;
     readonly retireBinding?: boolean;
     readonly cancelRequests?: (() => Promise<readonly AgentEvent[]>) | undefined;
+    readonly retireCommands?: (() => Promise<void>) | undefined;
     readonly run: Pick<RunRow, "id" | "providerSessionId" | "bindingGeneration" | "status">;
     readonly source: "host" | "runner";
     readonly status: "completed" | "failed" | "interrupted";
@@ -532,19 +533,22 @@ export async function cleanupRunAttemptTransaction(
       }))
       .where("id", "=", run.providerSessionId)
       .execute();
-    // Unknown describes the input's receipt, not a command that may still act.
-    await transaction
-      .updateTable("commands")
-      .set({
-        lastError: jsonValue({
-          message: "The execution was lost before control delivery completed",
-        }),
-        status: "failed",
-        updatedAt: input.completedAt,
-      })
-      .where("runId", "=", run.id)
-      .where("status", "in", ["pending", "dispatched", "unknown"])
-      .execute();
+    if (input.retireCommands) await input.retireCommands();
+    else {
+      // Unknown describes the input's receipt, not a command that may still act.
+      await transaction
+        .updateTable("commands")
+        .set({
+          lastError: jsonValue({
+            message: "The execution was lost before control delivery completed",
+          }),
+          status: "failed",
+          updatedAt: input.completedAt,
+        })
+        .where("runId", "=", run.id)
+        .where("status", "in", ["pending", "dispatched", "unknown"])
+        .execute();
+    }
   }
   return {
     events,

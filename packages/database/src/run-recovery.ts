@@ -243,11 +243,11 @@ export async function recoverRunTransaction(
     requestCancellationReason: "process-lost",
     retireBinding: true,
     cancelRequests: effects.cancelRequests,
+    retireCommands: effects.retireCommands,
     run,
     source: "host",
     status: "interrupted",
   });
-  await effects.retireCommands?.();
   const events = [restarted, ...cleanup.events];
   const claimed = await transaction
     .selectFrom("messages")

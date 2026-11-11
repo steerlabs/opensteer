@@ -44,7 +44,7 @@ import {
   type RunAgentToolsPlan,
   type RunnerConnectionFence,
 } from "@opensteer/protocol";
-import { type Kysely, sql } from "kysely";
+import type { Kysely } from "kysely";
 import type { ProjectDispatchPort } from "../runtime/project-runtime-ports.js";
 import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
 import type { ProjectCapabilityTokenService } from "./run-capability.js";
@@ -341,43 +341,7 @@ export class ProjectCommandDispatcher implements ProjectDispatchPort {
 
   /** Called at startup and after queue/connection wakes; commands is the only durable outbox. */
   async drainPending(limit = 100) {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Invalid Project dispatch batch limit",
-      });
-    await assertProjectAuthority(this.options.database);
-    const commands = await this.options.database
-      .selectFrom("commands")
-      .innerJoin("runs", "runs.id", "commands.runId")
-      .select(["commands.id", "commands.type"])
-      .where((eb) =>
-        eb.or([
-          eb.and([
-            eb("commands.type", "=", "run.execute.project"),
-            eb("commands.status", "in", ["pending", "dispatched"]),
-            eb("runs.status", "in", ["queued", "starting"]),
-          ]),
-          eb.and([
-            eb("commands.type", "=", "run.control.project"),
-            eb.or([
-              eb("commands.status", "in", ["pending", "dispatched"]),
-              eb.and([
-                eb("commands.status", "in", ["failed", "unknown"]),
-                eb("runs.status", "in", ["queued", "starting", "running", "waiting"]),
-                eb(sql<string>`commands.payload->'control'->>'kind'`, "in", [
-                  "request.resolve",
-                  "request.refuse",
-                ]),
-              ]),
-            ]),
-          ]),
-        ]),
-      )
-      .orderBy("commands.createdAt")
-      .orderBy("commands.id")
-      .limit(limit)
-      .execute();
+    const commands = await this.options.controls.pendingCommands(limit);
     const results: {
       commandId: CommandId;
       state:
