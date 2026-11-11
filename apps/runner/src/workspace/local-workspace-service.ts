@@ -57,6 +57,7 @@ export class LocalWorkspaceService {
     ((id: string, remove: () => Promise<void>) => Promise<void>) | undefined;
   readonly #appServers: Pick<AppServerManager, "stopBinding">;
   readonly #authority: LocalWorkspaceAuthority;
+  #projectStorageAdmitted = false;
   readonly #filesystem: NativeWorkspaceFilesAuthority;
 
   constructor(options: {
@@ -74,6 +75,10 @@ export class LocalWorkspaceService {
     this.#removeSpecialist = options.removeSpecialist;
     this.#authority = options.authority;
     this.#filesystem = options.filesystem;
+  }
+
+  admitProjectStorage(admitted: boolean): void {
+    this.#projectStorageAdmitted = admitted;
   }
 
   async scanSkills(
@@ -142,6 +147,11 @@ export class LocalWorkspaceService {
             await this.#relocate(binding.workspaceId, move);
           else await move();
           return { ...echo, type: "runner.workspace.local.relocated" };
+        }
+        case "host.workspace.project.provision": {
+          if (!this.#projectStorageAdmitted) throw new Error("Team computer admission is required");
+          const path = await this.#authority.provisionProject(binding, request.operationId, signal);
+          return { ...echo, path, type: "runner.workspace.local.provisioned" };
         }
         case "host.workspace.local.provision": {
           const path = await this.#authority.provision(
