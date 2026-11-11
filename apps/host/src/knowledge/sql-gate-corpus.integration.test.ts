@@ -1,15 +1,12 @@
 import type { KnowledgeTopicId } from "@opensteer/core";
 import {
-  createDatabase,
   createKnowledgeExecutorPool,
-  prepareKnowledgeExecutor,
   runKnowledgeStatement,
   type KnowledgeJson,
+  type KnowledgeWriter,
 } from "@opensteer/database";
-import {
-  cloneTestDatabase,
-  ownTestDatabaseProducer,
-} from "@opensteer/database/test-support/database";
+import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
+import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -21,56 +18,43 @@ import {
   otherDecisions,
   prototypeCorpus,
   reviewMatrix,
+  teamScopeForgeries,
   wrongAcceptVariants,
 } from "./sql-gate-corpus.test-support.js";
 
+// The corpus names these topics literally.
 const open = "open" as KnowledgeTopicId;
 const hidden = "hidden" as KnowledgeTopicId;
-const writer = {
-  kind: "person",
-  id: "usr_corpus",
-  initiatorId: null,
-  agentId: "agent-corpus",
-  taskId: null,
-  runId: null,
-} as const;
 
 async function knowledgeBase(legacyStrings: boolean) {
-  const clone = await cloneTestDatabase("host");
-  return ownTestDatabaseProducer(clone.url, async () => {
-    const database = createDatabase({ connectionString: clone.url, maxConnections: 2 });
-    const credentials = await prepareKnowledgeExecutor(database);
-    await sql`
-      insert into knowledge.topics (id, name, created_by_kind, created_by_id) values
-        (${open}, 'Open', 'person', 'usr_corpus'), (${hidden}, 'Hidden', 'person', 'usr_corpus')
-    `.execute(database);
-    await sql`
-      insert into knowledge.operations (id, writer_kind, writer_id, input_hash, row_count, receipt)
-        values ('seed', 'person', 'usr_corpus', repeat('0', 64), 4, '{}')
-    `.execute(database);
-    await sql`
-      insert into knowledge.fact_log
-        (topic, thing, property, value, writer_kind, writer_id, agent_id, operation_id, operation_row)
-      values
-        (${open}, 'trip/kyoto', 'hotel', '"Hotel A"', 'person', 'usr_corpus', 'seed', 'seed', 1),
-        (${open}, 'n', 'count', '5', 'person', 'usr_corpus', 'seed', 'seed', 2),
-        (${hidden}, 'trip/kyoto', 'hotel', '"HIDDEN_HOTEL_ZQX"', 'person', 'usr_corpus', 'seed', 'seed', 3),
-        (${hidden}, 'n', 'count', '"HIDDEN_NOT_INT_ZQX"', 'person', 'usr_corpus', 'seed', 'seed', 4)
-    `.execute(database);
-    if (legacyStrings)
-      await sql`alter database ${sql.id(new URL(clone.url).pathname.slice(1))}
-        set standard_conforming_strings = off`.execute(database);
-    const pool = createKnowledgeExecutorPool(clone.url, credentials);
-    return {
-      pool,
-      async close() {
-        await pool.end();
-        const role = sql.id(credentials.role);
-        await sql`drop owned by ${role}; drop role ${role}`.execute(database);
-        await database.destroy();
-      },
-    };
+  const f = await createTeamKnowledgeFixture();
+  const writer: KnowledgeWriter = { kind: "human", id: f.owner, requestId: null };
+  await sql`
+    insert into knowledge.topics (id, name, created_by) values
+      (${open}, 'Open', ${f.owner}), (${hidden}, 'Hidden', ${f.owner})
+  `.execute(f.database);
+  await sql`
+    insert into knowledge.operations (id, writer_kind, writer_id, input_hash, row_count, receipt)
+      values ('seed', 'human', ${f.owner}, repeat('0', 64), 4, '{}')
+  `.execute(f.database);
+  await sql`
+    insert into knowledge.fact_log
+      (topic, thing, property, value, writer_kind, writer_id, operation_id, operation_row)
+    values
+      (${open}, 'trip/kyoto', 'hotel', '"Hotel A"', 'human', ${f.owner}, 'seed', 1),
+      (${open}, 'n', 'count', '5', 'human', ${f.owner}, 'seed', 2),
+      (${hidden}, 'trip/kyoto', 'hotel', '"HIDDEN_HOTEL_ZQX"', 'human', ${f.owner}, 'seed', 3),
+      (${hidden}, 'n', 'count', '"HIDDEN_NOT_INT_ZQX"', 'human', ${f.owner}, 'seed', 4)
+  `.execute(f.database);
+  if (legacyStrings)
+    await sql`alter database ${sql.id(new URL(f.databaseUrl).pathname.slice(1))}
+      set standard_conforming_strings = off`.execute(f.database);
+  // A pool opened after the database default changed, so its sessions start with it.
+  const { pool } = await ownTestDatabaseProducer(f.databaseUrl, async () => {
+    const pool = createKnowledgeExecutorPool(f.databaseUrl, f.credentials);
+    return { pool, close: () => pool.end() };
   });
+  return { pool, writer };
 }
 
 const admitted = [
@@ -81,6 +65,7 @@ const admitted = [
   ...grammarDecisions,
   ...otherDecisions,
   ...insertShapes,
+  ...teamScopeForgeries,
 ].filter(([, expected]) => expected === "admit");
 
 // Failures an admitted statement may meet on this data: its own values, types and conditions, or
@@ -103,7 +88,7 @@ integration("the admitted corpus against the real knowledge schema", () => {
   it.for([false, true])(
     "runs every admitted statement without reaching a hidden topic or the scope (legacy strings: %s)",
     async (legacyStrings) => {
-      const { pool } = await knowledgeBase(legacyStrings);
+      const { pool, writer } = await knowledgeBase(legacyStrings);
       expect(admitted.length).toBeGreaterThan(140);
       const outcomes: string[] = [];
       for (const [text, , why, parameters = []] of admitted) {

@@ -59,7 +59,7 @@ import type {
   WithClause,
 } from "@pgsql/types";
 
-// Imported on first use so a Host with the trial off never resolves the parser package.
+// Imported on first use so a personal Host never resolves the parser package.
 let parserModule: Promise<typeof import("libpg-query")> | undefined;
 async function loadParser(): Promise<typeof import("libpg-query")> {
   parserModule ??= import("libpg-query");

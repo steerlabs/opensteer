@@ -48,7 +48,7 @@ describe("the knowledge pool's connection", () => {
   ])("refuses a Host connection that uses TLS: %s %o", (url, environment) => {
     for (const [name, value] of Object.entries(environment)) vi.stubEnv(name, value);
     expect(() => knowledgeExecutorClientConfig(url, credentials)).toThrow(
-      "The knowledge trial does not support an encrypted database connection yet",
+      "Team knowledge does not support an encrypted database connection",
     );
   });
 

@@ -20,7 +20,8 @@
     "./team-audit": "./src/team-audit-store.ts",
     "./team-notices": "./src/team-notices-store.ts",
     "./team-outbox": "./src/team-outbox-store.ts",
-    "./team-requests": "./src/team-requests-store.ts"
+    "./team-requests": "./src/team-requests-store.ts",
+    "./test-support/team-knowledge": "./src/team-knowledge.test-support.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
