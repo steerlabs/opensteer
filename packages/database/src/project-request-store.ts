@@ -26,6 +26,7 @@ import { sql, type Kysely, type Transaction } from "kysely";
 import { appendHostWorkspaceEvent } from "./workspace-events.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
 import { assertRequestResponse } from "./command-store.js";
+import { projectWorkIsCurrent } from "./execution-authority.js";
 import { checkAccess } from "./access-store.js";
 import { assertProjectAuthority } from "./deployment-execution-authority.js";
 import { lockRequestWorkspaces } from "./request-workspace-locks.js";
@@ -33,7 +34,10 @@ import { requestSettlementActor } from "./request-settlement.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
-import type { ProjectRequestControlPort } from "./project-execution-store.js";
+import {
+  ProjectExecutionStore,
+  type ProjectRequestControlPort,
+} from "./project-execution-store.js";
 
 export type ProjectRequestRevocationRoot =
   | { readonly kind: "member"; readonly userId: UserId; readonly memberGenerationCutoff: number }
@@ -55,6 +59,17 @@ export type ProjectRequestRevocationRoot =
 export interface ProjectRequestCancellation {
   readonly runIds: readonly RunId[];
   readonly events: readonly AgentEvent[];
+}
+
+/** E terminalizes waiting work in this transaction and interrupts its Runner after commit. */
+export interface ProjectRequestStopPort {
+  stop(
+    transaction: Transaction<DatabaseSchema>,
+    input: {
+      readonly runIds: readonly RunId[];
+      readonly reason: "authority-revoked" | "no-eligible-manager";
+    },
+  ): Promise<void>;
 }
 
 export type ProjectProposalResult =
@@ -127,6 +142,9 @@ async function storedBinding(database: Kysely<DatabaseSchema>, grantId: GrantId)
       "run.threadId",
       "run.environmentId",
       "run.requestedBy",
+      "run.actorPrincipalId",
+      "run.authoritySource",
+      "run.status as runStatus",
       "run.initiatorGeneration",
       "run.membershipGeneration",
       "run.originConnectionId",
@@ -243,7 +261,10 @@ function pending(row: RequestRow): ProjectPendingEngineRequest {
 export class ProjectRequestStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly controls: ProjectRequestControlPort;
-  constructor(database: Kysely<DatabaseSchema>, controls: ProjectRequestControlPort) {
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    controls: ProjectRequestControlPort = new ProjectExecutionStore(),
+  ) {
     this.database = database;
     this.controls = controls;
   }
@@ -306,6 +327,8 @@ export class ProjectRequestStore {
     });
     const reason: Extract<ProjectRunControl, { kind: "request.refuse" }>["reason"] | null =
       source.row.grantStatus !== "active" ||
+      !["starting", "running", "waiting"].includes(source.row.runStatus) ||
+      !(await projectWorkIsCurrent(transaction, source.row)) ||
       source.row.currentBindingGeneration !== source.binding.bindingGeneration ||
       (source.origin !== null && recipients.length === 0)
         ? "authority-revoked"
@@ -581,9 +604,45 @@ export class ProjectRequestStore {
     await fencePeople(transaction, [row.resolvedBy]);
     return (
       source.row.grantStatus === "active" &&
+      ["starting", "running", "waiting"].includes(source.row.runStatus) &&
+      (await projectWorkIsCurrent(transaction, source.row)) &&
       source.row.currentBindingGeneration === source.binding.bindingGeneration &&
       (await this.recipients(transaction, row.id)).includes(row.resolvedBy)
     );
+  }
+
+  async discover(
+    transaction: Transaction<DatabaseSchema>,
+    roots: readonly ProjectRequestRevocationRoot[],
+  ) {
+    await assertProjectAuthority(transaction);
+    const rows = roots.length ? await requestsForRoots(transaction, roots) : [];
+    return {
+      runIds: [...new Set(rows.map((row) => row.runId))].sort(),
+      workspaceIds: [...new Set(rows.map((row) => row.workspaceId))].sort(),
+    };
+  }
+
+  async discoverManagerless(
+    transaction: Transaction<DatabaseSchema>,
+    workspaceIds: readonly WorkspaceId[],
+  ) {
+    await assertProjectAuthority(transaction);
+    if (!workspaceIds.length) return { runIds: [], workspaceIds: [] };
+    const rows = await transaction
+      .selectFrom("requests")
+      .select(["originatingRunId", "originatingWorkspaceId"])
+      .where("originatingWorkspaceId", "in", [...workspaceIds])
+      .where("requestedBy", "is", null)
+      .where("originatingGrantId", "is not", null)
+      .where("status", "=", "pending")
+      .execute();
+    return {
+      runIds: [
+        ...new Set(rows.flatMap((row) => (row.originatingRunId ? [row.originatingRunId] : []))),
+      ].sort(),
+      workspaceIds: [...new Set(rows.map((row) => row.originatingWorkspaceId))].sort(),
+    };
   }
 
   /** Caller has reserved Runs then Workspaces; returned Runs are stopped by E in this transaction. */
@@ -593,41 +652,7 @@ export class ProjectRequestStore {
   ): Promise<ProjectRequestCancellation> {
     await assertProjectAuthority(transaction);
     if (!roots.length) return { runIds: [], events: [] };
-    const rows = await transaction
-      .selectFrom("requests as request")
-      .innerJoin("runs as run", "run.id", "request.originatingRunId")
-      .innerJoin("threads as thread", "thread.id", "run.threadId")
-      .select([
-        "request.id",
-        "run.id as runId",
-        "run.requestedBy",
-        "run.initiatorGeneration",
-        "run.membershipGeneration",
-        "run.originConnectionId",
-        "thread.workspaceId",
-      ])
-      .where("run.requestedBy", "in", [...new Set(roots.map((root) => root.userId))])
-      .where("request.originatingGrantId", "is not", null)
-      .where("request.status", "=", "pending")
-      .orderBy("request.id")
-      .execute();
-    const matches = rows.filter((row) =>
-      roots.some((root) => {
-        if (row.requestedBy !== root.userId || row.initiatorGeneration === null) return false;
-        if (root.kind === "member")
-          return Number(row.initiatorGeneration) <= root.memberGenerationCutoff;
-        if (
-          row.workspaceId !== root.workspaceId ||
-          Number(row.membershipGeneration) > root.membershipGenerationCutoff
-        )
-          return false;
-        return (
-          root.kind === "membership" ||
-          (row.originConnectionId === root.connectionId &&
-            Number(row.initiatorGeneration) <= root.memberGenerationCutoff)
-        );
-      }),
-    );
+    const matches = await requestsForRoots(transaction, roots);
     const events = await cancelRows(
       transaction,
       matches.map((row) => row.id),
@@ -639,6 +664,7 @@ export class ProjectRequestStore {
   async cancelManagerless(
     transaction: Transaction<DatabaseSchema>,
     workspaceId: WorkspaceId,
+    work: ProjectRequestStopPort,
   ): Promise<ProjectRequestCancellation> {
     await assertProjectAuthority(transaction);
     if ((await eligibleProjectRequestManagers(transaction, workspaceId)).length)
@@ -657,10 +683,11 @@ export class ProjectRequestStore {
       rows.map((row) => row.id),
       "no-eligible-manager",
     );
-    return {
-      runIds: rows.flatMap((row) => (row.originatingRunId ? [row.originatingRunId] : [])),
-      events,
-    };
+    const runIds = [
+      ...new Set(rows.flatMap((row) => (row.originatingRunId ? [row.originatingRunId] : []))),
+    ];
+    if (runIds.length) await work.stop(transaction, { runIds, reason: "no-eligible-manager" });
+    return { runIds, events };
   }
 }
 
@@ -795,4 +822,66 @@ async function authenticatedResponder(
     .forShare("authSessions")
     .executeTakeFirst();
   if (!session) denied();
+}
+
+async function requestsForRoots(
+  database: Kysely<DatabaseSchema>,
+  roots: readonly ProjectRequestRevocationRoot[],
+) {
+  const rows = await database
+    .selectFrom("requests as request")
+    .innerJoin("runs as run", "run.id", "request.originatingRunId")
+    .innerJoin("threads as thread", "thread.id", "run.threadId")
+    .select([
+      "request.id",
+      "run.id as runId",
+      "run.requestedBy",
+      "run.initiatorGeneration",
+      "run.membershipGeneration",
+      "run.originConnectionId",
+      "thread.workspaceId",
+    ])
+    .where("run.requestedBy", "in", [...new Set(roots.map((root) => root.userId))])
+    .where("request.originatingGrantId", "is not", null)
+    .where("request.status", "=", "pending")
+    .orderBy("request.id")
+    .execute();
+  return rows.filter((row) =>
+    roots.some((root) => {
+      if (row.requestedBy !== root.userId || row.initiatorGeneration === null) return false;
+      if (root.kind === "member")
+        return Number(row.initiatorGeneration) <= root.memberGenerationCutoff;
+      if (
+        row.workspaceId !== root.workspaceId ||
+        Number(row.membershipGeneration) > root.membershipGenerationCutoff
+      )
+        return false;
+      return (
+        root.kind === "membership" ||
+        (row.originConnectionId === root.connectionId &&
+          Number(row.initiatorGeneration) <= root.memberGenerationCutoff)
+      );
+    }),
+  );
+}
+
+/** Q's part of AccessWorkRevocationPort; E composes its other work scopes and terminalizer. */
+export function projectRequestRevocationHooks(
+  requests: ProjectRequestStore,
+  work: ProjectRequestStopPort,
+) {
+  return {
+    discover: (
+      transaction: Transaction<DatabaseSchema>,
+      roots: readonly ProjectRequestRevocationRoot[],
+    ) => requests.discover(transaction, roots),
+    cancel: async (
+      transaction: Transaction<DatabaseSchema>,
+      roots: readonly ProjectRequestRevocationRoot[],
+    ): Promise<void> => {
+      const cancelled = await requests.cancel(transaction, roots);
+      if (cancelled.runIds.length)
+        await work.stop(transaction, { runIds: cancelled.runIds, reason: "authority-revoked" });
+    },
+  };
 }

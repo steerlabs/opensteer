@@ -4603,9 +4603,9 @@ async function lockRequestOrigin(
   if (!run) return undefined;
   if (run.requestedBy === null || run.membershipGeneration === null)
     throw new OpensteerError({
-      code: "conflict",
-      reason: "unattended-project-work-unsupported",
-      message: "This Request path does not support unattended Project work yet",
+      code: "forbidden",
+      reason: "project-request-proposal-required",
+      message: "Project engine Requests require the Host proposal path",
     });
   return {
     environmentId: run.environmentId,

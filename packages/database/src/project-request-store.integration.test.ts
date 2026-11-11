@@ -5,11 +5,16 @@ import {
 } from "@opensteer/core";
 import { sql } from "kysely";
 import { expect } from "vitest";
+import { startExecutionNode } from "./execution-nodes.js";
 import { projectRequestStorageSql } from "./project-authority-migration.js";
 import { ProjectNotificationStore } from "./notification-store.js";
 import { describeStore } from "./store.integration.test-support.js";
-import { ProjectRequestStore, eligibleProjectRequestManagers } from "./project-request-store.js";
-import { projectRequestFixture, recordingProjectControls } from "./project-request.test-support.js";
+import {
+  ProjectRequestStore,
+  eligibleProjectRequestManagers,
+  projectRequestRevocationHooks,
+} from "./project-request-store.js";
+import { projectRequestFixture, durableProjectControls } from "./project-request.test-support.js";
 
 function proposal(binding: ProjectEngineRequestEvent["binding"]): ProjectEngineRequestEvent {
   return ProjectEngineRequestEventSchema.parse({
@@ -40,7 +45,7 @@ describeStore("Project Requests", (it) => {
   }) => {
     const fixture = await projectRequestFixture(storeFixture, "project-request-human");
     const { database } = storeFixture;
-    const controls = recordingProjectControls();
+    const controls = durableProjectControls(database);
     const store = new ProjectRequestStore(database, controls.port);
     const event = proposal(fixture.binding);
     const opened = await controls.transact(database, (tx) => store.propose(tx, event));
@@ -114,7 +119,7 @@ describeStore("Project Requests", (it) => {
     await expect(
       controls.transact(database, (tx) => store.answer(tx, answer)),
     ).rejects.toMatchObject({ code: "forbidden" });
-    expect(controls.records.size).toBe(0);
+    expect((await controls.read()).length).toBe(0);
     expect(
       await database
         .selectFrom("requests")
@@ -136,7 +141,7 @@ describeStore("Project Requests", (it) => {
     expect(await controls.transact(database, (tx) => store.answer(tx, answer))).toMatchObject({
       replayed: true,
     });
-    expect([...controls.records.values()]).toEqual([
+    expect(await controls.read()).toEqual([
       { kind: "request.resolve", requestId: answer.requestId, response: answer.response },
     ]);
     expect(await controls.transact(database, (tx) => store.canContinue(tx, answer.requestId))).toBe(
@@ -152,12 +157,62 @@ describeStore("Project Requests", (it) => {
     );
   });
 
+  it("retains node attribution without letting a node change the human audience", async ({
+    storeFixture,
+  }) => {
+    const fixture = await projectRequestFixture(storeFixture, "request-node");
+    const { database } = storeFixture;
+    const requests = new ProjectRequestStore(database);
+    const nodeId = createId("executionNode");
+    const event = proposal(fixture.binding);
+    event.data.request.originatingNodeId = nodeId;
+    await expect(
+      database.transaction().execute((tx) => requests.propose(tx, event)),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await database.transaction().execute((tx) =>
+      startExecutionNode(tx, {
+        attemptId: fixture.grant.attemptId,
+        runId: fixture.run.id,
+        startedAt: new Date(),
+        node: {
+          nodeId,
+          parentNodeId: null,
+          kind: "subagent",
+          title: "Inspect",
+          prompt: null,
+          model: null,
+          nativeRef: "child-1",
+          sessionRef: null,
+          originCallId: null,
+        },
+      }),
+    );
+    const opened = await database.transaction().execute((tx) => requests.propose(tx, event));
+    expect(opened).toMatchObject({
+      state: "ready",
+      request: {
+        originatingNodeId: nodeId,
+        requestedBy: fixture.userId,
+        requiredActor: "requester",
+      },
+    });
+    if (opened.state !== "ready") throw new Error("Expected attributed Request");
+    expect(opened.events[0]).toMatchObject({ data: { request: { originatingNodeId: nodeId } } });
+    expect(
+      await database
+        .transaction()
+        .execute((tx) =>
+          requests.detail(tx, { requestId: event.data.request.id, userId: fixture.userId }),
+        ),
+    ).toMatchObject({ originatingNodeId: nodeId });
+  });
+
   it("refuses injected roots and unsupported proposals without a card; a lost-root refusal is idempotent", async ({
     storeFixture,
   }) => {
     const fixture = await projectRequestFixture(storeFixture, "project-request-refusal");
     const { database } = storeFixture;
-    const controls = recordingProjectControls();
+    const controls = durableProjectControls(database);
     const store = new ProjectRequestStore(database, controls.port);
     const event = proposal(fixture.binding);
     const wrong = structuredClone(event);
@@ -186,7 +241,7 @@ describeStore("Project Requests", (it) => {
     expect(await controls.transact(database, (tx) => store.propose(tx, event))).toMatchObject({
       state: "refused",
     });
-    expect(controls.records.size).toBe(1);
+    expect((await controls.read()).length).toBe(1);
     expect(await database.selectFrom("requests").select("id").execute()).toHaveLength(0);
   });
 
@@ -195,7 +250,7 @@ describeStore("Project Requests", (it) => {
   }) => {
     const fixture = await projectRequestFixture(storeFixture, "project-request-ddl");
     const { database } = storeFixture;
-    const controls = recordingProjectControls();
+    const controls = durableProjectControls(database);
     const store = new ProjectRequestStore(database, controls.port);
     const event = proposal(fixture.binding);
     await controls.transact(database, (tx) => store.propose(tx, event));
@@ -229,21 +284,38 @@ describeStore("Project Requests", (it) => {
     it(`cancels only the captured ${kind} root without contacting a Runner`, async ({
       storeFixture,
     }) => {
-      const fixture = await projectRequestFixture(storeFixture, `project-request-cancel-${kind}`);
+      const fixture = await projectRequestFixture(
+        storeFixture,
+        `project-request-cancel-${kind}`,
+        kind === "connection" ? "connection" : "human",
+      );
       const { database } = storeFixture;
-      const controls = recordingProjectControls();
+      const controls = durableProjectControls(database);
       const store = new ProjectRequestStore(database, controls.port);
-      if (kind === "connection") {
-        await database
-          .updateTable("runs")
-          .set({ originConnectionId: fixture.connectionId })
-          .where("id", "=", fixture.run.id)
-          .execute();
-        if (!fixture.binding.authority.origin) throw new Error("Expected root");
-        fixture.binding.authority.origin.originConnectionId = fixture.connectionId;
-      }
       const event = proposal(fixture.binding);
       await controls.transact(database, (tx) => store.propose(tx, event));
+      const rootScope =
+        kind === "member"
+          ? { kind, userId: fixture.userId, memberGenerationCutoff: 1 }
+          : kind === "membership"
+            ? {
+                kind,
+                userId: fixture.userId,
+                workspaceId: fixture.workspace.id,
+                membershipGenerationCutoff: 1,
+              }
+            : {
+                kind,
+                userId: fixture.userId,
+                workspaceId: fixture.workspace.id,
+                connectionId: fixture.connectionId,
+                memberGenerationCutoff: 1,
+                membershipGenerationCutoff: 1,
+              };
+      expect(await database.transaction().execute((tx) => store.discover(tx, [rootScope]))).toEqual(
+        { runIds: [fixture.run.id], workspaceIds: [fixture.workspace.id] },
+      );
+
       await controls.transact(database, async (tx) => {
         await tx
           .selectFrom("runs")
@@ -280,7 +352,17 @@ describeStore("Project Requests", (it) => {
             ? { ...root, memberGenerationCutoff: 0 }
             : { ...root, membershipGenerationCutoff: 0 };
         expect((await store.cancel(tx, [older])).runIds).toEqual([]);
-        expect((await store.cancel(tx, [root])).runIds).toEqual([fixture.run.id]);
+        const hooks = projectRequestRevocationHooks(store, {
+          stop: async (transaction, input) => {
+            expect(input).toEqual({ runIds: [fixture.run.id], reason: "authority-revoked" });
+            await transaction
+              .updateTable("runs")
+              .set({ status: "interrupted", completedAt: new Date() })
+              .where("id", "in", [...input.runIds])
+              .execute();
+          },
+        });
+        await hooks.cancel(tx, [root]);
       });
       expect(
         await database
@@ -297,7 +379,7 @@ describeStore("Project Requests", (it) => {
   }) => {
     const fixture = await projectRequestFixture(storeFixture, "project-request-scans");
     const { database } = storeFixture;
-    const controls = recordingProjectControls();
+    const controls = durableProjectControls(database);
     const store = new ProjectRequestStore(database, controls.port);
     await controls.transact(database, (tx) => store.propose(tx, proposal(fixture.binding)));
     await controls.transact(database, async (tx) => {
@@ -344,5 +426,276 @@ describeStore("Project Requests", (it) => {
       .where("id", "=", fixture.userId)
       .execute();
     expect(await eligibleProjectRequestManagers(database, fixture.workspace.id)).toEqual([]);
+  });
+});
+
+// These Requests originate in admitted Runs; no Request is created by a Watch occurrence.
+describeStore("Unattended Project Requests", (it) => {
+  it("addresses live managers consistently and resolves the original unattended attempt through durable controls", async ({
+    storeFixture,
+  }) => {
+    const fixture = await projectRequestFixture(storeFixture, "unattended-answer", "unattended");
+    const { database } = storeFixture;
+    const controls = durableProjectControls(database);
+    const requests = new ProjectRequestStore(database);
+    const event = proposal(fixture.binding);
+    const result = await controls.transact(database, (tx) => requests.propose(tx, event));
+    expect(result).toMatchObject({
+      state: "ready",
+      request: {
+        requestedBy: null,
+        requiredActor: "workspace-owner",
+        originatingGrantId: fixture.grant.id,
+      },
+    });
+    if (result.state !== "ready") throw new Error("Expected manager Request");
+    expect(result.events).toEqual([]);
+    const outsider = await storeFixture.store.createUser("Administrator");
+    await database
+      .updateTable("users")
+      .set({ admittedAt: new Date(), instanceRole: "administrator" })
+      .where("id", "=", outsider)
+      .execute();
+    await controls.transact(database, async (tx) => {
+      expect(await requests.count(tx, fixture.userId)).toBe(1);
+      expect((await requests.list(tx, fixture.userId)).map((row) => row.id)).toEqual([
+        event.data.request.id,
+      ]);
+      expect(
+        (await requests.detail(tx, { requestId: event.data.request.id, userId: fixture.userId }))
+          .requestedBy,
+      ).toBeNull();
+      expect(await requests.recipients(tx, event.data.request.id)).toEqual([fixture.userId]);
+      expect(await requests.count(tx, outsider)).toBe(0);
+      expect(await requests.list(tx, outsider)).toEqual([]);
+    });
+    await expect(
+      controls.transact(database, (tx) =>
+        requests.detail(tx, { requestId: event.data.request.id, userId: outsider }),
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const answer = {
+      requestId: event.data.request.id,
+      userId: fixture.userId,
+      sessionId: fixture.sessionId,
+      response: { kind: "choice" as const, optionId: "yes" },
+    };
+    await expect(
+      controls.transact(database, (tx) => requests.answer(tx, { ...answer, userId: outsider })),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(await controls.transact(database, (tx) => requests.answer(tx, answer))).toMatchObject({
+      replayed: false,
+    });
+    expect(await controls.transact(database, (tx) => requests.answer(tx, answer))).toMatchObject({
+      replayed: true,
+    });
+    const commands = await database
+      .selectFrom("commands")
+      .selectAll()
+      .where("type", "=", "run.control.project")
+      .execute();
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      requestedBy: null,
+      originatingGrantId: fixture.grant.id,
+      payload: {
+        binding: fixture.binding,
+        control: {
+          kind: "request.resolve",
+          requestId: event.data.request.id,
+          response: answer.response,
+        },
+      },
+    });
+    expect(
+      await controls.transact(database, (tx) => requests.canContinue(tx, answer.requestId)),
+    ).toBe(true);
+    await database
+      .updateTable("users")
+      .set({ memberKind: "guest" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    expect(
+      await controls.transact(database, (tx) => requests.canContinue(tx, answer.requestId)),
+    ).toBe(false);
+  });
+
+  it("persists a managerless refusal without a card and never redecides it after a manager appears", async ({
+    storeFixture,
+  }) => {
+    const fixture = await projectRequestFixture(storeFixture, "unattended-refuse", "unattended");
+    const { database } = storeFixture;
+    const controls = durableProjectControls(database);
+    const requests = new ProjectRequestStore(database);
+    await database
+      .updateTable("users")
+      .set({ memberKind: "guest" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    const event = proposal(fixture.binding);
+    expect(await controls.transact(database, (tx) => requests.propose(tx, event))).toMatchObject({
+      state: "refused",
+      control: { reason: "no-eligible-manager" },
+    });
+    expect(await database.selectFrom("requests").select("id").execute()).toEqual([]);
+    await expect(
+      sql`update grants set runner_boot_id = 'readdressed' where id = ${fixture.grant.id}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      sql`delete from grants where id = ${fixture.grant.id}`.execute(database),
+    ).rejects.toMatchObject({ code: "23001" });
+
+    await database
+      .updateTable("users")
+      .set({ memberKind: "full" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    expect(await controls.transact(database, (tx) => requests.propose(tx, event))).toMatchObject({
+      state: "refused",
+      control: { reason: "no-eligible-manager" },
+    });
+    expect(await controls.read()).toHaveLength(1);
+    expect(await database.selectFrom("requests").select("id").execute()).toEqual([]);
+    const newEvent = proposal(fixture.binding);
+    newEvent.data.request.callId = "new-provider-call";
+    expect(await controls.transact(database, (tx) => requests.propose(tx, newEvent))).toMatchObject(
+      { state: "ready" },
+    );
+    await database
+      .updateTable("triggerWatchActivations")
+      .set({ executionGeneration: 2 })
+      .where("workspaceId", "=", fixture.workspace.id)
+      .execute();
+    const staleSource = proposal(fixture.binding);
+    staleSource.data.request.callId = "stale-source-call";
+    expect(
+      await controls.transact(database, (tx) => requests.propose(tx, staleSource)),
+    ).toMatchObject({
+      state: "refused",
+      control: { reason: "authority-revoked" },
+    });
+  });
+
+  it("cancels an unattended Run's card without sending the private row through the public DTO", async ({
+    storeFixture,
+  }) => {
+    const fixture = await projectRequestFixture(storeFixture, "unattended-run-end", "unattended");
+    const requests = new ProjectRequestStore(storeFixture.database);
+    const event = proposal(fixture.binding);
+    await storeFixture.database.transaction().execute((tx) => requests.propose(tx, event));
+    const events = await storeFixture.store.requests.cancelForRun(fixture.run.id, "run-ended");
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "request.cancelled",
+          data: { requestId: event.data.request.id, reason: "run-ended" },
+        }),
+      ]),
+    );
+    expect(
+      await storeFixture.database
+        .selectFrom("requests")
+        .select(["status", "requestedBy"])
+        .where("id", "=", event.data.request.id)
+        .executeTakeFirst(),
+    ).toEqual({ status: "cancelled", requestedBy: null });
+  });
+
+  it("cancels managerless waits atomically with the work port and never revives them", async ({
+    storeFixture,
+  }) => {
+    const fixture = await projectRequestFixture(
+      storeFixture,
+      "unattended-manager-loss",
+      "unattended",
+    );
+    const { database } = storeFixture;
+    const requests = new ProjectRequestStore(database);
+    const event = proposal(fixture.binding);
+    await database.transaction().execute((tx) => requests.propose(tx, event));
+    expect(
+      await database
+        .transaction()
+        .execute((tx) => requests.discoverManagerless(tx, [fixture.workspace.id])),
+    ).toEqual({ runIds: [fixture.run.id], workspaceIds: [fixture.workspace.id] });
+    await database
+      .updateTable("users")
+      .set({ memberState: "suspended", authorityGeneration: "2" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    const cancel = (work: import("./project-request-store.js").ProjectRequestStopPort) =>
+      database.transaction().execute(async (tx) => {
+        await tx
+          .selectFrom("runs")
+          .select("id")
+          .where("id", "=", fixture.run.id)
+          .forNoKeyUpdate()
+          .execute();
+        await tx
+          .selectFrom("workspaces")
+          .select("id")
+          .where("id", "=", fixture.workspace.id)
+          .forNoKeyUpdate()
+          .execute();
+        return requests.cancelManagerless(tx, fixture.workspace.id, work);
+      });
+    const abort = new Error("stop adapter rejected");
+    await expect(
+      cancel({
+        stop: async () => {
+          throw abort;
+        },
+      }),
+    ).rejects.toBe(abort);
+    expect(
+      await database
+        .selectFrom("requests")
+        .select("status")
+        .where("id", "=", event.data.request.id)
+        .executeTakeFirst(),
+    ).toEqual({ status: "pending" });
+    // E's Project terminalizer is not in e1c2306bf; this transaction double proves the handover/rollback boundary.
+    const stopped = await cancel({
+      stop: async (tx, input) => {
+        expect(input).toEqual({ runIds: [fixture.run.id], reason: "no-eligible-manager" });
+        await tx
+          .updateTable("runs")
+          .set({ status: "interrupted", completedAt: new Date() })
+          .where("id", "in", [...input.runIds])
+          .execute();
+      },
+    });
+    expect(stopped.runIds).toEqual([fixture.run.id]);
+    expect(
+      await database
+        .selectFrom("requests")
+        .select(["status", "cancellationReason"])
+        .where("id", "=", event.data.request.id)
+        .executeTakeFirst(),
+    ).toEqual({ status: "cancelled", cancellationReason: "no-eligible-manager" });
+    expect(
+      await database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", fixture.run.id)
+        .executeTakeFirst(),
+    ).toEqual({ status: "interrupted" });
+    await database
+      .updateTable("users")
+      .set({ memberState: "active", authorityGeneration: "3" })
+      .where("id", "=", fixture.userId)
+      .execute();
+    expect(
+      await cancel({
+        stop: async () => {
+          throw new Error("Cancelled Request was revived");
+        },
+      }),
+    ).toEqual({ runIds: [], events: [] });
+    expect(
+      await database.transaction().execute((tx) => requests.canContinue(tx, event.data.request.id)),
+    ).toBe(false);
   });
 });
