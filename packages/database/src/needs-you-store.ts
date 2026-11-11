@@ -1,9 +1,10 @@
 import { boundedSerializedPrefix } from "./message-window.js";
 import {
   OpensteerError,
-  PendingRequestSchema,
+  PendingRequestViewSchema,
   RequestIdSchema,
   type ThreadId,
+  type RequestId,
   type TaskPurpose,
   type UserId,
 } from "@opensteer/core";
@@ -60,32 +61,40 @@ export function needsYouPage(
       const selected = rows.slice(0, limit);
       const navigation = selected.length
         ? await sql<{
-            originId: ThreadId;
-            originPurpose: TaskPurpose;
+            requestId: RequestId;
+            purpose: TaskPurpose;
             id: ThreadId;
             title: string;
           }>`with recursive navigation as (
-      select id as origin_id, purpose as origin_purpose, id, title, parent_thread_id, listed,
-        array[id] as seen, 0 as depth
-      from threads where id in (${sql.join(selected.map((row) => row.originatingThreadId))})
+      select request.id as request_id, origin.id, origin.title, origin.purpose,
+        coalesce(held.parent_thread_id, origin.parent_thread_id) as next_thread_id,
+        held.parent_assignment_id as next_assignment_id,
+        (not origin.listed or held.id is not null) as roll_up,
+        array[origin.id] as seen, 0 as depth
+      from requests request join threads origin on origin.id = request.originating_thread_id
+      left join runs origin_run on origin_run.id = request.originating_run_id
+      left join delegations held on held.id = origin_run.assignment_id
+      where request.id in (${sql.join(selected.map((row) => row.id))})
       union all
-      select navigation.origin_id, navigation.origin_purpose, parent.id, parent.title,
-        parent.parent_thread_id, parent.listed, navigation.seen || parent.id, navigation.depth + 1
-      from navigation join threads parent on parent.id = navigation.parent_thread_id
-      where not navigation.listed and not parent.id = any(navigation.seen)
-    ) select distinct on (origin_id) origin_id as "originId", origin_purpose as "originPurpose", id, title
-      from navigation order by origin_id, depth desc`.execute(transaction)
+      select navigation.request_id, parent.id, parent.title, parent.purpose,
+        coalesce(ancestor.parent_thread_id, parent.parent_thread_id), ancestor.parent_assignment_id,
+        not parent.listed, navigation.seen || parent.id, navigation.depth + 1
+      from navigation join threads parent on parent.id = navigation.next_thread_id
+      left join delegations ancestor on ancestor.id = navigation.next_assignment_id
+      where navigation.roll_up and not parent.id = any(navigation.seen)
+    ) select distinct on (request_id) request_id as "requestId", purpose, id, title
+      from navigation order by request_id, depth desc`.execute(transaction)
         : { rows: [] };
-      const byOrigin = new Map(navigation.rows.map((row) => [row.originId, row]));
+      const byRequest = new Map(navigation.rows.map((row) => [row.requestId, row]));
       const candidates = selected.map((row) => {
-        const target = byOrigin.get(row.originatingThreadId);
+        const target = byRequest.get(row.id);
         if (!target) throw new Error("Request lost its originating task");
         return {
-          request: PendingRequestSchema.parse(requestFromRow(row)),
+          request: PendingRequestViewSchema.parse(requestFromRow(row)),
           originThreadId: row.originatingThreadId,
           navigationThreadId: target.id,
           title: target.title,
-          purpose: target.originPurpose,
+          purpose: target.purpose,
         };
       });
       const bounded = boundedSerializedPrefix(candidates, limit, maxBytes);

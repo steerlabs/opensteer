@@ -169,7 +169,7 @@ export function assignmentFromRow(row: Selectable<DelegationTable>): Assignment 
     returnMessageId: row.resultMessageId,
     returnReason: row.resultReason,
     returnStatus: row.resultStatus,
-    revision: row.revision,
+    revision: Number(row.revision),
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     workerThreadId: row.childThreadId,

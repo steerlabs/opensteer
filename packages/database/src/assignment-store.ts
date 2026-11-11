@@ -80,7 +80,7 @@ export async function assignmentSummaryInTransaction(
     resultPreview:
       row.resultText === null ? null : utf8Prefix(row.resultText, assignmentResultPreviewMaxBytes),
     returnStatus: row.resultStatus,
-    revision: row.revision,
+    revision: Number(row.revision),
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     workerThread: {

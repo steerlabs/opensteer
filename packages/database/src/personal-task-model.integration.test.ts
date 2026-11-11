@@ -1042,3 +1042,110 @@ it("hydrates the exact team request input when request IDs collide across teams"
     "The second team's current ask",
   );
 });
+
+it("navigates a reused worker's Request to the current assigning task without changing its origin", async () => {
+  const f = await fixture();
+  const original = await f.task("Original lineage parent");
+  const assigning = await f.task("Current assigning task");
+  const child = (
+    await createThread(f.database, {
+      ...f.execution,
+      createdBy: f.userId,
+      parentThreadId: original.id,
+      idempotencyKey: "reused-needs-you",
+      title: "Reused helper",
+    })
+  ).thread;
+  const send = (threadId: ThreadId, idempotencyKey: string) =>
+    enqueueThreadInput(f.database, {
+      threadId,
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      policy: "queue",
+      content: [{ type: "text", text: "Work" }],
+      idempotencyKey,
+    });
+  const parentInput = await send(assigning.id, "assigner-needs-you");
+  await f.start(parentInput.run!.id);
+  const childInput = await send(child.id, "worker-needs-you");
+  const assignmentId = createId("delegation");
+  await withPersonalTransaction(f.database, async (transaction) => {
+    await transaction
+      .updateTable("runs")
+      .set({ assignmentId })
+      .where("id", "=", childInput.run!.id)
+      .execute();
+    await transaction
+      .updateTable("threadInputs")
+      .set({ assignmentId })
+      .where("messageId", "=", childInput.message.id)
+      .execute();
+    await transaction
+      .insertInto("delegations")
+      .values({
+        id: assignmentId,
+        childRunId: childInput.run!.id,
+        childThreadId: child.id,
+        initialInputMessageId: childInput.message.id,
+        objective: "Work",
+        origin: "run",
+        parentAssignmentId: null,
+        parentRunId: parentInput.run!.id,
+        parentThreadId: assigning.id,
+        parentOccurrenceId: null,
+        parentWatchActivationId: null,
+        status: "open",
+        revision: 1,
+        resultStatus: "pending",
+        resultText: null,
+        finishedAt: null,
+        completedAt: null,
+        replyTarget: null,
+        resultAttemptedAt: null,
+        resultMessageId: null,
+        resultReason: null,
+      })
+      .execute();
+  });
+  await f.start(childInput.run!.id);
+  const { RequestStore } = await import("./request-store.js");
+  const request = await new RequestStore(f.database).create({
+    callId: "reused-needs-you-request",
+    kind: "browser.access",
+    mode: "durable",
+    originatingRunId: childInput.run!.id,
+    originatingThreadId: child.id,
+    requestedBy: f.userId,
+    requiredActor: "requester",
+    payload: {
+      kind: "browser.access",
+      reason: "Read a source",
+      suggestion: { kind: "user_choice" },
+    },
+    presentation: {
+      kind: "external",
+      title: "Choose a profile",
+      subject: { kind: "task", id: child.id },
+    },
+  });
+  const { needsYouPage } = await import("./needs-you-store.js");
+  expect((await needsYouPage(f.database, { userId: f.userId })).entries).toMatchObject([
+    {
+      originThreadId: child.id,
+      navigationThreadId: assigning.id,
+      title: assigning.title,
+      request: {
+        id: request.request.id,
+        originatingThreadId: child.id,
+        originatingRunId: childInput.run!.id,
+      },
+    },
+  ]);
+  await expect(
+    f.database
+      .selectFrom("threads")
+      .select("parentThreadId")
+      .where("id", "=", child.id)
+      .executeTakeFirstOrThrow(),
+  ).resolves.toEqual({ parentThreadId: original.id });
+});
