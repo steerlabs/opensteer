@@ -51,7 +51,7 @@ const encoder = new TextEncoder();
 export function keyedStreamBytes(value: unknown): number {
   return encoder.encode(JSON.stringify(value)).byteLength;
 }
-function equal(left: unknown, right: unknown): boolean {
+export function equal(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
     return false;

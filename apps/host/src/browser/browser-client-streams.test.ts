@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserClientStreams, type BrowserClientStreamMessage } from "./browser-client-streams.js";
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import {
+  BrowserClientStreams,
+  type BrowserClientStreamMessage,
+  type BrowserRowPorts,
+} from "./browser-client-streams.js";
+import type {
+  BrowserGroupRow,
+  BrowserTabRow,
+  BrowserTabRecord,
+} from "@opensteer/protocol/browser-tabs";
+import type { BrowserGroupFacts, WorkspaceTabStreamRow } from "@opensteer/database";
+import { keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import type { UserId } from "@opensteer/core";
+
 const alice = "usr_00000000-0000-4000-8000-000000000001" as UserId;
 const bob = "usr_00000000-0000-4000-8000-000000000002" as UserId;
 const groupId = "bsn_00000000-0000-4000-8000-000000000001" as BrowserGroupRow["id"];
@@ -51,162 +62,213 @@ const tab: BrowserTabRow = {
   canGoForward: false,
   occupants: [],
 };
+function fixture(count = 1) {
+  const facts: BrowserGroupFacts = { ...group, tabCount: count };
+  const durable = new Map<string, WorkspaceTabStreamRow>(
+    Array.from({ length: count }, (_, index) => {
+      const id = index ? (`surface_${index + 1}` as BrowserTabRow["id"]) : tabId;
+      return [id, { ...tab, id, order: index, kind: "browser", groupId }];
+    }),
+  );
+  const records = new Map<string, BrowserTabRecord>(
+    [...durable.values()].map((row) => [
+      row.id,
+      {
+        ...tab,
+        ...row,
+        state: "live",
+        url: "https://example.com/private/path?never=sent",
+        icon: null,
+        documentId: "doc",
+        geometryRevision: 1,
+        sizedByAgent: false,
+      },
+    ]),
+  );
+  let visible = true,
+    live = true,
+    acting = false;
+  let occupants: BrowserRowPorts["occupants"] = () => [];
+  const ports: BrowserRowPorts = {
+    groupIds: vi.fn(async (user) => (user === alice && !visible ? [] : [groupId])),
+    readGroups: vi.fn(async (user, ids) =>
+      (user === alice && !visible) || !ids.includes(groupId) ? [] : [{ ...facts }],
+    ),
+    readTabs: vi.fn(async () => [...durable.values()]),
+    groupId: vi.fn(async () => groupId),
+    live: () =>
+      live
+        ? {
+            groupId,
+            records,
+            inventoryRevision: 1,
+            navigation: true,
+            ready: true,
+            acting,
+            page: null,
+            iconRef: () => null,
+          }
+        : undefined,
+    occupants: (user, session, id) => occupants(user, session, id),
+    onError: (error) => {
+      throw error;
+    },
+  };
+  const streams = new BrowserClientStreams(ports);
+  const attach = async (
+    user = alice,
+    bufferedAmount = () => 0,
+    send?: (message: BrowserClientStreamMessage) => Promise<void>,
+  ) => {
+    const messages: BrowserClientStreamMessage[] = [];
+    const connection = await streams.attach(user, {
+      bufferedAmount,
+      send: async (message) => {
+        messages.push(message);
+        await send?.(message);
+      },
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    return { ...connection, messages };
+  };
+  return {
+    facts,
+    durable,
+    records,
+    ports,
+    streams,
+    attach,
+    set visible(value: boolean) {
+      visible = value;
+    },
+    set live(value: boolean) {
+      live = value;
+    },
+    set acting(value: boolean) {
+      acting = value;
+    },
+    set occupants(value: BrowserRowPorts["occupants"]) {
+      occupants = value;
+    },
+  };
+}
 afterEach(() => vi.useRealTimers());
 describe("BrowserClientStreams", () => {
   it("shares viewer projections but keeps each connection's revision independent", async () => {
     vi.useFakeTimers();
-    let visible = true,
-      acting = false;
-    const streams = new BrowserClientStreams({
-      read: async (user) => ({
-        groups: visible || user === bob ? [group] : [],
-        tabs: new Map([
-          [
-            groupId,
-            [
-              {
-                ...tab,
-                occupants:
-                  user === alice && acting
-                    ? [
-                        {
-                          threadId:
-                            "thr_00000000-0000-4000-8000-000000000001" as BrowserTabRow["occupants"][number]["threadId"],
-                          home: false,
-                          holding: true,
-                          acting: true,
-                          lastActiveAt: group.createdAt,
-                        },
-                      ]
-                    : [],
-              },
-            ],
-          ],
-        ]),
-      }),
-      onError: (error) => {
-        throw error;
-      },
-    });
-    const a: BrowserClientStreamMessage[] = [],
-      b: BrowserClientStreamMessage[] = [],
-      second: BrowserClientStreamMessage[] = [];
-    const connect = (user: UserId, messages: BrowserClientStreamMessage[]) =>
-      streams.attach(user, {
-        send: async (message) => {
-          messages.push(message);
-        },
-        bufferedAmount: () => 0,
-      });
-    const first = await connect(alice, a);
-    await connect(bob, b);
+    const f = fixture();
+    const a = await f.attach(),
+      b = await f.attach(bob),
+      second = await f.attach();
+    expect(f.ports.groupIds).toHaveBeenCalledTimes(2);
+    a.messages.length = b.messages.length = second.messages.length = 0;
+    a.resync();
     await vi.advanceTimersByTimeAsync(50);
-    await connect(alice, second);
+    expect(
+      a.messages.some(
+        (message) => message.type === "host.browser-tabs" && message.stream.op === "begin",
+      ),
+    ).toBe(true);
+    expect(second.messages).toHaveLength(0);
+    a.messages.length = 0;
+    f.occupants = (user) =>
+      user === alice
+        ? [
+            {
+              threadId:
+                "thr_00000000-0000-4000-8000-000000000001" as BrowserTabRow["occupants"][number]["threadId"],
+              home: false,
+              holding: true,
+              acting: true,
+              lastActiveAt: group.createdAt,
+            },
+          ]
+        : [];
+    f.streams.source.markTabs(groupId, [tabId]);
     await vi.advanceTimersByTimeAsync(50);
-    a.length = b.length = second.length = 0;
-    acting = true;
-    await streams.refresh();
+    expect(a.messages).toHaveLength(1);
+    expect(second.messages).toHaveLength(1);
+    expect(b.messages).toHaveLength(0);
+    expect(a.messages[0]?.type).toBe("host.browser-tabs");
+    a.messages.length = 0;
+    f.visible = false;
+    await f.streams.source.reauthorize(alice);
     await vi.advanceTimersByTimeAsync(50);
-    expect(a).toHaveLength(1);
-    expect(second).toHaveLength(1);
-    expect(b).toHaveLength(0);
-    expect(a[0]?.type).toBe("host.browser-tabs");
-    a.length = 0;
-    visible = false;
-    await streams.refresh(alice);
-    await vi.advanceTimersByTimeAsync(50);
-    expect(a).toEqual([
+    expect(a.messages).toEqual([
       expect.objectContaining({
         type: "host.browser-groups",
         stream: expect.objectContaining({ op: "change", remove: [groupId] }),
       }),
     ]);
-    a.length = 0;
-    acting = false;
-    await streams.refresh();
-    first.resync(groupId);
+    a.messages.length = 0;
+    f.occupants = () => [];
+    f.streams.source.markTabs(groupId, [tabId]);
+    a.resync(groupId);
     await vi.advanceTimersByTimeAsync(50);
-    expect(a).toHaveLength(0);
-    streams.close();
+    expect(a.messages).toHaveLength(0);
+    f.streams.close();
   });
   it("coalesces a blocked connection to the latest title without a backlog", async () => {
     vi.useFakeTimers();
-    let title = "Page",
-      blocked = false;
-    const messages: BrowserClientStreamMessage[] = [];
-    const streams = new BrowserClientStreams({
-      read: async () => ({ groups: [group], tabs: new Map([[groupId, [{ ...tab, title }]]]) }),
-      onError: (error) => {
-        throw error;
-      },
-    });
-    await streams.attach(alice, {
-      send: async (message) => {
-        messages.push(message);
-      },
-      bufferedAmount: () => (blocked ? 300_000 : 0),
-    });
-    await vi.advanceTimersByTimeAsync(50);
-    messages.length = 0;
+    const f = fixture();
+    let blocked = false;
+    const a = await f.attach(alice, () => (blocked ? 300_000 : 0));
+    a.messages.length = 0;
     blocked = true;
-    title = "Old";
-    await streams.refresh();
-    await vi.advanceTimersByTimeAsync(50);
-    title = "Latest";
-    await streams.refresh();
-    await vi.advanceTimersByTimeAsync(50);
-    expect(messages).toHaveLength(0);
+    for (const title of ["Old", "Latest"]) {
+      f.records.set(tabId, { ...f.records.get(tabId)!, title });
+      f.streams.source.markTabs(groupId, [tabId]);
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    expect(a.messages).toHaveLength(0);
     blocked = false;
     await vi.advanceTimersByTimeAsync(50);
-    expect(messages).toEqual([
+    expect(a.messages).toEqual([
       expect.objectContaining({
         type: "host.browser-tabs",
         stream: expect.objectContaining({ op: "change", update: [{ id: tabId, title: "Latest" }] }),
       }),
     ]);
-    streams.close();
+    f.streams.close();
   });
-  it("drops a revoked group's publisher during an unfinished tab snapshot", async () => {
+  it("drops a revoked group's publisher during an unfinished tab snapshot and regrants with a new generation", async () => {
     vi.useFakeTimers();
-    let visible = true;
+    const f = fixture(200);
     let release: (() => void) | undefined;
-    const messages: BrowserClientStreamMessage[] = [];
-    const streams = new BrowserClientStreams({
-      read: async () => ({
-        groups: visible ? [group] : [],
-        tabs: new Map([
-          [
-            groupId,
-            Array.from({ length: 200 }, (_, index) => ({
-              ...tab,
-              id: `surface_${index}` as BrowserTabRow["id"],
-              title: "x".repeat(256),
-              order: index,
-            })),
-          ],
-        ]),
-      }),
-      onError: (error) => {
-        throw error;
-      },
-    });
-    await streams.attach(alice, {
-      bufferedAmount: () => 0,
-      send: async (message) => {
-        messages.push(message);
+    const a = await f.attach(
+      alice,
+      () => 0,
+      async (message) => {
         if (message.type === "host.browser-tabs" && message.stream.op === "rows" && !release)
           await new Promise<void>((resolve) => {
             release = resolve;
           });
       },
-    });
-    await vi.advanceTimersByTimeAsync(50);
+    );
     expect(release).toBeDefined();
-    visible = false;
-    await streams.refresh(alice);
+    const first = a.messages.find(
+      (message) => message.type === "host.browser-tabs" && message.stream.op === "begin",
+    );
+    f.visible = false;
+    let authorize!: (ids: BrowserGroupRow["id"][]) => void;
+    vi.mocked(f.ports.groupIds).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          authorize = resolve;
+        }),
+    );
+    const reauthorization = f.streams.source.reauthorize(alice);
     release!();
-    await vi.advanceTimersByTimeAsync(0);
-    const removed = messages.findIndex(
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      a.messages.some(
+        (message) => message.type === "host.browser-tabs" && message.stream.op === "end",
+      ),
+    ).toBe(false);
+    authorize([]);
+    await reauthorization;
+    await vi.advanceTimersByTimeAsync(50);
+    const removed = a.messages.findIndex(
       (message) =>
         message.type === "host.browser-groups" &&
         message.stream.op === "change" &&
@@ -214,13 +276,203 @@ describe("BrowserClientStreams", () => {
     );
     expect(removed).toBeGreaterThan(0);
     expect(
-      messages.slice(removed + 1).filter((message) => message.type === "host.browser-tabs"),
+      a.messages.slice(removed + 1).filter((message) => message.type === "host.browser-tabs"),
     ).toEqual([]);
+    f.visible = true;
+    await f.streams.source.reauthorize(alice);
+    await vi.advanceTimersByTimeAsync(50);
+    const next = a.messages.findLast(
+      (message) => message.type === "host.browser-tabs" && message.stream.op === "begin",
+    );
+    expect(next).toBeDefined();
+    expect(next).not.toEqual(first);
+    f.streams.close();
+  });
+  it("projects only the changed tab per viewer, with constant bytes at 10 and 1,000 rows and no duplicate after its write", async () => {
+    vi.useFakeTimers();
+    const sizes: number[] = [];
+    for (const count of [10, 1000]) {
+      const f = fixture(count);
+      const a = await f.attach(),
+        second = await f.attach(),
+        b = await f.attach(bob);
+      a.messages.length = second.messages.length = b.messages.length = 0;
+      vi.mocked(f.ports.groupIds).mockClear();
+      vi.mocked(f.ports.readGroups).mockClear();
+      vi.mocked(f.ports.readTabs).mockClear();
+      const project = vi.spyOn(f.ports, "occupants");
+      f.records.set(tabId, { ...f.records.get(tabId)!, title: "Changed" });
+      f.streams.source.markTabs(groupId, [tabId]);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(project).toHaveBeenCalledTimes(2);
+      expect(f.ports.groupIds).not.toHaveBeenCalled();
+      expect(f.ports.readGroups).not.toHaveBeenCalled();
+      expect(f.ports.readTabs).not.toHaveBeenCalled();
+      expect(a.messages).toHaveLength(1);
+      expect(a.messages[0]).toMatchObject({
+        type: "host.browser-tabs",
+        stream: { op: "change", update: [{ id: tabId, title: "Changed" }] },
+      });
+      expect(JSON.stringify(a.messages)).not.toContain("private/path");
+      sizes.push(keyedStreamBytes(a.messages[0]));
+      a.messages.length = 0;
+      const written = { ...f.durable.get(tabId)!, title: "Changed" };
+      f.durable.set(tabId, written);
+      f.streams.source.tabsWritten(groupId, [written], []);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(a.messages).toHaveLength(0);
+      f.streams.close();
+    }
+    expect(sizes[0]).toBe(sizes[1]);
+  });
+  it("suspends open durable tabs on session end and removes an empty terminal group", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const a = await f.attach();
+    a.messages.length = 0;
+    f.live = false;
+    f.facts.state = "closed";
+    await f.streams.source.groupChanged(groupId, { tabs: true });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(a.messages).toContainEqual(
+      expect.objectContaining({
+        type: "host.browser-tabs",
+        stream: expect.objectContaining({
+          update: [expect.objectContaining({ id: tabId, state: "suspended", documentId: null })],
+        }),
+      }),
+    );
     expect(
-      messages.some(
-        (message) => message.type === "host.browser-tabs" && message.stream.op === "end",
+      a.messages.some(
+        (message) =>
+          message.type === "host.browser-groups" &&
+          message.stream.op === "change" &&
+          message.stream.remove?.includes(groupId),
       ),
     ).toBe(false);
-    streams.close();
+    a.messages.length = 0;
+    f.durable.clear();
+    f.facts.tabCount = 0;
+    await f.streams.source.groupChanged(groupId, { tabs: true });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(a.messages).toEqual([
+      expect.objectContaining({
+        type: "host.browser-groups",
+        stream: expect.objectContaining({ remove: [groupId] }),
+      }),
+    ]);
+    f.streams.close();
+  });
+  it("repairs just the requested publishers and leaves the other connection untouched", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const other = "bsn_00000000-0000-4000-8000-000000000099" as BrowserGroupRow["id"];
+    const facts = { ...f.facts, id: other, sessionId: other };
+    const live = f.ports.live;
+    f.ports.live = (id) => (id === other ? { ...live(groupId)!, groupId: other } : live(id));
+    vi.mocked(f.ports.groupIds).mockResolvedValue([groupId, other]);
+    vi.mocked(f.ports.readGroups).mockImplementation(async (_user, ids) =>
+      [f.facts, facts].filter((row) => ids.includes(row.id)),
+    );
+    vi.mocked(f.ports.readTabs).mockImplementation(async (ids) =>
+      ids.flatMap((id) =>
+        [...f.durable.values()].map((row) => ({ ...row, groupId: id, sessionId: id })),
+      ),
+    );
+    const a = await f.attach(),
+      b = await f.attach();
+    a.messages.length = b.messages.length = 0;
+    a.resync(other);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      a.messages
+        .filter((message) => message.stream.op === "begin")
+        .map((message) => (message.type === "host.browser-tabs" ? message.groupId : "groups")),
+    ).toEqual([other]);
+    a.messages.length = 0;
+    a.resync();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(
+      a.messages
+        .filter((message) => message.stream.op === "begin")
+        .map((message) => (message.type === "host.browser-tabs" ? message.groupId : "groups")),
+    ).toEqual(["groups", groupId, other]);
+    expect(b.messages).toHaveLength(0);
+    const project = vi.spyOn(f.ports, "occupants");
+    f.facts.attachedRunIds = [
+      "run_00000000-0000-4000-8000-000000000001" as BrowserGroupRow["attachedRunIds"][number],
+    ];
+    await f.streams.source.groupChanged(groupId);
+    expect(project).not.toHaveBeenCalled();
+    f.streams.close();
+  });
+  it("keeps restoring labels through a blank record and overlays sleep without a durable write", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    f.durable.set(tabId, { ...f.durable.get(tabId)!, state: "restoring" });
+    f.records.set(tabId, { ...f.records.get(tabId)!, title: "", url: "about:blank" });
+    const a = await f.attach();
+    const rows = a.messages.flatMap((message) =>
+      message.type === "host.browser-tabs" && message.stream.op === "rows"
+        ? message.stream.rows
+        : [],
+    );
+    expect(rows).toMatchObject([
+      {
+        id: tabId,
+        state: "restoring",
+        title: "Page",
+        site: "https://example.com",
+        documentId: null,
+      },
+    ]);
+    a.messages.length = 0;
+    f.records.set(tabId, {
+      ...f.records.get(tabId)!,
+      title: "Restored",
+      url: "https://example.com/restored",
+      state: "suspended",
+    });
+    vi.mocked(f.ports.readTabs).mockClear();
+    f.streams.source.markTabs(groupId, [tabId]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(a.messages).toContainEqual(
+      expect.objectContaining({
+        type: "host.browser-tabs",
+        stream: expect.objectContaining({
+          update: [expect.objectContaining({ state: "suspended", title: "Restored" })],
+        }),
+      }),
+    );
+    expect(f.ports.readTabs).not.toHaveBeenCalled();
+    expect(f.durable.get(tabId)?.state).toBe("restoring");
+    f.streams.close();
+  });
+  it("discards a keyed group read started before reauthorization", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const a = await f.attach();
+    a.messages.length = 0;
+    let finish!: (rows: BrowserGroupFacts[]) => void;
+    vi.mocked(f.ports.readGroups).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const old = f.streams.source.groupChanged(groupId);
+    await vi.advanceTimersByTimeAsync(0);
+    f.visible = false;
+    await f.streams.source.reauthorize(alice);
+    finish([f.facts]);
+    await old;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(a.messages).toEqual([
+      expect.objectContaining({
+        type: "host.browser-groups",
+        stream: expect.objectContaining({ remove: [groupId] }),
+      }),
+    ]);
+    f.streams.close();
   });
 });
