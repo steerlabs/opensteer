@@ -95,16 +95,10 @@ export function useMinuteClock(): number {
   return now;
 }
 
-/** Where a conversation opens: Chat at Home, any other at its Thread, at one message when named. */
-export function conversationPath(
-  threadId: string,
-  homeThreadId: string | null,
-  messageId?: string | null,
-): string {
+/** Where a task opens, at one message when named. */
+export function conversationPath(threadId: string, messageId?: string | null): string {
   const anchor = messageId ? `?messageId=${encodeURIComponent(messageId)}` : "";
-  return threadId === homeThreadId
-    ? `/${anchor}`
-    : `/threads/${encodeURIComponent(threadId)}${anchor}`;
+  return `/tasks/${encodeURIComponent(threadId)}${anchor}`;
 }
 
 export { automationPath } from "@opensteer/client/host";

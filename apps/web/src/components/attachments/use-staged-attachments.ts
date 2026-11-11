@@ -19,12 +19,12 @@ import { composerDrafts, type DraftFile } from "../composer-drafts.js";
 import { artifactPart, isInlineImage } from "./attachment-parts.js";
 import { prepareUploadFile, UploadPreparationError } from "./upload-file.js";
 
-/** Where staged files go: one Workspace, reached through one signed-in client. */
+/** Where staged files go: one Deployment, reached through one signed-in client. */
 export interface AttachmentTarget {
   readonly client: HostClient;
   /** The draft these files belong to; its key names the Thread, user and deployment. */
   readonly scope: string;
-  readonly workspaceId: string;
+  readonly deploymentId: string;
 }
 
 export interface StagedAttachment {
@@ -97,7 +97,7 @@ const addAgain = "This file has to be added again.";
 class StagedFiles {
   readonly client: HostClient;
   readonly #scope: string;
-  #workspaceId: string;
+  readonly #deploymentId: string;
   #state: State = noState;
   #unchecked: string[] = [];
   /** Its draft was discarded and may yet be taken back: uploads go on, the draft is left alone. */
@@ -108,7 +108,7 @@ class StagedFiles {
   constructor(target: AttachmentTarget) {
     this.client = target.client;
     this.#scope = target.scope;
-    this.#workspaceId = target.workspaceId;
+    this.#deploymentId = target.deploymentId;
     const saved = composerDrafts.read(target.scope)?.files ?? [];
     if (saved.length > 0)
       this.#state = { items: saved.map((file) => this.#saved(file)), notice: null };
@@ -161,27 +161,7 @@ class StagedFiles {
     for (const localId of waiting) this.#check(localId);
   }
 
-  /**
-   * The draft's task now starts in another Workspace, and the Host only sends
-   * files held there: those with their bytes go up again, the rest are added
-   * again. What was reserved in the old one is left to expire, since a message
-   * may already be carrying it.
-   */
-  moveTo(workspaceId: string): void {
-    if (workspaceId === this.#workspaceId) return;
-    this.#workspaceId = workspaceId;
-    this.#unchecked = [];
-    for (const [localId, record] of this.#records) {
-      record.controller?.abort();
-      record.controller = null;
-      record.attachmentId = null;
-      record.part = null;
-      record.reservationKey = mutationIdempotencyKey("attachment");
-      if (record.source) this.#upload(localId);
-      else
-        this.#patch(localId, { error: addAgain, part: null, retryable: false, status: "failed" });
-    }
-  }
+
 
   get aside(): boolean {
     return this.#asideFromDraft;
@@ -285,7 +265,7 @@ class StagedFiles {
     record.controller?.abort();
     const controller = new AbortController();
     record.controller = controller;
-    const workspaceId = this.#workspaceId;
+    const deploymentId = this.#deploymentId;
     this.#patch(localId, { error: null, part: null, retryable: false, status: "uploading" });
     void this.#prepare(localId, record, source, controller.signal)
       .then(() =>
@@ -301,7 +281,7 @@ class StagedFiles {
           signal: controller.signal,
           sizeBytes: record.sizeBytes,
           source: record.source ?? source,
-          workspaceId,
+          deploymentId,
         }),
       )
       .then(
@@ -533,11 +513,9 @@ export function useStagedAttachments(target: AttachmentTarget | null): StagedAtt
     session?.snapshot ?? noSnapshot,
     session?.snapshot ?? noSnapshot,
   );
-  const workspaceId = target?.workspaceId ?? null;
   useEffect(() => {
-    if (workspaceId) session?.moveTo(workspaceId);
     session?.begin();
-  }, [session, workspaceId]);
+  }, [session]);
   return useMemo(
     () =>
       session

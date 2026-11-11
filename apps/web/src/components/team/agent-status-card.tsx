@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Icon } from "../icon.js";
-import { ChatOrb, WorkingRing } from "../workspace/task-mark.js";
+import { AgentOrb, WorkingRing } from "../workspace/task-mark.js";
 import { AuthorAvatar } from "./team-marks.js";
 import {
   agentName,
@@ -98,7 +98,7 @@ export function AgentStatusCard({
       controls = button("Cancel", actions.onCancel);
       break;
     case "queued":
-      mark = <ChatOrb size={20} />;
+      mark = <AgentOrb size={20} />;
       title = (
         <>
           Queued
@@ -115,7 +115,7 @@ export function AgentStatusCard({
       tone = "live";
       mark = (
         <span className="agent-card__orb">
-          <ChatOrb size={20} />
+          <AgentOrb size={20} />
           <WorkingRing />
         </span>
       );

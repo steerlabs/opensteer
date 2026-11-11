@@ -1,6 +1,6 @@
 import { seedBrowserSession } from "@opensteer/client/test-support";
 import { seedBrowserSnapshot } from "@opensteer/client/test-support";
-import type { WorkspaceTabLineage } from "@opensteer/client/host";
+import type { PersonalTabLineage } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
 
@@ -116,7 +116,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
         const current = read();
         if (current !== base || !restoring) {
           base = current;
-          restoring = { ...current, workspaceTabRestoreVersion: 1 };
+          restoring = { ...current, tabRestoreVersion: 1 };
         }
         return restoring;
       });
@@ -181,12 +181,12 @@ describe("selection actions own exactly their axis, one history entry each", () 
           sessionId: selected.destination.sessionId,
           tabId: selected.destination.tabId,
         };
-        const group: WorkspaceTabLineage = {
+        const group: PersonalTabLineage = {
           id: createBrowserSessionId(),
           revision: 1,
           createdAt: "2026-10-19T12:00:00.000Z",
           session: {
-            id: destination.sessionId as WorkspaceTabLineage["session"]["id"],
+            id: destination.sessionId as PersonalTabLineage["session"]["id"],
             access: "read-write",
             createdAt: "2026-10-19T12:00:00.000Z",
             updatedAt: "2026-10-19T12:00:00.000Z",
@@ -194,18 +194,18 @@ describe("selection actions own exactly their axis, one history entry each", () 
             placement: {
               kind: "runner",
               runnerId: selected.device!
-                .machineId as WorkspaceTabLineage["session"]["placement"]["runnerId"],
+                .machineId as PersonalTabLineage["session"]["placement"]["runnerId"],
             },
             profileId: null,
             runtimeId: "test",
             state: "failed",
-            workspaceId: original.homeWorkspaceId as WorkspaceTabLineage["session"]["workspaceId"],
+            workspaceId: original.homeWorkspaceId as PersonalTabLineage["session"]["workspaceId"],
           },
           tabs: [
             {
               kind: "browser",
               id: BrowserSurfaceIdSchema.parse(destination.tabId),
-              sessionId: destination.sessionId as WorkspaceTabLineage["session"]["id"],
+              sessionId: destination.sessionId as PersonalTabLineage["session"]["id"],
               title: selected.title,
               site: selected.site ?? "",
               order: 0,
@@ -225,7 +225,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
                   { generation: 0, revision: 0, rows: [] },
                 ),
               ),
-            workspaceTabRestoreVersion: 1,
+            tabRestoreVersion: 1,
           } as HostSnapshot,
           [],
         );
@@ -247,7 +247,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
           for (const listener of listeners) listener();
           return group;
         });
-        Object.assign(source, { readWorkspaceTabs: read });
+        Object.assign(source, { readPersonalTabs: read });
         if (remembered) {
           rememberPlace(
             { deploymentId: original.deploymentId, userId: original.user!.id },

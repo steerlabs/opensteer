@@ -29,7 +29,7 @@ import { Popover } from "../popover.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
 import { TaskFamilyButton } from "./task-family.js";
 import { sameTaskFamilyGlance, taskFamilyGlance } from "@opensteer/client/host";
-import { TaskBadge, TaskMark, ChatOrb, WorkingRing, taskStateWords } from "./task-mark.js";
+import { TaskBadge, TaskMark, AgentOrb, WorkingRing, taskStateWords } from "./task-mark.js";
 import { AreaLink } from "./area-link.js";
 import { destinationPlaceKey, type WorkspaceNavigation } from "./navigation.js";
 import { DrawerButton } from "./place-stage.js";
@@ -137,7 +137,7 @@ export function ConversationHeader({
           >
             <Icon name="arrow-left" />
             {requester.threadId === directory.homeThreadId ? (
-              <ChatOrb size={16} />
+              <AgentOrb size={16} />
             ) : (
               <TaskMark size={16} mark={threadMark(requester.threadId, directory.snapshot)} />
             )}
@@ -154,7 +154,7 @@ export function ConversationHeader({
         )}
         <span className="conv-header__mark" data-yield={barRanks.mark}>
           {home ? (
-            <ChatOrb size={20} />
+            <AgentOrb size={20} />
           ) : voice ? (
             <Icon className="voice-thread-mark" name="waveform" />
           ) : projectOrb ? (

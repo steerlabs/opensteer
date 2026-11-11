@@ -665,9 +665,9 @@ try {
               (id) =>
                 (
                   Reflect.get(window, "opensteerMock") as {
-                    closeWorkspaceTabs(ids: string[]): Promise<unknown>;
+                    closePersonalTabs(ids: string[]): Promise<unknown>;
                   }
-                ).closeWorkspaceTabs([id]),
+                ).closePersonalTabs([id]),
               tabId,
             ),
         }),
@@ -696,9 +696,9 @@ try {
           (id) =>
             (
               Reflect.get(window, "opensteerMock") as {
-                closeWorkspaceTabs(ids: string[]): Promise<unknown>;
+                closePersonalTabs(ids: string[]): Promise<unknown>;
               }
-            ).closeWorkspaceTabs([id]),
+            ).closePersonalTabs([id]),
           after!.key.split(":").at(-1)!,
         ),
     });

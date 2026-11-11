@@ -9,7 +9,7 @@ import { Icon } from "./components/icon.js";
 import { ProviderLogo } from "./components/provider-brand.js";
 import { ToastProvider } from "./components/toast.js";
 import { StartFreshScreen } from "./components/start-fresh-screen.js";
-import { ChatOrb } from "./components/workspace/task-mark.js";
+import { AgentOrb } from "./components/workspace/task-mark.js";
 import { FolderChip, type FolderPickerProps } from "./components/home/folder-picker.js";
 import type {
   FolderGroupView,
@@ -801,7 +801,7 @@ const screens: Record<string, () => ReactNode> = {
         composer={<HomeComposer />}
         doneCount={24}
         folders={folders}
-        header={<AreaHeader mark={<ChatOrb size={22} />} title="New task" />}
+        header={<AreaHeader mark={<AgentOrb size={22} />} title="New task" />}
         needsYou={needsYou.slice(0, 2)}
       />
     </Frame>
@@ -835,7 +835,7 @@ const screens: Record<string, () => ReactNode> = {
               composer={<HomeComposer needsAccount />}
               doneCount={0}
               folders={[]}
-              header={<AreaHeader mark={<ChatOrb size={22} />} title="New task" />}
+              header={<AreaHeader mark={<AgentOrb size={22} />} title="New task" />}
               needsAccount
               needsYou={[]}
             />
@@ -1046,7 +1046,7 @@ const screens: Record<string, () => ReactNode> = {
         composer={<HomeComposer />}
         doneCount={24}
         folders={folders}
-        header={<AreaHeader mark={<ChatOrb size={22} />} title="New task" />}
+        header={<AreaHeader mark={<AgentOrb size={22} />} title="New task" />}
         needsYou={[]}
       />
       <JoinTeamDialog

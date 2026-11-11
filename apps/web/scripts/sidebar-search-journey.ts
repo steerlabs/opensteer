@@ -221,7 +221,7 @@ async function closeTabs(page: Page, titles: readonly string[]) {
     const tabs = store.structure().map((key) => store.tab(key.groupId, key.tabId)!);
     const ids = wanted.map((title) => tabs.find((tab) => tab.title === title)?.id);
     if (ids.some((id) => !id)) throw new Error(`No tab titled ${wanted.join(", ")}`);
-    await client.closeWorkspaceTabs(ids as string[]);
+    await client.closePersonalTabs(ids as string[]);
   }, titles);
 }
 
@@ -558,9 +558,9 @@ try {
     const before = await results(page);
     await page.evaluate(async () => {
       const client = Reflect.get(window, "opensteerMock") as {
-        closeWorkspaceTabs(ids: string[]): Promise<unknown>;
+        closePersonalTabs(ids: string[]): Promise<unknown>;
       };
-      await client.closeWorkspaceTabs(["mock-tab-1-1"]);
+      await client.closePersonalTabs(["mock-tab-1-1"]);
     });
     await page.waitForTimeout(500);
     const after = await results(page);

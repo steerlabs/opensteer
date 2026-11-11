@@ -25,7 +25,7 @@ import { LoadingRows } from "../loading-rows.js";
 import { PageTopbar } from "../page-header.js";
 import { actionErrorMessage, automationPath, useMinuteClock } from "../../ui-utils.js";
 import { AreaLink } from "../workspace/area-link.js";
-import { ChatOrb, TaskMark } from "../workspace/task-mark.js";
+import { AgentOrb, TaskMark } from "../workspace/task-mark.js";
 
 /** Requests a first-time reader can send as written, to see what an automation is. */
 const examples = [
@@ -268,7 +268,7 @@ function Where({
   return (
     <span className="automation-row__where">
       {home ? (
-        <ChatOrb size={16} />
+        <AgentOrb size={16} />
       ) : (
         <TaskMark
           mark={thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot)}

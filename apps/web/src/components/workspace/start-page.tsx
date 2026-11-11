@@ -51,7 +51,7 @@ import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
 import { useToastToolbar } from "../toast.js";
-import { TaskMark, ChatOrb } from "./task-mark.js";
+import { TaskMark, AgentOrb } from "./task-mark.js";
 import { ProfileAvatar } from "./identity.js";
 import {
   destinationPlaceKey,
@@ -1077,7 +1077,7 @@ function AppRow({
                   {occupant ? (
                     <span className="start-tile__mark">
                       {occupant.home ? (
-                        <ChatOrb size={16} />
+                        <AgentOrb size={16} />
                       ) : (
                         <TaskMark size={16} mark={threadMark(occupant.threadId, snapshot)} />
                       )}

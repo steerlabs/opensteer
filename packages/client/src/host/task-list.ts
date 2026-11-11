@@ -216,6 +216,43 @@ export function taskCanBeDone(
   return thread.purpose === "task";
 }
 
+/**
+ * The sidebar's tasks: what needs the reader, then results they have not
+ * read, then work running. A result leaves once read; the open task stays
+ * while it is open, so reading it never pulls its row away.
+ */
+export function liveTasks(list: TaskList, openThreadId: string | null = null): readonly TaskRow[] {
+  const needsYou = list.working.filter((row) => row.tone === "needs-you");
+  const results = list.ready.filter((row) => row.unread || row.threadId === openThreadId);
+  const running = list.working.filter((row) => row.tone !== "needs-you");
+  return [...needsYou, ...results, ...running];
+}
+
+export const allTasksFilters = ["all", "needs-you", "running", "unread", "read", "done"] as const;
+export type AllTasksFilter = (typeof allTasksFilters)[number];
+
+/** All tasks, by filter. Done reads the Host's Done list where it keeps one. */
+export function allTasksRows(
+  list: TaskList,
+  filter: AllTasksFilter,
+  done: readonly TaskRow[] = list.done,
+): readonly TaskRow[] {
+  switch (filter) {
+    case "all":
+      return [...list.working, ...list.ready];
+    case "needs-you":
+      return list.working.filter((row) => row.tone === "needs-you");
+    case "running":
+      return list.working.filter((row) => row.tone !== "needs-you");
+    case "unread":
+      return list.ready.filter((row) => row.unread);
+    case "read":
+      return list.ready.filter((row) => !row.unread);
+    case "done":
+      return done;
+  }
+}
+
 /** Work that marking the task Done would stop, which a person confirms first. */
 export function taskUnderWay(thread: Pick<ThreadSummary, "doneAt" | "status">): boolean {
   return thread.doneAt === null && (thread.status === "running" || thread.status === "waiting");

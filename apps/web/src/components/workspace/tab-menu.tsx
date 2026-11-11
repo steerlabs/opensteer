@@ -47,7 +47,7 @@ export function TabMenu({
   const hereId = useHereId();
   const reopenAvailable = useHostSelector(
     hostClient,
-    (snapshot) => snapshot.workspaceTabReopenAvailable,
+    (snapshot) => snapshot.tabReopenAvailable,
   );
   const toast = useToast();
   const requestClose = useTabCloser();
@@ -111,7 +111,7 @@ export function TabMenu({
     label: "Reopen closed tab",
     onSelect: () => {
       const show = nav.beginPlaceOperation();
-      void hostClient.reopenWorkspaceTab?.().then(
+      void hostClient.reopenPersonalTab?.().then(
         (result) =>
           show({
             kind: "browser",
@@ -169,7 +169,7 @@ export function TabMenu({
           <SurfaceMenuRow item={item} key={item.label} onChoose={choose(item)} />
         ))}
       </div>
-      {layout && place.workspaceTab ? (
+      {layout && place.personalTab ? (
         <div className="picker__section">
           <SurfaceSubmenuRow icon="plus" label="Add to group">
             <div className="picker__section">
@@ -218,7 +218,7 @@ export function TabMenu({
       ) : null}
       <div className="picker__section">
         <SurfaceMenuRow item={closing} onChoose={choose(closing)} />
-        {reopenAvailable && hostClient.reopenWorkspaceTab ? (
+        {reopenAvailable && hostClient.reopenPersonalTab ? (
           <SurfaceMenuRow item={reopen} onChoose={choose(reopen)} />
         ) : null}
       </div>

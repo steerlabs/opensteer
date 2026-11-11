@@ -25,7 +25,7 @@ import { TaskMark } from "./workspace/task-mark.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 
 function taskHref(assignment: AssignmentSummary): string {
-  return `/threads/${assignment.workerThread.id}`;
+  return `/tasks/${assignment.workerThread.id}`;
 }
 
 /**
@@ -165,7 +165,7 @@ export function DelegationLine({
         mark={threadMark(childThreadId, snapshot)}
         presentation={presentation}
         title={title}
-        to={workspace ? workspace.nav.threadPath(childThreadId) : `/threads/${childThreadId}`}
+        to={workspace ? workspace.nav.threadPath(childThreadId) : `/tasks/${childThreadId}`}
         tooltip={summary}
       />
     </div>

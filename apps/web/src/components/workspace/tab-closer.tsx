@@ -101,7 +101,7 @@ export function TabCloserProvider({
           error.reason === staleBrowserTabInventoryReason
         ) {
           try {
-            await hostClient.readWorkspaceTabs?.(sessionId);
+            await hostClient.readPersonalTabs?.(sessionId);
             const target = closeTarget(hostClient, sessionId, tabId);
             if (target) {
               ask({ kind: "close-tab", sessionId, tabId }, () =>
@@ -157,7 +157,7 @@ export function TabCloserProvider({
   const closeGroup = useCallback(
     (tabIds: readonly string[]) => {
       void hostClient
-        .closeWorkspaceTabs(tabIds)
+        .closePersonalTabs(tabIds)
         .then((result) => {
           if (result.failed.length)
             toast.error(result.failed.map((failure) => failure.message).join("\n"));

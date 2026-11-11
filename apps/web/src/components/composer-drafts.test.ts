@@ -207,17 +207,18 @@ describe("composer drafts", () => {
     expect(drafts.read(task("a"))?.text).toBe("returned");
   });
 
-  it("puts a returned task back in the Workspace it was to start in", () => {
+  it("puts a returned task back in the folder it was to start in", () => {
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
-    drafts.handBack(task("a"), { edit: () => "words", workspaceId: "project" });
-    expect(drafts.index(scope).tasks[0]?.workspaceId).toBe("project");
+    const folder = { computerId: "run_00000000-0000-4000-8000-000000000001", path: "/code/app" };
+    drafts.handBack(task("a"), { edit: () => "words", folder: folder as never });
+    expect(drafts.index(scope).tasks[0]?.folder).toEqual(folder);
   });
 
   it("lays a discarded draft back exactly as it was", () => {
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);
-    drafts.update(task("a"), { text: "keep me", workspaceId: "project" });
+    drafts.update(task("a"), { text: "keep me" });
     const discarded = drafts.read(task("a"));
     drafts.clear(task("a"));
     expect(drafts.index(scope).tasks).toEqual([]);
@@ -296,7 +297,7 @@ describe("composer drafts", () => {
     storage.setItem("opensteer:pending-send:v1:keep", "kept");
     const drafts = createComposerDraftStore(() => storage);
     drafts.update(task("a"), { text: "a" });
-    drafts.update(composerDraftKey({ ...scope, userId: "other" }, { kind: "chat" }), { text: "b" });
+    drafts.update(composerDraftKey({ ...scope, userId: "other" }, { kind: "task", draftId: "b" }), { text: "b" });
 
     drafts.clearAll();
 

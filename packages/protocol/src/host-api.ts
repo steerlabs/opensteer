@@ -304,7 +304,11 @@ const oidcReturnPathSchema = z
  * refuses it: there are none in the wild, because the Host serves its own web
  * bundle and the Desktop ships with the Host it talks to.
  */
-export { hostApiVersionHeader, teamApiVersionHeader } from "@opensteer/deployment-authority";
+export {
+  hostApiVersionHeader,
+  teamApiVersion,
+  teamApiVersionHeader,
+} from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
   code: OpensteerErrorCodeSchema,

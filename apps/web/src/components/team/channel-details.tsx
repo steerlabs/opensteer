@@ -3,7 +3,7 @@ import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SegmentedControl } from "../segmented-control.js";
-import { ChatOrb } from "../workspace/task-mark.js";
+import { AgentOrb } from "../workspace/task-mark.js";
 import { FolderChip, type FolderPickerProps } from "../home/folder-picker.js";
 import { PaneHeader } from "./channel-view.js";
 import { PersonAvatar, peopleOnlyRule } from "./team-marks.js";
@@ -157,7 +157,7 @@ export function ChannelDetails({
                 On your Opensteer
               </span>
             }
-            icon={<ChatOrb size={16} />}
+            icon={<AgentOrb size={16} />}
             title="Your agent here"
           >
             <div className="details-row details-row--spread">

@@ -358,7 +358,7 @@ export function RequestStack({
           <div className="request-card__by">
             <AreaLink
               className="request-card__source"
-              to={`/threads/${encodeURIComponent(open.source.threadId)}`}
+              to={`/tasks/${encodeURIComponent(open.source.threadId)}`}
             >
               <span className="task-request-mark">
                 <TaskMark size={16} mark={open.source.mark} />

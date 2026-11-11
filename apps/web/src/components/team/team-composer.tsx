@@ -11,7 +11,7 @@ import {
 import { attachmentDetail } from "../attachments/attachment-parts.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
-import { ChatOrb } from "../workspace/task-mark.js";
+import { AgentOrb } from "../workspace/task-mark.js";
 import { PeopleOnlyBadge, PersonAvatar } from "./team-marks.js";
 import {
   agentName,
@@ -348,7 +348,7 @@ export function TeamComposer({
               title={toAgent ? "Don’t ask my agent" : "Ask my agent · ⌘⇧↵"}
               type="button"
             >
-              <ChatOrb size={16} />
+              <AgentOrb size={16} />
               {toAgent ? "To my agent" : "Ask my agent"}
               {toAgent ? <Icon className="ask-pill__off" name="close" /> : null}
             </button>
@@ -476,7 +476,7 @@ function MentionList({
         if (item.kind === "my-agent")
           return (
             <div key="my-agent" {...common}>
-              <ChatOrb size={20} />
+              <AgentOrb size={20} />
               <span className="at-list__text">
                 <span className="at-list__name">My agent</span>
                 <span className="at-list__detail">
@@ -625,7 +625,7 @@ export function AgentUnavailable({
 }) {
   return (
     <div className="agent-unavailable">
-      <ChatOrb size={28} />
+      <AgentOrb size={28} />
       {kind === "not-linked" ? (
         <>
           <p className="agent-unavailable__title">Connect your Opensteer</p>
@@ -662,7 +662,7 @@ export function AskAgentHint({
 }) {
   return (
     <p className="ask-hint">
-      <ChatOrb size={16} />
+      <AgentOrb size={16} />
       <span>
         Ask your agent in any channel with <b>Ask my agent</b> or{" "}
         <span className="mention mention--agent">

@@ -119,7 +119,7 @@ import {
 import { MessageFold } from "./message-fold.js";
 import { useToast } from "./toast.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
-import { TaskMark, ChatOrb } from "./workspace/task-mark.js";
+import { TaskMark, AgentOrb } from "./workspace/task-mark.js";
 import { automationPath, useMediaQuery } from "../ui-utils.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { DelegationLine } from "./task-line.js";
@@ -562,7 +562,7 @@ function AgentByline({ author }: { author: MessageEntry["author"] | null }) {
   if (author?.kind === "platform" || threadId === null || threadId === homeThreadId) {
     return (
       <span className="msg--assistant__author">
-        <ChatOrb size={16} />
+        <AgentOrb size={16} />
         Opensteer
       </span>
     );
@@ -2327,7 +2327,7 @@ function TurnSource({ source }: { source: NonNullable<Turn["source"]> }) {
     ? {
         glyph: "message" as const,
         name: source.task.workerThread.title,
-        href: `/threads/${source.task.workerThread.id}`,
+        href: `/tasks/${source.task.workerThread.id}`,
       }
     : updateSource(source.author, "input", workspaces, home);
   const content = (
@@ -2360,7 +2360,7 @@ function updateSource(
         // Only a Thread the reader can open is a link: one behind a Workspace
         // they are not in is named and left at that.
         href: workspaces.some(({ id }) => id === author.workspaceId)
-          ? `/threads/${author.threadId}`
+          ? `/tasks/${author.threadId}`
           : null,
         name,
       };
@@ -2480,13 +2480,13 @@ function inputSource(
   switch (author.kind) {
     case "agent": {
       if (author.threadId === homeThreadId)
-        return { glyph: <ChatOrb size={16} />, href: "/", markdown: true, name };
+        return { glyph: <AgentOrb size={16} />, href: "/", markdown: true, name };
       const workspace = workspaces.find(({ id }) => id === author.workspaceId);
       return {
         glyph: <SenderTaskMark threadId={author.threadId} workspace={workspace ?? null} />,
         // Only a Thread the reader can open is a link: someone else's task,
         // behind a Workspace they are not in, is named and left at that.
-        href: workspace ? `/threads/${author.threadId}` : null,
+        href: workspace ? `/tasks/${author.threadId}` : null,
         markdown: true,
         name,
       };

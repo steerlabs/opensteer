@@ -6,7 +6,7 @@ import {
   type HostSnapshot,
   type NativeViewerSource,
   type PlaceItem,
-  type WorkspaceSurfaceDestination,
+  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { computerAppIdentityKey, type ComputerView } from "@opensteer/protocol";
@@ -26,7 +26,7 @@ import { ownerViewReadiness } from "./owner-views.js";
 import { useTabCloser } from "./tab-closer.js";
 import { useWorkspace } from "./workspace-context.js";
 
-type OwnerDestination = Extract<WorkspaceSurfaceDestination, { kind: "app" | "phone" }>;
+type OwnerDestination = Extract<PersonalSurfaceDestination, { kind: "app" | "phone" }>;
 
 const renewSoonMs = 90_000;
 

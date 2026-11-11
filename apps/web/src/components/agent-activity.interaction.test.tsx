@@ -817,7 +817,7 @@ describe("page rail", () => {
       seedBrowserSnapshot(
         {
           ...client.getSnapshot(),
-          workspaceTabRestoreVersion: undefined,
+          tabRestoreVersion: undefined,
           browserSessions: [rawSession],
         } as import("@opensteer/client/host").HostSnapshot,
         undefined,

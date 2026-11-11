@@ -17,7 +17,6 @@ import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
-  useContext,
 } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import type { BrowserTabGroupColor } from "@opensteer/protocol";
@@ -40,21 +39,18 @@ import {
   describeHostConnection,
   doneDays,
   doneTaskList,
-  groupTasksByProject,
   listedRowThreadId,
+  taskFolderKey,
   quietlyMoved,
   quietSeenScope,
   requestsWaitingOn,
-  taskRowLabel,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
   type PlaceDescriptor,
   type TaskRow,
 } from "@opensteer/client/host";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
-  VoiceContext,
   useBrowserGroups,
   useHostSelector,
   usePlace,
@@ -85,7 +81,7 @@ import {
   type ComposerDraftTarget,
   type TaskDraftRow,
 } from "./composer-drafts.js";
-import { TaskMark, TaskState, ChatOrb, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
+import { TaskMark, TaskState, UnsentMark, taskStateWords } from "./workspace/task-mark.js";
 import {
   ProfileAvatar,
   browserWords,
@@ -97,11 +93,7 @@ import { PlaceMark } from "./workspace/place-mark.js";
 import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { DeviceLabel } from "./computers/device-label.js";
 import { useHereId } from "./computers/here.js";
-import {
-  homeThreadKind,
-  useTaskDirectory,
-  type TaskDirectory,
-} from "./workspace/task-directory.js";
+import { useTaskDirectory, type TaskDirectory } from "./workspace/task-directory.js";
 import {
   useHighlightMatch,
   useWorkspace,
@@ -111,6 +103,7 @@ import {
 import {
   destinationPlaceKey,
   setupPath,
+  taskAt,
   type WorkspaceNavigation,
 } from "./workspace/navigation.js";
 import { revealInList, useScrollEdges, useWholeRows } from "./workspace/scroll-edges.js";
@@ -128,13 +121,15 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { useDesktopPlaces } from "../desktop/places-context.js";
 import { PlaceMenuPlaces } from "./places/place-menu.js";
 import { PlaceAccountFooter, SignOutDialog } from "./places/place-account.js";
+import { FolderHeaderRow, FolderMoreRow, PersonalTopRows, TaskSource } from "./home/personal-sidebar.js";
 import {
-  FolderMoreRow,
-  ProjectChatRow,
-  ProjectFolderHeader,
   folderRowLimit,
-  useClosedProjects,
-} from "./sidebar-projects.js";
+  folderSignal,
+  groupByFolder,
+  showDoneEvent,
+} from "./home/folder-groups.js";
+import { useTaskSourceView } from "../team/team-attachments.js";
+import { TeamSidebarSections } from "../team/team-sidebar-sections.js";
 
 export interface SidebarProps {
   collapsed: boolean;
@@ -146,16 +141,14 @@ export interface SidebarProps {
   mobile?: boolean;
   onCloseMobile: () => void;
   onLoadEarlierTasks: () => Promise<void>;
-  /** Null when the Host does not let this person create a project. */
-  onNewProject: (() => void) | null;
   onNewTab: () => void;
   onSetTaskDone: (threadId: string, done: boolean) => void;
   onToggleCollapsed: () => void;
 }
 
 /**
- * The one navigator: Chat, the tasks, the places open now, and a menu
- * for everything else. A task row changes only the conversation; a tab row
+ * The one navigator: New task, Needs you and Voice, the tasks by folder, each
+ * team, the places open now, and a menu for everything else. A task row changes only the conversation; a tab row
  * only the middle; a mark on a tab both, as one step.
  */
 export function Sidebar({
@@ -168,7 +161,6 @@ export function Sidebar({
   mobile = false,
   onCloseMobile,
   onLoadEarlierTasks,
-  onNewProject,
   onNewTab,
   onSetTaskDone,
   onToggleCollapsed,
@@ -285,23 +277,24 @@ export function Sidebar({
   const [tasksShare, commitTasksShare] = useTasksShare();
   useWholeRows(listsRef, !collapsed);
   const { openDrawer } = workspace;
-  const openThreadId =
-    pathname === "/"
-      ? snapshot.homeThreadId
-      : pathname.startsWith("/threads/")
-        ? decodeURIComponent(pathname.slice("/threads/".length).split("/")[0]!)
-        : null;
+  const openThreadId = taskAt(pathname);
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const directory = useTaskDirectory(hostClient, openRowThreadId);
-  const { list, homeThreadId } = directory;
-  const workspaces = directory.snapshot.workspaces;
-  // Main's tasks lead; each Project's work under way follows in its own folder.
-  const grouping = useMemo(() => groupTasksByProject({ workspaces }, list), [list, workspaces]);
-  const mainTasks = grouping.main;
-  const [closedProjects, toggleProject] = useClosedProjects();
-  const openProjectId = pathname.startsWith("/workspaces/")
-    ? decodeURIComponent(pathname.slice("/workspaces/".length).split("/")[0] ?? "")
-    : null;
+  const { list } = directory;
+  const agentHome = directory.snapshot.personalSettings?.agentHome ?? null;
+  const machines = directory.snapshot.machines;
+  // Agent home leads; every other folder follows by its latest ask.
+  const grouping = useMemo(
+    () =>
+      groupByFolder(
+        [...list.working, ...list.ready],
+        agentHome,
+        (computerId) => machines.find((machine) => machine.id === computerId)?.name ?? "Computer",
+      ),
+    [agentHome, list.ready, list.working, machines],
+  );
+  const [closedFolders, toggleFolder] = useClosedFolders();
+  const [expandedFolders, setExpandedFolders] = useState<ReadonlySet<string>>(() => new Set());
   const tasksList = useRef<HTMLUListElement | null>(null);
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open, at the height Tasks had,
@@ -313,14 +306,18 @@ export function Sidebar({
     if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
   }, [hostClient, quietTasks, userId]);
   const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
-  const doneRows = doneList?.rows ?? mainTasks.done;
-  const doneCount = doneList?.total ?? mainTasks.done.length;
+  const doneRows = doneList?.rows ?? list.done;
+  const doneCount = doneList?.total ?? list.done.length;
   const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
   const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
   const openDone = () => {
     setDoneView({ height: tasksSection.current?.getBoundingClientRect().height ?? 0 });
     markQuietSeen(moved);
   };
+  useEffect(() => {
+    window.addEventListener(showDoneEvent, openDone);
+    return () => window.removeEventListener(showDoneEvent, openDone);
+  });
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
   useEffect(() => {
@@ -443,16 +440,14 @@ export function Sidebar({
     },
     [onCloseMobile],
   );
-  const needsYou = directory.attention;
+  const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
   const openNeedsYou = () => {
-    const first = needsYou[0];
-    if (!first) return;
     onCloseMobile();
-    nav.openConversation(nav.threadPath(first.threadId), { focusRequest: first.requestId });
+    nav.openConversation("/needs-you");
   };
-  const newTask = () => {
+  const newTask = (folder?: string) => {
     onCloseMobile();
-    nav.openConversation("/new");
+    nav.openConversation(folder ? `/?folder=${encodeURIComponent(folder)}` : "/");
   };
   const discardDraft = (target: ComposerDraftTarget) => {
     if (!deploymentId || !userId) return;
@@ -472,7 +467,7 @@ export function Sidebar({
   };
   const discardTaskDraft = (row: TaskDraftRow, open: boolean) => {
     // An open draft's composer goes first, so it cannot write the draft back.
-    if (open) nav.openConversation("/new");
+    if (open) nav.openConversation("/");
     discardDraft({ kind: "task", draftId: row.draftId });
   };
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
@@ -498,29 +493,23 @@ export function Sidebar({
 
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
-  const rows = [...mainTasks.working, ...mainTasks.ready];
   const days = doneView ? doneDays(doneRows, Date.now()) : [];
   const doneMore = doneList?.hasMore ?? list.hasMore;
-  // A draft whose project is gone stays reachable, among Main's.
-  const projectIds = new Set(grouping.folders.map((folder) => folder.workspace.id));
-  const inProject = (draft: TaskDraftRow) =>
-    draft.workspaceId !== null && projectIds.has(draft.workspaceId);
-  const mainDrafts = drafts.tasks.filter((draft) => !inProject(draft));
-  const folders = grouping.folders.map((folder) => {
-    const open = !closedProjects.has(folder.workspace.id);
-    const shown = open ? folder.rows.slice(0, folderRowLimit) : [];
-    const folderDrafts = drafts.tasks.filter((draft) => draft.workspaceId === folder.workspace.id);
+  // A draft belongs to the folder it would start in, or Agent home.
+  const draftFolder = (draft: TaskDraftRow) =>
+    draft.folder ? taskFolderKey(draft.folder) : (grouping[0]?.folder.id ?? null);
+  const folders = grouping.map((group) => {
+    const open = !closedFolders.has(group.folder.id);
+    const all = expandedFolders.has(group.folder.id);
+    const shown = open ? (all ? group.rows : group.rows.slice(0, folderRowLimit)) : [];
+    const folderDrafts = drafts.tasks.filter((draft) => draftFolder(draft) === group.folder.id);
     return {
-      folder,
+      group,
       folderDrafts,
       open,
       shown,
-      more: open ? folder.rows.length - shown.length : 0,
-      hidden: (folder.chat ? 1 : 0) + folder.rows.length + folderDrafts.length,
-      holdsOpenRow:
-        openRowThreadId !== null &&
-        (folder.chat?.threadId === openRowThreadId ||
-          folder.rows.some((row) => row.threadId === openRowThreadId)),
+      more: open ? group.rows.length - shown.length : 0,
+      ...folderSignal(group.rows),
     };
   });
   const doneLine = doneCount > 0 || moved.length > 0;
@@ -530,26 +519,29 @@ export function Sidebar({
         ...(doneMore ? ["show-more"] : []),
       ]
     : [
-        ...mainDrafts.map((draft) => `draft:${draft.draftId}`),
-        ...rows.map((row) => row.threadId),
+        ...folders.flatMap(({ group, folderDrafts, open, shown, more }) =>
+          group.rows.length + folderDrafts.length === 0 && !group.folder.agentHome
+            ? []
+            : [
+                `folder:${group.folder.id}`,
+                ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
+                ...shown.map((row) => row.threadId),
+                ...(more > 0 ? [`more:${group.folder.id}`] : []),
+              ],
+        ),
         ...(list.hasMore ? ["show-more"] : []),
         ...(doneLine ? ["done-shelf"] : []),
-        ...(folders.length > 0 ? ["projects-head"] : []),
-        ...folders.flatMap(({ folder, folderDrafts, open, shown, more }) => [
-          `folder:${folder.workspace.id}`,
-          ...(open && folder.chat ? [folder.chat.threadId] : []),
-          ...(open ? folderDrafts.map((draft) => `draft:${draft.draftId}`) : []),
-          ...shown.map((row) => row.threadId),
-          ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
-        ]),
       ];
-  const hasTasksSection = doneView !== null || rowKeys.length > 0;
-  const taskRow = (row: TaskRow, nested = false) => (
+  // No tasks yet, no heading: the first one brings it.
+  const hasTasksSection =
+    doneView !== null ||
+    list.working.length + list.ready.length + drafts.tasks.length > 0 ||
+    doneLine;
+  const taskRow = (row: TaskRow) => (
     <TaskRowItem
       hostClient={hostClient}
       ask={directory.attentionByThread.get(row.threadId)?.title ?? null}
       key={row.threadId}
-      nested={nested}
       onDiscardDraft={discardDraft}
       onNavigate={onCloseMobile}
       onSetDone={onSetTaskDone}
@@ -559,24 +551,31 @@ export function Sidebar({
       workspace={workspace}
     />
   );
-  const draftRow = (draft: TaskDraftRow, nested = false) => {
-    const path = inProject(draft)
-      ? `/workspaces/${encodeURIComponent(draft.workspaceId ?? "")}`
-      : "/new";
-    const open = pathname === path && searchParams.get("draft") === draft.draftId;
+  const draftRow = (draft: TaskDraftRow) => {
+    const open = pathname === "/" && searchParams.get("draft") === draft.draftId;
     return (
       <DraftRowItem
         draft={draft}
         key={`draft:${draft.draftId}`}
         nav={nav}
-        nested={nested}
         onDiscard={() => discardTaskDraft(draft, open)}
         onNavigate={onCloseMobile}
         open={open}
-        path={path}
+        path="/"
         work={workspace.work}
       />
     );
+  };
+  const folderActions = {
+    onNewTask: (folderId: string) => newTask(folderId),
+    onCopyPath: (folderId: string) => {
+      const folder = grouping.find((group) => group.folder.id === folderId)?.value;
+      if (folder)
+        void navigator.clipboard
+          .writeText(folder.path)
+          .then(() => toast.success("Path copied"))
+          .catch(() => toast.error("Couldn’t copy the path"));
+    },
   };
   const startPageOpen = workspace.selection.kind === "launcher";
   // The order the tab list shows; a change slides its rows to their new places.
@@ -597,7 +596,7 @@ export function Sidebar({
   };
   const tabRow = (slot: PlaceDescriptor, index: number, groupColor?: BrowserTabGroupColor) => (
     <TabRowItem
-      sort={slot.workspaceTab ? sort.handle : null}
+      sort={slot.personalTab ? sort.handle : null}
       groupColor={groupColor}
       onEditGroup={editGroup}
       active={slot.key === shownPlaceKey}
@@ -781,26 +780,31 @@ export function Sidebar({
         shownPlaceKey={shownPlaceKey}
         sources={searchSources}
       >
-        <ChatRow
-          ask={homeThreadId ? (directory.attentionByThread.get(homeThreadId) ?? null) : null}
-          onNavigate={onCloseMobile}
-          open={openRowThreadId !== null && openRowThreadId === homeThreadId}
-          row={list.chat}
-          unsent={drafts.chat}
-          workspace={workspace}
-        />
-        <VoiceRow
-          asked={
-            snapshot.voiceThreadId !== null &&
-            requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0
+        <PersonalTopRows
+          needsYou={needsYouCount}
+          onOpenNeedsYou={openNeedsYou}
+          onOpenNewTask={() => newTask()}
+          onOpenVoice={() => {
+            onCloseMobile();
+            nav.openConversation("/voice");
+          }}
+          open={
+            pathname === "/"
+              ? "new-task"
+              : pathname === "/needs-you"
+                ? "needs-you"
+                : pathname === "/voice"
+                  ? "voice"
+                  : null
           }
-          onNavigate={onCloseMobile}
-          open={openThreadId !== null && openThreadId === snapshot.voiceThreadId}
-          threadId={snapshot.voiceThreadId}
-          workspace={workspace}
+          voice={{
+            asked:
+              snapshot.voiceThreadId !== null &&
+              requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0,
+            live: <VoiceLive />,
+          }}
         />
-        {/* No tasks yet, no heading: ⌘N and Chat are the ways to start
-                  one, and the heading arrives with the first. */}
+        {/* No tasks yet, no heading: New task starts one, and the heading arrives with it. */}
         {!hasTasksSection ? null : (
           <section
             aria-labelledby="sidebar-tasks"
@@ -841,29 +845,6 @@ export function Sidebar({
                 <h2 className="side-head__title" id="sidebar-tasks">
                   Tasks
                 </h2>
-                {needsYou.length > 0 ? (
-                  <button
-                    aria-label={`${needsYou.length} ${needsYou.length === 1 ? "task needs" : "tasks need"} you. Open the first`}
-                    className="side-needs"
-                    onClick={openNeedsYou}
-                    title="Open the first task that needs you"
-                    type="button"
-                  >
-                    <span aria-hidden className="side-needs__bang">
-                      !
-                    </span>
-                    <span aria-hidden>{needsYou.length}</span>
-                  </button>
-                ) : null}
-                <button
-                  aria-label="New task"
-                  className="icon-btn icon-btn--small side-head__action"
-                  onClick={newTask}
-                  title="New task · ⌘N"
-                  type="button"
-                >
-                  <Icon name="plus" />
-                </button>
               </div>
             )}
             <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
@@ -909,8 +890,40 @@ export function Sidebar({
                         : []),
                     ]
                   : [
-                      ...mainDrafts.map((draft) => draftRow(draft)),
-                      ...rows.map((row) => taskRow(row)),
+                      ...folders.flatMap(({ group, folderDrafts, open, shown, more, signal, needsYou }) =>
+                        group.rows.length + folderDrafts.length === 0 && !group.folder.agentHome
+                          ? []
+                          : [
+                              <FolderHeaderRow
+                                actions={folderActions}
+                                group={{
+                                  folder: group.folder,
+                                  tasks: [],
+                                  more: group.rows.length + folderDrafts.length,
+                                  signal,
+                                  needsYou,
+                                }}
+                                key={`folder:${group.folder.id}`}
+                                onToggle={toggleFolder}
+                                open={open}
+                              />,
+                              ...(open ? folderDrafts.map((draft) => draftRow(draft)) : []),
+                              ...shown.map((row) => taskRow(row)),
+                              ...(more > 0
+                                ? [
+                                    <FolderMoreRow
+                                      count={more}
+                                      key={`more:${group.folder.id}`}
+                                      onOpen={() =>
+                                        setExpandedFolders(
+                                          (current) => new Set([...current, group.folder.id]),
+                                        )
+                                      }
+                                    />,
+                                  ]
+                                : []),
+                            ],
+                      ),
                       ...(list.hasMore
                         ? [
                             <li data-motion-key="show-more" key="show-more">
@@ -941,89 +954,13 @@ export function Sidebar({
                             />,
                           ]
                         : []),
-                      ...(folders.length > 0
-                        ? [
-                            <li
-                              className="side-subhead"
-                              data-motion-key="projects-head"
-                              key="projects-head"
-                            >
-                              <h3 className="side-subhead__title">
-                                <Link
-                                  className="side-subhead__link"
-                                  onClick={(event) => {
-                                    onCloseMobile();
-                                    openConversationRow(event, nav, "/projects");
-                                  }}
-                                  title="All projects"
-                                  to={nav.conversationHref("/projects")}
-                                >
-                                  Projects
-                                </Link>
-                              </h3>
-                              {onNewProject ? (
-                                <button
-                                  aria-label="New project"
-                                  className="icon-btn icon-btn--small side-head__action"
-                                  onClick={() => {
-                                    onCloseMobile();
-                                    onNewProject();
-                                  }}
-                                  title="New project"
-                                  type="button"
-                                >
-                                  <Icon name="plus" />
-                                </button>
-                              ) : null}
-                            </li>,
-                          ]
-                        : []),
-                      ...folders.flatMap(
-                        ({ folder, folderDrafts, open, shown, more, hidden, holdsOpenRow }) => [
-                          <ProjectFolderHeader
-                            current={openProjectId === folder.workspace.id}
-                            folder={folder}
-                            hiddenCount={hidden}
-                            holdsOpenRow={holdsOpenRow}
-                            key={`folder:${folder.workspace.id}`}
-                            nav={nav}
-                            onNavigate={onCloseMobile}
-                            onToggle={toggleProject}
-                            open={open}
-                          />,
-                          ...(open && folder.chat
-                            ? [
-                                <ProjectChatRow
-                                  key={folder.chat.threadId}
-                                  nav={nav}
-                                  onNavigate={onCloseMobile}
-                                  open={folder.chat.threadId === openRowThreadId}
-                                  row={folder.chat}
-                                  unsent={drafts.replies.has(folder.chat.threadId)}
-                                  work={workspace.work}
-                                />,
-                              ]
-                            : []),
-                          ...(open ? folderDrafts.map((draft) => draftRow(draft, true)) : []),
-                          ...shown.map((row) => taskRow(row, true)),
-                          ...(more > 0
-                            ? [
-                                <FolderMoreRow
-                                  count={more}
-                                  key={`more:${folder.workspace.id}`}
-                                  nav={nav}
-                                  onNavigate={onCloseMobile}
-                                  workspaceId={folder.workspace.id}
-                                />,
-                              ]
-                            : []),
-                        ],
-                      ),
                     ]}
               </RowMotion>
             </SideList>
+            <TeamSidebarSections onNavigate={onCloseMobile} />
           </section>
         )}
+        {hasTasksSection ? null : <TeamSidebarSections onNavigate={onCloseMobile} />}
         {hasTasksSection ? <SideSplit onCommit={commitTasksShare} share={tasksShare} /> : null}
         <section
           aria-labelledby="sidebar-tabs"
@@ -1202,110 +1139,39 @@ function SideList({
   );
 }
 
-/* ---- Chat ---- */
+const selectSince = ({ since }: VoiceSnapshot) => since;
 
-function ChatRow({
-  ask,
-  onNavigate,
-  open,
-  row,
-  unsent,
-  workspace,
-}: {
-  readonly ask: { readonly title: string } | null;
-  readonly onNavigate: () => void;
-  readonly open: boolean;
-  readonly row: TaskRow | null;
-  /** Words are waiting here, unsent. */
-  readonly unsent: boolean;
-  readonly workspace: WorkspaceState;
-}) {
-  // Its state in words, for the row's name; the orb and its mark say it to the eye.
-  const named = row === null ? CHAT_THREAD_TITLE : taskRowLabel(row, { chat: true });
-  const label = unsent ? `${named}, unsent draft` : named;
-  const classes = ["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""];
-  return (
-    <div className={classes.filter(Boolean).join(" ")} data-voice-row="chat">
-      <Link
-        aria-current={open ? "page" : undefined}
-        aria-label={label}
-        className="side-home__main"
-        onClick={(event) => {
-          onNavigate();
-          openConversationRow(event, workspace.nav, "/");
-        }}
-        title={ask?.title}
-        to={workspace.nav.conversationHref("/")}
-      >
-        <ChatOrb size={20} />
-        <span className="side-home__title">{CHAT_THREAD_TITLE}</span>
-        {unsent ? <UnsentMark /> : null}
-        {row === null ? null : row.tone === "needs-you" ? (
-          <span aria-hidden className="side-bang">
-            !
-          </span>
-        ) : row.tone === "working" ? (
-          <span aria-hidden className="spinner side-home__spinner" />
-        ) : row.unread ? (
-          <span aria-hidden className="task-row__unread" />
-        ) : null}
-      </Link>
-    </div>
-  );
+/** A live call's clock beside Voice, wherever the person is. */
+function VoiceLive() {
+  const since = useVoiceValue(selectSince);
+  return since !== null ? <VoiceClock /> : null;
 }
 
-const selectSince = ({ since }: VoiceSnapshot) => since;
-const selectOffered = ({ available, phase }: VoiceSnapshot) => available || phase !== "idle";
+const closedFoldersKey = "opensteer.sidebar.closed-folders";
 
-/** The way to the person's Voice Thread, which shows a live call wherever they are. */
-function VoiceRow({
-  asked,
-  onNavigate,
-  open,
-  threadId,
-  workspace,
-}: {
-  readonly asked: boolean;
-  readonly onNavigate: () => void;
-  readonly open: boolean;
-  readonly threadId: string | null;
-  readonly workspace: WorkspaceState;
-}) {
-  const controller = useContext(VoiceContext);
-  const since = useVoiceValue(selectSince);
-  const offered = useVoiceValue(selectOffered);
-  // A Thread that exists holds history and Requests, whether or not a call can start.
-  if (threadId === null && (!controller || !offered)) return null;
-  const go = async () => {
-    const id = threadId ?? (await controller?.openThread());
-    if (!id) return;
-    onNavigate();
-    workspace.nav.openConversation(`/threads/${encodeURIComponent(id)}`);
-  };
-  return (
-    <div
-      className={["side-home", open ? (workspace.work ? "is-open" : "is-filled") : ""]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <button
-        aria-current={open ? "page" : undefined}
-        className="side-home__main"
-        onClick={() => void go()}
-        type="button"
-      >
-        <Icon className="voice-thread-mark" name="waveform" />
-        <span className="side-home__title">Voice</span>
-        {since !== null ? (
-          <VoiceClock />
-        ) : asked ? (
-          <span aria-hidden className="side-bang">
-            !
-          </span>
-        ) : null}
-      </button>
-    </div>
-  );
+/** Folded folders stay folded on this device. */
+function useClosedFolders(): readonly [ReadonlySet<string>, (folderId: string) => void] {
+  const [closed, setClosed] = useState<ReadonlySet<string>>(() => {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem(closedFoldersKey) ?? "[]");
+      return new Set(Array.isArray(stored) ? stored.filter((id) => typeof id === "string") : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const toggle = useCallback((folderId: string) => {
+    setClosed((current) => {
+      const next = new Set(current);
+      if (!next.delete(folderId)) next.add(folderId);
+      try {
+        localStorage.setItem(closedFoldersKey, JSON.stringify([...next]));
+      } catch {
+        // Folding still works for this window.
+      }
+      return next;
+    });
+  }, []);
+  return [closed, toggle];
 }
 
 /**
@@ -1338,7 +1204,6 @@ function openConversationRow(
 function DraftRowItem({
   draft,
   nav,
-  nested,
   onDiscard,
   onNavigate,
   open,
@@ -1347,7 +1212,6 @@ function DraftRowItem({
 }: {
   readonly draft: TaskDraftRow;
   readonly nav: WorkspaceNavigation;
-  readonly nested: boolean;
   readonly onDiscard: () => void;
   readonly onNavigate: () => void;
   readonly open: boolean;
@@ -1357,7 +1221,6 @@ function DraftRowItem({
   const classes = [
     "side-task",
     "side-task--draft",
-    nested ? "side-task--nested" : "",
     open ? (work ? "is-open" : "is-filled") : "",
     draft.refused ? "is-refused" : "",
   ];
@@ -1403,7 +1266,6 @@ function DraftRowItem({
 const TaskRowItem = memo(function TaskRowItem({
   hostClient,
   ask,
-  nested,
   onDiscardDraft,
   onNavigate,
   onSetDone,
@@ -1414,8 +1276,6 @@ const TaskRowItem = memo(function TaskRowItem({
 }: {
   readonly hostClient: HostClient;
   readonly ask: string | null;
-  /** Inside a Project's folder. */
-  readonly nested: boolean;
   readonly onDiscardDraft: (target: ComposerDraftTarget) => void;
   readonly onNavigate: () => void;
   readonly onSetDone: (threadId: string, done: boolean) => void;
@@ -1427,16 +1287,11 @@ const TaskRowItem = memo(function TaskRowItem({
 }) {
   const { highlight, nav, work } = workspace;
   const threadId = row.threadId;
-  const canRename = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.threadRenameAvailable && homeThreadKind(threadId, snapshot) === null,
-  );
+  const canRename = useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable);
   const [editing, setEditing] = useState(false);
   const [changingIcon, setChangingIcon] = useState(false);
-  const canChangeIcon = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.taskMarksAvailable && homeThreadKind(threadId, snapshot) === null,
-  );
+  const canChangeIcon = useHostSelector(hostClient, (snapshot) => snapshot.taskMarksAvailable);
+  const source = useTaskSourceView(row.teamOrigin);
   const [menuAt, setMenuAt] = useState<{ readonly x: number; readonly y: number } | null>(null);
 
   const matches = useCallback((value: Highlight) => value.threadIds.includes(threadId), [threadId]);
@@ -1444,11 +1299,10 @@ const TaskRowItem = memo(function TaskRowItem({
   const needsYou = row.tone === "needs-you" && ask !== null;
   const classes = [
     "side-task",
-    nested ? "side-task--nested" : "",
     `side-task--${row.tone}`,
     open ? (work ? "is-open" : "is-filled") : "",
     lit ? "is-match" : "",
-    needsYou ? "has-ask" : "",
+    needsYou || source ? "has-ask" : "",
   ];
   const words = taskStateWords(row.tone);
   const mainRef = useRef<HTMLAnchorElement | null>(null);
@@ -1516,7 +1370,13 @@ const TaskRowItem = memo(function TaskRowItem({
           <TaskMark size={20} mark={taskMark(row)} quiet={taskMarkQuiet(row, row.done)} />
           <span className="side-task__text">
             <span className="side-task__title">{row.title}</span>
-            {needsYou ? <span className="side-task__ask">{ask}</span> : null}
+            {needsYou ? (
+              <span className="side-task__ask">{ask}</span>
+            ) : source ? (
+              <span className="side-task__source">
+                <TaskSource source={source} />
+              </span>
+            ) : null}
           </span>
           {unsent ? <UnsentMark /> : null}
           <TaskState state={row.tone} unread={row.unread} />
@@ -2094,7 +1954,7 @@ function SidebarFooter({
 /** The tab list's saved web tabs and group headers, as drag-and-drop sees them. */
 function sortRowsOf(strip: BrowserTabStrip<PlaceDescriptor>): SortRow[] {
   const tab = (place: PlaceDescriptor, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
-    place.workspaceTab && place.destination.kind === "browser" && place.destination.tabId
+    place.personalTab && place.destination.kind === "browser" && place.destination.tabId
       ? [
           {
             kind: "tab",

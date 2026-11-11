@@ -5,7 +5,7 @@ import {
   TaskMark,
   TaskBadge,
   TaskState,
-  ChatOrb,
+  AgentOrb,
   WorkingRing,
   taskStateWords,
   type TaskMarkSize,
@@ -121,7 +121,7 @@ function OccupantOverflow({
                 }}
               >
                 {occupant.home ? (
-                  <ChatOrb size={16} />
+                  <AgentOrb size={16} />
                 ) : (
                   <TaskMark size={16} mark={threadMark(occupant.threadId, directory.snapshot)} />
                 )}
@@ -186,7 +186,7 @@ function OccupantMark({
       type="button"
     >
       <span className="occupant-mark__mark">
-        {home ? <ChatOrb size={size} /> : <TaskMark size={size} mark={mark} />}
+        {home ? <AgentOrb size={size} /> : <TaskMark size={size} mark={mark} />}
         {acting || lingering ? <WorkingRing mark={home ? null : mark} settling={!acting} /> : null}
         <TaskBadge state={state} />
       </span>

@@ -22,7 +22,7 @@ import {
 } from "../desktop/web-links.js";
 import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page.js";
 import { DownloadFeedback } from "./browser/browser-downloads.js";
-import { markColorAllocationOrder, provisionalThreadTitle } from "@opensteer/core";
+import { provisionalThreadTitle, type TaskFolder } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
 import {
   createContext,
@@ -45,12 +45,7 @@ import {
   type DesktopNotificationTarget,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
-import {
-  type ExecutionPreferences,
-  type MarkColor,
-  type ThreadAccessMode,
-  type WorkspaceIconName,
-} from "@opensteer/core";
+import { type ExecutionPreferences, type ThreadAccessMode } from "@opensteer/core";
 import { actionErrorMessage, conversationPath, fromLivePage, useMediaQuery } from "../ui-utils.js";
 import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { observeLocalExecutionStatus } from "../desktop/local-execution-status.js";
@@ -67,7 +62,7 @@ import {
   type ExecutionChoice,
   type ExecutionSelection,
   type PendingBrowserTabDestination,
-  type WorkspaceSurfaceDestination,
+  type PersonalSurfaceDestination,
   type HostClient,
   type HostSnapshot,
   type LocalRunnerIdentity,
@@ -78,7 +73,7 @@ import {
   taskUnderWay,
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
-import { useActionReview, useHostSelector, useTeam } from "@opensteer/client/react";
+import { useActionReview, useHostSelector } from "@opensteer/client/react";
 import type { PendingSubmission } from "./composer.js";
 import {
   claimFirstMessage,
@@ -117,44 +112,24 @@ import {
 } from "./workspace/navigation.js";
 import { DeploymentOperationBanner } from "./deployment-operation.js";
 import { Icon } from "./icon.js";
-import { NewWorkspaceDialog } from "./new-workspace-dialog.js";
 import {
   PaneResizeHandle,
   usePersistedPaneSize,
   type PaneSizeRange,
 } from "./pane-resize-handle.js";
-import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
 import { AccountSignInDialog, type AddHarnessAccount } from "./account-sign-in-dialog.js";
 import { useToast } from "./toast.js";
 
 export interface ShellContext {
   actionError: string | null;
   clearActionError: () => void;
-  /** Taken once, by Home's composer, so a later visit starts from its own draft. */
-  clearHomeHandoff: () => void;
   /**
-   * The Home conversation, once the Host has one. Null before the first valid
-   * execution choice creates it — the Home route then shows a real empty
-   * composer, not a Thread that does not exist.
-   */
-  homeThreadId: string | null;
-  /** Words handed to Home's composer from elsewhere, to land focused and unsent. */
-  homeHandoff: {
-    readonly key: number;
-    readonly text: string;
-  } | null;
-  /**
-   * Writes a request into Home's composer and goes there. It never sends: the
-   * person reads it, changes it if they like, and sends it themselves.
-   */
-  writeInChat: (text: string) => void;
-  /**
-   * Starts a Thread and keeps its first message, words and files, for that
-   * Thread's composer to send when it opens. Null when either failed; the
-   * reason is in `actionError`.
+   * Starts a task in a folder and keeps its first message, words and files,
+   * for that task's composer to send when it opens. Null when either failed;
+   * the reason is in `actionError`.
    */
   createThreadAndSend: (
-    workspaceId: string,
+    folder: TaskFolder,
     message: PendingSubmission,
     selection: ExecutionSelection,
     accessMode: ThreadAccessMode,
@@ -183,8 +158,6 @@ export interface ShellContext {
   /** Returns from Settings to the workspace address left behind, or Home if opened there. */
   leaveSettings: () => void;
   openMobileNavigation: () => void;
-  /** Opens the dialog that creates a project. */
-  openNewWorkspace: () => void;
   /**
    * Runs one action against this computer's Runner slot. It records the
    * message in `localExecutionError` and then rejects, so a caller with a
@@ -196,7 +169,6 @@ export interface ShellContext {
   openHarnessAuthentication:
     ((placement: ThreadPlacementOption, options?: { readonly methodId?: string }) => void) | null;
   refreshHarnessCatalog: (placement: ThreadPlacementOption) => Promise<void>;
-  openSharing: (workspaceId: string) => void;
   placements: ThreadPlacementOption[];
   rememberExecution: (choice: ExecutionChoice) => void;
   reportActionError: (error: unknown) => void;
@@ -349,10 +321,10 @@ export function AppShell({
   // Setup, like Settings, covers the workspace: no sidebar, no place beside it.
   const setupMode = isSetupPath(location.pathname);
   const fullWindow = settingsMode || setupMode;
-  const nav = useWorkspaceNavigation(
-    { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
-    snapshot.homeThreadId,
-  );
+  const nav = useWorkspaceNavigation({
+    deploymentId: snapshot.deploymentId,
+    userId: snapshot.user?.id ?? null,
+  });
   const openWebLink = useCallback(
     (address: string) => openWorkspaceWebLink(hostClient, nav, address, location.state),
     [hostClient, nav, location.state],
@@ -360,12 +332,12 @@ export function AppShell({
   const { controller: dictation } = useDictation();
   const voice = useVoiceRuntime(hostClient, dictation, () => {
     // Settings and other full pages cover the conversation and any place beside it.
-    const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+    const match = /^\/tasks\/([^/]+)/.exec(location.pathname);
     if (settingsMode || (!match && location.pathname !== "/"))
       return { threadId: null, tabId: null };
     const selection = placeSelection(new URLSearchParams(location.search));
     return {
-      threadId: match ? decodeURIComponent(match[1]!) : snapshot.homeThreadId,
+      threadId: match ? decodeURIComponent(match[1]!) : null,
       tabId:
         selection.kind === "place" && selection.destination.kind === "browser"
           ? selection.destination.tabId
@@ -423,7 +395,7 @@ export function AppShell({
       () => {
         let pendingKey: string | null = null;
         const select = selection(
-          (destination: PendingBrowserTabDestination | WorkspaceSurfaceDestination) => {
+          (destination: PendingBrowserTabDestination | PersonalSurfaceDestination) => {
             if (destination.kind === "pending-browser") {
               pendingKey = destination.idempotencyKey;
               webLinkNavigation.current.showPendingBrowserTab(pendingKey);
@@ -467,11 +439,6 @@ export function AppShell({
   );
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [homeHandoff, setHomeHandoff] = useState<ShellContext["homeHandoff"]>(null);
-  const [sharingWorkspaceId, setSharingWorkspaceId] = useState<string | null>(null);
-  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
-  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
-  const [newWorkspaceError, setNewWorkspaceError] = useState<string | null>(null);
   const [accountSignIn, setAccountSignIn] = useState<{
     readonly added: boolean;
     readonly continued: boolean;
@@ -608,77 +575,9 @@ export function AppShell({
     [hostClient, reportActionError],
   );
   const clearActionError = useCallback(() => setActionError(null), []);
-  const clearHomeHandoff = useCallback(() => setHomeHandoff(null), []);
-  // Handing words to Chat changes only the conversation: the place stays.
   const { openConversation } = nav;
-  const writeInChat = useCallback(
-    (text: string) => {
-      setHomeHandoff((current) => ({ key: (current?.key ?? 0) + 1, text }));
-      openConversation("/");
-    },
-    [openConversation],
-  );
   const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), []);
   const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), []);
-  const team = useTeam(hostClient);
-  const teamProjects = snapshot.teamAdministrationAvailable === true;
-  const canCreateProject = !teamProjects || team.summary?.can.createProject.allowed === true;
-  const openNewWorkspace = useCallback(() => {
-    setNewWorkspaceError(null);
-    setNewWorkspaceOpen(true);
-  }, []);
-  const createWorkspace = useCallback(
-    async (input: {
-      readonly color: MarkColor | null;
-      readonly icon: WorkspaceIconName | null;
-      readonly name: string;
-    }) => {
-      setCreatingWorkspace(true);
-      setNewWorkspaceError(null);
-      try {
-        if (team.team && team.summary) {
-          const created = await team.team.createProject(team.summary.accessRevision, {
-            name: input.name,
-            color: input.color ?? markColorAllocationOrder[0]!,
-          });
-          setNewWorkspaceOpen(false);
-          openConversation(`/workspaces/${encodeURIComponent(created.projectId)}/settings`);
-          return;
-        }
-        const result = await hostClient.dispatch({
-          ...(input.icon ? { icon: input.icon } : {}),
-          idempotencyKey: mutationIdempotencyKey("workspace"),
-          name: input.name,
-          type: "workspace.create",
-        });
-        if (result.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-        setNewWorkspaceOpen(false);
-        // The Project exists either way; a colour the Host refused is the
-        // person's to pick again on its page, not a reason to stay here.
-        if (input.color)
-          void hostClient
-            .dispatch({
-              color: input.color,
-              idempotencyKey: mutationIdempotencyKey(`workspace-color:${result.workspace.id}`),
-              type: "workspace.color.set",
-              workspaceId: result.workspace.id,
-            })
-            .catch(reportActionError);
-        openConversation(`/workspaces/${encodeURIComponent(result.workspace.id)}`);
-      } catch (error) {
-        setNewWorkspaceError(actionErrorMessage(error));
-      } finally {
-        setCreatingWorkspace(false);
-      }
-    },
-    [hostClient, openConversation, reportActionError, team.summary, team.team],
-  );
-  const openSharing = useCallback(
-    (workspaceId: string) => {
-      if (snapshot.workspaceSharingAvailable) setSharingWorkspaceId(workspaceId);
-    },
-    [snapshot.workspaceSharingAvailable],
-  );
   // Who may sign in is the Host's call for each work location. Reading the
   // capability flag preserves owner-bound managed Runner authorization.
   const harnessAuthenticationEnvironmentIds = useMemo(
@@ -806,7 +705,7 @@ export function AppShell({
 
   const createThreadAndSend = useCallback(
     async (
-      workspaceId: string,
+      folder: TaskFolder,
       message: PendingSubmission,
       selection: ExecutionSelection,
       accessMode: ThreadAccessMode,
@@ -832,7 +731,7 @@ export function AppShell({
           modelSelection: selection.modelSelection,
           generateTitle: true,
           title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
-          workspaceId,
+          folder,
         });
         // The new Thread's own composer sends it, exactly as kept, when it
         // opens: one path for the first try, a lost answer and a refusal.
@@ -881,16 +780,15 @@ export function AppShell({
   // surface that owns selection hands the target over once its own app is
   // attached.
   const deploymentId = snapshot.deploymentId;
-  const homeThreadId = snapshot.homeThreadId;
   const openNotification = useCallback(
     (target: DesktopNotificationTarget) => {
       if (!deploymentId || target.deploymentId !== deploymentId) return;
       openConversation(
-        conversationPath(target.threadId, homeThreadId),
+        conversationPath(target.threadId),
         target.messageId ? { messageId: target.messageId } : undefined,
       );
     },
-    [deploymentId, homeThreadId, openConversation],
+    [deploymentId, openConversation],
   );
   useEffect(() => {
     // The Desktop's own activation is subscribed once, above the app; a second
@@ -904,14 +802,13 @@ export function AppShell({
     onNotificationTargetOpened?.();
   }, [deploymentId, notificationTarget, onNotificationTargetOpened, openNotification]);
 
-  // ⌘N / Ctrl+N starts a separate task. Home needs no shortcut to reach: it is
-  // where the app opens, and where asking again needs nothing new.
+  // ⌘N / Ctrl+N opens Home, where every new task starts.
   useEffect(() => {
     function handleShortcut(event: KeyboardEvent) {
       if (fromLivePage(event)) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "n") {
         event.preventDefault();
-        openConversation("/new");
+        openConversation("/");
       }
     }
     window.addEventListener("keydown", handleShortcut);
@@ -1034,54 +931,41 @@ export function AppShell({
     });
   }, []);
 
-  const sharingWorkspace = snapshot.workspaceSharingAvailable
-    ? (snapshot.workspaces.find((workspace) => workspace.id === sharingWorkspaceId) ?? null)
-    : null;
-
   const context = useMemo<ShellSharedContext>(
     () => ({
       actionError,
       clearActionError,
-      clearHomeHandoff,
       createThreadAndSend,
       defaultPlacement,
       deploymentAccess,
       desktopBridge: localBridge,
       desktopDeployment,
       executionPreferences,
-      homeHandoff,
-      homeThreadId: snapshot.homeThreadId,
       hostClient,
       localExecutionStatus: viewedLocalExecutionStatus,
       localExecutionAction,
       localExecutionError,
       leaveSettings: nav.leaveSettings,
       openMobileNavigation,
-      openNewWorkspace,
       addHarnessAccount: harnessAuthenticationEnvironmentIds.size > 0 ? addHarnessAccount : null,
       openHarnessAuthentication:
         harnessAuthenticationEnvironmentIds.size > 0 ? openHarnessAuthentication : null,
       performLocalExecutionAction,
-      openSharing,
       placements,
       rememberExecution,
       refreshHarnessCatalog,
       reportActionError,
       setTaskDone,
-      writeInChat,
     }),
     [
       actionError,
       clearActionError,
-      clearHomeHandoff,
       createThreadAndSend,
       defaultPlacement,
       deploymentAccess,
       desktopDeployment,
       executionPreferences,
       harnessAuthenticationEnvironmentIds,
-      homeHandoff,
-      snapshot.homeThreadId,
       hostClient,
       localBridge,
       localExecutionAction,
@@ -1089,17 +973,14 @@ export function AppShell({
       nav.leaveSettings,
       viewedLocalExecutionStatus,
       openMobileNavigation,
-      openNewWorkspace,
       addHarnessAccount,
       openHarnessAuthentication,
-      openSharing,
       placements,
       performLocalExecutionAction,
       rememberExecution,
       refreshHarnessCatalog,
       reportActionError,
       setTaskDone,
-      writeInChat,
     ],
   );
 
@@ -1109,7 +990,6 @@ export function AppShell({
   );
   const overlayOpen =
     accountSignIn !== null ||
-    sharingWorkspace !== null ||
     (!fullWindow && mobileNavigation && mobileNavigationOpen);
   const shellClassName = setupMode
     ? "app-shell app-shell--settings app-shell--setup"
@@ -1208,7 +1088,6 @@ export function AppShell({
                       throw error;
                     }
                   }}
-                  onNewProject={canCreateProject ? openNewWorkspace : null}
                   onSetTaskDone={setTaskDone}
                   onToggleCollapsed={toggleSidebar}
                 />
@@ -1270,26 +1149,6 @@ export function AppShell({
                 </SidebarChromeProvider>
               </main>
 
-              {sharingWorkspace && snapshot.user ? (
-                <WorkspaceSharingDialog
-                  client={hostClient}
-                  currentUserId={snapshot.user.id}
-                  onClose={() => setSharingWorkspaceId(null)}
-                  workspace={sharingWorkspace}
-                />
-              ) : null}
-              {newWorkspaceOpen ? (
-                <NewWorkspaceDialog
-                  colors={snapshot.taskMarksAvailable}
-                  team={teamProjects ? (team.summary?.team.name ?? null) : null}
-                  creating={creatingWorkspace}
-                  error={newWorkspaceError}
-                  onClose={() => {
-                    if (!creatingWorkspace) setNewWorkspaceOpen(false);
-                  }}
-                  onCreate={(input) => void createWorkspace(input)}
-                />
-              ) : null}
               {accountSignIn ? (
                 <AccountSignInDialog
                   continued={accountSignIn.continued}
@@ -1374,7 +1233,7 @@ function WorkspaceKeys({
   const canonicalized = useRef<string | null>(null);
   const restoreVersion = useHostSelector(
     hostClient,
-    (snapshot) => snapshot.workspaceTabRestoreVersion,
+    (snapshot) => snapshot.tabRestoreVersion,
   );
   useEffect(() => {
     if (!known || !deploymentId || !userId || restoreVersion !== 1) return;
@@ -1404,7 +1263,7 @@ function WorkspaceKeys({
             : null;
         // A group the client holds only part of cannot say the tab is gone; the Host can.
         if (sessionId === null && !(groupId && store.tabs(groupId).whole)) {
-          const read = await hostClient.readWorkspaceTabs?.(remembered.sessionId);
+          const read = await hostClient.readPersonalTabs?.(remembered.sessionId);
           if (read?.tabs?.some((tab) => tab.id === remembered.tabId)) sessionId = read.session.id;
         }
         if (cancelled) return;
@@ -1460,11 +1319,11 @@ const selectBrowsersKnown = (snapshot: HostSnapshot) =>
 const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 
-/** Home at the root and a Thread under /threads stream; other routes stay stable. */
+/** Home at the root and a task under /tasks stream; other routes stay stable. */
 function ShellRouteOutlet({ context }: { readonly context: ShellSharedContext }) {
   const { pathname } = useLocation();
   return (
-    <ShellScope context={context} live={pathname === "/" || pathname.startsWith("/threads/")}>
+    <ShellScope context={context} live={pathname === "/" || pathname.startsWith("/tasks/")}>
       <Outlet />
     </ShellScope>
   );
@@ -1522,7 +1381,7 @@ function PersonShowNavigation({
   const cursor = useVoiceCursor();
   const personShowPort = useRef<(message: PersonShowMessage) => void>(() => undefined);
   personShowPort.current = (message) => {
-    const match = /^\/threads\/([^/]+)/.exec(location.pathname);
+    const match = /^\/tasks\/([^/]+)/.exec(location.pathname);
     // The composer is where the person asked; any other field is work in progress.
     const field = document.activeElement?.closest(
       'input, textarea, [contenteditable]:not([contenteditable="false"]), iframe',
@@ -1540,16 +1399,11 @@ function PersonShowNavigation({
       {
         foreground: document.visibilityState === "visible",
         call,
-        threadId:
-          focused && !editing && (match || location.pathname === "/")
-            ? match
-              ? decodeURIComponent(match[1]!)
-              : snapshot.homeThreadId
-            : null,
+        threadId: focused && !editing && match ? decodeURIComponent(match[1]!) : null,
       },
       (target) =>
         cursor.show(target, personShowFromCall(message, call), () => {
-          // Settings covers places, so a shown place opens over Chat instead.
+          // Settings covers places, so a shown place opens over Home instead.
           if (target.kind === "place")
             if (settingsMode) nav.showPlaceWithConversation(target.destination, "/");
             else nav.showPlace(target.destination);
