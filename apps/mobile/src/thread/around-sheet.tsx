@@ -5,11 +5,8 @@ import {
   sameTaskFamily,
   sameTaskMark,
   schedulesClient,
-  showsHostLive,
   taskFamily,
   threadMark,
-  type AgentCard,
-  type AgentRoster,
   type FamilyTask,
   type HostClient,
   type HostSnapshot,
@@ -58,7 +55,6 @@ import {
   aroundFrom,
   aroundPlaces,
   aroundSections,
-  earlierAgentDays,
   earlierDays,
   openingSection,
   sameAroundPlaces,
@@ -68,14 +64,11 @@ import {
   type AroundSection,
 } from "./around-model.js";
 import { TaskStatus } from "./task-status.js";
-import { SubagentStop } from "./subagent-stop.js";
-import { AgentCardRow, AgentMemoryContext, WorkflowCard, type AgentScope } from "./agent-cards.js";
-import { aroundAgentsSelector, samePlain } from "./agent-select.js";
 
 export type AroundScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
   readonly threadId: string;
-  /** The page to open on, when the reader came for it: the agents pill asks for Agents. */
+  /** The page to open on, when the reader came for it. */
   readonly section?: AroundSection;
 }>;
 
@@ -144,33 +137,15 @@ function Around(props: {
     useCallback((snapshot: HostSnapshot) => taskFamily(snapshot, threadId), [threadId]),
     sameTaskFamily,
   );
-  const agents = useHostSelector(
-    hostClient,
-    useMemo(() => aroundAgentsSelector(threadId), [threadId]),
-    samePlain,
-  );
-  const live = useHostSelector(hostClient, showsHostLive);
   const blocked = useHostSelector(hostClient, selectChangeBlocked);
-  // Asked for by name, Agents has a page even with nobody on it, to say so.
-  const sections = useMemo(() => {
-    const filled = aroundSections(places, family, agents);
-    return props.asked === "agents" && !filled.includes("agents")
-      ? [
-          ...filled.filter((section) => section === "places" || section === "tasks"),
-          "agents" as const,
-          ...filled.filter((section) => section !== "places" && section !== "tasks"),
-        ]
-      : filled;
-  }, [agents, family, places, props.asked]);
+  const sections = useMemo(() => aroundSections(places, family), [family, places]);
 
   // Chosen once, when there is first anything to choose, then kept: data
   // changing under the sheet never moves it. A section that empties gives way
   // to the first that has anything, and that becomes the choice.
   const [chosen, setChosen] = useState<AroundSection | null>(null);
   const shown =
-    chosen === null
-      ? openingSection(places, family, agents, props.asked)
-      : shownSection(chosen, sections);
+    chosen === null ? openingSection(places, family, props.asked) : shownSection(chosen, sections);
   if (shown !== null && shown !== chosen) setChosen(shown);
   const choose = useCallback((section: AroundSection) => {
     setChosen(section);
@@ -219,26 +194,6 @@ function Around(props: {
     },
     [deploymentId, hostClient, navigation],
   );
-  // A subagent or workflow opens its own view over the conversation, as a task does.
-  const openAgent = useCallback(
-    (card: AgentCard) => {
-      if (card.opens === null) return;
-      if (card.opens.kind === "thread") {
-        openThread(card.opens.threadId);
-        return;
-      }
-      navigation.goBack();
-      navigation.dispatch(
-        StackActions.push("Subagent", {
-          deploymentId,
-          nodeId: card.opens.nodeId,
-          threadId: card.opens.threadId,
-        }),
-      );
-    },
-    [deploymentId, navigation, openThread],
-  );
-  const memory = useRef(new Map<string, boolean>()).current;
   const side = useMemo(
     () => ({ paddingLeft: insets.left + sheetInset, paddingRight: insets.right + sheetInset }),
     [insets.left, insets.right],
@@ -249,14 +204,13 @@ function Around(props: {
   );
   const rows = useMemo(
     () => ({
-      agents: { live, onOpen: openAgent, hostClient },
       blocked,
       hostClient,
       openPlace,
       openSchedule,
       openThread,
     }),
-    [blocked, hostClient, live, openAgent, openPlace, openSchedule, openThread],
+    [blocked, hostClient, openPlace, openSchedule, openThread],
   );
 
   return (
@@ -294,7 +248,6 @@ function Around(props: {
         )}
         {sections.length > 1 && shown !== null ? (
           <Tiles
-            agents={agents}
             family={family}
             onChoose={choose}
             places={places}
@@ -310,18 +263,15 @@ function Around(props: {
           </AppText>
         ) : null
       ) : (
-        <AgentMemoryContext value={memory}>
-          <Pages
-            agents={agents}
-            inset={pageInset}
-            family={family}
-            onChoose={choose}
-            places={places}
-            rows={rows}
-            sections={sections}
-            shown={shown}
-          />
-        </AgentMemoryContext>
+        <Pages
+          inset={pageInset}
+          family={family}
+          onChoose={choose}
+          places={places}
+          rows={rows}
+          sections={sections}
+          shown={shown}
+        />
       )}
     </View>
   );
@@ -334,7 +284,6 @@ const tileGap = space[8];
 const tileMinWidth = 72;
 
 const sectionLabel = {
-  agents: "Agents",
   earlier: "Earlier",
   places: "Places",
   schedules: "Schedules",
@@ -354,7 +303,6 @@ function runningInOrder(family: TaskFamily): readonly FamilyTask[] {
  * fit four across, they wrap two by two rather than cut a label short.
  */
 const Tiles = memo(function Tiles(props: {
-  readonly agents: AgentRoster;
   readonly family: TaskFamily;
   readonly onChoose: (section: AroundSection) => void;
   readonly places: readonly AroundPlace[];
@@ -386,7 +334,7 @@ const Tiles = memo(function Tiles(props: {
           section={section}
           selected={section === props.shown}
           width={tileWidth}
-          {...tileState(section, places, family, props.agents)}
+          {...tileState(section, places, family)}
         />
       ))}
     </View>
@@ -397,7 +345,6 @@ function tileState(
   section: AroundSection,
   places: readonly AroundPlace[],
   family: TaskFamily,
-  agents: AgentRoster,
 ): {
   readonly count: number;
   readonly glyph: ReactNode;
@@ -433,13 +380,6 @@ function tileState(
         ),
         needsYou: family.running.filter(({ needsYou }) => needsYou).length,
         working: family.running.filter(({ tone }) => tone === "working").length,
-      };
-    case "agents":
-      return {
-        count: agents.now.length,
-        glyph: <Symbol name="person.2" size={15} tint={color.text} />,
-        needsYou: agents.now.filter(({ tone }) => tone === "needs-you").length,
-        working: agents.now.filter(({ tone }) => tone === "working").length,
       };
     case "earlier":
       return {
@@ -517,7 +457,6 @@ function Tile(props: {
 }
 
 interface RowActions {
-  readonly agents: AgentScope;
   readonly blocked: boolean;
   readonly hostClient: HostClient;
   readonly openPlace: (place: AroundPlace) => void;
@@ -528,12 +467,6 @@ interface RowActions {
 type AroundRow =
   | { readonly kind: "place"; readonly key: string; readonly place: AroundPlace }
   | { readonly kind: "task"; readonly key: string; readonly task: FamilyTask }
-  | {
-      readonly kind: "agent";
-      readonly key: string;
-      readonly card: AgentCard;
-      readonly earlier: boolean;
-    }
   | { readonly kind: "schedule"; readonly key: string; readonly automation: ThreadAutomation };
 
 interface AroundGroup {
@@ -544,18 +477,10 @@ interface AroundGroup {
 
 const taskRow = (task: FamilyTask): AroundRow => ({ key: task.threadId, kind: "task", task });
 
-const agentRow = (card: AgentCard, earlier: boolean): AroundRow => ({
-  card,
-  earlier,
-  key: card.key,
-  kind: "agent",
-});
-
 function sectionGroups(
   section: AroundSection,
   places: readonly AroundPlace[],
   family: TaskFamily,
-  agents: AgentRoster,
   now: number,
 ): readonly AroundGroup[] {
   switch (section) {
@@ -569,24 +494,6 @@ function sectionGroups(
       ];
     case "tasks":
       return [{ data: runningInOrder(family).map(taskRow), key: section, title: null }];
-    // Now, untitled while it is the only group, then the days the rest ended on.
-    case "agents": {
-      const days = earlierAgentDays(agents.earlier, now).map((day) => ({
-        data: day.cards.map((card) => agentRow(card, true)),
-        key: day.title,
-        title: day.title,
-      }));
-      return agents.now.length === 0
-        ? days
-        : [
-            {
-              data: agents.now.map((card) => agentRow(card, false)),
-              key: section,
-              title: days.length === 0 ? null : "Now",
-            },
-            ...days,
-          ];
-    }
     case "earlier":
       return earlierDays(family.earlier, now).map((day) => ({
         data: day.tasks.map(taskRow),
@@ -614,7 +521,6 @@ function sectionGroups(
  * between them never resizes the sheet.
  */
 function Pages(props: {
-  readonly agents: AgentRoster;
   readonly inset: ViewStyle;
   readonly family: TaskFamily;
   readonly onChoose: (section: AroundSection) => void;
@@ -623,7 +529,7 @@ function Pages(props: {
   readonly sections: readonly AroundSection[];
   readonly shown: AroundSection;
 }): ReactNode {
-  const { agents, family, onChoose, places, sections } = props;
+  const { family, onChoose, places, sections } = props;
   const screen = useWindowDimensions();
   const [measured, setWidth] = useState<number | null>(null);
   const width = measured ?? screen.width;
@@ -637,9 +543,9 @@ function Pages(props: {
   const pages = useMemo(() => {
     const now = Date.now();
     return new Map(
-      sections.map((section) => [section, sectionGroups(section, places, family, agents, now)]),
+      sections.map((section) => [section, sectionGroups(section, places, family, now)]),
     );
-  }, [agents, family, places, sections]);
+  }, [family, places, sections]);
   const onSwipe = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const section = sections[Math.round(event.nativeEvent.contentOffset.x / width)];
@@ -662,7 +568,6 @@ function Pages(props: {
         renderItem={({ item: section }) => (
           <View style={{ width }}>
             <Page
-              empty={section === "agents" ? "No agents have worked in this conversation." : null}
               groups={pages.get(section) ?? []}
               inset={props.inset}
               label={sectionLabel[section]}
@@ -678,7 +583,6 @@ function Pages(props: {
 }
 
 const Page = memo(function Page(props: {
-  readonly empty: string | null;
   readonly groups: readonly AroundGroup[];
   readonly inset: ViewStyle;
   readonly label: string;
@@ -690,13 +594,6 @@ const Page = memo(function Page(props: {
       accessibilityLabel={props.label}
       contentContainerStyle={props.inset}
       keyExtractor={(row) => row.key}
-      ListEmptyComponent={
-        props.empty === null ? undefined : (
-          <AppText role="secondary" style={styles.empty} tone="muted">
-            {props.empty}
-          </AppText>
-        )
-      }
       renderItem={({ index, item, section }) => (
         <View
           style={[
@@ -708,32 +605,6 @@ const Page = memo(function Page(props: {
         >
           {item.kind === "place" ? (
             <PlaceRow onOpen={rows.openPlace} place={item.place} />
-          ) : item.kind === "agent" ? (
-            item.card.workflow ? (
-              <WorkflowCard
-                bare
-                card={item.card}
-                scope={rows.agents}
-                workflow={item.card.workflow}
-              />
-            ) : (
-              <SubagentStop card={item.card} hostClient={rows.hostClient}>
-                {(onStop) => (
-                  <AgentCardRow
-                    accessibilityActions={
-                      item.card.stop ? [{ name: "stop", label: "Stop subagent" }] : []
-                    }
-                    onAccessibilityAction={(name) => {
-                      if (name === "stop") onStop();
-                    }}
-                    card={item.card}
-                    live={rows.agents.live}
-                    onOpen={rows.agents.onOpen}
-                    ended={item.earlier}
-                  />
-                )}
-              </SubagentStop>
-            )
           ) : item.kind === "task" ? (
             <TaskRow onOpen={rows.openThread} task={item.task} />
           ) : (

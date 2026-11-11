@@ -1,5 +1,6 @@
 import { previewToolOutput } from "@opensteer/core";
 import { seedMockSubagents } from "./mock-subagents.js";
+import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
@@ -1934,7 +1935,8 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
-  subagents?: "seeded" | "absent";
+  /** `seeded`, or one task holding a single scene of the subagent design. */
+  subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   /** Plugins an agent made in Main, from a folder in that Workspace. */
@@ -4816,6 +4818,11 @@ export class MockHostClient implements HostClient {
     this.#state.activateWorkspace(workspaceId);
   }
 
+  /** A running subagent reports a new step, as the Host relays its progress line. */
+  mockSubagentProgress(threadId: string, nodeId: string, progress: string): void {
+    this.#state.mockSubagentProgress(threadId, nodeId, progress);
+  }
+
   async cancelThreadInput(threadId: string, messageId: string): Promise<void> {
     await this.dispatch({
       idempotencyKey: `mock-input-cancel:${crypto.randomUUID()}`,
@@ -6691,6 +6698,16 @@ class MockHostState {
     }
     if (
       !firstRun &&
+      options.subagents !== undefined &&
+      options.subagents !== "seeded" &&
+      options.subagents !== "absent" &&
+      !teamPlace
+    ) {
+      const fixture = seedMockSubagentScene(this.snapshot, options.subagents, this.now());
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+    } else if (
+      !firstRun &&
       options.initialHome !== "absent" &&
       options.subagents !== "absent" &&
       !teamPlace
@@ -6960,6 +6977,21 @@ class MockHostState {
             }
           : machine,
       ),
+    });
+  }
+
+  mockSubagentProgress(threadId: string, nodeId: string, progress: string): void {
+    const entries = this.snapshot.transcripts[threadId] ?? [];
+    this.update({
+      ...this.snapshot,
+      transcripts: {
+        ...this.snapshot.transcripts,
+        [threadId]: entries.map((entry) =>
+          entry.kind === "node" && entry.nodeId === nodeId && entry.status === "running"
+            ? { ...entry, progress }
+            : entry,
+        ),
+      },
     });
   }
 

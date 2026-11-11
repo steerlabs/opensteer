@@ -25,7 +25,9 @@ is set. Never set the profile on a build anyone but a developer installs.
 `EXPO_PUBLIC_OPENSTEER_MOCK_HOME=absent` starts without Chat, for the first-message screen.
 `EXPO_PUBLIC_OPENSTEER_MOCK_TEAM=admin|admin-stale|member|guest|suspended|removed` plays a team
 server, for the team screens; without it the mock is today's Host with no team. The web preview takes
-the same names as `?mock-team=`.
+the same names as `?mock-team=`. `EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS=<scene>` adds the
+conversation "Fix checkout on mobile" in one subagent state of `mockSubagentScenes` (`one`, `three`,
+`needs`, `nested`, `workflow`, `thirty`, …), as the web preview's `?mock-subagents=` does.
 
 ```sh
 EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE=development EXPO_PUBLIC_OPENSTEER_MOCK=1 \

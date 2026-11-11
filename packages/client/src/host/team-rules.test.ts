@@ -4,6 +4,7 @@ import { teamComputerCommand } from "./team-computer.js";
 import { placeHas } from "./team-place.js";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { deriveSurface } from "./composer-surface.js";
+import { nodeSubagentCard, transcriptNodes } from "./subagent-model.js";
 import { taskList } from "./task-list.js";
 import { canDeleteProject, canListAllProjects, teamComputerReplace } from "./team-presentation.js";
 import { unplacedOutcomes } from "./team-thread.js";
@@ -118,5 +119,29 @@ describe("replacing the team computer", () => {
     expect(teamComputerReplace({ computer: null, can: { replace: allowed } }, "Acme")?.label).toBe(
       "Connect a computer",
     );
+  });
+});
+
+describe("engine subagents on a team place", () => {
+  it("keeps the subagent's row but offers neither its own view nor a stop", () => {
+    const host = new MockHostClient();
+    const personal = host.getSnapshot();
+    const found = Object.entries(personal.transcripts)
+      .flatMap(([threadId, entries]) =>
+        transcriptNodes(entries).map((node) => ({ threadId, node })),
+      )
+      .find(({ node }) => node.nodeKind !== "task" && node.status === "running");
+    expect(found).toBeDefined();
+    const live = { ...found!.node, stopSupported: true };
+    const mine = nodeSubagentCard(live, found!.threadId, [live], personal);
+    expect(mine?.opens).not.toBeNull();
+    const team = nodeSubagentCard(live, found!.threadId, [live], {
+      ...personal,
+      teamAdministrationAvailable: true,
+    });
+    expect(team?.title).toBe(mine?.title);
+    expect(team?.opens).toBeNull();
+    expect(team?.stop ?? null).toBeNull();
+    host.dispose();
   });
 });

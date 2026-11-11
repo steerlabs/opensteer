@@ -1,4 +1,4 @@
-import { conversationSubagents, type AgentRoster, type HostSnapshot } from "@opensteer/client/host";
+import type { HostSnapshot } from "@opensteer/client/host";
 
 /** What the subagent model reads of the Host; nothing else moves a card. */
 function readerInputs(snapshot: HostSnapshot): readonly unknown[] {
@@ -44,25 +44,4 @@ export function samePlain(left: unknown, right: unknown): boolean {
   return leftKeys.every((key) =>
     samePlain((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]),
   );
-}
-
-/**
- * The pill's counts alone, so nothing else a helper does redraws the dock. It
- * counts what the Agents page it opens lists.
- */
-export function agentsPillSelector(
-  threadId: string,
-): (snapshot: HostSnapshot) => AgentRoster["pill"] {
-  return heldSelector(
-    (snapshot) => conversationSubagents(snapshot, threadId, { tasks: false }).pill,
-  );
-}
-
-/**
- * The roster as Around shows it: its tasks already have their own tiles and
- * marks there, so the Agents page and the header's agents part count the
- * engines' subagents and workflows alone.
- */
-export function aroundAgentsSelector(threadId: string): (snapshot: HostSnapshot) => AgentRoster {
-  return heldSelector((snapshot) => conversationSubagents(snapshot, threadId, { tasks: false }));
 }

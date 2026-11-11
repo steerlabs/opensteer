@@ -1,11 +1,15 @@
 import { useState } from "react";
-import type { AgentCard } from "@opensteer/client/host";
+import { noteSubagentStop, type AgentCard } from "@opensteer/client/host";
 import { useActionReview } from "@opensteer/client/react";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
 import { Popover } from "./popover.js";
 
-export function SubagentStop({ card, direct = false }: { card: AgentCard; direct?: boolean }) {
+/**
+ * Stop for one subagent, offered while it runs and its engine can stop it on
+ * its own. It asks once before stopping; the Host refuses anyone who may not.
+ */
+export function SubagentStop({ card, icon = false }: { card: AgentCard; icon?: boolean }) {
   const { hostClient, reportActionError } = useShell();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const { review, ask, dismiss } = useActionReview(hostClient);
@@ -15,79 +19,57 @@ export function SubagentStop({ card, direct = false }: { card: AgentCard; direct
   };
   if (!card.stop) return null;
   const target = card.stop;
-  const request = () => ask({ kind: "stop-node", ...target });
+  const noun = card.kind === "workflow" ? "workflow" : "subagent";
   return (
     <>
       <button
-        aria-label={direct ? `Stop ${card.title}` : `More for ${card.title}`}
-        aria-haspopup={direct ? "dialog" : "menu"}
         aria-expanded={anchor !== null}
-        className={direct ? "btn btn--small btn--ghost" : "agent-row__more"}
+        aria-haspopup="dialog"
+        aria-label={`Stop ${card.title}`}
+        className={icon ? "icon-btn icon-btn--small subagent-stop" : "btn btn--small subagent-stop"}
         onClick={(event) => {
           setAnchor(event.currentTarget);
-          if (direct) request();
+          ask({ kind: "stop-node", ...target });
         }}
+        title={icon ? "Stop" : undefined}
         type="button"
       >
-        <Icon name={direct ? "stop" : "more"} />
-        {direct ? "Stop" : null}
+        <Icon name="stop" />
+        {icon ? null : "Stop"}
       </button>
-      {anchor ? (
-        review ? (
-          <Popover
-            anchor={anchor}
-            className="task-stop"
-            key="confirm"
-            label={`Stop ${card.title}?`}
-            onClose={close}
-            role="dialog"
-          >
-            <p className="task-stop__question">Stop “{card.title}”?</p>
-            <p className="task-stop__detail">Nothing it already did is undone.</p>
-            <div className="task-stop__actions">
-              <button
-                className="btn btn--small btn--ghost"
-                data-autofocus
-                onClick={close}
-                type="button"
-              >
-                Keep working
-              </button>
-              <button
-                className="btn btn--small btn--danger"
-                onClick={() => {
-                  const result = review.confirm();
-                  close();
-                  void result.catch(reportActionError);
-                }}
-                type="button"
-              >
-                Stop {card.kind === "workflow" ? "workflow" : "subagent"}
-              </button>
-            </div>
-          </Popover>
-        ) : (
-          <Popover
-            anchor={anchor}
-            className="task-menu"
-            label={`${card.title} actions`}
-            onClose={close}
-          >
+      {anchor && review ? (
+        <Popover
+          anchor={anchor}
+          className="task-stop"
+          label={`Stop ${card.title}?`}
+          onClose={close}
+          role="dialog"
+        >
+          <p className="task-stop__question">Stop “{card.title}”?</p>
+          <p className="task-stop__detail">Nothing it already did is undone.</p>
+          <div className="task-stop__actions">
             <button
-              className="picker__row picker__row--danger"
-              onClick={request}
-              role="menuitem"
+              className="btn btn--small btn--ghost"
+              data-autofocus
+              onClick={close}
               type="button"
             >
-              <span className="picker__glyph">
-                <Icon name="stop" />
-              </span>
-              <span className="picker__label">
-                Stop {card.kind === "workflow" ? "workflow" : "subagent"}
-              </span>
+              Keep working
             </button>
-          </Popover>
-        )
+            <button
+              className="btn btn--small btn--danger"
+              onClick={() => {
+                const result = review.confirm();
+                close();
+                noteSubagentStop(target.nodeId);
+                void result.catch(reportActionError);
+              }}
+              type="button"
+            >
+              Stop {noun}
+            </button>
+          </div>
+        </Popover>
       ) : null}
     </>
   );

@@ -23,6 +23,7 @@ const harness = vi.hoisted(() => ({
   platform: "ios",
   setOptions: vi.fn(),
 }));
+vi.mock("../thread/settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -186,6 +187,7 @@ vi.mock("../client/mobile-client.js", () => ({
 }));
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { readonly children?: ReactNode }) => <span>{children}</span>,
+  monoFontFamily: "monospace",
   Field: () => null,
   Notice: ({ title, detail }: { readonly title: string; readonly detail: string }) => (
     <div>

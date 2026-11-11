@@ -24,15 +24,19 @@ export function awaitsFirstWorkspace(
 /**
  * What a place offers a person. A team place has no Tabs in this version, and
  * its Projects' settings choose the engine and model, so a person's choice of
- * them is never offered there.
+ * them is never offered there. A team Host refuses reading one engine
+ * subagent's own transcript and stopping one subagent for Project work, so
+ * neither is offered; the subagent's row, ordinary task activity, still shows.
  */
 export function placeHas(
   snapshot: Pick<HostSnapshot, "teamAdministrationAvailable">,
-  part: "tabs" | "execution-choice",
+  part: "tabs" | "execution-choice" | "subagent-detail" | "subagent-stop",
 ): boolean {
   switch (part) {
     case "tabs":
     case "execution-choice":
+    case "subagent-detail":
+    case "subagent-stop":
       return !isTeamPlace(snapshot);
   }
 }

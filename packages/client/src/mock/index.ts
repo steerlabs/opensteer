@@ -6,3 +6,5 @@ export { mockIphoneRunnerId, type MockPlaceScript } from "./mock-places.js";
 
 export * from "./mock-desktop-updates.js";
 export * from "./mock-team-access.js";
+
+export { mockSubagentScenes, type MockSubagentScene } from "./mock-subagent-scenes.js";

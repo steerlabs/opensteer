@@ -32,6 +32,7 @@ import {
   type HostClient,
   type PasswordSignInAccount,
   type PasswordSignInAccountGroup,
+  type RequestAsker,
   type SurfaceModel,
 } from "@opensteer/client/host";
 import { computerAppAccessApproval, computerUseAccessLabel } from "@opensteer/client/integrations";
@@ -76,7 +77,7 @@ import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { requestTitle } from "./docked-requests.js";
-import { AskedBySubagent } from "./asked-by-subagent.js";
+import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { InstallReview } from "./integration-install-review.js";
 import {
   approvalMenuOptions,
@@ -151,7 +152,6 @@ function SubscribedRequestSheet(props: {
     (snapshot.requests[threadId] ?? []).find(({ id }) => id === requestId) ??
     snapshot.waitingRequests.find(({ request }) => request.id === requestId)?.request ??
     null;
-  const waiting = snapshot.waitingRequests.find(({ request }) => request.id === requestId) ?? null;
   const pending = request?.status === "pending" ? request : null;
   // Admitted and gone can both ask to close; only the sheet itself may go back.
   const close = useRef(() => undefined as void);
@@ -169,7 +169,6 @@ function SubscribedRequestSheet(props: {
       canRespond={canRespondToRequests(snapshot)}
       machines={snapshot.machines}
       onClose={() => close.current()}
-      subagentTitle={waiting?.subagent?.title ?? null}
       surface={deriveSurface([pending], snapshot.user)}
       userId={snapshot.user.id}
     />
@@ -184,14 +183,12 @@ function SheetForRequest(props: {
   readonly machines: readonly MachineSummary[];
   readonly onClose: () => void;
   readonly reason: boolean;
-  readonly subagentTitle: string | null;
   readonly surface: SurfaceModel | null;
   readonly userId: string;
 }): ReactNode {
   const { deploymentId, hostClient, surface, userId } = props;
   const navigation = useNavigation();
   const threadId = surface?.request.originatingThreadId ?? "";
-  const nodeId = surface?.request.originatingNodeId;
   const { drafts } = useMobileClient();
   const { gate, owner } = useThreadMutation({ deploymentId, threadId, userId });
   const archived = useHostSelector(
@@ -220,17 +217,16 @@ function SheetForRequest(props: {
       machines={props.machines}
       onClose={props.onClose}
       reason={props.reason}
-      subagentTitle={props.subagentTitle}
-      {...(nodeId === undefined
-        ? {}
-        : {
-            onOpenSubagent: () => {
-              props.onClose();
-              navigation.dispatch(
-                StackActions.push("Subagent", { deploymentId, nodeId, threadId }),
-              );
-            },
-          })}
+      onOpenSubagent={(asker) => {
+        props.onClose();
+        navigation.dispatch(
+          StackActions.push("Subagent", {
+            deploymentId,
+            nodeId: asker.nodeId,
+            threadId: asker.threadId,
+          }),
+        );
+      }}
       surface={surface}
     />
   );
@@ -267,14 +263,14 @@ export function RequestSheetContent(props: {
   readonly machines: readonly MachineSummary[];
   readonly onClose: () => void;
   readonly reason: boolean;
-  readonly subagentTitle: string | null;
   /** Opens the asking subagent's own view, where it can be answered too. */
-  readonly onOpenSubagent?: () => void;
+  readonly onOpenSubagent?: (asker: RequestAsker) => void;
   readonly surface: SurfaceModel;
 }): ReactNode {
   const { surface } = props;
   const { request } = surface;
   const { presentation } = request;
+  const asker = useRequestAsker(props.hostClient, request);
   const insets = useSafeAreaInsets();
   const computerApproval = useComputerAppApproval(props.hostClient);
   const close = (): void => {
@@ -384,13 +380,13 @@ export function RequestSheetContent(props: {
             {requestAgentProposedLabel}
           </AppText>
         ) : null}
-        {props.subagentTitle && props.onOpenSubagent ? (
-          <AskedBySubagent onOpen={props.onOpenSubagent} title={props.subagentTitle} />
-        ) : props.subagentTitle ? (
-          <AppText role="caption" tone="muted">
-            Asked by subagent {props.subagentTitle}
-          </AppText>
-        ) : null}
+        {asker === null || props.onOpenSubagent === undefined ? null : (
+          <AskerByline
+            asker={asker}
+            hostClient={props.hostClient}
+            onOpen={() => props.onOpenSubagent?.(asker)}
+          />
+        )}
         {detail === null ? null : (
           <RequestDetail mono={request.kind === "harness.approval"} text={detail} />
         )}

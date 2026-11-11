@@ -62,6 +62,7 @@ import { TaskSearchScreen } from "./screens/task-search.js";
 import { ThreadFindScreen } from "./screens/thread-find.js";
 import { RequestSheetScreen } from "./thread/request-sheet.js";
 import { NewThreadScreen, ThreadSettingsScreen } from "./screens/thread-settings.js";
+import { RunningNowScreen } from "./screens/running-now.js";
 import { SubagentScreen } from "./screens/subagent.js";
 import { ThreadStepScreen } from "./screens/thread-step.js";
 import { ThreadScreen } from "./screens/thread.js";
@@ -346,6 +347,19 @@ const RootStack = createNativeStackNavigator({
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Around this thread",
+      },
+    },
+    // Running now: what works for a conversation at this moment, from the
+    // capsule over its composer. It opens part-way so the conversation stays
+    // in view; a row opens over the conversation.
+    RunningNow: {
+      screen: RunningNowScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.RunningNow,
+        sheetAllowedDetents: [0.5, 0.95],
+        sheetGrabberVisible: true,
+        title: "Running now",
       },
     },
     // A long list opens full height like the pages it leads to: a half-height
@@ -676,6 +690,7 @@ type OpensteerRootParamList = {
     readonly section?: import("./thread/around-model.js").AroundSection;
     readonly threadId: string;
   };
+  readonly RunningNow: { readonly deploymentId: string; readonly threadId: string };
   readonly Subagent: {
     readonly deploymentId: string;
     readonly nodeId: string;
