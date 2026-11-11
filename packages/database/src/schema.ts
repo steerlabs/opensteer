@@ -1,4 +1,5 @@
 import type {
+  KnowledgeTopicId,
   TaskPurpose,
   TeamAgentRequestId,
   TeamChannelId,

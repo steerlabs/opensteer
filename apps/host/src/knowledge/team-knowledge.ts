@@ -8,25 +8,22 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
-  appendTeamKnowledgeAudit,
-  appendTeamKnowledgeDenial,
   attachTeamTopic,
   createKnowledgeExecutorPool,
   createSharedTeamTopic,
   detachTeamTopic,
-  isTeamAdmin,
   liveTeamKnowledgeRequest,
-  noticeTeamTopicManagers,
-  prepareKnowledgeExecutor,
   readTeamTopic,
   runKnowledgeStatement,
   setTeamTopicGrants,
   teamChannelScopeTopics,
   teamFactsPage,
+  teamKnowledgeCaller,
   teamTopicGrants,
   teamTopicsAfter,
   updateTeamTopic,
   type DatabaseSchema,
+  type KnowledgeExecutorCredentials,
   type KnowledgeJson,
   type KnowledgeRows,
   type KnowledgeStatement,
@@ -37,43 +34,77 @@ import {
 } from "@opensteer/database";
 import {
   teamKnowledgeLimits,
+  teamReadSchemas,
   type TeamCommandSchema,
   type TeamFact,
   type TeamSqlInput,
   type TeamSqlResult,
   type TeamTopic,
-  type teamReadSchemas,
 } from "@opensteer/protocol";
 import type { Kysely, Transaction } from "kysely";
 import { createHash } from "node:crypto";
 import type { z } from "zod";
 import type {
+  TeamAccessEffects,
   TeamAccessLockPort,
   TeamAccessResolver,
   TeamTopicAuthority,
 } from "../team/access-port.js";
 import { admitKnowledgeSql } from "./sql-gate.js";
 
-type Read<Name extends keyof typeof teamReadSchemas> = {
+type TeamCommand = z.infer<typeof TeamCommandSchema>;
+const knowledgeCommands = new Set([
+  "team.knowledge.topic.create",
+  "team.knowledge.topic.rename",
+  "team.knowledge.topic.access.set",
+  "team.knowledge.topic.peopleOnly.set",
+  "team.knowledge.fact.append",
+  "team.knowledge.topic.archive",
+  "team.knowledge.topic.restore",
+  "team.channel.topic.attach",
+  "team.channel.topic.detach",
+] as const);
+export type TeamKnowledgeCommand = Extract<
+  TeamCommand,
+  { type: typeof knowledgeCommands extends Set<infer Type> ? Type : never }
+>;
+export type TeamKnowledgeReadName =
+  | "team.knowledge.topics.list"
+  | "team.knowledge.topic.get"
+  | "team.knowledge.topic.access.get"
+  | "team.knowledge.facts.page"
+  | "team.knowledge.history.page";
+type Read<Name extends TeamKnowledgeReadName> = {
   readonly input: z.infer<(typeof teamReadSchemas)[Name]["input"]>;
   readonly output: z.infer<(typeof teamReadSchemas)[Name]["output"]>;
 };
-type TeamCommand = z.infer<typeof TeamCommandSchema>;
-export type TeamKnowledgeCommand = Extract<
-  TeamCommand,
-  {
-    type:
-      | "team.knowledge.topic.create"
-      | "team.knowledge.topic.rename"
-      | "team.knowledge.topic.access.set"
-      | "team.knowledge.topic.peopleOnly.set"
-      | "team.knowledge.fact.append"
-      | "team.knowledge.topic.archive"
-      | "team.knowledge.topic.restore"
-      | "team.channel.topic.attach"
-      | "team.channel.topic.detach";
-  }
->;
+
+/** The team's access service: the frozen ports plus the change that knows who made it. */
+export interface TeamKnowledgeAccess extends TeamAccessResolver, TeamAccessLockPort {
+  /** Like `mutate`, and records and announces an admin's gain of a restricted resource. */
+  mutateAs<Value>(
+    actor: TeamActor,
+    action: string,
+    write: (
+      transaction: Transaction<DatabaseSchema>,
+    ) => Promise<{ readonly value: Value; readonly effects: TeamAccessEffects }>,
+  ): Promise<Value>;
+}
+/** The team audit log's writer; entries hold IDs, counts and fingerprints, never SQL text or values. */
+export type TeamKnowledgeAudit = (
+  executor: Kysely<DatabaseSchema>,
+  entry: {
+    readonly actor: TeamActor;
+    readonly action: string;
+    readonly resourceKind: "topic" | "channel";
+    readonly resourceId?: string | undefined;
+    readonly channelId?: TeamChannelId | undefined;
+    readonly linkId?: TeamLinkId | undefined;
+    readonly requestId?: TeamAgentRequestId | undefined;
+    readonly outcome?: "allowed" | "denied";
+    readonly metadata?: Readonly<Record<string, unknown>>;
+  },
+) => Promise<unknown>;
 
 /**
  * A buffered answer and the check of the whole scope that produced it, for the link's
@@ -94,27 +125,9 @@ export interface TeamKnowledgeSqlCall {
 export interface TeamKnowledge {
   /** An agent's `sql` call, scoped to the ticket's channel topic and attached topics. */
   sql(call: TeamKnowledgeSqlCall): Promise<TeamKnowledgeSqlAnswer>;
-  topics(
-    userId: UserId,
-    input: Read<"team.knowledge.topics.list">["input"],
-  ): Promise<Read<"team.knowledge.topics.list">["output"]>;
-  topic(
-    userId: UserId,
-    input: Read<"team.knowledge.topic.get">["input"],
-  ): Promise<Read<"team.knowledge.topic.get">["output"]>;
-  topicAccess(
-    userId: UserId,
-    input: Read<"team.knowledge.topic.access.get">["input"],
-  ): Promise<Read<"team.knowledge.topic.access.get">["output"]>;
-  facts(
-    userId: UserId,
-    input: Read<"team.knowledge.facts.page">["input"],
-  ): Promise<Read<"team.knowledge.facts.page">["output"]>;
-  history(
-    userId: UserId,
-    input: Read<"team.knowledge.history.page">["input"],
-  ): Promise<Read<"team.knowledge.history.page">["output"]>;
-  command(userId: UserId, command: TeamKnowledgeCommand): Promise<void>;
+  /** A person's knowledge read; the output matches `teamReadSchemas[name].output`. */
+  read(actor: TeamActor, name: TeamKnowledgeReadName, input: unknown): Promise<unknown>;
+  command(actor: TeamActor, command: TeamCommand): Promise<{ readonly type: TeamCommand["type"] }>;
   close(): Promise<void>;
 }
 
@@ -123,25 +136,23 @@ const relationNames = ["facts", "fact_history"] as const;
 const insertable = ["topic", "thing", "property", "value", "seen_fact_id"];
 
 /**
- * Opens the restricted login's two connections and serves team knowledge. Who may
- * read or write which topic is resolved freshly for every call; topic names in SQL
- * are never grants. Writes commit inside the access fence, and every buffered
- * answer is handed off only while its authority still holds.
+ * Serves team knowledge over the restricted login's two connections; prepare the schema
+ * and login first with `prepareKnowledgeExecutor`. Who may read or write which topic is
+ * resolved freshly for every call, and topic names in SQL are never grants. Writes commit
+ * inside the access fence; every buffered answer is handed off only while its authority holds.
  */
 export async function startTeamKnowledge(options: {
   readonly database: Kysely<DatabaseSchema>;
   readonly databaseUrl: string;
-  readonly access: TeamAccessResolver;
-  readonly lock: TeamAccessLockPort;
+  readonly credentials: KnowledgeExecutorCredentials;
+  readonly access: TeamKnowledgeAccess;
+  readonly audit: TeamKnowledgeAudit;
   readonly statementTimeoutMs?: number;
 }): Promise<TeamKnowledge> {
-  const { database, access, lock } = options;
+  const { database, access, audit } = options;
   // Loads the parser now, so a Host that cannot is refused at start rather than at an agent's first call.
   await admitKnowledgeSql({ text: "SELECT 1", parameters: [] });
-  const pool = createKnowledgeExecutorPool(
-    options.databaseUrl,
-    await prepareKnowledgeExecutor(database),
-  );
+  const pool = createKnowledgeExecutorPool(options.databaseUrl, options.credentials);
   try {
     (await pool.connect()).release();
   } catch (error) {
@@ -207,16 +218,16 @@ export async function startTeamKnowledge(options: {
     return { request, actor, writer, read, write, listed };
   }
 
-  /** Hands `answer` over only if the topics it came from are still readable; else nothing at all. */
+  /** Hands `answer` over only if its authority still holds; on loss, nothing at all. */
   async function handOff<Value>(
-    authorizedAt: typeof lock.revision,
+    authorizedAt: typeof access.revision,
     stillReadable: () => Promise<boolean>,
     answer: Value,
     lostMessage: string,
   ): Promise<Value> {
     let lost = false;
     try {
-      return await lock.handoff(
+      return await access.handoff(
         authorizedAt,
         async () => {
           lost = !(await stillReadable().catch(() => false));
@@ -234,20 +245,59 @@ export async function startTeamKnowledge(options: {
     }
   }
 
+  /** The access fence for a write: a refusal before the write ran means the topic can't be written now. */
+  async function fenced<Value>(
+    actor: TeamActor,
+    topicId: KnowledgeTopicId,
+    write: (transaction: Transaction<DatabaseSchema>) => Promise<Value>,
+  ): Promise<Value> {
+    let entered = false;
+    try {
+      return await access.knowledgeWrite(actor, topicId, (transaction) => {
+        entered = true;
+        return write(transaction);
+      });
+    } catch (error) {
+      if (!entered && error instanceof OpensteerError && error.code === "forbidden")
+        throw notWritable();
+      throw error;
+    }
+  }
+
   async function sql(call: TeamKnowledgeSqlCall): Promise<TeamKnowledgeSqlAnswer> {
     const { linkId, requestId, input } = call;
-    const authorizedAt = lock.revision;
+    const authorizedAt = access.revision;
     let scope: Awaited<ReturnType<typeof agentScope>>;
     try {
       scope = await inTransaction((transaction) => agentScope(transaction, linkId, requestId));
     } catch (error) {
-      await appendTeamKnowledgeDenial(database, {
-        linkId,
-        requestId,
-        metadata: { kind: input.query === undefined ? "discover" : "statement" },
-      });
+      const caller = await teamKnowledgeCaller(database, linkId, requestId);
+      if (caller)
+        await audit(database, {
+          actor: { kind: "agent", userId: caller.ownerUserId },
+          linkId,
+          requestId: caller.requestId ?? undefined,
+          channelId: caller.channelId ?? undefined,
+          action: "knowledge.sql",
+          resourceKind: "topic",
+          outcome: "denied",
+          metadata: { kind: input.sql === undefined ? "discover" : "statement" },
+        });
       throw error;
     }
+    const allowed = (
+      executor: Kysely<DatabaseSchema>,
+      metadata: Readonly<Record<string, unknown>>,
+    ) =>
+      audit(executor, {
+        actor: scope.actor,
+        linkId,
+        requestId,
+        channelId: scope.request.channelId,
+        action: "knowledge.sql",
+        resourceKind: "topic",
+        metadata,
+      });
     const covers = (topics: readonly KnowledgeTopicId[]) => async () => {
       const fresh = await inTransaction((transaction) =>
         agentScope(transaction, linkId, requestId),
@@ -263,35 +313,24 @@ export async function startTeamKnowledge(options: {
       const reauthorize = covers(topics);
       return { result: await handOff(authorizedAt, reauthorize, result, lostMessage), reauthorize };
     };
-    const audit = (executor: Kysely<DatabaseSchema>, metadata: Readonly<Record<string, unknown>>) =>
-      appendTeamKnowledgeAudit(executor, {
-        actor: scope.actor,
-        linkId,
-        requestId,
-        action: "knowledge.sql",
-        resourceKind: "topic",
-        resourceId: null,
-        channelId: scope.request.channelId,
-        outcome: "allowed",
-        metadata,
-      });
 
-    if (input.query === undefined) {
+    if (input.sql === undefined) {
       if (
         input.mode === "write" ||
-        input.parameters !== undefined ||
-        input.onlyIfUnchanged !== undefined
+        input.parameters.length > 0 ||
+        input.onlyIfUnchanged !== undefined ||
+        input.operationId !== undefined
       )
         throw refusal(
-          "Send query with mode, parameters or onlyIfUnchanged.",
-          "sql without query only describes facts and topics.",
+          "Send sql with mode, parameters, onlyIfUnchanged or operationId.",
+          "sql without a statement only describes facts and topics.",
         );
       const start =
         input.cursor === undefined
           ? 0
           : scope.listed.findIndex((topic) => topic.id === input.cursor) + 1;
       if (start === 0 && input.cursor !== undefined)
-        throw refusal("That cursor is no longer valid.", "Call sql without query or cursor.");
+        throw refusal("That cursor is no longer valid.", "Call sql without a statement or cursor.");
       const page = scope.listed.slice(start, start + pageSize);
       const last = page.at(-1);
       const discovered = bounded({
@@ -299,16 +338,17 @@ export async function startTeamKnowledge(options: {
         topics: page,
         ...(last && start + pageSize < scope.listed.length ? { nextCursor: last.id } : {}),
       });
-      await audit(database, { kind: "discover", topics: page.map((topic) => topic.id) });
+      await allowed(database, { kind: "discover", topics: page.map((topic) => topic.id) });
       return answer(
         discovered,
         page.map((topic) => topic.id),
       );
     }
-    if (input.cursor !== undefined) throw refusal("cursor pages topics; send it without query.");
-    const parameters = (input.parameters ?? []) as KnowledgeJson[];
-    const admitted = await admitKnowledgeSql({ text: input.query, parameters });
-    const fingerprint = createHash("sha256").update(input.query).digest("hex");
+    if (input.cursor !== undefined)
+      throw refusal("cursor pages topics; send it without a statement.");
+    const parameters = input.parameters as KnowledgeJson[];
+    const admitted = await admitKnowledgeSql({ text: input.sql, parameters });
+    const fingerprint = createHash("sha256").update(input.sql).digest("hex");
     if (admitted.kind === "select") {
       if (input.onlyIfUnchanged !== undefined)
         throw refusal("onlyIfUnchanged applies only to an INSERT.");
@@ -321,7 +361,7 @@ export async function startTeamKnowledge(options: {
       });
       if (result.kind !== "select") throw new Error("A SELECT returned a write");
       const selected = bounded(rows(result));
-      await audit(database, {
+      await allowed(database, {
         kind: "select",
         fingerprint,
         topics: scope.read,
@@ -330,18 +370,22 @@ export async function startTeamKnowledge(options: {
       return answer(selected, scope.read);
     }
     if (input.mode !== "write") throw refusal('INSERT needs mode "write". Nothing was saved.');
+    if (input.operationId === undefined)
+      throw refusal(
+        "A write needs operationId: a new UUID, reused only to retry this same write. Nothing was saved.",
+      );
     const statement: KnowledgeStatement = {
       kind: "insert",
       text: admitted.text,
       parameters,
-      operationKey: operationId("agent", requestId, input.operationKey),
+      operationKey: operationId("agent", requestId, input.operationId),
       onlyIfUnchanged: input.onlyIfUnchanged === true,
       suppliesBaseline: admitted.suppliesBaseline,
       keys: admitted.keys,
     };
     const topics = admitted.topicIds as KnowledgeTopicId[];
     if (!topics.every((topic) => scope.write.includes(topic))) throw notWritable();
-    const result = await lock.knowledgeWrite(scope.actor, topics[0]!, async (transaction) => {
+    const result = await fenced(scope.actor, topics[0]!, async (transaction) => {
       const fresh = await agentScope(transaction, linkId, requestId);
       if (!topics.every((topic) => fresh.write.includes(topic))) throw notWritable();
       const written = await runKnowledgeStatement(pool, {
@@ -352,7 +396,7 @@ export async function startTeamKnowledge(options: {
         ...timeout,
       });
       if (written.kind !== "insert") throw new Error("An INSERT returned rows only");
-      await audit(transaction, {
+      await allowed(transaction, {
         kind: "insert",
         fingerprint,
         topics,
@@ -373,18 +417,14 @@ export async function startTeamKnowledge(options: {
     return answer(receipt, topics, `${unseenMessage} The write was saved; don't repeat it.`);
   }
 
-  const human = (userId: UserId): TeamActor => ({ kind: "human", userId });
-
-  /** What a person sees of a topic: readers and managers see it; admins also see shared topics' metadata. */
+  /** What a person sees of a topic: its readers and managers (admins manage shared topics) see it. */
   async function view(
     transaction: Transaction<DatabaseSchema>,
-    userId: UserId,
+    actor: TeamActor,
     topic: TeamTopicRecord,
-    admin: boolean,
   ): Promise<TeamTopic | undefined> {
-    const can = await access.topic(transaction, human(userId), topic.id);
-    const manage = can.manage || (admin && topic.originChannelId === null);
-    if (!can.read && !manage) return undefined;
+    const can = await access.topic(transaction, actor, topic.id);
+    if (!can.read && !can.manage) return undefined;
     return {
       id: topic.id,
       name: topic.name,
@@ -392,127 +432,214 @@ export async function startTeamKnowledge(options: {
       peopleOnly: can.peopleOnly,
       archivedAt: topic.archivedAt?.toISOString() ?? null,
       updatedAt: topic.updatedAt.toISOString(),
-      can: { read: can.read, write: can.write, manage },
+      can: { read: can.read, write: can.write, manage: can.manage },
     };
   }
 
   async function visibleTopic(
     transaction: Transaction<DatabaseSchema>,
-    userId: UserId,
+    actor: TeamActor,
     topicId: KnowledgeTopicId,
   ): Promise<TeamTopic> {
     const topic = await readTeamTopic(transaction, topicId);
-    const seen =
-      topic && (await view(transaction, userId, topic, await isTeamAdmin(transaction, userId)));
+    const seen = topic && (await view(transaction, actor, topic));
     if (!seen) throw missingTopic();
     return seen;
   }
 
-  async function readable(userId: UserId, topicId: KnowledgeTopicId): Promise<boolean> {
-    return inTransaction(async (transaction) => {
-      const can = await access.topic(transaction, human(userId), topicId);
-      return can.read;
+  const stillVisible = (actor: TeamActor, topicIds: readonly KnowledgeTopicId[]) => () =>
+    inTransaction(async (transaction) => {
+      for (const topicId of topicIds) await visibleTopic(transaction, actor, topicId);
+      return true;
     });
+  const changedMessage = "Your access to this topic changed.";
+
+  async function topicsList(actor: TeamActor, input: Read<"team.knowledge.topics.list">["input"]) {
+    const authorizedAt = access.revision;
+    const page = await inTransaction(async (transaction) => {
+      if (input.channelId) {
+        const channel = await access.channel(transaction, actor, input.channelId);
+        if (!channel.read)
+          throw new OpensteerError({
+            code: "not_found",
+            reason: "team-channel-not-found",
+            message: "That channel doesn't exist or you can't read it.",
+          });
+        const all = await teamChannelScopeTopics(transaction, input.channelId);
+        const start = input.after ? all.findIndex((topic) => topic.id === input.after) + 1 : 0;
+        const seen: TeamTopic[] = [];
+        for (const topic of all.slice(start)) {
+          const shown = await view(transaction, actor, topic);
+          if (shown?.can.read) seen.push(shown);
+        }
+        return { topics: seen.slice(0, pageSize), hasMore: seen.length > pageSize };
+      }
+      const seen: TeamTopic[] = [];
+      let after = input.after;
+      for (;;) {
+        const batch = await teamTopicsAfter(transaction, after, pageSize * 2);
+        for (const topic of batch) {
+          const shown = await view(transaction, actor, topic);
+          if (shown) seen.push(shown);
+          if (seen.length > pageSize) return { topics: seen.slice(0, pageSize), hasMore: true };
+        }
+        if (batch.length < pageSize * 2) return { topics: seen, hasMore: false };
+        after = batch.at(-1)!.id;
+      }
+    });
+    return handOff(
+      authorizedAt,
+      stillVisible(
+        actor,
+        page.topics.map((topic) => topic.id),
+      ),
+      page,
+      "Your access to these topics changed.",
+    );
+  }
+
+  async function topicAccess(
+    actor: TeamActor,
+    input: Read<"team.knowledge.topic.access.get">["input"],
+  ): Promise<Read<"team.knowledge.topic.access.get">["output"]> {
+    const authorizedAt = access.revision;
+    const answer = await inTransaction(async (transaction) => {
+      const shown = await visibleTopic(transaction, actor, input.topicId);
+      const topic = await readTeamTopic(transaction, input.topicId);
+      if (!topic || topic.originChannelId !== null)
+        throw new OpensteerError({
+          code: "bad_request",
+          reason: "team-topic-follows-channel",
+          message: "A channel's topic has the channel's access.",
+        });
+      return {
+        revision:
+          topic.accessRevision as Read<"team.knowledge.topic.access.get">["output"]["revision"],
+        entries: await teamTopicGrants(transaction, input.topicId),
+        can: shown.can,
+      };
+    });
+    return handOff(authorizedAt, stillVisible(actor, [input.topicId]), answer, changedMessage);
   }
 
   async function factPage(
-    userId: UserId,
+    actor: TeamActor,
     input: { readonly topicId: KnowledgeTopicId; readonly before?: string | undefined },
     current: boolean,
   ) {
-    const authorizedAt = lock.revision;
-    if (!(await readable(userId, input.topicId))) throw missingTopic();
+    const authorizedAt = access.revision;
+    const readable = () =>
+      inTransaction(
+        async (transaction) => (await access.topic(transaction, actor, input.topicId)).read,
+      );
+    if (!(await readable())) throw missingTopic();
     const page = await teamFactsPage(database, {
       topicId: input.topicId,
       before: input.before,
       current,
       limit: pageSize,
     });
-    const answer = { facts: page.facts.map(fact), hasMore: page.hasMore };
     return handOff(
       authorizedAt,
-      () => readable(userId, input.topicId),
-      answer,
-      "Your access to this topic changed.",
+      readable,
+      { facts: page.facts.map(fact), hasMore: page.hasMore },
+      changedMessage,
     );
   }
 
-  /** Runs an access-changing knowledge command under the access lock, before any affected row. */
-  function mutate(
-    topics: readonly KnowledgeTopicId[],
-    channels: readonly TeamChannelId[],
-    work: (transaction: Transaction<DatabaseSchema>) => Promise<void>,
-  ): Promise<void> {
-    return lock.mutate(async (transaction) => {
-      await work(transaction);
-      return {
-        value: undefined,
-        effects: {
-          users: [],
-          channels: [...channels],
-          topics: [...topics],
-          links: [],
-          requests: [],
-        },
-      };
-    });
+  async function read(actor: TeamActor, name: TeamKnowledgeReadName, input: unknown) {
+    const person = human(actor);
+    switch (name) {
+      case "team.knowledge.topics.list":
+        return topicsList(person, teamReadSchemas[name].input.parse(input));
+      case "team.knowledge.topic.get": {
+        const { topicId } = teamReadSchemas[name].input.parse(input);
+        const authorizedAt = access.revision;
+        const shown = await inTransaction((transaction) =>
+          visibleTopic(transaction, person, topicId),
+        );
+        return handOff(authorizedAt, stillVisible(person, [topicId]), shown, changedMessage);
+      }
+      case "team.knowledge.topic.access.get":
+        return topicAccess(person, teamReadSchemas[name].input.parse(input));
+      case "team.knowledge.facts.page":
+        return factPage(person, teamReadSchemas[name].input.parse(input), true);
+      case "team.knowledge.history.page":
+        return factPage(person, teamReadSchemas[name].input.parse(input), false);
+    }
   }
 
+  /** A shared topic this person may change: they manage it (admins manage every shared topic). */
   async function managedSharedTopic(
     transaction: Transaction<DatabaseSchema>,
-    userId: UserId,
+    actor: TeamActor,
     topicId: KnowledgeTopicId,
-  ): Promise<{
-    readonly topic: TeamTopicRecord;
-    readonly can: TeamTopicAuthority;
-    readonly admin: boolean;
-  }> {
+    channelTopics: "refuse" | "allow" = "refuse",
+  ): Promise<{ readonly topic: TeamTopicRecord; readonly can: TeamTopicAuthority }> {
     const topic = await readTeamTopic(transaction, topicId);
     if (!topic) throw missingTopic();
-    const can = await access.topic(transaction, human(userId), topicId);
-    const admin = await isTeamAdmin(transaction, userId);
-    if (!can.manage && !(admin && topic.originChannelId === null)) {
+    const can = await access.topic(transaction, actor, topicId);
+    if (!can.manage) {
       if (!can.read) throw missingTopic();
       throw forbidden("Only this topic's managers can change it.");
     }
-    if (topic.originChannelId !== null)
+    if (topic.originChannelId !== null && channelTopics === "refuse")
       throw new OpensteerError({
         code: "bad_request",
         reason: "team-topic-follows-channel",
         message: "A channel's topic follows its channel; change the channel instead.",
       });
-    return { topic, can, admin };
+    return { topic, can };
   }
 
-  async function command(userId: UserId, command: TeamKnowledgeCommand): Promise<void> {
-    const actor = human(userId);
-    const audit = (
+  async function command(actor: TeamActor, command: TeamCommand) {
+    const person = human(actor);
+    if (!isKnowledgeCommand(command))
+      throw new OpensteerError({ code: "not_found", message: "Unsupported knowledge command" });
+    const { userId } = person;
+    const record = (
       transaction: Transaction<DatabaseSchema>,
       topicId: KnowledgeTopicId,
-      action: string,
       metadata: Readonly<Record<string, unknown>> = {},
-      channelId: TeamChannelId | null = null,
+      channelId?: TeamChannelId,
     ) =>
-      appendTeamKnowledgeAudit(transaction, {
-        actor,
-        action,
+      audit(transaction, {
+        actor: person,
+        action: command.type,
         resourceKind: "topic",
         resourceId: topicId,
         channelId,
-        outcome: "allowed",
         metadata,
+      });
+    /** Changes that move what someone may read run as that person under the access lock. */
+    const change = (
+      topics: readonly KnowledgeTopicId[],
+      channels: readonly TeamChannelId[],
+      work: (transaction: Transaction<DatabaseSchema>) => Promise<void>,
+    ) =>
+      access.mutateAs(person, command.type, async (transaction) => {
+        await work(transaction);
+        return {
+          value: undefined,
+          effects: {
+            users: [],
+            channels: [...channels],
+            topics: [...topics],
+            links: [],
+            requests: [],
+          },
+        };
       });
     switch (command.type) {
       case "team.knowledge.topic.create":
-        return mutate([command.id], [], async (transaction) => {
-          const existing = await readTeamTopic(transaction, command.id);
+        await change([command.id], [], async (transaction) => {
+          const existing = await transaction
+            .selectFrom("knowledge.topics")
+            .select(["createdBy", "originChannelId"])
+            .where("id", "=", command.id)
+            .executeTakeFirst();
           if (existing) {
-            const own = await transaction
-              .selectFrom("knowledge.topics")
-              .select("createdBy")
-              .where("id", "=", command.id)
-              .executeTakeFirstOrThrow();
-            if (own.createdBy === userId && existing.originChannelId === null) return;
+            if (existing.createdBy === userId && existing.originChannelId === null) return;
             throw conflict("That topic ID is already in use.");
           }
           if (!(await isActiveMember(transaction, userId)))
@@ -524,18 +651,12 @@ export async function startTeamKnowledge(options: {
             createdBy: userId,
             access: command.access.map(grant),
           });
-          await audit(transaction, command.id, "topic.create");
+          await record(transaction, command.id);
         });
-      case "team.knowledge.topic.rename":
-        await inTransaction(async (transaction) => {
-          await managedSharedTopic(transaction, userId, command.topicId);
-          await updateTeamTopic(transaction, command.topicId, { name: command.name });
-          await audit(transaction, command.topicId, "topic.rename");
-        });
-        return;
+        break;
       case "team.knowledge.topic.access.set":
-        return mutate([command.topicId], [], async (transaction) => {
-          const { can, admin } = await managedSharedTopic(transaction, userId, command.topicId);
+        await change([command.topicId], [], async (transaction) => {
+          await managedSharedTopic(transaction, person, command.topicId);
           const changed = await setTeamTopicGrants(transaction, {
             topicId: command.topicId,
             expectedRevision: command.expectedRevision,
@@ -543,54 +664,27 @@ export async function startTeamKnowledge(options: {
             changedBy: userId,
           });
           if (!changed) throw conflict("This topic's list changed; reload it and try again.");
-          const after = await access.topic(transaction, actor, command.topicId);
-          const selfAdded = admin && !can.read && after.read;
-          const auditId = await audit(transaction, command.topicId, "topic.access.set", {
-            entries: command.access.length,
-            selfAdded,
-          });
-          if (selfAdded)
-            await noticeTeamTopicManagers(transaction, {
-              topicId: command.topicId,
-              auditId,
-              except: userId,
-            });
+          await record(transaction, command.topicId, { entries: command.access.length });
         });
+        break;
       case "team.knowledge.topic.peopleOnly.set":
-        return mutate([command.topicId], [], async (transaction) => {
-          const topic = await readTeamTopic(transaction, command.topicId);
-          if (!topic) throw missingTopic();
-          const can = await access.topic(transaction, actor, command.topicId);
-          const admin = await isTeamAdmin(transaction, userId);
-          if (!can.manage && !(admin && topic.originChannelId === null)) {
-            if (!can.read) throw missingTopic();
-            throw forbidden("Only this topic's managers can change it.");
-          }
+        await change([command.topicId], [], async (transaction) => {
+          await managedSharedTopic(transaction, person, command.topicId, "allow");
           await updateTeamTopic(transaction, command.topicId, { peopleOnly: command.peopleOnly });
-          await audit(transaction, command.topicId, "topic.peopleOnly.set", {
-            peopleOnly: command.peopleOnly,
-          });
+          await record(transaction, command.topicId, { peopleOnly: command.peopleOnly });
         });
-      case "team.knowledge.topic.archive":
-      case "team.knowledge.topic.restore":
-        await inTransaction(async (transaction) => {
-          await managedSharedTopic(transaction, userId, command.topicId);
-          const archived = command.type === "team.knowledge.topic.archive";
-          await updateTeamTopic(transaction, command.topicId, { archived });
-          await audit(transaction, command.topicId, archived ? "topic.archive" : "topic.restore");
-        });
-        return;
+        break;
       case "team.channel.topic.attach":
       case "team.channel.topic.detach":
-        return mutate([command.topicId], [command.channelId], async (transaction) => {
-          const channel = await access.channel(transaction, actor, command.channelId);
+        await change([command.topicId], [command.channelId], async (transaction) => {
+          const channel = await access.channel(transaction, person, command.channelId);
           if (!channel.manage)
             throw forbidden("Only this channel's managers can change its topics.");
           if (command.type === "team.channel.topic.detach") {
             await detachTeamTopic(transaction, command.channelId, command.topicId);
           } else {
-            const can = await access.topic(transaction, actor, command.topicId);
-            if (!can.read) throw missingTopic();
+            if (!(await access.topic(transaction, person, command.topicId)).read)
+              throw missingTopic();
             if (
               !(await attachTeamTopic(transaction, {
                 channelId: command.channelId,
@@ -604,24 +698,35 @@ export async function startTeamKnowledge(options: {
                 message: "Only shared topics can be attached to a channel.",
               });
           }
-          await audit(
+          await record(transaction, command.topicId, {}, command.channelId);
+        });
+        break;
+      case "team.knowledge.topic.rename":
+      case "team.knowledge.topic.archive":
+      case "team.knowledge.topic.restore":
+        await inTransaction(async (transaction) => {
+          await managedSharedTopic(transaction, person, command.topicId);
+          await updateTeamTopic(
             transaction,
             command.topicId,
-            command.type === "team.channel.topic.attach" ? "topic.attach" : "topic.detach",
-            {},
-            command.channelId,
+            command.type === "team.knowledge.topic.rename"
+              ? { name: command.name }
+              : { archived: command.type === "team.knowledge.topic.archive" },
           );
+          await record(transaction, command.topicId);
         });
+        break;
       case "team.knowledge.fact.append":
-        return appendFacts(userId, command);
+        await appendFacts(person, command);
+        break;
     }
+    return { type: command.type };
   }
 
   async function appendFacts(
-    userId: UserId,
+    actor: TeamActor,
     command: Extract<TeamKnowledgeCommand, { type: "team.knowledge.fact.append" }>,
   ): Promise<void> {
-    const actor = human(userId);
     const topics = [...new Set(command.facts.map((fact) => fact.topicId))].sort();
     const statement: KnowledgeStatement = {
       kind: "insert",
@@ -638,7 +743,7 @@ export async function startTeamKnowledge(options: {
         JSON.stringify(fact.value),
         fact.replacesId,
       ]),
-      operationKey: operationId("human", userId, command.operationId),
+      operationKey: operationId("human", actor.userId, command.operationId),
       onlyIfUnchanged: true,
       suppliesBaseline: true,
       keys: command.facts.map((fact) => ({
@@ -647,29 +752,23 @@ export async function startTeamKnowledge(options: {
         property: fact.property,
       })),
     };
-    await lock.knowledgeWrite(actor, topics[0]!, async (transaction) => {
-      const read: KnowledgeTopicId[] = [];
-      for (const topicId of topics) {
-        const can = await access.topic(transaction, actor, topicId);
-        if (!can.write) throw can.read ? notWritable() : missingTopic();
-        read.push(topicId);
-      }
+    await fenced(actor, topics[0]!, async (transaction) => {
+      for (const topicId of topics)
+        if (!(await access.topic(transaction, actor, topicId)).write) throw notWritable();
       const written = await runKnowledgeStatement(pool, {
         statement,
-        readTopicIds: read,
-        writeTopicIds: read,
-        writer: { kind: "human", id: userId, requestId: null },
+        readTopicIds: topics,
+        writeTopicIds: topics,
+        writer: { kind: "human", id: actor.userId, requestId: null },
         ...timeout,
       });
       if (written.kind !== "insert") throw new Error("An INSERT returned rows only");
       for (const topicId of topics)
-        await appendTeamKnowledgeAudit(transaction, {
+        await audit(transaction, {
           actor,
-          action: "knowledge.fact.append",
+          action: command.type,
           resourceKind: "topic",
           resourceId: topicId,
-          channelId: null,
-          outcome: "allowed",
           metadata: { rows: written.receipt.facts.length, replayed: written.replayed },
         });
     });
@@ -683,106 +782,22 @@ export async function startTeamKnowledge(options: {
         throw failure(error);
       }
     },
-    async topics(userId, input) {
-      const authorizedAt = lock.revision;
-      const page = await inTransaction(async (transaction) => {
-        const admin = await isTeamAdmin(transaction, userId);
-        if (input.channelId) {
-          const channel = await access.channel(transaction, human(userId), input.channelId);
-          if (!channel.read)
-            throw new OpensteerError({
-              code: "not_found",
-              reason: "team-channel-not-found",
-              message: "That channel doesn't exist or you can't read it.",
-            });
-          const all = await teamChannelScopeTopics(transaction, input.channelId);
-          const start = input.after ? all.findIndex((topic) => topic.id === input.after) + 1 : 0;
-          const seen: TeamTopic[] = [];
-          for (const topic of all.slice(start)) {
-            const shown = await view(transaction, userId, topic, admin);
-            if (shown?.can.read) seen.push(shown);
-          }
-          return { topics: seen.slice(0, pageSize), hasMore: seen.length > pageSize };
-        }
-        const seen: TeamTopic[] = [];
-        let after = input.after;
-        for (;;) {
-          const batch = await teamTopicsAfter(transaction, after, pageSize * 2);
-          for (const topic of batch) {
-            const shown = await view(transaction, userId, topic, admin);
-            if (shown) seen.push(shown);
-            if (seen.length > pageSize) return { topics: seen.slice(0, pageSize), hasMore: true };
-          }
-          if (batch.length < pageSize * 2) return { topics: seen, hasMore: false };
-          after = batch.at(-1)!.id;
-        }
-      });
-      return handOff(
-        authorizedAt,
-        () =>
-          inTransaction(async (transaction) => {
-            for (const shown of page.topics)
-              if (!(await visibleTopic(transaction, userId, shown.id).catch(() => undefined)))
-                return false;
-            return true;
-          }),
-        page,
-        "Your access to these topics changed.",
-      );
-    },
-    async topic(userId, input) {
-      const authorizedAt = lock.revision;
-      const shown = await inTransaction((transaction) =>
-        visibleTopic(transaction, userId, input.topicId),
-      );
-      return handOff(
-        authorizedAt,
-        () =>
-          inTransaction((transaction) => visibleTopic(transaction, userId, input.topicId)).then(
-            () => true,
-          ),
-        shown,
-        "Your access to this topic changed.",
-      );
-    },
-    async topicAccess(userId, input) {
-      const authorizedAt = lock.revision;
-      const answer = await inTransaction(async (transaction) => {
-        const shown = await visibleTopic(transaction, userId, input.topicId);
-        if (shown.originChannelId !== null)
-          throw new OpensteerError({
-            code: "bad_request",
-            reason: "team-topic-follows-channel",
-            message: "A channel's topic has the channel's access.",
-          });
-        const topic = await readTeamTopic(transaction, input.topicId);
-        return {
-          revision: topic!
-            .accessRevision as Read<"team.knowledge.topic.access.get">["output"]["revision"],
-          entries: (await teamTopicGrants(transaction, input.topicId)).map((entry) => ({
-            subject: entry.subject,
-            level: entry.level,
-          })),
-          can: shown.can,
-        };
-      });
-      return handOff(
-        authorizedAt,
-        () =>
-          inTransaction((transaction) => visibleTopic(transaction, userId, input.topicId)).then(
-            () => true,
-          ),
-        answer,
-        "Your access to this topic changed.",
-      );
-    },
-    facts: (userId, input) => factPage(userId, input, true),
-    history: (userId, input) => factPage(userId, input, false),
+    read,
     command,
     async close() {
       await pool.end();
     },
   };
+}
+
+function human(actor: TeamActor): TeamActor & { readonly kind: "human" } {
+  if (actor.kind !== "human")
+    throw new OpensteerError({ code: "forbidden", message: "Only people use this." });
+  return actor;
+}
+
+function isKnowledgeCommand(command: TeamCommand): command is TeamKnowledgeCommand {
+  return (knowledgeCommands as ReadonlySet<string>).has(command.type);
 }
 
 async function isActiveMember(

@@ -2,7 +2,6 @@ import {
   createId,
   OpensteerError,
   type KnowledgeTopicId,
-  type TeamActor,
   type TeamAgentRequestId,
   type TeamChannelId,
   type TeamGroupId,
@@ -36,20 +35,6 @@ export type TeamTopicLevel = "read" | "write" | "manage";
 export interface TeamTopicGrant {
   readonly subject: TeamTopicSubject;
   readonly level: TeamTopicLevel;
-}
-
-/** What an actor may do with a topic; structurally the access port's topic authority. */
-export interface TeamTopicRights {
-  readonly read: boolean;
-  readonly write: boolean;
-  readonly manage: boolean;
-  readonly peopleOnly: boolean;
-}
-export interface TeamChannelRights {
-  readonly read: boolean;
-  readonly post: boolean;
-  readonly manage: boolean;
-  readonly peopleOnly: boolean;
 }
 
 function topicRows(executor: Executor) {
@@ -128,98 +113,6 @@ export async function teamTopicsAfter(
         left join team_channels ac on ac.id = a.origin_channel_id where a.id = ${after})`,
     );
   return query.orderBy("name").orderBy("t.id").limit(limit).execute();
-}
-
-/**
- * Resolves a topic for one actor. A channel topic follows its channel (read, post as write,
- * manage); a shared topic follows its own grants, through nested groups. Either people-only
- * switch shuts agents out, and agents never manage.
- */
-export async function resolveTeamTopicAuthority(
-  transaction: Transaction<DatabaseSchema>,
-  actor: TeamActor,
-  topicId: KnowledgeTopicId,
-  channel: (channelId: TeamChannelId) => Promise<TeamChannelRights>,
-): Promise<TeamTopicRights> {
-  const topic = await transaction
-    .selectFrom("knowledge.topics")
-    .select(["originChannelId", "peopleOnly", "archivedAt"])
-    .where("id", "=", topicId)
-    .executeTakeFirst();
-  if (!topic) return { read: false, write: false, manage: false, peopleOnly: false };
-  let rights: TeamTopicRights;
-  if (topic.originChannelId) {
-    const can = await channel(topic.originChannelId);
-    rights = {
-      read: can.read,
-      write: can.read && can.post && topic.archivedAt === null,
-      manage: can.manage,
-      peopleOnly: can.peopleOnly || topic.peopleOnly,
-    };
-  } else {
-    const level = await grantedLevel(transaction, topicId, actor.userId);
-    rights = {
-      read: level >= 1,
-      write: level >= 2 && topic.archivedAt === null,
-      manage: level >= 3,
-      peopleOnly: topic.peopleOnly,
-    };
-  }
-  if (actor.kind === "human") return rights;
-  return rights.peopleOnly
-    ? { read: false, write: false, manage: false, peopleOnly: true }
-    : { ...rights, manage: false };
-}
-
-/** 0 none, 1 read, 2 write, 3 manage: the best grant reaching an active member, directly or through any group. */
-async function grantedLevel(
-  executor: Executor,
-  topicId: KnowledgeTopicId,
-  userId: UserId,
-): Promise<number> {
-  const { rows } = await sql<{ level: number | null }>`
-    with recursive member_groups(id) as (
-      select p.group_id from team_group_people p
-      join team_groups g on g.id = p.group_id and g.deleted_at is null
-      where p.user_id = ${userId}
-      union
-      select e.parent_group_id from team_group_edges e
-      join member_groups m on e.child_group_id = m.id
-      join team_groups g on g.id = e.parent_group_id and g.deleted_at is null
-    )
-    select max(case grants.level when 'manage' then 3 when 'write' then 2 else 1 end)::int as level
-    from team_topic_grants grants
-    where grants.topic_id = ${topicId}
-      and exists (select from team_members where user_id = ${userId} and state = 'active')
-      and ((grants.subject_kind = 'person' and grants.subject_id = ${userId})
-        or (grants.subject_kind = 'group' and grants.subject_id in (select id from member_groups)))
-  `.execute(executor);
-  return rows[0]?.level ?? 0;
-}
-
-/** Active members a shared topic's managers are told about: managing people and everyone in managing groups. */
-export async function teamTopicManagers(
-  executor: Executor,
-  topicId: KnowledgeTopicId,
-): Promise<UserId[]> {
-  const { rows } = await sql<{ userId: UserId }>`
-    with recursive managing(id) as (
-      select grants.subject_id from team_topic_grants grants
-      join team_groups g on g.id = grants.subject_id and g.deleted_at is null
-      where grants.topic_id = ${topicId} and grants.subject_kind = 'group' and grants.level = 'manage'
-      union
-      select e.child_group_id from team_group_edges e
-      join managing m on e.parent_group_id = m.id
-      join team_groups g on g.id = e.child_group_id and g.deleted_at is null
-    )
-    select distinct m.user_id from team_members m
-    where m.state = 'active' and (
-      m.user_id in (select subject_id from team_topic_grants where topic_id = ${topicId}
-        and subject_kind = 'person' and level = 'manage')
-      or m.user_id in (select p.user_id from team_group_people p join managing on managing.id = p.group_id))
-    order by m.user_id
-  `.execute(executor);
-  return rows.map((row) => row.userId);
 }
 
 export async function teamTopicGrants(
@@ -557,95 +450,28 @@ export async function teamFactsPage(
   };
 }
 
-export async function isTeamAdmin(executor: Executor, userId: UserId): Promise<boolean> {
-  const member = await executor
-    .selectFrom("teamMembers")
-    .select("role")
-    .where("userId", "=", userId)
-    .where("state", "=", "active")
-    .executeTakeFirst();
-  return member?.role === "owner" || member?.role === "admin";
-}
-
-/** One audit row; metadata holds IDs, counts and fingerprints, never SQL text, parameters or values. */
-export async function appendTeamKnowledgeAudit(
+/** Who a refused agent call is recorded against: the link's owner, and the request only if it is that link's. */
+export async function teamKnowledgeCaller(
   executor: Executor,
-  entry: {
-    readonly actor: TeamActor;
-    readonly linkId?: TeamLinkId | null;
-    readonly requestId?: TeamAgentRequestId | null;
-    readonly action: string;
-    readonly resourceKind: "topic" | "channel";
-    readonly resourceId: string | null;
-    readonly channelId: TeamChannelId | null;
-    readonly outcome: "allowed" | "denied";
-    readonly metadata: Readonly<Record<string, unknown>>;
-  },
-): Promise<string> {
+  linkId: TeamLinkId,
+  requestId: TeamAgentRequestId,
+): Promise<
+  | {
+      readonly ownerUserId: UserId;
+      readonly requestId: TeamAgentRequestId | null;
+      readonly channelId: TeamChannelId | null;
+    }
+  | undefined
+> {
   const row = await executor
-    .insertInto("teamAudit")
-    .values({
-      actorUserId: entry.actor.userId,
-      actorKind: entry.actor.kind,
-      linkId: entry.linkId ?? null,
-      agentRequestId: entry.requestId ?? null,
-      action: entry.action,
-      resourceKind: entry.resourceKind,
-      resourceId: entry.resourceId,
-      channelId: entry.channelId,
-      outcome: entry.outcome,
-      metadata: entry.metadata,
-    })
-    .returning("id")
-    .executeTakeFirstOrThrow();
-  return row.id;
-}
-
-/** A refused agent call, recorded against the link and, when it names one of that link's, the request. */
-export async function appendTeamKnowledgeDenial(
-  executor: Executor,
-  input: {
-    readonly linkId: TeamLinkId;
-    readonly requestId: TeamAgentRequestId;
-    readonly metadata: Readonly<Record<string, unknown>>;
-  },
-): Promise<void> {
-  await sql`
-    insert into team_audit (actor_user_id, actor_kind, link_id, agent_request_id, action,
-      resource_kind, resource_id, channel_id, outcome, metadata)
-    select l.owner_user_id, 'agent', l.id, r.id, 'knowledge.sql', 'topic', null, r.channel_id,
-      'denied', ${JSON.stringify(input.metadata)}::jsonb
-    from team_links l
-    left join team_agent_requests r on r.id = ${input.requestId} and r.link_id = l.id
-    where l.id = ${input.linkId}
-  `.execute(executor);
-}
-
-/** Tells a shared topic's managers that an admin added themselves to it. */
-export async function noticeTeamTopicManagers(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly topicId: KnowledgeTopicId;
-    readonly auditId: string;
-    readonly except: UserId;
-  },
-): Promise<void> {
-  const recipients = (await teamTopicManagers(transaction, input.topicId)).filter(
-    (userId) => userId !== input.except,
+    .selectFrom("teamLinks as l")
+    .leftJoin("teamAgentRequests as r", (join) =>
+      join.onRef("r.linkId", "=", "l.id").on("r.id", "=", requestId),
+    )
+    .select(["l.ownerUserId", "r.id as requestId", "r.channelId"])
+    .where("l.id", "=", linkId)
+    .executeTakeFirst();
+  return (
+    row && { ownerUserId: row.ownerUserId, requestId: row.requestId, channelId: row.channelId }
   );
-  if (!recipients.length) return;
-  const notices = recipients.map((recipientUserId) => ({
-    id: createId("teamNotice"),
-    recipientUserId,
-    kind: "admin-self-added" as const,
-    resourceKind: "topic" as const,
-    resourceId: input.topicId,
-    auditId: input.auditId,
-    dedupeKey: `topic:${input.topicId}:${input.auditId}`,
-  }));
-  await transaction.insertInto("teamNotices").values(notices).execute();
-  await transaction
-    .insertInto("teamOutbox")
-    .values(notices.map((notice) => ({ kind: "notice" as const, noticeId: notice.id })))
-    .execute();
 }
