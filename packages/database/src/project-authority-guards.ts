@@ -59,11 +59,11 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
       join public.runs r on r.id = g.run_id
       join public.threads t on t.id = r.thread_id
       join public.principals p on p.id = r.actor_principal_id
-      join public.deployments d on d.singleton_key = 'primary'
+      cross join public.opensteer_stored_execution_authority() d
       where g.id = new.originating_grant_id and g.run_id = new.originating_run_id
         and g.status = 'active' and g.binding_generation = r.binding_generation
         and p.kind = 'project' and p.workspace_id = t.workspace_id
-        and d.authority_model_version = 2 and d.deployment_shape->>'kind' = 'server'
+        and d.model = 2 and d.kind = 'server'
         and new.originating_workspace_id = t.workspace_id
         and new.target_workspace_id = t.workspace_id and new.originating_thread_id = t.id
         and new.originating_occurrence_id is null and new.mode = 'live'
@@ -88,7 +88,8 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
     if row(new.id, new.run_id, new.attempt_id, new.binding_generation, new.runner_id, new.runner_boot_id)
        is distinct from row(old.id, old.run_id, old.attempt_id, old.binding_generation, old.runner_id, old.runner_boot_id)
        then
-      if exists (select 1 from public.requests q where q.originating_grant_id = old.id) then
+      if exists (select 1 from public.requests q where q.originating_grant_id = old.id)
+         or exists (select 1 from public.commands c where c.originating_grant_id = old.id) then
         raise exception 'A Request retains its original grant identity' using errcode = '23514';
       end if;
     end if;

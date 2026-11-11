@@ -283,7 +283,7 @@ const sqlExceptions: Record<
         "stored_kind = 'server' or (stored_kind = 'personal' and exists (": 1,
       },
       "baseline/public.opensteer_project_request_scope": {
-        "d.deployment_shape->>'kind' = 'server'": 1,
+        "d.kind = 'server'": 1,
       },
     },
   },
@@ -331,7 +331,7 @@ const sqlExceptions: Record<
         "deployment.deployment_shape->>'kind' = 'personal'": 1,
       },
       "projectExecutionPreparationMigration/public.opensteer_project_runtime_settings_scope": {
-        "d.deployment_shape->>'kind' = 'server'": 1,
+        "d.kind = 'server'": 1,
       },
       "runnerOwnedLocalWorkspacesMigration/deployments_shape_check": {
         "deployment_shape->>'kind' = any (array['personal', 'server'])": 1,
