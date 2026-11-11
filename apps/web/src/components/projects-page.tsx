@@ -7,7 +7,10 @@ import {
   taskList,
   type ProjectFolder,
   isTeamPlace,
+  runtimeRowLabel,
+  teamHomeEmpty,
 } from "@opensteer/client/host";
+import type { RuntimeState } from "@opensteer/protocol";
 import { useMinuteClock } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
@@ -16,6 +19,7 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { TaskState } from "./workspace/task-mark.js";
+import { OtherProjects } from "./team/other-projects.js";
 import { TeamMark, useShellTeam } from "./team/team-ui.js";
 
 /** Past this many, the directory offers to narrow itself by name. */
@@ -41,6 +45,13 @@ export function ProjectsPage() {
     () => groupTasksByProject(snapshot, taskList(snapshot)).folders,
     [snapshot],
   );
+  const runtimes = new Map<string, RuntimeState | undefined>(
+    summary?.projects.map(({ id, runtime }) => [id, runtime]),
+  );
+  const empty = teamHomeEmpty({
+    canCreate,
+    listsOthers: summary?.can.people.allowed === true,
+  });
   const needle = query.trim().toLocaleLowerCase();
   const shown = needle
     ? folders.filter(({ workspace }) =>
@@ -103,12 +114,10 @@ export function ProjectsPage() {
             <span aria-hidden className="projects-empty__mark">
               <Icon name="folder" />
             </span>
-            <h2 className="projects-empty__title">No projects yet</h2>
+            <h2 className="projects-empty__title">{team ? empty.title : "No projects yet"}</h2>
             <p className="projects-empty__body">
               {team
-                ? canCreate
-                  ? "When someone adds you to a project, it appears here. You can also start one."
-                  : "When someone adds you to a project, it appears here."
+                ? empty.body
                 : "Give recurring or long-running work its own folder, chat and instructions — a launch, your finances, a client. Opensteer can also make one when work calls for it."}
             </p>
             {canCreate ? (
@@ -125,7 +134,11 @@ export function ProjectsPage() {
           <ul aria-label="Projects" className="projects-list">
             {shown.map((folder) => (
               <li key={folder.workspace.id}>
-                <ProjectRow folder={folder} now={new Date(now)} />
+                <ProjectRow
+                  folder={folder}
+                  now={new Date(now)}
+                  runtime={team ? runtimes.get(folder.workspace.id) : undefined}
+                />
               </li>
             ))}
           </ul>
@@ -147,14 +160,26 @@ export function ProjectsPage() {
             {loadingMore ? "Loading…" : "Show more projects"}
           </button>
         ) : null}
+
+        {team ? <OtherProjects open={folders.length === 0} /> : null}
       </div>
     </div>
   );
 }
 
-function ProjectRow({ folder, now }: { readonly folder: ProjectFolder; readonly now: Date }) {
+function ProjectRow({
+  folder,
+  now,
+  runtime,
+}: {
+  readonly folder: ProjectFolder;
+  readonly now: Date;
+  readonly runtime: RuntimeState | undefined;
+}) {
   const { workspace, signal, needsYou, rows } = folder;
-  const problem = projectStatusLabel(workspace);
+  // Something it needs from the reader comes first; it can't run tasks says why it is quiet.
+  const problem =
+    projectStatusLabel(workspace) ?? (signal === "needs-you" ? null : runtimeRowLabel(runtime));
   const working = rows.filter((row) => row.tone === "working").length;
   const state = problem ?? folderSignalWords(signal, needsYou);
   const line =

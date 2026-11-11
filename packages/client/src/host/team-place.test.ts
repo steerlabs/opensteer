@@ -22,14 +22,17 @@ describe("which shell a place gets", () => {
   });
 
   it.each(mockTeamScenarios.filter((scenario) => scenario !== "absent"))(
-    "serves the %s team scenario as a team server: no Main, no Chat, only Projects",
+    "serves the %s team scenario as a team server: no Main, no Chat, only its own Projects",
     (team) => {
       const host = new MockHostClient({ team });
       const snapshot = host.getSnapshot();
       expect(isTeamPlace(snapshot)).toBe(true);
       expect(snapshot).toMatchObject({ homeWorkspaceId: null, homeThreadId: null });
       expect(snapshot.workspaces.every(({ kind }) => kind === "project")).toBe(true);
-      expect(snapshot.workspaces.length).toBeGreaterThan(0);
+      // Only Projects this person is on; a paused, removed or unplaced person has none.
+      expect(snapshot.workspaces.length > 0).toBe(
+        ["admin", "admin-stale", "member", "guest"].includes(team),
+      );
       host.dispose();
     },
   );

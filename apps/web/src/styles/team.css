@@ -560,3 +560,27 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.team-others {
+  margin-top: var(--space-32);
+}
+
+.team-others__title {
+  margin: 0;
+  font-size: var(--text-root);
+  font-weight: 600;
+}
+
+.team-others__lead {
+  margin: var(--space-4) 0 var(--space-14);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.team-others__toggle {
+  margin-top: var(--space-24);
+}
+
+.team-others__add {
+  flex: none;
+}

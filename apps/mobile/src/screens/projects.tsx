@@ -4,12 +4,15 @@ import {
   groupTasksByProject,
   isTeamPlace,
   projectStatusLabel,
+  runtimeRowLabel,
   sameStableHostSnapshot,
+  teamHomeEmpty,
   taskList,
   type HostClient,
   type ProjectFolder,
 } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
+import { useHostSnapshot, useTeam } from "@opensteer/client/react";
+import type { RuntimeState } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   memo,
@@ -37,6 +40,7 @@ import { Symbol } from "../ui/symbol.js";
 import { WorkspaceMark } from "../ui/workspace-mark.js";
 import { NeedsYouTag, UnreadDot } from "../threads/task-row.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
+import { OtherProjects } from "../team/other-projects.js";
 import { useCanCreateProject } from "../team/team-parts.js";
 
 export type ProjectsScreenProps = StaticScreenProps<{ readonly deploymentId: string }>;
@@ -109,6 +113,18 @@ function ProjectDirectory(props: {
   const { deploymentId } = props;
   const teamAllowsCreate = useCanCreateProject(props.hostClient);
   const team = isTeamPlace(snapshot);
+  const { summary } = useTeam(props.hostClient);
+  const runtimes = useMemo(
+    () =>
+      new Map<string, RuntimeState | undefined>(
+        summary?.projects.map(({ id, runtime }) => [id, runtime]),
+      ),
+    [summary],
+  );
+  const empty = teamHomeEmpty({
+    canCreate: teamAllowsCreate,
+    listsOthers: summary?.can.people.allowed === true,
+  });
 
   const directory = useMemo<Directory>(
     () => ({
@@ -166,8 +182,10 @@ function ProjectDirectory(props: {
   };
 
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<ProjectFolder>) => <ProjectRow folder={item} onPress={open} />,
-    [open],
+    ({ item }: ListRenderItemInfo<ProjectFolder>) => (
+      <ProjectRow folder={item} onPress={open} runtime={runtimes.get(item.workspace.id)} />
+    ),
+    [open, runtimes],
   );
 
   return (
@@ -185,12 +203,10 @@ function ProjectDirectory(props: {
           ) : (
             <View style={styles.empty}>
               <Symbol name="folder" size={30} tint={color.mutedDim} />
-              <AppText role="title">No projects yet</AppText>
+              <AppText role="title">{team ? empty.title : "No projects yet"}</AppText>
               <AppText role="secondary" style={styles.centred} tone="muted">
                 {team
-                  ? teamAllowsCreate
-                    ? "When someone adds you to a project, it appears here. You can also start one."
-                    : "When someone adds you to a project, it appears here."
+                  ? empty.body
                   : "Give recurring or long-running work its own folder inside Main, with its own chat, tasks, people and access. You don’t need one to ask in Chat."}
               </AppText>
               {directory.canCreate && teamAllowsCreate ? (
@@ -204,6 +220,12 @@ function ProjectDirectory(props: {
             <View style={styles.footer}>
               <ActivityIndicator color={color.muted} size="small" />
             </View>
+          ) : team && directory.loaded && !directory.hasMore ? (
+            <OtherProjects
+              deploymentId={deploymentId}
+              hostClient={props.hostClient}
+              open={directory.projects.length === 0}
+            />
           ) : undefined
         }
         ListHeaderComponent={
@@ -241,11 +263,15 @@ function ProjectDirectory(props: {
 interface ProjectRowProps {
   readonly folder: ProjectFolder;
   readonly onPress: (workspaceId: string) => void;
+  readonly runtime?: RuntimeState | undefined;
 }
 
 const ProjectRow = memo(function ProjectRow(props: ProjectRowProps): ReactNode {
   const { workspace, signal, needsYou, rows } = props.folder;
-  const problem = projectStatusLabel(workspace);
+  // Something it needs from the reader comes first; it can't run tasks says why it is quiet.
+  const problem =
+    projectStatusLabel(workspace) ??
+    (signal === "needs-you" ? null : runtimeRowLabel(props.runtime));
   const words = problem ?? folderSignalWords(signal, needsYou);
   const description = workspace.description.trim();
   const detail =
@@ -319,6 +345,7 @@ function sameProjectRowProps(left: ProjectRowProps, right: ProjectRowProps): boo
   const b = right.folder;
   return (
     left.onPress === right.onPress &&
+    left.runtime === right.runtime &&
     a.workspace.id === b.workspace.id &&
     a.workspace.name === b.workspace.name &&
     a.workspace.description === b.workspace.description &&

@@ -5,6 +5,7 @@ import {
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   ModelSelectionSchema,
+  RunnerIdSchema,
   UserIdSchema,
   WorkspaceIdSchema,
   type MarkColor,
@@ -29,6 +30,7 @@ import {
   type MemberState,
   type MemberSummary,
   type PersonRef,
+  type RuntimeState,
   type Settings,
   type Subject,
   type SubjectView,
@@ -45,16 +47,32 @@ import { rpcErrorStatus } from "../host/host-session-client.js";
  * every team call refused as the dormant Host refuses it.
  */
 export type MockTeamScenario =
-  "absent" | "admin" | "admin-stale" | "member" | "guest" | "suspended" | "removed";
+  | "absent"
+  | "admin"
+  | "admin-stale"
+  | "admin-empty"
+  | "member"
+  | "member-empty"
+  | "guest"
+  | "suspended"
+  | "removed"
+  | "fresh";
 
+/**
+ * `admin-stale` also has its computer offline. `-empty` is the same team with
+ * this person on no Project. `fresh` is a new server: its owner, and nothing else.
+ */
 export const mockTeamScenarios: readonly MockTeamScenario[] = [
   "absent",
   "admin",
   "admin-stale",
+  "admin-empty",
   "member",
+  "member-empty",
   "guest",
   "suspended",
   "removed",
+  "fresh",
 ];
 
 type TeamReadHandlers = Pick<HostApiHandlers, keyof typeof teamReadSchemas>;
@@ -96,7 +114,13 @@ interface Project {
   name: string;
   color: MarkColor;
   settings: Settings | null;
-  runtime: "ready" | "not-configured" | "model-unavailable";
+  runtime: "ready" | Extract<RuntimeState, { state: "unavailable" }>["reason"];
+}
+interface Computer {
+  readonly id: string;
+  readonly name: string;
+  state: "connected" | "offline" | "update-required";
+  lastSeenAt: string | null;
 }
 interface Invitation {
   readonly id: string;
@@ -132,6 +156,7 @@ export const mockTeamProjects = {
   launch: projectId("2"),
   finance: projectId("3"),
   payroll: projectId("b1"),
+  support: projectId("b4"),
 } as const;
 const claudeInstance = HarnessInstanceIdSchema.parse("hin_00000000-0000-4000-8000-0000000000c1");
 const codexInstance = HarnessInstanceIdSchema.parse("hin_00000000-0000-4000-8000-0000000000c2");
@@ -173,6 +198,7 @@ export class MockTeamAccess {
   readonly #projects = new Map<WorkspaceId, Project>();
   readonly #invitations = new Map<string, Invitation>();
   #admitted = false;
+  #computer: Computer | null = null;
   /** The selector this browser proved, standing in for the Host's HttpOnly admission cookie. */
   #proof: string | null = null;
 
@@ -224,7 +250,7 @@ export class MockTeamAccess {
     });
     for (const p of [
       person(viewerId, "Alex Rivera", "alex@acme.example", {
-        administrator: this.scenario.startsWith("admin"),
+        administrator: this.scenario.startsWith("admin") || this.scenario === "fresh",
         kind: viewerKind,
         state: viewerState,
         invitedBy: null,
@@ -321,7 +347,8 @@ export class MockTeamAccess {
       grantedBy: by,
       grantedAt: at(day),
     });
-    const { launch, finance, payroll } = mockTeamProjects;
+    const { launch, finance, payroll, support } = mockTeamProjects;
+    const onNone = this.scenario.endsWith("-empty");
     this.#entries = [
       entry("1", { kind: "group", groupId: customerSuccess }, launch, "use"),
       entry("2", { kind: "person", userId: maya }, launch, "manage"),
@@ -339,10 +366,12 @@ export class MockTeamAccess {
         launch,
         this.scenario === "guest" ? "use" : "manage",
       ),
-      entry("5", { kind: "group", groupId: everyone }, finance, "use"),
+      entry("5", { kind: "group", groupId: onNone ? customerSuccess : everyone }, finance, "use"),
       entry("6", { kind: "person", userId: priya }, payroll, "manage"),
       entry("7", { kind: "person", userId: dev }, payroll, "use"),
-    ];
+      entry("8", { kind: "group", groupId: supportTeam }, support, "use"),
+      entry("9", { kind: "person", userId: dev }, support, "manage"),
+    ].filter((e) => !onNone || e.subject.kind !== "person" || e.subject.userId !== viewerId);
     const updatedAt = at(8);
     this.#projects.set(launch, {
       id: launch,
@@ -393,6 +422,19 @@ export class MockTeamAccess {
         updatedAt,
       },
     });
+    this.#projects.set(support, {
+      id: support,
+      name: "Support",
+      color: "blue",
+      runtime: "not-configured",
+      settings: null,
+    });
+    this.#computer = {
+      id: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-0000000000f1"),
+      name: "acme-runner",
+      state: this.scenario === "admin-stale" ? "offline" : "connected",
+      lastSeenAt: at(10),
+    };
     this.#invitations.set(mockTeamInvitation.selector, {
       id: "00000000-0000-4000-b000-000000000001",
       selector: mockTeamInvitation.selector,
@@ -420,6 +462,15 @@ export class MockTeamAccess {
       });
     settled("2", "jordan@partner.example", "used", 2);
     settled("3", "omar@acme.example", "revoked", 5);
+    if (this.scenario === "fresh") {
+      for (const id of this.#people.keys()) if (id !== viewerId) this.#people.delete(id);
+      for (const id of this.#groups.keys()) if (id !== everyone) this.#groups.delete(id);
+      this.#entries = [];
+      this.#projects.clear();
+      this.#invitations.clear();
+      this.#computer = null;
+      this.#syncEveryone();
+    }
   }
 
   #syncEveryone() {
@@ -611,6 +662,7 @@ export class MockTeamAccess {
               needsYou: project.id === mockTeamProjects.launch ? 1 : 0,
               lastActivity: new Date(Date.UTC(2026, 10, 9, 15)).toISOString(),
               canOpen: allowed,
+              runtime: this.#runtime(project),
             },
           ]
         : [];
@@ -637,8 +689,37 @@ export class MockTeamAccess {
         groups: adminCan,
         audit: adminCan,
         invite: adminCan,
+        computer: adminCan,
       },
     };
+  }
+
+  #runtime(project: Project): RuntimeState {
+    if (project.runtime !== "ready") return { state: "unavailable", reason: project.runtime };
+    if (this.#computer === null || this.#computer.state === "offline")
+      return { state: "unavailable", reason: "computer-offline" };
+    if (this.#computer.state === "update-required")
+      return { state: "unavailable", reason: "runner-update-required" };
+    return { state: "ready" };
+  }
+
+  /** The Projects this person is on, which are all a team place's snapshot holds. */
+  reachableProjects(): Set<string> {
+    if (!this.available || this.#viewer.state !== "active") return new Set();
+    return new Set([...this.#projects.keys()].filter((id) => this.#myLevel(id) !== null));
+  }
+
+  /** The Host's snapshot audience for a Project: how many people, and this person's level. */
+  audience(workspaceId: string): { people: number; myLevel: Level | null } | null {
+    if (!this.#projects.has(workspaceId as WorkspaceId)) return null;
+    const id = workspaceId as WorkspaceId;
+    return { people: this.#levels(id).size, myLevel: this.#myLevel(id) };
+  }
+
+  /** A Project's runtime as its summary row reports it. */
+  runtimeOf(workspaceId: string): RuntimeState | undefined {
+    const project = this.#projects.get(workspaceId as WorkspaceId);
+    return project ? this.#runtime(project) : undefined;
   }
 
   #projectAccess(workspaceId: WorkspaceId) {
@@ -686,10 +767,7 @@ export class MockTeamAccess {
         kind: this.#person(id).kind,
       })),
       iAmAdminNotMember: this.#admin && myLevel === null,
-      runtime:
-        project.runtime === "ready"
-          ? { state: "ready" }
-          : { state: "unavailable", reason: project.runtime },
+      runtime: this.#runtime(project),
       can: {
         use: myLevel ? allowed : denied("membership-lost"),
         manage: myLevel === "manage" ? allowed : denied("project-manage-required"),
@@ -700,6 +778,7 @@ export class MockTeamAccess {
           this.#admin && myLevel === null
             ? allowed
             : denied(this.#admin ? undefined : "team-admin-required"),
+        delete: myLevel === "manage" ? allowed : denied("project-manage-required"),
       },
     };
   }
@@ -982,13 +1061,27 @@ export class MockTeamAccess {
     this.#requireMember();
     const base = () => ({ accessRevision: this.#revision, commandId: this.#commandId() });
     switch (command.type) {
-      case "team.computer.replace":
+      case "team.computer.replace": {
         this.#requireAdmin();
-        throw refusal(
-          "forbidden",
-          "team-not-implemented",
-          "The team computer preview is not implemented yet.",
-        );
+        this.#checkRevision(command.expectedRevision);
+        if ((this.#computer?.id ?? null) !== command.expectedComputerId)
+          throw refusal(
+            "conflict",
+            "team-object-unavailable",
+            "The team's computer changed since this screen was opened.",
+          );
+        // The old computer stops at once; the new one joins with this code.
+        this.#computer = null;
+        this.#bump();
+        const expiresAt = new Date(this.#now().getTime() + 15 * 60_000).toISOString();
+        return TeamCommandResultSchema.parse({
+          ...base(),
+          type: command.type,
+          enrollmentId: `enr_mock_${this.#commandCount}`,
+          token: `MOCK-TEAM-COMPUTER-CODE-${String(this.#commandCount).padStart(4, "0")}`,
+          expiresAt,
+        });
+      }
       case "team.project.create": {
         if (this.#viewer.kind !== "full")
           throw refusal("forbidden", "team-admin-required", "Guests can't create projects.");
@@ -1221,21 +1314,28 @@ export class MockTeamAccess {
     const matches = (text: string, query: string | undefined) =>
       !query || text.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
     return {
-      "team.projects.list": run("team.projects.list", () => {
-        this.#requireAdmin();
-        throw refusal(
-          "forbidden",
-          "team-not-implemented",
-          "The all-projects preview is not implemented yet.",
-        );
-      }),
+      "team.projects.list": (input) =>
+        run("team.projects.list", () => {
+          this.#requireAdmin();
+          const rows = [...this.#projects.values()]
+            .filter((project) => matches(project.name, input.query))
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((project) => ({
+              id: project.id,
+              name: project.name,
+              color: project.color,
+              people: this.#levels(project.id).size,
+              myLevel: this.#myLevel(project.id),
+            }));
+          return { ...page(rows, input), accessRevision: this.#revision };
+        })(),
       "team.computer.get": run("team.computer.get", () => {
         this.#requireAdmin();
-        throw refusal(
-          "forbidden",
-          "team-not-implemented",
-          "The team computer preview is not implemented yet.",
-        );
+        return {
+          computer: this.#computer ? { ...this.#computer } : null,
+          // With none, replacing it is connecting the first one.
+          can: { replace: allowed },
+        };
       }),
       "team.invitations.list": (input) =>
         run("team.invitations.list", () => {

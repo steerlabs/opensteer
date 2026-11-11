@@ -96,7 +96,7 @@ function ProjectGone({ error, teamName }: { readonly error: unknown; readonly te
       <h2>This project isn’t available</h2>
       <TeamError error={error} team={teamName} />
       <AreaLink className="btn" to="/">
-        Back to Chat
+        Back to projects
       </AreaLink>
     </div>
   );

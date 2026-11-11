@@ -12,7 +12,7 @@ import type {
   TeamCommand,
   teamReadSchemas,
 } from "@opensteer/protocol";
-import { UserIdSchema, WorkspaceIdSchema } from "@opensteer/core";
+import { RunnerIdSchema, UserIdSchema, WorkspaceIdSchema } from "@opensteer/core";
 import { AgentConnectionIdSchema } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { HostClient } from "./client.js";
@@ -43,6 +43,8 @@ export type GroupsPage = TeamReadOutput<"team.groups.list">;
 export type MemberDetailView = TeamReadOutput<"team.member.get">;
 export type DirectoryResults = TeamReadOutput<"team.directory.search">;
 export type InvitePreviewView = TeamReadOutput<"team.invitation.preview">;
+export type TeamProjectsPage = TeamReadOutput<"team.projects.list">;
+export type TeamComputerRead = TeamReadOutput<"team.computer.get">;
 
 /**
  * The person's Host as a team server: typed reads and commands. It decides
@@ -88,6 +90,13 @@ export class TeamAccess {
     options: ReadOptions = {},
   ) {
     return unwrapRpcResult(await this.#port.rpc["team.people.list"](input, options));
+  }
+  /** Every Project in the team, names only: an administrator's read. */
+  async projects(input: Page & { query?: string } = {}, options: ReadOptions = {}) {
+    return unwrapRpcResult(await this.#port.rpc["team.projects.list"](input, options));
+  }
+  async computer(options: ReadOptions = {}) {
+    return unwrapRpcResult(await this.#port.rpc["team.computer.get"]({}, options));
   }
   async invitations(input: Page = {}, options: ReadOptions = {}) {
     return unwrapRpcResult(await this.#port.rpc["team.invitations.list"](input, options));
@@ -250,6 +259,13 @@ export class TeamAccess {
       trustedComputerConfirmed: input.trustedComputerConfirmed,
     });
     return result;
+  }
+  /** The computer this screen showed is fenced, so a stale screen cannot replace a newer one. */
+  replaceComputer(revision: number, expectedComputerId: string | null) {
+    return this.#command("team.computer.replace", revision, {
+      expectedComputerId:
+        expectedComputerId === null ? null : RunnerIdSchema.parse(expectedComputerId),
+    });
   }
   revokeInvitation(revision: number, invitationId: string) {
     return this.#command("team.invitation.revoke", revision, { invitationId });

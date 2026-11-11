@@ -578,7 +578,11 @@ function RequestBody(props: {
         detail={
           surface.denied === "administrator"
             ? "A Host administrator has to answer this. It stays open until they do."
-            : "The person who started this task has to answer this. It stays open until they do."
+            : surface.denied === "manager"
+              ? "A manager of this project has to answer this. It stays open until they do."
+              : surface.denied === "other"
+                ? "You can’t answer this. It stays open until someone who can does."
+                : "The person who started this task has to answer this. It stays open until they do."
         }
         title="Someone else answers this"
         tone="neutral"

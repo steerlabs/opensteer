@@ -617,7 +617,11 @@ export function DeniedRequestBody({
       <ActionNote>
         {denied === "administrator"
           ? "A Host administrator must complete this request."
-          : "The person who started this task must answer this request."}
+          : denied === "manager"
+            ? "A manager of this project must answer this request."
+            : denied === "other"
+              ? "You can’t answer this request."
+              : "The person who started this task must answer this request."}
       </ActionNote>
     </>
   );

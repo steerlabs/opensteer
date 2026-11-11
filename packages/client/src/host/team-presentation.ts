@@ -406,3 +406,48 @@ export function invitationTrustNote(team: string): string {
 export function invitationTrustConfirmation(email: string, team: string): string {
   return `I trust ${email.trim() || "this person"} with ${team}’s computer and its network.`;
 }
+
+/** A Project row's short state when the Host says it can't run tasks. */
+export function runtimeRowLabel(state: RuntimeState | undefined): string | null {
+  if (!state || state.state === "ready") return null;
+  return `Can’t run tasks · ${
+    {
+      "not-configured": "not set up",
+      "computer-offline": "computer offline",
+      "engine-unavailable": "engine unavailable",
+      "model-unavailable": "model unavailable",
+      "runner-update-required": "computer needs an update",
+    }[state.reason]
+  }`;
+}
+
+/** A row in an administrator's list of every Project. */
+export function otherProjectLine(row: {
+  readonly people: number;
+  readonly myLevel: Level | null;
+}): string {
+  const people = row.people === 1 ? "1 person" : `${row.people} people`;
+  return `${people} · ${
+    row.myLevel === null
+      ? "You’re not on it"
+      : row.myLevel === "manage"
+        ? "You manage it"
+        : "You use it"
+  }`;
+}
+
+/** What a team's Projects page says when this person is on none. */
+export function teamHomeEmpty(input: {
+  readonly canCreate: boolean;
+  readonly listsOthers: boolean;
+}): { readonly title: string; readonly body: string } {
+  if (input.listsOthers)
+    return {
+      title: "You’re not on a project yet",
+      body: `Add yourself to one below, ${input.canCreate ? "or start one" : "or ask a manager to add you"}.`,
+    };
+  return {
+    title: "No projects yet",
+    body: `When someone adds you to a project, it appears here.${input.canCreate ? " You can also start one." : ""}`,
+  };
+}

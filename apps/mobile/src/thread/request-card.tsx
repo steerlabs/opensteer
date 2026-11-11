@@ -337,7 +337,11 @@ function CardAnswers(props: {
             ? "Answer this on a computer."
             : props.denied === "administrator"
               ? "A Host administrator has to answer this."
-              : "The person who started this task has to answer this."}
+              : props.denied === "manager"
+                ? "A manager of this project has to answer this."
+                : props.denied === "other"
+                  ? "You can’t answer this."
+                  : "The person who started this task has to answer this."}
         </AppText>
         {overflows ? (
           <AnswerRow>
