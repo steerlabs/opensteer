@@ -1,22 +1,30 @@
 import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { PendingBrowserTabRows } from "../browser/pending-browser-tab.js";
 import {
+  allTabs,
   browserTabPicture,
-  browserTabSections,
-  tabSectionPlaceTitle,
-  browserTabStrip,
   placeAgents,
   placeAgentsWords,
+  devicesElsewhere,
+  placeDeviceLabels,
+  sameDevicesElsewhere,
+  tabListHomeId,
   placeHasAgents,
   profileBadgesVisible,
   samePlaceAgents,
+  tabDeviceChoice,
+  tabFilterActive,
+  tabFilterEmptyWords,
+  tabFilterWords,
+  tabMatchesFilter,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
   type PlaceKind,
-  type TabSectionDevice,
+  type TabFilter,
+  type TabFilterDevice,
 } from "@opensteer/client/host";
-import type { MachineSummary } from "@opensteer/protocol";
+import type { DeviceElsewhere } from "@opensteer/client/computers";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
 import {
   StackActions,
@@ -49,7 +57,7 @@ import { workspaceRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { useSidebarMenu } from "../navigation-header.js";
-import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import { color, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { NeedsYouTag } from "../threads/task-row.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
@@ -57,6 +65,7 @@ import { Symbol } from "../ui/symbol.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { useAppForeground } from "../ui/foreground.js";
+import { homeName } from "./profile-home-menu.js";
 import { computerSymbols } from "./settings-model.js";
 import { TabPicture } from "./tab-picture.js";
 
@@ -66,7 +75,9 @@ export type TabsScreenProps = StaticScreenProps<{ readonly deploymentId: string 
  * Tabs: every tab, app and phone this person may see on the Deployment, from
  * the shared place list web and desktop read — tabs they opened by hand,
  * tasks' and delegated work's tabs, saved tabs and the person's own views —
- * one section per device, in the person's own order within it.
+ * in one list in the person's own order, browser tabs first, then the Mac
+ * apps, phones and Opensteer Apps. Each row names its device while the list
+ * spans more than one; the filter narrows it to one device, or to agents.
  *
  * A row shows a picture of its page only when this phone already holds one;
  * it never asks for one, because a picture costs a stream per row on a phone
@@ -132,36 +143,21 @@ function AttachedTabs(props: {
   );
 }
 
-/** One device's tabs, then its apps; or the Opensteer Apps, which run on none. */
-interface PlaceGroup {
-  readonly key: string;
-  /** Null for the Opensteer Apps. */
-  readonly device: TabSectionDevice | null;
-  /** Sections wear their device as a heading once anything runs elsewhere than this phone. */
-  readonly headed: boolean;
+/**
+ * The list's two runs, as the sidebar's hairline parts them on web: browser
+ * tabs, then the Mac apps, phones and Opensteer Apps. An empty run is left out.
+ */
+interface PlaceRun {
+  readonly key: "web" | "native";
   readonly data: readonly PlaceItem[];
 }
 
-/** Places as sections by device, in the order every surface lists devices in. */
-function placeGroups(
-  places: readonly PlaceItem[],
-  machines: readonly MachineSummary[],
-  hereId: string | null,
-): readonly PlaceGroup[] {
-  const { headed, sections } = browserTabSections({
-    strip: browserTabStrip(places),
-    machines,
-    hereId,
-  });
-  return sections.map((section) => ({
-    key: section.key,
-    device: section.device,
-    headed,
-    data: [
-      ...section.web.flatMap((row) => (row.kind === "place" ? [row.place] : row.places)),
-      ...section.native,
-    ],
-  }));
+function placeRuns(places: readonly PlaceItem[]): readonly PlaceRun[] {
+  const runs: PlaceRun[] = [
+    { key: "web", data: places.filter((place) => place.kind === "browser") },
+    { key: "native", data: places.filter((place) => place.kind !== "browser") },
+  ];
+  return runs.filter((run) => run.data.length > 0);
 }
 
 /**
@@ -198,23 +194,45 @@ function TabsForReader(props: {
   const places = usePlaceList(hostClient);
   const machines = useHostSelector(hostClient, selectMachines);
   const hereId = useHereDeviceId(deploymentId);
+  const selectHome = useCallback(
+    (snapshot: HostSnapshot) => tabListHomeId(snapshot, hereId),
+    [hereId],
+  );
+  const homeId = useHostSelector(hostClient, selectHome);
+  const selectElsewhere = useCallback(
+    (snapshot: HostSnapshot) => devicesElsewhere(snapshot.machines, homeId),
+    [homeId],
+  );
+  // Labels keep their identity while their devices stay the same, so rows stay undrawn.
+  const elsewhere = useHostSelector(hostClient, selectElsewhere, sameDevicesElsewhere);
   const loaded = useHostSelector(hostClient, selectLoaded);
   const signInKeys = useHostSelector(hostClient, selectSignIns);
-  const [agents, setAgents] = useState(false);
-  const withAgents = useMemo(() => places.filter(placeHasAgents), [places]);
+  const [chosenFilter, setFilter] = useState<TabFilter>(allTabs);
+  const choice = useMemo(
+    () => tabDeviceChoice({ places, machines, hereId, homeId, filter: chosenFilter }),
+    [chosenFilter, hereId, homeId, machines, places],
+  );
+  const filter = choice.filter;
+  const filtering = tabFilterActive(filter);
+  const deviceName = choice.devices.find(({ id }) => id === filter.device)?.name ?? null;
   const canOpen = useHostSelector(hostClient, selectCanOpen);
   const openApp = useCallback(
     () => navigation.dispatch(StackActions.push("OpenApp", { deploymentId })),
     [deploymentId, navigation],
   );
   useTabsBar({
-    agents,
-    filterOffered: agents || withAgents.length > 0,
-    onChange: setAgents,
+    devices: choice.devices,
+    filter,
+    filterOffered: filtering || choice.devices.length > 0 || places.some(placeHasAgents),
+    onChange: setFilter,
     onOpen: canOpen ? openApp : null,
   });
-  const shown = agents ? withAgents : places;
-  const sections = useMemo(() => placeGroups(shown, machines, hereId), [hereId, machines, shown]);
+  const shown = useMemo(
+    () => (filtering ? places.filter((place) => tabMatchesFilter(place, filter)) : places),
+    [filter, filtering, places],
+  );
+  const sections = useMemo(() => placeRuns(shown), [shown]);
+  const deviceLabels = useMemo(() => placeDeviceLabels(shown, elsewhere), [elsewhere, shown]);
   const signIns = useMemo(() => new Set(signInKeys.split("\n")), [signInKeys]);
   const showProfile = useMemo(() => profileBadgesVisible(places), [places]);
   const open = useCallback(
@@ -225,10 +243,10 @@ function TabsForReader(props: {
     [deploymentId, navigation],
   );
   const renderItem = useCallback(
-    ({ index, item, section }: SectionListRenderItemInfo<PlaceItem, PlaceGroup>) => (
+    ({ index, item, section }: SectionListRenderItemInfo<PlaceItem, PlaceRun>) => (
       <PlaceRow
+        device={deviceLabels.get(item.key) ?? null}
         first={index === 0}
-        headed={section.headed}
         hostClient={hostClient}
         last={index === section.data.length - 1}
         needsYou={
@@ -241,30 +259,34 @@ function TabsForReader(props: {
         showProfile={showProfile}
       />
     ),
-    [hostClient, open, props.active, showProfile, signIns],
+    [deviceLabels, hostClient, open, props.active, showProfile, signIns],
   );
   const loading = !loaded && places.length === 0;
   return (
     <Screen edgeToEdge>
-      <SectionList<PlaceItem, PlaceGroup>
+      <SectionList<PlaceItem, PlaceRun>
         contentContainerStyle={[styles.content, column, insets]}
         contentInsetAdjustmentBehavior="automatic"
         keyExtractor={(item) => item.key}
         ListEmptyComponent={
           <View style={styles.empty}>
             <AppText role="bodyMedium" tone={loading ? "muted" : "default"}>
-              {loading ? "Finding tabs…" : agents ? "No tasks are using tabs" : "No tabs yet"}
+              {loading
+                ? "Finding tabs…"
+                : filtering
+                  ? tabFilterEmptyWords(filter, deviceName)
+                  : "No tabs yet"}
             </AppText>
-            {loading ? null : (
+            {loading || (filtering && !filter.agents) ? null : (
               <AppText role="secondary" style={styles.centred} tone="muted">
-                {agents
+                {filtering
                   ? "Tabs appear here while a task works in them."
                   : "Tabs you and your agents open appear here."}
               </AppText>
             )}
-            {loading ? null : agents ? (
+            {loading ? null : filtering ? (
               <View style={styles.emptyAction}>
-                <SecondaryButton compact label="Show all tabs" onPress={() => setAgents(false)} />
+                <SecondaryButton compact label="Show all tabs" onPress={() => setFilter(allTabs)} />
               </View>
             ) : canOpen ? (
               <View style={styles.emptyAction}>
@@ -289,53 +311,12 @@ function TabsForReader(props: {
         }
         renderItem={renderItem}
         renderSectionHeader={({ section }) =>
-          section.headed ? (
-            <GroupHead device={section.device} />
-          ) : section.key === sections[0]?.key ? null : (
-            <View style={styles.groupGap} />
-          )
+          section.key === sections[0]?.key ? null : <View style={styles.groupGap} />
         }
         sections={sections}
         stickySectionHeadersEnabled={false}
       />
     </Screen>
-  );
-}
-
-/**
- * A device's shape and name over its tabs and apps, and Offline when it is
- * away, announced as a heading; the Opensteer Apps are headed Apps.
- */
-function GroupHead(props: { readonly device: TabSectionDevice | null }): ReactNode {
-  const { device } = props;
-  const name = device?.name ?? "Apps";
-  const offline = device !== null && !device.online;
-  return (
-    <View
-      accessibilityLabel={offline ? `${name}, offline` : name}
-      accessibilityRole="header"
-      style={styles.groupHead}
-    >
-      <Symbol
-        name={device ? computerSymbols[device.glyph] : opensteerAppGlyph}
-        size={13}
-        tint={color.muted}
-      />
-      <AppText
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        numberOfLines={1}
-        role="caption"
-        style={[styles.groupTitle, styles.shrink]}
-        tone="muted"
-      >
-        {name}
-      </AppText>
-      {offline ? (
-        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
-          · Offline
-        </AppText>
-      ) : null}
-    </View>
   );
 }
 
@@ -346,8 +327,15 @@ const kindHint: Record<PlaceKind, string> = {
   phone: "Opens this phone",
 };
 
-/** Under a row's title: the site, or what kind of place it is, then anything not ordinary. */
-function placeDetail(place: PlaceItem, showProfile: boolean): readonly string[] {
+/**
+ * Under a row's title: the site, or what kind of place it is, who it browses
+ * as and where it runs when those tell rows apart, then anything not ordinary.
+ */
+function placeDetail(
+  place: PlaceItem,
+  showProfile: boolean,
+  device: DeviceElsewhere | null,
+): readonly string[] {
   const where =
     place.kind === "browser"
       ? tabSiteLabel(place.site)
@@ -358,19 +346,24 @@ function placeDetail(place: PlaceItem, showProfile: boolean): readonly string[] 
           : "Opensteer app";
   const state =
     place.availability === "unavailable"
-      ? "Unavailable"
+      ? device && !device.online
+        ? "Offline"
+        : "Unavailable"
       : place.loading || place.availability === "starting"
         ? "Opening…"
         : null;
-  return [where, showProfile ? (place.identity?.name ?? null) : null, state].filter(
-    (part): part is string => part !== null && part !== "",
-  );
+  return [
+    where,
+    showProfile ? (place.identity?.name ?? null) : null,
+    device?.name ?? null,
+    state,
+  ].filter((part): part is string => part !== null && part !== "");
 }
 
 interface PlaceRowProps {
+  /** The device it runs on, while the list spans more than one. */
+  readonly device: DeviceElsewhere | null;
   readonly first: boolean;
-  /** The row stands under its device's heading. */
-  readonly headed: boolean;
   readonly hostClient: HostClient;
   readonly last: boolean;
   /** A pending sign-in Request names this very tab. */
@@ -396,8 +389,7 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
   const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
   const words = placeAgentsWords(agents);
   const acting = agents.unnamedActing || agents.agents.some((agent) => agent.acting);
-  const detail = placeDetail(place, props.showProfile);
-  const title = tabSectionPlaceTitle(place, props.headed);
+  const detail = placeDetail(place, props.showProfile, props.device);
   const unavailable = place.availability === "unavailable";
   const picture =
     props.shown && place.destination.kind === "browser" && place.destination.tabId
@@ -453,7 +445,7 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
       </View>
       <View style={styles.words}>
         <AppText numberOfLines={1} role="bodyMedium" tone={unavailable ? "muted" : "default"}>
-          {title}
+          {place.title}
         </AppText>
         {detail.length === 0 ? null : (
           <AppText numberOfLines={1} role="caption" tone="muted">
@@ -473,18 +465,19 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
 
 /**
  * The bar: Open, for the person's own Mac apps and phones, and the filter —
- * every tab, or only those agents are in, which the title then names. iOS
- * draws native bar items; Android the same in its own bar. The filter is
- * offered while an agent is in a tab, and while it filters, so the way back
- * is always there.
+ * every tab, or only those agents are in, or one device's, which the title
+ * then names. iOS draws native bar items; Android the same in its own bar.
+ * The filter is offered while there is something to narrow, and while it
+ * narrows, so the way back is always there.
  */
 function useTabsBar(props: {
-  readonly agents: boolean;
+  readonly devices: readonly TabFilterDevice[];
+  readonly filter: TabFilter;
   readonly filterOffered: boolean;
-  readonly onChange: (agents: boolean) => void;
+  readonly onChange: (filter: TabFilter) => void;
   readonly onOpen: (() => void) | null;
 }): void {
-  const { agents, filterOffered } = props;
+  const { devices, filter, filterOffered } = props;
   const navigation = useNavigation();
   const change = useRef(props.onChange);
   change.current = props.onChange;
@@ -492,18 +485,46 @@ function useTabsBar(props: {
   open.current = props.onOpen;
   const openOffered = props.onOpen !== null;
   useLayoutEffect(() => {
-    const label = agents ? "Filter, showing tabs with agents" : "Filter";
-    const choices: NativeMenuOption[] = [
-      { id: "all", label: "All tabs", onPress: () => change.current(false), selected: !agents },
-      {
-        id: "agents",
-        label: "Tabs with agents",
-        onPress: () => change.current(true),
-        selected: agents,
-      },
+    const active = tabFilterActive(filter);
+    const deviceName = devices.find(({ id }) => id === filter.device)?.name ?? null;
+    const words = tabFilterWords(filter, deviceName);
+    const label = active ? `Filter: ${words}` : "Filter";
+    const choose = (next: TabFilter) => () => change.current(next);
+    const sections: readonly (readonly NativeMenuOption[])[] = [
+      [
+        {
+          id: "all",
+          label: "All tabs",
+          onPress: choose({ ...filter, agents: false }),
+          selected: !filter.agents,
+        },
+        {
+          id: "agents",
+          label: "Tabs with agents",
+          onPress: choose({ ...filter, agents: true }),
+          selected: filter.agents,
+        },
+      ],
+      devices.length === 0
+        ? []
+        : [
+            {
+              id: "device:all",
+              label: "All devices",
+              onPress: choose({ ...filter, device: null }),
+              selected: filter.device === null,
+            },
+            ...devices.map((device): NativeMenuOption => ({
+              icon: computerSymbols[device.glyph],
+              id: `device:${device.id}`,
+              label: deviceChoiceLabel(device),
+              onPress: choose({ ...filter, device: device.id }),
+              selected: filter.device === device.id,
+            })),
+          ],
     ];
     navigation.setOptions({
-      title: agents ? "Tabs with agents" : "Tabs",
+      title: words,
       headerRight: () => (
         <View style={styles.barItems}>
           {filterOffered ? (
@@ -511,7 +532,7 @@ function useTabsBar(props: {
               accessibilityLabel={label}
               onPresent={noop}
               onSettle={noop}
-              options={choices}
+              options={sections}
               style={styles.barItem}
             >
               <Symbol name="line.3.horizontal.decrease" tint={color.ember} />
@@ -548,19 +569,29 @@ function useTabsBar(props: {
               {
                 accessibilityLabel: label,
                 icon: {
-                  name: agents
+                  name: active
                     ? "line.3.horizontal.decrease.circle.fill"
                     : "line.3.horizontal.decrease.circle",
                   type: "sfSymbol" as const,
                 },
                 label: "Filter",
                 menu: {
-                  items: choices.map((choice) => ({
-                    label: choice.label,
-                    onPress: choice.onPress,
-                    state: choice.selected === true ? ("on" as const) : ("off" as const),
-                    type: "action" as const,
-                  })),
+                  items: sections
+                    .filter((section) => section.length > 0)
+                    .map((section) => ({
+                      inline: true,
+                      items: section.map((choice) => ({
+                        ...(choice.icon === undefined
+                          ? {}
+                          : { icon: { name: choice.icon, type: "sfSymbol" as const } }),
+                        label: choice.label,
+                        onPress: choice.onPress,
+                        state: choice.selected === true ? ("on" as const) : ("off" as const),
+                        type: "action" as const,
+                      })),
+                      label: "",
+                      type: "submenu" as const,
+                    })),
                 },
                 type: "menu" as const,
               },
@@ -568,7 +599,13 @@ function useTabsBar(props: {
           : []),
       ],
     });
-  }, [agents, filterOffered, navigation, openOffered]);
+  }, [devices, filter, filterOffered, navigation, openOffered]);
+}
+
+/** A device in the filter: this phone as the phone says it, and Offline when it is away. */
+function deviceChoiceLabel(device: TabFilterDevice): string {
+  const name = homeName(device);
+  return device.online ? name : `${name} · Offline`;
 }
 
 /**
@@ -617,19 +654,10 @@ const styles = StyleSheet.create({
     width: 32,
   },
   groupGap: { height: space[16] },
-  groupHead: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: space[6],
-    paddingBottom: space[6],
-    paddingHorizontal: space[4],
-    paddingTop: space[16],
-  },
-  groupTitle: { fontWeight: "600" },
   mark: { height: 32, width: 32 },
   notices: { gap: space[8], paddingBottom: space[8] },
   pressed: { backgroundColor: color.surfacePressed },
-  // One plate per computer, as the platform's grouped lists draw it. Each line
+  // One plate per run, as the platform's grouped lists draw it. Each line
   // is held to one, so a row is as tall as its text size and no taller.
   row: {
     alignItems: "center",
@@ -643,6 +671,5 @@ const styles = StyleSheet.create({
   rowFirst: { borderTopLeftRadius: radius.md, borderTopRightRadius: radius.md },
   rowLast: { borderBottomLeftRadius: radius.md, borderBottomRightRadius: radius.md },
   rowSeparated: { borderColor: color.line, borderTopWidth: StyleSheet.hairlineWidth },
-  shrink: { flexShrink: 1 },
   words: { flex: 1, gap: space[2], minWidth: 0 },
 });

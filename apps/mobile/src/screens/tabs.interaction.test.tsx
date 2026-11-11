@@ -6,12 +6,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  browserTabSections,
-  browserTabStrip,
   placeHasAgents,
   placeList,
   type HostClient,
   type HostSnapshot,
+  type PlaceItem,
 } from "@opensteer/client/host";
 import { MockHostClient, mockBrowserSignInRequest } from "@opensteer/client/mock";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
@@ -1134,11 +1133,12 @@ function row(scope: HTMLElement, title: string): HTMLButtonElement {
 function placeRows(scope: HTMLElement): HTMLButtonElement[] {
   return [...scope.querySelectorAll<HTMLButtonElement>('button[data-testid^="place:"]')];
 }
-/** Tabs' group headers, in the order drawn. */
-function groupHeads(scope: HTMLElement): string[] {
-  return [...scope.querySelectorAll<HTMLElement>("[data-section] > div[aria-label]")].map((head) =>
-    head.getAttribute("aria-label")!,
-  );
+/** The list's order: browser tabs first, then the Mac apps, phones and Opensteer Apps. */
+function listOrder(places: readonly PlaceItem[]): readonly PlaceItem[] {
+  return [
+    ...places.filter(({ kind }) => kind === "browser"),
+    ...places.filter(({ kind }) => kind !== "browser"),
+  ];
 }
 
 /**
@@ -1349,7 +1349,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     w.record("J1 from task A");
   });
 
-  it("lists every tab, app and phone grouped by computer, with the page pill's marks and no pictures", async () => {
+  it("lists every tab, app and phone in one list, each naming its device, with the page pill's marks and no pictures", async () => {
     harness.platform = "android";
     let worker = "";
     const w = await world({
@@ -1378,16 +1378,15 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     // the person's own Notes view, opened last, sits with the Mac mini's apps.
     expect(
       placeRows(screen).map((button) => button.getAttribute("aria-label")!.split(", ")[0]),
-    ).toEqual(
-      browserTabSections({
-        strip: browserTabStrip(places, snapshot.browserTabGroups),
-        machines: snapshot.machines,
-        hereId: null,
-      }).ordered.map(({ title }) => title),
-    );
+    ).toEqual(listOrder(places).map(({ title }) => title));
     expect(placeRows(screen)).toHaveLength(places.length);
-    // One section per device, its tabs then its apps; this phone is none of them, so all are named.
-    expect(groupHeads(screen)).toEqual(["Alex's iPhone", "Mac mini", "Pixel 7", "Studio Mac"]);
+    // One list, no device headings. This phone is none of the devices, so it is home at the
+    // Mac mini that runs the Deployment: rows elsewhere name their device, the Mac mini's none.
+    expect(screen.querySelectorAll("[data-section] > div[aria-label]")).toHaveLength(0);
+    expect(row(screen, "Running shoes – Allbirds").getAttribute("aria-label")).toContain(
+      ", Alex's iPhone",
+    );
+    expect(row(screen, "Keynote").getAttribute("aria-label")).toContain("Mac app, Studio Mac");
     for (const title of [
       "Q4 roadmap – Linear", // opened by hand on the desktop
       "Friday dinner", // a task's
@@ -1432,18 +1431,14 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(w.calls.viewers).toEqual([]);
     expect(w.calls.displays).toEqual([]);
     expect(w.calls.ownerRetains).toEqual([]);
-    w.record("J1 global list", { groups: groupHeads(screen) });
+    w.record("J1 global list");
   });
 
-  it("narrows to the tabs agents are in from the bar's filter, titled so, and back to every tab", async () => {
+  it("narrows to the tabs agents are in, or one device's, from the bar's filter, titled so, and back to every tab", async () => {
     const w = await world();
     await openSidebarTabs(w);
     const snapshot = w.host.getSnapshot();
-    const places = browserTabSections({
-      strip: browserTabStrip(placeList(snapshot), snapshot.browserTabGroups),
-      machines: snapshot.machines,
-      hereId: null,
-    }).ordered;
+    const places = listOrder(placeList(snapshot));
     const busy = places.filter(placeHasAgents).map(({ title }) => title);
     expect(busy.length).toBeGreaterThan(0);
     expect(busy.length).toBeLessThan(places.length);
@@ -1454,9 +1449,23 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(filter().getAttribute("aria-label")).toBe("Filter");
     await press(control(filter(), "Tabs with agents"));
     expect(title()).toBe("Tabs with agents");
-    expect(filter().getAttribute("aria-label")).toBe("Filter, showing tabs with agents");
+    expect(filter().getAttribute("aria-label")).toBe("Filter: Tabs with agents");
     expect(shown()).toEqual(busy);
     await press(control(filter(), "All tabs"));
+    expect(title()).toBe("Tabs");
+    expect(shown()).toEqual(places.map(({ title }) => title));
+    // One device's rows; with one device left, rows stop naming it. Opensteer Apps run on none.
+    const mini = places.filter(({ device }) => device?.name === "Mac mini");
+    expect(mini.length).toBeGreaterThan(0);
+    expect(mini.length).toBeLessThan(places.length);
+    await press(control(filter(), "Mac mini"));
+    expect(title()).toBe("Tabs on Mac mini");
+    expect(filter().getAttribute("aria-label")).toBe("Filter: Tabs on Mac mini");
+    expect(shown()).toEqual(mini.map(({ title }) => title));
+    expect(row(front(w), "Q4 roadmap – Linear").getAttribute("aria-label")).toBe(
+      "Q4 roadmap – Linear, linear.app, Work",
+    );
+    await press(control(filter(), "All devices"));
     expect(title()).toBe("Tabs");
     expect(shown()).toEqual(places.map(({ title }) => title));
   });
@@ -1494,7 +1503,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     });
     const drawn = () => [
       harness.draws.get("Keynote") ?? 0,
-      harness.draws.get("Studio Mac") ?? 0,
+      harness.draws.get("Pixel 7") ?? 0,
       harness.draws.get("Q4 roadmap – Linear") ?? 0,
     ];
     const before = drawn();
@@ -1511,6 +1520,12 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
           },
         };
       });
+    expect(drawn()).toEqual(before);
+    // A computer reporting in anew, its name and presence unchanged, redraws no row that names it.
+    await host.change((snapshot) => ({
+      ...snapshot,
+      machines: snapshot.machines.map((machine) => ({ ...machine })),
+    }));
     expect(drawn()).toEqual(before);
 
     const roadmap = placeList(w.host.getSnapshot()).find(

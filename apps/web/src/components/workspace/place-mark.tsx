@@ -123,12 +123,3 @@ function SiteIcon({
     />
   );
 }
-
-/** A Mac's outline, after an app's name: muted, named for the reader by its tooltip. */
-export function DeviceGlyph({ name }: { readonly name: string }) {
-  return (
-    <span aria-label={name} className="device-glyph" role="img" title={name}>
-      <Icon name="laptop" />
-    </span>
-  );
-}
