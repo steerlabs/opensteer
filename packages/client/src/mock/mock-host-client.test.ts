@@ -264,7 +264,7 @@ describe("MockHostClient", () => {
             ? {
                 type: kind,
                 sessionId: BrowserSessionIdSchema.parse(session.id),
-                tabId: session.tabs[0]!.id,
+                tabId: client.browserTabs.sessionTabs(session.id)[0]!.id,
                 title: "A page with a different name",
                 url: "https://example.com",
               }

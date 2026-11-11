@@ -1,4 +1,4 @@
-import type { WorkspaceTabLineage } from "./client.js";
+import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
 import type { HostClient, HostSnapshot, WorkspaceTabActivationOptions } from "./client.js";
 import { browserPlaceUnavailableReason } from "./places.js";
 import { browserIdentity } from "./start-page-model.js";
@@ -66,25 +66,21 @@ export class WorkspaceTabActivations {
       return held.promise;
     }
     const scope = JSON.stringify(viewerScopeOf(this.#ports.snapshot()));
-    let lineage: WorkspaceTabLineage | undefined;
+    let lineage: BrowserGroupRow | undefined;
     const read = () => {
       const snapshot = this.#ports.snapshot();
-      const current = snapshot.workspaceTabs?.find(
-        (group) => group.id === lineage?.id || group.tabs?.some((tab) => tab.id === tabId),
-      );
+      const store = snapshot.browserTabs;
+      const groupId = lineage?.id ?? store?.groupForTab(tabId);
+      const current = groupId ? store?.group(groupId) : undefined;
       if (current) lineage = current;
       const placement = snapshot.browserPlacements.find(
-        (value) => value.runnerId === lineage?.session.placement.runnerId,
+        (value) => value.runnerId === lineage?.placement.runnerId,
       );
-      // Omitted lineages and byte-bounded tab arrays cannot prove a close.
-      const closed =
-        current?.whole !== false &&
-        !!current?.tabs &&
-        !current.tabs.some((tab) => tab.id === tabId);
+      const closed = !!current && store!.tabs(current.id).whole && !store!.tab(current.id, tabId);
       const reason = lineage
         ? browserPlaceUnavailableReason(
-            browserIdentity(lineage.session.profileId, snapshot.browserProfiles),
-            lineage.unavailableReason,
+            browserIdentity(lineage.profileId, snapshot.browserProfiles),
+            lineage.unavailableReason ?? undefined,
             placement?.unavailableReason,
           )
         : null;
@@ -96,7 +92,7 @@ export class WorkspaceTabActivations {
         ready: !!lineage && snapshot.connection === "connected" && placement?.available === true,
         key: JSON.stringify([
           snapshot.connection,
-          lineage?.session.placement.runnerId,
+          lineage?.placement.runnerId,
           placement?.available,
           placement?.runtimeId,
         ]),

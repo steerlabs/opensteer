@@ -6,30 +6,36 @@ import { browserTabStrip } from "../host/browser-tab-strip.js";
 import { placeList } from "../host/places.js";
 import { runPages } from "../host/surfaces.js";
 
+it("closes a sleeping mock tab from its keyed record", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const dormant = client.scriptDormantBrowser({ profileName: "Saved" });
+    const result = await client.closeWorkspaceTabs([dormant.tabId]);
+    expect(result.failed).toEqual([]);
+    expect(result.closed).toEqual([dormant.tabId]);
+    expect(client.browserTabs.sessionTab(dormant.sessionId, dormant.tabId)).toBeUndefined();
+  } finally {
+    client.dispose();
+  }
+});
+
 it("activates an existing mock surface without replacing its document or duplicating the tab", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   try {
     const session = client
       .getSnapshot()
-      .browserSessions.find((held) => held.tabCatalog?.tabs.length)!;
-    const tab = session.tabCatalog!.tabs[0]!;
+      .browserSessions.find((held) => client.browserTabs.sessionTabs(held.id).length)!;
+    const tab = client.browserTabs.sessionTabs(session.id)[0]!;
     const response = await client.rpc["commands.dispatch"]({
       type: "workspace.tab.activate",
       tabId: BrowserSurfaceIdSchema.parse(tab.id),
       idempotencyKey: "existing-surface",
     });
     expect(response.ok).toBe(true);
-    const updated = client.getSnapshot().browserSessions.find((held) => held.id === session.id)!;
-    expect(updated.tabCatalog?.tabs.find((held) => held.id === tab.id)?.documentId).toBe(
-      tab.documentId,
-    );
-    expect(updated.tabs.filter((held) => held.id === tab.id)).toHaveLength(1);
-    expect(
-      client
-        .getSnapshot()
-        .workspaceTabs?.find((group) => group.session.id === session.id)
-        ?.tabs?.find((held) => held.id === tab.id)?.state,
-    ).toBe("live");
+    const rows = client.browserTabs.sessionTabs(session.id);
+    expect(client.browserTabs.sessionTab(session.id, tab.id)?.documentId).toBe(tab.documentId);
+    expect(rows.filter((held) => held.id === tab.id)).toHaveLength(1);
+    expect(client.browserTabs.sessionTab(session.id, tab.id)?.state).toBe("live");
   } finally {
     client.dispose();
   }
@@ -185,8 +191,8 @@ describe("moving mock workspace", () => {
       await loading;
       const session = client
         .getSnapshot()
-        .browserSessions.find((session) => session.tabs.length >= 2)!;
-      const [first, second] = session.tabs;
+        .browserSessions.find((session) => client.browserTabs.sessionTabs(session.id).length >= 2)!;
+      const [first, second] = client.browserTabs.sessionTabs(session.id);
       const sessionId = session.id;
       // A tile scrolls into view, shows its picture, scrolls away and back within one tick.
       const release = client.retainBrowserWatch(sessionId, first!.id);

@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -62,11 +63,15 @@ it("keeps the card and its watch lease across independent inventories, Request w
     workspaceTabs: [],
     runQueue: [{ id: runId, threadId, status: "running" }],
   } as unknown as HostSnapshot;
+  snapshot = withBrowserTabStore(snapshot);
   const listeners = new Set<() => void>();
   const release = vi.fn(),
     retain = vi.fn(() => release);
   const watchState = { status: "unavailable", frame: null, error: null };
   const client = {
+    get browserTabs() {
+      return snapshot.browserTabs!;
+    },
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -100,7 +105,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
     { connection: "connected", workspaceTabs: [] },
   ]) {
     await act(async () => {
-      snapshot = { ...snapshot, ...patch } as HostSnapshot;
+      snapshot = withBrowserTabStore({ ...snapshot, ...patch } as HostSnapshot);
       listeners.forEach((listener) => listener());
     });
     expect(node.querySelector(".viewfinder")).toBe(card);
@@ -115,6 +120,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
         { id: replacement, state: "ready", tabCatalog: { tabs: [{ id: surfaceId }] } },
       ],
     } as unknown as HostSnapshot;
+    snapshot = withBrowserTabStore(snapshot);
     listeners.forEach((listener) => listener());
   });
   expect(store.get(runId)!.data.place).toMatchObject({ sessionId });

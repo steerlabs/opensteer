@@ -1,3 +1,9 @@
+import { browserStoreFixture, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
+import type {
+  BrowserGroupRow,
+  BrowserTabRow,
+  BrowserViewerSurface,
+} from "@opensteer/protocol/browser-tabs";
 import { describe, expect, it } from "vitest";
 import {
   BrowserSessionIdSchema,
@@ -15,6 +21,7 @@ import {
   liveWork,
   runPages,
   placePage,
+  messagePages,
 } from "./surfaces.js";
 
 const base = new MockHostClient({ latencyMs: 0 }).getSnapshot();
@@ -30,13 +37,50 @@ function task(index: number, title: string, status: ThreadStatus): TaskEntry {
   };
 }
 
+function bind(
+  session: BrowserSessionSummary,
+  rows: readonly BrowserTabRow[],
+  complete = true,
+  viewer: (id: string) => BrowserViewerSurface | undefined = () => undefined,
+): BrowserSessionSummary {
+  return {
+    ...session,
+    browserTabs: browserStoreFixture(
+      [
+        {
+          id: session.id,
+          sessionId: session.id,
+          createdAt: session.createdAt ?? "",
+          state: session.state,
+        } as BrowserGroupRow,
+      ],
+      [
+        {
+          groupId: session.id,
+          rows: rows.map((row) => ({
+            ...row,
+            sessionId: BrowserSessionIdSchema.parse(session.id),
+          })),
+          complete,
+        },
+      ],
+      (_session, id) => viewer(id),
+    ),
+  };
+}
+function rows(session: BrowserSessionSummary) {
+  return session.browserTabs!.sessionTabs(session.id);
+}
+function replace(session: BrowserSessionSummary, next: readonly BrowserTabRow[]) {
+  replaceBrowserTabs(session.browserTabs!, session.id, next);
+}
 function browser(
   index: number,
   page: string,
   usedBy: readonly string[],
   state: BrowserSessionSummary["state"] = "ready",
 ): BrowserSessionSummary {
-  return {
+  const session: BrowserSessionSummary = {
     access: "read-write",
     attachedRunIds: [],
     dialog: null,
@@ -47,19 +91,32 @@ function browser(
     profileId: null,
     runtimeId: "runtime",
     state,
-    tabs: [
-      {
-        active: true,
-        id: BrowserSurfaceIdSchema.parse(`tab-${index}`),
-        title: page,
-        url: `https://${page}/`,
-      },
-    ],
+    tabs: [],
     threadIds: usedBy,
     viewerError: null,
     viewerState: "synchronized",
     workspaceId: template.workspaceId,
   };
+  return bind(session, [
+    {
+      id: BrowserSurfaceIdSchema.parse(`tab-${index}`),
+      sessionId: BrowserSessionIdSchema.parse(session.id),
+      title: page,
+      site: `https://${page}`,
+      order: 0,
+      openerId: null,
+      createdAt: "",
+      state: "live",
+      iconRef: null,
+      documentId: "document",
+      availability: "ready",
+      loading: false,
+      navigationFailed: false,
+      canGoBack: false,
+      canGoForward: false,
+      occupants: [],
+    },
+  ]);
 }
 
 function snapshot(
@@ -70,12 +127,54 @@ function snapshot(
     ...base,
     activeTasks: [],
     assignments: {},
-    browserSessions: [...browserSessions],
+    browserSessions: browserSessions.map((session) =>
+      session.browserTabs?.groupForSession(session.id)
+        ? session
+        : bind(
+            session,
+            session.browserTabs
+              ?.groups()
+              .ids.flatMap((id) =>
+                session.browserTabs!.sessionTabs(session.browserTabs!.group(id)!.sessionId),
+              ) ?? [],
+            true,
+            (id) =>
+              session.browserTabs?.surface(
+                session.browserTabs.group(session.browserTabs.groups().ids[0]!)!.sessionId,
+                id,
+              ),
+          ),
+    ),
     machines: [],
     tasks: { entries, window: base.workspaceWindow },
     waitingRequests: [],
   };
 }
+
+it("names an unviewed message page from its current keyed row, retaining the recorded page after the browser ends", () => {
+  const session = browser(1, "current.example", []);
+  const pages = [
+    {
+      type: "browser-page" as const,
+      sessionId: BrowserSessionIdSchema.parse(session.id),
+      tabId: BrowserSurfaceIdSchema.parse("tab-1"),
+      documentId: "document",
+      title: "Recorded title",
+      url: "https://recorded.example",
+    },
+  ];
+  expect(messagePages(pages, [session])[0]).toMatchObject({
+    title: "current.example",
+    site: "current.example",
+    favicon: null,
+    ended: false,
+  });
+  expect(messagePages(pages, [{ ...session, state: "closed" }])[0]).toMatchObject({
+    title: "Recorded title",
+    site: "recorded.example",
+    ended: true,
+  });
+});
 
 describe("liveWork", () => {
   it("keeps a finished task's open browser, as still open, beside the work under way", () => {
@@ -125,22 +224,20 @@ describe("liveWork", () => {
 describe("runPages", () => {
   const run = "run_00000000-0000-4000-8000-000000000001";
   const icon = "data:image/png;base64,iVBORw0KGgo=";
-  const twoTabs = (state: BrowserSessionSummary["state"]): BrowserSessionSummary => ({
-    ...browser(1, "amazon.com", [threadId(1)], state),
-    acting: true,
-    attachedRunIds: [run],
-    tabCatalog: {
-      generation: 1,
-      revision: 1,
-      tabs: ["tab-a", "tab-b"].map((id, order) => ({
+  const twoTabs = (state: BrowserSessionSummary["state"]): BrowserSessionSummary => {
+    const session = {
+      ...browser(1, "amazon.com", [threadId(1)], state),
+      acting: true,
+      attachedRunIds: [run],
+    };
+    return bind(
+      session,
+      ["tab-a", "tab-b"].map((id, order) => ({
+        ...rows(session)[0]!,
         id: BrowserSurfaceIdSchema.parse(id),
+        order,
         title: order === 0 ? "Amazon" : "Wayfair",
         site: order === 0 ? "https://amazon.com" : "https://wayfair.com",
-        iconRef: null,
-        order,
-        openerId: null,
-        availability: "ready" as const,
-        documentId: null,
         occupants:
           order === 0
             ? []
@@ -154,23 +251,21 @@ describe("runPages", () => {
                 },
               ],
       })),
-    },
-    tabs: [
-      {
-        active: false,
-        favicon: icon,
-        id: BrowserSurfaceIdSchema.parse("tab-a"),
-        title: "Amazon",
-        url: "https://amazon.com/",
-      },
-      {
-        active: true,
-        id: BrowserSurfaceIdSchema.parse("tab-b"),
-        title: "Wayfair",
-        url: "https://wayfair.com/",
-      },
-    ],
-  });
+      true,
+      (id) => ({
+        id: BrowserSurfaceIdSchema.parse(id),
+        state: "live",
+        title: id === "tab-a" ? "Amazon" : "Wayfair",
+        url: id === "tab-a" ? "https://amazon.com/" : "https://wayfair.com/",
+        favicon: id === "tab-a" ? icon : null,
+        documentId: "document",
+        geometryRevision: 1,
+        loading: false,
+        navigationFailed: false,
+        sizedByAgent: false,
+      }),
+    );
+  };
 
   const uses = [
     {
@@ -230,7 +325,7 @@ describe("runPages", () => {
     "ends a stop when %s",
     (state) => {
       const session = twoTabs(state === "closed" || state === "failed" ? state : "ready");
-      if (state === "tab-closed") session.tabCatalog = { ...session.tabCatalog!, tabs: [] };
+      if (state === "tab-closed") replace(session, []);
       expect(placePage(stop(), state === "missing" ? [] : [session], threadId(1))).toMatchObject({
         ended: true,
         acting: false,
@@ -252,7 +347,7 @@ describe("runPages", () => {
     const first = twoTabs("ready");
     const second = {
       ...first,
-      id: "second-session",
+      id: "bsn_00000000-0000-4000-8000-000000000002",
       createdAt: "2026-10-16",
       profileId: "profile-work",
     };
@@ -261,8 +356,8 @@ describe("runPages", () => {
     expect(pages.map((page) => page.key)).toEqual([
       `browser:${first.id}:tab-a`,
       `browser:${first.id}:tab-b`,
-      "browser:second-session:tab-a",
-      "browser:second-session:tab-b",
+      "browser:bsn_00000000-0000-4000-8000-000000000002:tab-a",
+      "browser:bsn_00000000-0000-4000-8000-000000000002:tab-b",
     ]);
     expect(pages.map((page) => page.acting)).toEqual([false, true, false, true]);
     expect(pages.map(surfaceDestination)).toEqual([
@@ -283,19 +378,17 @@ describe("runPages", () => {
 
   it("keeps popup pages beside their opener and trusts catalog removal over stale viewer tabs", () => {
     const original = twoTabs("ready");
-    const a = original.tabCatalog!.tabs[0]!;
-    const b = original.tabCatalog!.tabs[1]!;
+    const a = rows(original)[0]!;
+    const b = rows(original)[1]!;
     const popup = { ...b, id: BrowserSurfaceIdSchema.parse("popup"), order: 2, openerId: a.id };
-    const source = snapshot(
-      [],
-      [{ ...original, tabCatalog: { ...original.tabCatalog!, tabs: [b, popup, a] } }],
-    );
+    replace(original, [b, popup, a]);
+    const source = snapshot([], [original]);
     expect(
       conversationSurfaces(source, threadId(1))
         .map(surfaceDestination)
         .map((page) => page.kind === "browser" && page.tabId),
     ).toEqual(["tab-a", "popup", "tab-b"]);
-    source.browserSessions = [{ ...original, tabCatalog: { ...original.tabCatalog!, tabs: [] } }];
+    replace(original, []);
     expect(conversationSurfaces(source, threadId(1))).toEqual([]);
   });
 
@@ -333,15 +426,9 @@ describe("runPages", () => {
 
   it("keeps a missing tab open until the session's list is whole", () => {
     const session = twoTabs("ready");
-    const { tabCatalog: _incomplete, ...prefix } = session;
+    const prefix = bind(session, [], false);
     expect(runPages(uses, [prefix], [run]).every((page) => !page.ended)).toBe(true);
-    expect(
-      runPages(
-        uses,
-        [{ ...session, tabCatalog: { ...session.tabCatalog!, tabs: [] } }],
-        [run],
-      ).every((page) => page.ended),
-    ).toBe(true);
+    expect(runPages(uses, [bind(session, [])], [run]).every((page) => page.ended)).toBe(true);
   });
 
   it("marks only the tab the agent is in, not every page of its browser", () => {

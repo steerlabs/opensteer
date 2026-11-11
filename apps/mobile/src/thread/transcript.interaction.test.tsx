@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 
 import type { WebViewProps } from "react-native-webview";
 import { Linking } from "react-native";
@@ -818,7 +819,7 @@ describe("native page rail", () => {
         lastUsedAt: run.createdAt,
       },
     ];
-    const session: BrowserSessionSummary = {
+    const rawSession: BrowserSessionSummary = {
       ...original,
       attachedRunIds: [run.runId!],
       tabCatalog: {
@@ -833,6 +834,12 @@ describe("native page rail", () => {
         ],
       },
     };
+    const session = withBrowserTabStore({
+      ...client.getSnapshot(),
+      workspaceTabs: undefined,
+      workspaceTabRestoreVersion: undefined,
+      browserSessions: [rawSession],
+    }).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "stop",

@@ -1,3 +1,5 @@
+import { browserStoreFixture } from "../test-support/browser-snapshot.js";
+import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { createId, PlaceEnteredEventViewSchema, SequenceSchema } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
@@ -98,10 +100,13 @@ it("resolves a durable tab from its current ready catalog even while the saved r
   const tabId = event.data.place.surfaceId;
   const snapshot = {
     machines: [],
-    workspaceTabs: [{ tabs: [{ id: tabId, sessionId: original }] }],
+    browserTabs: browserStoreFixture(
+      [{ id: "group", sessionId: restored, state: "ready" } as BrowserGroupRow],
+      [{ groupId: "group", rows: [{ id: tabId, sessionId: restored }] as BrowserTabRow[] }],
+    ),
     browserSessions: [
-      { id: original, state: "closed", tabCatalog: { tabs: [] } },
-      { id: restored, state: "ready", tabCatalog: { tabs: [{ id: tabId }] } },
+      { id: original, state: "closed" },
+      { id: restored, state: "ready" },
     ],
   } as unknown as HostSnapshot;
   expect(runPlaceDestination(event, snapshot)).toEqual({
@@ -109,7 +114,9 @@ it("resolves a durable tab from its current ready catalog even while the saved r
     tabId,
     sessionId: restored,
   });
-  expect(runPlaceDestination(event, { ...snapshot, browserSessions: [] })).toEqual({
+  expect(
+    runPlaceDestination(event, { ...snapshot, browserSessions: [], browserTabs: undefined }),
+  ).toEqual({
     kind: "browser",
     tabId,
     sessionId: original,

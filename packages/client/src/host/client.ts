@@ -785,6 +785,7 @@ export interface WorkspaceTabLineage {
 }
 
 export interface BrowserSessionSummary {
+  readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
   navigationVersion?: 1 | undefined;
@@ -840,6 +841,8 @@ type HostSessionState = "authenticated" | "authentication-required" | "checking"
 export type ThreadLookupState = "failed" | "loading" | "missing";
 
 export interface HostSnapshot {
+  /** Live tab selectors, shared with HostClient.browserTabs. */
+  readonly browserTabs?: import("./browser-tab-store.js").BrowserTabStore;
   readonly openingAppTabs?: readonly string[];
   readonly appTabs?: readonly import("@opensteer/protocol").AppTab[];
   readonly appVersions?: Readonly<Record<string, number>>;

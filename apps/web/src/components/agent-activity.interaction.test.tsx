@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -789,7 +790,7 @@ describe("page rail", () => {
         lastUsedAt: run.createdAt,
       },
     ];
-    const session: BrowserSessionSummary = {
+    const rawSession: BrowserSessionSummary = {
       ...original,
       attachedRunIds: [run.runId!],
       tabCatalog: {
@@ -810,6 +811,12 @@ describe("page rail", () => {
         ],
       },
     };
+    const session = withBrowserTabStore({
+      ...client.getSnapshot(),
+      workspaceTabs: undefined,
+      workspaceTabRestoreVersion: undefined,
+      browserSessions: [rawSession],
+    }).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "first-stop",

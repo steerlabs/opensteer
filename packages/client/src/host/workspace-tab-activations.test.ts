@@ -1,3 +1,6 @@
+import { browserStoreFixture } from "../test-support/browser-snapshot.js";
+import { groupSession } from "./browser-snapshot.js";
+import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { afterEach, expect, it, vi } from "vitest";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
@@ -18,20 +21,28 @@ function fixture() {
       available: true,
     })),
   };
-  const group = snapshot.workspaceTabs!.find(
-    (value) =>
-      value.tabs?.length &&
-      snapshot.browserPlacements.some(
-        (placement) => placement.runnerId === value.session.placement.runnerId,
-      ),
-  )!;
-  const tabId = group.tabs![0]!.id;
+  const group = seed.browserTabs
+    .groups()
+    .ids.map((id) => seed.browserTabs.group(id)!)
+    .find(
+      (group) =>
+        seed.browserTabs.tabs(group.id).ids.length > 0 &&
+        snapshot.browserPlacements.some(
+          (placement) => placement.runnerId === group.placement.runnerId,
+        ),
+    )!;
+  const rows = seed.browserTabs.sessionTabs(group.sessionId);
+  const tabId = rows[0]!.id;
+  snapshot = {
+    ...snapshot,
+    browserTabs: browserStoreFixture([group], [{ groupId: group.id, rows }]),
+  };
   const result: Result = {
     type: "workspace.tab.activate",
     tabId,
     groupId: group.id,
-    sessionId: group.session.id,
-    session: group.session,
+    sessionId: group.sessionId,
+    session: groupSession(group),
   };
   seed.dispose();
   const listeners = new Set<() => void>();
@@ -58,10 +69,26 @@ function fixture() {
     dispatch,
     error,
     group,
+    rows,
+    store: () => snapshot.browserTabs!,
     result,
     tabId,
-    publish(patch: Partial<HostSnapshot> = {}) {
-      snapshot = { ...snapshot, ...patch };
+    publish(
+      patch: Partial<HostSnapshot> & {
+        groups?: readonly BrowserGroupRow[];
+        rows?: readonly BrowserTabRow[];
+        whole?: boolean;
+      } = {},
+    ) {
+      const { groups, rows: nextRows, whole = true, ...metadata } = patch;
+      snapshot = { ...snapshot, ...metadata };
+      if (groups || nextRows)
+        snapshot = {
+          ...snapshot,
+          browserTabs: browserStoreFixture(groups ?? [group], [
+            { groupId: group.id, rows: nextRows ?? rows, complete: whole },
+          ]),
+        };
       for (const listener of listeners) listener();
     },
   };
@@ -75,14 +102,8 @@ it("remembers a failed opening across snapshot churn until a new opening starts"
     const sessionId = createBrowserSessionId();
     f.publish({
       connection: revision % 2 === 0 ? "connected" : "offline",
-      workspaceTabs: [
-        {
-          ...f.group,
-          revision: f.group.revision + revision,
-          session: { ...f.group.session, id: sessionId },
-          tabs: f.group.tabs!.map((tab) => ({ ...tab, sessionId })),
-        },
-      ],
+      groups: [{ ...f.group, sessionId }],
+      rows: f.rows.map((tab) => ({ ...tab, sessionId })),
     });
     await expect(f.activations.activate(f.tabId, { opening: "selected" })).rejects.toBe(f.error);
   }
@@ -131,14 +152,32 @@ it("forgets closed tabs but retains failure across omitted lineages and missing 
   const f = fixture();
   const first = f.activations.activate(f.tabId, { opening: "selected" });
   await expect(first).rejects.toBe(f.error);
-  f.publish({ workspaceTabs: [] });
+  f.publish({ groups: [] });
   expect(f.activations.activate(f.tabId, { opening: "selected" })).toBe(first);
-  const { tabs: _tabs, ...bounded } = f.group;
-  f.publish({ workspaceTabs: [bounded] });
+  f.publish({ groups: [f.group], rows: [], whole: false });
   expect(f.activations.activate(f.tabId, { opening: "selected" })).toBe(first);
   expect(f.dispatch).toHaveBeenCalledTimes(1);
-  f.publish({ workspaceTabs: [{ ...f.group, tabs: [] }] });
-  f.publish({ workspaceTabs: [f.group] });
+  f.publish({ groups: [f.group], rows: [] });
+  f.publish({ groups: [f.group], rows: f.rows });
   await expect(f.activations.activate(f.tabId, { opening: "selected" })).rejects.toBe(f.error);
   expect(f.dispatch).toHaveBeenCalledTimes(2);
+});
+
+it("activates a sleeping keyed tab and retains committed membership through an interrupted resync", async () => {
+  const f = fixture();
+  f.publish({ rows: f.rows.map((tab) => ({ ...tab, state: "suspended", documentId: null })) });
+  const request = Promise.withResolvers<Result>();
+  f.dispatch.mockReturnValueOnce(request.promise);
+  const activated = f.activations.activate(f.tabId);
+  expect(f.dispatch).toHaveBeenCalledTimes(1);
+  const store = f.store();
+  const ids = store.tabs(f.group.id).ids;
+  store.applyTabs(f.group.id, { op: "begin", generation: "interrupted" });
+  store.applyTabs(f.group.id, { op: "rows", rows: [] });
+  store.disconnected();
+  f.publish();
+  expect(store.tabs(f.group.id).ids).toBe(ids);
+  expect(f.activations.ids).toEqual([f.tabId]);
+  request.resolve(f.result);
+  await expect(activated).resolves.toBe(f.result);
 });

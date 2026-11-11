@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -12,7 +13,8 @@ import {
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { type LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
-import type { BrowserSessionSummary } from "../packages/client/src/host/client.js";
+import { withBrowserTabStore } from "../packages/client/src/test-support/browser-snapshot.js";
+import type { BrowserSessionSummary, HostSnapshot } from "../packages/client/src/host/client.js";
 import {
   HttpHostClient,
   type WebSocketClient,
@@ -47,7 +49,138 @@ import {
   type ViewerEntry,
 } from "./browser-sessions.test-support.js";
 
+function holdAdmittedTabOpen(
+  store: Awaited<ReturnType<typeof deployment>>["host"]["store"],
+  idempotencyKey: string,
+) {
+  const admitted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const bind = store.bindBrowserTabOpen.bind(store);
+  const spy = vi.spyOn(store, "bindBrowserTabOpen").mockImplementation(async (input) => {
+    const result = await bind(input);
+    if (input.binding.idempotencyKey === idempotencyKey) {
+      admitted.resolve();
+      await withTimeout(release.promise, 5_000, {
+        timeoutError: () => new Error("The admitted tab open was not released"),
+      });
+    }
+    return result;
+  });
+  return {
+    waitForAdmission: () =>
+      withTimeout(admitted.promise, 5_000, {
+        timeoutError: () => new Error("The tab open was not admitted"),
+      }),
+    release: () => release.resolve(),
+    restore: () => spy.mockRestore(),
+  };
+}
+
 run("Browser Sessions through a whole deployment", () => {
+  it.each(["close-before-admission", "admitted-before-close", "open-before-close"] as const)(
+    "verifies the explicit %s tab interleaving without losing or resurrecting durable rows",
+    async (order) => {
+      const browser = await startBrowser();
+      addCleanup("interleaving Browser Runtime", () => browser.close());
+      const stack = await deployment(browser);
+      await browserAvailable(stack);
+      const owner = await stack.host.store.firstUser();
+      if (!owner) throw new Error("Missing owner");
+      const sessionId = BrowserSessionIdSchema.parse(
+        await startPersonBrowser(stack, { viewport: { height: 700, width: 1000 } }),
+      );
+      const initial = await browserInventory(stack, sessionId);
+      expect(initial.tabs).toHaveLength(1);
+      const command = {
+        type: "browser.tab.open" as const,
+        sessionId,
+        idempotencyKey: randomUUID(),
+      };
+      const close = () =>
+        stack.api["commands.dispatch"]({
+          type: "browser.tab.close",
+          sessionId,
+          surfaceId: initial.tabs[0]!.id,
+          inventoryRevision: initial.inventoryRevision,
+          idempotencyKey: randomUUID(),
+        });
+      const barrier =
+        order === "admitted-before-close"
+          ? holdAdmittedTabOpen(stack.host.store, command.idempotencyKey)
+          : null;
+      let opening: Awaited<ReturnType<(typeof stack.api)["commands.dispatch"]>>;
+      let closing: Awaited<ReturnType<typeof close>>;
+      try {
+        if (order === "close-before-admission") {
+          closing = await close();
+          opening = await stack.api["commands.dispatch"](command);
+        } else if (order === "admitted-before-close") {
+          const pending = stack.api["commands.dispatch"](command);
+          await barrier!.waitForAdmission();
+          closing = await close();
+          barrier!.release();
+          opening = await pending;
+        } else {
+          opening = await stack.api["commands.dispatch"](command);
+          closing = await close();
+        }
+      } finally {
+        barrier?.release();
+        barrier?.restore();
+      }
+      const replay = await stack.api["commands.dispatch"](command);
+      const record = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
+      const rows = await stack.host.store.database
+        .selectFrom("workspaceTabs")
+        .select(["id", "closedAt", "state"])
+        .where("sessionId", "=", sessionId)
+        .orderBy("id")
+        .execute();
+      const binding = await stack.host.store.getBrowserTabOpen(owner.id, command.idempotencyKey);
+      if (order === "open-before-close") {
+        expect(opening).toMatchObject({ ok: true, data: { type: "browser.tab.open" } });
+        expect(closing).toMatchObject({ ok: false, error: { reason: "stale-tab-inventory" } });
+        expect(record?.state).toBe("ready");
+        expect(rows).toHaveLength(2);
+        if (!opening.ok || opening.data.type !== "browser.tab.open")
+          throw new Error("The ordered open did not succeed");
+        expect(rows.map((row) => row.id)).toEqual([initial.tabs[0]!.id, opening.data.tabId].sort());
+        expect(rows.every((row) => row.closedAt === null && row.state === "live")).toBe(true);
+        const inventory = await browserInventory(stack, sessionId);
+        expect(inventory.tabs.map((tab) => tab.id).sort()).toEqual(rows.map((row) => row.id));
+        expect(binding?.outcome.kind).toBe("opened");
+      } else {
+        expect(closing).toMatchObject({ ok: true, data: { outcome: "session-closed" } });
+        expect(opening).toMatchObject({
+          ok: false,
+          error: {
+            reason:
+              order === "close-before-admission"
+                ? "browser-session-closed"
+                : "browser-tab-open-failed",
+          },
+        });
+        expect(record?.state).toBe("closed");
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.id).toBe(initial.tabs[0]!.id);
+        expect(rows[0]!.closedAt).not.toBeNull();
+        expect(binding?.outcome.kind).toBe(
+          order === "close-before-admission" ? undefined : "failed",
+        );
+        await vi.waitFor(() => expect(browser.health().sessionCount).toBe(0), { timeout: 5_000 });
+      }
+      expect(replay).toEqual(opening);
+      expect(
+        await stack.host.store.database
+          .selectFrom("workspaceTabs")
+          .select(["id", "closedAt", "state"])
+          .where("sessionId", "=", sessionId)
+          .orderBy("id")
+          .execute(),
+      ).toEqual(rows);
+    },
+  );
+
   it("opens authoritative tabs without a viewer, replays keys, and fences last-tab close", async () => {
     const browser = await startBrowser();
     addCleanup("local Browser Runtime", () => browser.close());
@@ -145,16 +278,28 @@ run("Browser Sessions through a whole deployment", () => {
     await stack.host.browser.stop(owner.id, urlSessionId);
     const afterClose = await browserInventory(stack, sessionId);
     const last = afterClose.tabs[0]!;
-    const race = await Promise.all([
-      stack.api["commands.dispatch"]({
-        type: "browser.tab.close",
-        sessionId,
-        surfaceId: last.id,
-        inventoryRevision: afterClose.inventoryRevision,
-        idempotencyKey: randomUUID(),
-      }),
-      stack.api["commands.dispatch"]({ ...command, idempotencyKey: randomUUID() }),
-    ]);
+    // Keep the open admitted but not sent to the Runtime when last-tab close wins.
+    const raceKey = randomUUID();
+    const barrier = holdAdmittedTabOpen(stack.host.store, raceKey);
+    const openingRequest = stack.api["commands.dispatch"]({ ...command, idempotencyKey: raceKey });
+    const racingClose = async () => {
+      await barrier.waitForAdmission();
+      try {
+        return await stack.api["commands.dispatch"]({
+          type: "browser.tab.close",
+          sessionId,
+          surfaceId: last.id,
+          inventoryRevision: afterClose.inventoryRevision,
+          idempotencyKey: randomUUID(),
+        });
+      } finally {
+        barrier.release();
+      }
+    };
+    const race = await Promise.all([racingClose(), openingRequest]).finally(() => {
+      barrier.release();
+      barrier.restore();
+    });
     const closing = race[0];
     const opening = race[1];
     if (
@@ -239,22 +384,24 @@ run("Browser Sessions through a whole deployment", () => {
     await until("its page's response is held open", tabId, true);
     // The sidebar's place list reads exactly that field.
     const read = await catalog();
-    const listed = placeList({
-      browserSessions: [
-        {
-          createdAt: new Date().toISOString(),
-          id: sessionId,
-          profileId: null,
-          placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
-          state: "ready",
-          tabCatalog: read,
-          tabs: [],
-        } as unknown as BrowserSessionSummary,
-      ],
-      browserProfiles: [],
-      browserPlacements: [],
-      machines: [],
-    });
+    const listed = placeList(
+      withBrowserTabStore({
+        browserSessions: [
+          {
+            createdAt: new Date().toISOString(),
+            id: sessionId,
+            profileId: null,
+            placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
+            state: "ready",
+            tabCatalog: read,
+            tabs: [],
+          } as unknown as BrowserSessionSummary,
+        ],
+        browserProfiles: [],
+        browserPlacements: [],
+        machines: [],
+      } as unknown as HostSnapshot),
+    );
     expect(listed.find((place) => place.key === `browser:${sessionId}:${tabId}`)?.loading).toBe(
       true,
     );

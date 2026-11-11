@@ -36,6 +36,10 @@ export class BrowserSnapshotDerivation {
       durable: NonNullable<WorkspaceTabLineage["tabs"]>;
     }
   >();
+  #previous: Pick<HostSnapshot, "browserSessions" | "workspaceTabs"> = {
+    browserSessions: [],
+    workspaceTabs: [],
+  };
   readonly #sessions = new WeakMap<BrowserGroupRow, ReturnType<typeof groupSession>>();
 
   #session(group: BrowserGroupRow) {
@@ -98,12 +102,17 @@ export class BrowserSnapshotDerivation {
     return projected;
   }
   derive(
-    snapshot: Pick<HostSnapshot, "browserSessions" | "workspaceTabs">,
+    _snapshot: Pick<HostSnapshot, "browserSessions" | "workspaceTabs">,
     store: BrowserTabStore,
     surface: (sessionId: string, surfaceId: string) => BrowserViewerSurface | undefined = () =>
       undefined,
-  ): Pick<HostSnapshot, "browserSessions" | "workspaceTabs" | "workspaceTabRestoreVersion"> {
+  ): Pick<
+    HostSnapshot,
+    "browserSessions" | "workspaceTabs" | "workspaceTabRestoreVersion" | "browserTabs"
+  > {
+    const snapshot = this.#previous;
     const heldSessions = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
+    const statuses = new Map(_snapshot.browserSessions.map((session) => [session.id, session]));
     const heldGroups = new Map<string, WorkspaceTabLineage>(
       snapshot.workspaceTabs?.map((group) => [group.id, group]),
     );
@@ -112,6 +121,7 @@ export class BrowserSnapshotDerivation {
     for (const id of store.groups().ids) {
       const group = store.group(id)!;
       const previous = heldSessions.get(group.sessionId);
+      const status = statuses.get(group.sessionId);
       const heldGroup = heldGroups.get(id);
       const session = this.#session(group);
       const list = store.tabs(id);
@@ -162,17 +172,18 @@ export class BrowserSnapshotDerivation {
       browserSessions.push(
         same(previous, {
           ...session,
+          browserTabs: store,
           opener: group.opener,
           ...(tabCatalog ? { tabCatalog } : {}),
-          dialog: terminal ? null : (previous?.dialog ?? null),
-          error: previous?.error ?? null,
+          dialog: terminal ? null : (status?.dialog ?? null),
+          error: status?.error ?? null,
           tabs,
-          viewerError: terminal ? null : (previous?.viewerError ?? null),
-          viewerState: terminal ? "disconnected" : (previous?.viewerState ?? "disconnected"),
-          watchViewerError: terminal ? null : (previous?.watchViewerError ?? null),
+          viewerError: terminal ? null : (status?.viewerError ?? null),
+          viewerState: terminal ? "disconnected" : (status?.viewerState ?? "disconnected"),
+          watchViewerError: terminal ? null : (status?.watchViewerError ?? null),
           watchViewerState: terminal
             ? "disconnected"
-            : (previous?.watchViewerState ?? "disconnected"),
+            : (status?.watchViewerState ?? "disconnected"),
         }),
       );
       workspaceTabs.push(
@@ -189,15 +200,18 @@ export class BrowserSnapshotDerivation {
     }
     const ids = new Set(store.groups().ids);
     for (const id of this.#groups.keys()) if (!ids.has(id)) this.#groups.delete(id);
-    return {
-      workspaceTabRestoreVersion: 1,
+    const result = {
+      browserTabs: store,
+      workspaceTabRestoreVersion: 1 as const,
       browserSessions: shared(snapshot.browserSessions, browserSessions),
       workspaceTabs: shared(snapshot.workspaceTabs, workspaceTabs),
     };
+    this.#previous = result;
+    return result;
   }
 }
 
-function groupSession(group: BrowserGroupRow) {
+export function groupSession(group: BrowserGroupRow) {
   return {
     id: group.sessionId,
     access: group.access,
@@ -217,4 +231,45 @@ function groupSession(group: BrowserGroupRow) {
     ...(group.navigation ? { navigationVersion: 1 as const } : {}),
     workspaceTabRestoreVersion: 1 as const,
   };
+}
+
+const lineages = new WeakMap<
+  BrowserTabStore,
+  WeakMap<BrowserGroupRow, { revision: number; value: WorkspaceTabLineage }>
+>();
+
+/** Materialize only for callers explicitly requesting a complete lineage. */
+export function workspaceTabLineage(
+  store: BrowserTabStore,
+  id: string,
+): WorkspaceTabLineage | null {
+  const group = store.group(id);
+  if (!group) return null;
+  let held = lineages.get(store);
+  if (!held) lineages.set(store, (held = new WeakMap()));
+  const revision = store.tabRevision(id);
+  const previous = held.get(group);
+  if (previous?.revision === revision) return previous.value;
+  const value: WorkspaceTabLineage = {
+    id: group.id,
+    revision: group.inventoryRevision,
+    createdAt: group.createdAt,
+    unavailableReason: group.unavailableReason ?? undefined,
+    session: groupSession(group),
+    whole: store.tabs(id).whole,
+    tabs: store.sessionTabs(group.sessionId).map((tab) => ({
+      kind: "browser",
+      id: tab.id,
+      sessionId: tab.sessionId,
+      title: tab.title,
+      site: tab.site,
+      iconRef: tab.iconRef,
+      order: tab.order,
+      openerId: tab.openerId,
+      state: tab.state,
+      createdAt: tab.createdAt,
+    })),
+  };
+  held.set(group, { revision, value });
+  return value;
 }

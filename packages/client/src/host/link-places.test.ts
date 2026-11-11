@@ -1,3 +1,5 @@
+import { browserStoreFixture } from "../test-support/browser-snapshot.js";
+import type { BrowserGroupRow } from "@opensteer/protocol/browser-tabs";
 import type { MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
@@ -51,7 +53,6 @@ function world(overrides: Partial<Source> = {}): Source {
     ],
     browserSessions: [],
     machines: [machine(studio, "Studio Mac"), machine(mini, "Mac mini"), machine(phone, "iPhone")],
-    workspaceTabs: [],
     ...overrides,
   };
 }
@@ -107,7 +108,16 @@ describe("recentProfileOn", () => {
     const tied = world({ browserSessions: [session(phone, "bpr_shopping", at)] });
     const saved = {
       ...tied,
-      workspaceTabs: [{ session: session(phone, "bpr_bank", at) }],
+      browserTabs: browserStoreFixture(
+        [
+          {
+            ...session(phone, "bpr_bank", at),
+            sessionId: "saved",
+            id: "saved",
+          } as unknown as BrowserGroupRow,
+        ],
+        [],
+      ),
     } as unknown as Source;
     expect(recentProfileOn(saved, phone)).toBe("bpr_bank");
   });

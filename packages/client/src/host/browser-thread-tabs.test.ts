@@ -1,7 +1,11 @@
 import type { PlaceOccupant } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema, ThreadIdSchema } from "@opensteer/core";
-import type { BrowserCatalogTab as BrowserTabSummary } from "./client.js";
+import type {
+  BrowserTabRow as BrowserTabSummary,
+  BrowserGroupRow,
+} from "@opensteer/protocol/browser-tabs";
+import { browserStoreFixture } from "../test-support/browser-snapshot.js";
 import type { BrowserSessionSummary, PlaceEntry } from "./client.js";
 import { browserThreadAgentTab, browserThreadTabs } from "./browser-thread-tabs.js";
 
@@ -26,10 +30,20 @@ const tab = (id: string, order: number, occupants: PlaceOccupant[] = []): Browse
   openerId: null,
   documentId: null,
   availability: "ready",
+  loading: false,
+  navigationFailed: false,
+  canGoBack: false,
+  canGoForward: false,
+  sessionId,
+  createdAt: "2026-01-01",
+  state: "live",
 });
-const session = (tabs: BrowserTabSummary[]): Pick<BrowserSessionSummary, "id" | "tabCatalog"> => ({
+const session = (tabs: BrowserTabSummary[]): Pick<BrowserSessionSummary, "id" | "browserTabs"> => ({
   id: sessionId,
-  tabCatalog: { tabs, generation: 1, revision: 1 },
+  browserTabs: browserStoreFixture(
+    [{ id: sessionId, sessionId, createdAt: "2026-01-01" } as BrowserGroupRow],
+    [{ groupId: sessionId, rows: tabs }],
+  ),
 });
 const place = (id: string): PlaceEntry => ({
   id,

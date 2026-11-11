@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { act } from "react";
 
@@ -996,6 +997,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
                 : lineage,
             ),
           };
+          changed = withBrowserTabStore(changed);
           seen.set(snapshot, changed);
         }
         return changed;

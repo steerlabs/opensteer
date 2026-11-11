@@ -1,4 +1,5 @@
 import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
@@ -1088,7 +1089,7 @@ const connectingWatch = { error: null, frame: null, status: "connecting" } as co
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
 function fakeHost(initial: HostSnapshot) {
-  let snapshot = initial;
+  let snapshot = withBrowserTabStore(initial);
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
@@ -1102,7 +1103,7 @@ function fakeHost(initial: HostSnapshot) {
   const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
-    snapshot = earlierPage;
+    snapshot = withBrowserTabStore(earlierPage);
     earlierPage = null;
     for (const listener of listeners) listener();
   });
@@ -1130,6 +1131,9 @@ function fakeHost(initial: HostSnapshot) {
     subscribeBrowserWatch: () => () => undefined,
     subscribeLatestPlace: () => () => undefined,
     dispatch,
+    get browserTabs() {
+      return snapshot.browserTabs!;
+    },
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
@@ -1166,7 +1170,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadTranscriptAround,
     move(next: HostSnapshot) {
-      snapshot = next;
+      snapshot = withBrowserTabStore(next);
       act(() => {
         for (const listener of listeners) listener();
       });

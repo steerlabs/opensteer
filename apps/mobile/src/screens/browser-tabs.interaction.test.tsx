@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -13,7 +14,7 @@ const occupant = (acting: boolean) => ({
   lastActiveAt: "2026-11-01T10:00:00.000Z",
   threadId: "thread-trip",
 });
-const snapshot = {
+const rawSnapshot = {
   activeTasks: [],
   homeThreadId: "home",
   tasks: null,
@@ -48,6 +49,7 @@ const snapshot = {
     },
   ],
 } as unknown as HostSnapshot;
+const snapshot = withBrowserTabStore(rawSnapshot);
 vi.mock("@opensteer/client/react", () => ({
   useHostSelector: (_: unknown, select: (value: HostSnapshot) => unknown) => select(snapshot),
   usePlaceList: () => [

@@ -1,7 +1,7 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
 import { BrowserTabStore } from "./browser-tab-store.js";
-import { BrowserSnapshotDerivation } from "./browser-snapshot.js";
+import { BrowserSnapshotDerivation, workspaceTabLineage } from "./browser-snapshot.js";
 import { hostDeploymentPolicy } from "./deployment-policy.js";
 import { AppTabSchema } from "@opensteer/protocol";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
@@ -493,8 +493,16 @@ export class HttpHostClient {
   #browserCarrier: WorkspaceChannel | null = null;
   #browserContinuation: string | undefined;
   readonly #browserWaiters = new Set<() => void>();
-  readonly #browserTabs = new BrowserTabStore((groupId) => this.#resyncBrowser(groupId));
+  readonly #browserTabs = new BrowserTabStore(
+    (groupId) => this.#resyncBrowser(groupId),
+    (sessionId, tabId) =>
+      this.#targetedControl.surface(sessionId, tabId) ??
+      this.#targetedWatch.surface(sessionId, tabId),
+  );
   readonly browserTabs = this.#browserTabs;
+  #browserStructure: ReturnType<BrowserTabStore["structure"]> = [];
+  #browserRevision = -1;
+  #browserTabIds = new Map<string, readonly string[]>();
   readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
@@ -697,11 +705,9 @@ export class HttpHostClient {
         this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
       return groupId ? this.#browserTabs.tabs(groupId).whole : this.#browserTabs.groups().whole;
     });
-    return (
-      this.#snapshot.workspaceTabs?.find(
-        (group) => group.id === sessionId || group.session.id === sessionId,
-      ) ?? null
-    );
+    const groupId =
+      this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
+    return groupId ? workspaceTabLineage(this.#browserTabs, groupId) : null;
   }
 
   readonly #workspaceTabActivations: WorkspaceTabActivations;
@@ -994,7 +1000,7 @@ export class HttpHostClient {
       this.rpc,
       (browserTabGroups) => this.#update({ ...this.#snapshot, browserTabGroups }),
       () => this.#viewer.generation,
-      () => browserTabOrderTabs(this.#snapshot.workspaceTabs),
+      () => browserTabOrderTabs(this.browserTabs),
     );
     this.#random = options.random ?? Math.random;
     this.#livenessIdleMs = Math.max(1, options.realtimeLiveness?.idleMs ?? realtimeIdleProbeMs);
@@ -5674,15 +5680,25 @@ export class HttpHostClient {
             this.#targetedWatch.surface(sessionId, surfaceId),
         ),
       };
-    const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
-    const closedBrowserTabs = workspaceTabsChanged
-      ? (this.#snapshot.workspaceTabs ?? []).flatMap((previous) => {
-          const current = snapshot.workspaceTabs?.find((group) => group.id === previous.id);
-          if (!current?.whole || current.tabs === previous.tabs) return [];
-          const open = new Set(current.tabs?.map((tab) => tab.id));
-          return previous.tabs?.flatMap((tab) => (open.has(tab.id) ? [] : [tab.id])) ?? [];
-        })
-      : [];
+    const structure = this.#browserTabs.structure();
+    const workspaceTabsChanged = structure !== this.#browserStructure;
+    const browserTabsChanged = this.#browserRevision !== this.#browserTabs.revision;
+    const closedBrowserTabs: string[] = [];
+    if (workspaceTabsChanged) {
+      const tabIds = new Map<string, readonly string[]>();
+      for (const groupId of this.#browserTabs.groups().ids) {
+        const list = this.#browserTabs.tabs(groupId);
+        const previous = this.#browserTabIds.get(groupId);
+        tabIds.set(groupId, list.ids);
+        if (list.whole && previous && previous !== list.ids) {
+          const open = new Set(list.ids);
+          for (const id of previous) if (!open.has(id)) closedBrowserTabs.push(id);
+        }
+      }
+      this.#browserTabIds = tabIds;
+    }
+    this.#browserStructure = structure;
+    this.#browserRevision = this.#browserTabs.revision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
       for (const check of this.#browserWaiters) check();
@@ -5724,7 +5740,7 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        snapshot.workspaceTabs !== this.#snapshot.workspaceTabs ||
+        browserTabsChanged ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
@@ -5796,9 +5812,12 @@ export class HttpHostClient {
         browserSessions: snapshot.browserSessions.filter(
           ({ workspaceId }) => !this.#forbiddenWorkspaces.has(workspaceId),
         ),
-        workspaceTabs: snapshot.workspaceTabs?.filter(
-          ({ session }) => !this.#forbiddenWorkspaces.has(session.workspaceId),
-        ),
+        workspaceTabs: this.#browserTabs.groups().ids.flatMap((id) => {
+          const group = this.#browserTabs.group(id)!;
+          return this.#forbiddenWorkspaces.has(group.workspaceId)
+            ? []
+            : [workspaceTabLineage(this.#browserTabs, id)!];
+        }),
         homeThreadId: deniedHome ? null : snapshot.homeThreadId,
         homeWorkspaceId: deniedHome ? null : snapshot.homeWorkspaceId,
         inputQueues: Object.fromEntries(Object.entries(snapshot.inputQueues).filter(retainThread)),
