@@ -50,6 +50,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@opensteer/browser-runtime-core": "workspace:*",
     "@types/pg": "catalog:",
     "pg": "catalog:",
     "@opensteer/agent-phone-setup": "workspace:*",

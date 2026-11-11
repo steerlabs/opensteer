@@ -99,7 +99,7 @@ export const browser_tab_read = defineAgentTool({
   name: "browser_tab_read",
   title: "Find saved tabs",
   description:
-    "Find open/asleep saved tabs and groups. Returns tabs, reachable groups/tabCount and nextCursor; keep query when paging. tabId is Browser Harness surfaceId; null profileId means Guest. Groups grant no access.",
+    "Find open/asleep saved tabs and groups. Returns tabs, reachable groups/tabCount and nextCursor; keep query when paging. tabId is Browser Harness surfaceId. An asleep tab with sessionId resumes via --tab tabId; with null sessionId, restore it first. A sleeping page may reload: observe again and discard old handles. null profileId means Guest. Groups grant no access.",
   input: BrowserTabReadInputSchema,
   output: BrowserTabReadOutputSchema,
   access: "read",

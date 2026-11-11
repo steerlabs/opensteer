@@ -1,3 +1,13 @@
+import { BrowserRuntime } from "@opensteer/browser-runtime-core";
+import {
+  FakeContext,
+  FakePage,
+  FakeLaunchedBrowser,
+  FakeLauncher,
+  FakeTicketVerifier,
+  FakeSink,
+  testSessionFilesRoot,
+} from "@opensteer/browser-runtime-core/test-support";
 import { KeyedStreamPublisher } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserTabRecordSchema,
@@ -81,6 +91,7 @@ const eligibleRunners = new Map<RunnerId, string>();
  * belongs to a Runner now, so even the simplest case names a machine.
  */
 function runnerTarget(options: {
+  readonly surfaceState?: boolean | undefined;
   readonly initialPageMismatch?: boolean;
   readonly navigationVersion?: boolean;
   readonly navigationAttributionVersion?: boolean;
@@ -148,6 +159,7 @@ function runnerTarget(options: {
             passkeys: options.passkeys === true,
             personFill: options.personFill === true,
             cdpBoundary: true,
+            surfaceState: options.surfaceState ? 1 : undefined,
             workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
             sharedControl: options.sharedControl ?? true,
             editing: options.editing === true ? 1 : options.editing || undefined,
@@ -5673,6 +5685,8 @@ describe("BrowserService", () => {
 });
 
 function freshService(options: {
+  readonly surfaceState?: boolean | undefined;
+  readonly workspaceTabRestoreVersion?: boolean;
   readonly history?: BrowserHistoryStore;
   readonly navigationAttribution?: boolean;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
@@ -5718,6 +5732,8 @@ function freshService(options: {
     }),
     targetResolver: runnerTarget({
       url: options.runtime.url,
+      surfaceState: options.surfaceState,
+      workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
       navigationAttributionVersion: options.navigationAttribution ?? options.history !== undefined,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
@@ -6301,7 +6317,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
   }
 
   async listActiveBrowserProfileGrantsForWorkspace(workspaceId: WorkspaceId, ownerId: UserId) {
-    return workspaceId === this.#workspaceId && ownerId === this.#ownerId && this.#grant
+    return workspaceId === this.#grant?.workspaceId && ownerId === this.#ownerId && this.#grant
       ? [this.#grant]
       : [];
   }
@@ -6580,6 +6596,7 @@ async function startFakeRuntime(
   publicKey: CryptoKeyLike,
   keyId: string,
   options: {
+    readonly core?: { runtime: BrowserRuntime; verifier: FakeTicketVerifier; sink: FakeSink };
     readonly beforeInitialSnapshot?: readonly Record<string, unknown>[];
     readonly deferInitialSnapshot?: boolean;
     readonly initialTabCount?: number;
@@ -6742,6 +6759,29 @@ async function startFakeRuntime(
     }
     const claims = verifyTicket(authorization.slice(7), publicKey, keyId);
     latestClaims = claims;
+    if (options.core) {
+      const { runtime, verifier, sink } = options.core;
+      verifier.claims = { ...claims, initialSurfaceId: BrowserSurfaceIdSchema.parse("page-1") };
+      sink.sendServerImplementation = async (message) => {
+        socket.send(JSON.stringify(message));
+      };
+      const attached = runtime.attach(authorization.slice(7), sink);
+      let tail = Promise.resolve();
+      socket.on("message", (raw, isBinary) => {
+        if (isBinary) return;
+        const command = JSON.parse(raw.toString()) as Record<string, unknown>;
+        tail = tail.then(async () => {
+          await (await attached).handle(raw.toString());
+          receivedCommands.push(command);
+        });
+        void tail.catch(() => socket.close(1011, "Test runtime command failed"));
+      });
+      socket.once("close", () => {
+        void attached.then((a) => a.close());
+      });
+      void attached.catch(() => socket.close(1011, "Test runtime attach failed"));
+      return;
+    }
     if (claims.initialNavigation?.url) {
       const navigation = {
         type: "cdp.command",
@@ -6769,6 +6809,7 @@ async function startFakeRuntime(
           ...(claims.navigationAttributionVersion === 1 && options.navigationAttribution !== false
             ? { navigationAttributionVersion: 1 }
             : {}),
+          ...(claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
           ...(claims.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
           ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
@@ -7699,4 +7740,426 @@ it("resynchronizes an initial tab gap before announcing readiness", async () => 
     surfaces: [{ id: "page-1", active: true, title: "Example", url: "about:blank" }],
   });
   expect(await starting).toMatchObject({ result: { session: { state: "ready" } } });
+});
+
+it("sends authoritative sleep state after commit and keeps two viewers and Watch independent of Run holds", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const service = freshService({
+    keys,
+    runtime,
+    repository,
+    surfaceState: true,
+    targetControl: true,
+  });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "sleep-run",
+    fresh: true,
+  });
+  const sessionId = opened.session.id;
+  const lastState = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  await vi.waitFor(() =>
+    expect(lastState()).toEqual({ type: "session.state", runs: 1, viewed: [], pinned: [] }),
+  );
+  const harness = await service.attachCdpForAgent(
+    { ownerId, workspaceId, agentBindingId: "sleep-run", sessionId },
+    () => undefined,
+  );
+  harness.close();
+  const attach = async (id: string, mode: "control" | "watch", frames = true) => {
+    const viewer = await service.attach(ownerId, sessionId, new RecordingPeer(id), {
+      ...consumerOptions(),
+      mode,
+    });
+    await viewer.handle(
+      Buffer.from(
+        JSON.stringify({
+          type: "stream.subscribe",
+          surfaceId: "page-1",
+          ...(frames ? {} : { frames: false }),
+        }),
+      ),
+      false,
+    );
+    return viewer;
+  };
+  const one = await attach("one", "control", false);
+  const two = await attach("two", "control");
+  const watch = await attach("watch", "watch");
+  await vi.waitFor(() =>
+    expect(lastState()).toMatchObject({ runs: 1, viewed: ["page-1"], pinned: ["page-1"] }),
+  );
+  await service.detachAgentSessionsForBinding("sleep-run");
+  await vi.waitFor(() =>
+    expect(lastState()).toMatchObject({ runs: 0, viewed: ["page-1"], pinned: ["page-1"] }),
+  );
+  one.close();
+  await two.handle(
+    Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1", frames: false })),
+    false,
+  );
+  await vi.waitFor(() => expect(lastState()).toMatchObject({ viewed: ["page-1"] }));
+  await two.handle(Buffer.from(JSON.stringify({ type: "stream.unsubscribe" })), false);
+  await vi.waitFor(() =>
+    expect(lastState()).toMatchObject({ runs: 0, viewed: [], pinned: ["page-1"] }),
+  );
+  watch.close();
+  await vi.waitFor(() => expect(lastState()).toMatchObject({ runs: 0, viewed: [], pinned: [] }));
+  two.close();
+});
+
+it("admits paged listing and exact resume only inside an agent's own session", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const service = freshService({ keys, runtime, repository, surfaceState: true });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "sleep-run",
+    fresh: true,
+  });
+  const cdp = await service.attachCdpForAgent(
+    { ownerId, workspaceId, agentBindingId: "sleep-run", sessionId: opened.session.id },
+    () => undefined,
+  );
+  await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "other-holding-run",
+    sessionId: opened.session.id,
+  });
+  runtime.publishTabs({
+    surfaces: [{ id: "page-1", active: true, state: "suspended", title: "Sleeping" }],
+  });
+  await vi.waitFor(() =>
+    expect(service.tabStateOf(opened.session.id, BrowserSurfaceIdSchema.parse("page-1"))).toBe(
+      "suspended",
+    ),
+  );
+  const forward = async (method: string, parameters: Record<string, unknown>) => {
+    const before = runtime.receivedCommands().length;
+    const { result } = await cdp.dispatch({ method, parameters });
+    await vi.waitFor(() =>
+      expect(
+        runtime
+          .receivedCommands()
+          .slice(before)
+          .find((m) => m.type === "cdp.command"),
+      ).toBeDefined(),
+    );
+    const sent = runtime
+      .receivedCommands()
+      .slice(before)
+      .find((m) => m.type === "cdp.command")!;
+    expect(sent.command).toMatchObject({ method, parameters });
+    runtime.sendServer({ type: "cdp.result", requestId: sent.requestId, result: { ok: true } });
+    expect(await result).toEqual({ ok: true });
+  };
+  await forward("Opensteer.listTabs", { cursor: "42" });
+  await forward("Opensteer.resumeTab", { surfaceId: "page-1" });
+  expect(await repository.countBrowserSessionAttachments(opened.session.id)).toBe(2);
+  await expect(
+    cdp.request({ method: "Opensteer.resumeTab", parameters: { surfaceId: "other-session-tab" } }),
+  ).rejects.toMatchObject({ code: "not_found" });
+  await expect(cdp.request({ method: "Opensteer.openTab", parameters: {} })).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  cdp.close();
+});
+
+it("lets the runtime sleep an unviewed leftover only after its Run's durable hold ends", async () => {
+  const context = new FakeContext([new FakePage()]);
+  const verifier = new FakeTicketVerifier();
+  const engine = new BrowserRuntime({
+    launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
+    runtimeId: "runtime-1",
+    ticketVerifier: verifier,
+    sessionFilesRoot: testSessionFilesRoot(),
+  });
+  cleanups.push(() => engine.shutdown());
+  const sink = new FakeSink();
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    core: { runtime: engine, verifier, sink },
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const service = freshService({
+    keys,
+    runtime,
+    repository,
+    surfaceState: true,
+    workspaceTabRestoreVersion: true,
+  });
+  const opened = await service.openAgentSession({
+    ownerId,
+    workspaceId,
+    agentBindingId: "leftover-run",
+    fresh: true,
+  });
+  const cdp = await service.attachCdpForAgent(
+    { ownerId, workspaceId, agentBindingId: "leftover-run", sessionId: opened.session.id },
+    () => undefined,
+  );
+  await cdp.request({
+    method: "Target.createTarget",
+    parameters: { url: "https://leftover.test/" },
+  });
+  const tab = [...sink.tabs.rows.values()].find((tab) => tab.order === 1)!;
+  expect(tab).toBeDefined();
+  await vi.waitFor(() =>
+    expect(runtime.receivedCommands().findLast((m) => m.type === "session.state")).toMatchObject({
+      runs: 1,
+    }),
+  );
+  vi.useFakeTimers();
+  try {
+    cdp.close();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+    await service.detachAgentSessionsForBinding("leftover-run");
+    await vi.waitFor(() =>
+      expect(runtime.receivedCommands().findLast((m) => m.type === "session.state")).toMatchObject({
+        runs: 0,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sink.tabs.rows.get(tab.id)?.state).toBe("suspended");
+  } finally {
+    await engine.shutdown();
+    vi.useRealTimers();
+  }
+});
+
+it("retains the requesting tab's pin after its actor ends and keeps unknown Host facts awake", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace"),
+    runId = createId("run"),
+    threadId = createId("thread");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  vi.spyOn(repository as BrowserSessionRepository, "resolvePlaceActors").mockImplementation(
+    async () => [
+      {
+        agentBindingId: `run:${runId}`,
+        ownerId,
+        runId,
+        threadId,
+        home: false,
+        generation: 1,
+        lineageThreadIds: [threadId],
+        lineageWorkspaceIds: [workspaceId],
+      },
+    ],
+  );
+  const service = freshService({ keys, runtime, repository, surfaceState: true });
+  const authority = { ownerId, workspaceId, agentBindingId: `run:${runId}` };
+  const { session } = await service.openAgentSession({ ...authority, fresh: true });
+  const cdp = await service.attachCdpForAgent(
+    { ...authority, sessionId: session.id },
+    () => undefined,
+  );
+  const attached = await cdp.dispatch({
+    method: "Target.attachToTarget",
+    parameters: { targetId: "target-1", flatten: true },
+  });
+  await vi.waitFor(() =>
+    expect(runtime.receivedCommands().findLast((m) => m.type === "cdp.command")).toBeDefined(),
+  );
+  const command = runtime.receivedCommands().findLast((m) => m.type === "cdp.command")!;
+  runtime.sendServer({
+    type: "cdp.result",
+    requestId: command.requestId,
+    result: { surfaceId: "page-1", sessionId: "attached" },
+  });
+  await attached.result;
+  const pins = [{ sessionId: session.id, runId }];
+  service.setRequestPins("sign-in", pins);
+  service.setRequestPins("card", pins);
+  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  await vi.waitFor(() => expect(last()).toMatchObject({ pinned: ["page-1"] }));
+  await service.detachAgentSessionsForBinding(authority.agentBindingId);
+  service.setRequestPins("sign-in", []);
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0, pinned: ["page-1"] }));
+  service.setRequestPins("card", []);
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0, pinned: [] }));
+  const count = vi
+    .spyOn(repository, "countBrowserSessionAttachments")
+    .mockRejectedValue(new Error("store unavailable"));
+  service.setRequestPins("unknown", pins);
+  await vi.waitFor(() => expect(last()).toMatchObject({ keepAwake: true }));
+  count.mockRestore();
+  service.setRequestPins("unknown", []);
+  await vi.waitFor(() =>
+    expect(last()).toEqual({ type: "session.state", runs: 0, viewed: [], pinned: [] }),
+  );
+  cdp.close();
+});
+
+it("updates Run holds when a revoked grant's session was opened in another Workspace", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user"),
+    main = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, main, "main");
+  const project = repository.addWorkspace("project");
+  const profile = repository.addHostedProfile("Work");
+  const service = freshService({ keys, runtime, repository, surfaceState: true });
+  await repository.createBrowserProfileGrant({
+    access: "read-write",
+    createdBy: ownerId,
+    profileId: profile.id,
+    workspaceId: main,
+  });
+  const { session } = await service.start({ ownerId, workspaceId: project, profileId: profile.id });
+  const cdp = await service.attachCdpForAgent(
+    { ownerId, workspaceId: main, sessionId: session.id, agentBindingId: "project-run" },
+    () => undefined,
+  );
+  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 1 }));
+  await repository.revokeBrowserGrant();
+  expect(
+    await service.detachAgentSessionsForRevokedProfileGrant({
+      ownerId,
+      workspaceId: main,
+      profileId: profile.id,
+    }),
+  ).toBe(1);
+  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0 }));
+  cdp.close();
+});
+
+it("publishes a passkey offer as a pin until the ceremony is cancelled", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+    targetedStreaming: true,
+  });
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const service = freshService({
+    keys,
+    runtime,
+    repository,
+    surfaceState: true,
+    targetControl: true,
+    passkeys: true,
+    passkeysEnabled: true,
+  });
+  const { session } = await service.start({ ownerId, workspaceId, fresh: true });
+  const peer = new RecordingPeer("passkey-pin");
+  const viewer = await service.attach(ownerId, session.id, peer, {
+    ...consumerOptions(),
+    passkeys: "native",
+  });
+  await viewer.handle(
+    Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1", frames: false })),
+    false,
+  );
+  const ceremonyId = randomUUID();
+  runtime.sendServer({
+    type: "passkey.ceremony",
+    ceremonyId,
+    surfaceId: "page-1",
+    documentId: "document-1",
+    op: "get",
+    origin: "https://login.example.test",
+    rpId: "example.test",
+    options: {
+      challenge: "AQID",
+      allowCredentials: [],
+      userVerification: "preferred",
+      extensions: {},
+    },
+    clientDataJSON: "AQID",
+    cause: "agent",
+    deadline: Date.now() + 10_000,
+  });
+  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
+  await vi.waitFor(() => expect(last()).toMatchObject({ viewed: ["page-1"], pinned: ["page-1"] }));
+  runtime.sendServer({ type: "passkey.cancel", ceremonyId });
+  await vi.waitFor(() => expect(last()).toMatchObject({ viewed: ["page-1"], pinned: [] }));
+  viewer.close();
+});
+
+it("agent restore resumes its exact suspended tab in the existing session", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const tabId = BrowserSurfaceIdSchema.parse("page-1");
+  let sessionId: BrowserSessionId;
+  const workspaceTabs = {
+    get: async () => ({ id: tabId, groupId: sessionId, url: "about:blank", favicon: null }),
+    session: async () => repository.session(sessionId),
+    read: async (_owner: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
+      Array.isArray(id) ? [] : { id: sessionId, latestSessionId: sessionId, tabs: [] },
+    recordChanges: async (id: BrowserSessionId) => ({
+      groupId: id,
+      changed: false,
+      rows: [],
+      closedIds: [],
+    }),
+    groupIds: async () => [],
+    openTabs: async () => [],
+    lineageForSession: async (id: BrowserSessionId) => id,
+    suspend: async () => undefined,
+  } as unknown as WorkspaceTabStore;
+  const service = freshService({
+    keys,
+    runtime,
+    repository,
+    surfaceState: true,
+    workspaceTabRestoreVersion: true,
+    workspaceTabs,
+  });
+  sessionId = (await service.start({ ownerId, workspaceId, fresh: true })).session.id;
+  runtime.publishTabs({
+    surfaces: [{ id: tabId, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("suspended"));
+  const before = runtime.receivedCommands().length;
+  const restored = service.restoreAgentWorkspaceTab(
+    { ownerId, workspaceId, agentBindingId: "restoring-run" },
+    tabId,
+  );
+  await vi.waitFor(() =>
+    expect(
+      runtime
+        .receivedCommands()
+        .slice(before)
+        .find((m) => m.type === "cdp.command"),
+    ).toBeDefined(),
+  );
+  const command = runtime
+    .receivedCommands()
+    .slice(before)
+    .find((m) => m.type === "cdp.command")!;
+  expect(command.command).toEqual({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: tabId },
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+  expect(await restored).toEqual({ tabId, sessionId });
+  expect(await repository.countBrowserSessionAttachments(sessionId)).toBe(1);
 });

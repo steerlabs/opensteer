@@ -110,11 +110,13 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
   const platform = ledger.binding(surfaceId)!.cdp;
   const read = async <T = unknown>(expression: string): Promise<T> => {
     const result = await withBrowserTestSignal(
-      platform.send<{ result: { value: T }; exceptionDetails?: unknown }>("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-      }),
+      ledger
+        .binding(surfaceId)!
+        .cdp.send<{ result: { value: T }; exceptionDetails?: unknown }>("Runtime.evaluate", {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        }),
     );
     if (result.exceptionDetails)
       throw new Error(`Oracle evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
@@ -177,6 +179,7 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
     program: string,
     options: {
       inventory?: boolean;
+      tab?: string;
       timeoutMs?: number;
       onStderrLine?: (line: string) => void;
     } = {},
@@ -190,7 +193,7 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
       const result = await runHarness(
         bridge.url,
         claims.sessionId,
-        options.inventory ? undefined : targetId,
+        options.inventory ? undefined : (options.tab ?? targetId),
         programAssertions + program,
         {
           timeoutMs: options.timeoutMs ?? 15_000,
@@ -228,7 +231,9 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
     controller,
     sink,
     surfaceId,
-    platform,
+    get platform() {
+      return ledger.binding(surfaceId)!.cdp;
+    },
     read,
     navigate,
     trace,

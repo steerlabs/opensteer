@@ -576,3 +576,27 @@ assert(JSON.stringify(await page.locator('#multi').selectOption([]))==='[]','mul
     "11",
   );
 });
+
+acceptance(
+  "sleep-resume",
+  "--tab resumes the exact sleeping surface and attaches its new target",
+  async (kit) => {
+    expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
+    const inventory = await kit.run(`console.log(JSON.stringify(await listTabs()));`, {
+      inventory: true,
+    });
+    expect(JSON.parse(inventory.stdout)).toContainEqual(
+      expect.objectContaining({ surfaceId: kit.surfaceId, state: "suspended" }),
+    );
+    const out = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
+      tab: kit.surfaceId,
+    });
+    expect(out.stderr).toMatch(/asleep.*reloaded/i);
+    expect(JSON.parse(out.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    expect(kit.ledger.snapshot().find((tab) => tab.id === kit.surfaceId)?.state).toBe("live");
+    expect(kit.trace.find((entry) => entry.method === "Opensteer.resumeTab")?.parameters).toEqual({
+      surfaceId: kit.surfaceId,
+    });
+  },
+  "01",
+);

@@ -1703,7 +1703,7 @@ export const BrowserTabReadResultSchema = z.object({
         title: z.string().max(256),
         matchedFields: z.array(z.enum(["title", "site", "group", "profile"])).optional(),
         site: z.string().max(2_048),
-        /** `open` tabs have a live session to drive; restore an `asleep` one first. */
+        /** An `asleep` tab with a sessionId resumes there; otherwise restore it first. */
         state: z.enum(["open", "opening", "asleep"]),
         sessionId: BrowserSessionIdSchema.nullable(),
         /** The profile this tab's lineage browses as; null is Guest, for open, opening and asleep tabs. */

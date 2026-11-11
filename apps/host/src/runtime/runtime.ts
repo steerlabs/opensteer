@@ -955,6 +955,7 @@ export async function createHostRuntime(
         };
       },
       onError: (error) => reportBrowserSignInError(error),
+      onPendingBrowserPins: (key, pins) => browser.setRequestPins(key, pins),
       onRequestResolved: () => notifyIntegrationContinuations(),
       onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
       requests: store.requests,
@@ -1384,6 +1385,11 @@ export async function createHostRuntime(
     let observeIntegrationInput: ((event: AgentEvent) => void) | undefined;
     const publishWorkspaceEvent = (event: AgentEvent): void => {
       observeIntegrationInput?.(event);
+      if (
+        (event.type === "request.opened" || event.type === "request.resolved") &&
+        "request" in event.data
+      )
+        browser.observeRequest(event.data.request);
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
           event.workspaceId,

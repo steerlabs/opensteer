@@ -898,6 +898,7 @@ export class PhoneBrowserManager {
 
     if (session.closing)
       throw new PhoneBrowserError("target-closed", "The browser session is closing.");
+    if (message.type === "session.state") return;
     if (message.type === "agent.attach") {
       if (
         message.sessionId !== session.claims.sessionId ||
@@ -1091,7 +1092,13 @@ export class PhoneBrowserManager {
       const session = channel.session;
       const { method, parameters } = message.command;
       let result: Record<string, unknown>;
-      if (Object.values(browserHostMethods).includes(method as typeof browserHostMethods.openTab)) {
+      if (
+        Object.values(browserHostMethods).includes(method as typeof browserHostMethods.openTab) &&
+        !(
+          message.actorToken &&
+          (method === browserHostMethods.listTabs || method === browserHostMethods.resumeTab)
+        )
+      ) {
         if (message.actorToken)
           throw new PhoneBrowserError("forbidden", "This is a Host-only operation.");
         if (method === browserHostMethods.openTab) {

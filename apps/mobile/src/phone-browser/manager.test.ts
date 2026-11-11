@@ -2085,3 +2085,57 @@ test("a CDP session never receives another Host session's targets or native meta
   ).toMatchObject({ type: "cdp.error" });
   expect(fixture.native.pipes.size).toBe(0);
 });
+
+test("Android CDP lists sleeping surfaces and resumes only this attachment's session", async () => {
+  const f = await setup("android");
+  await f.open("sleeping-agent-tab");
+  await f.client({
+    type: "agent.attach",
+    sessionId: f.sessionId,
+    attachmentId: f.attachmentId,
+    actorToken: f.actorToken,
+    backend: "cdp",
+  });
+  const command = async (method: string, parameters: Record<string, unknown> = {}) => {
+    const requestId = uuid();
+    await f.client({
+      type: "cdp.command",
+      actorToken: f.actorToken,
+      attachmentId: f.attachmentId,
+      requestId,
+      command: { method, parameters },
+    });
+    return f
+      .server()
+      .findLast(
+        (message) =>
+          (message.type === "cdp.result" || message.type === "cdp.error") &&
+          message.requestId === requestId,
+      );
+  };
+  expect(await command("Opensteer.listTabs")).toMatchObject({
+    type: "cdp.result",
+    result: {
+      tabs: expect.arrayContaining([
+        expect.objectContaining({
+          surfaceId: "sleeping-agent-tab",
+          state: "suspended",
+          targetId: null,
+        }),
+      ]),
+      nextCursor: null,
+    },
+  });
+  expect(await command("Opensteer.resumeTab", { surfaceId: "sleeping-agent-tab" })).toMatchObject({
+    type: "cdp.result",
+    result: {
+      surfaceId: "sleeping-agent-tab",
+      targetId: "sleeping-agent-tab",
+      documentId: expect.any(String),
+      reloaded: false,
+    },
+  });
+  expect(await command("Opensteer.resumeTab", { surfaceId: "another-session-tab" })).toMatchObject({
+    type: "cdp.error",
+  });
+});
