@@ -1,3 +1,4 @@
+import { toolOutputDigest } from "@opensteer/core";
 import { requestSettlementLabel } from "./request-settlement.js";
 import { BrowserSignInRequestResponseSchema } from "@opensteer/protocol/browser-sources";
 import { browserSiteLabel } from "./browser-sign-in.js";
@@ -371,6 +372,11 @@ function foldTranscriptOwnEvent(
     case "tool.completed": {
       const id = toolEntryId(event.runId, event.data.callId);
       const prior = findEntry(entries, id, "tool");
+      const streamedWhole =
+        event.data.outputPreview?.cut === true &&
+        prior?.streamText.startsWith(event.data.output.text) === true &&
+        new TextEncoder().encode(prior.streamText).byteLength === event.data.outputPreview.bytes &&
+        toolOutputDigest(prior.streamText) === event.data.outputPreview.digest;
       return upsertEntry(entries, {
         arguments: prior?.arguments,
         callId: event.data.callId,
@@ -381,7 +387,17 @@ function foldTranscriptOwnEvent(
         isError: event.data.isError,
         kind: "tool",
         ...nodeIdOf(event.data.nodeId, prior?.nodeId),
-        output: event.data.output,
+        output: streamedWhole
+          ? { ...event.data.output, text: prior!.streamText }
+          : event.data.output,
+        ...(event.data.outputPreview
+          ? {
+              outputPreview: {
+                ...event.data.outputPreview,
+                cut: event.data.outputPreview.cut && !streamedWhole,
+              },
+            }
+          : {}),
         runId: event.runId,
         state: event.data.isError ? "failed" : "done",
         streamText: prior?.streamText ?? "",

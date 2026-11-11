@@ -1066,6 +1066,9 @@ export class HttpHostClient {
     read: async (input) => {
       const page = unwrapRpcResult(
         await this.rpc["node.events.list"]({
+          ...(this.#capabilities?.includes("tool-output-detail-v1")
+            ? { toolOutputs: "preview" as const }
+            : {}),
           ...input,
           nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
         }),
@@ -2634,6 +2637,9 @@ export class HttpHostClient {
     await scan?.promise;
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
+        ...(this.#capabilities?.includes("tool-output-detail-v1")
+          ? { toolOutputs: "preview" as const }
+          : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
@@ -3030,6 +3036,9 @@ export class HttpHostClient {
   async #readThreadHistory(threadId: string, before?: string) {
     const page = unwrapRpcResult(
       await this.rpc["thread.events.list"]({
+        ...(this.#capabilities?.includes("tool-output-detail-v1")
+          ? { toolOutputs: "preview" as const }
+          : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
@@ -4941,6 +4950,9 @@ export class HttpHostClient {
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
+            ...(this.#capabilities?.includes("tool-output-detail-v1")
+              ? { toolOutputs: "preview" }
+              : {}),
             ...(this.#capabilities?.includes("place-events-v1")
               ? { placeEvents: "include" as const }
               : {}),

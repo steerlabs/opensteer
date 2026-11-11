@@ -1,3 +1,4 @@
+import { type RunId } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import {
   type UserId,
@@ -1235,4 +1236,33 @@ export async function workspaceHead(
     .executeTakeFirst();
   if (!row) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
   return row.eventSequence as Sequence;
+}
+
+export async function toolOutputForOwner(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    ownerId: UserId;
+    threadId: ThreadId;
+    runId: RunId;
+    callId: string;
+    nodeId?: ExecutionNodeId | undefined;
+  },
+) {
+  const row = await database
+    .selectFrom("workspaceEvents")
+    .innerJoin("threads", "threads.id", "workspaceEvents.threadId")
+    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
+    .selectAll("workspaceEvents")
+    .where("threads.id", "=", input.threadId)
+    .where("workspaceMemberships.userId", "=", input.ownerId)
+    .where("workspaceMemberships.state", "=", "active")
+    .where("workspaceEvents.runId", "=", input.runId)
+    .where("workspaceEvents.type", "=", "tool.completed")
+    .where("workspaceEvents.nodeDetailId", input.nodeId ? "=" : "is", input.nodeId ?? null)
+    .where(sql<string>`data->>'callId'`, "=", input.callId)
+    .orderBy("workspaceEvents.sequence", "desc")
+    .executeTakeFirst();
+  if (!row) return null;
+  const event = eventFromRow(row);
+  return event.type === "tool.completed" ? event.data.output : null;
 }

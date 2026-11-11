@@ -1,3 +1,4 @@
+import { previewToolOutput } from "@opensteer/core";
 import {
   BootstrapNoticeDiagnostics,
   type BootstrapNoticeSource,
@@ -118,6 +119,7 @@ interface SubscriberOptions {
   readonly authority: Promise<TeamRealtimeAuthority | null>;
   readonly personShow: boolean;
   readonly placeEvents: boolean;
+  readonly toolOutputs: boolean;
   readonly cursor: Sequence;
   readonly fill: (after: Sequence, through: Sequence) => Promise<RealtimeFillWindow>;
   readonly gapFillDelayMs: number;
@@ -204,9 +206,10 @@ class Subscriber {
         if (last) this.#handedThrough = last.sequence;
         if (visible) this.#visibleThrough = visible.sequence;
         if (events.length === 0) return Promise.resolve();
-        return this.sink.send(
-          events.length === message.events.length ? message : { ...message, events },
-        );
+        return this.sink.send({
+          ...message,
+          events: this.#options.toolOutputs ? events.map(previewToolOutput) : events,
+        });
       }
       case "host.live": {
         const items = message.progress.items.filter(
@@ -742,6 +745,7 @@ export class RealtimeHub {
     readonly afterSequence: Sequence;
     readonly snapshotMessages?: "omit";
     readonly placeEvents?: "include";
+    readonly toolOutputs?: "preview";
     readonly personShow?: "accept";
     readonly sink: RealtimeSink;
     readonly userId: UserId;
@@ -784,6 +788,7 @@ export class RealtimeHub {
       connectionSink: input.sink,
       authority,
       placeEvents: input.placeEvents === "include",
+      toolOutputs: input.toolOutputs === "preview",
       personShow: input.personShow === "accept",
       userId: input.userId,
       workspaceId: input.workspaceId,

@@ -1,3 +1,4 @@
+import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -1386,6 +1387,15 @@ export async function createHostServer(
         }),
       );
     },
+    "tool.output.get": async (input, context) => {
+      const output = await dependencies.store.toolOutputForOwner({
+        ...input,
+        ownerId: requireRpcSession(context).user.id,
+      });
+      if (!output)
+        throw new OpensteerError({ code: "not_found", message: "Tool output not found" });
+      return rpcSuccess({ output });
+    },
     "thread.events.list": async (input, context) => {
       const page = await dependencies.store.threadEventPageForOwner({
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
@@ -1398,7 +1408,11 @@ export async function createHostServer(
         threadId: input.threadId,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-      return rpcSuccess(hostApi["thread.events.list"].success.parse(page));
+      return rpcSuccess(
+        hostApi["thread.events.list"].success.parse(
+          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+        ),
+      );
     },
     "node.events.list": async (input, context) => {
       const page = await dependencies.store.nodeEventPageForOwner({
@@ -1410,7 +1424,11 @@ export async function createHostServer(
         ownerId: requireRpcSession(context).user.id,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Subagent not found" });
-      return rpcSuccess(hostApi["node.events.list"].success.parse(page));
+      return rpcSuccess(
+        hostApi["node.events.list"].success.parse(
+          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+        ),
+      );
     },
     "thread.messages.list": async (input, context) => {
       const page = await dependencies.store.threadMessagePageForOwner({
@@ -1688,6 +1706,7 @@ export async function createHostServer(
     | "tasks.list"
     | "thread.events.list"
     | "node.events.list"
+    | "tool.output.get"
     | "thread.messages.list"
     | "thread.readState.get"
     | "thread.inputQueue.get"
@@ -3047,6 +3066,7 @@ export function advertisedCapabilities(
     "snapshot-messages-omit-v1",
     "history-turns-v1",
     "node-detail-v1",
+    "tool-output-detail-v1",
     "place-events-v1",
     "person-show-v1",
     "shared-task-done-v1",
@@ -4026,6 +4046,7 @@ function attachRealtimeSocket(
         unsubscribe = await realtime.subscribe({
           afterSequence: message.afterSequence,
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
+          ...(message.toolOutputs ? { toolOutputs: message.toolOutputs } : {}),
           ...(message.personShow ? { personShow: message.personShow } : {}),
           ...(message.snapshotMessages ? { snapshotMessages: message.snapshotMessages } : {}),
           sink,
@@ -4420,4 +4441,15 @@ function requireBearerToken(request: FastifyRequest, maximumTokenLength = 4_096)
 
 function badMessage(message: string): OpensteerError {
   return new OpensteerError({ code: "bad_request", message });
+}
+
+function clientToolOutputPage<
+  T extends { events: readonly AgentEventView[]; window: { byteCount: number } },
+>(page: T) {
+  const events = page.events.map(previewToolOutput);
+  return {
+    ...page,
+    events,
+    window: { ...page.window, byteCount: Buffer.byteLength(JSON.stringify(events)) },
+  };
 }

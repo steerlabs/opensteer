@@ -94,6 +94,7 @@ interface WsRecord {
   readonly eventCount?: number;
 }
 export interface ScenarioResult {
+  readonly toolOutputHistoryBytes: { readonly whole: number; readonly preview: number };
   readonly seed: SeedName;
   readonly profile: ProfileName;
   readonly run: number;
@@ -172,6 +173,30 @@ export async function runMobileNetworkSample(options: {
     cleanup.push(() => host.close());
     console.info(`Seeding ${options.seed}/${options.profile} run ${options.run}`);
     const fixture = await seedWorkspace(host, options.seed, cleanup);
+    const wholePage = await testRpcData(
+      host.origin,
+      "thread.events.list",
+      { threadId: fixture.homeThreadId, turns: 10 },
+      { headers: host.ownerHeaders },
+    );
+    const previewPage = await testRpcData(
+      host.origin,
+      "thread.events.list",
+      { threadId: fixture.homeThreadId, turns: 10, toolOutputs: "preview" },
+      { headers: host.ownerHeaders },
+    );
+    const toolOutputHistoryBytes = {
+      whole: Buffer.byteLength(JSON.stringify(wholePage)),
+      preview: Buffer.byteLength(JSON.stringify(previewPage)),
+    };
+    for (const event of previewPage.events)
+      if (event.type === "tool.completed") {
+        expect(event.data.outputPreview).toBeDefined();
+        expect(event.data.output.text).not.toContain(
+          "Build log: checked workspace and synchronized dependency.\n".repeat(440),
+        );
+      }
+    console.info("Tool output history bytes", toolOutputHistoryBytes);
     options.onManifest?.(fixture.manifest);
     console.info(
       `Seeded ${fixture.manifest.tasks} tasks, ${fixture.manifest.homeMessages} Chat messages, ${fixture.manifest.tabs} tabs`,
@@ -491,6 +516,7 @@ export async function runMobileNetworkSample(options: {
       const tcpConnections = connections.filter((connection) => connection.openedInScenario).length;
       const rtt = options.link.latencyUpMs + options.link.latencyDownMs;
       const result = {
+        toolOutputHistoryBytes,
         seed: options.seed,
         profile: options.profile,
         run: options.run,
