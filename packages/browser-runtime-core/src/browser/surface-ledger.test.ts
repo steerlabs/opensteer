@@ -1,8 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import {
-  browserSessionTabsFullReason,
-  browserWorkspaceTabUrlMaxLength,
-} from "@opensteer/protocol/browser";
+import { browserWorkspaceTabUrlMaxLength } from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import {
   FakeContext,
@@ -746,23 +743,24 @@ describe("SurfaceLedger", () => {
     await ledger.close();
   });
 
-  it("bounds the number of browser surfaces", async () => {
-    const first = new FakePage();
-    const context = new FakeContext([first]);
-    const ledger = new SurfaceLedger(context, { maxSurfaces: 1 });
+  it("keeps tab 65 and popup 129 open and listed", async () => {
+    const root = new FakePage();
+    const context = new FakeContext([root]);
+    const ledger = new SurfaceLedger(context);
     await ledger.start();
-    const excess = new FakePage({ opener: first });
-
-    context.addPage(excess);
-    await flushMicrotasks();
-    expect(ledger.snapshot()).toHaveLength(1);
-    expect(excess.closeCount).toBe(1);
-    await expect(ledger.openSurface()).rejects.toMatchObject({
-      code: "conflict",
-      reason: browserSessionTabsFullReason,
-    });
-    await ledger.close();
-    expect(() => new SurfaceLedger(context, { maxSurfaces: 65 })).toThrow(/1 through 64/);
+    try {
+      for (let index = 1; index < 128; index++) await ledger.openSurface();
+      expect(ledger.snapshot()).toHaveLength(128);
+      const popup = new FakePage({ opener: root, title: "Popup 129" });
+      context.addPage(popup);
+      await vi.waitFor(() => expect(ledger.snapshot()).toHaveLength(129));
+      expect(ledger.snapshot().at(-1)).toMatchObject({ title: "Popup 129" });
+      expect(popup.closeCount).toBe(0);
+      expect(ledger.snapshot().every((surface) => surface.state === "live")).toBe(true);
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
   });
 
   it("adopts only openerless targets created through the scoped session router", async () => {

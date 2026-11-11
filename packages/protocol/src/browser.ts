@@ -207,11 +207,6 @@ export function createBrowserBridgeAttachedSchema() {
 export const BrowserBridgeAttachedSchema = createBrowserBridgeAttachedSchema();
 export type BrowserBridgeAttached = z.infer<typeof BrowserBridgeAttachedSchema>;
 
-/** How many tabs one browser session holds. */
-export const browserSessionTabLimit = 64;
-/** The runtime's refusal reason when a session already holds `browserSessionTabLimit` tabs. */
-export const browserSessionTabsFullReason = "session-tabs-full";
-
 export const BrowserAttachTicketClaimsSchema = z
   .strictObject({
     access: BrowserProfileAccessSchema,
@@ -308,7 +303,6 @@ export type BrowserSurface = z.infer<typeof BrowserSurfaceSchema>;
 
 export const BrowserSurfacesSchema = z
   .array(BrowserSurfaceSchema)
-  .max(browserSessionTabLimit)
   .superRefine((surfaces, context) => {
     const ids = new Set<string>();
     for (const [index, surface] of surfaces.entries()) {

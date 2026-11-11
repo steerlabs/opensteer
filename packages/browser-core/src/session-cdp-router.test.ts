@@ -404,25 +404,59 @@ describe("SessionCdpRouter", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  it("bounds commands, results, streamed events, sessions, and targets", async () => {
+  it("owns target 129 including a popup and registers session 65", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    try {
+      router.registerSession("session-0", "root-0", async () => true, "/files/0");
+      backend.targetInfos.push({ targetId: "root-0", type: "page", url: "about:blank" });
+      for (let index = 1; index < 128; index++)
+        await router.send("session-0", { method: "Target.createTarget" });
+      backend.targetInfos.push({
+        targetId: "popup-129",
+        type: "page",
+        url: "about:blank",
+        openerId: "root-0",
+      });
+      backend.emit("Target.targetCreated", { targetInfo: backend.targetInfos.at(-1)! });
+      await expect(
+        router.send("session-0", {
+          method: "Target.attachToTarget",
+          parameters: { targetId: "popup-129" },
+        }),
+      ).resolves.toMatchObject({ sessionId: expect.any(String) });
+      for (let index = 1; index < 65; index++)
+        router.registerSession(
+          `session-${index}`,
+          `root-${index}`,
+          async () => true,
+          `/files/${index}`,
+        );
+      await expect(
+        router.send("session-64", {
+          method: "Target.attachToTarget",
+          parameters: { targetId: "popup-129" },
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      const targets = (await router.send("session-0", { method: "Target.getTargets" })) as {
+        targetInfos: unknown[];
+      };
+      expect(targets.targetInfos).toHaveLength(129);
+    } finally {
+      await router.close();
+    }
+  });
+
+  it("bounds command, result and event bytes", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend, {
       maxCommandBytes: 200,
       maxEventBytes: 300,
       maxResultBytes: 200,
-      maxSessions: 1,
-      maxTargetsPerSession: 2,
     });
     router.registerSession("session-a", "root-a", async () => true, "/opensteer-files/session-a");
     const events: import("./session-cdp-router.js").CdpEvent[] = [];
     router.onEvent("session-a", (event) => events.push(event));
-    expect(() =>
-      router.registerSession("session-b", "root-b", async () => true, "/opensteer-files/session-b"),
-    ).toThrow(SessionCdpRouterError);
-    await router.send("session-a", { method: "Target.createTarget" });
-    await expect(router.send("session-a", { method: "Target.createTarget" })).rejects.toMatchObject(
-      { code: "conflict" },
-    );
     backend.emit("Target.targetInfoChanged", {
       targetInfo: { targetId: "root-a", title: "one" },
     });

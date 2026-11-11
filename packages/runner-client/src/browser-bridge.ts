@@ -23,8 +23,6 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
 
-const maxBrowserRelayChannels = 32;
-
 const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),
   runtimeId: z.string().min(1).max(255),
@@ -212,9 +210,6 @@ export class LocalBrowserRuntimeBridge {
   ): Promise<BrowserBridgeAttached> {
     if (this.#channels.has(channelId)) {
       throw new BrowserRelayError("The browser relay channel already exists.");
-    }
-    if (this.#channels.size >= maxBrowserRelayChannels) {
-      throw new BrowserRelayError("The local browser runtime relay capacity is full.");
     }
     if (
       Buffer.byteLength(attachTicket, "utf8") > 16_384 ||

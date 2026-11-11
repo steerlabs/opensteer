@@ -49,8 +49,6 @@ export interface BrowserRuntimeOptions {
   memoryBudgetBytes?: number | undefined;
   initialViewport?: Viewport;
   launcher: BrowserLauncher;
-  maxProfileHosts?: number;
-  maxSessionsPerProfile?: number;
   /**
    * The caller must own this root exclusively for the process lifetime (desktop
    * application lock or standalone OS lock). Only one live runtime may use it.
@@ -194,10 +192,7 @@ export class BrowserRuntime implements NativePresentationSource {
   private generation = 0;
   private readonly initialViewport: Viewport;
   private readonly launcher: BrowserLauncher;
-  private readonly maxProfileHosts: number;
-  private readonly maxSessionsPerProfile: number;
   private readonly lanes = new LifecycleLanes<BrowserPartitionKey>();
-  private reservations = 0;
   private readonly pendingSessions = new Set<string>();
   private usage = 0;
   private readonly onOpenTiming: NonNullable<BrowserRuntimeOptions["onOpenTiming"]>;
@@ -288,8 +283,6 @@ export class BrowserRuntime implements NativePresentationSource {
         });
       });
     this.localProfilesOptions = options.localProfiles;
-    this.maxProfileHosts = options.maxProfileHosts ?? 8;
-    this.maxSessionsPerProfile = options.maxSessionsPerProfile ?? 32;
     this.runtimeId = options.runtimeId;
     if (
       !path.isAbsolute(options.sessionFilesRoot) ||
@@ -322,17 +315,6 @@ export class BrowserRuntime implements NativePresentationSource {
             diagnostic.error instanceof BrowserRuntimeError ? diagnostic.error.code : "internal",
         });
       });
-    for (const [name, value, maximum] of [
-      ["maxProfileHosts", this.maxProfileHosts, 64],
-      ["maxSessionsPerProfile", this.maxSessionsPerProfile, 128],
-    ] as const) {
-      if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
-        throw new TypeError(`${name} is outside its supported range.`);
-      }
-    }
-    if (this.maxProfileHosts < 1 || this.maxSessionsPerProfile < 1) {
-      throw new TypeError("Browser Runtime capacities must be positive.");
-    }
   }
 
   health(): BrowserRuntimeHealth {
@@ -933,7 +915,6 @@ export class BrowserRuntime implements NativePresentationSource {
     assertCurrent();
     let host = this.hosts.get(hostKey);
     let createdHost = false;
-    let reserved = false;
     let stage = "profile-state";
     let acquisition: BrowserOpenTiming["acquisition"] =
       claims.identity.kind === "profile-local" ? "cold" : "guest";
@@ -965,8 +946,6 @@ export class BrowserRuntime implements NativePresentationSource {
         stage = "profile-state";
       }
       if (!host) {
-        await wait(this.reserveCapacity());
-        reserved = true;
         let localDirectory: string | undefined;
         if (claims.identity.kind === "profile-local") {
           const identity = claims.identity;
@@ -1044,9 +1023,7 @@ export class BrowserRuntime implements NativePresentationSource {
         const stateImports = new AsyncMutex();
         const router = new SessionCdpRouter(
           browser.cdp,
-          {
-            maxSessions: this.maxSessionsPerProfile,
-          },
+          {},
           browser.clipboard?.machineClipboardShared !== false,
         );
         const onBrowserClose = () => {
@@ -1089,8 +1066,6 @@ export class BrowserRuntime implements NativePresentationSource {
         host = launchedHost;
         browser.onClose(onBrowserClose);
         this.hosts.set(hostKey, host);
-        this.reservations--;
-        reserved = false;
         createdHost = true;
         await wait(Promise.resolve(browser.profile?.ready()));
         assertCurrent();
@@ -1111,16 +1086,12 @@ export class BrowserRuntime implements NativePresentationSource {
             { retryable: true },
           );
         }
-        if (host.sessions.size >= this.maxSessionsPerProfile) {
-          throw new BrowserRuntimeError("conflict", "Browser Host session capacity is full.");
-        }
         acquisition = "warm";
       }
 
       assertCurrent();
       return { host, createdHost, acquisition };
     } catch (error) {
-      if (reserved) this.reservations--;
       if (createdHost && host) {
         const { kind } = host.identity;
         await boundedCleanup(this.cleanupHost(host)).catch((error: unknown) =>
@@ -1130,26 +1101,6 @@ export class BrowserRuntime implements NativePresentationSource {
       this.updateState();
       throw this.startFailure("sessionId" in claims ? claims.sessionId : hostKey, stage, error);
     }
-  }
-
-  private async reserveCapacity(): Promise<void> {
-    // Synchronous counters/selection are the entire capacity reservation. No I/O
-    // holds this critical section, including an evicted host's process exit.
-    if (this.hosts.size + this.reservations < this.maxProfileHosts) {
-      this.reservations++;
-      return;
-    }
-    const victim = [...this.hosts.values()]
-      .filter(
-        (host) =>
-          host.acceptingSessions && host.sessions.size === 0 && !this.lanes.busy(host.identity.key),
-      )
-      .sort((a, b) => a.lastUsed - b.lastUsed)[0];
-    if (!victim)
-      throw new BrowserRuntimeError("conflict", "Browser Runtime host capacity is full.");
-    victim.acceptingSessions = false;
-    await this.closeHost(victim.identity.key, victim.generation);
-    return this.reserveCapacity();
   }
 
   private reportHostCleanupFailure(kind: "fresh" | "local", stage: string, error: unknown): void {

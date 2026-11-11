@@ -56,8 +56,6 @@ export interface SessionCdpRouterLimits {
   readonly maxCommandBytes: number;
   readonly maxEventBytes: number;
   readonly maxResultBytes: number;
-  readonly maxSessions: number;
-  readonly maxTargetsPerSession: number;
 }
 
 export class SessionCdpRouterError extends Error {
@@ -104,8 +102,6 @@ const defaultLimits: SessionCdpRouterLimits = {
   maxCommandBytes: 432 * 1_024,
   maxEventBytes: 432 * 1_024,
   maxResultBytes: 432 * 1_024,
-  maxSessions: 64,
-  maxTargetsPerSession: 128,
 };
 
 const allowedBrowserMethods = new Set(["Browser.getVersion"]);
@@ -196,9 +192,6 @@ export class SessionCdpRouter {
     }
     if (this.#sessions.has(sessionId)) {
       throw new SessionCdpRouterError("conflict", "Browser Session is already registered.");
-    }
-    if (this.#sessions.size >= this.#limits.maxSessions) {
-      throw new SessionCdpRouterError("conflict", "Profile Host session capacity is exhausted.");
     }
     if (this.#ownerByTargetId.has(rootTargetId)) {
       throw new SessionCdpRouterError("conflict", "Root target already belongs to a session.");
@@ -326,9 +319,9 @@ export class SessionCdpRouter {
    */
   admitCreateTarget(sessionId: string, command: CdpCommand): void {
     this.#assertOpen();
-    const state = this.#requireSession(sessionId);
+    this.#requireSession(sessionId);
     validateCommand(command, this.#limits.maxCommandBytes);
-    this.#admitCreateTarget(state, command.parameters ?? {});
+    assertSafeNavigationUrl(command.parameters?.url, true);
   }
 
   onEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
@@ -384,7 +377,7 @@ export class SessionCdpRouter {
         return this.#backend.send(command.method, { ...parameters, targetId });
       }
       case "Target.createTarget": {
-        this.#admitCreateTarget(state, parameters);
+        assertSafeNavigationUrl(parameters.url, true);
         const response = asRecord(await this.#backend.send(command.method, parameters));
         const targetId = readString(response, "targetId");
         if (!targetId) {
@@ -641,7 +634,7 @@ export class SessionCdpRouter {
         readString(targetInfo, "openerId") ?? readString(targetInfo, "parentId");
       const ownerId = parentTargetId ? this.#ownerByTargetId.get(parentTargetId) : undefined;
       const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
-      if (owner && owner.ownedTargetIds.size < this.#limits.maxTargetsPerSession) {
+      if (owner) {
         this.#claimTarget(owner, targetId);
       }
     }
@@ -672,7 +665,6 @@ export class SessionCdpRouter {
     if (existingOwner && existingOwner !== state.sessionId) {
       throw new SessionCdpRouterError("conflict", "CDP target belongs to another session.");
     }
-    this.#assertTargetCapacity(state);
     state.ownedTargetIds.add(targetId);
     this.#ownerByTargetId.set(targetId, state.sessionId);
     const announced = this.#unclaimedPages.get(targetId);
@@ -740,17 +732,6 @@ export class SessionCdpRouter {
   #assertOwnedTarget(state: SessionState, targetId: string): void {
     if (this.#ownerByTargetId.get(targetId) !== state.sessionId) {
       throw new SessionCdpRouterError("forbidden", "CDP target is outside this Browser Session.");
-    }
-  }
-
-  #admitCreateTarget(state: SessionState, parameters: CdpParameters): void {
-    this.#assertTargetCapacity(state);
-    assertSafeNavigationUrl(parameters.url, true);
-  }
-
-  #assertTargetCapacity(state: SessionState): void {
-    if (state.ownedTargetIds.size >= this.#limits.maxTargetsPerSession) {
-      throw new SessionCdpRouterError("conflict", "Browser Session target capacity is exhausted.");
     }
   }
 

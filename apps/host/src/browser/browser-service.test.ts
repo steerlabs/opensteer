@@ -41,7 +41,6 @@ import {
   browserHostMethods,
   BrowserServerMessageSchema,
   browserSessionMaxThreads,
-  browserSessionTabLimit,
   BrowserSurfaceIdSchema,
   createBrowserSessionId,
   decodeBrowserFrameEnvelope,
@@ -509,7 +508,7 @@ describe("BrowserService", () => {
     expect(runtime.receivedCommands()).toHaveLength(2);
   });
 
-  it("opens a person's link in another browser once theirs holds all the tabs it can", async () => {
+  it("reuses the person's session at 64 tabs and beyond, including concurrent opens", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
@@ -517,16 +516,7 @@ describe("BrowserService", () => {
     const ownerId = createId("user"),
       workspaceId = createId("workspace");
     const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
-    const saved = new Map<string, string[]>();
-    const service = freshService({
-      keys,
-      repository,
-      runtime,
-      workspaceTabs: new Proxy(
-        { tabIds: async (sessionId: string) => saved.get(sessionId) ?? [] },
-        { get: (store, key) => (key === "tabIds" ? store.tabIds : async () => undefined) },
-      ) as unknown as WorkspaceTabStore,
-    });
+    const service = freshService({ keys, repository, runtime });
     const open = () =>
       service.openTab(ownerId, {
         type: "browser.tab.open",
@@ -534,23 +524,39 @@ describe("BrowserService", () => {
         idempotencyKey: randomUUID(),
       });
     const first = await open();
-    // Its listed page is also saved; asleep tabs fill the rest but one place.
-    saved.set(first.sessionId, [
-      first.tabId,
-      ...Array.from({ length: browserSessionTabLimit - 2 }, (_, index) => `bsf_asleep-${index}`),
-    ]);
-    const reused = open();
-    const request = await runtime.nextCommand();
-    // The open still in flight holds the last place, so a concurrent one goes elsewhere.
-    const concurrent = await open();
-    expect(concurrent.browserStarted).toBe(true);
-    expect(concurrent.sessionId).not.toBe(first.sessionId);
-    runtime.sendServer({
-      type: "cdp.result",
-      requestId: request.requestId,
-      result: { tabId: "bsf_reused" },
-    });
-    expect((await reused).sessionId).toBe(first.sessionId);
+    for (const count of [64, 129]) {
+      runtime.publishTabs({
+        surfaces: Array.from({ length: count }, (_, index) => ({
+          id: `tab-${index}`,
+          active: index === 0,
+          title: `Tab ${index}`,
+          url: "https://example.test/",
+        })),
+      });
+      await vi.waitFor(() =>
+        expect(service.clientStreams.source.ports.live(first.sessionId)?.records.size).toBe(count),
+      );
+      const results = [open(), open()];
+      for (const result of results) void result.catch(() => undefined);
+      await vi.waitFor(() => expect(repository.tabOpens.size).toBe(count === 64 ? 3 : 5));
+      expect(
+        [...repository.tabOpens.values()].every(
+          (binding) => binding.chosenSessionId === first.sessionId,
+        ),
+      ).toBe(true);
+      for (let index = 0; index < 2; index++) {
+        const request = await runtime.nextCommand();
+        runtime.sendServer({
+          type: "cdp.result",
+          requestId: request.requestId,
+          result: { tabId: `opened-${count}-${index}` },
+        });
+      }
+      expect(await Promise.all(results)).toEqual([
+        expect.objectContaining({ sessionId: first.sessionId, browserStarted: false }),
+        expect.objectContaining({ sessionId: first.sessionId, browserStarted: false }),
+      ]);
+    }
   });
 
   it("keeps an unanswered additional tab recoverable by its original key", async () => {

@@ -535,24 +535,18 @@ export async function createBrowserSession(
           message: "Open this browser profile on its owning computer with an updated runtime.",
         });
       }
-      const placementHolders = await transaction
+      const otherPlacement = await transaction
         .selectFrom("browserSessions")
-        .select(["id", "placementKey", "state"])
+        .select("id")
         .where("profileId", "=", profileId)
         .where("state", "in", ["starting", "ready", "closing"])
-        .limit(65)
-        .execute(databaseOperationOptions());
-      if (placementHolders.some((session) => session.placementKey !== input.placementKey)) {
+        .where("placementKey", "!=", input.placementKey)
+        .limit(1)
+        .executeTakeFirst(databaseOperationOptions());
+      if (otherPlacement) {
         throw new OpensteerError({
           code: "conflict",
           message: "This browser profile is already active on another placement",
-        });
-      }
-      const active = placementHolders.filter((session) => session.state !== "closed");
-      if (active.length >= 32) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Browser profile session limit reached",
         });
       }
     }
@@ -652,7 +646,6 @@ export async function listActiveBrowserSessionsForAgentBinding(
     .where("browserSessions.state", "in", ["starting", "ready", "closing"])
     .orderBy("browserSessionAttachments.updatedAt", "desc")
     .orderBy("browserSessionAttachments.sessionId", "desc")
-    .limit(100)
     .execute(databaseOperationOptions());
 }
 
@@ -1447,33 +1440,28 @@ export async function listBrowserSessions(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
 ): Promise<readonly BrowserSessionRecord[]> {
-  return (
-    database
-      .selectFrom("browserSessions")
-      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
-      .select([
-        "browserSessions.createdAt",
-        "browserSessions.runnerId",
-        "browserSessions.id",
-        "browserSessions.origin",
-        "browserSessions.opener",
-        "browserSessions.placementKey",
-        "browserSessions.profileId",
-        "browserSessions.runtimeId",
-        "browserSessions.state",
-        "browserSessions.updatedAt",
-        "browserSessions.workspaceId",
-      ])
-      .where((expression) => ownedBrowserSession(expression, ownerId))
-      // The bounded bootstrap catalog must never hide a live session behind
-      // newer closed sessions kept as history.
-      .orderBy(
-        sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
-      )
-      .orderBy("browserSessions.createdAt", "desc")
-      .limit(100)
-      .execute(databaseOperationOptions())
-  );
+  return database
+    .selectFrom("browserSessions")
+    .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+    .select([
+      "browserSessions.createdAt",
+      "browserSessions.runnerId",
+      "browserSessions.id",
+      "browserSessions.origin",
+      "browserSessions.opener",
+      "browserSessions.placementKey",
+      "browserSessions.profileId",
+      "browserSessions.runtimeId",
+      "browserSessions.state",
+      "browserSessions.updatedAt",
+      "browserSessions.workspaceId",
+    ])
+    .where((expression) => ownedBrowserSession(expression, ownerId))
+    .orderBy(
+      sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
+    )
+    .orderBy("browserSessions.createdAt", "desc")
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -1669,7 +1657,6 @@ export async function listActiveBrowserSessionsForAgent(
   }
   const rows = await query
     .orderBy("browserSessions.createdAt", "desc")
-    .limit(100)
     .execute(databaseOperationOptions());
   return rows.map((row) => ({
     ...row,

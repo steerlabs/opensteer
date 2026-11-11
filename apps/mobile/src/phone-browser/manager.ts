@@ -1532,8 +1532,6 @@ export class PhoneBrowserManager {
         JSON.stringify(session.claims.identity.binding);
     if (session.closed.has(id) || (retained && !restore) || this.#opening.has(id))
       throw new PhoneBrowserError("target-closed", "The surface ID was already used.");
-    if (session.tabs.size >= 64)
-      throw new PhoneBrowserError("too-large", "The session has too many tabs.");
     const epoch = this.#epoch;
     this.#opening.add(id);
     const metadata = await this.#bounded(epoch, () =>

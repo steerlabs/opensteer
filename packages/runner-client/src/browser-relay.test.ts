@@ -94,6 +94,30 @@ function fixture(negotiated = true) {
 }
 
 describe("BrowserModuleRelay native profiles", () => {
+  it("opens relay channel 33", async () => {
+    const f = fixture();
+    vi.spyOn(f.bridge, "attach").mockResolvedValue({ type: "browser.attached" });
+    try {
+      await f.relay.attach(f.stream);
+      await f.send({ type: "capability.grant", lease: f.lease });
+      for (let index = 0; index < 33; index++) {
+        const channelId = BrowserChannelIdSchema.parse(`bch_${randomUUID()}`);
+        const attached = f.wait("browser.attached");
+        await f.send({
+          type: "browser.attach",
+          capability: f.capability,
+          channelId,
+          attachTicket: "abc.def.ghi",
+        });
+        await attached;
+        expect(f.messages.at(-1)).toMatchObject({ type: "browser.attached", channelId });
+      }
+      expect(f.messages.filter((message) => message.type === "browser.attached")).toHaveLength(33);
+    } finally {
+      f.relay.detach();
+    }
+  });
+
   it("sends every inventory claim in bounded batches before execution admission", async () => {
     const f = fixture();
     const profiles: HeldLocalProfile[] = Array.from({ length: 257 }, () => ({

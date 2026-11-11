@@ -30,13 +30,10 @@ export async function settleCleanup(operations: Array<() => Promise<void>>): Pro
   }
 }
 
-/** Independent lifecycle lanes; no lane owns capacity or another lane's I/O. */
+/** Independent lifecycle lanes; no lane waits for another lane's I/O. */
 export class LifecycleLanes<Key> {
   private readonly lanes = new Map<Key, { mutex: AsyncMutex; users: number }>();
   private readonly pending = new Set<Promise<unknown>>();
-  busy(key: Key): boolean {
-    return this.lanes.has(key);
-  }
   run<T>(key: Key, operation: () => Promise<T>): Promise<T> {
     let lane = this.lanes.get(key);
     if (!lane) {

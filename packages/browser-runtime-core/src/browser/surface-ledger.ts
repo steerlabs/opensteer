@@ -5,8 +5,6 @@ import {
 } from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
-  browserSessionTabLimit,
-  browserSessionTabsFullReason,
   browserWorkspaceTabUrlMaxLength,
   type BrowserDialog,
   type BrowserNavigationCommitted,
@@ -76,10 +74,8 @@ interface SurfaceLedgerOptions {
   releaseTarget?: (targetId: string) => void;
   /** The size the session starts at, until the person's view gives it one. */
   initialViewport?: Viewport;
-  maxSurfaces?: number;
   rootPages?: readonly BrowserPage[];
   initialSurfaceId?: BrowserSurfaceId;
-  dormantSurfaceIds?: readonly BrowserSurfaceId[];
 }
 
 export interface PageSize {
@@ -311,12 +307,10 @@ export class SurfaceLedger {
   private creatingPage: Promise<void> | null = null;
   private readonly creationLock = new AsyncMutex();
   private readonly initialSurfaceId: BrowserSurfaceId | undefined;
-  private readonly dormantSurfaceIds: Set<BrowserSurfaceId>;
   private readonly context: BrowserContext;
   /** The size the person's view last followed on any page here; new pages start at it. */
   private followedSize: PageSize;
   private readonly listeners = new Set<(event: SurfaceLedgerEvent) => void>();
-  private readonly maxSurfaces: number;
   private readonly pageIds = new Map<BrowserPage, BrowserSurfaceId>();
   private readonly rootPages: readonly BrowserPage[] | null;
   private readonly records = new Map<BrowserSurfaceId, TabRecord>();
@@ -343,7 +337,6 @@ export class SurfaceLedger {
     this.context = context;
     this.navigationVersion = options.navigationVersion;
     this.initialSurfaceId = options.initialSurfaceId;
-    this.dormantSurfaceIds = new Set(options.dormantSurfaceIds);
     this.claimTarget = options.claimTarget;
     this.releaseTarget = options.releaseTarget;
     this.beforeResize = options.beforeResize;
@@ -357,16 +350,6 @@ export class SurfaceLedger {
       width: initialViewport.width,
     };
     this.rootPages = options.rootPages ? [...options.rootPages] : null;
-    this.maxSurfaces = options.maxSurfaces ?? browserSessionTabLimit;
-    if (
-      !Number.isInteger(this.maxSurfaces) ||
-      this.maxSurfaces < 1 ||
-      this.maxSurfaces > browserSessionTabLimit
-    ) {
-      throw new Error(
-        `Surface maxSurfaces must be an integer from 1 through ${browserSessionTabLimit}.`,
-      );
-    }
   }
 
   async start(): Promise<void> {
@@ -616,12 +599,6 @@ export class SurfaceLedger {
       canGoForward: record.live?.navigation?.canGoForward ?? false,
       sizedByAgent: record.agentMetrics !== null,
     };
-  }
-  setSavedTabs(ids: Iterable<string>): void {
-    this.dormantSurfaceIds.clear();
-    for (const id of ids)
-      if (!this.records.has(BrowserSurfaceIdSchema.parse(id)))
-        this.dormantSurfaceIds.add(BrowserSurfaceIdSchema.parse(id));
   }
 
   /** Correlates only this Page.navigate with the document Chromium says it produced. */
@@ -1105,11 +1082,6 @@ export class SurfaceLedger {
     if (options.surfaceId && this.records.has(options.surfaceId))
       return this.toSurface(this.liveRecord(options.surfaceId)!);
     if (options.viewport) assertViewport(options.viewport);
-    if (this.atCapacity(options.surfaceId)) {
-      throw new BrowserRuntimeError("conflict", "This browser session holds all the tabs it can.", {
-        reason: browserSessionTabsFullReason,
-      });
-    }
     // Discovery waits until the creator has assigned the requested identity.
     await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
       ...(options.signal ? { signal: options.signal } : {}),
@@ -1244,20 +1216,6 @@ export class SurfaceLedger {
     );
   }
 
-  forgetDormantSurface(surfaceId: BrowserSurfaceId): void {
-    this.dormantSurfaceIds.delete(surfaceId);
-  }
-
-  private atCapacity(surfaceId?: BrowserSurfaceId): boolean {
-    if (surfaceId && this.dormantSurfaceIds.has(surfaceId)) return false;
-    return (
-      this.records.size +
-        [...this.registrations.keys()].filter((page) => !this.pageIds.has(page)).length +
-        this.dormantSurfaceIds.size >=
-      this.maxSurfaces
-    );
-  }
-
   private liveRecord(id: BrowserSurfaceId): SurfaceRecord | undefined {
     const record = this.records.get(id);
     return record && isLive(record) ? record : undefined;
@@ -1328,10 +1286,6 @@ export class SurfaceLedger {
       if (!id) return;
       if (viewport) await this.fitViewport(id, viewport);
       if (makeActive) await this.activate(id);
-      return;
-    }
-    if (this.atCapacity(surfaceId)) {
-      await page.close().catch(() => undefined);
       return;
     }
     const registration = this.registerOnce(page, makeActive, viewport, surfaceId).finally(() => {
@@ -1635,7 +1589,6 @@ export class SurfaceLedger {
               this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
           },
         );
-        this.dormantSurfaceIds.delete(id);
         this.pageIds.set(page, id);
         record.live.stopObservingHumanInput = page.observeHumanInput?.((observation) => {
           this.recordHumanActivity(id, observation);

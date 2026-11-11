@@ -596,6 +596,24 @@ describe("phone browser manager", () => {
     expect(fixture.native.tabs.size).toBe(2);
   });
 
+  test("opens and lists phone tab 129 through typed actions", async () => {
+    const fixture = await setup();
+    await fixture.agentAttach();
+    for (let index = 1; index < 129; index++) {
+      await fixture.sessionAction({ type: "surface.open" });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "agent.result",
+        result: { type: "surface.open" },
+      });
+    }
+    await fixture.sessionAction({ type: "session.tabs" });
+    const listed = fixture.server().at(-1);
+    expect(listed).toMatchObject({ type: "agent.result", result: { type: "session.tabs" } });
+    if (listed?.type !== "agent.result" || listed.result.type !== "session.tabs")
+      throw new Error("Tabs were not listed");
+    expect(listed.result.tabs).toHaveLength(129);
+  });
+
   test.each(["retained", "discarded"] as const)(
     "closing a %s tab checks its document and geometry without resuming or allocating a view",
     async (state) => {

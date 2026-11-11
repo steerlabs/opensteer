@@ -20,8 +20,6 @@ import {
 } from "./browser-bridge.js";
 import type { RunnerModuleStream } from "./module-connection.js";
 
-const maxBrowserRelayChannels = 32;
-
 interface ActiveChannel {
   capability: BrowserCapabilityReference;
   expiryTimer: NodeJS.Timeout;
@@ -213,9 +211,6 @@ export class BrowserModuleRelay {
         const lease = this.#assertCapability(message.capability);
         if (this.#channels.has(message.channelId)) {
           throw new BrowserRelayError("The browser relay channel already exists.");
-        }
-        if (this.#channels.size >= maxBrowserRelayChannels) {
-          throw new BrowserRelayError("This browser relay capacity is full.");
         }
         const expiryTimer = setTimeout(
           () => this.#expireChannel(message.channelId),

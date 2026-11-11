@@ -344,7 +344,7 @@ export const BrowserActionResultSchema = z
   .discriminatedUnion("type", [
     z.strictObject({
       type: z.literal("session.tabs"),
-      tabs: z.array(BrowserActionBindingSchema).max(64),
+      tabs: z.array(BrowserActionBindingSchema),
     }),
     bindingResult("surface.attach"),
     bindingResult("surface.resume"),

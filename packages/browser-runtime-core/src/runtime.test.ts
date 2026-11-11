@@ -256,28 +256,32 @@ describe("BrowserRuntime", () => {
     }
   });
 
-  it("counts fresh hosts against the runtime host capacity", async () => {
+  it("attaches Guest host 9", async () => {
     const verifier = new FakeTicketVerifier(freshClaims());
-    verifier.setClaims(
-      "second-fresh",
-      freshClaims({
-        nonce: "nonce_1123456789abcdef",
-        sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000003"),
-      }),
-    );
     const runtime = new BrowserRuntime({
       launcher: new FakeIsolatingLauncher(),
-      maxProfileHosts: 1,
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: verifier,
     });
-
-    await runtime.attach("fresh-ticket", new FakeSink());
-    await expect(runtime.attach("second-fresh", new FakeSink())).rejects.toMatchObject({
-      code: "conflict",
-    });
-    await runtime.shutdown();
+    try {
+      for (let index = 1; index <= 9; index++) {
+        const ticket = `guest-${index}`;
+        verifier.setClaims(
+          ticket,
+          freshClaims({
+            nonce: `nonce_${String(index).padStart(16, "0")}`,
+            sessionId: BrowserSessionIdSchema.parse(
+              `bsn_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            ),
+          }),
+        );
+        await runtime.attach(ticket, new FakeSink());
+      }
+      expect(runtime.health()).toMatchObject({ profileHostCount: 9, sessionCount: 9 });
+    } finally {
+      await runtime.shutdown();
+    }
   });
 });
 

@@ -70,8 +70,6 @@ import {
   BrowserHistoryUrlSchema,
   browserHostMethods,
   browserPageSite,
-  browserSessionTabLimit,
-  browserSessionTabsFullReason,
   BrowserProfileAccessSchema,
   browserStateImportHostTimeoutMs,
   BrowserSurfaceIdSchema,
@@ -745,7 +743,6 @@ export class BrowserService {
   ) => void;
   readonly #onUsageChanged: NonNullable<BrowserServiceOptions["onUsageChanged"]>;
   readonly #onError: NonNullable<BrowserServiceOptions["onError"]>;
-  readonly #reservedTabs = new Map<BrowserSessionId, number>();
   readonly #activityClock: Clock;
   readonly #actingWindowMs: number;
   readonly #actorMetadataTimeoutMs: number;
@@ -1734,8 +1731,6 @@ export class BrowserService {
     return this.#serializeKey(`tab-open:${ownerId}:${command.idempotencyKey}`, async () => {
       budget.signal.throwIfAborted();
       let admitted: BrowserTabOpenBinding | undefined;
-      // Until its page is recorded, an open counts against the session it chose.
-      let reserved: BrowserSessionId | undefined;
       try {
         let pendingFinish: (() => Promise<void>) | undefined;
         const select = async () => {
@@ -1790,20 +1785,7 @@ export class BrowserService {
                   left.createdAt.getTime() - right.createdAt.getTime() ||
                   left.id.localeCompare(right.id),
               );
-            record = null;
-            for (const candidate of candidates) {
-              const saved = (await this.#workspaceTabs?.tabIds(candidate.id)) ?? [];
-              // Read together after the await: an open is reserved until its page is listed.
-              const listed = this.#brokers.get(candidate.id)?.surfaceIds ?? [];
-              const held =
-                new Set([...saved, ...listed]).size + (this.#reservedTabs.get(candidate.id) ?? 0);
-              if (held < browserSessionTabLimit) {
-                record = candidate;
-                reserved = candidate.id;
-                this.#reservedTabs.set(reserved, (this.#reservedTabs.get(reserved) ?? 0) + 1);
-                break;
-              }
-            }
+            record = candidates[0] ?? null;
             if (!record)
               opening = {
                 ownerId,
@@ -1893,25 +1875,16 @@ export class BrowserService {
           if (settled?.outcome.kind === "failed") throw this.#tabOpenFailure(settled, error);
         }
         throw error;
-      } finally {
-        if (reserved) {
-          const left = (this.#reservedTabs.get(reserved) ?? 1) - 1;
-          if (left > 0) this.#reservedTabs.set(reserved, left);
-          else this.#reservedTabs.delete(reserved);
-        }
       }
     });
   }
 
   #tabOpenFailure(binding: BrowserTabOpenBinding, cause?: unknown): OpensteerError {
-    const full = cause instanceof OpensteerError && cause.reason === browserSessionTabsFullReason;
     return this.#tabOpenRefusal(
       "browser-tab-open-failed",
       binding.outcome.kind === "failed" && binding.outcome.reason === "interrupted"
         ? "Opening was interrupted by a Host restart. Retry to open a new page."
-        : full
-          ? "This browser holds all the tabs it can. Retry to open the page in another browser."
-          : "The browser could not open this page. Retry to open a new page.",
+        : "The browser could not open this page. Retry to open a new page.",
       [],
       cause,
     );
@@ -4988,9 +4961,6 @@ class HostedBrowserBroker {
   #tabStateRevision = 0;
   #storedTabStateRevision = 0;
   #surfaces: BrowserSurface[] = [];
-  get surfaceIds(): readonly BrowserSurfaceId[] {
-    return [...this.#tabs.rows.values()].map((row) => row.id);
-  }
   get workspaceTabRestoreVersion(): 1 | undefined {
     return this.#restoreTabs ? 1 : undefined;
   }

@@ -438,12 +438,10 @@ integration.sequential("durable workspace tabs", () => {
     await tabs.closeLineage(replacement);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs).toEqual([]);
   });
-  it("admits a replacement in the same flush that closes a tab at capacity", async ({
-    storeFixture,
-  }) => {
+  it("records additions and closes in one flush beyond tab 129", async ({ storeFixture }) => {
     const { fixture, tabs } = storeFixture;
     const f = await fixture();
-    const original = Array.from({ length: 64 }, (_, order) => ({
+    const original = Array.from({ length: 129 }, (_, order) => ({
       ...f.first,
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
       order,
@@ -454,15 +452,14 @@ integration.sequential("durable workspace tabs", () => {
         .changed,
     ).toBe(true);
     const group = await tabs.read(f.ownerId, f.groupId);
-    expect(group?.tabs).toHaveLength(64);
+    expect(group?.tabs).toHaveLength(129);
     expect(group?.tabs?.some((tab) => tab.id === original[0]!.id)).toBe(false);
     expect(group?.tabs?.some((tab) => tab.id === f.second.id)).toBe(true);
     expect((await tabs.recordChanges(f.groupId, original, [])).changed).toBe(false);
-    await expect(tabs.recordChanges(f.groupId, [f.first], [])).rejects.toMatchObject({
-      code: "conflict",
-    });
+    expect((await tabs.recordChanges(f.groupId, [f.first], [])).changed).toBe(true);
+    expect((await tabs.read(f.ownerId, f.groupId))?.tabs).toHaveLength(130);
   });
-  it("preserves a long durable URL and resolves an omitted group's replacement session", async ({
+  it("keeps older groups visible and resolves their replacement session with a long URL", async ({
     storeFixture,
   }) => {
     const { fixture, tabs, store, database } = storeFixture;
@@ -505,14 +502,14 @@ integration.sequential("durable workspace tabs", () => {
         })),
       )
       .execute();
-    expect((await tabs.list(f.ownerId)).some((group) => group.id === f.groupId)).toBe(false);
+    expect((await tabs.list(f.ownerId)).some((group) => group.id === f.groupId)).toBe(true);
     const grouped = await new BrowserTabGroupStore(database).group(f.ownerId, {
       tabIds: [f.first.id],
       title: "Still relevant",
       idempotencyKey: randomUUID(),
     });
     const preferred = await tabs.list(f.ownerId);
-    expect(preferred).toHaveLength(100);
+    expect(preferred).toHaveLength(101);
     expect(preferred[0]?.id).toBe(f.groupId);
     expect(preferred.flatMap((lineage) => lineage.tabs ?? []).map((tab) => tab.id)).toContain(
       f.first.id,
@@ -521,7 +518,7 @@ integration.sequential("durable workspace tabs", () => {
       tabIds: [f.first.id],
       idempotencyKey: randomUUID(),
     });
-    expect((await tabs.list(f.ownerId)).some((lineage) => lineage.id === f.groupId)).toBe(false);
+    expect((await tabs.list(f.ownerId)).some((lineage) => lineage.id === f.groupId)).toBe(true);
     expect(grouped.layout.groups[0]?.tabIds).toEqual([f.first.id]);
     expect(await tabs.lineageForSession(replacement)).toBe(f.groupId);
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.[0]?.id).toBe(f.first.id);
@@ -545,9 +542,7 @@ integration.sequential("durable workspace tabs", () => {
     await store.markWorkspaceDeleted({ workspaceId: f.session.workspaceId });
     expect(await tabs.list(f.ownerId)).toEqual([]);
   });
-  it("lists the newest 100 groups without refusing new dormant groups", async ({
-    storeFixture,
-  }) => {
+  it("lists every dormant group beyond the old 100-group window", async ({ storeFixture }) => {
     const { fixture, store, tabs, database } = storeFixture;
     const f = await fixture();
     const now = Date.now();
@@ -596,11 +591,11 @@ integration.sequential("durable workspace tabs", () => {
     ).toBe(true);
     await tabs.suspend(id);
     const listed = await tabs.list(f.ownerId);
-    expect(listed).toHaveLength(100);
+    expect(listed).toHaveLength(101);
     expect(listed.map((group) => group.id)).toEqual([
       id,
       ...dormant
-        .slice(1)
+        .slice()
         .reverse()
         .map((group) => group.id),
     ]);
@@ -942,7 +937,7 @@ integration.sequential("durable workspace tabs", () => {
     await tabs.closeLineage(f.groupId);
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
   });
-  it("does not consume refused access or a close at the 64-tab bound", async ({ storeFixture }) => {
+  it("keeps refused closes reopenable beyond 64 tabs", async ({ storeFixture }) => {
     const { fixture, tabs, allowReopen } = storeFixture;
     const f = await fixture();
     await tabs.recordChanges(f.groupId, [f.first], []);
@@ -957,13 +952,9 @@ integration.sequential("durable workspace tabs", () => {
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
     }));
     await tabs.recordChanges(f.groupId, full, []);
-    await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({
-      message: "Browser tab limit reached.",
-    });
-    await tabs.close(f.ownerId, full[0]!.id, false);
     const reopened = await tabs.reopen(f.ownerId, allowReopen);
     expect(reopened.title).toBe("One");
-    expect((await tabs.read(f.ownerId, f.groupId))?.tabs).toHaveLength(64);
+    expect((await tabs.read(f.ownerId, f.groupId))?.tabs).toHaveLength(65);
   });
   it("refuses a full surviving group without consuming its close", async ({ storeFixture }) => {
     const { fixture, database, store, tabs, allowReopen } = storeFixture;

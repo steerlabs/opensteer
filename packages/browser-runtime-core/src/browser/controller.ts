@@ -375,6 +375,7 @@ export class BrowserController {
   private readonly canceledGenerations = new Map<string, number>();
   private readonly hoverOwners = new Map<BrowserSurfaceId, { owner: string; cdp: CdpChannel }>();
   private readonly cleanupReservations = new Set<string>();
+  private readonly laneIdleTimers = new Map<BrowserSurfaceId, ReturnType<typeof setTimeout>>();
   private readonly laneGeometries = new Map<BrowserSurfaceId, number>();
   /** Each actor's cursor on each page, least recently used first. */
   private readonly agentPointers = new Map<string, AgentPointer>();
@@ -704,6 +705,8 @@ export class BrowserController {
     );
     this.observers.clear();
     this.closed = true;
+    for (const timer of this.laneIdleTimers.values()) clearTimeout(timer);
+    this.laneIdleTimers.clear();
     this.unsubscribeCdp?.();
     this.unsubscribeCdp = null;
     this.unsubscribeLedger?.();
@@ -743,8 +746,7 @@ export class BrowserController {
       return this.drainTabs();
     }
     if (message.type === "session.saved") {
-      const result = this.savedTabs.apply(message.stream);
-      if (result === "applied") this.ledger.setSavedTabs(this.savedTabs.rows.keys());
+      this.savedTabs.apply(message.stream);
       return Promise.resolve();
     }
 
@@ -852,7 +854,6 @@ export class BrowserController {
     const surfaceId = this.pageOf(message);
     // Resolve implicit targets now: a later activation cannot retarget admitted work.
     if (surfaceId && (!isCdpRequest(message) || isOrderedAgentMutation(message))) {
-      const lane = this.inputLane(surfaceId);
       const reservation = this.reservation(message, surfaceId);
       const release = isInputRelease(message);
       const cleanup = release && reservation !== null && this.cleanupReservations.has(reservation);
@@ -885,10 +886,12 @@ export class BrowserController {
         message.type === "input.wheel" || message.type === "input.key"
           ? this.cursorHints.get(surfaceId)?.hints.pause()
           : undefined;
-      return lane.enqueue(message, cleanup).finally(() => {
-        resumeCursor?.();
-        if (release && reservation) this.cleanupReservations.delete(reservation);
-      });
+      return this.inputLane(surfaceId)
+        .enqueue(message, cleanup)
+        .finally(() => {
+          resumeCursor?.();
+          if (release && reservation) this.cleanupReservations.delete(reservation);
+        });
     }
     const queue = isCdpRequest(message) ? this.agentCommands : this.viewerCommands;
     return this.enqueueOperation(queue, () => ({ done: this.run(message, surfaceId), surfaceId }));
@@ -934,13 +937,12 @@ export class BrowserController {
   private inputLane(surfaceId: BrowserSurfaceId): BrowserInputLane {
     let lane = this.lanes.get(surfaceId);
     if (!lane) {
-      if (this.lanes.size >= 128)
-        throw new BrowserRuntimeError("conflict", "Too many browser input surfaces.");
       lane = new BrowserInputLane(
         this.maxPendingCommands,
         (message) => this.run(message, surfaceId),
         (message, reason) => this.refuseInput(message, reason),
         surfaceId,
+        () => this.releaseIdleLane(surfaceId),
       );
       this.lanes.set(surfaceId, lane);
       this.laneGeometries.set(
@@ -949,6 +951,27 @@ export class BrowserController {
       );
     }
     return lane;
+  }
+
+  private releaseIdleLane(surfaceId: BrowserSurfaceId): void {
+    clearTimeout(this.laneIdleTimers.get(surfaceId));
+    if (this.closed) return;
+    // Preserve the wheel transaction's anchor during its 200 ms quiet period.
+    const timer = setTimeout(() => {
+      this.laneIdleTimers.delete(surfaceId);
+      const lane = this.lanes.get(surfaceId);
+      if (
+        !lane ||
+        lane.contains(() => true) ||
+        this.gestures.has(surfaceId) ||
+        this.keyOwners.has(surfaceId)
+      )
+        return;
+      this.lanes.delete(surfaceId);
+      this.laneGeometries.delete(surfaceId);
+    }, 200);
+    timer.unref();
+    this.laneIdleTimers.set(surfaceId, timer);
   }
 
   private reservation(message: BrowserClientMessage, surfaceId: BrowserSurfaceId): string | null {
@@ -3396,8 +3419,6 @@ export class BrowserController {
       message.command.method === browserHostMethods.closeTab &&
       !this.ledger.stateOf(BrowserSurfaceIdSchema.parse(surfaceId))
     ) {
-      const tabId = BrowserSurfaceIdSchema.parse(surfaceId);
-      if (!this.ledger.binding(tabId)) this.ledger.forgetDormantSurface(tabId);
       await this.send({
         type: "cdp.result",
         requestId: message.requestId,

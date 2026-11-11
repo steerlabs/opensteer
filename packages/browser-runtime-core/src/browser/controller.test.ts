@@ -64,6 +64,39 @@ describe("BrowserController", () => {
     await ledger.start();
   });
 
+  it("admits input on surface 129 and releases idle lanes", async () => {
+    const controller = createController();
+    await controller.start();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (let index = 0; index < 129; index++) {
+        const surface = index === 0 ? ledger.snapshot()[0]! : await ledger.openSurface();
+        await controller.handle({ type: "navigation.reload", surfaceId: surface.id });
+      }
+      expect(
+        context
+          .pages()
+          .flatMap((page) => (page instanceof FakePage ? commandsNamed("Page.reload", page) : [])),
+      ).toHaveLength(129);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(controller.diagnostics()).toEqual([]);
+      await controller.handle({
+        type: "input.key",
+        surfaceId: ledger.snapshot()[0]!.id,
+        action: "up",
+        key: "x",
+        code: "KeyX",
+        modifiers: [],
+      });
+      expect(controller.diagnostics()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+      await controller.close();
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
     const controller = createController(
       undefined,

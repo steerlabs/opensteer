@@ -80,8 +80,6 @@ describe("readBrowserRuntimeConfig", () => {
     ["invalid port", { OPENSTEER_BROWSER_PORT: "70000" }],
     ["invalid boolean", { OPENSTEER_BROWSER_HEADLESS: "yes" }],
     ["invalid memory budget", { OPENSTEER_BROWSER_MEMORY_BUDGET_MB: "0" }],
-    ["invalid profile capacity", { OPENSTEER_BROWSER_MAX_PROFILE_HOSTS: "0" }],
-    ["invalid session capacity", { OPENSTEER_BROWSER_MAX_SESSIONS_PER_PROFILE: "129" }],
   ])("rejects %s", (_label, override) => {
     expect(() =>
       readBrowserRuntimeConfig({

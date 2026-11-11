@@ -879,7 +879,7 @@ integration("Browser presence and conversation usage", () => {
     ).toBe(false);
   }, 60_000);
 
-  it("cold-loads all 100 × 64 tab identities and 64 × 16 occupants through the carrier", async () => {
+  it("cold-loads all 150 × 64 tab identities and 64 × 16 occupants through the carrier", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
@@ -909,7 +909,7 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => runtime.close());
     const producers = [runtime];
-    for (let index = 32; index < 100; index += 32) {
+    for (let index = 32; index < 150; index += 32) {
       const producer = await startBrowserRuntime(
         host.hostPort,
         await enrollmentToken(host, {
@@ -942,7 +942,7 @@ integration("Browser presence and conversation usage", () => {
       geometryRevision: 1,
       openerId: null,
     }));
-    for (let index = 0; index < 100; index++) {
+    for (let index = 0; index < 150; index++) {
       const producer = producers[Math.floor(index / 32)]!;
       const opened = await host.runtime.browser.start({
         ownerId: host.ownerId,
@@ -1003,11 +1003,11 @@ integration("Browser presence and conversation usage", () => {
     cleanups.push(async () => client.dispose());
     await client.waitForSnapshot(
       (snapshot) =>
-        snapshot.browserSessions.length === 100 &&
+        snapshot.browserSessions.length === 150 &&
         snapshot.browserSessions.every((session) => session.tabCatalog?.tabs.length === 64),
     );
     const loaded = client.getSnapshot().browserSessions;
-    expect(loaded).toHaveLength(100);
+    expect(loaded).toHaveLength(150);
     expect(loaded.every((session) => session.tabCatalog?.tabs.length === 64)).toBe(true);
     const occupied = loaded.find((session) => session.id === sessionId)!.tabCatalog!;
     expect(occupied.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);

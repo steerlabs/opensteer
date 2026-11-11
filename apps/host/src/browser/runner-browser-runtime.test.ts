@@ -109,6 +109,24 @@ async function maintenanceFixture() {
   };
 }
 
+it("opens Host relay channel 33 on one runtime", async () => {
+  const f = await maintenanceFixture();
+  try {
+    for (let index = 0; index < 33; index++) {
+      const connection = f.target.connect(`ticket-${index}`);
+      const errors: Error[] = [];
+      connection.on("error", (error) => errors.push(error));
+      await vi.waitFor(() => {
+        expect(errors).toEqual([]);
+        expect(connection.readyState).toBe(1);
+      });
+    }
+    expect(f.sent.filter((message) => message.type === "browser.attach")).toHaveLength(33);
+  } finally {
+    f.router.close();
+  }
+});
+
 it("waits for a pending renewal before sending an open", async () => {
   vi.useFakeTimers();
   const f = await maintenanceFixture();

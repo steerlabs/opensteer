@@ -59,8 +59,6 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     localProfiles: { root: config.profileRoot },
     acknowledgeProfileReady: nativeProfileReadyClient(config.profileReadyTrustedHttpOrigin),
     launcher,
-    maxProfileHosts: config.maxProfileHosts,
-    maxSessionsPerProfile: config.maxSessionsPerProfile,
     onOpenTiming: (timing) =>
       process.stdout.write(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,

@@ -4,7 +4,6 @@ import {
   BrowserSurfaceIdSchema,
   BrowserTabGroupIdSchema,
   browserPageSite,
-  browserSessionTabLimit,
   browserTabGroupMaxTabs,
   browserTabOpenReplayWindowMs,
   projectBrowserSessionOpener,
@@ -182,7 +181,6 @@ export class WorkspaceTabStore {
     const groups = await query
       .orderBy("lineages.createdAt", "desc")
       .orderBy("lineages.id", "desc")
-      .limit(100)
       .execute(databaseOperationOptions());
     if (!groups.length) return [];
     const rows = await database
@@ -362,16 +360,6 @@ export class WorkspaceTabStore {
       .execute(databaseOperationOptions());
     return rows.map(streamTab);
   }
-  /** The open tabs a session holds, with a page or asleep. */
-  async tabIds(sessionId: BrowserSessionId): Promise<string[]> {
-    const rows = await this.database
-      .selectFrom("workspaceTabs")
-      .select("id")
-      .where("sessionId", "=", sessionId)
-      .where("closedAt", "is", null)
-      .execute(databaseOperationOptions());
-    return rows.map((row) => row.id);
-  }
   async get(ownerId: UserId, id: string) {
     const row = await this.database
       .selectFrom("workspaceTabs")
@@ -490,18 +478,13 @@ export class WorkspaceTabStore {
             .execute(databaseOperationOptions())
         : [];
       let nextOrder: number | undefined;
-      let openCount = 0;
       if (descriptors.some((row) => !previous.some((held) => held.id === row.id))) {
         const bounds = await tx
           .selectFrom("workspaceTabs")
-          .select((eb) => [
-            eb.fn.max("order").as("maxOrder"),
-            eb.fn.countAll().filterWhere("closedAt", "is", null).as("openCount"),
-          ])
+          .select((eb) => eb.fn.max("order").as("maxOrder"))
           .where("groupId", "=", session.tabGroupId)
           .executeTakeFirstOrThrow(databaseOperationOptions());
         nextOrder = (bounds.maxOrder ?? -1) + 1;
-        openCount = Number(bounds.openCount);
       }
       const written: TabRow[] = [];
       if (closed.length) {
@@ -515,7 +498,6 @@ export class WorkspaceTabStore {
           .returning("id")
           .execute(databaseOperationOptions());
         changes.closedIds = result.map((row) => row.id);
-        openCount -= result.length;
         for (const row of previous)
           if (row.sessionId === sessionId && closed.includes(row.id) && !row.closedAt)
             row.closedAt = closedAt;
@@ -563,11 +545,6 @@ export class WorkspaceTabStore {
             .executeTakeFirst(databaseOperationOptions());
           if (updated) written.push(updated);
         } else {
-          if (openCount >= browserSessionTabLimit)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Browser tab limit reached.",
-            });
           const inserted = {
             ...values,
             id: descriptor.id,
@@ -585,7 +562,6 @@ export class WorkspaceTabStore {
           if (!row) continue;
           written.push(row);
           nextOrder!++;
-          openCount++;
           previous.push({
             ...inserted,
             closedBy: null,
@@ -726,14 +702,6 @@ export class WorkspaceTabStore {
         const session = await this.session(ownerId, source.groupId, tx);
         if (!session)
           throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
-        const open = await tx
-          .selectFrom("workspaceTabs")
-          .select("id")
-          .where("groupId", "=", source.groupId)
-          .where("closedAt", "is", null)
-          .execute(databaseOperationOptions());
-        if (open.length >= browserSessionTabLimit)
-          throw new OpensteerError({ code: "conflict", message: "Browser tab limit reached." });
         const groups = new BrowserTabGroupStore(tx);
         const { arrangement } = await groups.orderedTabs(ownerId, tx);
         if (arrangement.order.length >= browserTabOrderMaxTabs)
