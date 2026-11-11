@@ -1774,6 +1774,17 @@ export async function createHostServer(
     }
     const session = requireRpcSession(context);
     const userId = session.user.id;
+    if (
+      (command.type === "runner.enrollment.createManaged" ||
+        command.type === "runner.enrollment.createLocal" ||
+        command.type === "runner.enrollment.createPhone") &&
+      isProjectDeploymentAuthority(await dependencies.store.securityEffectAuthority())
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "team-unavailable",
+        message: "Team computers are enrolled through team computer replacement",
+      });
     if (isAdministrationCommand(command))
       return administration.execute(
         { kind: "person", userId, isAdministrator: session.user.instanceRole === "administrator" },

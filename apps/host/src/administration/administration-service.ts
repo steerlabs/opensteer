@@ -211,13 +211,13 @@ export class AdministrationService {
     command: AdministrationCommand,
   ): Promise<HostApiCommandOutput> {
     if (
-      command.type === "workspace.delete" &&
+      (command.type === "workspace.delete" || command.type === "machine.revoke") &&
       isProjectDeploymentAuthority(await this.dependencies.store.securityEffectAuthority())
     )
       throw new OpensteerError({
         code: "forbidden",
         reason: "team-unavailable",
-        message: "Team Projects require the team Project deletion command",
+        message: "Team Projects and computers require the team administration commands",
       });
     if (caller.kind === "person") return this.#authorizedExecute(caller, command);
     return this.#mutations.run(JSON.stringify([caller.userId, command.idempotencyKey]), () =>
