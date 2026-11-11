@@ -37,11 +37,15 @@ function fixture() {
     ),
     detach: vi.fn(() => new Promise<void>(() => {})),
   });
-  const page = new EventEmitter() as unknown as Page;
+  const pages: Page[] = [];
   const context = Object.assign(new EventEmitter(), {
     addInitScript: vi.fn(async () => {}),
-    pages: () => [page],
-    newPage: vi.fn(async () => page),
+    pages: () => pages,
+    newPage: vi.fn(async () => {
+      const page = new EventEmitter() as unknown as Page;
+      pages.push(page);
+      return page;
+    }),
     newCDPSession: vi.fn(async () => cdp as unknown as CDPSession),
   });
   const browser = {

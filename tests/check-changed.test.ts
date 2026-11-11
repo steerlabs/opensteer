@@ -47,7 +47,7 @@ it("keeps listed browser tests out of ordinary changed-file execution", () => {
   const selected = realBrowserTests.flatMap((file) => [file.replace(/\.test\.tsx?$/, ".ts"), file]);
   const plan = localPlan(realBrowserTests, [], selected);
   expect(plan.commands.filter((command: string[]) => command[0] === "test:browser")).toEqual([
-    ["test:browser", "--", ...realBrowserTests],
+    ["test:browser", ...realBrowserTests],
   ]);
   expect(plan.commands.some((command: string[]) => command.includes("vitest"))).toBe(false);
   expect(plan.lanes["browser-journeys"]).toBe(true);
