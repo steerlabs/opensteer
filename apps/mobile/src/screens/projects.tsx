@@ -123,10 +123,7 @@ function ProjectDirectory(props: {
       ),
     [summary],
   );
-  const empty = teamHomeEmpty({
-    canCreate: teamAllowsCreate,
-    listsOthers: summary?.can.people.allowed === true,
-  });
+  const empty = teamHomeEmpty({ canCreate: teamAllowsCreate });
 
   const directory = useMemo<Directory>(
     () => ({

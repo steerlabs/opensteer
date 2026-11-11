@@ -1,16 +1,13 @@
 import { useMemo, useState } from "react";
 import {
   formatRelativeTime,
+  teamComputerCommand,
   teamComputerState,
   teamComputerTrustNote,
   teamErrorText,
 } from "@opensteer/client/host";
 import { useHostRead } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
-import {
-  computerConnectionCommands,
-  runnerDistribution,
-} from "../../computers/connection-commands.js";
 import {
   CopyBlock,
   containerLabel,
@@ -27,6 +24,8 @@ interface Issued {
   readonly expiresAt: string;
   /** The connection code: held only in this screen's memory, never stored. */
   readonly token: string;
+  /** The image the Host names for its own release; null when it has none to offer. */
+  readonly runnerImage: string | null;
 }
 
 /**
@@ -48,17 +47,15 @@ export function TeamComputerPage() {
   const [issued, setIssued] = useState<Issued | null>(null);
   const countdown = useCountdown(issued?.expiresAt ?? null);
   const view = read.data;
-  const commands = useMemo(
+  const command = useMemo(
     () =>
       issued && snapshot.deploymentShape && snapshot.identityConfig
-        ? computerConnectionCommands({
+        ? teamComputerCommand({
             deploymentShape: snapshot.deploymentShape,
-            enrollmentId: issued.enrollmentId,
             hostOrigin: snapshot.identityConfig.publicOrigin,
-            name: `${teamName} computer`,
-            runnerDistribution,
-            token: issued.token,
-          }).container
+            team: teamName,
+            replaced: issued,
+          })
         : null,
     [issued, snapshot.deploymentShape, snapshot.identityConfig, teamName],
   );
@@ -74,6 +71,7 @@ export function TeamComputerPage() {
           enrollmentId: result.enrollmentId,
           expiresAt: result.expiresAt,
           token: result.token,
+          runnerImage: result.runnerImage ?? null,
         });
         setConfirming(false);
         read.reload();
@@ -117,14 +115,26 @@ export function TeamComputerPage() {
               </button>
             ) : null}
           </div>
-          {issued && commands ? (
+          {issued && command ? (
             <div className="card__row team-computer__connect">
-              <p className="computers-expiry">Connection code expires in {countdown}.</p>
-              <p className="field__hint">
-                Whoever runs {teamName}’s server runs this on the new computer. It joins as{" "}
-                {teamName}’s computer.
-              </p>
-              <CopyBlock hint={containerPrerequisite} label={containerLabel} value={commands} />
+              {command.kind === "command" ? (
+                <>
+                  <p className="computers-expiry">Connection code expires in {countdown}.</p>
+                  <p className="field__hint">
+                    Whoever runs {teamName}’s server runs this on the new computer. It joins as{" "}
+                    {teamName}’s computer.
+                  </p>
+                  <CopyBlock
+                    hint={containerPrerequisite}
+                    label={containerLabel}
+                    value={command.text}
+                  />
+                </>
+              ) : (
+                <p className="field__hint" role="status">
+                  {command.text}
+                </p>
+              )}
             </div>
           ) : null}
         </div>

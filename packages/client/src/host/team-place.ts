@@ -20,3 +20,19 @@ export function awaitsFirstWorkspace(
   if (snapshot.workspaces.length > 0) return false;
   return !(isTeamPlace(snapshot) && snapshot.deploymentId !== null);
 }
+
+/**
+ * What a place offers a person. A team place has no Tabs in this version, and
+ * its Projects' settings choose the engine and model, so a person's choice of
+ * them is never offered there.
+ */
+export function placeHas(
+  snapshot: Pick<HostSnapshot, "teamAdministrationAvailable">,
+  part: "tabs" | "execution-choice",
+): boolean {
+  switch (part) {
+    case "tabs":
+    case "execution-choice":
+      return !isTeamPlace(snapshot);
+  }
+}

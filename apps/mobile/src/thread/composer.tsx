@@ -125,6 +125,8 @@ export function Composer(props: {
   readonly hostClient: HostClient;
   /** What the next message will run on, in the words the settings sheet uses. */
   readonly modelLabel: string;
+  /** False where a person's engine and model choice is never used: a team Project's settings decide them. */
+  readonly executionChoice?: boolean;
   readonly model: HarnessModelDescriptor | null;
   readonly modelOptions: ModelSelection["options"];
   readonly mutationGate: ThreadMutationGate;
@@ -717,12 +719,16 @@ export function Composer(props: {
       label: "Attach photo…",
       onPress: () => void staged.pick("photo"),
     },
-    {
-      icon: "gearshape",
-      id: "model",
-      label: props.variant === "conversation" ? "AI settings" : "Change model…",
-      onPress: () => props.onChangeModel(),
-    },
+    ...(props.executionChoice === false
+      ? []
+      : [
+          {
+            icon: "gearshape" as const,
+            id: "model",
+            label: props.variant === "conversation" ? "AI settings" : "Change model…",
+            onPress: () => props.onChangeModel(),
+          },
+        ]),
     ...props.conversationActions,
     ...(props.running
       ? [
@@ -1017,7 +1023,7 @@ export function Composer(props: {
                   />
                 ),
               }
-            : view.showPills
+            : view.showPills && props.executionChoice !== false
               ? {
                   accessory: (
                     <View>

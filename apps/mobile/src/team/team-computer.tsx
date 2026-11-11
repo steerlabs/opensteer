@@ -1,6 +1,6 @@
-import { computerConnectionCommands, runnerImageReference } from "@opensteer/client/computers";
 import {
   formatRelativeTime,
+  teamComputerCommand,
   teamComputerState,
   teamComputerTrustNote,
   type HostClient,
@@ -26,7 +26,11 @@ export function TeamComputer(props: { readonly hostClient: HostClient }): ReactN
   );
   const [pending, setPending] = useState(false);
   // The connection code lives only in this screen's memory.
-  const [command, setCommand] = useState<{ text: string; expiresAt: string } | null>(null);
+  const [command, setCommand] = useState<{
+    kind: "command" | "unavailable";
+    text: string;
+    expiresAt: string;
+  } | null>(null);
   const view = read.data;
   if (!view || !summary)
     return (
@@ -45,17 +49,12 @@ export function TeamComputer(props: { readonly hostClient: HostClient }): ReactN
       .then((result) => {
         if (snapshot.deploymentShape && snapshot.identityConfig)
           setCommand({
-            text: computerConnectionCommands({
+            ...teamComputerCommand({
               deploymentShape: snapshot.deploymentShape,
-              enrollmentId: result.enrollmentId,
               hostOrigin: snapshot.identityConfig.publicOrigin,
-              name: `${teamName} computer`,
-              runnerDistribution: null,
-              runnerImage: runnerImageReference(
-                process.env.EXPO_PUBLIC_OPENSTEER_RUNNER_SOURCE_REVISION,
-              ),
-              token: result.token,
-            }).container,
+              team: teamName,
+              replaced: result,
+            }),
             expiresAt: result.expiresAt,
           });
         read.reload();
@@ -92,7 +91,13 @@ export function TeamComputer(props: { readonly hostClient: HostClient }): ReactN
           ) : null}
         </View>
       </TeamSection>
-      {command ? (
+      {command?.kind === "unavailable" ? (
+        <TeamSection label="Connect it">
+          <AppText role="secondary" tone="muted">
+            {command.text}
+          </AppText>
+        </TeamSection>
+      ) : command ? (
         <TeamSection
           footer={`Whoever runs ${teamName}’s server runs this on the new computer. It needs Docker. The code expires at ${new Date(command.expiresAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`}
           label="Connect it"

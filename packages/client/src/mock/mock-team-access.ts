@@ -691,6 +691,7 @@ export class MockTeamAccess {
         audit: adminCan,
         invite: adminCan,
         computer: adminCan,
+        projects: adminCan,
       },
     };
   }
@@ -1082,6 +1083,8 @@ export class MockTeamAccess {
           enrollmentId: `ren_00000000-0000-4000-8000-${String(this.#commandCount).padStart(12, "0")}`,
           token: `MOCK-TEAM-COMPUTER-CODE-${String(this.#commandCount).padStart(4, "0")}`,
           expiresAt,
+          // A fresh server here is a build with no published image to name.
+          runnerImage: this.scenario === "fresh" ? null : `opensteer/runner:sha-${"1f".repeat(20)}`,
         });
       }
       case "team.project.delete": {

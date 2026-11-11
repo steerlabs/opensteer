@@ -7,13 +7,15 @@ import {
   requestWaitLines,
   taskStarterLine,
   taskStoppedText,
+  unplacedOutcomes,
   type HostClient,
   type HostSnapshot,
   type ThreadSummary,
 } from "@opensteer/client/host";
-import { useHostSelector, useTeam } from "@opensteer/client/react";
+import { useHostRead, useHostSelector, useTeam } from "@opensteer/client/react";
+import { useNavigation } from "@react-navigation/native";
 import { useCallback, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -28,6 +30,8 @@ interface TeamTaskPlace {
   readonly viewerId: string | null;
   /** The pending Requests on this task the reader holds, as a key. */
   readonly held: string;
+  /** The Requests the transcript already shows where they were asked, as a key. */
+  readonly placed: string;
 }
 
 function sameTaskPlace(left: TeamTaskPlace, right: TeamTaskPlace): boolean {
@@ -36,7 +40,8 @@ function sameTaskPlace(left: TeamTaskPlace, right: TeamTaskPlace): boolean {
     left.project === right.project &&
     left.teamName === right.teamName &&
     left.viewerId === right.viewerId &&
-    left.held === right.held
+    left.held === right.held &&
+    left.placed === right.placed
   );
 }
 
@@ -53,40 +58,59 @@ function useTeamTaskPlace(hostClient: HostClient, thread: ThreadSummary | null):
         .filter(({ status }) => status === "pending")
         .map(({ id }) => id)
         .join(" "),
+      placed: (threadId === null ? [] : (snapshot.transcripts[threadId] ?? []))
+        .flatMap((entry) => (entry.kind === "request" ? [entry.requestId] : []))
+        .join(" "),
     }),
     [threadId, workspaceId],
   );
   return useHostSelector(hostClient, select, sameTaskPlace);
 }
 
+export type TeamRuntimeNotice = NonNullable<ReturnType<typeof composerRuntimeNotice>>;
+
 /**
  * What a shared task says above its composer on a team place: who started it,
- * who can see it, why it stopped or can't send, whom its questions wait on and
- * how they ended. Every line is a Host fact; one it doesn't send isn't drawn.
+ * who can see it, how its earlier questions ended, why it stopped, whom it
+ * waits on and why it can't send. Every line is a Host fact; one it doesn't
+ * send isn't drawn.
  */
 export function TeamTaskFacts(props: {
+  readonly deploymentId: string;
   readonly hostClient: HostClient;
+  readonly runtime: TeamRuntimeNotice | null;
   readonly thread: ThreadSummary;
 }): ReactNode {
-  const { thread } = props;
+  const { runtime, thread } = props;
+  const navigation = useNavigation();
   const where = useTeamTaskPlace(props.hostClient, thread);
-  const blocked = useTeamSendBlocked(props.hostClient, thread);
   if (!where.team) return null;
   const place = { project: where.project, team: where.teamName };
   const held = new Set(where.held.split(" ").filter(Boolean));
   const waits = thread.requestWaits
     ? requestWaitLines(thread.requestWaits, place.project, held)
     : [];
-  const outcomes = (thread.requestOutcomes ?? []).slice(-outcomesShown);
+  // An outcome whose question the transcript shows is told there, where it was asked.
+  const outcomes = unplacedOutcomes(
+    thread.requestOutcomes ?? [],
+    where.placed
+      .split(" ")
+      .filter(Boolean)
+      .map((requestId) => ({ kind: "request", requestId })),
+  ).slice(-outcomesShown);
   const starter = thread.startedBy ? taskStarterLine(thread.startedBy, where.viewerId) : null;
   const lines = [
     ...(thread.stopped ? [taskStoppedText(thread.stopped, place).long] : []),
     ...waits,
-    ...outcomes.map(
-      (outcome) => `${requestOutcomeLine(outcome, place)} · ${formatRelativeTime(outcome.at)}`,
-    ),
   ];
-  if (!starter && !thread.audience && lines.length === 0 && blocked === null) return null;
+  if (
+    !starter &&
+    !thread.audience &&
+    lines.length === 0 &&
+    outcomes.length === 0 &&
+    runtime === null
+  )
+    return null;
   return (
     <View accessibilityLabel="About this task" style={styles.facts}>
       {starter || thread.audience ? (
@@ -106,41 +130,84 @@ export function TeamTaskFacts(props: {
           ) : null}
         </View>
       ) : null}
+      {outcomes.length > 0 ? (
+        <View accessibilityLabel="Earlier questions" style={styles.earlier}>
+          {outcomes.map((outcome) => (
+            <AppText key={outcome.requestId} role="caption" tone="muted">
+              {`Earlier question · ${requestOutcomeLine(outcome, place)} · ${formatRelativeTime(outcome.at)}`}
+            </AppText>
+          ))}
+        </View>
+      ) : null}
       {lines.map((line) => (
         <AppText key={line} role="caption" tone="muted">
           {line}
         </AppText>
       ))}
-      {blocked === null ? null : (
-        <AppText role="caption" tone="ember">
-          {blocked}
-        </AppText>
+      {runtime === null ? null : (
+        <View style={styles.line}>
+          <AppText role="caption" tone="ember">
+            {`Can’t send yet. ${runtime.why} ${runtime.fix}`}
+          </AppText>
+          {runtime.settings ? (
+            <Pressable
+              accessibilityRole="link"
+              hitSlop={8}
+              onPress={() =>
+                navigation.navigate("TeamProjectRuntime", {
+                  deploymentId: props.deploymentId,
+                  workspaceId: thread.workspaceId,
+                })
+              }
+            >
+              <AppText role="caption" tone="default">
+                How it runs
+              </AppText>
+            </Pressable>
+          ) : null}
+        </View>
       )}
     </View>
   );
 }
 
 /**
- * Why a shared Project's composer can't send, from the summary's runtime and
- * the reader's level on it. Null when it runs or nothing is known.
+ * Why a shared Project's composer can't send, from the summary's runtime. Who
+ * may fix it comes from the Host's `can` on the Project, read only while it
+ * can't run; until that answers, the reader is told who can.
  */
-export function useTeamSendBlocked(
+export function useTeamRuntimeNotice(
   hostClient: HostClient,
   thread: ThreadSummary | null,
-): string | null {
-  const { summary } = useTeam(hostClient);
+): TeamRuntimeNotice | null {
+  const { team, summary, identity, generation } = useTeam(hostClient);
   const where = useTeamTaskPlace(hostClient, thread);
-  if (!where.team || thread === null) return null;
-  const runtime = summary?.projects.find(({ id }) => id === thread.workspaceId)?.runtime;
-  const notice = composerRuntimeNotice(runtime, {
+  const runtime =
+    thread === null
+      ? undefined
+      : summary?.projects.find(({ id }) => id === thread.workspaceId)?.runtime;
+  const blocked =
+    where.team && thread !== null && runtime !== undefined && runtime.state !== "ready";
+  const workspaceId = thread?.workspaceId ?? "";
+  const access = useHostRead(
+    team && blocked ? () => team.projectAccess({ workspaceId, limit: 1 }) : null,
+    `team-runtime-access:${identity}:${workspaceId}:${generation}`,
+  );
+  if (!blocked) return null;
+  return composerRuntimeNotice(runtime, {
     project: where.project,
     team: where.teamName,
-    manages: thread.audience?.myLevel === "manage",
+    canChange: access.data?.can.manage.allowed === true,
   });
-  return notice ? `Can’t send yet. ${notice.why} ${notice.fix}` : null;
 }
 
 const styles = StyleSheet.create({
+  earlier: {
+    borderBottomColor: color.line,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: space[2],
+    paddingBottom: space[4],
+  },
   facts: { gap: space[4], paddingBottom: space[8], paddingHorizontal: space[16] },
   line: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[8] },
   marker: {

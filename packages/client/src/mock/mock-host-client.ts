@@ -2771,12 +2771,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "team.connection.revoke":
     case "team.project.settings.set":
     case "team.invitation.create":
-    case "team.invitation.revoke":
-      return rpcSuccess(
-        await client.team.command(command, async (name) =>
-          WorkspaceIdSchema.parse((await client.createWorkspace({ name })).id),
-        ),
+    case "team.invitation.revoke": {
+      const result = await client.team.command(command, async (name) =>
+        WorkspaceIdSchema.parse((await client.createWorkspace({ name })).id),
       );
+      if (command.type === "team.project.delete") client.forgetTeamProject(command.workspaceId);
+      return rpcSuccess(result);
+    }
     case "phone.tab.close":
       client.closePhoneTab(command.machineId);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
@@ -10448,6 +10449,29 @@ class MockHostState {
     return this.setWorkspaceStatus(workspaceId, "deleting");
   }
 
+  /** A deleted team Project goes from every snapshot, with its tasks; a repeat finds nothing. */
+  forgetTeamProject(workspaceId: string): void {
+    const gone = new Set(
+      this.snapshot.threads
+        .filter((thread) => thread.workspaceId === workspaceId)
+        .map(({ id }) => id),
+    );
+    const keep = <T>(record: Record<string, T>) =>
+      Object.fromEntries(Object.entries(record).filter(([threadId]) => !gone.has(threadId)));
+    this.update({
+      ...this.snapshot,
+      requests: keep(this.snapshot.requests),
+      runQueue: this.snapshot.runQueue.filter(({ threadId }) => !gone.has(threadId)),
+      threads: this.snapshot.threads.filter(({ id }) => !gone.has(id)),
+      transcripts: keep(this.snapshot.transcripts),
+      transcriptWindows: keep(this.snapshot.transcriptWindows),
+      waitingRequests: this.snapshot.waitingRequests.filter(
+        ({ request }) => !gone.has(request.originatingThreadId),
+      ),
+      workspaces: this.snapshot.workspaces.filter(({ id }) => id !== workspaceId),
+    });
+  }
+
   async recoverWorkspace(workspaceId: string): Promise<WorkspaceSummary> {
     return this.setWorkspaceStatus(workspaceId, "ready");
   }
@@ -13370,7 +13394,7 @@ function teamPlaceWorld(snapshot: HostSnapshot, team: MockTeamAccess): HostSnaps
 function withTeamFacts(snapshot: HostSnapshot, team: MockTeamAccess): HostSnapshot {
   const manages = (workspaceId: string) => team.audience(workspaceId)?.myLevel === "manage";
   const launch = snapshot.threads.find(({ id }) => id === mockTeamThreads.launch);
-  const added = launch ? mockTeamAddedThreads(launch) : [];
+  const added = launch ? mockTeamAddedThreads(launch, manages(launch.workspaceId)) : [];
   const threads = [...added.map(({ thread }) => thread), ...snapshot.threads].map((thread) => {
     const audience = team.audience(thread.workspaceId);
     return { ...thread, ...(audience ? { audience } : {}), ...mockTeamTaskFacts[thread.id] };
@@ -13408,6 +13432,8 @@ function withTeamFacts(snapshot: HostSnapshot, team: MockTeamAccess): HostSnapsh
  */
 function mockTeamAddedThreads(
   launch: ThreadSummary,
+  /** A manager may read the managers' questions, so their history shows where each was asked. */
+  managesLaunch: boolean,
 ): { thread: ThreadSummary; transcript: TranscriptEntry[] }[] {
   const at = "2026-11-10T09:12:00.000Z";
   const maya = {
@@ -13471,7 +13497,47 @@ function mockTeamAddedThreads(
         askedAt: "2026-11-10T07:00:00.000Z",
         updatedAt: "2026-11-10T07:00:00.000Z",
       },
-      transcript: [],
+      transcript: [
+        message(
+          "msg_00000000-0000-4000-8000-0000000009c1",
+          {
+            displayName: "Nightly release notes",
+            kind: "trigger",
+            occurrenceId: "toc_00000000-0000-4000-8000-0000000009c1",
+            source: "schedule",
+            triggerId: "trg_00000000-0000-4000-8000-0000000009c1",
+          } as MessageEntry["author"],
+          "Draft tonight’s release notes from the changes merged today, and ask before publishing them.",
+          "2026-11-09T07:00:00.000Z",
+        ),
+        ...(managesLaunch
+          ? [
+              {
+                createdAt: "2026-11-09T07:04:00.000Z",
+                id: "request:req_0192f4a1-1111-4000-8000-0000000000a8",
+                kind: "request" as const,
+                outcome: "Fulfilled · Publish",
+                requestId: "req_0192f4a1-1111-4000-8000-0000000000a8",
+                requestKind: "harness.approval" as const,
+                resolvedByName: "Dev Patel",
+                runId: null,
+                title: "Publish last night’s release notes to the changelog?",
+              },
+            ]
+          : []),
+        message(
+          "msg_00000000-0000-4000-8000-0000000009c2",
+          {
+            displayName: "Nightly release notes",
+            kind: "trigger",
+            occurrenceId: "toc_00000000-0000-4000-8000-0000000009c2",
+            source: "schedule",
+            triggerId: "trg_00000000-0000-4000-8000-0000000009c1",
+          } as MessageEntry["author"],
+          "Draft tonight’s release notes from the changes merged today, and ask before publishing them.",
+          "2026-11-10T07:00:00.000Z",
+        ),
+      ],
     },
   ];
 }

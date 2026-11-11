@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { otherProjectLine } from "@opensteer/client/host";
+import { canListAllProjects, otherProjectLine } from "@opensteer/client/host";
 import { usePagedList } from "@opensteer/client/react";
 import { Icon } from "../icon.js";
 import { WorkspaceOrb } from "../workspace-orb.js";
@@ -14,8 +14,8 @@ import { ShowMore, TeamError, useShellTeam } from "./team-ui.js";
 export function OtherProjects({ open: openFirst }: { readonly open: boolean }) {
   const { team, summary, identity, generation } = useShellTeam();
   const [open, setOpen] = useState(openFirst);
-  // The read is an administrator's; nothing is asked unless the Host lets this person see people.
-  const allowed = summary?.can.people.allowed === true;
+  // Nothing is asked unless the Host lets this person list every Project.
+  const allowed = canListAllProjects(summary);
   const list = usePagedList(
     team && allowed && open
       ? (cursor: string | null) => team.projects({ limit: 50, ...(cursor ? { cursor } : {}) })

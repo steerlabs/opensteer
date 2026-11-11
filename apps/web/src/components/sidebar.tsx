@@ -53,7 +53,7 @@ import {
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
-import { isTeamPlace } from "@opensteer/client/host";
+import { isTeamPlace, placeHas } from "@opensteer/client/host";
 import {
   VoiceContext,
   useHostSelector,
@@ -237,7 +237,8 @@ export function Sidebar({
     () => placeDeviceLabels(places, elsewhere),
     [places, elsewhere],
   );
-  const searchStrip = browserTabStrip(places, layout);
+  // A team place has no Tabs, so search finds none there.
+  const searchStrip = browserTabStrip(placeHas(snapshot, "tabs") ? places : noPlaces, layout);
   const toast = useToast();
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
@@ -1177,6 +1178,7 @@ function ChatRow({
   );
 }
 
+const noPlaces: readonly PlaceItem[] = [];
 const selectSince = ({ since }: VoiceSnapshot) => since;
 const selectOffered = ({ available, phase }: VoiceSnapshot) => available || phase !== "idle";
 

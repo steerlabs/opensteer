@@ -6,9 +6,11 @@ import {
   requestWaitLines,
   taskStarterLine,
   taskStoppedText,
+  unplacedOutcomes,
   type HostSnapshot,
   type ThreadSummary,
 } from "@opensteer/client/host";
+import { useHostRead } from "@opensteer/client/react";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 import { formatWhen } from "../settings/primitives.js";
@@ -29,7 +31,13 @@ function placeOf(snapshot: HostSnapshot, thread: ThreadSummary) {
  * who can see it, why it stopped, whom its questions wait on and how they
  * ended. Every line is a Host fact; a fact it doesn't send is not drawn.
  */
-export function TeamTaskFacts({ thread }: { readonly thread: ThreadSummary }) {
+export function TeamTaskFacts({
+  runtime = null,
+  thread,
+}: {
+  readonly runtime?: TeamRuntimeNotice | null;
+  readonly thread: ThreadSummary;
+}) {
   const { snapshot } = useShell();
   if (!isTeamPlace(snapshot)) return null;
   const place = placeOf(snapshot, thread);
@@ -41,7 +49,11 @@ export function TeamTaskFacts({ thread }: { readonly thread: ThreadSummary }) {
   const waits = thread.requestWaits
     ? requestWaitLines(thread.requestWaits, place.project, held)
     : [];
-  const outcomes = (thread.requestOutcomes ?? []).slice(-outcomesShown);
+  // An outcome whose question the transcript shows is told there, where it was asked.
+  const outcomes = unplacedOutcomes(
+    thread.requestOutcomes ?? [],
+    snapshot.transcripts[thread.id] ?? [],
+  ).slice(-outcomesShown);
   const starter = thread.startedBy
     ? taskStarterLine(thread.startedBy, snapshot.user?.id ?? null)
     : null;
@@ -50,7 +62,8 @@ export function TeamTaskFacts({ thread }: { readonly thread: ThreadSummary }) {
     !thread.audience &&
     !thread.stopped &&
     waits.length === 0 &&
-    outcomes.length === 0
+    outcomes.length === 0 &&
+    runtime === null
   )
     return null;
   return (
@@ -83,6 +96,18 @@ export function TeamTaskFacts({ thread }: { readonly thread: ThreadSummary }) {
           ) : null}
         </div>
       ) : null}
+      {outcomes.length > 0 ? (
+        <ul aria-label="Earlier questions" className="team-task__earlier">
+          {outcomes.map((outcome) => (
+            <li className="team-task__outcome" key={outcome.requestId}>
+              <Icon name="check-circle" />
+              <span>
+                Earlier question · {requestOutcomeLine(outcome, place)} · {formatWhen(outcome.at)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {thread.stopped ? (
         <p className="team-task__stopped">{taskStoppedText(thread.stopped, place).long}</p>
       ) : null}
@@ -92,28 +117,46 @@ export function TeamTaskFacts({ thread }: { readonly thread: ThreadSummary }) {
           {line}
         </p>
       ))}
-      {outcomes.map((outcome) => (
-        <p className="team-task__outcome" key={outcome.requestId}>
-          {requestOutcomeLine(outcome, place)} · {formatWhen(outcome.at)}
+      {runtime ? (
+        <p className="team-task__runtime">
+          <Icon name="alert-circle" />
+          <span>
+            {runtime.why} {runtime.fix}{" "}
+            {runtime.settings ? (
+              <AreaLink
+                to={`/workspaces/${encodeURIComponent(thread.workspaceId)}/settings#team-project-runtime`}
+              >
+                How it runs
+              </AreaLink>
+            ) : null}
+          </span>
         </p>
-      ))}
+      ) : null}
     </div>
   );
 }
 
+export type TeamRuntimeNotice = NonNullable<ReturnType<typeof composerRuntimeNotice>>;
+
 /**
- * The composer's refusal on a shared Project that can't run tasks, from the
- * summary's runtime and the reader's level on the Project. Null when it runs
- * or nothing is known.
+ * Why a shared Project's composer can't send, from the summary's runtime. Who
+ * may fix it comes from the Host's `can` on the Project, read only while it
+ * can't run; until that answers, the reader is told who can.
  */
-export function useTeamSendBlocked(thread: ThreadSummary): string | null {
+export function useTeamRuntimeNotice(thread: ThreadSummary): TeamRuntimeNotice | null {
   const { snapshot } = useShell();
-  const { summary } = useShellTeam();
-  if (!isTeamPlace(snapshot)) return null;
+  const { team, summary, identity, generation } = useShellTeam();
   const runtime = summary?.projects.find(({ id }) => id === thread.workspaceId)?.runtime;
-  const notice = composerRuntimeNotice(runtime, {
+  const blocked = isTeamPlace(snapshot) && runtime !== undefined && runtime.state !== "ready";
+  const access = useHostRead(
+    team && blocked
+      ? () => team.projectAccess({ workspaceId: thread.workspaceId, limit: 1 })
+      : null,
+    `team-runtime-access:${identity}:${thread.workspaceId}:${generation}`,
+  );
+  if (!blocked) return null;
+  return composerRuntimeNotice(runtime, {
     ...placeOf(snapshot, thread),
-    manages: thread.audience?.myLevel === "manage",
+    canChange: access.data?.can.manage.allowed === true,
   });
-  return notice ? `Can’t send yet. ${notice.why} ${notice.fix}` : null;
 }

@@ -100,9 +100,9 @@ describe("a shared task's facts, in words", () => {
 
   it("offers settings only to a manager, and says nothing without a runtime", () => {
     const missing = { state: "unavailable", reason: "not-configured" } as const;
-    expect(composerRuntimeNotice(missing, { ...place, manages: true })?.settings).toBe(true);
-    expect(composerRuntimeNotice(missing, { ...place, manages: false })?.settings).toBe(false);
-    expect(composerRuntimeNotice(undefined, { ...place, manages: false })).toBeNull();
-    expect(composerRuntimeNotice({ state: "ready" }, { ...place, manages: false })).toBeNull();
+    expect(composerRuntimeNotice(missing, { ...place, canChange: true })?.settings).toBe(true);
+    expect(composerRuntimeNotice(missing, { ...place, canChange: false })?.settings).toBe(false);
+    expect(composerRuntimeNotice(undefined, { ...place, canChange: false })).toBeNull();
+    expect(composerRuntimeNotice({ state: "ready" }, { ...place, canChange: false })).toBeNull();
   });
 });

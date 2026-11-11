@@ -1674,7 +1674,10 @@ export function activityStepHead(
       return delegationHead(entry);
     case "request":
       return {
-        detail: entry.outcome,
+        // On a team, who settled it is part of what happened to the question.
+        detail: entry.resolvedByName
+          ? `${entry.outcome} · by ${entry.resolvedByName}`
+          : entry.outcome,
         detailKind: "prose",
         duration: null,
         errors: 0,

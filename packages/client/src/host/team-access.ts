@@ -260,6 +260,12 @@ export class TeamAccess {
     });
     return result;
   }
+  /** Deletes a shared Project, its tasks and its files, for everyone. Repeating it is harmless. */
+  deleteProject(revision: number, workspaceId: string) {
+    return this.#command("team.project.delete", revision, {
+      workspaceId: WorkspaceIdSchema.parse(workspaceId),
+    });
+  }
   /** The computer this screen showed is fenced, so a stale screen cannot replace a newer one. */
   replaceComputer(revision: number, expectedComputerId: string | null) {
     return this.#command("team.computer.replace", revision, {

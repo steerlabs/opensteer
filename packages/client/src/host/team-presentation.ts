@@ -1,6 +1,7 @@
 import {
   TeamReasonSchema,
   type AccessExplanation,
+  type Can,
   type AccessPreview,
   type EntryView,
   type GroupRef,
@@ -438,19 +439,31 @@ export function otherProjectLine(row: {
 }
 
 /** What a team's Projects page says when this person is on none. */
-export function teamHomeEmpty(input: {
-  readonly canCreate: boolean;
-  readonly listsOthers: boolean;
-}): { readonly title: string; readonly body: string } {
-  if (input.listsOthers)
-    return {
-      title: "You’re not on a project yet",
-      body: `Add yourself to one below, ${input.canCreate ? "or start one" : "or ask a manager to add you"}.`,
-    };
+export function teamHomeEmpty(input: { readonly canCreate: boolean }): {
+  readonly title: string;
+  readonly body: string;
+} {
+  // True whether or not the team has other Projects: an admin's list of those says so itself.
   return {
-    title: "No projects yet",
-    body: `When someone adds you to a project, it appears here.${input.canCreate ? " You can also start one." : ""}`,
+    title: "You’re not on a project yet",
+    body: input.canCreate
+      ? "When you start a project or someone adds you to one, it appears here."
+      : "When someone adds you to a project, it appears here.",
   };
+}
+
+/** Whether this person may list every Project in the team. Missing means not. */
+export function canListAllProjects(
+  summary: { readonly can: { readonly projects?: Can | undefined } } | null,
+): boolean {
+  return summary?.can.projects?.allowed === true;
+}
+
+/** Whether this person may delete a shared Project. Missing means not. */
+export function canDeleteProject(
+  access: { readonly can: { readonly delete?: Can | undefined } } | null,
+): boolean {
+  return access?.can.delete?.allowed === true;
 }
 
 /** The team computer's state, in the words of its settings page. */

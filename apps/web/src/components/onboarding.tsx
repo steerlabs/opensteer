@@ -223,7 +223,8 @@ export function HostAccessOnboarding({
           <>
             <Icon name="key" />
             <span>
-              This code can authorize only the first administrator. It is not an account password.
+              This code can authorize only the first {teamClaim ? "admin" : "administrator"}. It is
+              not an account password.
             </span>
           </>
         ) : (
@@ -298,13 +299,21 @@ export function HostAccessOnboarding({
           codeOnly
             ? "Checking code…"
             : active === "claim"
-              ? "Creating the owner account…"
+              ? teamClaim
+                ? "Creating the admin account…"
+                : "Creating the owner account…"
               : "Signing in…"
         }
         providers={!needsCode && (!teamClaim || trusted)}
         submitDisabled={teamClaim && !trusted && !codeOnly}
         submitLabel={
-          codeOnly ? "Continue" : active === "claim" ? "Create the owner account" : "Sign in"
+          codeOnly
+            ? "Continue"
+            : active === "claim"
+              ? teamClaim
+                ? "Create the admin account"
+                : "Create the owner account"
+              : "Sign in"
         }
       />
     </OnboardingCard>

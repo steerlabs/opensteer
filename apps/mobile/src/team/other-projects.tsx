@@ -1,4 +1,4 @@
-import { otherProjectLine, type HostClient } from "@opensteer/client/host";
+import { canListAllProjects, otherProjectLine, type HostClient } from "@opensteer/client/host";
 import { usePagedList, useTeam } from "@opensteer/client/react";
 import { useNavigation } from "@react-navigation/native";
 import { useState, type ReactNode } from "react";
@@ -20,8 +20,8 @@ export function OtherProjects(props: {
   const navigation = useNavigation();
   const { team, summary, identity, generation } = useTeam(props.hostClient);
   const [open, setOpen] = useState(props.open);
-  // The read is an administrator's; nothing is asked unless the Host lets this person see people.
-  const allowed = summary?.can.people.allowed === true;
+  // Nothing is asked unless the Host lets this person list every Project.
+  const allowed = canListAllProjects(summary);
   const list = usePagedList(
     team && allowed && open
       ? (cursor: string | null) => team.projects({ limit: 50, ...(cursor ? { cursor } : {}) })

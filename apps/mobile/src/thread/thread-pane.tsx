@@ -1,4 +1,4 @@
-import { TeamTaskFacts, useTeamSendBlocked } from "../team/team-task.js";
+import { TeamTaskFacts, useTeamRuntimeNotice } from "../team/team-task.js";
 import {
   messageAuthorName,
   conversationActivityTurn,
@@ -38,7 +38,7 @@ import {
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
-import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
+import { useHostSelector, useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
 import {
@@ -60,7 +60,10 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import Animated from "react-native-reanimated";
-import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
+import { canRespondToRequests, placeHas, showsHostLive } from "@opensteer/client/host";
+
+const selectExecutionChoice = (snapshot: HostSnapshot): boolean =>
+  placeHas(snapshot, "execution-choice");
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
 import type { ArtifactContentPart } from "@opensteer/core";
 import {
@@ -1144,7 +1147,8 @@ function ThreadPaneForUser(
       loadEarlier();
   };
 
-  const teamSendBlocked = useTeamSendBlocked(props.hostClient, thread);
+  const teamRuntime = useTeamRuntimeNotice(props.hostClient, thread);
+  const executionChoice = useHostSelector(props.hostClient, selectExecutionChoice);
   if (thread === null) {
     return (
       <View style={[styles.centred, sides]}>
@@ -1426,7 +1430,12 @@ function ThreadPaneForUser(
             </>
           ) : (
             <View>
-              <TeamTaskFacts hostClient={props.hostClient} thread={thread} />
+              <TeamTaskFacts
+                deploymentId={props.deploymentId}
+                hostClient={props.hostClient}
+                runtime={teamRuntime}
+                thread={thread}
+              />
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={isHome}
@@ -1439,7 +1448,8 @@ function ThreadPaneForUser(
                 // another Thread builds a new one rather than inheriting this one's.
                 key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
                 disabledReason={disabledReason}
-                sendBlockedReason={teamSendBlocked}
+                sendBlockedReason={teamRuntime ? "Can’t send yet." : null}
+                executionChoice={executionChoice}
                 readOnly={thread.status === "archived"}
                 drafts={client.drafts}
                 driverKind={placement?.driverKind}

@@ -49,10 +49,7 @@ export function ProjectsPage() {
   const runtimes = new Map<string, RuntimeState | undefined>(
     summary?.projects.map(({ id, runtime }) => [id, runtime]),
   );
-  const empty = teamHomeEmpty({
-    canCreate,
-    listsOthers: summary?.can.people.allowed === true,
-  });
+  const empty = teamHomeEmpty({ canCreate });
   const needle = query.trim().toLocaleLowerCase();
   const shown = needle
     ? folders.filter(({ workspace }) =>

@@ -124,10 +124,11 @@ export function requestAnswerRefusalText(error: unknown): string | null {
  */
 export function composerRuntimeNotice(
   runtime: RuntimeState | undefined,
-  place: { readonly project: string; readonly team: string; readonly manages: boolean },
+  /** `canChange` is the Host's `can` to manage the Project; unknown means no. */
+  place: { readonly project: string; readonly team: string; readonly canChange: boolean },
 ): { readonly why: string; readonly fix: string; readonly settings: boolean } | null {
   if (!runtime || runtime.state === "ready") return null;
-  const { project, team, manages } = place;
+  const { project, team, canChange: manages } = place;
   switch (runtime.reason) {
     case "computer-offline":
       return {
@@ -163,8 +164,30 @@ export function composerRuntimeNotice(
           }
         : {
             why: `The ${runtime.reason === "engine-unavailable" ? "engine" : "model"} ${project} was set up with isn’t available any more.`,
-            fix: `A manager of ${project} can fix this.`,
+            fix: `A manager of ${project} can choose another.`,
             settings: false,
           };
   }
+}
+
+/**
+ * The outcomes a task shows as lines of their own: those whose question the
+ * transcript doesn't already show where it was asked, which a reader who
+ * couldn't read the question never has.
+ */
+export function unplacedOutcomes(
+  outcomes: readonly ThreadRequestOutcome[],
+  transcript: readonly { readonly kind: string; readonly requestId?: string }[],
+): ThreadRequestOutcome[] {
+  const placed = new Set(
+    transcript.flatMap((entry) =>
+      entry.kind === "request" && entry.requestId ? [entry.requestId] : [],
+    ),
+  );
+  return outcomes.filter(({ requestId }) => !placed.has(requestId));
+}
+
+/** An empty shared task or Project chat, in the words a team place uses. */
+export function teamEmptyThreadLine(project: string, team: string): string {
+  return `Describe the outcome you want. ${project} does its work on ${team}’s computer, and everyone on the project can see it.`;
 }

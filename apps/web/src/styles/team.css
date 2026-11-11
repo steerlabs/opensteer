@@ -682,3 +682,26 @@
   flex-direction: column;
   align-items: stretch;
 }
+
+.team-task__earlier {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-6);
+  padding: 0 0 var(--space-6);
+  border-bottom: 1px solid var(--rim-plate);
+  list-style: none;
+}
+
+.team-task__earlier li,
+.team-task__runtime {
+  display: flex;
+  gap: var(--space-6);
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+}
+
+.team-task__runtime {
+  color: var(--text-soft);
+}

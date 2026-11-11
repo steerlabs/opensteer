@@ -100,6 +100,12 @@ describe("the shared team mock", () => {
     await expect(team.replaceComputer(await revision(), shown)).rejects.toMatchObject({
       reason: "team-object-unavailable",
     });
+    // Deleting a Project takes it from everyone's snapshot, and asking again changes nothing.
+    const { finance } = mockTeamProjects;
+    expect(host.getSnapshot().workspaces.some(({ id }) => id === finance)).toBe(true);
+    results.push(await team.deleteProject(await revision(), finance));
+    await team.deleteProject(await revision(), finance);
+    expect(host.getSnapshot().workspaces.some(({ id }) => id === finance)).toBe(false);
     const draft = createTeamInvitationDraft();
     const created = await team.createInvitation(await revision(), draft, {
       email: "nina2@acme.example",
@@ -117,7 +123,7 @@ describe("the shared team mock", () => {
     expect(await listed()).toMatchObject({ state: "revoked", can: { revoke: { allowed: false } } });
     for (const result of results) expect(() => TeamCommandResultSchema.parse(result)).not.toThrow();
     expect(new Set(results.map((result) => TeamCommandResultSchema.parse(result).type)).size).toBe(
-      9,
+      10,
     );
     host.dispose();
   });

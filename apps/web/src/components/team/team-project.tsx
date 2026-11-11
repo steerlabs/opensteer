@@ -1,11 +1,18 @@
 import { useState } from "react";
-import { audienceLabel, runtimeStateForUser, type ProjectAccessView } from "@opensteer/client/host";
+import {
+  audienceLabel,
+  canDeleteProject,
+  runtimeStateForUser,
+  teamErrorText,
+  type ProjectAccessView,
+} from "@opensteer/client/host";
 import { useShell } from "../app-shell.js";
+import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { PageTopbar } from "../page-header.js";
 import { WorkspaceOrb } from "../workspace-orb.js";
-import { AreaLink } from "../workspace/area-link.js";
+import { AreaLink, useAreaNavigate } from "../workspace/area-link.js";
 import {
   ProjectAccessNotices,
   ProjectAccessSection,
@@ -46,7 +53,103 @@ export function TeamProjectSections({ access }: { readonly access: ProjectAccess
         viewerId={snapshot.user?.id ?? null}
       />
       {access.data ? <ProjectRuntimeSection access={access.data} teamName={teamName} /> : null}
+      {access.data && canDeleteProject(access.data) ? (
+        <TeamDeleteProject access={access.data} teamName={teamName} />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * Deleting a shared Project, offered only where the Host allows it, including
+ * one that never finished setting up. It goes for everyone, with its tasks
+ * and files, and the person lands on the team's Projects.
+ */
+function TeamDeleteProject({
+  access,
+  teamName,
+}: {
+  readonly access: ProjectAccessView;
+  readonly teamName: string;
+}) {
+  const { team } = useShellTeam();
+  const navigate = useAreaNavigate();
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const name = access.project.name;
+  return (
+    <section aria-labelledby="team-project-delete" className="section">
+      <div className="section__head">
+        <h2 className="section__title" id="team-project-delete">
+          Delete project
+        </h2>
+      </div>
+      <div className="card">
+        <div className="card__row">
+          <span className="card__row-body">
+            <span className="card__row-detail">
+              Removes {name}, its tasks and its files, for everyone on it. This can’t be undone.
+            </span>
+          </span>
+          <span className="card__row-actions">
+            <button
+              className="btn btn--small btn--danger"
+              onClick={() => setConfirming(true)}
+              type="button"
+            >
+              Delete…
+            </button>
+          </span>
+        </div>
+      </div>
+      {confirming ? (
+        <Dialog
+          labelledBy="team-project-delete-title"
+          onClose={() => !pending && setConfirming(false)}
+          title={`Delete ${name}?`}
+        >
+          <p className="section__hint">
+            {name}, its tasks and its files are deleted for everyone in {teamName} who uses it. This
+            can’t be undone.
+          </p>
+          {error ? (
+            <p className="notice notice--error" role="alert">
+              {teamErrorText(error, teamName)}
+            </p>
+          ) : null}
+          <div className="form-actions">
+            <button
+              className="btn"
+              disabled={pending}
+              onClick={() => setConfirming(false)}
+              type="button"
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn--danger"
+              disabled={pending || !team}
+              onClick={() => {
+                if (!team) return;
+                setPending(true);
+                setError(null);
+                void team
+                  .deleteProject(access.accessRevision, access.project.id)
+                  .then(() => navigate("/"))
+                  .catch((reason: unknown) => {
+                    setError(reason);
+                    setPending(false);
+                  });
+              }}
+              type="button"
+            >
+              {pending ? "Deleting…" : `Delete ${name}`}
+            </button>
+          </div>
+        </Dialog>
+      ) : null}
+    </section>
   );
 }
 
