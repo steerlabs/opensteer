@@ -12,6 +12,7 @@ describe("BrowserAttachTicketSigner", () => {
     const keys = generateKeyPairSync("ed25519");
     const signer = new BrowserAttachTicketSigner({ keyId: "phone", privateKey: keys.privateKey });
     const ticket = signer.issue({
+      creationOrigin: "person",
       access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "phone",
@@ -34,6 +35,7 @@ describe("BrowserAttachTicketSigner", () => {
       keyId: "host-primary",
       privateKey: keys.privateKey,
     }).issue({
+      creationOrigin: "person",
       access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "browser",
@@ -58,6 +60,7 @@ describe("BrowserAttachTicketSigner", () => {
     const sessionId = createBrowserSessionId();
 
     const ticket = signer.issue({
+      creationOrigin: "person",
       access: "read-write",
       identity: {
         kind: "fresh",
@@ -101,6 +104,7 @@ describe("BrowserAttachTicketSigner", () => {
       keyId: "split",
       privateKey: keys.privateKey,
     }).issue({
+      creationOrigin: "person",
       access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "browser",
@@ -123,6 +127,7 @@ describe("BrowserAttachTicketSigner", () => {
       keyId: "host-primary",
       privateKey: keys.privateKey,
     }).issue({
+      creationOrigin: "person",
       access: "read-write",
       identity: { kind: "fresh" },
       runtimeId: "hosted-browser-1",
@@ -155,6 +160,7 @@ it("keeps native storage out of the frozen released ticket reader", () => {
     engine: "electron" as const,
   };
   const ticket = signer.issue({
+    creationOrigin: "person",
     access: "read-write",
     identity: {
       kind: "profile-local",

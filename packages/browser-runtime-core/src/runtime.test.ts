@@ -36,7 +36,7 @@ describe("BrowserRuntime", () => {
     try {
       const attachment = await runtime.attach("fresh-ticket", sink);
       await attachment.handle(
-        JSON.stringify({ type: "session.state", runs: 0, viewed: [], pinned: [] }),
+        JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
       );
       await vi.advanceTimersByTimeAsync(10_000);
       await vi.waitFor(
@@ -84,12 +84,12 @@ describe("BrowserRuntime", () => {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
       await attachment.handle(
-        JSON.stringify({ type: "session.state", runs: 1, viewed: [], pinned: [] }),
+        JSON.stringify({ type: "session.state", runs: 1, personUsed: [], viewed: [], pinned: [] }),
       );
       await vi.advanceTimersByTimeAsync(120_000);
       expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
       await attachment.handle(
-        JSON.stringify({ type: "session.state", runs: 0, viewed: [], pinned: [] }),
+        JSON.stringify({ type: "session.state", runs: 0, personUsed: [], viewed: [], pinned: [] }),
       );
       await vi.advanceTimersByTimeAsync(59_999);
       expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
@@ -102,6 +102,109 @@ describe("BrowserRuntime", () => {
       vi.useRealTimers();
     }
   });
+  it.each([
+    { creationOrigin: "agent", activity: "unviewed" },
+    { creationOrigin: "agent", activity: "watch" },
+    { creationOrigin: "agent", activity: "activation" },
+    { creationOrigin: "agent", activity: "host-activation" },
+    { creationOrigin: "agent", activity: "native" },
+    { creationOrigin: "person", activity: "unviewed" },
+  ] as const)(
+    "uses Host creation origin for initial pages and popups ($creationOrigin, $activity)",
+    async ({ creationOrigin, activity }) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const root = new FakePage();
+      const context = new FakeContext([root]);
+      const claims = freshClaims({
+        workspaceTabRestoreVersion: 1,
+        surfaceState: 1,
+        creationOrigin,
+      });
+      const runtime = new BrowserRuntime({
+        launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
+        runtimeId: "runtime_test",
+        sessionFilesRoot: testSessionFilesRoot(),
+        ticketVerifier: new FakeTicketVerifier(claims),
+      });
+      const sink = new FakeSink();
+      try {
+        const attachment = await runtime.attach("fresh-ticket", sink);
+        const popup = new FakePage({ opener: root });
+        popup.hasOpenerAccess = () => false;
+        context.addPage(popup);
+        await flushMicrotasks();
+        await attachment.handle(
+          JSON.stringify({
+            type: "session.state",
+            runs: 1,
+            personUsed: [],
+            viewed: [],
+            pinned: [],
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(["live", "live"]);
+        const initialId = [...sink.tabs.rows.values()][0]!.id;
+        if (activity === "watch")
+          await attachment.handle(
+            JSON.stringify({
+              type: "session.state",
+              runs: 0,
+              personUsed: [],
+              viewed: [initialId],
+              pinned: [],
+            }),
+          );
+        const activeBefore = sink.tabs.meta?.activeId;
+        if (activity === "host-activation") {
+          await attachment.handle(
+            JSON.stringify({
+              type: "session.state",
+              runs: 0,
+              personUsed: [initialId],
+              viewed: [],
+              pinned: [],
+            }),
+          );
+          expect(sink.tabs.meta?.activeId).toBe(activeBefore);
+        }
+        if (activity === "activation")
+          await attachment.handle(
+            JSON.stringify({ type: "surface.activate", surfaceId: initialId }),
+          );
+        if (activity === "native") {
+          const presentation = runtime.presentSurface(claims.sessionId, initialId);
+          expect(presentation).not.toBeNull();
+          presentation?.release();
+        }
+        await attachment.handle(
+          JSON.stringify({
+            type: "session.state",
+            runs: 0,
+            personUsed: [],
+            viewed: [],
+            pinned: [],
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(["live", "live"]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect([...sink.tabs.rows.values()].map((row) => row.state)).toEqual(
+          creationOrigin === "person"
+            ? ["live", "live"]
+            : [
+                activity === "activation" || activity === "native" || activity === "host-activation"
+                  ? "live"
+                  : "suspended",
+                "suspended",
+              ],
+        );
+      } finally {
+        await runtime.shutdown();
+        vi.useRealTimers();
+      }
+    },
+  );
   it("sizes only the page a Fit names and leaves the session's other pages alone", async () => {
     const root = new FakePage({ title: "Root" });
     const context = new FakeContext([root]);

@@ -395,20 +395,21 @@ export class WorkspaceTabStore {
       return operation(tx);
     });
   }
-  async #lockLineage(tx: Transaction<DatabaseSchema>, groupId: BrowserSessionId) {
+  async #lockLineage(
+    tx: Transaction<DatabaseSchema>,
+    groupId: BrowserSessionId,
+    tabIds?: readonly string[],
+  ) {
     await tx
       .selectFrom("browserSessions")
       .select("id")
       .where("id", "=", groupId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow(databaseOperationOptions());
-    await tx
-      .selectFrom("workspaceTabs")
-      .select("id")
-      .where("groupId", "=", groupId)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
+    if (tabIds?.length === 0) return;
+    let rows = tx.selectFrom("workspaceTabs").select("id").where("groupId", "=", groupId);
+    if (tabIds) rows = rows.where("id", "in", tabIds);
+    await rows.orderBy("id").forNoKeyUpdate().execute(databaseOperationOptions());
   }
   async #lockLayout(tx: Transaction<DatabaseSchema>, ownerId: UserId) {
     await tx
@@ -451,7 +452,10 @@ export class WorkspaceTabStore {
     };
     if (!session || session.origin === "trigger" || session.opener?.kind === "automation")
       return changes;
-    return this.#turn(session.tabGroupId, async (tx) => {
+    return withDatabaseTransaction(this.database, async (tx) => {
+      await this.#lockLineage(tx, session.tabGroupId, [
+        ...new Set([...descriptors.map((row) => row.id), ...closed]),
+      ]);
       const changes: WorkspaceTabChanges = {
         groupId: session.tabGroupId,
         changed: false,
@@ -577,6 +581,7 @@ export class WorkspaceTabStore {
       return changes;
     });
   }
+
   async bind(groupId: BrowserSessionId, sessionId: BrowserSessionId, id: string) {
     return this.#turn(groupId, async (tx) => {
       await tx

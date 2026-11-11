@@ -1158,7 +1158,9 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
         const attachment = await runtime.attach("fixture-only-ticket", sink);
         const id = [...sink.tabs.rows.keys()][0]!;
         const state = (viewed: string[]) =>
-          attachment.handle(JSON.stringify({ type: "session.state", runs: 1, viewed, pinned: [] }));
+          attachment.handle(
+            JSON.stringify({ type: "session.state", runs: 1, personUsed: [], viewed, pinned: [] }),
+          );
         await state([id]);
         const contents = webContents
           .getAllWebContents()

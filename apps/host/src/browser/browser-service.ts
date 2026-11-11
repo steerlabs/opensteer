@@ -1056,6 +1056,7 @@ export class BrowserService {
           });
         await this.#holdForAgent(agent, session);
       }
+      if (!agent) await broker.markPersonUsed(tabId);
       await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
       return {
         type: "workspace.tab.activate" as const,
@@ -1963,6 +1964,7 @@ export class BrowserService {
             method: browserHostMethods.openTab,
             parameters: {
               operationAuthority: this.#signer.issue({
+                creationOrigin: "person",
                 access: "read-write",
                 identity: { kind: "fresh" },
                 runtimeId: record.runtimeId,
@@ -4176,6 +4178,8 @@ export class BrowserService {
       !input.agentBindingId?.startsWith("trigger:") &&
       !input.agentBindingId?.startsWith("watch:");
     const ticket = this.#signer.issue({
+      creationOrigin:
+        origin === "workspace" && record.opener?.kind === "person" ? "person" : "agent",
       ...(input.operationBudget
         ? {
             operationExpiresAt: new Date(input.operationBudget.expiresAt).toISOString(),
@@ -5084,6 +5088,7 @@ class HostedBrowserBroker {
   #sessionStateTimer: NodeJS.Timeout | undefined;
   #sessionStateGeneration = 0;
   #lastSessionState: string | undefined;
+  readonly #personUsed = new Set<BrowserSurfaceId>();
   readonly #passkeys: PasskeyService | undefined;
   constructor(options: HostedBrowserBrokerOptions) {
     this.#readSessionState = options.readSessionState;
@@ -5155,6 +5160,13 @@ class HostedBrowserBroker {
     this.#readyPromise = this.#waitUntilReady();
   }
 
+  async markPersonUsed(surfaceId: BrowserSurfaceId): Promise<void> {
+    if (!this.#tabs.rows.has(surfaceId)) return;
+    this.#personUsed.add(surfaceId);
+    this.#sessionStateGeneration++;
+    await this.#sendSessionState();
+  }
+
   refreshSessionState(): void {
     this.#sessionStateGeneration++;
     if (!this.live || this.#snapshot?.surfaceState !== 1 || this.#sessionStateTimer) return;
@@ -5189,6 +5201,7 @@ class HostedBrowserBroker {
       type: "session.state" as const,
       ...facts,
       viewed: [...viewed].sort(),
+      personUsed: [...this.#personUsed].sort(),
       pinned: [...pinned].sort(),
     };
     if (keyedStreamBytes(message) > keyedStreamHardCapBytes)
@@ -5196,6 +5209,7 @@ class HostedBrowserBroker {
         type: "session.state",
         runs: facts.runs,
         viewed: [],
+        personUsed: [],
         pinned: [],
         keepAwake: true,
       };
@@ -5947,6 +5961,7 @@ class HostedBrowserBroker {
       }
       for (const id of changes.removed) {
         const tabId = BrowserSurfaceIdSchema.parse(id);
+        this.#personUsed.delete(tabId);
         this.#passkeys?.documentChanged(tabId);
         this.#editingContexts.delete(tabId);
         this.#dialogs.delete(tabId);

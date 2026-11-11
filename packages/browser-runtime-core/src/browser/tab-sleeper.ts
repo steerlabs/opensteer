@@ -197,7 +197,7 @@ export class TabSleeper {
     )
       session.releasedAt = Date.now();
     session.hostState = state;
-    for (const surfaceId of state.viewed) session.ledger.touch(surfaceId, true);
+    for (const surfaceId of state.personUsed) session.ledger.markPersonUsed(surfaceId);
     this.poke();
   }
   private openerLinks(session: SleepSession): ReadonlySet<BrowserSurfaceId> {

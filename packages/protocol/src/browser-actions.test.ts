@@ -306,6 +306,7 @@ describe("typed browser agent wire", () => {
     const claims = {
       access: "read-write",
       audience: "opensteer-browser-runtime",
+      creationOrigin: "person",
       wireVersion: 2,
       operationExpiresAt: "2026-11-09T12:00:18Z",
       remainingBudgetMs: 18_000,
@@ -321,6 +322,11 @@ describe("typed browser agent wire", () => {
       BrowserAttachTicketClaimsSchema.parse({ ...claims, basicInput: 1, surfaceState: 1 }),
     ).not.toHaveProperty("editingVersion");
     expect(BrowserAttachTicketClaimsSchema.parse(claims)).not.toHaveProperty("surfaceState");
+    const state = { type: "session.state", runs: 0, viewed: [], pinned: [], personUsed: [] };
+    expect(BrowserClientMessageSchema.parse(state)).toEqual(state);
+    expect(BrowserClientMessageSchema.safeParse({ ...state, personUsed: undefined }).success).toBe(
+      false,
+    );
     const snapshot = {
       type: "browser.snapshot",
       access: "read-write",

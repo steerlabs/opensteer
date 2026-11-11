@@ -371,6 +371,7 @@ describe("BrowserController", () => {
     }
   });
   it("commits a tab before its open result and its removal before its close result", async () => {
+    [...ledger.policyRecords()][0]!.favicon = "data:image/png;base64,AAAA";
     const controller = createController();
     const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
     try {
@@ -408,6 +409,18 @@ describe("BrowserController", () => {
         if (message.type === "cdp.result" && message.requestId === closeId)
           expect(receiver.rows.has(opened!)).toBe(false);
       }
+      await controller.handle({
+        type: "cdp.command",
+        requestId: randomUUID(),
+        command: {
+          method: browserHostMethods.closeTab,
+          parameters: {
+            surfaceId: ledger.snapshot()[0]!.id,
+            inventoryRevision: ledger.inventoryRevision,
+          },
+        },
+      });
+      expect((controller as unknown as { tabIcons: Map<string, string> }).tabIcons.size).toBe(0);
     } finally {
       await controller.close();
       await ledger.close();
@@ -448,6 +461,58 @@ describe("BrowserController", () => {
       await ledger.close();
     }
   });
+  it.each([false, true])(
+    "releases replaced and closed icon payloads while retaining in-flight row icons (retry=%s)",
+    async (failSend) => {
+      const record = [...ledger.policyRecords()][0]!;
+      record.favicon = "data:image/png;base64,AAAA";
+      const controller = createController();
+      const { tabIcons } = controller as unknown as { tabIcons: Map<string, string> };
+      const blocked = Promise.withResolvers<void>(),
+        release = Promise.withResolvers<void>();
+      try {
+        await controller.start();
+        sink.sendServerImplementation = async (message) => {
+          if (message.type === "browser.tab.icon" && message.favicon.endsWith("AAAB")) {
+            blocked.resolve();
+            await release.promise;
+            if (failSend) throw new Error("Icon transport interrupted");
+          }
+        };
+        record.favicon = "data:image/png;base64,AAAB";
+        page.setMetadata("Second", "https://example.test/");
+        const sending = controller.handle({ type: "tabs.resync" });
+        await withTimeout(blocked.promise, 1000, {
+          timeoutError: () => new Error("Icon never sent"),
+        });
+        record.favicon = "data:image/png;base64,AAAC";
+        page.setMetadata("Third", "https://example.test/");
+        await flushMicrotasks();
+        expect([...tabIcons.values()].sort()).toEqual([
+          "data:image/png;base64,AAAB",
+          "data:image/png;base64,AAAC",
+        ]);
+        release.resolve();
+        if (failSend) {
+          await expect(sending).rejects.toThrow("Icon transport interrupted");
+          expect([...tabIcons.values()].sort()).toEqual([
+            "data:image/png;base64,AAAB",
+            "data:image/png;base64,AAAC",
+          ]);
+          sink.sendServerImplementation = null;
+          await controller.handle({ type: "tabs.resync" });
+        } else await sending;
+        expect([...tabIcons.values()]).toEqual(["data:image/png;base64,AAAC"]);
+        await page.close();
+        await controller.handle({ type: "tabs.resync" });
+        expect(tabIcons.size).toBe(0);
+      } finally {
+        release.resolve();
+        await controller.close();
+        await ledger.close();
+      }
+    },
+  );
   it("does not remove durable tabs when the browser tears down", async () => {
     const controller = createController();
     try {

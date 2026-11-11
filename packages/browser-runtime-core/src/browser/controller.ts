@@ -340,7 +340,9 @@ export class BrowserController {
   private heldDialog: BrowserDialog | null = null;
   private readonly tabRows = new Map<string, BrowserTabRecord>();
   private readonly tabIcons = new Map<string, string>();
+  private readonly tabIconReferences = new Map<string, number>();
   private readonly sentIcons = new Set<string>();
+  private readonly inFlightIcons = new Set<string>();
   private readonly savedTabs = new KeyedStreamReceiver<
     { id: BrowserSurfaceId },
     Record<string, never>
@@ -1607,6 +1609,7 @@ export class BrowserController {
     }
     if (message.type === "surface.activate") {
       this.releaseDepartingInput(message, message.surfaceId);
+      this.ledger.touch(message.surfaceId, true);
       await this.ledger.activate(message.surfaceId);
       return;
     }
@@ -2705,14 +2708,29 @@ export class BrowserController {
     }
   }
 
-  private updateTab(id: BrowserSurfaceId): void {
-    const row = this.ledger.toRecord(id);
+  private updateTab(id: BrowserSurfaceId, closed = false): void {
+    const previousIcon = this.tabRows.get(id)?.icon;
+    const row = closed ? undefined : this.ledger.toRecord(id);
+    if (previousIcon !== row?.icon) {
+      if (previousIcon) {
+        const count = this.tabIconReferences.get(previousIcon)! - 1;
+        if (count) this.tabIconReferences.set(previousIcon, count);
+        else this.tabIconReferences.delete(previousIcon);
+      }
+      if (row?.icon)
+        this.tabIconReferences.set(row.icon, (this.tabIconReferences.get(row.icon) ?? 0) + 1);
+    }
     if (row) {
       this.tabRows.set(id, row);
       const favicon = [...this.ledger.policyRecords()].find((record) => record.id === id)?.favicon;
       if (row.icon && favicon) this.tabIcons.set(row.icon, favicon);
     } else this.tabRows.delete(id);
+    if (previousIcon) this.pruneTabIcon(previousIcon);
     this.tabPublisher.mark(id);
+  }
+
+  private pruneTabIcon(key: string): void {
+    if (!this.tabIconReferences.has(key) && !this.inFlightIcons.has(key)) this.tabIcons.delete(key);
   }
 
   private async drainTabs(): Promise<void> {
@@ -2736,6 +2754,7 @@ export class BrowserController {
               : frame.op === "change"
                 ? [...(frame.add ?? []), ...(frame.update ?? [])]
                 : [];
+          for (const row of rows) if (row.icon) this.inFlightIcons.add(row.icon);
           for (const row of rows)
             if (row.icon && !this.sentIcons.has(row.icon)) {
               const favicon = this.tabIcons.get(row.icon);
@@ -2745,6 +2764,9 @@ export class BrowserController {
             }
           await this.send({ type: "browser.tabs", stream: frame });
           this.tabPublisher.settled(frame, true);
+          const keys = [...this.inFlightIcons];
+          this.inFlightIcons.clear();
+          for (const key of keys) this.pruneTabIcon(key);
         } catch (error) {
           this.tabPublisher.settled(frame, false);
           throw error;
@@ -3448,8 +3470,7 @@ export class BrowserController {
       }
       if (!last && this.ledger.stateOf(surface.id)) await this.ledger.closeSurface(surface.id);
       if (last) {
-        this.tabRows.delete(surface.id);
-        this.tabPublisher.mark(surface.id);
+        this.updateTab(surface.id, true);
       }
       await this.drainTabs();
       await this.send({

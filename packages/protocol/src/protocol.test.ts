@@ -1242,6 +1242,7 @@ describe("wire protocol", () => {
       wireVersion: 2,
       access: "read-write",
       audience: "opensteer-browser-runtime",
+      creationOrigin: "person",
       expiresAt: new Date().toISOString(),
       identity: { kind: "fresh" },
       issuedAt: new Date().toISOString(),

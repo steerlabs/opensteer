@@ -1,3 +1,4 @@
+import type { Page, Request } from "playwright-core";
 import { nativeRuntimeProfile } from "./native-profile.test-support.js";
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { once } from "node:events";
@@ -66,6 +67,125 @@ import {
   waitFor,
   waitForAsync,
 } from "./chromium.test-support.js";
+it("keeps a 64 MiB upload alive through completion and the final sleep recheck", async () => {
+  const uploads: import("node:http").IncomingMessage[] = [];
+  let arrived = Promise.withResolvers<void>();
+  let completed = Promise.withResolvers<number>();
+  let aborted = false;
+  const server = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.end("Ready");
+      return;
+    }
+    uploads.push(request);
+    let bytes = 0;
+    request.on("data", (chunk: Buffer) => {
+      bytes += chunk.length;
+    });
+    request.on("aborted", () => {
+      aborted = true;
+    });
+    request.on("end", () => {
+      response.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Length": 8,
+        Connection: "close",
+      });
+      response.end("Uploaded");
+      completed.resolve(bytes);
+    });
+    request.pause();
+    arrived.resolve();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanup.push(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+  const browser = await new PlaywrightChromiumLauncher({
+    executablePath,
+    chromiumSandbox: false,
+    headless: true,
+  }).launch({
+    partitionKey: `session:${validClaims().sessionId}`,
+    storage: { kind: "guest" },
+    initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+  });
+  cleanup.push(() => browser.close());
+  const ledger = new SurfaceLedger(browser.context);
+  await ledger.start();
+  cleanup.push(() => ledger.close());
+  const record = [...ledger.policyRecords()][0]!;
+  const { page, cdp } = ledger.active()!;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Upload server has no address");
+  const url = `http://127.0.0.1:${address.port}/`;
+  await cdp.send("Page.navigate", { url });
+  await vi.waitFor(
+    () => {
+      expect(record.url).toBe(url);
+      expect(record.live?.loading).toBe(false);
+    },
+    { timeout: 3000 },
+  );
+  const nativePage = (page as unknown as { page: Page }).page;
+  let finished: Promise<Request> | undefined;
+  const startUpload = async () => {
+    finished = nativePage.waitForEvent("requestfinished", {
+      predicate: (request) => request.url().endsWith("/upload"),
+      timeout: 5000,
+    });
+    void finished.catch(() => undefined);
+    // Blob bodies keep Playwright from copying the payload into request metadata.
+    await nativePage.evaluate(
+      "void fetch('/upload', { method: 'POST', body: new Blob([new Uint8Array(64 * 1024 * 1024)]) }).then(response => response.text()).catch(() => {})",
+    );
+    await withTimeout(arrived.promise, 5000, {
+      timeoutError: () => new Error("Upload never reached server"),
+    });
+  };
+  await startUpload();
+  expect(record.live?.loading).toBe(false);
+  expect(await page.keepAwake!()).toBe("upload");
+  expect(await ledger.sleep(record.id, () => null)).toBe(false);
+  uploads.at(-1)!.resume();
+  expect(
+    await withTimeout(completed.promise, 5000, {
+      timeoutError: () => new Error("Upload never completed"),
+    }),
+  ).toBe(64 * 1024 * 1024);
+  await finished;
+  expect(
+    await withTimeout(Promise.resolve(page.keepAwake!()), 2000, {
+      timeoutError: () => new Error("Protection did not settle after upload completion"),
+    }),
+  ).toBeNull();
+  arrived = Promise.withResolvers<void>();
+  completed = Promise.withResolvers<number>();
+  page.captureRestore = async () => {
+    await startUpload();
+    return {};
+  };
+  expect(await ledger.sleep(record.id, () => null)).toBe(false);
+  expect(record.live).not.toBeNull();
+  uploads.at(-1)!.resume();
+  expect(
+    await withTimeout(completed.promise, 5000, {
+      timeoutError: () => new Error("Final upload never completed"),
+    }),
+  ).toBe(64 * 1024 * 1024);
+  await finished;
+  expect(
+    await withTimeout(Promise.resolve(page.keepAwake!()), 2000, {
+      timeoutError: () => new Error("Protection did not settle after upload completion"),
+    }),
+  ).toBeNull();
+  expect(aborted).toBe(false);
+});
+
 async function verifyNativeProfilePersistence(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "os-native-chromium-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));

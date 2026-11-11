@@ -211,6 +211,7 @@ export const BrowserAttachTicketClaimsSchema = z
   .strictObject({
     access: BrowserProfileAccessSchema,
     audience: z.literal("opensteer-browser-runtime"),
+    creationOrigin: z.enum(["agent", "person"]),
     passkeys: z.literal(1).optional(),
     navigationVersion: z.literal(1).optional(),
     wireVersion: z.literal(browserRuntimeWireVersion),
@@ -421,6 +422,7 @@ const cursorSequence = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGE
 export const BrowserSessionStateSchema = z.strictObject({
   runs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   viewed: z.array(BrowserSurfaceIdSchema),
+  personUsed: z.array(BrowserSurfaceIdSchema),
   pinned: z.array(BrowserSurfaceIdSchema),
   keepAwake: z.boolean().optional(),
 });

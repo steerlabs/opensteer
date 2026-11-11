@@ -532,6 +532,7 @@ export function validClaims(
     operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
     remainingBudgetMs: 18_000,
     wireVersion: 2,
+    creationOrigin: "person",
     audience: "opensteer-browser-runtime",
     access: "read-write",
     expiresAt: "2030-01-01T00:05:00.000Z",

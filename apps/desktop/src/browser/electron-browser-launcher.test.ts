@@ -189,7 +189,12 @@ vi.mock("electron", () => {
     setPermissionRequestHandler: vi.fn(),
     setUserAgent: vi.fn(),
     unregisterPreloadScript: vi.fn(),
-    webRequest: { onBeforeRequest: vi.fn(), onHeadersReceived: vi.fn() },
+    webRequest: {
+      onBeforeRequest: vi.fn(),
+      onHeadersReceived: vi.fn(),
+      onCompleted: vi.fn(),
+      onErrorOccurred: vi.fn(),
+    },
   });
 
   const sessions = new Map<string, ReturnType<typeof makeSession>>();
@@ -284,11 +289,20 @@ it("keeps POST results and engine activity awake and treats a POST redirect as G
     for (const [name, listener] of electron.views.at(-1)!.webContents.on.mock.calls)
       if (name === event) listener();
   };
-  const request = (method: string) =>
+  const finished = vi.mocked(profile.webRequest.onCompleted).mock.calls[0]![0]!;
+  const request = (method: string) => {
     before(
-      { url: "https://site.test/", resourceType: "mainFrame", webContentsId: contents.id, method },
+      {
+        id: 0,
+        url: "https://site.test/",
+        resourceType: "mainFrame",
+        webContentsId: contents.id,
+        method,
+      },
       () => {},
     );
+    finished({ id: 0 } as import("electron").OnCompletedListenerDetails);
+  };
   try {
     request("POST");
     emit("did-navigate");
@@ -299,6 +313,25 @@ it("keeps POST results and engine activity awake and treats a POST redirect as G
     request("POST");
     request("GET");
     emit("did-navigate");
+    expect(await page.keepAwake!()).toBeNull();
+    const upload = (id: number, method: string) =>
+      before(
+        {
+          id,
+          method,
+          webContentsId: contents.id,
+          url: "https://site.test/upload",
+          resourceType: "xhr",
+        },
+        () => {},
+      );
+    const failed = vi.mocked(profile.webRequest.onErrorOccurred).mock.calls[0]![0]!;
+    upload(1, "POST");
+    upload(2, "PUT");
+    expect(await page.keepAwake!()).toBe("upload");
+    finished({ id: 1 } as import("electron").OnCompletedListenerDetails);
+    expect(await page.keepAwake!()).toBe("upload");
+    failed({ id: 2 } as import("electron").OnErrorOccurredListenerDetails);
     expect(await page.keepAwake!()).toBeNull();
     downloads.active.mockReturnValue(true);
     expect(await page.keepAwake!()).toBe("download");
