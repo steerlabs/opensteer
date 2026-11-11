@@ -1,11 +1,21 @@
-import type { HostSnapshot, BrowserSessionSummary, WorkspaceTabLineage } from "../host/client.js";
+import type {
+  HostSnapshot,
+  BrowserSessionSummary,
+  BrowserInventory,
+  BrowserTabSummary,
+  WorkspaceTabLineage,
+} from "../host/client.js";
 import type { HostedBrowserBootstrap } from "@opensteer/protocol";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
-import { BrowserSnapshotDerivation } from "../host/browser-snapshot.js";
-import type {
-  BrowserGroupRow,
-  BrowserTabRow,
-  BrowserViewerSurface,
+import {
+  BrowserSnapshotDerivation,
+  groupSession,
+  workspaceTabLineage,
+} from "../host/browser-snapshot.js";
+import {
+  type BrowserGroupRow,
+  type BrowserTabRow,
+  type BrowserViewerSurface,
 } from "@opensteer/protocol/browser-tabs";
 
 export function browserStoreFixture(
@@ -20,7 +30,6 @@ export function browserStoreFixture(
   });
   return store;
 }
-
 export function replaceBrowserTabs(
   store: BrowserTabStore,
   groupId: string,
@@ -30,164 +39,228 @@ export function replaceBrowserTabs(
   store.applyTabs(groupId, { op: "rows", rows: [...rows] });
   store.applyTabs(groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
 }
-
 export function browserSnapshotFromRows(prefix: Pick<HostedBrowserBootstrap, "groups" | "tabs">) {
-  const store = new BrowserTabStore(() => {});
+  const store = new BrowserTabStore();
   store.seed(prefix);
-  return new BrowserSnapshotDerivation().derive({ browserSessions: [], workspaceTabs: [] }, store);
+  return new BrowserSnapshotDerivation().derive({ browserSessions: [] }, store);
 }
 
-const fixtureBindings = new WeakMap<
-  HostSnapshot["browserSessions"],
-  Map<HostSnapshot["workspaceTabs"], Pick<HostSnapshot, "browserTabs" | "browserSessions">>
->();
-const fixtureSnapshots = new WeakMap<HostSnapshot, HostSnapshot>();
+type SessionSeed = { [K in keyof BrowserSessionSummary]?: BrowserSessionSummary[K] | undefined } & {
+  id: string;
+};
+type RowSeed = {
+  [K in Exclude<keyof BrowserTabRow, "id" | "sessionId" | "openerId" | "occupants">]?:
+    BrowserTabRow[K] | undefined;
+} & {
+  id: string;
+  sessionId?: string | undefined;
+  openerId?: string | null | undefined;
+  occupants?:
+    | readonly {
+        threadId: string;
+        holding: boolean;
+        acting: boolean;
+        home: boolean;
+        lastActiveAt: string;
+      }[]
+    | undefined;
+};
+export function seedBrowserSession<T extends SessionSeed>(
+  source: T,
+  seed?: Partial<BrowserInventory> & { rows?: readonly RowSeed[]; complete?: boolean },
+  surfaces?: readonly (Omit<BrowserTabSummary, "id" | "active" | "favicon" | "documentId"> & {
+    id: string;
+    active?: boolean;
+    documentId?: string | null | undefined;
+    favicon?: string | null | undefined;
+  })[],
+): T & { browserTabs: BrowserTabStore } {
+  const inherited = source.browserTabs;
+  const oldGroup = inherited?.groupForSession(source.id);
+  const heldGroup = oldGroup ? inherited?.group(oldGroup) : undefined;
+  const id = heldGroup?.id ?? source.id;
+  const rows: readonly RowSeed[] =
+    seed?.rows ??
+    (surfaces
+      ? surfaces.map((tab, order) => ({
+          ...tab,
+          site: tab.url,
+          order,
+          canGoBack: true,
+          canGoForward: true,
+        }))
+      : inherited?.sessionTabs(source.id)) ??
+    [];
+  const tabs = rows.map((tab, order) => ({
+    id: tab.id,
+    sessionId: source.id,
+    title: tab.title ?? "Page",
+    site: tab.site ?? "",
+    iconRef: tab.iconRef ?? null,
+    order: tab.order ?? order,
+    openerId: tab.openerId ?? null,
+    createdAt: tab.createdAt ?? source.createdAt ?? "",
+    state: tab.state ?? "live",
+    availability: tab.availability ?? "ready",
+    loading: tab.loading ?? false,
+    navigationFailed: tab.navigationFailed ?? false,
+    documentId: tab.state === "suspended" ? null : (tab.documentId ?? `document-${tab.id}`),
+    canGoBack: tab.canGoBack ?? false,
+    canGoForward: tab.canGoForward ?? false,
+    occupants: tab.occupants ?? [],
+  })) as BrowserTabRow[];
+  const group = {
+    id,
+    sessionId: source.id,
+    createdAt: heldGroup?.createdAt ?? source.createdAt ?? "",
+    sessionCreatedAt: source.createdAt ?? "",
+    updatedAt: source.updatedAt ?? source.createdAt ?? "",
+    unavailableReason: heldGroup?.unavailableReason ?? null,
+    tabCount: tabs.length,
+    inventoryRevision:
+      seed?.inventoryRevision ?? seed?.revision ?? heldGroup?.inventoryRevision ?? 0,
+    access: source.access,
+    origin: source.origin,
+    state: source.state,
+    workspaceId: source.workspaceId,
+    placement: source.placement,
+    profileId: source.profileId ?? null,
+    runtimeId: source.runtimeId,
+    navigation: source.navigationVersion === 1,
+    opener: source.opener ?? { kind: "unknown" },
+    acting: source.acting ?? false,
+    page: source.page ?? null,
+    attachedRunIds: source.attachedRunIds ?? [],
+    threadIds: source.threadIds ?? [],
+  } as unknown as BrowserGroupRow;
+  const store = browserStoreFixture(
+    [group],
+    [{ groupId: id, rows: tabs, complete: seed?.complete ?? true }],
+    (sessionId, tabId) => {
+      const viewed = surfaces?.find((tab) => tab.id === tabId);
+      return viewed
+        ? {
+            ...viewed,
+            id: viewed.id as BrowserViewerSurface["id"],
+            state: "live",
+            documentId: viewed.documentId ?? `document-${tabId}`,
+            geometryRevision: 1,
+            loading: viewed.loading ?? false,
+            navigationFailed: viewed.navigationFailed ?? false,
+            sizedByAgent: viewed.sizedByAgent ?? false,
+            favicon: viewed.favicon ?? null,
+          }
+        : inherited?.surface(sessionId, tabId);
+    },
+  );
+  return { ...source, browserTabs: store };
+}
 
-/** Admit authored legacy fixture records at the same keyed boundary as real bootstrap data. */
-export function withBrowserTabStore(source: HostSnapshot): HostSnapshot {
-  const previous = fixtureSnapshots.get(source);
-  if (previous) return previous;
-  const binding = fixtureBindings.get(source.browserSessions)?.get(source.workspaceTabs);
-  if (binding) {
-    const snapshot = { ...source, ...binding };
-    fixtureSnapshots.set(source, snapshot);
-    return snapshot;
+const snapshots = new WeakMap<HostSnapshot, HostSnapshot>();
+const sessionBindings = new WeakMap<
+  HostSnapshot["browserSessions"],
+  HostSnapshot["browserSessions"]
+>();
+const bindings = new WeakMap<HostSnapshot["browserSessions"], HostSnapshot["browserTabs"]>();
+export function seedBrowserSnapshot(
+  source: HostSnapshot,
+  lineages?: readonly WorkspaceTabLineage[],
+): HostSnapshot {
+  if (!lineages) {
+    const held = snapshots.get(source);
+    if (held) return held;
   }
-  const sessions = [...source.browserSessions];
-  const groups: BrowserGroupRow[] = [];
-  const tabs: { groupId: string; rows: BrowserTabRow[]; complete: boolean }[] = [];
-  const claimed = new Set<string>();
-  const add = (session: BrowserSessionSummary, lineage?: WorkspaceTabLineage) => {
-    const id = lineage?.id ?? session.id;
-    const catalog = session.tabCatalog;
-    const live = new Map(catalog?.tabs.map((tab) => [tab.id, tab]));
-    const rows = (lineage?.tabs ?? catalog?.tabs ?? session.tabs ?? []).map((tab, order) => {
-      const record = live.get(tab.id);
-      const surface = session.tabs?.find((surface) => surface.id === tab.id);
-      const state = "state" in tab ? tab.state : "live";
-      return {
-        ...record,
-        ...tab,
-        sessionId: session.id,
-        title: tab.title ?? surface?.title ?? "Page",
-        site: "site" in tab ? tab.site : (surface?.url ?? ""),
-        iconRef: record?.iconRef ?? ("iconRef" in tab ? tab.iconRef : null) ?? null,
-        order: "order" in tab ? tab.order : order,
-        openerId: "openerId" in tab ? tab.openerId : null,
-        createdAt:
-          "createdAt" in tab ? tab.createdAt : (lineage?.createdAt ?? session.createdAt ?? ""),
-        state,
-        availability: record?.availability ?? "ready",
-        loading: surface?.loading ?? record?.loading ?? false,
-        navigationFailed: record?.navigationFailed ?? false,
-        documentId: state === "live" ? (record?.documentId ?? `document-${tab.id}`) : null,
-        canGoBack: record?.canGoBack ?? false,
-        canGoForward: record?.canGoForward ?? false,
-        occupants: record?.occupants ?? [],
-      } as BrowserTabRow;
-    });
-    groups.push({
-      ...session,
-      id,
-      sessionId: session.id,
-      createdAt: lineage?.createdAt ?? session.createdAt ?? "",
-      sessionCreatedAt: session.createdAt ?? "",
-      updatedAt: session.updatedAt ?? "",
-      unavailableReason: lineage?.unavailableReason ?? null,
-      tabCount: rows.length,
-      inventoryRevision: catalog?.inventoryRevision ?? catalog?.revision ?? lineage?.revision ?? 0,
-      navigation: session.navigationVersion === 1,
-      opener: session.opener ?? { kind: "unknown" },
-      profileId: session.profileId ?? null,
-      acting: session.acting ?? false,
-      page: session.page ?? null,
-      attachedRunIds: session.attachedRunIds ?? [],
-      threadIds: session.threadIds ?? [],
-    } as unknown as BrowserGroupRow);
-    tabs.push({
-      groupId: id,
-      rows,
-      complete: lineage ? lineage.whole !== false && !!lineage.tabs : !!catalog || !!session.tabs,
-    });
-    claimed.add(session.id);
-  };
-  for (const lineage of source.workspaceTabs ?? []) {
-    if (!lineage.session) continue;
-    let session = sessions.find((session) => session.id === lineage.session.id);
-    if (!session || session.state === "closed" || session.state === "failed") {
-      session = sessions.find(
-        (session) =>
-          session.state === "ready" &&
-          lineage.tabs?.some((tab) => session.tabCatalog?.tabs.some((live) => live.id === tab.id)),
-      );
+  let store = !lineages ? bindings.get(source.browserSessions) : undefined;
+  if (!store) {
+    const groups = new Map<string, BrowserGroupRow>();
+    const tabs = new Map<
+      string,
+      { groupId: string; rows: readonly BrowserTabRow[]; complete: boolean }
+    >();
+    for (const session of source.browserSessions) {
+      if (
+        lineages &&
+        session.workspaceTabRestoreVersion === 1 &&
+        !lineages.some((group) => group.session.id === session.id)
+      )
+        continue;
+      const groupId = session.browserTabs?.groupForSession(session.id);
+      const group = groupId ? session.browserTabs?.group(groupId) : undefined;
+      if (group) {
+        const seeded = seedBrowserSession(session).browserTabs;
+        groups.set(group.id, seeded.group(group.id)!);
+        tabs.set(group.id, {
+          groupId: group.id,
+          rows: session.browserTabs!.sessionTabs(session.id),
+          complete: session.browserTabs!.tabs(group.id).whole,
+        });
+      }
     }
-    if (!session) {
-      const { tabCatalog, ...metadata } = lineage.session;
-      const saved: BrowserSessionSummary = {
-        ...metadata,
-        acting: metadata.acting ?? false,
-        page: metadata.page ?? null,
-        threadIds: metadata.threadIds ?? [],
-        attachedRunIds: metadata.attachedRunIds ?? [],
-        ...(tabCatalog ? { tabCatalog } : {}),
-        opener: lineage.session.opener ?? { kind: "unknown" },
-        tabs: [],
+    for (const lineage of lineages ?? []) {
+      const session = source.browserSessions.find((session) => session.id === lineage.session.id);
+      const seeded = seedBrowserSession(
+        {
+          ...groupSession({
+            ...lineage.session,
+            sessionId: lineage.session.id,
+            sessionCreatedAt: lineage.session.createdAt,
+          } as BrowserGroupRow),
+          ...session,
+          workspaceTabRestoreVersion: 1,
+        },
+        {
+          rows: lineage.tabs ?? [],
+          revision: lineage.revision,
+          complete: lineage.whole !== false && !!lineage.tabs,
+        },
+      );
+      const group = seeded.browserTabs!.group(seeded.id)!;
+      groups.set(lineage.id, {
+        ...group,
+        id: lineage.id,
+        createdAt: lineage.createdAt,
+        unavailableReason: lineage.unavailableReason ?? null,
+      });
+      tabs.set(lineage.id, {
+        groupId: lineage.id,
+        rows: seeded.browserTabs!.sessionTabs(seeded.id),
+        complete: lineage.whole !== false && !!lineage.tabs,
+      });
+    }
+    store = browserStoreFixture([...groups.values()], [...tabs.values()], (sessionId, tabId) =>
+      source.browserSessions
+        .find((session) => session.id === sessionId)
+        ?.browserTabs?.surface(sessionId, tabId),
+    );
+    bindings.set(source.browserSessions, store);
+  }
+  const browserSessions =
+    (!lineages ? sessionBindings.get(source.browserSessions) : undefined) ??
+    source.browserSessions.map((session) => ({
+      ...session,
+      browserTabs: store,
+    }));
+  for (const id of store.groups().ids) {
+    const group = store.group(id)!;
+    if (!browserSessions.some((session) => session.id === group.sessionId))
+      browserSessions.push({
+        ...groupSession(group),
+        browserTabs: store,
         dialog: null,
         error: null,
         viewerState: "disconnected",
         viewerError: null,
-      };
-      sessions.push(saved);
-      session = saved;
-    }
-    session = { ...session, workspaceTabRestoreVersion: 1 };
-    const at = sessions.findIndex((value) => value.id === session!.id);
-    sessions[at] = session;
-    add(session, lineage);
+      });
   }
-  for (const session of source.browserSessions) {
-    if (
-      !claimed.has(session.id) &&
-      !(source.workspaceTabRestoreVersion === 1 && session.workspaceTabRestoreVersion === 1)
-    )
-      add(session);
-  }
-  const store = browserStoreFixture(groups, tabs, (sessionId, tabId) => {
-    const surface = source.browserSessions
-      .find((session) => session.id === sessionId)
-      ?.tabs?.find((tab) => tab.id === tabId);
-    return surface
-      ? {
-          ...surface,
-          state: "live",
-          documentId: surface.documentId ?? `document-${tabId}`,
-          geometryRevision: 1,
-          loading: surface.loading ?? false,
-          navigationFailed: false,
-          sizedByAgent: surface.sizedByAgent ?? false,
-          favicon: surface.favicon ?? null,
-        }
-      : undefined;
-  });
-  const inventory = store.inventory;
-  store.inventory = (sessionId) => {
-    const held = inventory(sessionId);
-    const authored = source.browserSessions.find((session) => session.id === sessionId)?.tabCatalog;
-    return held && authored
-      ? { ...held, generation: authored.generation, revision: authored.revision }
-      : held;
-  };
-  const snapshot = {
-    ...source,
-    browserTabs: store,
-    browserSessions: sessions.map((session) => ({ ...session, browserTabs: store })),
-  };
-  const output = { browserTabs: store, browserSessions: snapshot.browserSessions };
-  for (const list of [source.browserSessions, snapshot.browserSessions]) {
-    let versions = fixtureBindings.get(list);
-    if (!versions) fixtureBindings.set(list, (versions = new Map()));
-    versions.set(source.workspaceTabs, output);
-  }
-  fixtureSnapshots.set(source, snapshot);
+  sessionBindings.set(source.browserSessions, browserSessions);
+  sessionBindings.set(browserSessions, browserSessions);
+  bindings.set(browserSessions, store);
+  const snapshot = { ...source, browserTabs: store, browserSessions };
+  if (!lineages) snapshots.set(source, snapshot);
   return snapshot;
+}
+
+export function browserLineages(source: Pick<HostSnapshot, "browserTabs">) {
+  const store = source.browserTabs;
+  return store?.groups().ids.map((id) => workspaceTabLineage(store, id)!) ?? [];
 }

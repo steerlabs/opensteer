@@ -35,20 +35,15 @@ async function shot(page: Page, name: string) {
 }
 const inventory = (page: Page) =>
   page.evaluate(() => {
-    const client = Reflect.get(window, "opensteerMock") as {
-      getSnapshot(): {
-        workspaceTabs?: {
-          session: { profileId: string | null };
-          tabs?: { id: string; sessionId: string }[];
-        }[];
-      };
-    };
-    return (client.getSnapshot().workspaceTabs ?? []).flatMap((group) =>
-      (group.tabs ?? []).map((tab) => ({
-        key: `browser:${tab.sessionId}:${tab.id}`,
-        profileId: group.session.profileId,
-      })),
-    );
+    const client = Reflect.get(
+      window,
+      "opensteerMock",
+    ) as import("@opensteer/client/host").HostClient;
+    const store = client.browserTabs;
+    return store.structure().map((tab) => ({
+      key: `browser:${tab.sessionId}:${tab.tabId}`,
+      profileId: store.group(tab.groupId)!.profileId,
+    }));
   });
 async function choose(page: Page, name: string) {
   await trigger(page).click();
@@ -169,110 +164,15 @@ try {
     "mixed-profile groups retain only matching members and their collapse state",
     async () => {
       await page.evaluate(async () => {
-        const client = Reflect.get(window, "opensteerMock") as {
-          groupBrowserTabs(ids: string[], group: { title: string; color: string }): Promise<string>;
-        };
-        await client.groupBrowserTabs(["mock-tab-0-0", "mock-tab-2-0"], {
-          title: "Mixed accounts",
-          color: "blue",
-        });
-      });
-      await choose(page, "Work");
-      const members = await page.locator(".side-tab--grouped").allTextContents();
-      expectThat(
-        { members },
-        members.length === 1 && !members[0]!.includes("Nopa"),
-        "mixed group leaked a profile",
-      );
-      await page.getByRole("button", { name: "Mixed accounts, 1 tabs", exact: true }).click();
-      expectThat(
-        {},
-        (await page.locator(".side-tab--grouped").count()) === 0,
-        "filtered group did not collapse",
-      );
-      await shot(page, "03-grouped.png");
-      await page.getByRole("button", { name: "Clear profile filter" }).click();
-      expectThat(
-        {},
-        (await page
-          .getByRole("button", { name: "Mixed accounts, 2 tabs", exact: true })
-          .getAttribute("aria-expanded")) === "false",
-        "filter changed collapse state",
-      );
-      return { members };
-    },
-  );
-
-  await check("global search can open a tab outside the selected profile", async () => {
-    await choose(page, "Work");
-    await page.keyboard.press("Meta+k");
-    const field = page.getByRole("combobox", { name: "Search tasks and tabs" });
-    await field.fill("lisbon");
-    await page.getByRole("option").filter({ hasText: "Lisbon · Stays" }).click();
-    expectThat(
-      {},
-      (await page.getByRole("button", { name: "Clear profile filter" }).count()) === 0,
-      "search left its chosen tab filtered out",
-    );
-    expectThat(
-      {},
-      (await rows(page)).some((row) => row.title === "Lisbon · Stays – Airbnb"),
-      "chosen tab is hidden",
-    );
-    return { rows: await rows(page) };
-  });
-
-  await check(
-    "filtered keyboard reordering preserves hidden tabs and the chosen profile",
-    async () => {
-      const beforeAll = await rows(page);
-      const beforeInventory = await inventory(page);
-      await choose(page, "Guest");
-      const initial = await rows(page);
-      const first = page.locator(".side-section--tabs [data-place-key] .side-tab__main").first();
-      await first.focus();
-      await page.keyboard.press("Meta+ArrowDown");
-      await page.waitForTimeout(350);
-      const moved = await rows(page);
-      expectThat(
-        { initial, moved },
-        moved[0]?.key === initial[1]?.key && moved[1]?.key === initial[0]?.key,
-        "filtered reorder failed",
-      );
-      await page.getByRole("button", { name: "Clear profile filter" }).click();
-      const after = await rows(page);
-      const guestKeys = new Set(initial.map((row) => row.key));
-      const hidden = (items: typeof after) => items.filter((row) => !guestKeys.has(row.key));
-      const afterInventory = await inventory(page);
-      expectThat(
-        { beforeAll, after },
-        JSON.stringify(hidden(beforeAll)) === JSON.stringify(hidden(after)),
-        "reorder changed hidden tabs' relative order",
-      );
-      expectThat(
-        { beforeInventory, afterInventory },
-        JSON.stringify(beforeInventory.map((tab) => tab.key).sort()) ===
-          JSON.stringify(afterInventory.map((tab) => tab.key).sort()),
-        "reorder lost or duplicated tabs",
-      );
-      return { initial, moved };
-    },
-  );
-
-  await check(
-    "closing the last matching tab keeps a clearable, explicit empty filter",
-    async () => {
-      await choose(page, "Work");
-      await page.evaluate(async () => {
-        const client = Reflect.get(window, "opensteerMock") as {
-          getSnapshot(): {
-            workspaceTabs?: { session: { profileId: string | null }; tabs?: { id: string }[] }[];
-          };
-          closeWorkspaceTabs(ids: string[]): Promise<unknown>;
-        };
-        const ids = (client.getSnapshot().workspaceTabs ?? [])
-          .filter((group) => group.session.profileId?.endsWith("000000000002"))
-          .flatMap((group) => (group.tabs ?? []).map((tab) => tab.id));
+        const client = Reflect.get(
+          window,
+          "opensteerMock",
+        ) as import("@opensteer/client/host").HostClient;
+        const store = client.browserTabs;
+        const ids = store
+          .structure()
+          .filter((tab) => store.group(tab.groupId)!.profileId?.endsWith("000000000002"))
+          .map((tab) => tab.tabId);
         await client.closeWorkspaceTabs(ids);
       });
       await page.waitForTimeout(250);

@@ -1,3 +1,4 @@
+import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import { browserStoreFixture, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
 import type {
   BrowserGroupRow,
@@ -80,23 +81,26 @@ function browser(
   usedBy: readonly string[],
   state: BrowserSessionSummary["state"] = "ready",
 ): BrowserSessionSummary {
-  const session: BrowserSessionSummary = {
-    access: "read-write",
-    attachedRunIds: [],
-    dialog: null,
-    error: null,
-    id: `bsn_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
-    origin: "agent",
-    placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
-    profileId: null,
-    runtimeId: "runtime",
-    state,
-    tabs: [],
-    threadIds: usedBy,
-    viewerError: null,
-    viewerState: "synchronized",
-    workspaceId: template.workspaceId,
-  };
+  const session: BrowserSessionSummary = seedBrowserSession(
+    {
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      id: `bsn_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      origin: "agent",
+      placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
+      profileId: null,
+      runtimeId: "runtime",
+      state,
+      threadIds: usedBy,
+      viewerError: null,
+      viewerState: "synchronized",
+      workspaceId: template.workspaceId,
+    },
+    undefined,
+    [],
+  );
   return bind(session, [
     {
       id: BrowserSurfaceIdSchema.parse(`tab-${index}`),

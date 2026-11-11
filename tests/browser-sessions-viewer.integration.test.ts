@@ -1,3 +1,4 @@
+import { seedBrowserSession } from "../packages/client/src/test-support/browser-snapshot.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserInventory } from "./browser-sessions.test-support.js";
 import { randomUUID } from "node:crypto";
@@ -13,7 +14,7 @@ import {
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import { injectRpcRequest } from "../apps/host/src/server/test-host-api-request.js";
 import { type LaunchedBrowser } from "../packages/browser-runtime-core/src/index.js";
-import { withBrowserTabStore } from "../packages/client/src/test-support/browser-snapshot.js";
+import { seedBrowserSnapshot } from "../packages/client/src/test-support/browser-snapshot.js";
 import type { BrowserSessionSummary, HostSnapshot } from "../packages/client/src/host/client.js";
 import {
   HttpHostClient,
@@ -264,10 +265,16 @@ run("Browser Sessions through a whole deployment", () => {
     await client.load();
     const clientOpened = await client.openBrowserTab(urlSessionId, { url: site.origin });
     expect(
-      client
-        .getSnapshot()
-        .browserSessions.find((session) => session.id === clientOpened.sessionId)!
-        .tabCatalog!.tabs.some((tab) => tab.id === clientOpened.tabId),
+      (
+        client
+          .getSnapshot()
+          .browserSessions.find((session) => session.id === clientOpened.sessionId)!
+          .browserTabs?.sessionTabs(
+            client
+              .getSnapshot()
+              .browserSessions.find((session) => session.id === clientOpened.sessionId)!.id,
+          ) ?? []
+      ).some((tab) => tab.id === clientOpened.tabId),
     ).toBe(true);
     await waitFor(
       async () =>
@@ -385,17 +392,19 @@ run("Browser Sessions through a whole deployment", () => {
     // The sidebar's place list reads exactly that field.
     const read = await catalog();
     const listed = placeList(
-      withBrowserTabStore({
+      seedBrowserSnapshot({
         browserSessions: [
-          {
-            createdAt: new Date().toISOString(),
-            id: sessionId,
-            profileId: null,
-            placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
-            state: "ready",
-            tabCatalog: read,
-            tabs: [],
-          } as unknown as BrowserSessionSummary,
+          seedBrowserSession(
+            {
+              createdAt: new Date().toISOString(),
+              id: sessionId,
+              profileId: null,
+              placement: { kind: "runner", runnerId: "rnr_11111111-1111-4111-8111-111111111111" },
+              state: "ready",
+            },
+            { rows: read.tabs, revision: read.inventoryRevision },
+            [],
+          ) as unknown as BrowserSessionSummary,
         ],
         browserProfiles: [],
         browserPlacements: [],

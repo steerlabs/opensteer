@@ -1,6 +1,6 @@
 import type { UserId } from "@opensteer/core";
 import { browserPageSite, type BrowserSessionId } from "@opensteer/protocol";
-import { browserSnapshotFromRows } from "@opensteer/client/test-support";
+import { browserSnapshotFromRows, browserLineages } from "@opensteer/client/test-support";
 import type { BrowserService } from "./browser-service.js";
 
 export async function browserRows(
@@ -44,7 +44,7 @@ export async function browserRows(
           : live
             ? live.inventoryRevision
             : 0) ?? 0,
-      lineage: snapshot.workspaceTabs?.find(
+      lineage: browserLineages(snapshot).find(
         (group) => group.id === sessionId || group.session.id === sessionId,
       ),
       tabs,

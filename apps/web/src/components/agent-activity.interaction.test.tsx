@@ -1,5 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -778,8 +779,10 @@ describe("page rail", () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const original = client
       .getSnapshot()
-      .browserSessions.find((session) => session.tabCatalog?.tabs.length)!;
-    const tab = original.tabCatalog!.tabs[0]!;
+      .browserSessions.find(
+        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
+      )!;
+    const tab = (original.browserTabs?.sessionTabs(original?.id) ?? [])[0]!;
     const browserUses = [
       {
         sessionId: original.id,
@@ -790,12 +793,11 @@ describe("page rail", () => {
         lastUsedAt: run.createdAt,
       },
     ];
-    const rawSession: BrowserSessionSummary = {
-      ...original,
-      attachedRunIds: [run.runId!],
-      tabCatalog: {
-        ...original.tabCatalog!,
-        tabs: [
+    const rawSession: BrowserSessionSummary = seedBrowserSession(
+      { ...original, attachedRunIds: [run.runId!] },
+      {
+        ...original.browserTabs!.inventory(original?.id)!,
+        rows: [
           {
             ...tab,
             occupants: [
@@ -810,13 +812,17 @@ describe("page rail", () => {
           },
         ],
       },
-    };
-    const session = withBrowserTabStore({
-      ...client.getSnapshot(),
-      workspaceTabs: undefined,
-      workspaceTabRestoreVersion: undefined,
-      browserSessions: [rawSession],
-    }).browserSessions[0]!;
+    );
+    const session = seedBrowserSnapshot(
+      seedBrowserSnapshot(
+        {
+          ...client.getSnapshot(),
+          workspaceTabRestoreVersion: undefined,
+          browserSessions: [rawSession],
+        } as import("@opensteer/client/host").HostSnapshot,
+        undefined,
+      ),
+    ).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "first-stop",

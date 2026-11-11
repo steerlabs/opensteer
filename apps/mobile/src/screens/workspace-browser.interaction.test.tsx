@@ -1,5 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -147,21 +148,25 @@ vi.mock("@opensteer/client/react", async () => {
       state.popupFollow = { tab, follow };
     },
     useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
-      selector(withBrowserTabStore(state.snapshot!)),
+      selector(seedBrowserSnapshot(state.snapshot!)),
     useHostSnapshot: () => ({
-      snapshot: state.snapshot && withBrowserTabStore(state.snapshot),
+      snapshot: state.snapshot && seedBrowserSnapshot(state.snapshot),
       loadError: null,
       reload: state.refresh,
     }),
     usePlaceList: () => {
       if (state.snapshot === null) throw new Error("Missing snapshot fixture");
-      return placeList(withBrowserTabStore(state.snapshot));
+      return placeList(seedBrowserSnapshot(state.snapshot));
     },
     // The keyed tab reads, from the same fixture as the snapshot.
     useBrowserSessionGroupId: (_client: unknown, sessionId: string | undefined) =>
-      sessionId !== undefined && fixtureRows(sessionId) ? sessionId : undefined,
+      sessionId === undefined
+        ? undefined
+        : seedBrowserSnapshot(state.snapshot!).browserTabs?.groupForSession(sessionId),
     useBrowserTab: (_client: unknown, groupId?: string, tabId?: string) =>
-      groupId && tabId ? fixtureRows(groupId)?.get(tabId) : undefined,
+      groupId && tabId
+        ? seedBrowserSnapshot(state.snapshot!).browserTabs?.tab(groupId, tabId)
+        : undefined,
     useBrowserTabs: (_client: unknown, groupId: string) => fixtureList(groupId),
     useBrowserViewerSurface: (_client: unknown, sessionId?: string, tabId?: string) =>
       sessionId && tabId ? fixtureSurface(sessionId, tabId) : undefined,
@@ -170,7 +175,7 @@ vi.mock("@opensteer/client/react", async () => {
     useThreadAgentTab: (_client: unknown, threadId: string | null) =>
       threadId === null
         ? null
-        : browserThreadAgentTab(withBrowserTabStore(state.snapshot!).browserSessions, threadId),
+        : browserThreadAgentTab(seedBrowserSnapshot(state.snapshot!).browserSessions, threadId),
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -648,28 +653,31 @@ function session(
   workspaceId: string,
   state: BrowserSessionSummary["state"] = "ready",
 ): BrowserSessionSummary {
-  return {
-    access: "read-write",
-    attachedRunIds: [],
-    dialog: null,
-    error: null,
-    id,
-    origin: "agent",
-    placement: { kind: "runner", runnerId: "runner-a" },
-    profileId: null,
-    runtimeId: "runtime-a",
-    state,
-    tabs: [
-      { active: true, id: "page-1", title: "Page", url: "https://example.com" },
-    ] as BrowserSessionSummary["tabs"],
-    viewerError: null,
-    viewerState: "synchronized",
-    workspaceId,
-  };
+  return seedBrowserSession(
+    {
+      access: "read-write",
+      attachedRunIds: [],
+      dialog: null,
+      error: null,
+      id,
+      origin: "agent",
+      placement: { kind: "runner", runnerId: "runner-a" },
+      profileId: null,
+      runtimeId: "runtime-a",
+      state,
+      viewerError: null,
+      viewerState: "synchronized",
+      workspaceId,
+    },
+    undefined,
+    [{ active: true, id: "page-1", title: "Page", url: "https://example.com" }] as NonNullable<
+      Parameters<typeof seedBrowserSession>[2]
+    >,
+  );
 }
 
 function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
-  return withBrowserTabStore({
+  return seedBrowserSnapshot({
     assignments: {},
     browserPlacements: [],
     browserProfiles: [],
@@ -702,39 +710,11 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
   } as unknown as HostSnapshot);
 }
 
-/** A browser's tabs as the fixture's snapshot lists them: its catalog, else its viewer's tabs. */
 function fixtureRows(sessionId: string): ReadonlyMap<string, BrowserTabRow> | undefined {
   const session = state.snapshot?.browserSessions.find(({ id }) => id === sessionId);
-  if (!session) return undefined;
-  const tabs = session.tabCatalog?.tabs ?? session.tabs;
-  return new Map(
-    tabs.map((tab, order) => {
-      const viewed = session.tabs.find(({ id }) => id === tab.id);
-      const site = "site" in tab ? tab.site : tab.url;
-      return [
-        tab.id,
-        {
-          id: tab.id,
-          sessionId,
-          title: tab.title,
-          site,
-          iconRef: null,
-          order: "order" in tab ? tab.order : order,
-          openerId: null,
-          createdAt: "2026-10-13T00:00:00.000Z",
-          state: "live",
-          availability: "ready",
-          loading: tab.loading ?? false,
-          navigationFailed: tab.navigationFailed ?? false,
-          documentId: tab.documentId ?? viewed?.documentId ?? `document-${tab.id}`,
-          // A tab with no catalog row, as from an older Host, admits its history.
-          canGoBack: "canGoBack" in tab ? tab.canGoBack !== false : true,
-          canGoForward: "canGoForward" in tab ? tab.canGoForward !== false : true,
-          occupants: [],
-        } as unknown as BrowserTabRow,
-      ];
-    }),
-  );
+  return session
+    ? new Map(session.browserTabs?.sessionTabs(sessionId).map((tab) => [tab.id, tab]))
+    : undefined;
 }
 function fixtureList(sessionId: string) {
   const rows = fixtureRows(sessionId);
@@ -746,16 +726,14 @@ const fixtureTabs = {
   tab: (groupId: string, tabId: string) => fixtureRows(groupId)?.get(tabId),
 };
 const fixtureSurface = (sessionId: string, tabId: string) =>
-  state.snapshot?.browserSessions
-    .find(({ id }) => id === sessionId)
-    ?.tabs.find(({ id }) => id === tabId);
+  state.snapshot?.browserTabs?.surface(sessionId, tabId);
 
 const liveFeed = { status: "live", error: null, frame: null } as const;
 function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
-  state.hostClient.getSnapshot ??= () => state.snapshot && withBrowserTabStore(state.snapshot);
+  state.hostClient.getSnapshot ??= () => state.snapshot && seedBrowserSnapshot(state.snapshot);
   state.hostClient.browserTabs ??= fixtureTabs;
   state.hostClient.browserViewerSurface ??= fixtureSurface;
   state.drafts ??= createThreadDraftStore({
@@ -783,7 +761,7 @@ function setup(
   const render = () => {
     Object.defineProperty(state.hostClient, "browserTabs", {
       configurable: true,
-      get: () => withBrowserTabStore(state.snapshot!).browserTabs!,
+      get: () => seedBrowserSnapshot(state.snapshot!).browserTabs!,
     });
     return act(() =>
       root.render(
@@ -838,17 +816,14 @@ function header(): HTMLElement {
 }
 
 function mailSession(id: string): BrowserSessionSummary {
-  return {
-    ...session(id, child.id),
-    tabs: [
-      {
-        active: true,
-        id: "srf_00000000-0000-4000-8000-000000000001",
-        title: "Mail",
-        url: "https://mail.example.com/inbox",
-      },
-    ] as BrowserSessionSummary["tabs"],
-  };
+  return seedBrowserSession({ ...session(id, child.id) }, undefined, [
+    {
+      active: true,
+      id: "srf_00000000-0000-4000-8000-000000000001",
+      title: "Mail",
+      url: "https://mail.example.com/inbox",
+    },
+  ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>);
 }
 
 async function pressAsync(container: HTMLElement, label: string) {
@@ -875,12 +850,12 @@ type Occupant = Partial<Omit<import("@opensteer/client/host").PlaceOccupant, "th
 
 /** A browser whose one tab holds these occupants, as a Host that names who is in a tab lists them. */
 function occupied(id: string, occupants: readonly Occupant[]): BrowserSessionSummary {
-  return {
-    ...session(id, child.id),
-    tabCatalog: {
+  return seedBrowserSession(
+    { ...session(id, child.id) },
+    {
       generation: 1,
       revision: 1,
-      tabs: [
+      rows: [
         {
           availability: "ready",
           documentId: null,
@@ -900,7 +875,7 @@ function occupied(id: string, occupants: readonly Occupant[]): BrowserSessionSum
         },
       ],
     },
-  } as unknown as BrowserSessionSummary;
+  ) as unknown as BrowserSessionSummary;
 }
 
 /** A snapshot whose directory holds the agents' Threads, Chat and Main. */
@@ -964,7 +939,7 @@ describe("mobile pages", () => {
 
   it("opens a popup the person's input opened over its page, ready to go back", () => {
     const chosen = mailSession("chosen");
-    const tabId = chosen.tabs[0]!.id;
+    const tabId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
     const { render } = setup({ sessionId: chosen.id, tabId });
     state.snapshot = snapshot([chosen]);
     render();
@@ -1004,17 +979,25 @@ describe("mobile pages", () => {
       browserFrames: { subscribe: () => () => undefined },
     };
     const chosen = mailSession("chosen");
-    const target =
-      "srf_00000000-0000-4000-8000-000000000002" as BrowserSessionSummary["tabs"][number]["id"];
+    const target = "srf_00000000-0000-4000-8000-000000000002" as NonNullable<
+      Parameters<typeof seedBrowserSession>[2]
+    >[number]["id"];
     const { container, render } = setup({ sessionId: chosen.id, tabId: target });
     state.snapshot = snapshot([
-      {
-        ...chosen,
-        tabs: [
-          ...chosen.tabs,
-          { ...chosen.tabs[0]!, id: target, active: false, title: "Second page" },
-        ],
-      },
+      seedBrowserSession({ ...chosen }, undefined, [
+        ...chosen
+          .browserTabs!.sessionTabs(chosen.id)
+          .map((row) => chosen.browserTabs!.surface(chosen.id, row.id)!),
+        {
+          ...chosen.browserTabs!.surface(
+            chosen.id,
+            chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id,
+          )!,
+          id: target,
+          active: false,
+          title: "Second page",
+        },
+      ]),
     ]);
     render();
     expect(
@@ -1034,7 +1017,10 @@ describe("mobile pages", () => {
     });
     state.hostClient = { sendBrowserCommand };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    const { container, render } = setup({
+      sessionId: chosen.id,
+      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+    });
     let feed: object = { ...liveFeed, admissionId: "admission-1" };
     state.hostClient.browserViewerState = () => feed;
     state.snapshot = snapshot([chosen]);
@@ -1054,7 +1040,10 @@ describe("mobile pages", () => {
     });
     state.hostClient = { sendBrowserCommand };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    const { container, render } = setup({
+      sessionId: chosen.id,
+      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+    });
     state.snapshot = snapshot([chosen]);
     render();
     const field = () =>
@@ -1079,7 +1068,7 @@ describe("mobile pages", () => {
     press(container, "Tap the page");
     press(container, "Keyboard");
     type("x");
-    const surfaceId = chosen.tabs[0]!.id;
+    const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
     expect(sendBrowserCommand.mock.calls).toEqual([
       [chosen.id, { type: "clipboard.paste", surfaceId, text: "saved" }],
       [chosen.id, { type: "clipboard.paste", surfaceId, text: "!" }],
@@ -1274,12 +1263,9 @@ describe("mobile pages", () => {
         editAddress: true,
       };
       state.snapshot = snapshot([
-        {
-          ...session("chosen", child.id),
-          tabs: [
-            { id: "new-page", active: false, title: "", url: "about:blank" },
-          ] as BrowserSessionSummary["tabs"],
-        },
+        seedBrowserSession({ ...session("chosen", child.id) }, undefined, [
+          { id: "new-page", active: false, title: "", url: "about:blank" },
+        ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>),
       ]);
       render();
       expect(
@@ -1307,17 +1293,13 @@ describe("mobile pages", () => {
         },
       ];
       state.snapshot = snapshot([
-        {
-          ...chosen,
-          attachedRunIds: held ? ["run-1"] : [],
-          tabCatalog: {
-            generation: 1,
-            revision: 1,
-            tabs: [
-              { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
-            ],
-          } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>,
-        },
+        seedBrowserSession({ ...chosen, attachedRunIds: held ? ["run-1"] : [] }, {
+          generation: 1,
+          revision: 1,
+          rows: [
+            { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
+          ],
+        } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
       ]);
       render();
       await pressAsync(menu(), "Close tab");
@@ -1329,7 +1311,7 @@ describe("mobile pages", () => {
         await pressAsync(container, "Close tab");
       }
       expect(closeBrowserTab).toHaveBeenCalledExactlyOnceWith("chosen", "page-1", {
-        generation: 1,
+        generation: 0,
         revision: 1,
         inventoryRevision: 1,
       });
@@ -1369,16 +1351,13 @@ describe("mobile pages", () => {
       },
     ];
     state.snapshot = snapshot([
-      {
-        ...session("chosen", child.id),
-        tabCatalog: {
-          generation: 1,
-          revision: 1,
-          tabs: [
-            { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
-          ],
-        } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>,
-      },
+      seedBrowserSession({ ...session("chosen", child.id) }, {
+        generation: 1,
+        revision: 1,
+        rows: [
+          { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
+        ],
+      } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
     ]);
     render();
     await pressAsync(menu(), "Close tab");
@@ -1401,16 +1380,13 @@ describe("mobile pages", () => {
     };
     const { render } = setup({ sessionId: "chosen" });
     state.snapshot = snapshot([
-      {
-        ...session("chosen", child.id),
-        tabCatalog: {
-          generation: 1,
-          revision: 1,
-          tabs: [
-            { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
-          ],
-        } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>,
-      },
+      seedBrowserSession({ ...session("chosen", child.id) }, {
+        generation: 1,
+        revision: 1,
+        rows: [
+          { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
+        ],
+      } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
       session("other", child.id),
     ]);
     render();
@@ -1436,8 +1412,8 @@ describe("mobile pages", () => {
       generation: 1,
       revision: 1,
       tabs: [{ id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] }],
-    } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>;
-    state.snapshot = snapshot([{ ...chosen, tabCatalog: catalog }, occupied("other", [])]);
+    } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>;
+    state.snapshot = snapshot([seedBrowserSession({ ...chosen }, catalog), occupied("other", [])]);
     state.routes = [
       { name: "Tabs" },
       {
@@ -1463,16 +1439,13 @@ describe("mobile pages", () => {
     };
     const { container, render } = setup({ sessionId: "chosen" });
     state.snapshot = snapshot([
-      {
-        ...chosen,
-        tabCatalog: {
-          generation: 1,
-          revision: 1,
-          tabs: [
-            { id: "page-1", occupants: [], order: 0, site: "https://example.com", title: "Page" },
-          ],
-        } as unknown as NonNullable<BrowserSessionSummary["tabCatalog"]>,
-      },
+      seedBrowserSession({ ...chosen }, {
+        generation: 1,
+        revision: 1,
+        rows: [
+          { id: "page-1", occupants: [], order: 0, site: "https://example.com", title: "Page" },
+        ],
+      } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
     ]);
     render();
     await pressAsync(menu(), "Close tab");
@@ -2439,12 +2412,12 @@ describe("a page beside its agent's thread", () => {
       const { container, render, route } = openPage();
       const agentOn = (tabId: string) =>
         withAgents([
-          {
-            ...occupied("browser-child", []),
-            tabCatalog: {
+          seedBrowserSession(
+            { ...occupied("browser-child", []) },
+            {
               generation: 1,
               revision: 1,
-              tabs: ["page-1", "page-2"].map((id, order) => ({
+              rows: ["page-1", "page-2"].map((id, order) => ({
                 availability: "ready",
                 documentId: null,
                 iconRef: null,
@@ -2467,7 +2440,7 @@ describe("a page beside its agent's thread", () => {
                 title: id === "page-1" ? "Page" : "Flights",
               })),
             },
-          } as unknown as BrowserSessionSummary,
+          ) as unknown as BrowserSessionSummary,
         ]);
       const showTab = (tabId: string) => {
         route.params = {
@@ -2883,14 +2856,13 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     };
   }
   function catalogued(id: string): BrowserSessionSummary {
-    return {
-      ...session(id, child.id),
-      placement,
-      tabCatalog: {
+    return seedBrowserSession(
+      { ...session(id, child.id), placement, workspaceTabRestoreVersion: 1 },
+      {
         generation: 1,
         inventoryRevision: 1,
         revision: 1,
-        tabs: [
+        rows: [
           {
             availability: "ready",
             documentId: "document-1",
@@ -2904,18 +2876,23 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
           },
         ],
       },
-      workspaceTabRestoreVersion: 1,
-    } as unknown as BrowserSessionSummary;
+    ) as unknown as BrowserSessionSummary;
   }
 
   it("follows a saved tab's lineage to its new session", () => {
     const { container, render } = setup({ sessionId: "old" });
-    state.snapshot = {
-      ...snapshot([catalogued("new")]),
-      browserPlacements: [{ available: true, label: "Mac mini", runnerId: "runner-a" }],
-      workspaceTabRestoreVersion: 1,
-      workspaceTabs: [lineage("new", [{ id: "page-1", sessionId: "new", state: "live" }])],
-    } as unknown as HostSnapshot;
+    state.snapshot = seedBrowserSnapshot(
+      {
+        ...snapshot([catalogued("new")]),
+        browserPlacements: [{ available: true, label: "Mac mini", runnerId: "runner-a" }],
+        workspaceTabRestoreVersion: 1,
+      } as HostSnapshot,
+      [
+        lineage("new", [
+          { id: "page-1", sessionId: "new", state: "live" },
+        ]) as unknown as import("@opensteer/client/host").WorkspaceTabLineage,
+      ],
+    ) as unknown as HostSnapshot;
     render();
     expect(container.textContent).toContain("Viewing new");
     expect(state.setParams).toHaveBeenCalledWith({ sessionId: "new" });
@@ -2931,11 +2908,10 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
       readWorkspaceTabs,
     };
     const { container, render } = setup({ sessionId: "old" });
-    state.snapshot = {
-      ...snapshot([catalogued("sibling")]),
-      workspaceTabRestoreVersion: 1,
-      workspaceTabs: [],
-    } as unknown as HostSnapshot;
+    state.snapshot = seedBrowserSnapshot(
+      { ...snapshot([catalogued("sibling")]), workspaceTabRestoreVersion: 1 } as HostSnapshot,
+      [],
+    ) as unknown as HostSnapshot;
     render();
     await act(async () => undefined);
     await act(async () => undefined);
@@ -2958,7 +2934,10 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
       { sessionId: "old" },
       {
         strict: true,
-        snapshot: { ...snapshot([]), workspaceTabRestoreVersion: 1, workspaceTabs: [] },
+        snapshot: seedBrowserSnapshot(
+          { ...snapshot([]), workspaceTabRestoreVersion: 1 } as HostSnapshot,
+          [],
+        ),
       },
     );
     await act(async () => undefined);
@@ -2976,7 +2955,10 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
     const { container } = setup(
       { sessionId: "old" },
       {
-        snapshot: { ...snapshot([]), workspaceTabRestoreVersion: 1, workspaceTabs: [] },
+        snapshot: seedBrowserSnapshot(
+          { ...snapshot([]), workspaceTabRestoreVersion: 1 } as HostSnapshot,
+          [],
+        ),
       },
     );
     await act(async () => undefined);
@@ -3116,7 +3098,10 @@ describe("native page layout and controls", () => {
     const send = vi.fn();
     state.hostClient = { sendBrowserCommand: send, browserPreferences: {} };
     const chosen = mailSession("chosen");
-    const opened = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    const opened = setup({
+      sessionId: chosen.id,
+      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+    });
     state.snapshot = snapshot([chosen]);
     opened.render();
     return { ...opened, chosen, send };
@@ -3144,7 +3129,7 @@ describe("native page layout and controls", () => {
     });
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "navigation.go",
-      surfaceId: chosen.tabs[0]!.id,
+      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
       typed: true,
       url,
     });
@@ -3153,12 +3138,19 @@ describe("native page layout and controls", () => {
   it("cancels a draft address and switches a suggested tab in the page route", () => {
     const { container, chosen, render, send } = open();
     const other = {
-      ...chosen.tabs[0]!,
+      ...(chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!,
       id: BrowserSurfaceIdSchema.parse("srf_00000000-0000-4000-8000-000000000002"),
       title: "Other",
       url: "https://other.example",
     };
-    state.snapshot = snapshot([{ ...chosen, tabs: [...chosen.tabs, other] }]);
+    state.snapshot = snapshot([
+      seedBrowserSession({ ...chosen }, undefined, [
+        ...chosen
+          .browserTabs!.sessionTabs(chosen.id)
+          .map((row) => chosen.browserTabs!.surface(chosen.id, row.id)!),
+        other,
+      ]),
+    ]);
     render();
     press(container, "Address, mail.example.com");
     changeAddress(container, "discard this");
@@ -3166,7 +3158,10 @@ describe("native page layout and controls", () => {
     press(container, "Address, mail.example.com");
     expect(
       container.querySelector<HTMLInputElement>('input[aria-label="Website address"]')?.value,
-    ).toBe(chosen.tabs[0]!.url);
+    ).toBe(
+      chosen.browserTabs!.surface(chosen.id, chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id)!
+        .url,
+    );
     changeAddress(container, "Other");
     press(container, "Other, other.example");
     expect(state.setParams).toHaveBeenCalledExactlyOnceWith({
@@ -3184,7 +3179,7 @@ describe("native page layout and controls", () => {
     press(container, "Fit to screen");
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "viewport.set",
-      surfaceId: chosen.tabs[0]!.id,
+      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
       width: 400,
       height: 800,
     });
@@ -3217,7 +3212,17 @@ describe("native page layout and controls", () => {
     vi.mocked(Alert.alert).mockClear();
     state.layout = { width: 400, height: 800 };
     const { container, send, chosen, render } = open();
-    state.snapshot = snapshot([{ ...chosen, tabs: [{ ...chosen.tabs[0]!, sizedByAgent: true }] }]);
+    state.snapshot = snapshot([
+      seedBrowserSession({ ...chosen }, undefined, [
+        {
+          ...chosen.browserTabs!.surface(
+            chosen.id,
+            chosen.browserTabs!.sessionTabs(chosen.id)[0]!.id,
+          )!,
+          sizedByAgent: true,
+        },
+      ]),
+    ]);
     render();
     press(container, "Fit to screen");
     const buttons = vi.mocked(Alert.alert).mock.calls.at(-1)?.[2];
@@ -3231,7 +3236,7 @@ describe("native page layout and controls", () => {
     });
     expect(send).toHaveBeenCalledExactlyOnceWith(chosen.id, {
       type: "viewport.set",
-      surfaceId: chosen.tabs[0]!.id,
+      surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
       width: 400,
       height: 800,
     });
@@ -3239,19 +3244,24 @@ describe("native page layout and controls", () => {
 
   it("disables catalog-refused history and admits history from older Hosts", () => {
     const { container, chosen, send, render } = open();
-    const catalog = occupied(chosen.id, []).tabCatalog!;
+    const catalog = occupied(chosen.id, []).browserTabs!.inventory(occupied(chosen.id, [])?.id)!;
     const item = (label: string) =>
       [...menu().querySelectorAll("button")].find((button) => button.textContent === label);
     state.snapshot = snapshot([
-      {
-        ...chosen,
-        tabCatalog: {
+      seedBrowserSession(
+        { ...chosen },
+        {
           ...catalog,
-          tabs: [
-            { ...catalog.tabs[0]!, id: chosen.tabs[0]!.id, canGoBack: false, canGoForward: false },
+          rows: [
+            {
+              ...occupied(chosen.id, []).browserTabs!.sessionTabs(chosen.id)[0]!,
+              id: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+              canGoBack: false,
+              canGoForward: false,
+            },
           ],
         },
-      },
+      ),
     ]);
     render();
     // A phone's address keeps its room: the page's history is in More, beside Forward.
@@ -3268,8 +3278,20 @@ describe("native page layout and controls", () => {
     press(menu(), "Back");
     press(menu(), "Forward");
     expect(send.mock.calls).toEqual([
-      [chosen.id, { type: "navigation.back", surfaceId: chosen.tabs[0]!.id }],
-      [chosen.id, { type: "navigation.forward", surfaceId: chosen.tabs[0]!.id }],
+      [
+        chosen.id,
+        {
+          type: "navigation.back",
+          surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+        },
+      ],
+      [
+        chosen.id,
+        {
+          type: "navigation.forward",
+          surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+        },
+      ],
     ]);
 
     // Where the page is wide, Back and Forward stand beside the address, as Safari's do on iPad.
@@ -3287,7 +3309,10 @@ describe("native page layout and controls", () => {
     editing.negotiate("chosen", 1);
     state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    const { container, render } = setup({
+      sessionId: chosen.id,
+      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+    });
     state.snapshot = snapshot([chosen]);
     await act(async () => render());
     const input = () => container.querySelector<HTMLElement>("[data-page-input]");
@@ -3308,7 +3333,7 @@ describe("native page layout and controls", () => {
     act(() =>
       editing.receive(chosen.id, {
         type: "browser.editing",
-        surfaceId: chosen.tabs[0]!.id,
+        surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
         context: {
           contextId: "00000000-0000-4000-8000-000000000001",
           field: { kind: "text", multiline: false, sensitive: false },
@@ -3330,7 +3355,10 @@ describe("native page layout and controls", () => {
     editing.negotiate("chosen", 1);
     state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
     const chosen = mailSession("chosen");
-    const { container, render } = setup({ sessionId: chosen.id, tabId: chosen.tabs[0]!.id });
+    const { container, render } = setup({
+      sessionId: chosen.id,
+      tabId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
+    });
     state.snapshot = snapshot([chosen]);
     render();
     press(container, "Tap the page");
@@ -3339,7 +3367,7 @@ describe("native page layout and controls", () => {
     act(() =>
       editing.receive(chosen.id, {
         type: "browser.editing",
-        surfaceId: chosen.tabs[0]!.id,
+        surfaceId: (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id,
         context: {
           contextId: "00000000-0000-4000-8000-000000000001",
           field: { kind: "text", multiline: false, sensitive: false },
@@ -3361,7 +3389,7 @@ it("opens controller page actions only from matching streamed facts and offers o
     browserFrames: { editing, subscribe: () => () => undefined },
   };
   const chosen = mailSession("chosen");
-  const surfaceId = chosen.tabs[0]!.id;
+  const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
   const { container, render } = setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   render();
@@ -3400,7 +3428,7 @@ it("fences a menu clipboard read when another page contact changes its destinati
   editing.negotiate("chosen", 2);
   state.hostClient = { browserFrames: { editing, subscribe: () => () => undefined } };
   const chosen = mailSession("chosen");
-  const surfaceId = chosen.tabs[0]!.id;
+  const surfaceId = (chosen.browserTabs?.sessionTabs(chosen?.id) ?? [])[0]!.id;
   const { container, render } = setup({ sessionId: chosen.id, tabId: surfaceId });
   state.snapshot = snapshot([chosen]);
   render();

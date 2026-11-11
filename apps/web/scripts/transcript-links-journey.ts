@@ -222,7 +222,14 @@ try {
             return snapshot.browserSessions.some(
               (session) =>
                 session.id === params.get("browser") &&
-                session.tabs.some((tab) => tab.id === params.get("browserTab") && tab.url === url),
+                (session.browserTabs?.sessionTabs(session?.id) ?? []).some(
+                  (tab) =>
+                    tab.id === params.get("browserTab") &&
+                    (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
+                      session.id,
+                      tab.id,
+                    )?.url === url,
+                ),
             );
           },
           expected,
@@ -516,11 +523,15 @@ async function mockTabs(page: Page) {
     (Reflect.get(window, "opensteerMock") as MockHostClient)
       .getSnapshot()
       .browserSessions.flatMap((session) =>
-        session.tabs.map((tab) => ({
+        (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
           id: tab.id,
           sessionId: session.id,
           profileId: session.profileId,
-          url: tab.url,
+          url:
+            (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
+              session.id,
+              tab.id,
+            )?.url ?? tab.site,
         })),
       ),
   );

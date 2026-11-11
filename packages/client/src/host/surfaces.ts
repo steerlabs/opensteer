@@ -26,6 +26,7 @@ export interface BrowserSurfaceItem {
   readonly key: string;
   readonly session: BrowserSessionSummary;
   readonly tabId: string;
+  readonly occupants: readonly import("@opensteer/protocol").PlaceOccupant[];
   readonly identity: PlaceBrowserIdentity;
   readonly acting: boolean;
   readonly title: string;
@@ -265,6 +266,7 @@ function browserItems(
       openedAt: session.createdAt ?? "",
       session,
       tabId: tab.id,
+      occupants: tab.occupants,
       site: hostName(tab.site),
       title: browserTabTitle({ title: tab.title, url: tab.site }),
     });

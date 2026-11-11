@@ -1,5 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 
 import type { WebViewProps } from "react-native-webview";
 import { Linking } from "react-native";
@@ -806,8 +807,10 @@ describe("native page rail", () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const original = client
       .getSnapshot()
-      .browserSessions.find((session) => session.tabCatalog?.tabs.length)!;
-    const tab = original.tabCatalog!.tabs[0]!;
+      .browserSessions.find(
+        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length,
+      )!;
+    const tab = (original.browserTabs?.sessionTabs(original?.id) ?? [])[0]!;
     const threadId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001");
     const browserUses = [
       {
@@ -819,12 +822,11 @@ describe("native page rail", () => {
         lastUsedAt: run.createdAt,
       },
     ];
-    const rawSession: BrowserSessionSummary = {
-      ...original,
-      attachedRunIds: [run.runId!],
-      tabCatalog: {
-        ...original.tabCatalog!,
-        tabs: [
+    const rawSession: BrowserSessionSummary = seedBrowserSession(
+      { ...original, attachedRunIds: [run.runId!] },
+      {
+        ...original.browserTabs!.inventory(original?.id)!,
+        rows: [
           {
             ...tab,
             occupants: [
@@ -833,13 +835,17 @@ describe("native page rail", () => {
           },
         ],
       },
-    };
-    const session = withBrowserTabStore({
-      ...client.getSnapshot(),
-      workspaceTabs: undefined,
-      workspaceTabRestoreVersion: undefined,
-      browserSessions: [rawSession],
-    }).browserSessions[0]!;
+    );
+    const session = seedBrowserSnapshot(
+      seedBrowserSnapshot(
+        {
+          ...client.getSnapshot(),
+          workspaceTabRestoreVersion: undefined,
+          browserSessions: [rawSession],
+        } as import("@opensteer/client/host").HostSnapshot,
+        undefined,
+      ),
+    ).browserSessions[0]!;
     const stop: PlaceEntry = {
       kind: "place",
       id: "stop",
@@ -885,7 +891,7 @@ describe("native page rail", () => {
       expect(f.open).toHaveBeenCalledExactlyOnceWith({
         kind: "browser",
         sessionId: f.session.id,
-        tabId: f.session.tabCatalog!.tabs[0]!.id,
+        tabId: (f.session.browserTabs?.sessionTabs(f.session?.id) ?? [])[0]!.id,
       });
       vi.mocked(f.client.getSnapshot).mockReturnValue({
         ...f.client.getSnapshot(),
@@ -925,13 +931,13 @@ describe("native page rail", () => {
         view.render([run, command, note]);
         expect(
           view.container.querySelector(
-            `button[aria-label^="${f.session.tabCatalog!.tabs[0]!.title}"]`,
+            `button[aria-label^="${(f.session.browserTabs?.sessionTabs(f.session?.id) ?? [])[0]!.title}"]`,
           ),
         ).toBeNull();
         view.render([{ ...run, status: "completed", replyMessageId: note.id }, command, note]);
         expect(
           view.container.querySelector(
-            `button[aria-label^="${f.session.tabCatalog!.tabs[0]!.title}"]`,
+            `button[aria-label^="${(f.session.browserTabs?.sessionTabs(f.session?.id) ?? [])[0]!.title}"]`,
           ),
         ).not.toBeNull();
       } finally {

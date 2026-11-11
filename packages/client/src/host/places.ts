@@ -11,7 +11,7 @@ import {
   type PlaceOccupant,
 } from "@opensteer/protocol";
 import { BrowserTabStore, type BrowserTabKey } from "./browser-tab-store.js";
-import type { BrowserTabCatalog, BrowserSessionSummary, HostSnapshot } from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
 import { phoneOwnerView, phonePlaceKey, phoneTabOpen, phoneTaskSession } from "./phone-tab.js";
 import type { WorkspaceSurfaceDestination as SurfaceDestination } from "./surfaces.js";
 export type { PlaceOccupant } from "@opensteer/protocol";
@@ -101,22 +101,9 @@ const sourceKeys = [
   "machines",
 ] as const;
 export type PlaceListSource = Pick<HostSnapshot, (typeof sourceKeys)[number]> &
-  Partial<Pick<HostSnapshot, "workspaceTabs" | "workspaceTabRestoreVersion">>;
+  Partial<Pick<HostSnapshot, "workspaceTabRestoreVersion">>;
 export function samePlaceListSource(a: PlaceListSource, b: PlaceListSource): boolean {
   return sourceKeys.every((key) => a[key] === b[key]);
-}
-export function newerBrowserTabCatalog(
-  previous: BrowserTabCatalog | undefined,
-  next: BrowserTabCatalog | undefined,
-): BrowserTabCatalog | undefined {
-  if (!next) return previous;
-  if (
-    !previous ||
-    next.generation > previous.generation ||
-    (next.generation === previous.generation && next.revision > previous.revision)
-  )
-    return next;
-  return previous;
 }
 function occupants(values: readonly PlaceOccupant[]): PlaceOccupant[] {
   values = values.filter((value) => value.holding || value.acting);

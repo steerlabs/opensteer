@@ -1,5 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -34,13 +35,10 @@ const rawSnapshot = {
   },
   workspaceTasks: {},
   browserSessions: [
-    {
-      id: "browser",
-      placement: { kind: "runner", runnerId: "computer" },
-      profileId: null,
-      tabs: [],
-      tabCatalog: {
-        tabs: [
+    seedBrowserSession(
+      { id: "browser", placement: { kind: "runner", runnerId: "computer" }, profileId: null },
+      {
+        rows: [
           { id: "last", order: 2, title: "Last", site: "https://last.example", occupants: [] },
           {
             id: "current",
@@ -52,10 +50,11 @@ const rawSnapshot = {
           { id: "first", order: 0, title: "First", site: "https://first.example", occupants: [] },
         ],
       },
-    },
+      [],
+    ),
   ],
 } as unknown as HostSnapshot;
-const snapshot = withBrowserTabStore(rawSnapshot);
+const snapshot = seedBrowserSnapshot(rawSnapshot);
 const currentPlace = {
   key: "browser:browser:current",
   browser: { sessionId: "browser" },
@@ -64,7 +63,10 @@ const currentPlace = {
 };
 // The browser's tabs by key, as the snapshot's catalog lists them.
 const catalog = () =>
-  [...(snapshot.browserSessions[0]!.tabCatalog?.tabs ?? [])].sort((a, b) => a.order - b.order);
+  [
+    ...(snapshot.browserSessions[0]!.browserTabs?.sessionTabs(snapshot.browserSessions[0]!.id) ??
+      []),
+  ].sort((a, b) => a.order - b.order);
 vi.mock("@opensteer/client/react", () => ({
   useHostSelector: (_: unknown, select: (value: HostSnapshot) => unknown) => select(snapshot),
   useBrowserSessionGroupId: () => "browser",

@@ -155,7 +155,9 @@ describe("place catalog", () => {
       const places = placeList(snapshot);
       expect(new Set(places.map((place) => place.key)).size).toBe(places.length);
       const shared = snapshot.browserSessions.find(
-        (session) => session.origin === "workspace" && (session.tabCatalog?.tabs.length ?? 0) > 1,
+        (session) =>
+          session.origin === "workspace" &&
+          ((session.browserTabs?.sessionTabs(session?.id) ?? []).length ?? 0) > 1,
       )!;
       expect(shared).toBeDefined();
       const tabs = places.filter(
@@ -164,7 +166,9 @@ describe("place catalog", () => {
       );
       expect(tabs[0]?.occupants).toEqual([]);
       expect(tabs.some((place) => place.occupants.some((occupant) => occupant.acting))).toBe(true);
-      expect(shared.tabCatalog!.tabs.some((tab) => tab.openerId)).toBe(true);
+      expect((shared.browserTabs?.sessionTabs(shared?.id) ?? []).some((tab) => tab.openerId)).toBe(
+        true,
+      );
       expect(places.some((place) => place.occupants.some((occupant) => occupant.home))).toBe(true);
       expect(
         new Set(
@@ -289,10 +293,10 @@ describe("place catalog", () => {
           ...session,
           workspaceTabRestoreVersion: undefined,
         })),
-        workspaceTabs: undefined,
+        lineages: undefined,
         workspaceTabRestoreVersion: undefined,
       };
-      const source = { ...snapshot, workspaceTabRestoreVersion: 1 as const, workspaceTabs: [] };
+      const source = { ...snapshot, workspaceTabRestoreVersion: 1 as const };
       const expected = placeList(snapshot).filter((place) => place.kind === "browser");
       expect(expected.length).toBeGreaterThan(0);
       expect(placeList(source).filter((place) => place.kind === "browser")).toEqual(expected);
@@ -355,7 +359,7 @@ describe("place catalog", () => {
       )!.destination;
       expect(
         placeDestinationEnded(
-          { ...snapshot, browserSessions: [], workspaceTabRestoreVersion: 1, workspaceTabs: [] },
+          { ...snapshot, browserSessions: [], workspaceTabRestoreVersion: 1 },
           destination,
         ),
       ).toBe(false);

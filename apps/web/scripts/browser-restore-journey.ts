@@ -329,11 +329,10 @@ try {
         },
       );
       const snapshot = client.getSnapshot();
-      const group = snapshot.workspaceTabs!.find((lineage) =>
-        lineage.tabs?.some((tab) => tab.id === snapshot.activatingWorkspaceTabs![0]),
-      )!;
+      const store = client.browserTabs;
+      const group = store.group(store.groupForTab(snapshot.activatingWorkspaceTabs![0]!)!)!;
       const label = snapshot.browserPlacements.find(
-        (placement) => placement.runnerId === group.session.placement.runnerId,
+        (placement) => placement.runnerId === group.placement.runnerId,
       )!.label;
       client.finishBrowserActivation();
       return label;

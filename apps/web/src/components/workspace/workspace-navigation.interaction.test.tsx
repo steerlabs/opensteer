@@ -1,4 +1,5 @@
-import { withBrowserTabStore } from "@opensteer/client/test-support";
+import { seedBrowserSession } from "@opensteer/client/test-support";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import type { WorkspaceTabLineage } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
@@ -213,18 +214,21 @@ describe("selection actions own exactly their axis, one history entry each", () 
             },
           ],
         };
-        let snapshot: HostSnapshot = {
-          ...original,
-          browserSessions: original.browserSessions
-            .filter((session) => session.id === destination.sessionId)
-            .map((session) => ({
-              ...session,
-              state: "failed" as const,
-              tabCatalog: { generation: 0, revision: 0, tabs: [] },
-            })),
-          workspaceTabRestoreVersion: 1,
-          workspaceTabs: [],
-        };
+        let snapshot: HostSnapshot = seedBrowserSnapshot(
+          {
+            ...original,
+            browserSessions: original.browserSessions
+              .filter((session) => session.id === destination.sessionId)
+              .map((session) =>
+                seedBrowserSession(
+                  { ...session, state: "failed" as const },
+                  { generation: 0, revision: 0, rows: [] },
+                ),
+              ),
+            workspaceTabRestoreVersion: 1,
+          } as HostSnapshot,
+          [],
+        );
         vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
         Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
         // Outside the bounded catalog, the client holds none of this browser's rows.
@@ -237,7 +241,9 @@ describe("selection actions own exactly their axis, one history entry each", () 
           };
         });
         read.mockImplementation(async () => {
-          snapshot = withBrowserTabStore({ ...snapshot, workspaceTabs: [group] });
+          snapshot = seedBrowserSnapshot(
+            seedBrowserSnapshot({ ...snapshot } as HostSnapshot, [group]),
+          );
           for (const listener of listeners) listener();
           return group;
         });

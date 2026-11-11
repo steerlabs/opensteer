@@ -237,7 +237,11 @@ try {
         run: s.runQueue.find((run) => run.threadId === "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912")!,
         tab: s.browserSessions
           .flatMap((session) =>
-            session.tabs.map((tab) => ({ id: tab.id, sessionId: session.id, title: tab.title })),
+            (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
+              id: tab.id,
+              sessionId: session.id,
+              title: tab.title,
+            })),
           )
           .find((tab) => tab.title === "Launch brief")!,
       };

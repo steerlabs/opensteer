@@ -1,3 +1,4 @@
+import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import {
   SequenceSchema,
   createId,
@@ -15,22 +16,25 @@ const runId = createId("run");
 
 describe("independent browser creation", () => {
   it("keeps another session in the same workspace when a new browser starts", () => {
-    const original: BrowserSessionSummary = {
-      access: "read-write",
-      attachedRunIds: [],
-      dialog: null,
-      error: null,
-      id: "original",
-      origin: "workspace",
-      placement: { kind: "runner", runnerId: "runner" },
-      profileId: null,
-      runtimeId: "runtime",
-      state: "ready",
-      tabs: [],
-      viewerError: null,
-      viewerState: "synchronized",
-      workspaceId: "shared",
-    };
+    const original: BrowserSessionSummary = seedBrowserSession(
+      {
+        access: "read-write",
+        attachedRunIds: [],
+        dialog: null,
+        error: null,
+        id: "original",
+        origin: "workspace",
+        placement: { kind: "runner", runnerId: "runner" },
+        profileId: null,
+        runtimeId: "runtime",
+        state: "ready",
+        viewerError: null,
+        viewerState: "synchronized",
+        workspaceId: "shared",
+      },
+      undefined,
+      [],
+    );
     const opened: BrowserSessionSummary = { ...original, id: "opened" };
     const snapshot = { ...baseSnapshot(), browserSessions: [original] };
     const result = applyOptimisticCommandPatch(snapshot, {

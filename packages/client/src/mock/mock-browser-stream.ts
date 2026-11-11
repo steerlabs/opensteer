@@ -7,7 +7,6 @@ import {
   BrowserTabRowSchema,
   type BrowserGroupRow,
   type BrowserTabRow,
-  type BrowserViewerSurface,
 } from "@opensteer/protocol/browser-tabs";
 import { KeyedStreamPublisher, type KeyedStreamMessage } from "@opensteer/protocol/keyed-stream";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
@@ -122,11 +121,7 @@ export class MockBrowserStream {
     this.#store = store;
   }
   readonly #derive = new BrowserSnapshotDerivation();
-  publish(
-    snapshot: HostSnapshot,
-    previous: PublicHostSnapshot | null,
-    surface: (sessionId: string, surfaceId: string) => BrowserViewerSurface | undefined,
-  ): PublicHostSnapshot {
+  publish(snapshot: HostSnapshot, previous: PublicHostSnapshot | null): PublicHostSnapshot {
     const rows =
       snapshot.session === "authenticated"
         ? mockBrowserRows(snapshot)
@@ -138,15 +133,7 @@ export class MockBrowserStream {
       stream.publish(tabs, (frame) => this.#store.applyTabs(id, frame));
     }
     for (const id of this.#tabs.keys()) if (!rows.tabs.has(id)) this.#tabs.delete(id);
-    const derived = this.#derive.derive(
-      {
-        ...snapshot,
-        browserSessions: previous?.browserSessions ?? [],
-        workspaceTabs: undefined,
-      },
-      this.#store,
-      surface,
-    );
+    const derived = this.#derive.derive(snapshot, this.#store);
     const order = new Map(snapshot.browserSessions.map((session, index) => [session.id, index]));
     const sessions = derived.browserSessions.toSorted(
       (a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity),

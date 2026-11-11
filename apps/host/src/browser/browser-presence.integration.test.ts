@@ -1004,12 +1004,18 @@ integration("Browser presence and conversation usage", () => {
     await client.waitForSnapshot(
       (snapshot) =>
         snapshot.browserSessions.length === 150 &&
-        snapshot.browserSessions.every((session) => session.tabCatalog?.tabs.length === 64),
+        snapshot.browserSessions.every(
+          (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length === 64,
+        ),
     );
     const loaded = client.getSnapshot().browserSessions;
     expect(loaded).toHaveLength(150);
-    expect(loaded.every((session) => session.tabCatalog?.tabs.length === 64)).toBe(true);
-    const occupied = loaded.find((session) => session.id === sessionId)!.tabCatalog!;
+    expect(
+      loaded.every(
+        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length === 64,
+      ),
+    ).toBe(true);
+    const occupied = { tabs: client.getSnapshot().browserTabs!.sessionTabs(sessionId) };
     expect(occupied.tabs.every((tab) => tab.occupants.length === 16)).toBe(true);
     expect(occupied.tabs.every((tab) => tab.occupants.every((occupant) => occupant.holding))).toBe(
       true,
@@ -1026,11 +1032,9 @@ integration("Browser presence and conversation usage", () => {
     );
     await client.waitForSnapshot(
       (snapshot) =>
-        snapshot.browserSessions
-          .find((session) => session.id === sessionId)
-          ?.tabCatalog?.tabs.every(
-            (tab) => tab.title === "Revised" && tab.occupants.length === 16,
-          ) === true,
+        (snapshot.browserTabs?.sessionTabs(sessionId) ?? []).every(
+          (tab) => tab.title === "Revised" && tab.occupants.length === 16,
+        ) === true,
     );
     const outsider = await signUpUser(host, {
       email: "maximum-stranger@example.com",
@@ -1052,7 +1056,7 @@ integration("Browser presence and conversation usage", () => {
           {
             identities: loaded.map((session) => ({
               sessionId: session.id,
-              tabIds: session.tabCatalog!.tabs.map((tab) => tab.id),
+              tabIds: (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => tab.id),
             })),
             occupied,
             bytes,
@@ -1151,7 +1155,9 @@ integration("Browser presence and conversation usage", () => {
         : undefined,
     );
     cold = await browserRows(host.runtime.browser, host.ownerId);
-    const initial = cold.browserSessions.find((session) => session.id === sessionId)?.tabCatalog;
+    const initial = {
+      tabs: cold.browserTabs!.sessionTabs(sessionId).filter((tab) => tab.documentId !== null),
+    };
     expect(initial?.tabs.map(({ id }) => id)).toEqual(["page-x", "page-y", "page-z"]);
     expect(
       initial?.tabs.every((tab) => tab.occupants.length === 0 && !tab.site.includes("private")),
@@ -1273,15 +1279,11 @@ integration("Browser presence and conversation usage", () => {
       surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
     });
     await liveClient.waitForSnapshot(
-      (snapshot) =>
-        snapshot.browserSessions.find((session) => session.id === sessionId)?.tabCatalog?.tabs[0]
-          ?.title === "X deferred",
+      (snapshot) => (snapshot.browserTabs?.sessionTabs(sessionId) ?? [])[0]?.title === "X deferred",
     );
     runtime.publishTabs({ surfaces });
     await liveClient.waitForSnapshot(
-      (snapshot) =>
-        snapshot.browserSessions.find((session) => session.id === sessionId)?.tabCatalog?.tabs[0]
-          ?.title === "X",
+      (snapshot) => (snapshot.browserTabs?.sessionTabs(sessionId) ?? [])[0]?.title === "X",
     );
     const releaseWatch = liveClient.retainBrowserWatch(sessionId, "page-y");
     cleanups.push(async () => releaseWatch());
@@ -1433,9 +1435,11 @@ integration("Browser presence and conversation usage", () => {
         place: { kind: "browser", sessionId, surfaceId: "page-y" },
       },
     });
-    const occupied = (await browserRows(host.runtime.browser, host.ownerId)).browserSessions.find(
-      (session) => session.id === sessionId,
-    )?.tabCatalog;
+    const occupied = {
+      tabs: (await browserRows(host.runtime.browser, host.ownerId)).browserTabs!.sessionTabs(
+        sessionId,
+      ),
+    };
     expect(occupied?.tabs.find((tab) => tab.id === "page-y")?.occupants).toEqual([
       expect.objectContaining({ threadId: run.threadId, holding: true, acting: true }),
     ]);
@@ -1443,7 +1447,7 @@ integration("Browser presence and conversation usage", () => {
       snapshot.browserSessions.some(
         (session) =>
           session.id === sessionId &&
-          session.tabCatalog?.tabs
+          (session.browserTabs?.sessionTabs(session?.id) ?? [])
             .find((tab) => tab.id === "page-y")
             ?.occupants.some(
               (occupant) =>
@@ -1474,9 +1478,11 @@ integration("Browser presence and conversation usage", () => {
     );
     expect(await host.runtime.browser.latestPlaces(host.ownerId)).toEqual(latestBeforeExpiry);
     host.runtime.browser.invalidatePlaceAuthority(run.workspaceId, [run.threadId]);
-    const stillHolding = (
-      await browserRows(host.runtime.browser, host.ownerId)
-    ).browserSessions.find((session) => session.id === sessionId)?.tabCatalog;
+    const stillHolding = {
+      tabs: (await browserRows(host.runtime.browser, host.ownerId)).browserTabs!.sessionTabs(
+        sessionId,
+      ),
+    };
     expect(stillHolding?.tabs.find((tab) => tab.id === "page-y")?.occupants).toEqual([
       expect.objectContaining({ threadId: run.threadId, holding: true, acting: false }),
     ]);
@@ -2032,9 +2038,9 @@ integration("Browser presence and conversation usage", () => {
       ],
     });
     await until(async () =>
-      (await browserRows(host.runtime.browser, host.ownerId)).browserSessions
-        .find((session) => session.id === sessionId)
-        ?.tabCatalog?.tabs.some((tab) => tab.id === "page-shared")
+      (await browserRows(host.runtime.browser, host.ownerId))
+        .browserTabs!.sessionTabs(sessionId)
+        .some((tab) => tab.id === "page-shared")
         ? true
         : undefined,
     );

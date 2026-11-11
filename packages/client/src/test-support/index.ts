@@ -6,3 +6,5 @@ export * from "./thread-activity-scenarios.js";
 export * from "./conversation-history.js";
 export * from "./mcp-presentation-scenarios.js";
 export * from "./browser-snapshot.js";
+
+export * from "./browser-fixtures.js";

@@ -107,7 +107,7 @@ describe("live agent-created browser profile", () => {
         .where("kind", "=", "browser.profile.save")
         .execute();
       const onSite = sessions.filter((session) =>
-        session.tabCatalog?.tabs.some((tab) => tab.site === origin),
+        (session.browserTabs?.sessionTabs(session?.id) ?? []).some((tab) => tab.site === origin),
       );
       Object.assign(evidence, {
         profiles: profiles.map(({ id, name }) => ({ id, name })),
@@ -115,7 +115,8 @@ describe("live agent-created browser profile", () => {
         sessions: sessions.map((session) => ({
           id: session.id,
           profileId: session.profileId,
-          sites: session.tabCatalog?.tabs.map((tab) => tab.site) ?? null,
+          sites:
+            (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => tab.site) ?? null,
           state: session.state,
         })),
       });

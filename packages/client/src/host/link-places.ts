@@ -3,8 +3,7 @@ import type { BrowserTabOpenInput, HostSnapshot } from "./client.js";
 import type { StartPageProfileChoice } from "./start-page-model.js";
 
 type DeviceSource = Pick<HostSnapshot, "browserProfileHomes" | "machines">;
-type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "browserTabs"> &
-  Partial<Pick<HostSnapshot, "workspaceTabs">>;
+type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "browserTabs">;
 
 /**
  * Whether the device the reader is at lends a browser in this Deployment now,

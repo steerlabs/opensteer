@@ -2,7 +2,8 @@ import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
 } from "./mock-browser-source.js";
-import type { BrowserTabCatalog, WorkspaceTabLineage } from "../host/client.js";
+import type { WorkspaceTabLineage } from "../host/client.js";
+import type { MockBrowserCatalog } from "./mock-browser-source.js";
 import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
   BrowserSessionIdSchema,
@@ -121,7 +122,7 @@ export function seedMockPlaces(
     }[],
   ) => {
     const id = sessionId(index);
-    const catalog: BrowserTabCatalog = {
+    const catalog: MockBrowserCatalog = {
       generation: 1,
       revision: 1,
       inventoryRevision: 1,
@@ -216,7 +217,7 @@ export function seedMockPlaces(
       runtimeId: "mock-targeted-runtime",
       state: "ready",
       catalog: catalog,
-      tabs: [],
+
       surfaces: catalog.tabs.map((tab, index) => ({
         active: index === 0,
         id: tab.id,
@@ -1283,7 +1284,7 @@ export class MockPlaceWorld {
       attachedRunIds: [],
       dialog: null,
       error: null,
-      tabs: [],
+
       surfaces: [],
       catalog: { generation: 1, revision: 0, tabs: [] },
       viewerError: null,

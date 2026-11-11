@@ -1,3 +1,4 @@
+import { browserLineages } from "@opensteer/client/test-support";
 import { browserSnapshotFromRows } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -81,11 +82,11 @@ export async function runTabRestoreTrial(input: {
   };
   const bootstrap = async () => parseBootstrap(await rpc("bootstrap.get"));
   const rows = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.browserView.workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? [];
+    browserLineages(value.browserView)?.flatMap((group) => group.tabs ?? []) ?? [];
   const targets = (value: Awaited<ReturnType<typeof bootstrap>>) =>
     value.browserView.browserSessions
       .filter((session) => session.state === "ready")
-      .flatMap((session) => session.tabCatalog?.tabs ?? []);
+      .flatMap((session) => session.browserTabs?.sessionTabs(session?.id) ?? []);
   const page = (pathname: string) =>
     webContents
       .getAllWebContents()
@@ -754,7 +755,7 @@ export async function runTabRestoreTrial(input: {
       icons: rows(value).map((row) => ({ id: row.id, ref: z.string().parse(row.iconRef) })),
       tabGroup: null,
     };
-    const group = value.browserView.workspaceTabs!.find((group) =>
+    const group = browserLineages(value.browserView)!.find((group) =>
       group.tabs?.some((tab) => tab.id === p1.tabId),
     )!;
     assert.deepEqual(
