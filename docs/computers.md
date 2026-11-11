@@ -1,26 +1,26 @@
-# Computers: membership, roles, and machine access
+# Computers: enrollment and machine access
 
-## Membership
+## Enrollment
 
 A computer is one Runner identity in one Deployment. Its enrollment grant caps modules on every
 reconnect, and advertising fewer does not reduce it; ordinary grants use
 [computerRunnerGrant](../apps/host/src/agents/runner-enrollment-grant.ts), phones an exact
 browser-and-integrations grant. Enabling execution or changing reach policy must not replace identity.
-Personal Deployments execute only on Main; other user-owned computers offer browser, integrations,
+Personal Opensteer executes tasks only on its hosting computer; other user-owned computers offer browser, integrations,
 messaging and shell, while phones offer browser and integrations. The supervised messaging service is Deployment-owned, not a lent
-computer. Personal Main cannot be removed. An iPhone's enrollment profile is fixed and rechecked on
+computer. The hosting computer cannot be removed. An iPhone's enrollment profile is fixed and rechecked on
 every authentication, so a phone-shaped descriptor cannot claim Android's authority ([This iPhone's
 apps](mobile.md#this-iphones-apps)).
 
 Personal remote access gates route-admitted computers. A route generation change disconnects them
 but keeps identities and enrollments; fence admission against it both before and after registry
-insertion. Main and the colocated messaging service are never swept. Phone enrollment needs a live
-route. Only Personal Main requires a loopback Host URL, and loopback in a model endpoint means the
+insertion. The hosting computer and the colocated messaging service are never swept. Phone enrollment needs a live
+route. Only the hosting computer requires a loopback Host URL, and loopback in a model endpoint means the
 Runner's computer, not the viewer's or the Host's.
 
 Revocation is a bare close 4010 with no preceding `host.error`: the Runner stops reconnecting, and
 the desktop supervisor then forgets that slot's identity. Ordinary route or lease failures keep
-membership and retry, so keep this terminal signal distinct from transient refusals.
+enrollment and retry, so keep this terminal signal distinct from transient refusals.
 
 ## Runner and desktop
 
@@ -30,14 +30,14 @@ reuses that identity; the environment binding is immutable after its first adver
 device shape is presentation, never authority or routing. Android phones offer no shell. Windows
 shell endpoints remain unsupported, but this does not prevent a browser-only connection.
 
-Desktop persists membership before starting the Runner so an exit during join cannot strand a Host
+Desktop persists enrollment before starting the Runner so an exit during join cannot strand a Host
 row. Turning execution off restarts the same identity, data directory and SSH host key. Removal
 deletes the enrollment slot and every browser profile homed there; adding again creates a new computer.
 The removed device erases its profile storage when it learns of removal. If it never returns, erasure
 is unconfirmed, not claimed complete ([profile state](browser-sessions.md#profile-state)). The owner-session Host chooses the enrollment grant and
 origin, never the desktop. Only the supervising desktop can establish that a computer is local; a
-browser cannot claim it. Administrators may remove another member's machine but cannot inspect or
-change its private app settings.
+browser cannot claim it. Team administrators cannot enroll, remove or inspect another person's
+computer through team authority.
 
 ## Machine access
 
@@ -58,8 +58,7 @@ skill](../apps/runner/agent-skills/skills/computers/SKILL.md).
 
 ## Computer apps
 
-A connection is pinned to one Runner, and its access caps every Workspace grant, including Main's
-inheritance. The Host authorizes calls; Runner contract validation detects mismatches and is not
+A connection is pinned to one Runner, and its person-approved access caps every Run. The Host authorizes calls; Runner contract validation detects mismatches and is not
 owner approval. Offline computers keep their connections. A lost write answer is an unknown outcome
 and is never retried ([ComputerAppHub](../apps/host/src/computer-apps/computer-app-hub.ts)).
 
@@ -76,7 +75,7 @@ reach every agent process.
 ## MCP servers on a computer
 
 Program and loopback MCP servers run on the chosen computer, never with Host authority, and default
-to the Deployment's Main computer. Internet servers run through the Host over HTTPS, and Host
+to the Deployment's hosting computer. Internet servers run through the Host over HTTPS, and Host
 loopback is refused. A Host-local program path never implies the files exist on another computer.
 
 The owner reviews the program, arguments, working directory and environment, or URL and headers,
@@ -85,12 +84,11 @@ Request events, agent projections or client snapshots. Consent binds the launch 
 target Runner and is rechecked in admission; the Runner trusts that Host decision, with no local
 approval file. An offline computer starts nothing. A changed launch needs review again, except on a
 Personal Deployment: there an approved server's new launch on the same computer keeps consent unless
-it declares a new secret name, because a Personal Runner runs agent commands as its owner with no
-isolation ([Shared Runner sandbox](ai-engines.md#shared-runner-sandbox)) and review would cover code
-any agent there could already run. Shared Runners isolate agent commands but not plugin servers, so
-server Deployments keep review. A new, moved or declined server always asks.
+it declares a new secret name, because a personal Runner runs agent commands as its owner with no
+isolation and review would cover code any agent there could already run. Team servers run no
+agents or personal plugin servers. A new, moved or declined server always asks.
 
-An agent-made plugin records its Workspace folder, not a Host path, so only an agent updates it, by
+An agent-made plugin records its task folder, not a Host path, so only an agent updates it, by
 installing that folder again; Settings' Update and `plugin_manage` update person-installed plugins.
 
 A program server declares the secrets its owner must supply under
@@ -119,9 +117,7 @@ cancels it ([integration-input.ts](../apps/host/src/integrations/integration-inp
 A TV, speaker or light is reached by an agent-made plugin whose server runs on a computer on its
 network. `extensions["com.opensteer"].device` lists the plugin under Devices instead of Plugins and
 names its installation; the agent writes it, so it grants and proves nothing. The plugin records the
-nearest listed task whose agent last installed it, from the Run's claims, and shows it only to members
-of that task's Workspace. Removing a plugin is for administrators or the person who installed it in a
-Workspace. It deletes the plugin's data, such as a pairing, on the Host and on every computer that ran
+nearest listed task whose agent last installed it, from the Run's claims, and shows it only to the personal owner. The owner removes plugins. It deletes the plugin's data, such as a pairing, on the Host and on every computer that ran
 its servers. A computer that was offline or predates `pluginDataRemoval` keeps a pending deletion until
 it reconnects and confirms. Removal can't unpair the device itself or stop a same-user shell from
 reaching it.

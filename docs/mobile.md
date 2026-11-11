@@ -21,10 +21,11 @@ iOS builds under the old ID get no push.
 
 ## Attachment and identity
 
-[mobile-client.ts](../apps/mobile/src/client/mobile-client.ts) owns the one active Host attachment;
-screens never create clients or sockets or read credentials. Several Deployment sockets would
-multiply reconnect storms and battery use, and push can name a Deployment without attaching it.
-Links install the destination's Chat beneath its task so Back cannot cross Hosts.
+[mobile-client.ts](../apps/mobile/src/client/mobile-client.ts) owns the active personal attachment;
+screens never create clients or sockets or read credentials. The phone holds one extra connection
+to the team server of the computer it is showing; team chat works while that computer is off.
+Switching computers replaces that team attachment rather than accumulating background sockets.
+Push can name another computer without attaching it. Links keep Back within the selected computer.
 
 Host OAuth and PersonalRemote credentials have separate parsers and never cross. A stored credential
 does not override Host refusal, which stays latched until an attachment uses a new credential.
@@ -47,9 +48,8 @@ Drafts work offline, but approvals need a live authenticated Host, because repla
 decision is unsafe; only Host state resolves a Request, and sending does not answer one.
 
 Unsent drafts never leave the device: no Host API carries them, so a task begun on a Mac does not
-appear on a phone, and each client keeps its own store. A new task's draft has its own id, and its
-Workspace is a field that can change. Changing it must stage the draft's files again, because the
-Host refuses attachments held in another Workspace. A route may name that id and nothing else: an
+appear on a phone, and each client keeps its own store. A new task's draft has its own id and a selectable folder. Once admitted, the task's folder
+never changes. Attachment staging remains bound to the authenticated personal owner. A route may name that id and nothing else: an
 id with no draft behind it is a blank page, so nothing about a draft is readable from an address.
 
 Execution preferences belong to the Host: never silently replace an unavailable model, account or
@@ -72,8 +72,8 @@ because a call can start agent work.
 
 ## Saved views
 
-While attachment connects, Chat and the sidebar can show the remembered Deployment's last published
-Chat text and task subjects, replaced wholesale by the fresh answer. Saved views are presentation
+While attachment connects, task views and the sidebar can show the remembered Deployment's
+last published task text and subjects, replaced wholesale by the fresh answer. Saved views are presentation
 only: they never authenticate, start or replay work, send, answer Requests, mark read, claim the
 active Thread or open media, and hold no cursor, Requests, queue, media or capability. An offline
 phone cannot learn of a revocation it has not seen.
@@ -87,7 +87,7 @@ never the file ([saved-host-view.ts](../packages/client/src/host/saved-host-view
 corruption or scope mismatch are cache misses, never grounds to weaken verification or block
 attachment.
 
-Sign-out, removal, login replacement and authentication, Workspace or identity refusal hide saved
+Sign-out, removal, login replacement and authentication or identity refusal hide saved
 content synchronously and attempt key erasure before revocation. A content-free `.deny` marker in
 document storage, created before the key is deleted and removed only after, turns any leftover
 ciphertext into a miss across restarts. Content can return after a restart only if both the marker
@@ -207,7 +207,7 @@ While a conversation's own Run works in a place, the page stands under the bar a
 small picture beside Around ([rule](../packages/client/src/host/run-page.ts)). A bar degrades as the
 web's does: the name keeps itself whole, or its first 64 points when longer, and past that Around
 gives up its schedules, then its places ([order](../apps/mobile/src/thread/around-model.ts)), so a
-short name like Chat never truncates beside the picture. Open or folded is
+short task name never truncates beside the picture. Open or folded is
 presentation, held in memory per conversation and never in a route, so Back and links stay one
 navigation model. It takes the page's own shape and never resizes the page, for the reason Fit never
 happens by itself, and takes at most half the room between the bar and the dock, so a docked
@@ -233,7 +233,7 @@ Android's inset can hold its navigation buttons, so it keeps all of it.
 
 ## Messages
 
-Chat takes its shapes from Messages: bubbles with nothing on them, held to act on. A task doesn't,
+Team chat takes its shapes from Messages: bubbles with nothing on them, held to act on. A task doesn't,
 because long Markdown needs the full width, so an agent's words stay bare there with their copy mark
 and menu under them. Holding a task's words has to stay free to select them. Report stays on
 everything an agent wrote, in both places, including a reply with no words.

@@ -5,9 +5,9 @@ an engine host; each Guest session has its own throwaway browser. Sessions parti
 even when they share a profile, and a session's identity is fixed at creation. Checks:
 [browser-and-passwords](../.agents/skills/browser-and-passwords/SKILL.md).
 
-## Open workspace tabs
+## Open tabs
 
-A tab is a durable record; its live page is a runtime lease. Workspace lineages survive a session
+A tab is a durable record; its live page is a runtime lease. Task lineages survive a session
 ending. Trigger and watch browsers write no tabs. Only a lineage's latest session can close its
 records, late updates never resurrect a closed row, and reopen makes a new row. Only committed
 navigation becomes a restore URL, except that failed navigation keeps its attempted address.
@@ -186,7 +186,7 @@ can make, does not exist.
 
 Watch is passive: it may manage picture subscriptions and raster demand, but never navigate, select,
 resize, input, touch the clipboard or CDP, or move state. Profile owners can always view their
-sessions, whatever the grants; Guest follows Workspace membership.
+sessions, whatever the grants; Guest follows personal owner authority.
 
 A popup is another tab of its session. A background-tab opening, such as an unmodified middle-click,
 leaves every viewer on its opener. For a foreground opening, each viewer owns what it shows, so
@@ -204,8 +204,8 @@ same rule ([Filling for people](passwords.md#filling-for-people)), and Watch nev
 
 Profile listing, opening, CDP and tab reach follow the [Run resource authority
 rule](agent-orchestration.md#run-tool-authority); driving needs `read-write`. Only people create
-profiles; an agent asks with a browser-access Request. Main already reaches every owner profile and
-holds no grants. Grants decide which agents may use a profile, never whether its owner may watch it.
+profiles; an agent asks with a browser-access Request. Private profile access is decided for the personal owner and current caller ceiling, never
+by team membership. Consent never limits whether the owner may watch their own profile.
 Guest state cannot be promoted, so choose the profile before signing in.
 
 Deletion revokes grants and schedules erasure on the owning computer (`pending-computer` while it is
@@ -275,8 +275,7 @@ is tried first and any local process could answer there, so the extension sends 
 after the Host signs a fresh challenge.
 
 No path signs in a loopback site or the Deployment's own origins: they hold the owner's Opensteer
-cookie, and an agent signed in there could approve its own Requests. Consent belongs to the Browser
-Session's Workspace, even when Main drives it. The
+cookie, and an agent signed in there could approve its own Requests. Consent belongs to the person and site, independently of the task driving the Browser Session. The
 [service](../apps/host/src/browser/browser-source-service.ts) serializes decline with delivery and
 rechecks authority just before import. Automatic delivery waits for the grant's preferred source,
 never another account, and inspection never sends cookie values. Any agent with a signed-in browser

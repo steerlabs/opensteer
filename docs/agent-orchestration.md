@@ -2,24 +2,16 @@
 
 ## One MCP, live caller authority
 
-Runs, Trigger and Watch programs and connected agents share one `opensteer` MCP server; the
-[registry](../packages/agent-tools/src/tools/index.ts) filters tools by caller kind, access ceiling
-and consent reach. A connected agent starts a managed task for Run-bound tools; the Host records its
-messages as that connection, never as the person who approved it. Consent reach comes from the
-lineage root: Main-inheriting work reaches the person's Workspaces, other work stays in its
-Workspace, specialists stay in their lineage, and shared channel conversations withhold Main
-inheritance. A connection uses the reach its owner approved. Membership and live grants still apply.
-Trigger and Watch programs act as their anchor, never with owner-wide authority, and the `home`
-alias resolves only the caller's own Chat, granting nothing. Writes also respect the access-mode
-ceiling, and Settings need full access, which never substitutes for ownership or a grant. Creating
-work never raises its access mode. Domain services recheck authority when the effect commits,
-including after a wait. Agents may reduce access but never grant it, approve consent, pair or enroll
-devices, manage sign-in sessions, reveal credentials or raise their own power. Mutating calls carry
-caller- and tool-scoped idempotency keys; a key reused with different input is rejected, and retries
-rerun live authorization. The Host never repeats an uncertain external effect; an engine retry is a
-new call. Waits pin the observed Run and recheck authority on wake. Disconnecting cancels only the
-wait; revoking a connection ends its waits without cancelling work it started
-([Thread waits](../apps/host/src/threads/thread-wait.ts)).
+Runs, Trigger and Watch programs and connected agents share one `opensteer` MCP server.
+The [registry](../packages/agent-tools/src/tools/index.ts) filters by caller kind and access
+ceiling. Connected agents have one personal scope; approving a connection does not approve
+consent or raise its ceiling. Domain services recheck authority when effects commit, including
+after waits. Agents cannot grant themselves access, pair devices or reveal credentials.
+An uncertain external effect is never replayed automatically.
+
+Team tools exist only on team-bound tasks; authority belongs to the current Run's request,
+not the task's history. A private follow-up, Trigger or Voice Run has no team authority.
+See [Teams](teams.md) for the request and access fences.
 
 ## Inbox authority and delivery
 
@@ -30,16 +22,13 @@ the original requester with current execution authority can promote a human inpu
 or reorder only their own waiting inputs. Steering intent is not receipt. A proven refusal restores
 a promoted queued input but cancels a strict steer. Ambiguous dispatch stays `unknown` and is never
 resent automatically, even after Run termination or Host restart. A Run uses its own queued seed's
-authority, never later work's. Reports must match requester, membership generation and reply target,
+authority, never later work's. Reports must match requester and reply target,
 and are not exactly-once: only provider acceptance confirms consumption.
 
 In work Threads, Stop pauses admission before interrupting, cancels the Run's live Requests and
 settles it as interrupted even if another outcome races it. Recovery never restarts stopped work.
-Only the person who paused or a Workspace owner can Resume, and Resume grants no execution: each
-input keeps its requester's authority. In a conversation, only a person's own messages in Chat or
-their owner DM can join the reply underway, with the same requester, membership, reply target,
-Assignment, engine and model; Stop cancels their untaken inputs without pausing the queue. An
-ordinary message never answers a Request. Live harness Requests hold their native turn; a new
+Only the owner can Resume, and Resume grants no execution: each input keeps its requester's
+authority. An ordinary message never answers a Request. Live harness Requests hold their native turn; a new
 person message can start work normally after a Run ends with durable Requests still pending.
 
 A foreground Run outside voice holds a tool call that opens its own durable Request until the
@@ -64,8 +53,7 @@ no native turn to resume.
 
 Thread state is a stored projection; pending Requests drive Needs you independently of whether a
 Run still executes. The [lock order](../packages/database/src/lock-order.ts) is authoritative: lock the
-complete authority and event Workspace sets in order, then rediscover; growth means rollback and
-retry. Retryable transactions return only the committed attempt's events, and callbacks doing
+personal event fence before domain rows in order. Retryable transactions return only the committed attempt's events, and callbacks doing
 external work are never blindly retried. Saved Trigger program versions are immutable syntax
 contracts; never relabel v3 source as v2.
 
@@ -82,11 +70,9 @@ actual bytes and full decoding. Image input needs native engine transport and ca
 model support, rechecked at dispatch and steer; unknown support refuses, never converts or switches
 models. Engines fit images themselves, so there are no per-model size tables. Web HEIC decoding uses
 `heic-to` (LGPL-3.0) in a blob worker, hence the CSP's blob workers. Dispatch sends references and a
-scoped download capability, never bytes; downloads recheck membership or the Run's binding, and
+scoped download capability, never bytes; downloads recheck personal ownership or the Run's binding, and
 never expose waiting inputs or unselected reports. The Runner cache is disposable, hash-verified and
-outside private state, Workspaces and system temp. Isolated Linux services see only the active
-Thread's directory, read-only; shared-service macOS offers attachments only to engines whose sandbox
-enforces that (Codex, Claude); shared-service Windows offers none, as that isolation is unverified.
+outside private state, task folders and system temp.
 
 ## Runs across connection loss and restarts
 
@@ -117,9 +103,9 @@ conversation exists nor that none does: startup repeats only when earlier attemp
 happened, and resume returns the exact native reference, never a fresh conversation or replayed Host
 messages ([Runner runtime](../apps/runner/src/runtime/runtime.ts)).
 
-Voice is a permanent Thread beside Chat, the person's spoken manager, and a call is one
+Voice is a separate permanent Thread, the person's spoken entry, and a call is one
 non-recoverable Run on it. Codex hands each utterance to a turn on that same Thread, so a call has
-Chat's whole tool set: it opens Requests, starts tasks and hears what they return. Because a call's
+the personal tool set: it opens Requests, starts tasks and hears what they return. Because a call's
 Run stays open between turns, everything sent to its Thread is handed in at once, as a steer, and a
 Request's answer is released without waiting for the Run to end. What arrives after hang-up wakes an
 ordinary text Run on the Thread, which notifies the person. A call takes the Thread only once
@@ -132,24 +118,17 @@ turn, and that second answer would replace the reply.
 
 ## Run tool authority
 
-Resource access intersects [consent reach](#one-mcp-live-caller-authority) with the
-[resource guard](../packages/database/src/resource-access.ts). Main inheritance needs the lineage
-root to act as the requester in their own Main. Projects need the requester's explicit grants;
-browser consent also needs the grant creator's active membership, and reads never create grants.
-Connection ceilings and owner Off or Main exclusions only narrow access, and cannot erase
-instructions already in an engine's history. A specialist adopts its caller's access in its
-Workspace, because installing it or asking an agent to make it is the consent: there are no
-per-specialist bindings, and a manifest's `access` field grants and limits nothing. Only its owner's
-live registration carries that access, so another member's or a removed one reaches nothing. Plugin
-owner settings are never agent-reachable. A caller without Main authority cannot reuse, queue to or steer a Main-lineage
-Thread; a specialist sends only reports outside its registration. Every capability names the current
-attempt's grant. Tool admission needs an active grant, live binding, matching Runner boot and
-non-deleting Workspace; reporting needs only the binding, so a stopped Run can record its end.
-Revocation and admission share the Run lock, and revoking a grant closes its SSH and computer-use
-sessions ([`execution-authority.ts`](../packages/database/src/execution-authority.ts)). A Thread
-runs again only once its prior processes are proven gone, with start time checked against PID reuse
-([containment](../apps/runner/src/runtime/execution-containment.ts)). Interrupts, restarts and
-Request answers replay by command ID after reconnect; unconfirmed steers do not.
+Private resources belong to the personal owner. Connection ceilings and person-approved
+resource access only narrow authority; removing access cannot erase instructions already in
+engine history. A specialist is a task recipe, never another agent or an authority boundary.
+Plugin owner settings remain person-only.
+
+Every capability names the current attempt's grant. Admission needs a live binding and matching
+Runner boot; reporting needs the binding so a stopped Run can record its end. Revocation and
+admission share the Run lock, and revocation closes SSH and computer-use sessions
+([execution authority](../packages/database/src/execution-authority.ts)). A task runs again only
+when its prior processes are proven gone, including a PID start-time check. Interrupts,
+restarts and Request answers replay by command ID; unconfirmed steers do not.
 
 ## Tool failures
 
@@ -172,7 +151,7 @@ may use `person_message` or `person_show`; a task answers its assigner, which sh
 reports. A completed Run's last substantive reply is its single result ([`run-reply.ts`](../packages/database/src/run-reply.ts)). An
 Assignment spans Runs, one open per worker, and its identity travels with inputs so a late approval
 cannot attach to a new task. Completion is derived transactionally, never declared by an agent;
-results return only if the requester can still read the worker Workspace. Siblings started by one
+results return only if the requester can still read the worker task. Siblings started by one
 Run, program occurrence or Watch observation share one waiting return under the same requester,
 reply target and Assignment authority. Each keeps its title and id; long results are shortened
 with a pointer to `task_status` or `thread_read`. Taking the message for a Run, steering it or
@@ -188,16 +167,15 @@ Unconsumed results stay in the return outbox for reconciliation. An empty result
 parent Assignment needs it, but a waiter still receives its settlement. Bounded waits subscribe
 before reading, pin their observed Run and recheck live authority on wakes and before return; a
 timeout cancels no work. Cancellation follows Assignments, not Thread lineage.
-An ordinary question is answerable by any agent whose live reach, access ceiling and membership
+An ordinary question is answerable by any agent whose live authority and access ceiling
 allow writing to the conversation that asked it, except the asking Run itself. The direct assigner
 alone receives a Host-authored notice, unless its wait already delivers the question; program tasks
 and native engine subagents send no such notice. A person can always answer too, and the first answer
 wins. Native engine subagent questions, secret fields, approvals, access, sign-ins, credentials and
 other consent remain human-only. Agent answers
 name the answering Run and conversation, never the person. An accepted answer outlives the Run that
-gave it: delivery rechecks the person's membership, reach and access and the Request's revision, not
-that the answering Run is still live. Done is shared and needs active membership plus the task's
-creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
+gave it: delivery rechecks the person's authority and access and the Request's revision, not
+that the answering Run is still live. Only the personal owner marks a task Done. Done stops the
 open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
 revokes grants; Reopen starts nothing. A person's own message reopens a Done task they could reopen
 by hand, in the same transaction; other writers are still refused. The Host itself moves its
@@ -205,7 +183,7 @@ creator's finished, read, idle tasks to Done (`doneReason: "quiet"`) after the d
 through the same Done command re-checked under its locks
 ([quiet-tasks.ts](../packages/database/src/quiet-tasks.ts)); a Host change to the task or its
 creator reading it restarts that clock. A task moves in lists only when a person asks it for
-something (`askedAt`). Clients never link to Workspaces the reader cannot open.
+something (`askedAt`).
 
 Giving a finished task more work is a separate `delegate_task`, never an effect of
 `thread_send`: choosing delegate or join must be one atomic decision, and a retry after the
@@ -219,9 +197,8 @@ task's progress is injected or pushed; its final result and ordinary questions r
 
 The `activity` view of `thread_read` is summary-first. Events give one ordering, and message text
 comes from published rows, so waiting inputs never appear. Tool text is clipped and arguments are
-absent unless the call names that item. Only the person a Run acted for reads its tool text: other
-members get title and status, because tool output can hold a page, mail or a code that presence
-rules alone would not cover. Node items carry title and status, Request items kind and title, never
+absent unless the call names that item. Private task transcripts, including tool text, stay on the personal Host. Team viewers get only
+published replies and bounded status, because tool output can contain private pages, mail or codes. Node items carry title and status, Request items kind and title, never
 a prompt, result or payload. `sign_in`, `use_card`, `trigger_write` and `computer` keep status and
 title even by item, because they can carry a credential, a webhook secret, typed values or a phone
 PIN, and so does a completion with no resolvable start. A tool call naming a Mac app or phone is
@@ -253,21 +230,17 @@ navigates the person's selected place. See [Browser sessions](browser-sessions.m
 
 ## Personal memory
 
-Memory is ordinary files in Main reaching Runs through Main's `AGENTS.md`, with no memory store or
-tool. Projects never see it, since Project members read what reaches a Project. Memory is evidence,
-never permission: nothing remembered authorizes an action, and inbound content or an agent's own
-refusal never becomes a standing rule. The person's standing instructions sit in their own section
-of `AGENTS.md`, outside `## Memory`; only the Run that heard the person writes one, and they direct
-work without answering a Request or granting access. Only the nightly pass curates; others write
-only what the person asks for or raw inbox scraps, and each nightly pass reapplies recorded forgets.
-The Host, not a pass's notes, knows what each pass must read: each wake lists every Main-inheriting
-conversation with anything new since that pass last completed, which covers Voice and tasks however
-they started and leaves out shared channels and Projects. A light pass with nothing new starts no
-model unless two hours have passed, since only a model can read connected sources. Opensteer creates each Main's two
-background passes (the Trigger's `systemRole`); the Host refuses archive, reprogramming and manual
-runs, and inserts them paused when memory is off. Stopping memory writes the off line first, pauses
-both workers and marks them Done, and erases files only once neither is running or waiting. Each pass
-chooses its model at admission on Main's computer, keeps it for that pass, and starts a fresh native
-session with no replayed history, since continuity lives in the files. With no usable model a pass waits, which is neither a
-pause nor memory off, so recovery can't undo either. Main is not yet a private boundary: a shared channel routed into Main receives its `AGENTS.md`. See
-[`opensteer:memory`](../apps/runner/agent-skills/skills/memory/SKILL.md).
+Personal memory is ordinary files in `~/Opensteer`, reaching eligible Runs through its
+`AGENTS.md`. Memory is evidence, never permission. Standing instructions remain separate from
+`## Memory`; only the Run that heard the person records them. Forgetting must survive the next
+curation pass. Only the nightly pass curates memory; other Runs write what the person asks
+for or raw inbox scraps. Missing model capacity means waiting, not memory off, and forgetting
+waits until memory workers have stopped before erasing files.
+
+The nightly pass is an independent background job. It reads every task, including work started
+from team threads, and Voice; it keeps each memory's source and who could see it. It remembers
+the person and how they work, leaving shared team facts to the team's knowledge base. Team
+Runs may receive personal memory with an explicit audience descriptor so the agent can judge
+what to disclose. Non-owner or shared Messaging conversations receive no automatic personal
+memory, and changing audiences must not reuse earlier private engine context.
+See the shipped [memory skill](../apps/runner/agent-skills/skills/memory/SKILL.md).

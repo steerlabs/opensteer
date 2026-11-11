@@ -121,7 +121,7 @@ holds, and Cursor API keys are no substitute because model commands can read the
 environment. Never advertise a sign-in whose OAuth callback port a Runner cannot reach.
 
 On shared Runners, per-command isolation keeps model commands from private credential state, and
-Linux binds only this Run's profile, Thread state, Workspace roots and launch directory. Native-user
+Linux binds only this Run's profile, Thread state, task folder roots and launch directory. Native-user
 Runners omit both layers, because their owner owns the machine and credentials
 ([harness-sandbox.ts](../apps/runner/src/sandbox/harness-sandbox.ts)). Boot probes must prove
 isolation, and Runner death must end inspection subprocesses too.
@@ -153,7 +153,7 @@ in every access mode.
 
 ## Instructions and skills
 
-Skills have unique full names (`plugin:skill`, or bare for loose Workspace skills); duplicates fail
+Skills have unique full names (`plugin:skill`, or bare for loose folder skills); duplicates fail
 the Run, and no layer shadows another. Instructions supplement the engine's system prompt and never
 confer Host authority. Cross-tool routing stays in the Run guide so Claude can choose tools before
 loading deferred schemas. On Codex resume, send current instructions through keyed turn context,
@@ -164,8 +164,7 @@ cancellation, so each driver declares its own rather than inferring it from the 
 ## Thread names and symbols
 
 Names and symbols have independent provenance: a late generated candidate never replaces a person's
-choice, even an identical one. Chat is identified by `homeThreadId` and cannot be renamed through
-ordinary Thread commands. Naming is Host-owned background work, so a Run's teardown and engine reuse
+choice, even an identical one. Naming is Host-owned background work, so a Run's teardown and engine reuse
 never wait on it ([thread-naming.ts](../apps/host/src/agents/thread-naming.ts)). Generation runs
 contained with no tools, ambient instructions, hooks, plugins or history, using the exact model it's
 given with no discovery. A result counts only for its live attempt on that Runner connection, and
