@@ -1,26 +1,32 @@
-import type { KnowledgeTopicId } from "@opensteer/core";
+import type { KnowledgeTopicId, TeamAgentRequestId, TeamChannelId, UserId } from "@opensteer/core";
 import { sql, type ColumnType, type Generated, type Kysely, type Transaction } from "kysely";
-import type { DatabaseSchema, JsonColumn, Timestamp } from "./schema.js";
+import type { DatabaseSchema, JsonColumn, NullableTimestamp, Timestamp } from "./schema.js";
 
-export type KnowledgeWriterKind = "person" | "project";
+/** Who wrote: a person, or that person's own agent answering one team request. */
+export type KnowledgeWriterKind = "human" | "agent";
 
 export interface KnowledgeTables {
   "knowledge.topics": {
     id: KnowledgeTopicId;
     name: string;
-    createdAt: Generated<Timestamp>;
-    createdByKind: KnowledgeWriterKind;
-    createdById: string;
-    archivedAt: Generated<Date | null>;
+    /** Set for the topic every channel gets; shared topics have none. */
+    originChannelId: TeamChannelId | null;
+    peopleOnly: Generated<boolean>;
+    createdBy: UserId;
+    createdAt: Timestamp;
+    updatedAt: Timestamp;
+    archivedAt: NullableTimestamp;
+    accessRevision: Generated<string>;
   };
   "knowledge.operations": {
     id: string;
     writerKind: KnowledgeWriterKind;
-    writerId: string;
+    writerId: UserId;
+    requestId: TeamAgentRequestId | null;
     inputHash: string;
     rowCount: Generated<number>;
     receipt: JsonColumn<unknown> | null;
-    createdAt: Generated<Timestamp>;
+    createdAt: Timestamp;
   };
   "knowledge.factLog": {
     id: ColumnType<string, never, never>;
@@ -29,12 +35,8 @@ export interface KnowledgeTables {
     property: string;
     value: JsonColumn<unknown>;
     writerKind: KnowledgeWriterKind;
-    writerId: string;
-    initiatorId: string | null;
-    agentId: string;
-    taskId: string | null;
-    runId: string | null;
-    writtenAt: Generated<Timestamp>;
+    writerId: UserId;
+    writtenAt: Timestamp;
     replacesId: string | null;
     seenFactId: string | null;
     operationId: string;
@@ -108,30 +110,42 @@ const scope = (setting: string) =>
   `coalesce(nullif((select current_setting('knowledge.${setting}', true)), '')::text[], '{}')`;
 
 const factColumns = `id, topic, thing, property, value, value #>> '{}' as text,
-  writer_kind, writer_id, initiator_id, agent_id, task_id, run_id, written_at,
-  replaces_id, seen_fact_id, operation_id, operation_row`;
+  writer_kind, writer_id, written_at, replaces_id, seen_fact_id, operation_id, operation_row`;
 
-/** Each step moves the knowledge schema up one version. Add a step; never edit one that has shipped. */
+/**
+ * Each step moves the knowledge schema up one version. Add a step; never edit one that has shipped.
+ * It runs only on a team Host, after the baseline, so it may reference team tables.
+ */
 const knowledgeSchemaSteps: readonly string[] = [
   `create schema knowledge authorization ${knowledgeOwnerRole};
 
     create table knowledge.topics (
       id text primary key check (octet_length(id) between 1 and 128),
-      name text not null check (char_length(name) between 1 and 200),
+      name text not null check (char_length(name) between 1 and 160),
+      origin_channel_id text unique references public.team_channels(id),
+      people_only boolean not null default false,
+      created_by text not null references public.team_members(user_id),
       created_at timestamptz not null default now(),
-      created_by_kind text not null check (created_by_kind in ('person', 'project')),
-      created_by_id text not null check (created_by_id <> ''),
-      archived_at timestamptz
+      updated_at timestamptz not null default now(),
+      archived_at timestamptz,
+      access_revision bigint not null default 0 check (access_revision >= 0)
     );
+    create index topics_name on knowledge.topics (name, id);
+    alter table public.team_topic_grants
+      add foreign key (topic_id) references knowledge.topics(id);
+    alter table public.team_channel_topics
+      add foreign key (topic_id) references knowledge.topics(id);
 
     create table knowledge.operations (
       id text primary key check (octet_length(id) between 1 and 128),
-      writer_kind text not null check (writer_kind in ('person', 'project')),
-      writer_id text not null check (writer_id <> ''),
+      writer_kind text not null check (writer_kind in ('human', 'agent')),
+      writer_id text not null references public.team_members(user_id),
+      request_id text references public.team_agent_requests(id),
       input_hash text not null check (input_hash ~ '^[0-9a-f]{64}$'),
       row_count smallint not null default 0,
       receipt jsonb,
-      created_at timestamptz not null default now()
+      created_at timestamptz not null default now(),
+      check ((writer_kind = 'agent') = (request_id is not null))
     );
 
     create table knowledge.fact_log (
@@ -142,18 +156,14 @@ const knowledgeSchemaSteps: readonly string[] = [
         constraint fact_log_property_size check (octet_length(property) between 1 and 128),
       value jsonb not null constraint fact_log_value_size check (octet_length(value::text) <= 65536)
         constraint fact_log_value_depth check (not jsonb_path_exists(value, 'strict $.**{64}')),
-      writer_kind text not null check (writer_kind in ('person', 'project')),
+      writer_kind text not null check (writer_kind in ('human', 'agent')),
       writer_id text not null,
-      initiator_id text,
-      agent_id text not null,
-      task_id text,
-      run_id text,
       written_at timestamptz not null default clock_timestamp(),
       replaces_id bigint,
       seen_fact_id bigint,
       operation_id text not null references knowledge.operations(id),
       operation_row smallint not null check (operation_row between 1 and 25),
-      constraint fact_log_writer_present check (writer_id <> '' and agent_id <> ''),
+      constraint fact_log_writer_present check (writer_id <> ''),
       unique (operation_id, operation_row)
     );
     create index fact_log_key on knowledge.fact_log (topic, thing, property, id desc);
@@ -191,12 +201,14 @@ const knowledgeSchemaSteps: readonly string[] = [
       if operation is null or kind is null or writer is null then
         raise exception using errcode = 'KB008', message = 'The write has no operation or writer.';
       end if;
-      insert into knowledge.operations (id, writer_kind, writer_id, input_hash)
-      values (operation, kind, writer, begin_operation.input_hash)
+      insert into knowledge.operations (id, writer_kind, writer_id, request_id, input_hash)
+      values (operation, kind, writer, nullif(current_setting('knowledge.request_id', true), ''),
+        begin_operation.input_hash)
       on conflict (id) do nothing returning id into claimed;
       if claimed is not null then return null; end if;
       select * into existing from knowledge.operations where id = operation;
       if existing.writer_kind = kind and existing.writer_id = writer
+         and existing.request_id is not distinct from nullif(current_setting('knowledge.request_id', true), '')
          and existing.input_hash = begin_operation.input_hash and existing.receipt is not null then
         return existing.receipt;
       end if;
@@ -246,13 +258,9 @@ const knowledgeSchemaSteps: readonly string[] = [
             'currentFactId', previous_id::text, 'seenFactId', new.seen_fact_id::text)::text;
       end if;
       insert into knowledge.fact_log (topic, thing, property, value, writer_kind, writer_id,
-        initiator_id, agent_id, task_id, run_id, replaces_id, seen_fact_id, operation_id, operation_row)
+        replaces_id, seen_fact_id, operation_id, operation_row)
       values (new.topic, new.thing, new.property, new.value,
         current_setting('knowledge.writer_kind', true), current_setting('knowledge.writer_id', true),
-        nullif(current_setting('knowledge.initiator_id', true), ''),
-        current_setting('knowledge.agent_id', true),
-        nullif(current_setting('knowledge.task_id', true), ''),
-        nullif(current_setting('knowledge.run_id', true), ''),
         previous_id, new.seen_fact_id, operation, next_row)
       returning * into inserted;
       new.id := inserted.id;
@@ -260,10 +268,6 @@ const knowledgeSchemaSteps: readonly string[] = [
       new.text := inserted.value #>> '{}';
       new.writer_kind := inserted.writer_kind;
       new.writer_id := inserted.writer_id;
-      new.initiator_id := inserted.initiator_id;
-      new.agent_id := inserted.agent_id;
-      new.task_id := inserted.task_id;
-      new.run_id := inserted.run_id;
       new.written_at := inserted.written_at;
       new.replaces_id := inserted.replaces_id;
       new.operation_id := inserted.operation_id;
@@ -297,7 +301,6 @@ const knowledgeSchemaSteps: readonly string[] = [
           'unseen', case when written.seen_fact_id is not null or observed then (
             select coalesce(jsonb_agg(jsonb_build_object('id', missed.id::text,
               'writerKind', missed.writer_kind, 'writerId', missed.writer_id,
-              'agentId', missed.agent_id, 'taskId', missed.task_id,
               'writtenAt', missed.written_at) order by missed.id desc), '[]')
             from (select * from knowledge.fact_log missed
               where missed.topic = written.topic and missed.thing = written.thing
@@ -347,8 +350,8 @@ const versionComment = "opensteer knowledge schema ";
 
 /**
  * Creates or upgrades the knowledge schema, its owner and the restricted login,
- * in one transaction serialized against any other start. Nothing about
- * knowledge exists in a database until the trial first runs this.
+ * in one transaction serialized against any other start. Only a team Host
+ * runs this; a personal database never has a knowledge schema.
  */
 export async function ensureKnowledge(
   transaction: Transaction<DatabaseSchema>,
@@ -360,7 +363,7 @@ export async function ensureKnowledge(
   // Creating the owner's schema needs SET on that role, and pinning the login's logging needs superuser.
   if (superuser[0]?.superuser !== true)
     throw new Error(
-      "The knowledge trial needs the Host's PostgreSQL user to be a superuser; turn OPENSTEER_KNOWLEDGE off or run the Host as one",
+      "Team knowledge needs the Host's PostgreSQL user to be a superuser; run the team Host as a PostgreSQL superuser",
     );
   await sql`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('opensteer:knowledge-schema', 0))`.execute(
     transaction,
@@ -376,9 +379,7 @@ export async function ensureKnowledge(
       ? Number(found.comment.slice(versionComment.length))
       : Number.NaN;
   if (!Number.isInteger(version) || version > knowledgeSchemaSteps.length)
-    throw new Error(
-      "This database has a knowledge schema this build did not create; turn OPENSTEER_KNOWLEDGE off or remove that schema",
-    );
+    throw new Error("This database has a knowledge schema this build did not create");
   // The owner role is shared by every database in the cluster, which the advisory lock does not
   // span, so it is created at most once and altered only when wrong.
   await sql

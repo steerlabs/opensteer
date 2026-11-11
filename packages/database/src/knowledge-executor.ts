@@ -13,7 +13,7 @@ export interface KnowledgeExecutorCredentials {
 
 /**
  * Creates or upgrades the knowledge schema and gives the restricted role a
- * fresh random password; call at every start with the trial on and keep the
+ * fresh random password; call at every team Host start and keep the
  * password only in memory. The server receives a SCRAM verifier, so the
  * password itself never reaches its statement log.
  */
@@ -49,7 +49,7 @@ export function knowledgeExecutorClientConfig(
   const host = new pg.Client({ connectionString: hostConnectionString });
   if (host.ssl)
     throw new Error(
-      "The knowledge trial does not support an encrypted database connection yet; turn OPENSTEER_KNOWLEDGE off or connect the Host without TLS",
+      "Team knowledge does not support an encrypted database connection; reach PostgreSQL over the team recipe's private network",
     );
   return {
     Client: KnowledgeClient,

@@ -1,4 +1,4 @@
-import { createId, type KnowledgeTopicId } from "@opensteer/core";
+import { createId, type KnowledgeTopicId, type UserId } from "@opensteer/core";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -10,8 +10,7 @@ import {
   type KnowledgeExecutorCredentials,
 } from "./knowledge-executor.js";
 import {
-  ensureKnowledgeGeneralTopic,
-  listKnowledgeTopics,
+  knowledgeQueueLimit,
   runKnowledgeStatement,
   type KnowledgeFactKey,
   type KnowledgeJson,
@@ -21,14 +20,15 @@ import {
 import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
 
 const owner = createId("user");
-const writer: KnowledgeWriter = {
-  kind: "person",
-  id: owner,
-  initiatorId: null,
-  agentId: "agent-1",
-  taskId: "thr-1",
-  runId: "run-1",
-};
+const writer: KnowledgeWriter = { kind: "human", id: owner, requestId: null };
+
+/** Writers are team members; a clone of the shared baseline has none. */
+async function addOwner(database: ReturnType<typeof createDatabase>) {
+  await sql`insert into users (id, display_name, email, email_verified)
+    values (${owner}, 'Owner', 'owner@example.invalid', true)`.execute(database);
+  await sql`insert into team_members (user_id, handle, role, state)
+    values (${owner}, 'owner', 'owner', 'active')`.execute(database);
+}
 
 async function fixture() {
   const clone = await cloneTestDatabase("host");
@@ -39,23 +39,24 @@ async function fixture() {
     const clients: pg.Client[] = [];
     const open = createId("knowledgeTopic");
     const hidden = createId("knowledgeTopic");
+    await addOwner(database);
     await sql`
-      insert into knowledge.topics (id, name, created_by_kind, created_by_id) values
-        (${open}, 'Open', 'person', ${owner}), (${hidden}, 'Hidden', 'person', ${owner})
+      insert into knowledge.topics (id, name, created_by) values
+        (${open}, 'Open', ${owner}), (${hidden}, 'Hidden', ${owner})
     `.execute(database);
     await sql`
       insert into knowledge.operations (id, writer_kind, writer_id, input_hash, row_count, receipt)
-        values ('seed', 'person', ${owner}, repeat('0', 64), 5, '{}')
+        values ('seed', 'human', ${owner}, repeat('0', 64), 5, '{}')
     `.execute(database);
     await sql`
       insert into knowledge.fact_log
-        (topic, thing, property, value, writer_kind, writer_id, agent_id, operation_id, operation_row)
+        (topic, thing, property, value, writer_kind, writer_id, operation_id, operation_row)
       values
-        (${open}, 'trip/kyoto', 'hotel', '"Hotel A"', 'person', ${owner}, 'seed', 'seed', 1),
-        (${open}, 'n', 'count', '5', 'person', ${owner}, 'seed', 'seed', 2),
-        (${hidden}, 'trip/kyoto', 'hotel', '"HIDDEN_HOTEL"', 'person', ${owner}, 'seed', 'seed', 3),
-        (${hidden}, 'n', 'count', '"HIDDEN_NOT_AN_INTEGER"', 'person', ${owner}, 'seed', 'seed', 4),
-        (${hidden}, 'z', 'divisor', '0', 'person', ${owner}, 'seed', 'seed', 5)
+        (${open}, 'trip/kyoto', 'hotel', '"Hotel A"', 'human', ${owner}, 'seed', 1),
+        (${open}, 'n', 'count', '5', 'human', ${owner}, 'seed', 2),
+        (${hidden}, 'trip/kyoto', 'hotel', '"HIDDEN_HOTEL"', 'human', ${owner}, 'seed', 3),
+        (${hidden}, 'n', 'count', '"HIDDEN_NOT_AN_INTEGER"', 'human', ${owner}, 'seed', 4),
+        (${hidden}, 'z', 'divisor', '0', 'human', ${owner}, 'seed', 5)
     `.execute(database);
     return {
       url: clone.url,
@@ -162,22 +163,19 @@ async function scoped(
     operation?: string;
     onlyIfUnchanged?: boolean;
     writerId?: string;
-    agentId?: string;
   } = {},
 ) {
   await client.query(`begin isolation level ${options.isolation ?? "read committed"}`);
   await client.query(
     `select set_config('knowledge.read_topics', $1::text[]::text, true),
       set_config('knowledge.write_topics', $1::text[]::text, true),
-      set_config('knowledge.writer_kind', 'person', true),
+      set_config('knowledge.writer_kind', 'human', true),
       set_config('knowledge.writer_id', $2, true),
-      set_config('knowledge.agent_id', $3, true),
-      set_config('knowledge.operation_id', $4, true),
-      set_config('knowledge.only_if_unchanged', $5, true)`,
+      set_config('knowledge.operation_id', $3, true),
+      set_config('knowledge.only_if_unchanged', $4, true)`,
     [
       [context.open],
       options.writerId ?? owner,
-      options.agentId ?? "agent-2",
       options.operation ?? randomUUID(),
       String(options.onlyIfUnchanged ?? false),
     ],
@@ -314,7 +312,7 @@ integration("knowledge storage", () => {
   });
 
   it.for(["", "createrole"])(
-    "refuses to turn the trial on for a database user that is not a superuser (%s)",
+    "refuses to prepare knowledge for a database user that is not a superuser (%s)",
     async (attribute) => {
       const clone = await cloneTestDatabase("host");
       const limited = `knowledge_limited_${randomUUID().replaceAll("-", "")}`;
@@ -342,7 +340,7 @@ integration("knowledge storage", () => {
         };
       });
       await expect(prepareKnowledgeExecutor(database)).rejects.toThrow(
-        "The knowledge trial needs the Host's PostgreSQL user to be a superuser",
+        "Team knowledge needs the Host's PostgreSQL user to be a superuser",
       );
       expect(
         (await sql`select from pg_namespace where nspname = 'knowledge'`.execute(database)).rows,
@@ -350,57 +348,39 @@ integration("knowledge storage", () => {
     },
   );
 
-  it("seeds one General topic for the Personal owner and lists unarchived topics", async () => {
-    const clone = await cloneTestDatabase("host");
-    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
-      const database = createDatabase({ connectionString: clone.url, maxConnections: 3 });
-      const { role } = await prepareKnowledgeExecutor(database);
-      return {
-        database,
-        async close() {
-          await sql`drop owned by ${sql.id(role)}; drop role ${sql.id(role)}`.execute(database);
-          await database.destroy();
-        },
-      };
-    });
-    // A first call still seeding: the next waits for it rather than also finding no topic.
-    const seeding = Promise.withResolvers<void>();
-    const commit = Promise.withResolvers<void>();
-    const first = database.transaction().execute(async (transaction) => {
-      await sql`
-        insert into knowledge.topics (id, name, created_by_kind, created_by_id)
-        values (${createId("knowledgeTopic")}, 'General', 'person', ${owner})
-      `.execute(transaction);
-      seeding.resolve();
-      await commit.promise;
-    });
-    await seeding.promise;
-    const second = ensureKnowledgeGeneralTopic(database, owner);
-    try {
-      await vi.waitFor(
-        async () => {
-          const { rows } = await sql<{ waiting: string }>`
-            select count(*)::text as waiting from pg_catalog.pg_locks
-            where locktype = 'relation' and not granted
-              and relation = 'knowledge.topics'::regclass
-          `.execute(database);
-          if (rows[0]?.waiting !== "1")
-            throw new Error("The second seed never waited for the first");
-        },
-        { timeout: 10_000, interval: 20 },
+  it("ties topics to their channel, lists and attachments, and every write to a member", async () => {
+    const context = await fixture();
+    const { database } = context;
+    const channel = createId("teamChannel");
+    await sql`insert into team_channels (id, kind, name, normalized_name, created_by, people_only,
+      instructions_markdown) values (${channel}, 'public', 'support', 'support', ${owner}, false, '')`.execute(
+      database,
+    );
+    const topic = (id: string, origin: string | null) =>
+      sqlState(
+        sql`insert into knowledge.topics (id, name, origin_channel_id, created_by)
+          values (${id}, 'support', ${origin}, ${owner})`.execute(database),
       );
-    } finally {
-      commit.resolve();
-      await Promise.all([first, second]);
-    }
-    await ensureKnowledgeGeneralTopic(database, owner);
-    const [general, ...rest] = await listKnowledgeTopics(database);
-    expect(rest).toEqual([]);
-    expect(general).toMatchObject({ name: "General", createdByKind: "person", createdById: owner });
-    await sql`update knowledge.topics set archived_at = now()`.execute(database);
-    await ensureKnowledgeGeneralTopic(database, owner);
-    expect(await listKnowledgeTopics(database)).toEqual([]);
-    expect(await listKnowledgeTopics(database, { includeArchived: true })).toHaveLength(1);
+    expect(await topic(createId("knowledgeTopic"), channel)).toBeUndefined();
+    expect(await topic(createId("knowledgeTopic"), channel)).toBe("23505");
+    expect(await topic(createId("knowledgeTopic"), createId("teamChannel"))).toBe("23503");
+    const missing = createId("knowledgeTopic");
+    for (const statement of [
+      sql`insert into team_topic_grants (topic_id, subject_kind, subject_id, level, added_by)
+        values (${missing}, 'person', ${owner}, 'read', ${owner})`,
+      sql`insert into team_channel_topics (channel_id, topic_id, attached_by)
+        values (${channel}, ${missing}, ${owner})`,
+      sql`insert into knowledge.operations (id, writer_kind, writer_id, input_hash)
+        values ('stranger', 'human', ${createId("user")}, repeat('0', 64))`,
+    ])
+      expect(await sqlState(statement.execute(database))).toBe("23503");
+    // An agent's write always names the request it answered; a person's never does.
+    expect(
+      await sqlState(
+        sql`insert into knowledge.operations (id, writer_kind, writer_id, input_hash)
+          values ('unasked', 'agent', ${owner}, repeat('0', 64))`.execute(database),
+      ),
+    ).toBe("23514");
   });
 
   it("shows a caller only its readable topics, through counts, joins and predicates that fail on hidden values", async () => {
@@ -480,10 +460,10 @@ integration("knowledge storage", () => {
     for (const statement of [
       `insert into facts (topic, thing, property, value, writer_id) values ($1, 'x', 'p', '1', 'usr_forged')`,
       `insert into facts (topic, thing, property, value, replaces_id) values ($1, 'x', 'p', '1', 1)`,
-      `insert into facts (topic, thing, property, value, agent_id) values ($1, 'x', 'p', '1', 'forged')`,
+      `insert into facts (topic, thing, property, value, writer_kind) values ($1, 'x', 'p', '1', 'agent')`,
       `insert into fact_history (topic, thing, property, value) values ($1, 'x', 'p', '1')`,
-      `insert into knowledge.fact_log (topic, thing, property, value, writer_kind, writer_id, agent_id,
-        operation_id, operation_row) values ($1, 'x', 'p', '1', 'person', 'usr_forged', 'a', 'seed', 9)`,
+      `insert into knowledge.fact_log (topic, thing, property, value, writer_kind, writer_id,
+        operation_id, operation_row) values ($1, 'x', 'p', '1', 'human', 'usr_forged', 'seed', 9)`,
       `update facts set value = '2' where topic = $1`,
       `update knowledge.fact_log set writer_id = 'usr_forged' where topic = $1`,
       `delete from fact_history where topic = $1`,
@@ -498,7 +478,7 @@ integration("knowledge storage", () => {
       reason: "knowledge-not-permitted",
     });
     expect(await context.count()).toBe(5);
-    expect(await context.count("writer_id <> agent_id and agent_id <> 'seed'")).toBe(0);
+    expect(await context.count(`writer_id <> '${owner}' or writer_kind <> 'human'`)).toBe(0);
   });
 
   it("connects only as the restricted login, whatever the Host's connection string carries", async () => {
@@ -633,7 +613,7 @@ integration("knowledge storage", () => {
         seenFactId: baseline,
         baseline: "observed",
         unseenCount: 1,
-        unseen: [expect.objectContaining({ id: firstId, writerId: owner, agentId: "agent-2" })],
+        unseen: [expect.objectContaining({ id: firstId, writerKind: "human", writerId: owner })],
       }),
     ]);
     const history = await select(
@@ -872,7 +852,7 @@ integration("knowledge storage", () => {
     await expect(
       insert(context, statement, {
         parameters: [context.open],
-        writer: { ...writer, agentId: "" },
+        writer: { ...writer, id: "" as UserId },
       }),
     ).rejects.toMatchObject({ code: "internal", reason: "knowledge-failed" });
     const client = await context.executorClient();
@@ -989,6 +969,25 @@ integration("knowledge storage", () => {
       select(context, "select count(*) from facts"),
     ]);
     expect(after.map(rowsOf)).toEqual([[["2"]], [["2"]]]);
+    expect(context.pool.totalCount).toBeLessThanOrEqual(2);
+  });
+
+  it("queues a few callers behind its two connections and tells the rest it is busy", async () => {
+    const context = await fixture();
+    const slow = () =>
+      runKnowledgeStatement(context.pool, {
+        statement: { kind: "select", text: "select pg_sleep(0.2)", parameters: [] },
+        readTopicIds: [context.open],
+        writeTopicIds: [],
+        writer,
+      });
+    const admitted = Array.from({ length: 2 + knowledgeQueueLimit }, slow);
+    await expect(slow()).rejects.toMatchObject({
+      code: "resource_exhausted",
+      reason: "knowledge-busy",
+      retryable: true,
+    });
+    expect(await Promise.all(admitted)).toHaveLength(2 + knowledgeQueueLimit);
     expect(context.pool.totalCount).toBeLessThanOrEqual(2);
   });
 
