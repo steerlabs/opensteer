@@ -88,6 +88,8 @@ interface AttachedChannel {
 interface SessionState {
   readonly resolveTarget: (targetId: string) => Promise<boolean>;
   readonly channels: Map<string, AttachedChannel>;
+  /** Released channels retain identity for the caller's tab lifecycle check, never page access. */
+  readonly retiredTargets: Map<string, string>;
   discoverTargets: boolean;
   ledgerDialogEvents: boolean;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
@@ -199,6 +201,7 @@ export class SessionCdpRouter {
     const state: SessionState = {
       resolveTarget,
       channels: new Map(),
+      retiredTargets: new Map(),
       discoverTargets: true,
       ledgerDialogEvents: false,
       eventListeners: new Set(),
@@ -278,7 +281,12 @@ export class SessionCdpRouter {
 
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
   attachedTargetId(sessionId: string, cdpSessionId: string): string | null {
-    return this.#sessions.get(sessionId)?.channels.get(cdpSessionId)?.physicalTargetId ?? null;
+    const state = this.#sessions.get(sessionId);
+    return (
+      state?.channels.get(cdpSessionId)?.physicalTargetId ??
+      state?.retiredTargets.get(cdpSessionId) ??
+      null
+    );
   }
 
   /** Retains the actual Input handler for cleanup after an admitted agent press. */
@@ -398,6 +406,7 @@ export class SessionCdpRouter {
         const virtualSessionId = requiredString(parameters, "sessionId");
         const attached = state.channels.get(virtualSessionId);
         if (!attached) {
+          if (state.retiredTargets.delete(virtualSessionId)) return {};
           throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
         }
         this.#endChannel(state, attached);
@@ -683,7 +692,10 @@ export class SessionCdpRouter {
     state?.ownedTargetIds.delete(targetId);
     if (!state) return;
     for (const attached of state.channels.values()) {
-      if (attached.physicalTargetId === targetId) this.#endChannel(state, attached);
+      if (attached.physicalTargetId === targetId) {
+        state.retiredTargets.set(attached.virtualSessionId, targetId);
+        this.#endChannel(state, attached);
+      }
     }
   }
 

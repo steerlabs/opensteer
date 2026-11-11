@@ -473,35 +473,36 @@ function createBrowserHarness(client, initialTargetId) {
         );
       }
       const inventory = await client.command("Target.getTargets");
-      if (typeof inventory.rootTargetId !== "string" || inventory.rootTargetId.length === 0) {
+      const rootId = inventory.rootSurfaceId ?? inventory.rootTargetId;
+      if (typeof rootId !== "string" || rootId.length === 0) {
         throw new Error(
           "The browser runtime did not provide this session's initial tab identity. Update the browser runtime, or choose an explicit target with --tab.",
         );
       }
-      if (availablePages[0].targetId !== inventory.rootTargetId) {
+      const root = availablePages[0];
+      if (root.surfaceId !== rootId && root.targetId !== rootId) {
         throw new Error(
           "This Browser Session's initial tab is closed. Use await listTabs() and choose the intended target explicitly with --tab or switchTab(targetId).",
         );
       }
-      nextTargetId = inventory.rootTargetId;
-    } else {
-      const named = availablePages.find(
-        (page) => page.targetId === nextTargetId || page.surfaceId === nextTargetId,
-      );
-      if (!named) {
-        throw new Error(
-          `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
-        );
-      }
-      if (named.state === "suspended") {
-        const resumed = await client.command("Opensteer.resumeTab", { surfaceId: named.surfaceId });
-        if (resumed.reloaded) {
-          invalidateSurface(named.surfaceId);
-          resumedNotice(named.surfaceId);
-        }
-        nextTargetId = resumed.targetId;
-      } else nextTargetId = named.targetId;
+      nextTargetId = rootId;
     }
+    const named = availablePages.find(
+      (page) => page.targetId === nextTargetId || page.surfaceId === nextTargetId,
+    );
+    if (!named) {
+      throw new Error(
+        `Browser tab ${nextTargetId} is closed or unavailable. Use await listTabs() and choose the intended tab explicitly.`,
+      );
+    }
+    if (named.state === "suspended") {
+      const resumed = await client.command("Opensteer.resumeTab", { surfaceId: named.surfaceId });
+      if (resumed.reloaded) {
+        invalidateSurface(named.surfaceId);
+        resumedNotice(named.surfaceId);
+      }
+      nextTargetId = resumed.targetId;
+    } else nextTargetId = named.targetId;
     if (typeof nextTargetId !== "string" || nextTargetId.length === 0) {
       throw new Error("CDP did not provide a target ID");
     }
@@ -515,12 +516,7 @@ function createBrowserHarness(client, initialTargetId) {
     }
     sessionId = result.sessionId;
     attachedTargets.set(sessionId, nextTargetId);
-    attachedSurfaces.set(
-      sessionId,
-      availablePages.find(
-        (tab) => tab.surfaceId === requestedTargetId || tab.targetId === nextTargetId,
-      )?.surfaceId,
-    );
+    attachedSurfaces.set(sessionId, named.surfaceId);
     targetId = nextTargetId;
     selectedTargetId = nextTargetId;
     attachedActivity = result.userActivity;

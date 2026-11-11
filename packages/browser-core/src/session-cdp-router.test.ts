@@ -219,6 +219,33 @@ describe("SessionCdpRouter", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
+  it("retains a released attachment's target for lifecycle refusal without retaining its channel", async () => {
+    const backend = new FakeBackend();
+    const router = new SessionCdpRouter(backend);
+    router.registerSession("session-a", "root-a", async () => true, "/opensteer-files/session-a");
+    const { sessionId } = (await router.send("session-a", {
+      method: "Target.attachToTarget",
+      parameters: { targetId: "root-a" },
+    })) as { sessionId: string };
+    router.releaseTarget("session-a", "root-a");
+    expect(router.attachedTargetId("session-a", sessionId)).toBe("root-a");
+    expect(router.attachedTargetId("session-b", sessionId)).toBeNull();
+    expect(backend.channels.get("root-a")?.closed).toBe(true);
+    await expect(
+      router.send("session-a", {
+        method: "Runtime.evaluate",
+        sessionId,
+        parameters: { expression: "true" },
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+    await router.send("session-a", {
+      method: "Target.detachFromTarget",
+      parameters: { sessionId },
+    });
+    expect(router.attachedTargetId("session-a", sessionId)).toBeNull();
+    await router.close();
+  });
+
   it("retains the initial target identity after that page closes", async () => {
     const backend = new FakeBackend();
     const router = new SessionCdpRouter(backend);

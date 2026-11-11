@@ -17,7 +17,12 @@ test("Android CDP stages session-owned files before routing page commands and fe
   const stage = vi.spyOn(native, "stageChunk");
   vi.spyOn(native, "openCdpPipe").mockResolvedValue("pipe");
   const send = vi.spyOn(native, "sendCdp").mockResolvedValue({});
-  const tab = { id: "tab", metadata: { generation: 1 }, state: "retained" } as PhoneTab;
+  const tab = {
+    id: "tab",
+    sessionId: "session",
+    metadata: { generation: 1 },
+    state: "live-covered",
+  } as PhoneTab;
   const owner: PhoneCdpOwner = {
     sessionId: "session",
     epoch,
@@ -92,6 +97,41 @@ test("Android CDP stages session-owned files before routing page commands and fe
   await expect(
     cdp.send({ method: "Opensteer.stageFile", parameters: { ...parameters, name: "../secret" } }),
   ).rejects.toThrow();
+  tab.state = "retained";
+  cdp.surfaceChanged(tab);
+  await expect(
+    cdp.send({
+      method: "Runtime.evaluate",
+      sessionId: attached.sessionId,
+      parameters: { expression: "true" },
+    }),
+  ).rejects.toMatchObject({ code: "target-suspended" });
+  await expect(
+    cdp.capture(
+      { method: "Page.captureScreenshot", sessionId: attached.sessionId },
+      "channel",
+      "capture",
+    ),
+  ).rejects.toMatchObject({ code: "target-suspended" });
+  tab.state = "live-covered";
+  tab.metadata = { ...tab.metadata, generation: tab.metadata.generation + 1 };
+  cdp.surfaceChanged(tab);
+  await expect(
+    cdp.send({
+      method: "Runtime.evaluate",
+      sessionId: attached.sessionId,
+      parameters: { expression: "true" },
+    }),
+  ).rejects.toMatchObject({ code: "not_found" });
+  tab.state = "closed";
+  cdp.surfaceChanged(tab);
+  await expect(
+    cdp.send({
+      method: "Runtime.evaluate",
+      sessionId: attached.sessionId,
+      parameters: { expression: "true" },
+    }),
+  ).rejects.toMatchObject({ code: "target-closed" });
   await cdp.close();
   await expect(cdp.send({ method: "Opensteer.stageFile", parameters })).rejects.toMatchObject({
     code: "target-closed",

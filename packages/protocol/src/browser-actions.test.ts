@@ -7,6 +7,8 @@ import {
   BrowserActionLocatorSchema,
   BrowserAgentBackendSchema,
   type BrowserAction,
+  pageBrowserTabs,
+  browserListTabsMaxBytes,
 } from "./browser-actions.js";
 import {
   BrowserClientMessageSchema,
@@ -35,7 +37,7 @@ const binding = {
 };
 const request = { id: 1, sessionId, surfaceId, documentId: "doc", geometryRevision: 1 };
 const examples: readonly { action: BrowserAction; result: unknown }[] = [
-  { action: { type: "session.tabs" }, result: { tabs: [binding] } },
+  { action: { type: "session.tabs" }, result: { tabs: [binding], nextCursor: null } },
   ...["surface.attach", "surface.resume", "surface.open", "page.navigate", "page.wait"].map(
     (type) => ({
       action: {
@@ -110,6 +112,51 @@ const relay = {
 };
 
 describe("typed browser agent wire", () => {
+  it("includes the final null cursor in a tab page's byte budget", () => {
+    const empty = { tabs: ["x", ""], nextCursor: "1" };
+    const record =
+      "界".repeat(100) +
+      "x".repeat(browserListTabsMaxBytes - Buffer.byteLength(JSON.stringify(empty)) - 300);
+    const result = pageBrowserTabs(
+      [
+        { order: 0, tab: "x" },
+        { order: 1, tab: record },
+      ],
+      undefined,
+      (page) => page,
+    );
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(browserListTabsMaxBytes);
+    expect(result.nextCursor).toBe("0");
+    expect(
+      pageBrowserTabs([{ order: 1, tab: record }], result.nextCursor!, (page) => page),
+    ).toEqual({ tabs: [record], nextCursor: null });
+  });
+
+  it("carries a tab-list cursor and requires the next page identity", () => {
+    expect(
+      BrowserActionRequestSchema.parse({
+        id: 1,
+        sessionId,
+        action: { type: "session.tabs", cursor: "42" },
+      }).action,
+    ).toEqual({ type: "session.tabs", cursor: "42" });
+    expect(
+      BrowserActionResultSchema.parse({
+        type: "session.tabs",
+        tabs: [binding],
+        nextCursor: "43",
+      }),
+    ).toMatchObject({ nextCursor: "43" });
+    for (const cursor of ["-1", "1.5", "9007199254740992", "x"])
+      expect(
+        BrowserActionRequestSchema.safeParse({
+          id: 1,
+          sessionId,
+          action: { type: "session.tabs", cursor },
+        }).success,
+      ).toBe(false);
+  });
+
   it("admits payload-free focus and surface-free session actions, keeping existing target fences", () => {
     const focus = { type: "dom.act", kind: "focus", locator };
     expect(BrowserActionRequestSchema.safeParse({ ...request, action: focus }).success).toBe(true);
