@@ -77,10 +77,16 @@ export type {
   ProjectWorkSource,
   ProjectRuntimeSnapshot,
 } from "./project-work-store.js";
-export { ProjectExecutionStore, StoredProjectControlSchema } from "./project-execution-store.js";
+export {
+  ProjectBindingStore,
+  ProjectExecutionStore,
+  StoredProjectControlSchema,
+} from "./project-execution-store.js";
 export type { ProjectRequestControlPort } from "./project-execution-store.js";
 export {
   assertActiveProjectBinding,
   readProjectRunBinding,
   projectWorkIsCurrent,
 } from "./execution-authority.js";
+
+export { loadProjectRunDispatchContext } from "./execution-store.js";
