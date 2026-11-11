@@ -93,3 +93,9 @@ export {
 export { loadProjectRunDispatchContext } from "./execution-store.js";
 
 export { readProjectRunThreadState } from "./run-thread-state.js";
+
+export { ProjectProposalAcceptanceStore } from "./project-event-store.js";
+export type {
+  ProjectRequestProposalPort,
+  ProjectProposalAcceptance,
+} from "./project-event-store.js";
