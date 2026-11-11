@@ -107,7 +107,7 @@ describe("shared agent contract", () => {
       `${catalog.displayName} · High`,
     );
     expect(subagentTitle("Subagent: /root/check_the-tests")).toBe("Check The Tests");
-    expect(subagentPreview("👩‍💻".repeat(281))).toBe("👩‍💻".repeat(279) + "…");
+    expect(subagentPreview("😀".repeat(300))).toBe("😀".repeat(139) + "…");
   });
   it("builds the spec summaries and defaults expansion to live", () => {
     const { node, thread } = fixture();
