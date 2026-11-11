@@ -10,6 +10,8 @@ import {
   peopleCount,
   runtimeStateText,
   subjectKey,
+  invitationTrustConfirmation,
+  invitationTrustNote,
   teamInvitationUrl,
   teamReasonText,
   type HostClient,
@@ -21,7 +23,6 @@ import type {
   AccessChange,
   Level,
   MemberChange,
-  MemberKind,
   MemberSummary,
   Subject,
 } from "@opensteer/protocol";
@@ -38,6 +39,7 @@ import {
   PrimaryButton,
   RowGroup,
   SecondaryButton,
+  Toggle,
 } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -755,7 +757,7 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
   const { snapshot } = useHostSnapshot(props.hostClient);
   const teamName = summary?.team.name ?? "the team";
   const [email, setEmail] = useState("");
-  const [kind, setKind] = useState<MemberKind>("full");
+  const [trusted, setTrusted] = useState(false);
   const [validFor, setValidFor] = useState<"1d" | "7d">("7d");
   const [draft] = useState(() => createTeamInvitationDraft());
   const [pending, setPending] = useState(false);
@@ -820,25 +822,6 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
       />
       <View style={styles.row}>
         <View style={styles.grow}>
-          <AppText role="body">As</AppText>
-          <AppText role="caption" tone="muted">
-            {kind === "full"
-              ? "Members are in Everyone."
-              : "Guests see only projects they’re added to."}
-          </AppText>
-        </View>
-        <ChoiceMenu
-          accessibilityLabel="As"
-          choices={[
-            { id: "full", title: "Member" },
-            { id: "guest", title: "Guest" },
-          ]}
-          label={kind === "full" ? "Member" : "Guest"}
-          onChoose={(id) => setKind(id === "guest" ? "guest" : "full")}
-        />
-      </View>
-      <View style={styles.row}>
-        <View style={styles.grow}>
           <AppText role="body">Link works for</AppText>
         </View>
         <ChoiceMenu
@@ -851,17 +834,30 @@ function Invite(props: { readonly hostClient: HostClient }): ReactNode {
           onChoose={(id) => setValidFor(id === "1d" ? "1d" : "7d")}
         />
       </View>
+      <AppText role="secondary" tone="soft">
+        {invitationTrustNote(teamName)}
+      </AppText>
+      <View style={styles.row}>
+        <AppText role="body" style={styles.grow}>
+          {invitationTrustConfirmation(email, teamName)}
+        </AppText>
+        <Toggle
+          accessibilityLabel={invitationTrustConfirmation(email, teamName)}
+          onChange={setTrusted}
+          value={trusted}
+        />
+      </View>
       <PrimaryButton
         busy={pending}
-        disabled={!valid}
+        disabled={!valid || !trusted}
         label="Make invite link"
         onPress={() => {
           setPending(true);
           team
             .createInvitation(summary.accessRevision, draft, {
               email: email.trim(),
-              kind,
               validFor,
+              trustedComputerConfirmed: true,
             })
             .then((result) =>
               setMade({

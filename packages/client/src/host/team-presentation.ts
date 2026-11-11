@@ -391,3 +391,12 @@ export function accessPathSentence(name: string, { entry, via }: AccessPath): st
   );
   return `${chain.join(", ")}. ${entry.grantedBy.name} added ${via.at(-1)!.name}, ${when} (${level}).`;
 }
+
+/** The trusted-members pilot, said where someone is about to let a person in. */
+export function invitationTrustNote(team: string): string {
+  return `${team} is a trusted-members pilot: people you invite, and their agents, can reach ${team}’s computer and its network.`;
+}
+
+export function invitationTrustConfirmation(email: string, team: string): string {
+  return `I trust ${email.trim() || "this person"} with ${team}’s computer and its network.`;
+}

@@ -15,6 +15,7 @@ import { CredentialForm } from "../credential-form.js";
 import { Icon } from "../icon.js";
 import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { formatWhen } from "../settings/primitives.js";
+import { CopyButton } from "./team-people.js";
 import { TeamMark } from "./team-ui.js";
 
 /**
@@ -31,6 +32,7 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
   const [error, setError] = useState<unknown>(null);
   const [pending, setPending] = useState(false);
   const [mode, setMode] = useState<"create" | "sign-in">("create");
+  const [joined, setJoined] = useState(false);
   const opened = useRef(false);
   const settled = snapshot.session !== "checking";
   const authenticated = snapshot.session === "authenticated";
@@ -41,7 +43,7 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
 
   const finish = async () => {
     await hostClient.refresh();
-    await navigate("/", { replace: true });
+    setJoined(true);
   };
 
   // Opened once the session has settled. A return from sign-in is a new
@@ -69,6 +71,44 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
       setPending(false);
     }
   };
+
+  if (joined) {
+    const teamName = snapshot.identityConfig?.deployment.name ?? "the team";
+    const address = window.location.origin;
+    return (
+      <OnboardingCard
+        description={`Open ${teamName} here, or in the Opensteer app.`}
+        eyebrow={
+          <span className="team-join__eyebrow">
+            <TeamMark name={teamName} /> Joined
+          </span>
+        }
+        title={`You’re in ${teamName}`}
+        titleId="team-join-heading"
+      >
+        <div className="onboarding__form">
+          <button
+            className="btn btn--primary"
+            onClick={() => void navigate("/", { replace: true })}
+            type="button"
+          >
+            Open {teamName}
+            <Icon name="arrow-right" />
+          </button>
+          <div className="team-join__app">
+            <span className="field__label">Use the Opensteer app</span>
+            <span className="field__hint">
+              In the app, choose Add a server by address, enter this address, and sign in as yourself.
+            </span>
+            <div className="team-join__address">
+              <code>{address}</code>
+              <CopyButton label="Copy address" text={address} />
+            </div>
+          </div>
+        </div>
+      </OnboardingCard>
+    );
+  }
 
   if (!state || state.kind === "joined")
     return (
@@ -106,8 +146,9 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
         <>
           {preview.inviterName} invited {preview.emailMasked} to {preview.teamName} as {kind}.
           You’ll work in {preview.teamName}’s shared projects
-          {preview.kind === "guest" ? " you’re added to" : ""}. Your own Opensteer, its chats and
-          accounts stay yours.
+          {preview.kind === "guest" ? " you’re added to" : ""}, and you and your agents can reach{" "}
+          {preview.teamName}’s computer and its network. Your own Opensteer, its chats and accounts
+          stay yours.
         </>
       }
       eyebrow={
