@@ -7,9 +7,9 @@ description: Use Opensteer SSH access for another computer’s files, commands o
 
 Use the latest other-computers note as this Run's inventory. It names reachable aliases, platforms, online state, shared folders, command and forwarding permissions, and Mac Full Disk Access. Ordinary `ssh`, `scp`, `sftp`, `rsync` and `git` use those aliases; no extra CLI or setup is needed. A computer omitted from this Run cannot be addressed here. Relay the note's reason rather than inventing setup advice.
 
-`computer_list` lists enrolled computers and active sessions (user-wide reach); this inventory
+`computer_list` lists enrolled computers and active sessions ; this inventory
 does not grant SSH access. `computer_write` renames/revokes a computer or stops an access session
-with full-access and user-wide reach. Do those actions directly when authorized. Enrollment,
+with full-access and personal access. Do those actions directly when authorized. Enrollment,
 pairing and new grants need the person.
 
 Use opensteer:computer-use to see or operate Mac app interfaces and Agent Phones. An Agent Phone is not an SSH host and is absent from this inventory. A USB phone attached to a computer is that computer's device, reached with `adb` in its authorized shell.

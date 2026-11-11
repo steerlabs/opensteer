@@ -629,11 +629,10 @@ function openMessage() {
       startedAt: new Date().toISOString(),
       threadId: createId("thread"),
       threadTitle: "Test shell",
-      workspaceId: createId("workspace"),
     },
     dataTicket: "aaaa.bbbb.cccc",
     machineName: "Target machine",
-    policy: { commands: true, forwarding: true, reach: "deployment", shares: [] },
+    policy: { commands: true, forwarding: true, shares: [] },
     sessionId,
     type: "host.shell.session.open" as const,
   };

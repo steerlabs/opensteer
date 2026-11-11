@@ -3,7 +3,7 @@ import {
   generatedThreadTitleMaxLength,
   surrogateSafeCut,
   taskSymbolNames,
-  type WorkspaceIconName,
+  type IconName,
 } from "@opensteer/core";
 
 /**
@@ -99,7 +99,7 @@ const symbolLabel = /^(?:line\s*2|symbol|icon)\s*[:：-]\s*/iu;
 export function parseGeneratedThreadName(
   reply: string,
   options: { readonly icon?: boolean } = {},
-): { readonly title: string | null; readonly icon?: WorkspaceIconName } {
+): { readonly title: string | null; readonly icon?: IconName } {
   const title = sanitizeGeneratedTitle(reply);
   if (!options.icon || !reply.trim()) return { title };
   const lines = reply
@@ -114,6 +114,6 @@ export function parseGeneratedThreadName(
     .toLowerCase();
   return {
     title,
-    icon: symbolNames.has(name) ? (name as WorkspaceIconName) : defaultTaskSymbol,
+    icon: symbolNames.has(name) ? (name as IconName) : defaultTaskSymbol,
   };
 }

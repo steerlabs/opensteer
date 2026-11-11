@@ -24,13 +24,11 @@ import {
 } from "../administration/administration-service.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { ChannelService } from "../channels/channel-service.js";
-import { WorkspaceService } from "../workspace/workspace-service.js";
-import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
 import {
   AdministrationToolHandlers,
   administrationToolHandlers,
 } from "./handlers/administration.js";
-import type { AgentToolHandlers } from "./handlers/index.js";
+import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
@@ -108,9 +106,6 @@ describeStore("MCP administration", (it) => {
     "configure_model",
     "remember_execution",
     "set_time_zone",
-    "set_notifications",
-    "set_icon",
-    "set_color",
     "computer_rename",
   ] as const) {
     it(`replays ${action} after a person changes it and refuses changed input`, async ({
@@ -122,7 +117,6 @@ describeStore("MCP administration", (it) => {
         .set({ instanceRole: "administrator" })
         .where("id", "=", run.userId)
         .execute();
-      const project = await f.createProjectWorkspace(run.userId, `retry-target-${action}`);
       const other = await f.store.createHarnessInstance({
         config: {},
         driverKind: run.harnessInstance.driverKind,
@@ -134,8 +128,6 @@ describeStore("MCP administration", (it) => {
         {
           store: f.store,
           realtime: { broadcast: vi.fn(), publishNotificationPreference: vi.fn() },
-          workspaces: { setIcon: f.store.setWorkspaceIcon.bind(f.store) },
-          commands: { setWorkspaceColor: f.store.setWorkspaceColor.bind(f.store) },
           runners: {
             identityForEnvironment: () => ({
               modules: {
@@ -223,46 +215,6 @@ describeStore("MCP administration", (it) => {
           };
           observe = () => f.store.notificationState.timeZoneFor(run.userId);
           break;
-        case "set_notifications":
-          name = "project_write";
-          input = { action, workspaceId: project.id, muted: true };
-          different = { muted: false };
-          person = {
-            type: "workspace.notifications.update",
-            workspaceId: project.id,
-            muted: false,
-            idempotencyKey: randomUUID(),
-          };
-          observe = () =>
-            f.store.notificationState.listWorkspacePreferences({
-              userId: run.userId,
-              workspaceIds: [project.id],
-            });
-          break;
-        case "set_icon":
-          name = "project_write";
-          input = { action, workspaceId: project.id, icon: "folder" };
-          different = { icon: "code" };
-          person = {
-            type: "workspace.icon.set",
-            workspaceId: project.id,
-            icon: "code",
-            idempotencyKey: randomUUID(),
-          };
-          observe = () => f.store.getWorkspaceForOwner(project.id, run.userId);
-          break;
-        case "set_color":
-          name = "project_write";
-          input = { action, workspaceId: project.id, color: "blue" };
-          different = { color: "green" };
-          person = {
-            type: "workspace.color.set",
-            workspaceId: project.id,
-            color: "green",
-            idempotencyKey: randomUUID(),
-          };
-          observe = () => f.store.getWorkspaceForOwner(project.id, run.userId);
-          break;
         case "computer_rename":
           name = "computer_write";
           input = { action: "rename", machineId: run.runnerId, name: "A" };
@@ -296,85 +248,6 @@ describeStore("MCP administration", (it) => {
       }
     });
   }
-
-  it("replays Project deletion, recovery and storage retry after intervening person commands", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("project-retry");
-    const project = await f.createProjectWorkspace(run.userId, "project-retry-target");
-    await f.database
-      .updateTable("workspaces")
-      .set({
-        backing: {
-          ...project.backing,
-          ...(run.workspace.backing.kind === "local-directory"
-            ? {
-                storageAuthorityId: run.workspace.backing.storageAuthorityId,
-                ownerEnvironmentId: run.workspace.backing.ownerEnvironmentId,
-              }
-            : {}),
-        },
-      })
-      .where("id", "=", project.id)
-      .execute();
-    const workspaces = new WorkspaceService({
-      store: f.store,
-      shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
-      resolveOwnerEnvironmentId: async () => run.environmentId,
-      drivers: { local: { inspect: async () => ({ status: "ready", issue: null }) } as never },
-    });
-    const deletion = new WorkspaceDeletionService({
-      store: f.store,
-      drivers: { local: { destroy: vi.fn() } },
-      retentionDays: 7,
-      terminateRuns: async () => {},
-      onWorkspaceEvent: vi.fn(),
-      onError: (error) => {
-        throw error;
-      },
-    });
-    const agent = mcp(
-      {
-        store: f.store,
-        workspaces,
-        workspaceDeletion: deletion,
-        apps: { stopWorkspace: vi.fn() },
-        realtime: { broadcast: vi.fn(), sendToUsers: vi.fn() },
-        integrations: { platform: { store: new IntegrationPlatformStore(f.database) } },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    const observe = () => f.store.getWorkspaceForOwner(project.id, run.userId);
-    try {
-      await retryAfterPersonChange(
-        agent,
-        "project_write",
-        { action: "retry_storage", workspaceId: project.id },
-        () => deletion.requestDeletion(project.id, run.userId),
-        observe,
-        { action: "recover" },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "project_write",
-        { action: "recover", workspaceId: project.id },
-        () => deletion.requestDeletion(project.id, run.userId),
-        observe,
-        { action: "delete" },
-      );
-      await deletion.recover(project.id, run.userId);
-      await retryAfterPersonChange(
-        agent,
-        "project_write",
-        { action: "delete", workspaceId: project.id },
-        () => deletion.recover(project.id, run.userId),
-        observe,
-        { action: "recover" },
-      );
-    } finally {
-      await agent.service.close();
-    }
-  });
 
   it("rolls back the domain write with its result and serializes concurrent command keys", async ({
     storeFixture: f,
@@ -427,97 +300,6 @@ describeStore("MCP administration", (it) => {
     });
   });
 
-  it("refuses Main deletion, deletes and recovers a Project, and notifies another device", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("admin-project");
-    const project = await f.createProjectWorkspace(run.userId, "admin-project-target");
-    const other = await f.createProjectWorkspace(run.userId, "admin-other");
-    const rt = realtime(f.store, run.userId);
-    const deletion = new WorkspaceDeletionService({
-      drivers: { local: { destroy: vi.fn() } },
-      store: f.store,
-      retentionDays: 7,
-      onError: (error) => {
-        throw error;
-      },
-      onWorkspaceEvent: (event) => rt.hub.publish(event),
-      terminateRuns: async () => {},
-    });
-    const agent = mcp(
-      {
-        store: f.store,
-        realtime: rt.hub,
-        workspaces: { setIcon: f.store.setWorkspaceIcon.bind(f.store) },
-        workspaceDeletion: deletion,
-        apps: { stopWorkspace: vi.fn() },
-        integrations: { platform: { store: new IntegrationPlatformStore(f.database) } },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    try {
-      await expect(
-        agent.call("project_write", { action: "delete", workspaceId: run.workspace.id }),
-      ).rejects.toThrow("Main cannot be deleted");
-      const markInput = {
-        action: "set_icon",
-        workspaceId: project.id,
-        icon: "folder",
-        operationKey: "mark-once",
-      };
-      const marked = await agent.call("project_write", markInput);
-      expect(await agent.call("project_write", markInput)).toEqual(marked);
-      await expect(
-        agent.call("project_write", { ...markInput, icon: "code" }),
-      ).rejects.toMatchObject({ code: "conflict" });
-      expect(
-        await f.database
-          .selectFrom("commands")
-          .select("id")
-          .where("type", "=", "workspace.icon.set")
-          .execute(),
-      ).toHaveLength(1);
-      expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
-        icon: "folder",
-      });
-      const mark = await f.database
-        .selectFrom("commands")
-        .select("authoritySource")
-        .where("type", "=", "workspace.icon.set")
-        .executeTakeFirstOrThrow();
-      expect(mark.authoritySource).toMatchObject({ kind: "mcp", callerKind: "connection" });
-      await agent.call("project_write", { action: "delete", workspaceId: project.id });
-      expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
-        status: "deleting",
-      });
-      await agent.call("project_write", { action: "recover", workspaceId: project.id });
-      expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
-        status: "unavailable",
-      });
-      await vi.waitFor(
-        () =>
-          expect(
-            rt.messages.filter((message) => message.type === "host.machines.changed"),
-            "another device never received the administration change",
-          ).toHaveLength(3),
-        { timeout: 2000 },
-      );
-      expect(
-        rt.messages.filter((message) => message.type === "host.plugins-changed"),
-        "Settings on another device was never told the Project's plugin places changed",
-      ).toHaveLength(1);
-      agent.scope(project.id);
-      await expect(
-        agent.call("project_write", { action: "delete", workspaceId: other.id }),
-      ).rejects.toThrow("outside the caller's reach");
-      expect(await f.store.getWorkspaceForOwner(other.id, run.userId)).toMatchObject({
-        status: "ready",
-      });
-    } finally {
-      rt.release();
-      await agent.service.close();
-    }
-  });
   it("erases history, revokes a profile grant and preserves the scoped connection's boundary", async ({
     storeFixture: f,
   }) => {

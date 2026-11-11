@@ -1,5 +1,3 @@
-import { LocalWorkspaceAuthority, NativeFsHelper } from "@opensteer/workspace-local";
-import { LocalWorkspaceService } from "../workspace/local-workspace-service.js";
 import { createPrivateKey } from "node:crypto";
 import { join } from "node:path";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
@@ -115,13 +113,14 @@ async function boot(input: Boot) {
     projectContinuationIdentity: providerContinuationIdentityProjector(
       createPrivateKey(input.continuationPrivateKey),
     ),
-    workspaceManager: {
+    folderManager: {
       prepare: async () => ({
         cleanup: async () => undefined,
         instructions: "Read the durable workspace before answering.",
         path: input.mountedWorkspacePath,
+        agentHomePath: input.mountedWorkspacePath,
       }),
-      writableRoots: ({ workspacePath }) => [workspacePath],
+      writableRoots: ({ path }) => [path],
     },
   });
   const identityStore = new FileRunnerIdentityStore({
@@ -130,16 +129,6 @@ async function boot(input: Boot) {
     runnerId: config.runnerId!,
   });
   const identity = await identityStore.loadOrCreate();
-  const filesystem = new NativeFsHelper({
-    binary: input.nativeFsHelperBinary,
-    rootPolicy: "managed-local",
-  });
-  const authority = new LocalWorkspaceAuthority({
-    filesystemAuthority: filesystem,
-    namespace: { kind: "single-owner", ownerEnvironmentId: config.environmentId! },
-    registryFilePath: join(config.dataDirectory, "local-workspaces.json"),
-    visibleRootPath: join(config.dataDirectory, "local-workspaces"),
-  });
   const connection = new ReconnectingHostConnection({
     onConnected: () => authenticated.resolve(),
     bootId: RunnerBootIdSchema.parse(input.bootId),
@@ -151,15 +140,6 @@ async function boot(input: Boot) {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
       runtime,
-      localWorkspaces: {
-        inventory: () => authority.inventory(),
-        service: new LocalWorkspaceService({
-          authority,
-          filesystem,
-          appServers: runtime.appServers,
-        }),
-      },
-      workspaceBackings: ["local-directory"],
     },
   });
   const task = connection.run(stop.signal);

@@ -2308,7 +2308,6 @@ class CodexHarnessSession implements HarnessSession {
       originatingOccurrenceId: null,
       originatingRunId: active.runId,
       originatingThreadId: this.#context.threadId,
-      originatingWorkspaceId: this.#context.workspaceId,
       payload: { kind },
       presentation,
       requestedBy: active.requestedBy,
@@ -2317,7 +2316,6 @@ class CodexHarnessSession implements HarnessSession {
       resolvedBy: null,
       response: null,
       status: "pending",
-      targetWorkspaceId: this.#context.workspaceId,
     };
   }
 
@@ -4034,7 +4032,7 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
  * Per-Run facts travel on the turn, not only on thread startup: Codex renders
  * `developerInstructions` when it builds a conversation's initial context, so
  * a resumed thread would otherwise keep an earlier Run's facts. The platform
- * guide and Workspace instructions need this refresh only on resume;
+ * guide and task-folder instructions need this refresh only on resume;
  * a fresh thread already has them in `developerInstructions`. This also lets a
  * long-lived thread receive a changed capability guide. `additionalContext` is keyed and diffed by
  * Codex, which emits a developer message when a value changes and nothing when
@@ -4052,11 +4050,11 @@ function runAdditionalContext(
           opensteer_current_instructions: {
             kind: "application",
             value: [
-              "Current Opensteer and Workspace instructions for this Run follow. They replace their counterparts from earlier Runs.",
+              "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
               context.platformGuide,
               context.instructions?.trim()
                 ? context.instructions
-                : "(There are no current Workspace instructions.)",
+                : "(There are no current task instructions.)",
             ].join("\n\n"),
           },
         }

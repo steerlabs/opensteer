@@ -2628,7 +2628,7 @@ async function browserProfilesTurn(input) {
     };
     if (plan.delegate)
       report.delegated = await call("delegate_task", {
-        workspaceId: plan.delegate,
+        folder: plan.delegate,
         task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",
       });
@@ -2636,7 +2636,6 @@ async function browserProfilesTurn(input) {
       const input = {
         reason: "Create an isolated profile for the fixture account",
         suggestion: plan.request.suggestion ?? { kind: "new", suggestedName: "brex-ops" },
-        ...(plan.request.workspaceId ? { workspaceId: plan.request.workspaceId } : {}),
       };
       report.request = await call("browser_profile_request", input, 9001);
       if (plan.request.replay) report.replayed = await call("browser_profile_request", input, 9001);

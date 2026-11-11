@@ -1,5 +1,4 @@
 import { agentTools } from "@opensteer/agent-tools";
-import { createId as createStorageFixtureId } from "@opensteer/core";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -46,8 +45,11 @@ it("records a successful Codex command with large inline arguments without faili
     }),
   );
   const environmentId = createId("environment");
-  const workspaceId = createId("workspace");
   const command = RunnerCommandSchema.parse({
+    location: {
+      folder: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
+      agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
+    },
     commandId: createId("command"),
     context: {
       accessMode: "full-access",
@@ -69,7 +71,7 @@ it("records a successful Codex command with large inline arguments without faili
       },
       bindingGeneration: 1,
       executionLeaseMs: 90_000,
-      membershipGeneration: 1,
+
       egress: {
         maxRequestBytes: 8 * 1024 * 1024,
         maxResponseBytes: 8 * 1024 * 1024,
@@ -97,21 +99,10 @@ it("records a successful Codex command with large inline arguments without faili
       requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
-      threadRole: "work",
+      taskPurpose: "task",
       threadState: { previousAssignment: null, previousRun: null },
-      workspaceId,
-      workspaceKind: "project",
-      machineAccess: { callerMachineName: "test-runner", machines: [], omittedMachines: 0 },
-      workspaceInstructionsPath: null,
-      workspaceAccess: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
 
-        workspaceId,
-      },
+      machineAccess: { callerMachineName: "test-runner", machines: [], omittedMachines: 0 },
     },
     correlationId: "large-tool-arguments",
     environmentId,
@@ -145,7 +136,6 @@ it("records a successful Codex command with large inline arguments without faili
         "opensteer:devices": skillPath("devices"),
         "opensteer:threads": skillPath("threads"),
         "opensteer:triggers": skillPath("triggers"),
-        "opensteer:projects": skillPath("projects"),
       },
     },
     plugins: async () => ({
@@ -156,7 +146,7 @@ it("records a successful Codex command with large inline arguments without faili
     }),
     bootId: "large-tool-arguments-test",
     browserHarnessExecutable: "/unused/browser-harness",
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+    deploymentShape: { kind: "personal" },
     environmentId,
     harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
     harnesses: registry,
@@ -166,9 +156,13 @@ it("records a successful Codex command with large inline arguments without faili
     projectContinuationIdentity: providerContinuationIdentityProjector(
       generateKeyPairSync("ed25519").privateKey,
     ),
-    workspaceManager: {
+    folderManager: {
       writableRoots: () => [workspacePath],
-      prepare: async () => ({ instructions: undefined, path: workspacePath }),
+      prepare: async () => ({
+        agentHomePath: workspacePath,
+        instructions: undefined,
+        path: workspacePath,
+      }),
     },
   });
   const messages: RunnerOperationalReport[] = [];

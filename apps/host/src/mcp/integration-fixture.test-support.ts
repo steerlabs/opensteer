@@ -13,7 +13,7 @@ type IntegrationOptions = ConstructorParameters<typeof IntegrationToolHandlers>[
 export function createIntegrationMcpFixture(
   options: IntegrationOptions & {
     readonly publicUrl: URL;
-    readonly reach?: import("@opensteer/core").ThreadReachScope;
+
     readonly runTokens: { authenticate(token: string): Promise<RunCapabilityClaims<string>> };
     readonly triggerTokens: { authenticate(token: string): Promise<IntegrationToolsTriggerScope> };
   },
@@ -40,6 +40,7 @@ export function createIntegrationMcpFixture(
     product: unavailable as never,
     triggers: unavailable as never,
     apps: unavailable as never,
+    teamRequestForRun: async () => null,
     pluginInstall: async () => {
       throw new Error("Unexpected install");
     },
@@ -50,7 +51,6 @@ export function createIntegrationMcpFixture(
     store: {
       requests: { get: async () => null },
       getThreadForOwner: Reflect.get(unavailable, "getThreadForOwner"),
-      findMainWorkspaceForOwner: Reflect.get(unavailable, "findMainWorkspaceForOwner"),
     } as never,
     callers: {
       authenticate: async (token: string): Promise<AgentCaller> => {
@@ -58,10 +58,11 @@ export function createIntegrationMcpFixture(
         const claims = run ?? (await options.triggerTokens.authenticate(token));
         const thread = {
           id: claims.threadId,
-          workspaceId: claims.workspaceId,
+
           environmentId: claims.environmentId,
           lineageRootThreadId: claims.threadId,
           accessMode: "full-access",
+          teamOrigin: null,
         } as Thread;
         const base = {
           key: run
@@ -69,7 +70,6 @@ export function createIntegrationMcpFixture(
             : `trigger:${(claims as IntegrationToolsTriggerScope).occurrenceId}`,
           userId: claims.requestedBy,
           accessMode: thread.accessMode,
-          reach: options.reach ?? { kind: "user" as const },
         };
         return run
           ? { ...base, kind: "run", thread, claims: run as RunCaller["claims"] }

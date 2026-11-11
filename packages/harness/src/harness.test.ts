@@ -16,7 +16,6 @@ import {
   parseGeneratedThreadName,
   threadTitlePrompt,
   harnessRuntimeBoundaryForRunner,
-  isolatedServiceHarnessRuntimeBoundary,
   nativeUserHarnessRuntimeBoundary,
   type HarnessAdapter,
   type HarnessCapabilities,
@@ -148,19 +147,10 @@ describe("session generation fencing", () => {
 });
 
 describe("harness runtime boundary", () => {
-  it("keeps a lent local Runner native-user on a server Deployment", () => {
-    expect(
-      harnessRuntimeBoundaryForRunner({ deploymentKind: "server", runnerKind: "local" }),
-    ).toEqual(nativeUserHarnessRuntimeBoundary);
-  });
-
-  it("isolates the Deployment's own Runners on a server Deployment", () => {
-    expect(
-      harnessRuntimeBoundaryForRunner({ deploymentKind: "server", runnerKind: "main" }),
-    ).toEqual(isolatedServiceHarnessRuntimeBoundary);
-    expect(
-      harnessRuntimeBoundaryForRunner({ deploymentKind: "server", runnerKind: "managed" }),
-    ).toEqual(isolatedServiceHarnessRuntimeBoundary);
+  it("refuses engines on team servers", () => {
+    expect(() =>
+      harnessRuntimeBoundaryForRunner({ deploymentKind: "team", runnerKind: "main" }),
+    ).toThrow("Team servers cannot run agents");
   });
 
   it("keeps every Personal Runner native-user", () => {

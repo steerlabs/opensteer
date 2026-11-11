@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { closeHttpServerNow } from "@opensteer/shared/httpServer";
@@ -13,12 +13,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createId, refused, ThreadSchema } from "@opensteer/core";
 import { agentToolFailureResult, agentToolRecordResult, agentTools } from "@opensteer/agent-tools";
 import { OpensteerMcpService } from "../../apps/host/src/mcp/opensteer-mcp-service.js";
-import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/index.js";
+import type { AgentToolHandlers } from "../../apps/host/src/mcp/handlers/types.js";
 import { TriggerToolHandlers } from "../../apps/host/src/mcp/handlers/triggers.js";
-import { RunToolTokenService } from "../../apps/host/src/agents/run-tool-tokens.js";
-import { SignedTokenService } from "../../apps/host/src/identity/host-keys.js";
+import type { RunToolScope } from "../../apps/host/src/agents/run-tool-tokens.js";
 
-import { caseReach, type EvalCase } from "./cases.js";
+import { type EvalCase } from "./cases.js";
 import { partialMatch, gradeToolBoundary, type Check, type RecordedCall } from "./grader.js";
 
 // These are test doubles, never a real Host store, grant, credential or integration.
@@ -40,33 +39,24 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   const secret = randomUUID();
   const scope = {
     bindingGeneration: 1,
-    membershipGeneration: 1,
     environmentId: createId("environment"),
     requestedBy: createId("user"),
     runId: createId("run"),
     runnerBootId: "eval",
     runnerId: createId("runner"),
     threadId: createId("thread"),
-    workspaceId: createId("workspace"),
     exp: Math.floor(Date.now() / 1000) + 3600,
     iat: Math.floor(Date.now() / 1000),
     iss: "opensteer-host" as const,
     jti: randomUUID(),
   };
-  const signed = new SignedTokenService(generateKeyPairSync("ed25519"), {
-    deploymentId: createId("deployment"),
-    hostInstanceId: createId("hostInstance"),
-  });
-  const authorizer = { assertActiveGrant: async () => {} };
-  const agentTokens = new RunToolTokenService({ tokens: signed, authorizer });
-  const agentToken = agentTokens.issue(scope);
+  const agentToken = randomUUID();
   const http = createServer();
   http.listen(0, "127.0.0.1");
   await once(http, "listening");
   const address = http.address();
   if (!address || typeof address === "string") throw new Error("No eval listener");
   const url = new URL(`http://127.0.0.1:${address.port}`);
-  const chatThreadId = createId("thread");
   const thread = ThreadSchema.parse({
     ...scope,
     id: scope.threadId,
@@ -75,14 +65,17 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     createdAt: new Date().toISOString(),
     createdBy: scope.requestedBy,
     harnessInstanceId: createId("harnessInstance"),
-    inheritsMain: caseReach(testCase) === "user",
     lineageRootThreadId: scope.threadId,
     inputQueuePaused: false,
     listed: true,
     modelSelection: { modelId: "eval", providerId: "eval", options: {} },
     parentThreadId: null,
     pendingRequests: 0,
-    role: testCase.role,
+    purpose: testCase.purpose,
+    folder: { computerId: scope.runnerId, path: workspace ?? "/eval/task" },
+    teamOrigin: testCase.teamBound
+      ? { teamId: createId("deployment"), channelId: createId("teamChannel"), threadRootId: "1" }
+      : null,
     status: "idle",
     title: "Eval",
     updatedAt: new Date().toISOString(),
@@ -91,7 +84,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   // fixture replaces the backend.
   const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
   const handlers: AgentToolHandlers = {
-    project_write: async () => unavailable(),
     settings_read: async () => unavailable(),
     settings_write: async () => unavailable(),
     computer_list: async () => unavailable(),
@@ -106,8 +98,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     plugin_install: async () => unavailable(),
     orchestrator_capabilities: async () => unavailable(),
     environment_list: async () => unavailable(),
-    project_list: async () => unavailable(),
-    project_create: async () => unavailable(),
     thread_read: async () => unavailable(),
     thread_list: async () => unavailable(),
     delegate_task: async () => unavailable(),
@@ -141,24 +131,21 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     computer: async () => unavailable(),
     integration_request: async () => unavailable(),
     integration_propose: async () => unavailable(),
+    team_read: async () => unavailable(),
+    team_search: async () => unavailable(),
+    team_reply: async () => unavailable(),
     sql: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
     publicUrl: url,
     handlers,
-    knowledgeFor: async (caller) => caller.kind === "run" && testCase.knowledge === true,
     callers: {
       authenticate: async (token: string) => {
-        const claims = await agentTokens.authenticate(token);
+        if (token !== agentToken) throw refused("unauthorized", "Invalid eval credential");
+        const claims = scope as unknown as RunToolScope;
         const common = {
           userId: scope.requestedBy,
           accessMode: thread.accessMode,
-          reach:
-            caseReach(testCase) === "user"
-              ? { kind: "user" as const }
-              : caseReach(testCase) === "lineage"
-                ? { kind: "lineage" as const, lineageRootThreadId: thread.id }
-                : { kind: "workspace" as const, workspaceId: thread.workspaceId },
         };
         if (testCase.caller === "connection")
           return {
@@ -179,7 +166,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     store: {
       requests: { get: async () => null },
       getThreadForOwner: async (id) => ({ ...thread, id }),
-      findMainWorkspaceForOwner: async () => ({ homeThreadId: chatThreadId }) as never,
     },
   });
   const sessions: { server: Server; transport: StreamableHTTPServerTransport }[] = [];
@@ -429,8 +415,6 @@ function defaultResult(name: string): unknown {
   switch (name) {
     case "integration_search":
       return { operations: [], integrations: [], catalog: [], total: 0 };
-    case "project_list":
-      return { projects: [], window: { hasMore: false } };
     case "thread_list":
       return { threads: [], hasMore: false, nextBefore: null };
     case "pending_request":

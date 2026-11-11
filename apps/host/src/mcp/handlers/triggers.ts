@@ -7,14 +7,14 @@ import {
 } from "@opensteer/triggers";
 import { callerThread } from "../agent-caller.js";
 import { idempotencyKey, operationId } from "../operations.js";
-import type { ToolCall } from "./index.js";
+import type { ToolCall } from "./types.js";
 export interface AgentTriggerManager {
   manage(
     ownerId: UserId,
     input: TriggerControlInput,
     actorThreadId: ThreadId | null,
     context?: {
-      readonly reach?: import("@opensteer/core").ThreadReachScope;
+      readonly accessMode: import("@opensteer/core").ThreadAccessMode;
       readonly operationKey?: string;
     },
   ): Promise<unknown>;
@@ -34,7 +34,6 @@ export class TriggerToolHandlers {
             operation: "list",
             limit: input.limit,
             ...(input.systemRole ? { systemRole: input.systemRole } : {}),
-            ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
           }
         : {
             operation: "get",
@@ -42,19 +41,27 @@ export class TriggerToolHandlers {
             occurrenceLimit: input.occurrenceLimit,
           },
       caller.kind === "connection" ? null : callerThread(caller).id,
-      { reach: caller.reach },
+      { accessMode: caller.accessMode },
     );
   }
   async trigger_write({ caller, input, operationKey }: ToolCall<"trigger_write">) {
     const { operationKey: _operationKey, ...write } = input;
     const requestId = operationId(caller, operationKey, "trigger_write");
+    const anchor =
+      write.anchorThreadId ?? (caller.kind === "connection" ? undefined : callerThread(caller).id);
     const operation = triggerWriteOperation(
-      write,
+      write.action === "create" && anchor ? { ...write, anchorThreadId: anchor } : write,
       idempotencyKey(caller, requestId, "trigger.create"),
     );
-    return this.triggers.manage(caller.userId, operation, callerThread(caller).id, {
-      operationKey: idempotencyKey(caller, requestId, "trigger.write"),
-    });
+    return this.triggers.manage(
+      caller.userId,
+      operation,
+      caller.kind === "connection" ? null : callerThread(caller).id,
+      {
+        accessMode: caller.accessMode,
+        operationKey: idempotencyKey(caller, requestId, "trigger.write"),
+      },
+    );
   }
 }
 function triggerWriteOperation(write: TriggerWriteInput, requestId: string): TriggerControlInput {

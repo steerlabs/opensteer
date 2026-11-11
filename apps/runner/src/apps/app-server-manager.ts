@@ -3,10 +3,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join, relative, isAbsolute } from "node:path";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { appFolderSegments } from "@opensteer/core";
-import type { AppRuntimeSpec, LocalWorkspaceBindingRef } from "@opensteer/protocol";
+import type { AppRuntimeSpec } from "@opensteer/protocol";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { stopProcessGroup } from "@opensteer/shared/processGroup";
@@ -35,10 +34,7 @@ export class AppServerError extends Error {
   }
 }
 interface Options {
-  readonly resolveRoot: (
-    binding: AppRuntimeSpec["binding"],
-    signal: AbortSignal,
-  ) => Promise<string>;
+  readonly resolveRoot: (binding: AppRuntimeSpec["folder"], signal: AbortSignal) => Promise<string>;
   readonly planLaunch: (
     executionId: string,
     launch: Parameters<ProgramLaunchPlanner>[0],
@@ -78,12 +74,8 @@ export class AppServerManager {
       )
         return previous.port;
       // Resolve and check the identity-bound root even when replacing a live server.
-      const root = await this.#options.resolveRoot(spec.binding, signal);
-      const resolvedRoot = await realpath(root);
-      const folder = await realpath(join(resolvedRoot, ...appFolderSegments(spec.folder)));
-      const childPath = relative(resolvedRoot, folder);
-      if (isAbsolute(childPath) || childPath === ".." || childPath.startsWith("../"))
-        throw new Error("App folder escapes outside its Workspace");
+      const root = await this.#options.resolveRoot(spec.folder, signal);
+      const folder = await realpath(root);
       if (!(await stat(folder)).isDirectory()) throw new Error("App folder must be a directory");
       if (previous) await this.#stop(previous);
       if (this.#slots.size >= 32) throw new Error("This Runner already has 32 app servers");
@@ -101,7 +93,7 @@ export class AppServerManager {
         const wrap = await this.#options.planLaunch(executionId, {
           environment,
           privateDirectory: launchDirectory,
-          workspacePath: resolvedRoot,
+          workspacePath: folder,
         });
         signal.throwIfAborted();
         if (epoch !== this.#epoch) throw new Error("App connection was lost");
@@ -203,26 +195,6 @@ export class AppServerManager {
       if (server && (version === undefined || server.spec.version === version))
         await this.#stop(server);
     });
-  }
-  async stopBinding(binding: LocalWorkspaceBindingRef): Promise<void> {
-    // Join pending starts too: a launch may not have a server record yet.
-    await Promise.all(
-      [...new Set([...this.#queues.keys(), ...this.#servers.keys()])].map((appId) =>
-        this.#queues.run(appId, async () => {
-          const server = this.#servers.get(appId);
-          const owner = server?.spec.binding;
-          if (
-            server &&
-            owner?.bindingId === binding.bindingId &&
-            owner.generation === binding.generation &&
-            owner.workspaceId === binding.workspaceId &&
-            owner.ownerEnvironmentId === binding.ownerEnvironmentId &&
-            owner.storageAuthorityId === binding.storageAuthorityId
-          )
-            await this.#stop(server);
-        }),
-      ),
-    );
   }
   async stopAll(): Promise<void> {
     this.#epoch++;

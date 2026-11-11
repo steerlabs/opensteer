@@ -1,7 +1,3 @@
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
 import type { HarnessProcessLaunch } from "@opensteer/harness";
 import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -424,7 +420,7 @@ async function temporaryWorkspace() {
   temporaryDirectories.push(temporaryPath);
   const path = await realpath(temporaryPath);
   await mkdir(join(path, ".opensteer"), { recursive: true });
-  return { instructions: undefined, path };
+  return { agentHomePath: path, instructions: undefined, path };
 }
 
 function triggerContext(input: { readonly mcpUrl?: string; readonly source: string }) {
@@ -432,7 +428,6 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
   const triggerId = createId("trigger");
   const revisionId = createId("triggerRevision");
   const threadId = createId("thread");
-  const workspaceId = createId("workspace");
   return TriggerExecutionContextSchema.parse({
     anchorThreadId: threadId,
     browserCdp: null,
@@ -441,26 +436,14 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
       payload: { price: 42 },
       receivedAt: new Date().toISOString(),
       source: { kind: "manual" },
-      trigger: { anchorThreadId: threadId, id: triggerId, revisionId, workspaceId },
+      trigger: { anchorThreadId: threadId, id: triggerId, revisionId },
     },
     executionGeneration: 1,
 
     mcp: { token: "test-token", url: input.mcpUrl ?? "http://127.0.0.1:1/mcp" },
     occurrenceId,
-    program: { toolContractVersion: 2, language: "typescript", source: input.source },
+    program: { toolContractVersion: 3, language: "typescript", source: input.source },
     revisionId,
     triggerId,
-    workspaceId,
-    workspaceAccess: {
-      generation: 1,
-      kind: "local-directory",
-      bindingId: createStorageFixtureId("workspaceBinding"),
-      ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-        "env_00000000-0000-4000-8000-000000000001",
-      ),
-      storageAuthorityId: createStorageFixtureId("storageAuthority"),
-
-      workspaceId,
-    },
   });
 }

@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { mkdtemp, open, rename, rm } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import { NativeFsHelper } from "@opensteer/workspace-local";
+import { NativeFsHelper } from "@opensteer/shared/files/native-fs-helper";
 import {
   ensurePrivateDirectory,
   noFollowFlag,

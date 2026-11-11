@@ -13,7 +13,7 @@ approvals and its link to the device land here.
 First list plugins with `plugin_manage`. If one already covers this device, use or fix it instead of
 building another.
 
-1. **Find it** from a computer on the device's network. Main runs your commands; the other-computers
+1. **Find it** from a computer on the device's network. The hosting computer runs your commands; the other-computers
    note names the rest. Browse Bonjour (`dns-sd -B _services._dns-sd._udp`), read the router's device
    list, or ask the person for its address. A laptop away from home sees another network; say so
    rather than guessing.

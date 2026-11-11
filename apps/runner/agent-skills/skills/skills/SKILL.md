@@ -1,15 +1,14 @@
 ---
 name: skills
-description: Maintain standing instructions, skills and scripts in the current Workspace or Project when preferences change or repeated work needs a reusable procedure.
+description: Maintain standing instructions, skills and scripts in the current task folder when preferences change or repeated work needs a reusable procedure.
 ---
 
 # Durable instructions and skills
 
 Read existing instructions and relevant files first. Update the smallest useful source rather
-than creating a standard set of empty files. Facts about the person belong in Main's memory
-(`opensteer:memory`); this skill covers how work is done. Use ordinary file tools in the current Workspace;
-Main can also use a Project path returned by `project_create`. Project agents work only in their
-own folder.
+than creating a standard set of empty files. Facts about the person belong in the agent home's memory
+(`opensteer:memory`); this skill covers how work is done. Use ordinary file tools in the current task folder;
+Use the explicit task folder for work procedures and the agent home for personal instructions and memory.
 
 - Keep mission, scope and confirmed standing rules in `AGENTS.md`. Link detailed procedures
   rather than duplicating them. Preserve the person's authorization; tool failures do not
@@ -23,9 +22,9 @@ own folder.
   requirements.
 
 A skill's lowercase hyphenated local name must match its directory and frontmatter. Loose
-Workspace skills use that bare name and cannot contain `:`. Plugin skills are invoked as
+Folder skills use that bare name and cannot contain `:`. Plugin skills are invoked as
 `plugin:skill`, including bundled skills such as `opensteer:browser`. Two plugins can export
-the same local name; duplicate full names are refused, with no shadowing. Start with YAML frontmatter:
+the same local name; folder skills override agent-home skills of the same bare name; canonical sources load once. Start with YAML frontmatter:
 
 ```markdown
 ---
@@ -53,9 +52,9 @@ obsolete instructions when the person's requirements change.
 ## Package a repeated procedure as a plugin
 
 When repeated work needs skills, scripts or MCP servers together, package it as an Agent Plugins
-1.0 folder inside this Workspace: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
+1.0 folder inside the task folder: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
 `mcp.json`. Test the scripts on disposable inputs and run the skill's steps before calling
-`plugin_install` with the folder's path relative to this Workspace. Symlinks are refused. Its skills
+`plugin_install` with the folder's path relative to the task folder. Symlinks are refused. Its skills
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
@@ -76,13 +75,13 @@ List models in preference order: an exact `{"engine", "model", "options"?}`, or
 own automatic model choices in AI settings. Prefer a role unless the work needs a particular
 model. A list never names an account; it runs on the person's eligible accounts. Use
 `fallback: "caller"` only when that cost is intended (the default is `"none"`). A specialist can
-use what this Workspace gives its caller, so it declares no access. Test representative inputs and
+use what the task folder gives its caller, so it declares no access. Test representative inputs and
 check the outputs before `plugin_install`. Then call `delegate_task` with
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.
 
 `plugin_manage` lists, activates/deactivates or removes plugins, updates person-installed ones and
-removes specialist registrations within full-access and reach. Activation grants no resource access.
+removes specialist registrations within full-access. Enabling grants no resource access.
 
 - Read [durable context](references/durable-context.md) when choosing where a correction, fact or task state belongs.
 - Read [skills](references/skills.md) when authoring procedures.

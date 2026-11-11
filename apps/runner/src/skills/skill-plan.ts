@@ -1,29 +1,38 @@
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { HarnessSkill, HarnessSkillPlan } from "@opensteer/harness";
-
 interface SkillPlanLayers {
   readonly bundled: readonly HarnessSkill[];
   readonly integration: readonly HarnessSkill[];
-  readonly workspace: readonly HarnessSkill[];
+  readonly home: readonly HarnessSkill[];
+  readonly folder: readonly HarnessSkill[];
 }
-
-/** Every selected identity is unique; layers never shadow each other. */
-export function resolveSkillPlan(layers: SkillPlanLayers): HarnessSkillPlan | undefined {
-  const skills = [...layers.bundled, ...layers.integration, ...layers.workspace];
-  const seen = new Map<string, string>();
-  for (const skill of skills) {
+/** Folder skills override home names; one canonical source appears only once. */
+export async function resolveSkillPlan(
+  layers: SkillPlanLayers,
+): Promise<HarnessSkillPlan | undefined> {
+  const selected = new Map<string, HarnessSkill>();
+  const ordered = [...layers.bundled, ...layers.integration, ...layers.home, ...layers.folder];
+  for (const skill of ordered) {
     const expected = skill.plugin === null ? skill.localName : `${skill.plugin}:${skill.localName}`;
-    if (skill.localName.includes(":") || skill.fullName !== expected) {
+    if (skill.localName.includes(":") || skill.fullName !== expected)
       throw new Error(`Invalid Agent Skill identity ${skill.fullName}`);
-    }
-    const previous = seen.get(skill.fullName);
-    if (previous !== undefined) {
-      throw new Error(
-        `Duplicate Agent Skill full name ${skill.fullName}: ${previous} and ${skill.path}`,
-      );
-    }
-    seen.set(skill.fullName, skill.path);
+    selected.set(
+      skill.fullName,
+      Object.freeze({
+        ...skill,
+        path: await realpath(skill.path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return resolve(skill.path);
+          throw error;
+        }),
+      }),
+    );
   }
-  return skills.length === 0
-    ? undefined
-    : Object.freeze({ skills: Object.freeze(skills.map((skill) => Object.freeze({ ...skill }))) });
+  const sources = new Set<string>();
+  const skills = [...selected.values()].filter((skill) => {
+    if (sources.has(skill.path)) return false;
+    sources.add(skill.path);
+    return true;
+  });
+  return skills.length ? Object.freeze({ skills: Object.freeze(skills) }) : undefined;
 }

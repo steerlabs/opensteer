@@ -32,7 +32,7 @@ export const WATCH_OBSERVATIONS_PER_HOUR = 120;
 /** Capability renewal cadence; signed capabilities retain the existing 24-hour ceiling. */
 export const WATCH_CAPABILITY_RENEWAL_MS = 6 * 60 * 60 * 1_000;
 
-/** Retry cadence while durable watch intent waits for its Workspace to become ready. */
+/** Retry cadence while durable watch intent waits for its task folder to become available. */
 export const WATCH_START_RETRY_MS = 30_000;
 
 /** Maximum retained output for each watch process stream. */

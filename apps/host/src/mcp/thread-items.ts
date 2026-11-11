@@ -133,7 +133,7 @@ export function taskItem(summary: AssignmentSummary, result: string | null) {
     result,
     pendingRequests: summary.workerThread.pendingRequests,
     parentThreadId: summary.parentThreadId,
-    workspaceId: summary.workerThread.workspaceId,
+    folder: summary.workerThread.folder,
     environmentId: summary.workerThread.environmentId,
     createdAt: summary.createdAt,
     finishedAt: summary.finishedAt,

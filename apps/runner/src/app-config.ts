@@ -32,12 +32,6 @@ const RunnerApplicationEnvironmentSchema = z.object({
     .min(1)
     .refine(isAbsolute, "OPENSTEER_NATIVE_FS_HELPER must be an absolute path")
     .default(defaultNativeFsHelperBinary),
-  OPENSTEER_LOCAL_WORKSPACE_LEGACY_REGISTRY_PATH: z
-    .string()
-    .trim()
-    .min(1)
-    .refine(isAbsolute, "OPENSTEER_LOCAL_WORKSPACE_LEGACY_REGISTRY_PATH must be an absolute path")
-    .optional(),
   OPENSTEER_OPENSSL_BINARY: z.string().trim().min(1).default("openssl"),
   OPENSTEER_RUNNER_READINESS_PATH: z
     .string()
@@ -49,7 +43,6 @@ const RunnerApplicationEnvironmentSchema = z.object({
 
 export interface RunnerApplicationConfig {
   readonly nativeFsHelperBinary: string;
-  readonly localWorkspaceLegacyRegistryPath?: string;
   readonly opensslBinary: string;
   readonly readinessPath?: string;
 }
@@ -60,9 +53,6 @@ export function parseRunnerApplicationConfig(
   const parsed = RunnerApplicationEnvironmentSchema.parse(environment);
   return {
     nativeFsHelperBinary: parsed.OPENSTEER_NATIVE_FS_HELPER,
-    ...(parsed.OPENSTEER_LOCAL_WORKSPACE_LEGACY_REGISTRY_PATH
-      ? { localWorkspaceLegacyRegistryPath: parsed.OPENSTEER_LOCAL_WORKSPACE_LEGACY_REGISTRY_PATH }
-      : {}),
     opensslBinary: parsed.OPENSTEER_OPENSSL_BINARY,
     ...(parsed.OPENSTEER_RUNNER_READINESS_PATH
       ? { readinessPath: parsed.OPENSTEER_RUNNER_READINESS_PATH }

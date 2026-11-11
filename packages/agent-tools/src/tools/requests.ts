@@ -9,7 +9,7 @@ export const pending_request = defineAgentTool({
   name: "pending_request",
   title: "Read or answer Requests",
   description:
-    "Inspect reachable Requests. list: outgoing Thread/incoming Workspace Requests, newest first. read: one requestId, with status and ordinary question details. respond: answer an ordinary question using its response shape and expectedRevision from read; Run-only, with write access to its conversation. This cannot approve a permission request. Pending is not permission.",
+    "Inspect personal Requests. list: Requests from tasks and background jobs, newest first. read: one requestId, with status and ordinary question details. respond: answer an ordinary question using its response shape and expectedRevision from read; Run-only, with write access to its conversation. This cannot approve a permission request. Pending is not permission.",
   input: z
     .strictObject({
       action: z.enum(["list", "read", "respond"]).default("list"),

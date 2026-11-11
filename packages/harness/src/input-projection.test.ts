@@ -136,8 +136,6 @@ describe("harnessReportsPrompt", () => {
               kind: "agent",
               runId: createId("run"),
               threadId: createId("thread"),
-              workspaceId: createId("workspace"),
-              workspaceName: "Research",
             },
             content: [
               {
@@ -181,8 +179,6 @@ describe("harnessReportsPrompt", () => {
           kind: "agent",
           runId: createId("run"),
           threadId: createId("thread"),
-          workspaceId: createId("workspace"),
-          workspaceName: "Research",
         },
         content: [{ text: "unused", type: "text" }],
         createdAt: "2026-09-19T12:00:00.000Z",
