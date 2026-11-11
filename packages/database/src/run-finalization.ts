@@ -1,3 +1,7 @@
+import { assertProjectAuthority } from "./deployment-execution-authority.js";
+import { readProjectRunBinding, projectWorkIsCurrent } from "./execution-authority.js";
+import { ProjectExecutionStore } from "./project-execution-store.js";
+import { projectAssignmentEventsInTransaction } from "./assignment-store.js";
 import { sql } from "kysely";
 import { recordPersonWaited } from "./run-visibility.js";
 import { appendDoneState } from "./task-done.js";
@@ -46,7 +50,7 @@ interface FinalizeRunRequest {
   readonly status: "completed" | "failed" | "interrupted";
 }
 
-/** The sole durable transition from a nonterminal Run to a terminal Run. */
+/** The durable terminal transition for person execution. */
 export async function finalizeRunTransaction(
   transaction: Transaction<DatabaseSchema>,
   requested: FinalizeRunRequest,
@@ -518,4 +522,285 @@ export async function cleanupRunAttemptTransaction(
       return input.retireBinding ? revokeRunGrants(transaction, [run.id], "superseded") : [];
     },
   };
+}
+
+export interface ProjectRunFinalization {
+  readonly runId: RunId;
+  readonly source: "host" | "runner";
+  readonly status: "completed" | "failed" | "interrupted";
+  readonly completedAt: Date;
+  readonly failure?: RunFailure | undefined;
+  readonly stopReason?: "authority-revoked" | "no-eligible-manager";
+}
+
+/** The caller reserves the complete projection prefix before Q cancellation or late person fences. */
+export async function finalizeProjectRunTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  input: ProjectRunFinalization,
+): Promise<readonly AgentEvent[]> {
+  await assertProjectAuthority(transaction);
+  if (
+    (input.status === "failed" && !input.failure) ||
+    (input.source === "host" && input.status === "completed")
+  )
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Project terminal state has no valid completion proof",
+    });
+  const run = await transaction
+    .selectFrom("runs")
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .innerJoin("principals", "principals.id", "runs.actorPrincipalId")
+    .selectAll("runs")
+    .select([
+      "threads.workspaceId",
+      "principals.kind as principalKind",
+      "principals.workspaceId as principalWorkspaceId",
+    ])
+    .where("runs.id", "=", input.runId)
+    .forNoKeyUpdate("runs")
+    .executeTakeFirst();
+  if (!run) return [];
+  if (run.principalKind !== "project" || run.principalWorkspaceId !== run.workspaceId)
+    throw new OpensteerError({ code: "forbidden", message: "Terminal work is not a Project Run" });
+  if (input.stopReason === "no-eligible-manager" && run.requestedBy !== null)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Planned managerless cancellation only stops unattended work",
+    });
+  if (!["queued", "starting", "running", "waiting"].includes(run.status)) return [];
+  if (run.replyTarget !== null)
+    throw new OpensteerError({
+      code: "forbidden",
+      reason: "channel-not-supported",
+      message: "Project work does not route channel replies",
+    });
+  await lockWorkspaceRow(transaction, run.workspaceId);
+  const assignment = run.assignmentId
+    ? await transaction
+        .selectFrom("delegations")
+        .selectAll()
+        .where("id", "=", run.assignmentId)
+        .executeTakeFirst()
+    : null;
+  const threadIds = [
+    ...new Set([run.threadId, ...(assignment ? [assignment.parentThreadId] : [])]),
+  ];
+  const threads = await transaction
+    .selectFrom("threads")
+    .select(["id", "workspaceId"])
+    .where("id", "in", threadIds)
+    .where("workspaceId", "=", run.workspaceId)
+    .orderBy("id")
+    .forNoKeyUpdate()
+    .execute();
+  if (threads.length !== threadIds.length)
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Project terminal work crosses a Workspace boundary",
+    });
+  await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds });
+  if (
+    input.stopReason &&
+    (await transaction
+      .selectFrom("requests")
+      .select("id")
+      .where("originatingRunId", "=", run.id)
+      .where("status", "=", "pending")
+      .executeTakeFirst())
+  )
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Q must cancel lost-root Requests before Project work is stopped",
+    });
+  const grant =
+    run.bindingGeneration === null
+      ? null
+      : await transaction
+          .selectFrom("grants")
+          .select("id")
+          .where("runId", "=", run.id)
+          .where("bindingGeneration", "=", run.bindingGeneration)
+          .executeTakeFirst();
+  const original = grant
+    ? await readProjectRunBinding(transaction, { runId: run.id, grantId: grant.id })
+    : null;
+  const cleanup = await cleanupRunAttemptTransaction(transaction, {
+    run,
+    source: input.source,
+    status: input.status,
+    completedAt: input.completedAt,
+    failure: input.failure,
+    requestCancellationReason: input.stopReason ? "authority-revoked" : "run-ended",
+  });
+  const events: AgentEvent[] = [...cleanup.events];
+  const sourceCurrent =
+    input.stopReason === undefined && (await projectWorkIsCurrent(transaction, run));
+  const receipts = await transaction
+    .selectFrom("threadInputs")
+    .selectAll()
+    .where((eb) =>
+      eb.or([
+        eb("runId", "=", run.id),
+        eb("messageId", "=", run.seedInputId),
+        ...(input.stopReason
+          ? [eb(sql<string>`authority_source->>'parentRunId'`, "=", run.id)]
+          : []),
+      ]),
+    )
+    .where("state", "in", ["pending", "claimed", "unknown"])
+    .orderBy("messageId")
+    .execute();
+  for (const receipt of receipts) {
+    const reportUnknown =
+      sourceCurrent && receipt.policy === "report" && receipt.state !== "pending";
+    const updated = await transaction
+      .updateTable("threadInputs")
+      .set(
+        reportUnknown
+          ? { state: "unknown", updatedAt: input.completedAt }
+          : {
+              state: "cancelled",
+              cancelReason: input.stopReason
+                ? "execution-authority-unavailable"
+                : "run-ended-before-start",
+              updatedAt: input.completedAt,
+            },
+      )
+      .where("messageId", "=", receipt.messageId)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    events.push(
+      await appendHostWorkspaceEvent(transaction, {
+        type: "thread-input.updated",
+        data: { input: threadInputFromRow(updated) },
+        environmentId: run.environmentId,
+        workspaceId: run.workspaceId,
+        threadId: receipt.threadId,
+        runId: updated.runId,
+      }),
+    );
+  }
+  await transaction
+    .updateTable("commands")
+    .set({
+      status: input.source === "runner" ? "succeeded" : "failed",
+      lastError: input.failure ? jsonValue(input.failure) : null,
+      updatedAt: input.completedAt,
+    })
+    .where("runId", "=", run.id)
+    .where("type", "=", "run.execute.project")
+    .where("status", "in", ["pending", "dispatched", "unknown"])
+    .execute();
+  await transaction
+    .updateTable("commands")
+    .set({
+      status: "failed",
+      lastError: jsonValue({
+        code: "project_control_unavailable",
+        message: "Project Run ended before control delivery was confirmed",
+      }),
+      updatedAt: input.completedAt,
+    })
+    .where("runId", "=", run.id)
+    .where("type", "=", "run.control.project")
+    .where(sql<string>`payload->'control'->>'kind'`, "!=", "run.interrupt")
+    .where("status", "in", ["pending", "dispatched", "unknown"])
+    .execute();
+  await transaction
+    .updateTable("runs")
+    .set({
+      status: input.status,
+      completedAt: input.completedAt,
+      failure: input.failure ? jsonValue(input.failure) : null,
+    })
+    .where("id", "=", run.id)
+    .execute();
+  if (input.source === "host") {
+    if (input.status === "failed" && input.failure)
+      events.push(
+        await appendHostWorkspaceEvent(transaction, {
+          type: "run.failed",
+          data: input.failure,
+          environmentId: run.environmentId,
+          workspaceId: run.workspaceId,
+          threadId: run.threadId,
+          runId: run.id,
+        }),
+      );
+    else
+      events.push(
+        await appendHostWorkspaceEvent(transaction, {
+          type: "run.interrupted",
+          data: { status: "interrupted" },
+          environmentId: run.environmentId,
+          workspaceId: run.workspaceId,
+          threadId: run.threadId,
+          runId: run.id,
+        }),
+      );
+  }
+  if (assignment) {
+    if (input.stopReason && assignment.status === "open") {
+      const cancelled = await transaction
+        .updateTable("delegations")
+        .set((eb) => ({
+          status: "cancelled",
+          finishedAt: input.completedAt,
+          resultStatus: "undeliverable",
+          resultReason: input.stopReason,
+          resultAttemptedAt: input.completedAt,
+          revision: eb("revision", "+", 1),
+          updatedAt: input.completedAt,
+        }))
+        .where("id", "=", assignment.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      events.push(
+        ...(await projectAssignmentEventsInTransaction(
+          transaction,
+          cancelled,
+          "assignment.updated",
+          run.id,
+        )),
+      );
+    } else {
+      const settled = await settleAssignmentAfterRun(transaction, {
+        assignmentId: assignment.id,
+        status: input.status,
+        finishedAt: input.completedAt,
+        failureSummary: input.failure?.message ?? null,
+        run,
+      });
+      events.push(...settled);
+      for (const event of settled)
+        if (event.type === "assignment.updated") {
+          const parent = threads.find((thread) => thread.id === assignment.parentThreadId);
+          if (!parent)
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "Project Assignment parent is unavailable",
+            });
+          events.push(
+            await appendHostWorkspaceEvent(transaction, {
+              type: "assignment.updated",
+              data: event.data,
+              environmentId: run.environmentId,
+              workspaceId: parent.workspaceId,
+              threadId: parent.id,
+              runId: assignment.parentRunId,
+            }),
+          );
+        }
+    }
+  }
+  events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt)));
+  if (input.source === "host" && original)
+    await new ProjectExecutionStore().enqueue(transaction, {
+      binding: original.binding,
+      idempotencyKey: `terminal:${run.id}:${original.binding.bindingGeneration}`,
+      control: { kind: "run.interrupt" },
+    });
+  await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
+  return events;
 }

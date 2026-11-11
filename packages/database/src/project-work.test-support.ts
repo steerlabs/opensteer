@@ -1,3 +1,4 @@
+import { TriggerStore } from "./trigger-store.js";
 import { readProjectRunBinding } from "./execution-authority.js";
 import { HumanRootSchema, type RunId, type RunnerId } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
@@ -496,4 +497,46 @@ export async function bindProjectRun(fixture: StoreFixture, runId: RunId, runner
   const saved = await readProjectRunBinding(fixture.database, { runId, grantId });
   if (!saved) throw new Error("Project binding fixture was not retained");
   return saved.binding;
+}
+
+export async function projectWatchWorkSource(
+  {
+    database,
+    project,
+    prepared,
+  }: Pick<Awaited<ReturnType<typeof prepareProjectAdmission>>, "database" | "project" | "prepared">,
+  observationId = "one",
+) {
+  const created = await new TriggerStore(database).create({
+    actorThreadId: null,
+    anchorThreadId: prepared.thread.id,
+    createdBy: project.userId,
+    idempotencyKey: "watch",
+    name: "Files",
+    source: { kind: "watch" },
+    program: {
+      toolContractVersion: 2,
+      language: "javascript",
+      source: "export default async () => {}",
+    },
+  });
+  await database
+    .updateTable("triggerWatchActivations")
+    .set({ executionGeneration: 1 })
+    .where("triggerId", "=", created.trigger.id)
+    .execute();
+  const activation = await database
+    .selectFrom("triggerWatchActivations")
+    .selectAll()
+    .where("triggerId", "=", created.trigger.id)
+    .executeTakeFirstOrThrow();
+  const source = {
+    kind: "watch" as const,
+    activationId: activation.id,
+    observationId,
+    revisionId: activation.revisionId,
+    triggerId: activation.triggerId,
+    executionGeneration: Number(activation.executionGeneration),
+  };
+  return { activation, source };
 }

@@ -1,4 +1,8 @@
-import { prepareProjectAdmission, bindProjectRun } from "./project-work.test-support.js";
+import {
+  prepareProjectAdmission,
+  bindProjectRun,
+  projectWatchWorkSource,
+} from "./project-work.test-support.js";
 import { readProjectRunThreadState } from "./run-thread-state.js";
 import { ProjectBindingStore } from "./project-execution-store.js";
 import { loadProjectRunDispatchContext } from "./execution-store.js";
@@ -12,7 +16,6 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { Kysely } from "kysely";
-import { TriggerStore } from "./trigger-store.js";
 import { describeStore, type StoreFixture } from "./store.integration.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 import { setProjectRuntimeSettings } from "./project-runtime-settings-store.js";
@@ -486,37 +489,7 @@ describeStore("Project work admission", (it) => {
     storeFixture,
   }) => {
     const { project, prepared, database, store } = await prepareProjectAdmission(storeFixture);
-    const created = await new TriggerStore(database).create({
-      actorThreadId: null,
-      anchorThreadId: prepared.thread.id,
-      createdBy: project.userId,
-      idempotencyKey: "watch",
-      name: "Files",
-      source: { kind: "watch" },
-      program: {
-        toolContractVersion: 2,
-        language: "javascript",
-        source: "export default async () => {}",
-      },
-    });
-    await database
-      .updateTable("triggerWatchActivations")
-      .set({ executionGeneration: 1 })
-      .where("triggerId", "=", created.trigger.id)
-      .execute();
-    const activation = await database
-      .selectFrom("triggerWatchActivations")
-      .selectAll()
-      .where("triggerId", "=", created.trigger.id)
-      .executeTakeFirstOrThrow();
-    const source = {
-      kind: "watch" as const,
-      activationId: activation.id,
-      observationId: "one",
-      revisionId: activation.revisionId,
-      triggerId: activation.triggerId,
-      executionGeneration: Number(activation.executionGeneration),
-    };
+    const { activation, source } = await projectWatchWorkSource({ database, project, prepared });
     const input = {
       threadId: prepared.thread.id,
       origin: null,
