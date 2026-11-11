@@ -2,6 +2,7 @@ import {
   canRespondToRequests,
   folderSignalWords,
   groupTasksByProject,
+  isTeamPlace,
   projectStatusLabel,
   sameStableHostSnapshot,
   taskList,
@@ -65,6 +66,23 @@ interface Directory {
   readonly projects: readonly ProjectFolder[];
 }
 
+/**
+ * A team place's root: its Projects, under the team's name. A team server has
+ * no Main and no Chat, so this list is where the place opens.
+ */
+export function TeamHome(props: {
+  readonly deploymentId: string;
+  readonly hostClient: HostClient;
+}): ReactNode {
+  const navigation = useNavigation();
+  const { snapshot } = useHostSnapshot(props.hostClient, sameStableHostSnapshot);
+  const name = snapshot.identityConfig?.deployment.name ?? "Projects";
+  useLayoutEffect(() => {
+    navigation.setOptions({ headerLargeTitle: true, title: name });
+  }, [name, navigation]);
+  return <ProjectDirectory deploymentId={props.deploymentId} hostClient={props.hostClient} />;
+}
+
 function ProjectDirectory(props: {
   readonly deploymentId: string;
   readonly hostClient: HostClient;
@@ -79,15 +97,17 @@ function ProjectDirectory(props: {
   const loadingMoreRef = useRef(false);
   const { deploymentId } = props;
   const teamAllowsCreate = useCanCreateProject(props.hostClient);
+  const team = isTeamPlace(snapshot);
 
   const directory = useMemo<Directory>(
     () => ({
       canCreate: canRespondToRequests(snapshot),
       hasMore: snapshot.workspaceWindow.hasMore,
-      loaded: snapshot.workspaces.length > 0,
+      // A Personal place always has Main; a team place may truly have no Projects.
+      loaded: snapshot.workspaces.length > 0 || (team && snapshot.deploymentId !== null),
       projects: groupTasksByProject(snapshot, taskList(snapshot)).folders,
     }),
-    [snapshot, teamAllowsCreate],
+    [snapshot, team, teamAllowsCreate],
   );
 
   const create = useCallback(
@@ -156,10 +176,13 @@ function ProjectDirectory(props: {
               <Symbol name="folder" size={30} tint={color.mutedDim} />
               <AppText role="title">No projects yet</AppText>
               <AppText role="secondary" style={styles.centred} tone="muted">
-                Give recurring or long-running work its own folder inside Main, with its own chat,
-                tasks, people and access. You don’t need one to ask in Chat.
+                {team
+                  ? teamAllowsCreate
+                    ? "When someone adds you to a project, it appears here. You can also start one."
+                    : "When someone adds you to a project, it appears here."
+                  : "Give recurring or long-running work its own folder inside Main, with its own chat, tasks, people and access. You don’t need one to ask in Chat."}
               </AppText>
-              {directory.canCreate ? (
+              {directory.canCreate && teamAllowsCreate ? (
                 <SecondaryButton compact label="New project" onPress={create} />
               ) : null}
             </View>

@@ -129,7 +129,7 @@ function ProjectSettings(props: {
     `members:${workspaceId}:${userId}`,
   );
   const grants = useHostRead<readonly ProjectGrant[]>(
-    readable ? () => readGrants(hostClient, workspaceId) : null,
+    readable && !teamProject ? () => readGrants(hostClient, workspaceId) : null,
     `grants:${workspaceId}:${userId}`,
   );
   const owner =
@@ -279,25 +279,30 @@ function ProjectSettings(props: {
             workspace={project}
           />
         )}
-        <AccessSection
-          destinations={destinations}
-          grants={grants}
-          snapshot={snapshot}
-          workspace={project}
-        />
-        <PluginsSection
-          administrator={administrator}
-          canChange={connected && (owner || administrator)}
-          destinations={destinations}
-          hostClient={hostClient}
-          workspace={project}
-        />
-        <SpecialistsSection
-          connected={connected}
-          hostClient={hostClient}
-          userId={userId}
-          workspace={project}
-        />
+        {/* A team Project has no personal accounts, plugins or specialists to show. */}
+        {teamProject ? null : (
+          <>
+            <AccessSection
+              destinations={destinations}
+              grants={grants}
+              snapshot={snapshot}
+              workspace={project}
+            />
+            <PluginsSection
+              administrator={administrator}
+              canChange={connected && (owner || administrator)}
+              destinations={destinations}
+              hostClient={hostClient}
+              workspace={project}
+            />
+            <SpecialistsSection
+              connected={connected}
+              hostClient={hostClient}
+              userId={userId}
+              workspace={project}
+            />
+          </>
+        )}
 
         {project.status === "ready" ? (
           <MuteSection

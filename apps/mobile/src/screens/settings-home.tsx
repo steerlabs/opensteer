@@ -1,6 +1,6 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useMobileState } from "../ui/mobile-client-context.js";
-import type { HostClient } from "@opensteer/client/host";
+import { isTeamPlace, type HostClient } from "@opensteer/client/host";
 import { useTeam } from "@opensteer/client/react";
 import { SettingsHomeForm } from "./settings-home-form.js";
 import type { SettingsHomeTeam } from "./settings-home-model.js";
@@ -26,7 +26,7 @@ export function SettingsScreen() {
   return host && selection.deploymentId ? (
     <TeamSettingsHome deploymentId={selection.deploymentId} host={host} />
   ) : (
-    <SettingsHome team={null} />
+    <SettingsHome team={null} teamPlace={false} />
   );
 }
 
@@ -40,6 +40,7 @@ function TeamSettingsHome(props: { readonly deploymentId: string; readonly host:
   ];
   return (
     <SettingsHome
+      teamPlace={isTeamPlace(props.host.getSnapshot())}
       team={
         summary && rows.length
           ? {
@@ -55,12 +56,16 @@ function TeamSettingsHome(props: { readonly deploymentId: string; readonly host:
   );
 }
 
-function SettingsHome(props: { readonly team: SettingsHomeTeam | null }) {
+function SettingsHome(props: {
+  readonly team: SettingsHomeTeam | null;
+  readonly teamPlace: boolean;
+}) {
   const navigation = useNavigation();
   const { selection } = useMobileState();
   return (
     <SettingsHomeForm
       team={props.team}
+      teamPlace={props.teamPlace}
       onOpen={(route) => {
         if (route === "SettingsAiSharing") {
           navigation.navigate(route);

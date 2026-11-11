@@ -24,6 +24,8 @@ import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { HomeIntro, homeIntroDraftKey } from "./home-intro.js";
 import { useNotificationsIntro } from "./notifications-intro.js";
 import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
+import { isTeamPlace } from "@opensteer/client/host";
+import { TeamHome } from "./projects.js";
 
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -40,7 +42,20 @@ export type HomeScreenProps = StaticScreenProps<{
  * draft. It never navigates on its own: a link to a task keeps the foreground
  * it asked for, and a link about Chat arrives here with its exact update.
  */
+/**
+ * The stack root: Chat in Main on a Personal place. A team place has no Main
+ * and no Chat, so the same root opens its Projects.
+ */
 export function HomeScreen(props: HomeScreenProps): ReactNode {
+  const hostClient = useAttachedHost(props.route.params.deploymentId);
+  return hostClient !== null && isTeamPlace(hostClient.getSnapshot()) ? (
+    <TeamHome deploymentId={props.route.params.deploymentId} hostClient={hostClient} />
+  ) : (
+    <PersonalHome {...props} />
+  );
+}
+
+function PersonalHome(props: HomeScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);
