@@ -110,19 +110,23 @@ async function renderOpensteer(): Promise<void> {
           import("./host/browser-lifecycle.js"),
         ]).then(
           ([
-            { MockHostClient, mockTeamScenarios },
+            { MockHostClient, mockSubagentScenes, mockTeamScenarios },
             { browserPreferencesStorage },
             { browserClientLifecycle },
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
             const team = mockTeamScenarios.find((scenario) => scenario === search.get("mock-team"));
+            const subagents = mockSubagentScenes.find(
+              (scene) => scene === search.get("mock-subagents"),
+            );
             const client = new MockHostClient({
               lifecycle: browserClientLifecycle(),
               browserPreferencesStorage,
               ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
               ...(world === "first-run" || world === "busy" || world === "stress" ? { world } : {}),
               ...(team ? { team } : {}),
+              ...(subagents ? { subagents } : {}),
             });
             // The preview's own client, for journeys that count what the page sends.
             Object.assign(window, { opensteerMock: client });

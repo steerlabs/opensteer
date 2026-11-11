@@ -1,0 +1,779 @@
+/* ---- Subagents in the thread ----
+   A subagent, a group, a workflow and its phases are trace steps: the same
+   icon slot, label, guide, hover and chevron as "Read a file", with a second
+   line that says the one thing worth knowing. No plate, no border. */
+
+.agent-step__head {
+  align-items: flex-start;
+}
+
+.agent-step__head > .trace-step__icon {
+  height: 17px;
+}
+
+.agent-step__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.agent-step__text > .trace-step__label {
+  max-width: 100%;
+  line-height: 17px;
+}
+
+.agent-step__l2 {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+button.agent-step__head:hover .agent-step__l2 {
+  color: var(--muted);
+}
+
+/* Thirty or more beside each other: one line each, title and where it stands. */
+.agent-step__text--one {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-8);
+}
+
+.agent-step__text--one > .trace-step__label {
+  flex: 0 1 auto;
+  max-width: 68%;
+}
+
+.agent-step__inline {
+  font-size: var(--text-sm);
+}
+
+.agent-step__noun {
+  color: var(--muted);
+  font-weight: var(--weight-medium);
+}
+
+.agent-step__sep {
+  margin-inline: var(--space-4);
+  opacity: 0.6;
+}
+
+.agent-step__phrase[data-tone="attention"] {
+  color: var(--amber-text);
+}
+
+.agent-step__phrase[data-tone="failed"] {
+  color: var(--red-text);
+}
+
+/* Reported progress: a slow light passes across it, as across the turn's own
+   live line, and each new report fades in as itself. */
+.agent-step__live {
+  background: linear-gradient(
+      90deg,
+      var(--muted-dim) 0%,
+      var(--text-soft) 45%,
+      var(--muted-dim) 90%
+    )
+    0 0 / 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    work-shimmer 2.8s linear infinite,
+    fade-in var(--duration-med) var(--ease-out);
+}
+
+.agent-step__time,
+.agent-step__head > .trace-step__chevron {
+  align-self: flex-start;
+  height: 17px;
+  line-height: 17px;
+}
+
+.agent-step__number {
+  color: var(--muted-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-3xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-step--pending .trace-step__label {
+  color: var(--muted-dim);
+}
+
+/* A row's own rows hang one step in, on the trace's guide. */
+.agent-step__lines {
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.agent-step__lines.trace-step__lines--timeline > .trace-step:not(:last-child)::before {
+  top: 22px;
+  bottom: -4px;
+}
+
+/* The mark: the engine's glyph in the trace's own quiet ink, and one status
+   dot cut out of the ground. A finished subagent has no dot. */
+.agent-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--muted-dim);
+}
+
+.agent-mark > svg,
+.agent-mark > .icon {
+  width: 13.5px;
+  height: 13.5px;
+}
+
+.agent-mark[data-dot="working"] {
+  color: var(--ember-dim);
+}
+
+.agent-mark__dot {
+  position: absolute;
+  right: -2.5px;
+  bottom: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--ground);
+}
+
+[data-dot="working"] > .agent-mark__dot {
+  background: var(--ember);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+[data-dot="needs"] > .agent-mark__dot {
+  background: var(--amber);
+}
+
+[data-dot="waiting"] > .agent-mark__dot {
+  background: var(--ground);
+  box-shadow:
+    0 0 0 2px var(--ground),
+    inset 0 0 0 1.5px var(--muted);
+}
+
+[data-dot="failed"] > .agent-mark__dot {
+  background: var(--red);
+}
+
+[data-dot="stopped"] > .agent-mark__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 1.5px;
+  background: var(--muted);
+}
+
+[data-dot="last-known"] > .agent-mark__dot {
+  background: var(--ground);
+  box-shadow:
+    0 0 0 2px var(--ground),
+    inset 0 0 0 1.5px var(--ember-dim);
+}
+
+/* Chat: subagents stand above the typing or the reply, the column's full width. */
+.turn--conversation > .turn__content {
+  align-self: stretch;
+}
+
+.transcript__row > .agent-tasks {
+  margin-block: var(--space-6);
+}
+
+@media (any-pointer: coarse) {
+  .agent-step__head {
+    min-height: 44px;
+    padding-block: var(--space-6);
+  }
+}
+
+/* ---- Running now ----
+   The turn's live line, made sticky: pinned between the transcript and the
+   composer, on the ground, with no plate. Present only while something runs. */
+
+.running-now {
+  position: relative;
+  width: 100%;
+  max-width: var(--composer-max-width);
+  margin: 0 auto;
+  padding-inline: var(--space-6);
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.running-now--leaving {
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+  pointer-events: none;
+}
+
+.running-now__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: 100%;
+  min-height: 34px;
+  padding: var(--space-6) 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.running-now__what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.running-now__count {
+  color: var(--text-soft);
+  font-weight: var(--weight-strong);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.running-now__bar:hover .running-now__count {
+  color: var(--text);
+}
+
+.running-now__chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  color: var(--muted-dim);
+}
+
+.running-now__chevron svg {
+  width: 12px;
+  height: 12px;
+  transform: rotate(180deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.running-now--open .running-now__chevron svg {
+  transform: none;
+}
+
+.running-now__bar:hover .running-now__chevron {
+  color: var(--text-soft);
+}
+
+.running-now__command-glyph {
+  display: grid;
+  place-items: center;
+  color: var(--ember-dim);
+}
+
+.running-now__command-glyph svg {
+  width: 13.5px;
+  height: 13.5px;
+}
+
+/* It opens upward, in the column, into a short list. */
+.running-now__list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(264px, 38dvh);
+  margin: 0 calc(var(--space-6) * -1);
+  padding: var(--space-4) var(--space-6) var(--space-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--line);
+  list-style: none;
+  scrollbar-width: thin;
+  animation: rise-in var(--duration-med) var(--ease-out);
+}
+
+.running-now__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.running-now__open {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: var(--space-10);
+  min-width: 0;
+  padding: var(--space-4) 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  text-align: left;
+}
+
+.running-now__open > .trace-step__icon {
+  height: 17px;
+}
+
+.running-now__title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-6);
+  min-width: 0;
+  line-height: 17px;
+}
+
+.running-now__title > .trace-step__label {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.running-now__within {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--muted-dim);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.running-now__open:hover .trace-step__label {
+  color: var(--text);
+}
+
+button.running-now__open:hover .agent-step__l2 {
+  color: var(--muted);
+}
+
+.running-now__stop {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  min-height: 27px;
+}
+
+.running-now__row--command .trace-step__label {
+  font-weight: var(--weight-medium);
+}
+
+@media (any-pointer: coarse) {
+  .running-now__bar,
+  .running-now__open {
+    min-height: 44px;
+  }
+
+  .running-now__stop {
+    width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* ---- Who asked a question ---- */
+
+.request-card__asker {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-8);
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-align: left;
+}
+
+.request-card__asker strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-weight: var(--weight-strong);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.request-card__asker:hover strong {
+  color: var(--text);
+}
+
+.request-card__within {
+  flex: none;
+  white-space: nowrap;
+}
+
+.request-card__pager {
+  display: flex;
+  flex: none;
+  align-items: center;
+  margin-left: auto;
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- A subagent, opened ----
+   Docked, it pushes inside the conversation's column, over a conversation that
+   keeps its place underneath; wide and alone, it opens beside it. */
+
+.thread--pushed > :not(.subagent-pane) {
+  visibility: hidden;
+}
+
+.subagent-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--ground);
+}
+
+.subagent-pane--push {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  animation: subagent-push var(--duration-med) var(--ease-out);
+}
+
+@keyframes subagent-push {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.workspace__beside:empty {
+  display: none;
+}
+
+.workspace__beside {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: clamp(360px, 38%, 460px);
+  min-height: 0;
+  padding-left: var(--sheet-gutter);
+}
+
+.workspace__beside > .subagent-pane {
+  flex: 1;
+  background: transparent;
+  animation: subagent-push var(--duration-med) var(--ease-out);
+}
+
+.subagent-pane__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-8);
+  min-height: 50px;
+  padding: 0 var(--space-10) 0 var(--space-12);
+}
+
+.subagent-pane__back {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 32px;
+  padding-inline: var(--space-2) var(--space-6);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--text-lg);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.subagent-pane__back span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-pane__back svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.subagent-pane__back:hover {
+  color: var(--text);
+}
+
+.subagent-pane__kind {
+  color: var(--muted);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.subagent-pane__end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.subagent-pane__hop {
+  display: flex;
+  align-items: center;
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-pane__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.subagent-pane__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  width: 100%;
+  max-width: var(--transcript-max-width, 46rem);
+  margin-inline: auto;
+  padding: var(--space-8) var(--space-16) var(--space-20);
+}
+
+.subagent-pane__path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--muted-dim);
+  font-size: var(--text-sm);
+}
+
+.subagent-pane__path button {
+  color: var(--muted);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.subagent-pane__path button:hover {
+  color: var(--text);
+}
+
+.subagent-pane__step {
+  display: contents;
+}
+
+.subagent-pane__path svg {
+  width: 10px;
+  height: 10px;
+}
+
+.subagent-pane__title {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--display-xs);
+  font-weight: var(--weight-bold);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.subagent-pane__title:focus {
+  outline: none;
+}
+
+.subagent-pane__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-8);
+  margin: calc(var(--space-6) * -1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.subagent-pane__word {
+  color: var(--text-soft);
+  font-weight: var(--weight-strong);
+}
+
+.subagent-pane__word[data-tone="needs-you"] {
+  color: var(--amber-text);
+}
+
+.subagent-pane__word[data-tone="failed"] {
+  color: var(--red-text);
+}
+
+.subagent-pane__time {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-pane__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.subagent-pane__section > .eyebrow {
+  margin: 0;
+}
+
+.subagent-pane__ask {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.subagent-pane__outcome {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-2xl);
+  line-height: 1.55;
+}
+
+.subagent-pane__outcome[data-tone="failed"] {
+  color: var(--red-text);
+}
+
+.subagent-pane__note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin: 0;
+  color: var(--muted-dim);
+  font-size: var(--text-md);
+}
+
+.subagent-pane__note svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.subagent-pane__gone {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-10);
+  color: var(--muted);
+}
+
+.subagent-pane__gone p {
+  margin: 0;
+}
+
+.subagent-pane__foot {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: 0 var(--space-10) var(--space-10);
+}
+
+.subagent-pane__watch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: 100%;
+  max-width: var(--composer-max-width);
+  margin-inline: auto;
+  padding: var(--space-10) var(--space-6) 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.subagent-pane__watch > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-dim);
+}
+
+.subagent-pane__watch p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.subagent-pane__watch strong {
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+}
+
+.subagent-pane__watch .subagent-stop {
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-step__live {
+    background: none;
+    color: var(--text-soft);
+    animation: none;
+  }
+
+  .agent-mark__dot,
+  .agent-step__lines,
+  .running-now,
+  .running-now--leaving,
+  .running-now__list,
+  .running-now__chevron svg,
+  .subagent-pane--push,
+  .workspace__beside > .subagent-pane {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* A task's own actions sit beside its row and show with it. */
+.agent-step__more {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.agent-step > .trace-step__row:hover > .agent-step__more,
+.agent-step > .trace-step__row:focus-within > .agent-step__more,
+.agent-step__more[aria-expanded="true"] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .agent-step__more {
+    opacity: 1;
+  }
+}
+
+/* Between the transcript and the question, at the composer's measure. */
+.running-now-slot {
+  flex: none;
+  padding-inline: calc(var(--space-20) + env(safe-area-inset-right, 0px))
+    calc(var(--space-20) + env(safe-area-inset-left, 0px));
+}
+
+.running-now-slot:empty {
+  display: none;
+}
+
+.workspace--work .running-now-slot {
+  padding-inline: var(--space-12);
+}

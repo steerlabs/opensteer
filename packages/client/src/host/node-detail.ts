@@ -15,6 +15,7 @@ import type { NodeEventPage } from "@opensteer/protocol";
 import type { NodeEntry, ReasoningEntry, ToolEntry, TranscriptEntry } from "./client.js";
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { foldLiveRun, foldNodeDetailEvent, foldTranscriptEvent } from "./transcript.js";
+import { subagentLineage } from "./subagent-now.js";
 
 export interface NodeMessageEntry {
   readonly kind: "node-message";
@@ -572,6 +573,8 @@ export interface SubagentDetail {
   readonly card: AgentCard;
   readonly prompt: string | null;
   readonly parent: { readonly threadId: string; readonly title: string; readonly nodeId?: string };
+  /** The subagents above it, outermost first; empty when the conversation started it. */
+  readonly lineage: readonly { readonly nodeId: string; readonly title: string }[];
   readonly entries: readonly SubagentDetailEntry[];
   readonly result: string | null;
   readonly hasEarlier: boolean;
@@ -637,6 +640,7 @@ export function subagentDetail(
         "Parent conversation",
       ...(parentNode ? { nodeId: parentNode.nodeId } : {}),
     },
+    lineage: subagentLineage(nodes, node.nodeId),
     entries,
     result,
     hasEarlier: snapshot.hasMore,

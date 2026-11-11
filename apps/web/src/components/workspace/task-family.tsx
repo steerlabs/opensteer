@@ -1,11 +1,8 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
-  conversationSubagents,
-  earlierHelpers,
   formatRelativeTime,
   sameTaskFamily,
   taskFamily,
-  type AgentRoster,
   type FamilyTask,
   type HostClient,
   type HostSnapshot,
@@ -14,7 +11,6 @@ import {
 import { useHostSelector } from "@opensteer/client/react";
 import { automationPath, useMediaQuery, useMinuteClock } from "../../ui-utils.js";
 import { formatCountdown, formatMoment } from "@opensteer/client/host";
-import { AgentRosterRow } from "../agent-cards.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
@@ -23,70 +19,25 @@ import { AreaLink } from "./area-link.js";
 import { TaskMark } from "./task-mark.js";
 import { useWorkspace } from "./workspace-context.js";
 
-/** The conversation's own subagents at a glance: primitives only, so streaming never redraws the bar. */
-export interface HelperGlance {
-  readonly live: number;
-  readonly total: number;
-  readonly needsYou: boolean;
-  readonly earlier: number;
-}
-
-export function helperGlance(snapshot: HostSnapshot, threadId: string): HelperGlance | null {
-  const roster = conversationSubagents(snapshot, threadId, { tasks: false });
-  const total = roster.now.length + roster.earlier.length;
-  return total === 0
-    ? null
-    : {
-        live: roster.pill?.live ?? 0,
-        total,
-        needsYou: (roster.pill?.needsYou ?? 0) > 0,
-        earlier: roster.earlier.length,
-      };
-}
-
-export function sameHelperGlance(left: HelperGlance | null, right: HelperGlance | null): boolean {
-  return (
-    left === right ||
-    (left !== null &&
-      right !== null &&
-      left.live === right.live &&
-      left.total === right.total &&
-      left.needsYou === right.needsYou &&
-      left.earlier === right.earlier)
-  );
-}
-
-/** Cards are rebuilt on every change the panel hears; plain data, so their contents say it all. */
-function sameRoster(left: AgentRoster, right: AgentRoster): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 export function TaskFamilyButton({
   hostClient,
   threadId,
   glance,
-  helpers,
 }: {
   readonly hostClient: HostClient;
   readonly threadId: string;
-  readonly glance: TaskFamilyGlance | null;
-  readonly helpers: HelperGlance | null;
+  readonly glance: TaskFamilyGlance;
 }) {
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
-  const running = glance?.running ?? 0;
-  const automations = glance?.automations ?? 0;
-  const live = helpers?.live ?? 0;
-  const earlier = (glance?.earlier ?? 0) + (helpers?.earlier ?? 0);
-  const needsYou = glance?.needsYou === true || helpers?.needsYou === true;
-  const earlierOnly = running === 0 && automations === 0 && live === 0;
+  const { running, automations, earlier, needsYou } = glance;
+  const earlierOnly = running === 0 && automations === 0;
   const label = earlierOnly
     ? `${earlier} earlier`
     : [
-        ...(running || !live ? [`${running} task${running === 1 ? "" : "s"} running`] : []),
+        `${running} task${running === 1 ? "" : "s"} running`,
         ...(needsYou ? ["one needs you"] : []),
         ...(automations ? [`${automations} automation${automations === 1 ? "" : "s"}`] : []),
-        ...(live && helpers ? [`${live} of ${helpers.total} subagents working`] : []),
       ].join(", ");
   return (
     <>
@@ -103,7 +54,7 @@ export function TaskFamilyButton({
           `${earlier} earlier`
         ) : (
           <>
-            {running > 0 && glance ? (
+            {running > 0 ? (
               <>
                 <span className="task-family-button__marks">
                   {glance.marks.map((mark, index) => (
@@ -113,18 +64,10 @@ export function TaskFamilyButton({
                 <span>{running}</span>
               </>
             ) : null}
-            {live > 0 && helpers ? (
-              <span
-                className={`task-family-button__automations${running > 0 ? " task-family-button__automations--separated" : ""}`}
-              >
-                <Icon name="users" />
-                {live}/{helpers.total}
-              </span>
-            ) : null}
             {needsYou ? <span aria-hidden className="task-family-button__attention" /> : null}
             {automations > 0 ? (
               <span
-                className={`task-family-button__automations${running > 0 || live > 0 ? " task-family-button__automations--separated" : ""}`}
+                className={`task-family-button__automations${running > 0 ? " task-family-button__automations--separated" : ""}`}
               >
                 <Icon name="clock" />
                 {automations}
@@ -162,20 +105,11 @@ function FamilyPanel({
     [threadId],
   );
   const family = useHostSelector(hostClient, select, sameTaskFamily);
-  const selectHelpers = useCallback(
-    (snapshot: HostSnapshot) => conversationSubagents(snapshot, threadId, { tasks: false }),
-    [threadId],
-  );
-  const helpers = useHostSelector(hostClient, selectHelpers, sameRoster);
-  const earlier = useMemo(
-    () => earlierHelpers(helpers.earlier, family.earlier),
-    [family.earlier, helpers.earlier],
-  );
+  const earlier = family.earlier;
   const { nav } = useWorkspace();
   const narrow = useMediaQuery("(max-width: 620px)");
   const now = useMinuteClock();
-  const onlyEarlier =
-    family.running.length === 0 && family.automations.length === 0 && helpers.now.length === 0;
+  const onlyEarlier = family.running.length === 0 && family.automations.length === 0;
   const [earlierOpen, setEarlierOpen] = useState(false);
   const [shown, setShown] = useState(4);
   const open = (id: string) => {
@@ -216,14 +150,6 @@ function FamilyPanel({
   const remaining = earlier.length - shown;
   const body = (
     <div className="task-family">
-      {helpers.now.length > 0 ? (
-        <section aria-label="Subagents">
-          <h2 className="task-family__heading">Subagents · {helpers.now.length} working</h2>
-          {helpers.now.map((card) => (
-            <AgentRosterRow card={card} key={card.key} onOpen={onClose} />
-          ))}
-        </section>
-      ) : null}
       {family.running.length > 0 ? (
         <section aria-label="Running">
           <h2 className="task-family__heading">Running · {family.running.length}</h2>
@@ -287,15 +213,7 @@ function FamilyPanel({
           )}
           {onlyEarlier || earlierOpen ? (
             <>
-              {earlier
-                .slice(0, shown)
-                .map((item) =>
-                  item.kind === "task" ? (
-                    taskRow(item.task, true)
-                  ) : (
-                    <AgentRosterRow card={item.card} key={item.card.key} onOpen={onClose} />
-                  ),
-                )}
+              {earlier.slice(0, shown).map((task) => taskRow(task, true))}
               {remaining > 0 ? (
                 <button
                   type="button"
@@ -312,7 +230,7 @@ function FamilyPanel({
     </div>
   );
   return narrow ? (
-    <Dialog onClose={onClose} returnFocusTo={button} title="Tasks and subagents">
+    <Dialog onClose={onClose} returnFocusTo={button} title="Task family">
       {body}
     </Dialog>
   ) : (
@@ -320,7 +238,7 @@ function FamilyPanel({
       align="end"
       anchor={button}
       below
-      label="Tasks and subagents"
+      label="Task family"
       role="dialog"
       className="popover--task-family"
       onClose={onClose}
