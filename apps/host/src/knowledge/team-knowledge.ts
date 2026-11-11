@@ -126,7 +126,7 @@ export interface TeamKnowledge {
   /** An agent's `sql` call, scoped to the ticket's channel topic and attached topics. */
   sql(call: TeamKnowledgeSqlCall): Promise<TeamKnowledgeSqlAnswer>;
   /** A person's knowledge read; the output matches `teamReadSchemas[name].output`. */
-  read(actor: TeamActor, name: TeamKnowledgeReadName, input: unknown): Promise<unknown>;
+  read(actor: TeamActor, name: string, input: unknown): Promise<unknown>;
   command(actor: TeamActor, command: TeamCommand): Promise<{ readonly type: TeamCommand["type"] }>;
   close(): Promise<void>;
 }
@@ -547,7 +547,7 @@ export async function startTeamKnowledge(options: {
     );
   }
 
-  async function read(actor: TeamActor, name: TeamKnowledgeReadName, input: unknown) {
+  async function read(actor: TeamActor, name: string, input: unknown): Promise<unknown> {
     const person = human(actor);
     switch (name) {
       case "team.knowledge.topics.list":
@@ -566,6 +566,8 @@ export async function startTeamKnowledge(options: {
         return factPage(person, teamReadSchemas[name].input.parse(input), true);
       case "team.knowledge.history.page":
         return factPage(person, teamReadSchemas[name].input.parse(input), false);
+      default:
+        throw new OpensteerError({ code: "not_found", message: "Unsupported knowledge read" });
     }
   }
 
