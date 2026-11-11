@@ -111,3 +111,11 @@ export {
   type ProjectRequestStopPort,
   type ProjectRunFinalization,
 } from "./run-finalization.js";
+
+export {
+  ProjectWorkRevocationStore,
+  type ProjectWorkRevocationRoot,
+  type ProjectWorkRevocationScope,
+  type ProjectRequestRevocationHooks,
+  type PlannedManagerlessRequestHooks,
+} from "./project-work-revocation.js";
