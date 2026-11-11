@@ -3,6 +3,7 @@ import {
   BrowserTabRecordSchema,
   type BrowserTabRecord,
   type BrowserSurface,
+  type BrowserViewerSurface,
 } from "@opensteer/protocol/browser";
 import {
   createId,
@@ -55,6 +56,7 @@ import {
 } from "./browser-local-profiles.js";
 import {
   BrowserService,
+  BrowserConsumerOutlet,
   type ActiveBrowserProfileGrant,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
@@ -2606,6 +2608,148 @@ describe("BrowserService", () => {
     await expect(service.readWorkspaceTabs(ownerId, sessionId)).resolves.toEqual(group);
     expect(read).toHaveBeenCalledWith(ownerId, groupId);
   });
+  it("delivers only the subscribed viewer surface on record and icon changes", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      targetControl: true,
+    });
+    const opened = await service.openAgentSession({
+      agentBindingId: "run:viewer-surface",
+      ownerId,
+      workspaceId,
+      fresh: true,
+    });
+    const peer = new RecordingPeer("viewer-surface");
+    const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
+    const updates = () =>
+      peer.textFrames
+        .map(
+          (frame) => JSON.parse(frame) as { type: string; surfaceId?: string; surface?: unknown },
+        )
+        .filter((message) => message.type === "browser.surface");
+    await attachment.handle(
+      Buffer.from(
+        JSON.stringify({
+          type: "stream.subscribe",
+          surfaceId: "page-1",
+          frames: false,
+        }),
+      ),
+      false,
+    );
+    expect(updates()).toMatchObject([
+      {
+        surfaceId: "page-1",
+        surface: { id: "page-1", title: "Example", url: "about:blank" },
+      },
+    ]);
+    const own = { id: "page-1", title: "Example", url: "about:blank" };
+    runtime.publishTabs({
+      surfaces: [
+        own,
+        { id: "page-2", title: "Private sibling", url: "https://sibling.example/private" },
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(peer.text().filter(({ type }) => type === "browser.surfaces.changed")).toHaveLength(1),
+    );
+    expect(updates()).toHaveLength(1);
+    const sibling = {
+      id: "page-2",
+      title: "Changed sibling",
+      url: "https://sibling.example/private",
+    };
+    runtime.publishTabs({ surfaces: [own, sibling] });
+    await vi.waitFor(() =>
+      expect(
+        peer.text().filter(({ type }) => type === "browser.surfaces.changed"),
+        "The sibling title change never reached the broker.",
+      ).toHaveLength(2),
+    );
+    expect(updates()).toHaveLength(1);
+    const favicon = "data:image/png;base64,aWNvbg==";
+    runtime.publishTabs({ surfaces: [{ ...own, title: "Changed", favicon }, sibling] });
+    await vi.waitFor(() => expect(updates()).toHaveLength(2));
+    expect(updates()[1]).toMatchObject({
+      surfaceId: "page-1",
+      surface: { title: "Changed", favicon },
+    });
+    const replacementIcon = "data:image/png;base64,aWNvbjI=";
+    runtime.publishTabs({
+      surfaces: [{ ...own, title: "Changed", favicon: replacementIcon }, sibling],
+    });
+    await vi.waitFor(() =>
+      expect(updates(), "The viewer did not receive its replacement icon.").toHaveLength(3),
+    );
+    expect(updates()[2]).toMatchObject({ surface: { title: "Changed", favicon: replacementIcon } });
+    expect(JSON.stringify(updates())).not.toContain("sibling.example");
+    runtime.publishTabs({ surfaces: [{ id: "page-2", title: "Sibling" }] });
+    await vi.waitFor(() =>
+      expect(updates().at(-1)).toEqual({
+        type: "browser.surface",
+        surfaceId: "page-1",
+        surface: null,
+      }),
+    );
+    attachment.close();
+  });
+
+  it("coalesces a slow viewer's surface updates", async () => {
+    const pending = deferred<void>();
+    const peer = new RecordingPeer("slow-surface");
+    const send = peer.send.bind(peer);
+    peer.send = async (data, binary) => {
+      await send(data, binary);
+      if (peer.textFrames.length === 1) await pending.promise;
+    };
+    const outlet = new BrowserConsumerOutlet(
+      peer,
+      "control",
+      async () => true,
+      () => {},
+    );
+    outlet.surfaceId = "page-1";
+    outlet.subscription = "control";
+    const surface: BrowserViewerSurface = {
+      id: BrowserSurfaceIdSchema.parse("page-1"),
+      state: "live",
+      title: "First",
+      url: "https://example.test/private",
+      favicon: null,
+      documentId: "document",
+      geometryRevision: 1,
+      loading: false,
+      navigationFailed: false,
+      sizedByAgent: false,
+    };
+    try {
+      outlet.sendSurface("page-1", surface);
+      outlet.sendSurface("page-1", { ...surface, title: "Intermediate" });
+      outlet.sendSurface("page-1", { ...surface, title: "Latest" });
+      expect(peer.textFrames).toHaveLength(1);
+      pending.resolve();
+      await vi.waitFor(() => expect(peer.textFrames).toHaveLength(2));
+      expect(JSON.parse(peer.textFrames[1]!)).toMatchObject({ surface: { title: "Latest" } });
+      outlet.sendSurface("page-1", { ...surface, title: "Latest" });
+      expect(peer.textFrames).toHaveLength(2);
+      outlet.subscription = null;
+      outlet.resetSubscription();
+      outlet.sendSurface("page-1", surface);
+      expect(peer.textFrames).toHaveLength(2);
+    } finally {
+      pending.resolve();
+      outlet.close();
+    }
+  });
+
   it("keeps control targets outside capture capacity and clears a closed target", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {

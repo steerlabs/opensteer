@@ -14,6 +14,7 @@ import {
   BrowserIconKeySchema,
   BrowserGroupRowSchema,
   BrowserTabRowSchema,
+  BrowserViewerSurfaceSchema,
 } from "./browser-tabs.js";
 export * from "./browser-tabs.js";
 export const browserRuntimeWireVersion = 2;
@@ -1076,6 +1077,11 @@ export const BrowserRuntimeServerMessageSchema = z.union([
 export type BrowserRuntimeServerMessage = z.infer<typeof BrowserRuntimeServerMessageSchema>;
 export const BrowserServerMessageSchema = z.union([
   BrowserViewerSnapshotSchema,
+  z.strictObject({
+    type: z.literal("browser.surface"),
+    surfaceId: BrowserSurfaceIdSchema,
+    surface: BrowserViewerSurfaceSchema.nullable(),
+  }),
   z.strictObject({
     ...browserBase,
     surfaces: BrowserSurfacesSchema,

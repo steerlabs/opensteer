@@ -5,7 +5,11 @@ import {
   KeyedStreamReceiver,
   keyedStreamBytes,
 } from "@opensteer/protocol/keyed-stream";
-import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
+import type {
+  BrowserTabRecord,
+  BrowserTabStreamMeta,
+  BrowserViewerSurface,
+} from "@opensteer/protocol/browser-tabs";
 import {
   BrowserRuntimeServerMessageSchema,
   type BrowserRuntimeServerMessage,
@@ -6078,9 +6082,12 @@ class HostedBrowserBroker {
         }
       if (this.targetedStreaming)
         this.#latestFrame = active ? (this.#latestFrames.get(active) ?? null) : null;
+      const changedIds = new Set([...changes.added, ...changes.updated, ...changes.removed]);
       for (const consumer of this.#consumers.values()) {
         if (consumer.surfaceId === null && previousActive !== active) consumer.resetSubscription();
         consumer.dropPendingOutside(consumer.surfaceId ?? active);
+        if (consumer.surfaceId && changedIds.has(consumer.surfaceId))
+          this.#sendViewerSurface(consumer);
       }
       const firstCommit = stream.op === "end" && !this.#viewerCommitted;
       this.#viewerCommitted = true;
@@ -6313,6 +6320,24 @@ class HostedBrowserBroker {
       throw new Error("Browser Runtime returned the wrong correlated CDP response.");
     }
     pending.resolve(message);
+  }
+
+  #sendViewerSurface(outlet: BrowserConsumerOutlet): void {
+    if (!outlet.surfaceId || outlet.subscription === null) return;
+    const row = this.#tabs.rows.get(outlet.surfaceId);
+    if (!row) {
+      outlet.sendSurface(outlet.surfaceId, null);
+      return;
+    }
+    const {
+      icon: _icon,
+      order: _order,
+      openerId: _opener,
+      canGoBack: _back,
+      canGoForward: _forward,
+      ...surface
+    } = row;
+    outlet.sendSurface(row.id, { ...surface, favicon: this.#surfaceIcon(row)?.favicon ?? null });
   }
 
   #handleConsumerFrame(
@@ -6556,6 +6581,7 @@ class HostedBrowserBroker {
       outlet.captureRegion = captureRegion;
       outlet.resetSubscription();
       outlet.subscription = subscription;
+      this.#sendViewerSurface(outlet);
       // Already streaming for someone else: this viewer starts from the
       // current picture rather than a blank until the page next paints.
       const latest = surfaceId ? this.#latestFrames.get(surfaceId) : this.#latestFrame;
@@ -7163,6 +7189,9 @@ const browserFrameRateEstimateMs = 10_000;
  * to avoid converting a frame-rate improvement into older pictures on screen.
  */
 export class BrowserConsumerOutlet {
+  #surfaceLast: string | null = null;
+  #surfacePending: string | null = null;
+  #surfaceSending = false;
   frameWindow = false;
   #window = 1;
   #baselineDelay = Infinity;
@@ -7270,6 +7299,30 @@ export class BrowserConsumerOutlet {
     } catch (error) {
       this.#end(1011, "Browser consumer write failed");
       throw error;
+    }
+  }
+
+  sendSurface(surfaceId: string, surface: BrowserViewerSurface | null): void {
+    if (this.#closed || this.subscription === null || this.surfaceId !== surfaceId) return;
+    const data = JSON.stringify({ type: "browser.surface", surfaceId, surface });
+    if (data === this.#surfaceLast) return;
+    this.#surfaceLast = data;
+    this.#surfacePending = data;
+    if (!this.#surfaceSending) void this.#flushSurface();
+  }
+
+  async #flushSurface(): Promise<void> {
+    this.#surfaceSending = true;
+    try {
+      while (!this.#closed && this.#surfacePending !== null) {
+        const data = this.#surfacePending;
+        this.#surfacePending = null;
+        await this.sendText(data);
+      }
+    } catch {
+      // sendText closes the outlet on a failed write.
+    } finally {
+      this.#surfaceSending = false;
     }
   }
 
@@ -7431,6 +7484,8 @@ export class BrowserConsumerOutlet {
 
   /** Subscribing again starts over: no credit owed, no picture waiting. */
   resetSubscription(): void {
+    this.#surfaceLast = null;
+    this.#surfacePending = null;
     for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
     this.#outstanding.clear();
     this.#window = 1;
@@ -7461,6 +7516,7 @@ export class BrowserConsumerOutlet {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#surfacePending = null;
     this.legacyClipboard.close();
     this.legacyClipboardKeys.clear();
     this.#pending = null;
