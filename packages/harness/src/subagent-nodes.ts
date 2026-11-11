@@ -20,6 +20,7 @@ const progressIntervalMs = 1_000;
 export interface SubagentStart {
   /** A subagent unless named a background task, such as a shell left running. */
   readonly kind?: ExecutionNodeKind;
+  readonly stopSupported?: boolean;
   /**
    * This invocation, as the engine names it; unique within the Run. Absent
    * while the engine has not named it — a question that arrives before the
@@ -47,6 +48,7 @@ interface LiveNode {
   originCallId: string | null;
   parentNodeId: ExecutionNodeId | null;
   result: string | null;
+  stopSupported: boolean;
   title: string;
   prompt: string | null;
   model: string | null;
@@ -117,6 +119,7 @@ export class SubagentNodes {
       progressTimer: undefined,
       prompt: boundedText(start.prompt, executionNodePromptMaxBytes),
       result: null,
+      stopSupported: start.stopSupported ?? false,
       title: nodeTitle(start.title),
     };
     this.#live.set(key, node);
@@ -124,6 +127,7 @@ export class SubagentNodes {
       data: {
         ...(node.effort ? { effort: node.effort } : {}),
         kind: start.kind ?? "subagent",
+        ...(node.stopSupported ? { stopSupported: true } : {}),
         model: node.model,
         nativeRef: start.nativeRef ?? node.nodeId,
         nodeId: node.nodeId,
@@ -143,6 +147,7 @@ export class SubagentNodes {
   update(
     key: string,
     update: {
+      readonly stopSupported?: boolean;
       readonly effort?: string | null;
       readonly model?: string | null;
       readonly originCallId?: string | null;
@@ -169,6 +174,9 @@ export class SubagentNodes {
         : undefined;
     const phases = update.phases ? phaseTitles(update.phases) : null;
     const changed = {
+      ...(update.stopSupported !== undefined && update.stopSupported !== node.stopSupported
+        ? { stopSupported: update.stopSupported }
+        : {}),
       ...(title !== undefined && title !== node.title ? { title } : {}),
       ...(prompt !== null && prompt !== node.prompt ? { prompt } : {}),
       ...(update.model && update.model !== node.model ? { model: update.model } : {}),
@@ -274,6 +282,10 @@ export class SubagentNodes {
       },
       type: "node.completed",
     });
+  }
+
+  keyForNode(nodeId: ExecutionNodeId): string | undefined {
+    return [...this.#live].find(([, node]) => node.nodeId === nodeId)?.[0];
   }
 
   /** The keys of every node still running. */

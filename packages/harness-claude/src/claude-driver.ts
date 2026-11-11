@@ -36,6 +36,7 @@ import {
   ModelIdSchema,
   ModelProviderIdSchema,
   OpensteerError,
+  type ExecutionNodeId,
   RequestFormAnswersSchema,
   RunUsageSchema,
   createId,
@@ -46,7 +47,6 @@ import {
   type PendingRequest,
   type RequestFormAnswers,
   type RequestFormField,
-  type ExecutionNodeId,
   type RequestId,
   type RequestResponse,
   type RunUsage,
@@ -492,6 +492,7 @@ const claudeHarnessCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  subagentStop: true,
   longRequestHold: true,
   // The Claude Agent SDK renders an MCP image content block to the model.
   mcpImageContent: true,
@@ -1656,6 +1657,23 @@ class ClaudeHarnessSession implements HarnessSession {
     }
   }
 
+  async stopNode(nodeId: ExecutionNodeId): Promise<void> {
+    const active = this.#activeTurn;
+    const key = active?.nodes.keyForNode(nodeId);
+    const taskId =
+      key && active
+        ? [...active.agentCalls].find(
+            ([id, value]) => value === key && active.knownTasks.has(id),
+          )?.[0]
+        : undefined;
+    if (!active || active.terminal || active.interrupted || !key || !taskId || !active.query)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Claude has no stoppable task for this subagent",
+      });
+    await active.query.stopTask(taskId);
+  }
+
   async interrupt(): Promise<void> {
     const active = this.#activeTurn;
     if (!active || active.terminal) return;
@@ -2488,6 +2506,7 @@ class ClaudeHarnessSession implements HarnessSession {
           active.knownNodes.add(key);
         }
         active.nodes.update(key, {
+          stopSupported: true,
           title: message.workflow_name ?? message.description,
           prompt: message.prompt ?? null,
         });
@@ -2961,6 +2980,8 @@ class ClaudeHarnessSession implements HarnessSession {
         if (output.taskType === CLAUDE_WORKFLOW_TASK_TYPE && typeof output.taskId === "string") {
           active.agentCalls.set(output.taskId, callId);
           active.workflowTasks.set(output.taskId, callId);
+          active.knownTasks.add(output.taskId);
+          active.nodes.update(callId, { stopSupported: true });
           active.background.add(output.taskId);
           active.backgroundSeen.add(output.taskId);
         }

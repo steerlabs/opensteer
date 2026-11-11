@@ -651,6 +651,13 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("run.interrupt"),
   }),
   z.strictObject({
+    type: z.literal("node.stop"),
+    idempotencyKey: idempotencyKeySchema,
+    nodeId: ExecutionNodeIdSchema,
+    threadId: ThreadIdSchema,
+    runId: RunIdSchema,
+  }),
+  z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     requestId: RequestIdSchema,
     response: RequestResponseSchema,
@@ -1331,6 +1338,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("automaticModels.set"), config: AutomaticModelConfigViewSchema }),
   z.object({ type: z.literal("run.interrupt"), wasDuplicate: z.boolean() }),
+  z.object({ type: z.literal("node.stop"), wasDuplicate: z.boolean() }),
   z.object({ type: z.literal("request.respond") }),
   z.object({ harness: harnessRecordSchema, type: z.literal("harness.create") }),
   z.object({ installation: HarnessInstallationSchema, type: z.literal("harness.update") }),

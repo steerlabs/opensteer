@@ -5,6 +5,7 @@ import {
   attachmentNativeImageMediaTypes,
   HarnessIdSchema,
   OpensteerError,
+  type ExecutionNodeId,
   RequestFormAnswersSchema,
   createId,
   harnessCatalogEntry,
@@ -130,6 +131,7 @@ const museCapabilities: HarnessCapabilities = Object.freeze({
     },
   },
   interruption: true,
+  subagentStop: true,
   mcpImageContent: true,
   resume: true,
   steering: true,
@@ -791,6 +793,32 @@ class MuseHarnessSession implements HarnessSession {
     if (result.turnId !== active.turnId) throw new Error("Muse Code steered a different turn");
   }
 
+  async stopNode(nodeId: ExecutionNodeId): Promise<void> {
+    const active = this.#active;
+    const key = active?.nodes.keyForNode(nodeId);
+    if (!active || active.terminal || active.interruptRequested || !key || !this.#host)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Muse Code has no running child for this subagent",
+      });
+    if (active.subagents.has(key))
+      await this.#host.command("subagent/stop", {
+        sessionId: this.providerSessionReference,
+        subagentId: key,
+        reason: "Opensteer subagent stopped",
+      });
+    else if (key.startsWith("workflow:") && active.workflows.has(key.slice(9)))
+      await this.#host.command("workflow/cancel", {
+        sessionId: this.providerSessionReference,
+        workflowRunId: key.slice(9),
+      });
+    else
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Muse Code cannot stop this workflow member separately",
+      });
+  }
+
   async interrupt(): Promise<void> {
     const active = this.#active;
     if (!active || active.terminal) return;
@@ -1102,6 +1130,7 @@ class MuseHarnessSession implements HarnessSession {
       if (!active.nodes.nodeId(key)) {
         active.nodes.ensure(key, {
           nativeRef: key,
+          stopSupported: !!item.subagentId,
           originCallId: item.callId ?? null,
           parentKey: item.workflowRunId ? `workflow:${item.workflowRunId}` : null,
           prompt: item.objective ?? null,
@@ -1110,6 +1139,7 @@ class MuseHarnessSession implements HarnessSession {
         });
       }
       active.nodes.update(key, {
+        stopSupported: !!item.subagentId,
         parentKey: item.workflowRunId ? `workflow:${item.workflowRunId}` : null,
         ...(item.objective ? { prompt: item.objective } : {}),
         ...(item.summary?.[0] || item.objective
@@ -1141,6 +1171,7 @@ class MuseHarnessSession implements HarnessSession {
       if (active.settledNodes.has(workflowKey)) return;
       active.nodes.ensure(workflowKey, {
         kind: "workflow",
+        stopSupported: !!item.workflowRunId,
         nativeRef: workflowRunId,
         title: item.entryId ?? item.scriptId ?? item.fallbackText ?? "Muse Code workflow",
         originCallId: item.callId ?? null,

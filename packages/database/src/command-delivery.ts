@@ -7,6 +7,7 @@
  * twice would put the message in twice.
  */
 export const resendableControlCommandTypes = [
+  "node.stop",
   "request.respond",
   "run.interrupt",
   "run.restart",

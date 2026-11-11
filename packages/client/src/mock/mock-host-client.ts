@@ -2457,6 +2457,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
               if (node.kind !== "node") throw new Error("Node expected.");
               return {
                 id: node.nodeId,
+                stopSupported: node.stopSupported ?? false,
+                stopping: node.stopping ?? false,
                 attemptId,
                 kind: node.nodeKind,
                 model: node.model,
@@ -3400,6 +3402,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "channel.connection.status.set":
       await client.setChannelConnectionStatus(command.connectionId, command.status);
       return rpcSuccess({ type: command.type });
+    case "node.stop":
+      await client.stopNode(command.threadId, command.nodeId);
+      return rpcSuccess({ type: command.type, wasDuplicate: false });
     case "run.interrupt":
       await client.stopRun(command.threadId);
       return rpcSuccess({ type: command.type, wasDuplicate: false });
@@ -5286,6 +5291,10 @@ export class MockHostClient implements HostClient {
     const session = this.getSnapshot().browserSessions.find(({ id }) => id === result.session.id);
     if (!session) throw new Error("The mock Browser Session was not projected.");
     return session;
+  }
+
+  async stopNode(threadId: string, nodeId: string): Promise<void> {
+    await this.#state.stopNode(threadId, nodeId);
   }
 
   async stopRun(threadId: string): Promise<void> {
@@ -11862,6 +11871,46 @@ class MockHostState {
       },
     });
     if (script.decision) this.openTaskDecision(workerId, run.id, script.decision, at(30));
+  }
+
+  async stopNode(threadId: string, nodeId: string): Promise<void> {
+    const entries = this.snapshot.transcripts[threadId] ?? [];
+    const node = entries.find((entry) => entry.kind === "node" && entry.nodeId === nodeId);
+    if (node?.kind !== "node" || node.status !== "running" || !node.stopSupported || node.stopping)
+      throw new Error("This subagent cannot be stopped.");
+    const stoppingIds = new Set([nodeId]);
+    if (node.nodeKind === "workflow") {
+      for (const parentId of stoppingIds) {
+        for (const entry of entries) {
+          if (entry.kind === "node" && entry.parentNodeId === parentId)
+            stoppingIds.add(entry.nodeId);
+        }
+      }
+    }
+    const stopping = entries.map((entry) =>
+      entry.kind === "node" && stoppingIds.has(entry.nodeId) && entry.status === "running"
+        ? { ...entry, stopping: true }
+        : entry,
+    );
+    this.update({
+      ...this.snapshot,
+      transcripts: { ...this.snapshot.transcripts, [threadId]: stopping },
+    });
+    await Promise.resolve();
+    const ended = stopping.map((entry) =>
+      entry.kind === "node" && stoppingIds.has(entry.nodeId) && entry.status === "running"
+        ? {
+            ...entry,
+            status: "interrupted" as const,
+            stopping: false,
+            completedAt: this.now().toISOString(),
+          }
+        : entry,
+    );
+    this.update({
+      ...this.snapshot,
+      transcripts: { ...this.snapshot.transcripts, [threadId]: ended },
+    });
   }
 
   async stopRun(threadId: string): Promise<void> {

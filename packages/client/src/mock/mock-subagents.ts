@@ -61,6 +61,7 @@ export function seedMockSubagents(snapshot: HostSnapshot): {
       title,
       runId,
       status: "running",
+      stopSupported: true,
       createdAt: at(minute),
       completedAt: null,
       model: "gpt-6.1-sol",

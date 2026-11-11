@@ -3342,6 +3342,113 @@ describe("Claude subagent transcripts", () => {
     }
   });
 
+  it.each(["local_agent", "local_workflow"])(
+    "stops one Claude %s with SDK confirmation while its sibling and Run continue",
+    async (taskType) => {
+      const cancelled = new Gate();
+      const finish = new Gate();
+      const stopped: string[] = [];
+      const sdk = new FakeSdk((parameters) => {
+        const id = providerSessionId(parameters.options);
+        const inner = generatedQuery(async function* () {
+          yield initMessage(id);
+          for (const task of ["target", "sibling"])
+            yield message({
+              type: "system",
+              subtype: "task_started",
+              task_id: task,
+              tool_use_id: `${task}-call`,
+              task_type: task === "target" ? taskType : "local_agent",
+              description: task,
+              session_id: id,
+            });
+          await cancelled.reached;
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "target",
+            tool_use_id: "target-call",
+            status: "stopped",
+            summary: "Stopped",
+            session_id: id,
+          });
+          await finish.reached;
+          yield message({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "sibling",
+            tool_use_id: "sibling-call",
+            status: "completed",
+            summary: "Sibling result",
+            session_id: id,
+          });
+          yield successMessage(id, "Root result");
+        });
+        return {
+          ...inner,
+          async stopTask(taskId) {
+            stopped.push(taskId);
+            cancelled.open();
+          },
+          close() {
+            cancelled.open();
+            finish.open();
+            inner.close();
+          },
+        };
+      });
+      const { adapter, session } = await openSession(sdk);
+      const observer = observe(session.events);
+      try {
+        const run = send(session, "Run two children");
+        await vi.waitFor(() =>
+          expect(
+            observer.events.filter(
+              (event) => event.type === "node.updated" && event.data.stopSupported,
+            ),
+          ).toHaveLength(2),
+        );
+        const target = observer.events.find(
+          (event) => event.type === "node.started" && event.data.title === "target",
+        );
+        if (target?.type !== "node.started") throw new Error("Target node was not started");
+        await session.stopNode!(target.data.nodeId);
+        await vi.waitFor(() =>
+          expect(observer.events).toContainEqual({
+            type: "node.completed",
+            data: {
+              nodeId: target.data.nodeId,
+              status: "interrupted",
+              result: "Stopped",
+              usage: null,
+            },
+          }),
+        );
+        expect(stopped).toEqual(["target"]);
+        expect(observer.events.filter((event) => event.type === "node.completed")).toHaveLength(1);
+        expect(
+          observer.events.some(
+            (event) => event.type === "run.completed" || event.type === "run.interrupted",
+          ),
+        ).toBe(false);
+        await expect(session.stopNode!(target.data.nodeId)).rejects.toThrow("no stoppable task");
+        finish.open();
+        await run;
+        expect(
+          observer.events
+            .filter((event) => event.type === "node.completed")
+            .map((event) => event.data.status),
+        ).toEqual(["interrupted", "completed"]);
+      } finally {
+        cancelled.open();
+        finish.open();
+        await session.stop();
+        await adapter.close();
+        await observer.done;
+      }
+    },
+  );
+
   it.each([false, true])(
     "projects workflow phases, retries, terminal-first members, and post-turn progress (stop=%s)",
     async (stop) => {

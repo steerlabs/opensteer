@@ -1,3 +1,4 @@
+import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
   lockThreadCaller,
@@ -416,6 +417,7 @@ async function claimObservedCommand(
 }
 
 const runnerControlCommandTypes = [
+  "node.stop",
   "request.respond",
   "run.interrupt",
   "run.restart",
@@ -1753,6 +1755,7 @@ export async function failCommand(
     .where("id", "=", commandId)
     .executeTakeFirst();
   if (!observed) return [];
+  if (observed.type === "node.stop") return failNodeStop(database, commandId, publicMessage);
   if (observed.type === "run.steer") return refuseSteer(database, commandId, publicMessage);
   const failure = { ...dispatchFailure(publicMessage), code: failureCode };
   if (observed.type !== "run.execute" || !observed.runId) {
