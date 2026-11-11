@@ -12,21 +12,22 @@ const ICONS = {
   meeting: "M3.5 5h13v11h-13ZM3.5 8.5h13M7 3v3.5M13 3v3.5",
   search: "M8.5 14a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11ZM12.5 12.5 17 17",
   bell: "M10 3a4.5 4.5 0 0 0-4.5 4.5V11L4 14h12l-1.5-3V7.5A4.5 4.5 0 0 0 10 3ZM8.3 16.5a1.8 1.8 0 0 0 3.4 0",
-  gear: "M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6",
+  gear: "M10 12.6a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2ZM8.6 2.8h2.8l.4 2 1.5.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.5.9-.4 2H8.6l-.4-2-1.5-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.4 7.8l1.4-2.4 1.9.7 1.5-.9Z",
   contacts: "M10 9.5a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM4 17c.5-3.5 3-5.5 6-5.5s5.5 2 6 5.5",
   deals: "M3 6h14v10H3ZM7.5 6V4h5v2M3 10.5h14",
   chart: "M4 16V9M8 16V5M12 16v-5M16 16V7",
   inbox: "M3 11h4l1.5 2.5h3L13 11h4M5 4h10l2 7v5H3v-5Z",
   grid: "M4 4h4v4H4ZM12 4h4v4h-4ZM4 12h4v4H4ZM12 12h4v4h-4Z",
+  help: "M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15ZM7.9 7.9a2.2 2.2 0 1 1 3 2c-.6.3-.9.7-.9 1.4M10 13.9v.1",
 } as const;
 
 const SPROCKET = `<svg class="hs-sprocket" viewBox="0 0 20 20" aria-hidden="true"><circle cx="12" cy="12" r="3.6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M12 8.4V4.6M9.4 14.6l-3.6 2.6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="3.6" r="1.8" fill="currentColor"/><circle cx="5" cy="17.6" r="1.6" fill="currentColor"/></svg>`;
 
-const STAGES = ["Renewal due", "Proposal sent", "Negotiation", "Closed won", "Closed lost"];
+const STAGES = ["Renewal due", "Quote prepared", "Negotiation", "Closed won", "Closed lost"];
 
 const RAIL = `<nav class="hs-rail"><b>${SPROCKET}</b>${[ICONS.grid, ICONS.contacts, ICONS.deals, ICONS.inbox, ICONS.chart].map((path, index) => `<i${index === 2 ? ' class="is-on"' : ""}>${line(path)}</i>`).join("")}</nav>`;
 
-const TOP = `<header class="hs-top"><span class="hs-search">${line(ICONS.search)}Search HubSpot</span><span class="hs-top__end">${line(ICONS.bell)}${line(ICONS.gear)}<i class="hs-ava hs-ava--me">AR</i></span></header>`;
+const TOP = `<header class="hs-top"><span class="hs-search">${line(ICONS.search)}Search HubSpot</span><span class="hs-top__end">${line(ICONS.help)}${line(ICONS.bell)}${line(ICONS.gear)}<i class="hs-ava hs-ava--me">AR</i></span></header>`;
 
 const PIPE = `<div class="hs-pipe">
   <span class="hs-pipe__name">Renewals pipeline</span>
@@ -63,11 +64,12 @@ const MID = `<main class="hs-mid">
     <p class="hs-typed" data-h="hs-note"></p>
     <footer><span class="hs-btn" data-h="hs-save">Save note</span></footer>
   </div>
+  <div class="hs-find"><span class="hs-find__box">${line(ICONS.search)}Search activities</span><span class="hs-find__link">Collapse all</span></div>
   <p class="hs-month">November 2026</p>
   <div class="hs-feed">
     <article class="hs-entry hs-entry--new"><header><i>${line(ICONS.note)}</i><b>Note by Alex Rivera</b><time>Just now</time></header><p>${HUBSPOT_NOTE}</p></article>
     ${entry("email", "Email to Priya Raman", "Nov 2", "Acme's plan renews Dec 31. Want to set up time to plan 2027?")}
-    ${entry("call", "Call with Priya Raman", "Oct 14", "New VP Ops since September. Wants the renewal proposal before budgets lock.")}
+    ${entry("call", "Call with Priya Raman", "Oct 14", "New VP Ops since September. Wants a renewal quote before budgets lock.")}
     ${entry("deals", "Deal created", "Oct 2", "Renewal of Acme's 90-seat Team plan, $36,000 a year.")}
   </div>
 </main>`;

@@ -8,7 +8,7 @@ const ICONS = {
   menu: "M3 5.5h14M3 10h14M3 14.5h14",
   search: "M8.5 14a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11ZM12.5 12.5 17 17",
   help: "M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15ZM7.8 7.8a2.3 2.3 0 1 1 3.2 2.1c-.6.3-1 .8-1 1.5M10 14.2v.1",
-  gear: "M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6",
+  gear: "M10 12.6a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2ZM8.6 2.8h2.8l.4 2 1.5.9 1.9-.7 1.4 2.4-1.5 1.3v1.8l1.5 1.3-1.4 2.4-1.9-.7-1.5.9-.4 2H8.6l-.4-2-1.5-.9-1.9.7-1.4-2.4 1.5-1.3V9.1L3.4 7.8l1.4-2.4 1.9.7 1.5-.9Z",
   apps: "M5 5h.1M10 5h.1M15 5h.1M5 10h.1M10 10h.1M15 10h.1M5 15h.1M10 15h.1M15 15h.1",
   pencil: "M12.5 4.5 15.5 7.5 7 16H4v-3ZM11 6l3 3",
   inbox: "M3 11h4l1.5 2.5h3L13 11h4M5 4h10l2 7v5H3v-5Z",
@@ -27,6 +27,13 @@ const ICONS = {
   min: "M5 14h10",
   expand: "M11.5 4H16v4.5M8.5 16H4v-4.5M16 4l-5 5M4 16l5-5",
   close: "M5 5l10 10M15 5 5 15",
+  tune: "M3.5 6h6M13.5 6h3M3.5 14h3M10.5 14h6M11.5 4v4M8.5 12v4",
+  tag: "M3.5 10.5V4.5a1 1 0 0 1 1-1h6l6 6-7 7ZM7 7h.1",
+  people:
+    "M7.5 9.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM3 16c.4-2.8 2.2-4.3 4.5-4.3S11.6 13.2 12 16M13 5a2.4 2.4 0 0 1 0 4.6M14.2 11.8c1.5.5 2.4 1.9 2.8 4.2",
+  info: "M10 17a7 7 0 1 0 0-14 7 7 0 0 0 0 14ZM10 9.5V14M10 6.5v.1",
+  drive: "M7.5 3.5h5l5 8.5-2.5 4.5h-10L2.5 12ZM7.5 3.5l5 8.5M12.5 3.5 7.5 12M2.5 12h15",
+  dots: "M10 5h.1M10 10h.1M10 15h.1",
 } as const;
 
 const icon = (name: keyof typeof ICONS): string => line(ICONS[name]);
@@ -36,7 +43,7 @@ const MARK = `<svg class="gm-m" viewBox="0 0 24 18" aria-hidden="true"><path d="
 const TOP = `<header class="gm-top">
   <span class="gm-ico">${icon("menu")}</span>
   <span class="gm-brand">${MARK}<b>Gmail</b></span>
-  <span class="gm-search">${icon("search")}Search mail</span>
+  <span class="gm-search">${icon("search")}Search mail<span class="gm-ico gm-tune">${icon("tune")}</span></span>
   <span class="gm-top__end"><span class="gm-ico">${icon("help")}</span><span class="gm-ico">${icon("gear")}</span><span class="gm-ico">${icon("apps")}</span><i class="gm-me">AR</i></span>
 </header>`;
 
@@ -59,7 +66,7 @@ const mail = (
 
 const LIST = `<section class="gm-list">
   <div class="gm-tools"><i class="gm-box"></i><span class="gm-ico">${icon("refresh")}</span><span class="gm-ico">${icon("more")}</span><span class="gm-range">1–50 of 2,481</span></div>
-  <div class="gm-tabs"><span class="is-on">${icon("inbox")}Primary</span><span>Promotions</span><span>Updates</span></div>
+  <div class="gm-tabs"><span class="is-on">${icon("inbox")}Primary</span><span>${icon("tag")}Promotions</span><span>${icon("people")}Social</span><span>${icon("info")}Updates</span></div>
   ${mail("Jordan Lee", "Q4 pipeline review", "Pulled the numbers for Thursday. Acme is the big one", "9:12 AM", true)}
   ${mail("Sam Okafor", "Intro: Delta Supply ops", "Sam here, connecting you with their new COO", "8:47 AM", true)}
   ${mail("Nadia Aziz", "Acme onboarding playbook", "Thanks for the template, we used it for the last", "Nov 9")}
@@ -77,7 +84,7 @@ const COMPOSE = `<div class="gm-compose" data-h="gm-compose">
   <div class="gm-field" data-h="gm-subject-field"><span class="gm-placeholder">Subject</span><span class="gm-typed" data-h="gm-subject"></span></div>
   <div class="gm-body" data-h="gm-body">${["gm-p1", "gm-p2", "gm-p3", "gm-p4", "gm-p5"].map((hook) => `<p class="gm-p" data-h="${hook}"></p>`).join("")}</div>
   <div class="gm-file"><i class="gm-pdf">PDF</i><b>Acme-2027-renewal-quote.pdf</b><em>(84K)</em>${icon("close")}<span class="gm-file__bar"></span></div>
-  <footer class="gm-compose__foot"><span class="gm-send" data-h="gm-send"><b>Send</b><i></i><svg viewBox="0 0 10 6" aria-hidden="true"><path d="m1 1 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span><span class="gm-ico">${icon("format")}</span><span class="gm-ico" data-h="gm-clip">${icon("clip")}</span><span class="gm-ico">${icon("link")}</span><span class="gm-ico">${icon("smile")}</span><span class="gm-ico">${icon("image")}</span><span class="gm-saved">Draft saved</span><span class="gm-ico gm-trash">${icon("trash")}</span></footer>
+  <footer class="gm-compose__foot"><span class="gm-send" data-h="gm-send"><b>Send</b><i></i><svg viewBox="0 0 10 6" aria-hidden="true"><path d="m1 1 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span><span class="gm-ico">${icon("format")}</span><span class="gm-ico" data-h="gm-clip">${icon("clip")}</span><span class="gm-ico">${icon("link")}</span><span class="gm-ico">${icon("smile")}</span><span class="gm-ico">${icon("drive")}</span><span class="gm-ico">${icon("image")}</span><span class="gm-ico">${icon("dots")}</span><span class="gm-saved">Draft saved</span><span class="gm-ico gm-trash">${icon("trash")}</span></footer>
 </div>`;
 
 export const gmail: BrowserTab = {

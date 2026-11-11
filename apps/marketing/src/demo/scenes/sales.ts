@@ -101,10 +101,10 @@ export const sales: Scene = {
       api.click();
       api.flag("hs-menu", false);
       api.flag("hs-hover", false);
-      api.flag("hs-proposal");
-      api.text("hs-stage", "Proposal sent");
+      api.flag("hs-quote");
+      api.text("hs-stage", "Quote prepared");
       api.go("hs-stage-field", 0.5, 0.5, "hs-pipe");
-      api.step("Updated the Acme deal to $48,000");
+      api.step("Updated the Acme deal: $48,000, quote prepared");
     });
     beat(800, () => api.go("hs-note-btn", 0.5, 0.25));
     beat(ARRIVE, () => {
