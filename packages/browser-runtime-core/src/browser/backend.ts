@@ -53,8 +53,14 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
+export type KeepAwakeReason = "post" | "download" | "media" | "fullscreen" | "capturing";
+
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
 export interface BrowserPage {
+  /** Reads opaque restore state without closing or changing the page. Null refuses this document. */
+  captureRestore?(): Promise<unknown | null>;
+  keepAwake?(): KeepAwakeReason | null | Promise<KeepAwakeReason | null>;
+  hasOpenerAccess?(): boolean | Promise<boolean>;
   readonly cursor?: import("./cursor-hints.js").NativePageCursor;
   readonly capture?: PageCapturePort;
   /**
@@ -108,8 +114,8 @@ export interface BrowserPage {
 export interface BrowserContext {
   /** False after whole-context/browser teardown; page closes alone keep it connected. */
   isConnected?(): boolean;
-  /** New user pages, including eager launch pages, have their initial blank document submitted. */
-  createPage(): Promise<BrowserPage>;
+  /** Restore precedes any load; other new pages submit their initial blank document. */
+  createPage(options?: { readonly restore?: unknown }): Promise<BrowserPage>;
   offPage(listener: (page: BrowserPage) => void): void;
   onPage(listener: (page: BrowserPage) => void): void;
   pages(): BrowserPage[];
@@ -204,6 +210,7 @@ export interface LocalProfileEngine {
 }
 
 export interface BrowserLauncher {
+  readonly hostCost?: "process" | "partition";
   /** Completes engine initialization before the runtime advertises placement. */
   prepare?(): Promise<void>;
   /** Cancellation covers acquisition; the shared runtime owns the admitted host's lifetime. */

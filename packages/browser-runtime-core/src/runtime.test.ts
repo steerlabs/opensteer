@@ -18,6 +18,53 @@ import {
 } from "./test-support/fakes.js";
 
 describe("BrowserRuntime", () => {
+  it("receives Host session state before releasing an agent's page and drops its timer on detach", async () => {
+    vi.useFakeTimers();
+    const context = new FakeContext([new FakePage()]);
+    const claims = freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 });
+    const runtime = new BrowserRuntime({
+      launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
+      runtimeId: "runtime_test",
+      sessionFilesRoot: testSessionFilesRoot(),
+      ticketVerifier: new FakeTicketVerifier(claims),
+    });
+    const sink = new FakeSink();
+    try {
+      const attachment = await runtime.attach("fresh-ticket", sink);
+      expect(sink.messages.find((message) => message.type === "browser.snapshot")).toMatchObject({
+        surfaceState: 1,
+      });
+      await attachment.handle(
+        JSON.stringify({
+          type: "cdp.command",
+          requestId: crypto.randomUUID(),
+          command: { method: "Target.createTarget", parameters: { url: "https://leftover.test/" } },
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const tab = [...sink.tabs.rows.values()].find((row) => row.order === 1)!;
+      expect(tab).toBeDefined();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+      await attachment.handle(
+        JSON.stringify({ type: "session.state", runs: 1, viewed: [], pinned: [] }),
+      );
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+      await attachment.handle(
+        JSON.stringify({ type: "session.state", runs: 0, viewed: [], pinned: [] }),
+      );
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("live");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sink.tabs.rows.get(tab.id)?.state).toBe("suspended");
+      await attachment.close();
+      expect(runtime.health().sessionCount).toBe(0);
+    } finally {
+      await runtime.shutdown();
+      vi.useRealTimers();
+    }
+  });
   it("sizes only the page a Fit names and leaves the session's other pages alone", async () => {
     const root = new FakePage({ title: "Root" });
     const context = new FakeContext([root]);
