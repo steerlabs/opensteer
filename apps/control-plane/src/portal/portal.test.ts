@@ -353,8 +353,8 @@ function authorityEnvelope(
       hostKey: { algorithm: "Ed25519" },
       deploymentShape:
         kind === "self-hosted"
-          ? { defaultWorkspaceBacking: "local-directory", kind: "server" }
-          : { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+          ? { kind: "team" }
+          : { kind: "personal" },
     },
     publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
     signature: "A".repeat(86),

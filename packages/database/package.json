@@ -15,6 +15,16 @@
     "./personal-team-channel-folders-store": "./src/personal-team-channel-folders-store.ts",
     "./personal-team-requests-store": "./src/personal-team-requests-store.ts",
     "./team-requests-port": "./src/team-requests-port.ts",
+    "./team-access": "./src/team-access-store.ts",
+    "./team-members": "./src/team-members-store.ts",
+    "./team-groups": "./src/team-groups-store.ts",
+    "./team-invites": "./src/team-invites-store.ts",
+    "./team-chat": "./src/team-chat-store.ts",
+    "./team-files": "./src/team-files-store.ts",
+    "./team-audit": "./src/team-audit-store.ts",
+    "./team-notices": "./src/team-notices-store.ts",
+    "./team-outbox": "./src/team-outbox-store.ts",
+    "./team-requests": "./src/team-requests-store.ts",
     "./test-support/team-knowledge": "./src/team-knowledge.test-support.ts"
   },
   "scripts": {

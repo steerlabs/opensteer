@@ -10,6 +10,30 @@
  * ordered, and it refuses MERGE and data-modifying WITH, whose locks it cannot see.
  */
 export const databaseLockOrder = [
+  // BEGIN team authority and content lock order.
+  "team_access_state",
+  "team_channels",
+  "team_members",
+  "team_groups",
+  "team_invites",
+  "team_invite_uses",
+  "team_group_people",
+  "team_group_edges",
+  "team_channel_members",
+  "team_channel_member_state",
+  "team_topic_grants",
+  "team_channel_topics",
+  "team_links",
+  "team_messages",
+  "team_blobs",
+  "team_message_attachments",
+  "team_mentions",
+  "team_message_pins",
+  "team_agent_requests",
+  "team_audit",
+  "team_notices",
+  "team_outbox",
+  // END team authority and content lock order.
   "advisory:access-writer",
   "access_state",
   // Disjoint creation identities are reserved before any materialized authority.

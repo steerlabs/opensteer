@@ -1,8 +1,3 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
 import { delay } from "@opensteer/shared/delay";
 import { createHash, createHmac } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -14,15 +9,15 @@ import {
   type AuthenticatedSession,
   type NativeOAuthClient,
 } from "@opensteer/core";
-import {
-  acceptTeamInvitation,
-  OpensteerStore,
-  createDatabase,
-  migrateToLatest,
-} from "@opensteer/database";
+import { createDatabase } from "../../database/src/connection.js";
+import { migrateToLatest } from "../../database/src/migrations.js";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
+import { TeamIdentityAdmission } from "./team-admission.js";
+import { TeamAccessStore } from "@opensteer/database/team-access";
+import { TeamInvitesStore } from "@opensteer/database/team-invites";
+import { HostKeyFingerprintSchema } from "@opensteer/core";
 import { issueLocalAdministratorPasswordRecovery } from "./operator-password-reset.js";
 import type { VerifiedAccountAdoptionGrant } from "./types.js";
 
@@ -60,7 +55,6 @@ integration("IdentityService", () => {
         auth_admissions,
         auth_sso_providers,
         owner_enrollments,
-        security_effects,
         security_audit,
         auth_accounts,
         auth_sessions,
@@ -68,6 +62,17 @@ integration("IdentityService", () => {
         deployments
       restart identity cascade
     `.execute(database);
+    await database
+      .insertInto("personalRemoteAccess")
+      .values({
+        singletonKey: "personal",
+        generation: 0,
+        mode: "off",
+        routeOrigin: null,
+        updatedAt: new Date(),
+      })
+      .onConflict((c) => c.column("singletonKey").doNothing())
+      .execute();
     await database
       .updateTable("personalRemoteAccess")
       .set({ generation: 0, mode: "off", routeOrigin: null, updatedAt: new Date() })
@@ -196,7 +201,7 @@ integration("IdentityService", () => {
     );
     await database
       .updateTable("users")
-      .set({ instanceRole: "administrator" })
+      .set({ updatedAt: new Date() })
       .where("id", "=", first.data.session.user.id)
       .executeTakeFirstOrThrow();
     const second = await identity.signInPassword(
@@ -279,335 +284,349 @@ integration("IdentityService", () => {
     expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
   });
 
-  it("completes OIDC discovery, PKCE, token exchange, userinfo, and an encrypted account session", async () => {
-    const accessToken = "fixture-access-token-that-must-not-be-stored-in-plaintext";
-    let expectedCodeChallenge: string | null = null;
-    let tokenRequest:
-      | {
-          readonly authorization: string | undefined;
-          readonly body: URLSearchParams;
-        }
-      | undefined;
-    let userinfoAuthorization: string | undefined;
-    const handleIssuerRequest = async (
-      request: IncomingMessage,
-      response: ServerResponse,
-    ): Promise<void> => {
-      const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
-      if (request.method === "GET" && request.url === "/.well-known/openid-configuration") {
-        response.setHeader("content-type", "application/json");
-        response.end(
-          JSON.stringify({
-            authorization_endpoint: `${origin}/authorize`,
-            issuer: origin,
-            jwks_uri: `${origin}/jwks`,
-            token_endpoint: `${origin}/token`,
-            userinfo_endpoint: `${origin}/userinfo`,
-          }),
-        );
-        return;
-      }
-      if (request.method === "POST" && request.url === "/token") {
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) chunks.push(Buffer.from(chunk));
-        const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-        tokenRequest = { authorization: request.headers.authorization, body };
-        const challenge = createHash("sha256")
-          .update(body.get("code_verifier") ?? "")
-          .digest("base64url");
-        if (
-          expectedCodeChallenge === null ||
-          challenge !== expectedCodeChallenge ||
-          body.get("code") !== "fixture-code"
-        ) {
-          response.statusCode = 400;
-          response.end(JSON.stringify({ error: "invalid_grant" }));
+  it.each(["personal", "team"] as const)(
+    "completes %s OIDC discovery, PKCE and sign-in with the appropriate provider-token custody",
+    async (kind) => {
+      const accessToken = "fixture-access-token-that-must-not-be-stored-in-plaintext";
+      let expectedCodeChallenge: string | null = null;
+      let tokenRequest:
+        | {
+            readonly authorization: string | undefined;
+            readonly body: URLSearchParams;
+          }
+        | undefined;
+      let userinfoAuthorization: string | undefined;
+      const handleIssuerRequest = async (
+        request: IncomingMessage,
+        response: ServerResponse,
+      ): Promise<void> => {
+        const origin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        if (request.method === "GET" && request.url === "/.well-known/openid-configuration") {
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              authorization_endpoint: `${origin}/authorize`,
+              issuer: origin,
+              jwks_uri: `${origin}/jwks`,
+              token_endpoint: `${origin}/token`,
+              userinfo_endpoint: `${origin}/userinfo`,
+            }),
+          );
           return;
         }
-        response.setHeader("content-type", "application/json");
-        response.end(
-          JSON.stringify({
-            access_token: accessToken,
-            expires_in: 3_600,
-            token_type: "Bearer",
-          }),
-        );
-        return;
-      }
-      if (request.method === "GET" && request.url === "/userinfo") {
-        userinfoAuthorization = request.headers.authorization;
-        response.setHeader("content-type", "application/json");
-        response.end(
-          JSON.stringify({
-            email: "oidc-user@example.com",
-            email_verified: true,
-            name: "OIDC User",
-            sub: "fixture-oidc-subject",
-          }),
-        );
-        return;
-      }
-      response.statusCode = 404;
-      response.end();
-    };
-    const issuer = createServer((request, response) => {
-      void handleIssuerRequest(request, response).catch((error: unknown) =>
-        response.destroy(error instanceof Error ? error : new Error("OIDC issuer failed")),
-      );
-    });
-    await new Promise<void>((resolve, reject) => {
-      issuer.once("error", reject);
-      issuer.listen(0, "127.0.0.1", resolve);
-    });
-    try {
-      const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
-      const publicOrigin = "http://127.0.0.1:4310";
-      const configuredIssuerIdentity = identityService({
-        localPasswordEnabled: false,
-        oidcProviders: [
-          {
-            allowPrivateNetwork: false,
-            clientId: "opensteer-test-client",
-            clientSecret: "opensteer-test-client-secret",
-            issuer: issuerOrigin,
-            label: "Configured private SSO",
-            providerId: "configured",
-            trustedOrigins: [],
-          },
-        ],
-        exposure: "networked",
-        signupPolicy: "open",
-      });
-      const configuredIssuer = await configuredIssuerIdentity.beginOidcSignIn({
-        headers: new Headers({ origin: publicOrigin }),
-        providerId: "configured",
-        returnPath: "/",
-      });
-      expect(configuredIssuer.status).toBe(200);
-      expect(new URL(configuredIssuer.data.redirectUrl).origin).toBe(issuerOrigin);
-
-      const configuredProviderId = `oidc.enterprise.${createHash("sha256")
-        .update(issuerOrigin)
-        .digest("base64url")
-        .slice(0, 22)}`;
-      const identity = identityService({
-        localPasswordEnabled: false,
-        oidcProviders: [
-          {
-            allowPrivateNetwork: true,
-            clientId: "opensteer-test-client",
-            clientSecret: "opensteer-test-client-secret",
-            issuer: issuerOrigin,
-            label: "Company SSO",
-            providerId: "enterprise",
-            trustedOrigins: [],
-          },
-        ],
-        nativeOAuth: {
-          clients: [
-            nativeClient({
-              clientId: "opensteer-desktop",
-              redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
+        if (request.method === "POST" && request.url === "/token") {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+          tokenRequest = { authorization: request.headers.authorization, body };
+          const challenge = createHash("sha256")
+            .update(body.get("code_verifier") ?? "")
+            .digest("base64url");
+          if (
+            expectedCodeChallenge === null ||
+            challenge !== expectedCodeChallenge ||
+            body.get("code") !== "fixture-code"
+          ) {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_grant" }));
+            return;
+          }
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              access_token: accessToken,
+              expires_in: 3_600,
+              token_type: "Bearer",
             }),
-          ],
-        },
-        exposure: "networked",
-        signupPolicy: "invite-only",
+          );
+          return;
+        }
+        if (request.method === "GET" && request.url === "/userinfo") {
+          userinfoAuthorization = request.headers.authorization;
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              email: "oidc-user@example.com",
+              email_verified: true,
+              name: "OIDC User",
+              sub: "fixture-oidc-subject",
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      };
+      const issuer = createServer((request, response) => {
+        void handleIssuerRequest(request, response).catch((error: unknown) =>
+          response.destroy(error instanceof Error ? error : new Error("OIDC issuer failed")),
+        );
       });
-      const userId = await new OpensteerStore(database).createUser("OIDC User");
-      await database
-        .updateTable("users")
-        .set({ email: "oidc-user@example.com", emailVerified: true, instanceRole: "administrator" })
-        .where("id", "=", userId)
-        .execute();
-      await database
-        .insertInto("authAccounts")
-        .values({
-          id: createId("authAccount"),
-          userId,
+      await new Promise<void>((resolve, reject) => {
+        issuer.once("error", reject);
+        issuer.listen(0, "127.0.0.1", resolve);
+      });
+      try {
+        const issuerOrigin = `http://127.0.0.1:${(issuer.address() as AddressInfo).port}`;
+        const publicOrigin = "http://127.0.0.1:4310";
+        const configuredIssuerIdentity = identityService({
+          localPasswordEnabled: false,
+          oidcProviders: [
+            {
+              allowPrivateNetwork: false,
+              clientId: "opensteer-test-client",
+              clientSecret: "opensteer-test-client-secret",
+              issuer: issuerOrigin,
+              label: "Configured private SSO",
+              providerId: "configured",
+              trustedOrigins: [],
+            },
+          ],
+          exposure: "networked",
+          signupPolicy: "open",
+        });
+        const configuredIssuer = await configuredIssuerIdentity.beginOidcSignIn({
+          headers: new Headers({ origin: publicOrigin }),
+          providerId: "configured",
+          returnPath: "/",
+        });
+        expect(configuredIssuer.status).toBe(200);
+        expect(new URL(configuredIssuer.data.redirectUrl).origin).toBe(issuerOrigin);
+
+        const logicalProviderId = kind === "team" ? "opensteer-account" : "enterprise";
+        const configuredProviderId = `oidc.${logicalProviderId}.${createHash("sha256")
+          .update(issuerOrigin)
+          .digest("base64url")
+          .slice(0, 22)}`;
+        let team: TeamIdentityAdmission | undefined;
+        let ownerId: ReturnType<typeof createId<"user">> | undefined;
+        let invite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
+        if (kind === "team") {
+          const access = new TeamAccessStore(database);
+          await access.initialize();
+          const invites = new TeamInvitesStore(access, publicOrigin);
+          team = new TeamIdentityAdmission({
+            access,
+            invites,
+            authority: {
+              canonicalOrigin: publicOrigin,
+              deploymentId: createId("deployment"),
+              hostInstanceId: createId("hostInstance"),
+              hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
+            },
+            grantVerifier: {
+              async verify() {
+                throw new Error("No adoption grant in OIDC fixture");
+              },
+            },
+            async installAccountBundle() {
+              throw new Error("No bundle in OIDC fixture");
+            },
+          });
+          ownerId = await createUser("Team Owner");
+          await database
+            .insertInto("teamMembers")
+            .values({
+              userId: ownerId,
+              handle: "owner",
+              role: "owner",
+              state: "active",
+              joinedAt: new Date(),
+              changedAt: new Date(),
+              changedBy: null,
+            })
+            .execute();
+          await database
+            .insertInto("accountDirectoryProvider")
+            .values({
+              singletonKey: "opensteer-account",
+              providerId: configuredProviderId,
+              issuer: issuerOrigin,
+            })
+            .execute();
+          invite = await invites.create({ kind: "human", userId: ownerId }, createId("teamInvite"));
+        }
+        const identity = identityService({
+          ...(team ? { team } : {}),
+          localPasswordEnabled: false,
+          oidcProviders: [
+            {
+              allowPrivateNetwork: true,
+              clientId: "opensteer-test-client",
+              clientSecret: "opensteer-test-client-secret",
+              issuer: issuerOrigin,
+              label: "Company SSO",
+              providerId: logicalProviderId,
+              trustedOrigins: [],
+            },
+          ],
+          nativeOAuth: {
+            clients: [
+              nativeClient({
+                clientId: "opensteer-desktop",
+                redirectUris: ["com.opensteer.opensteer:/oauth/host-callback"],
+              }),
+            ],
+          },
+          exposure: "networked",
+          signupPolicy: "invite-only",
+        });
+        if (kind === "personal") {
+          const userId = await createUser("OIDC User");
+          await database
+            .updateTable("users")
+            .set({ email: "oidc-user@example.com", emailVerified: true, updatedAt: new Date() })
+            .where("id", "=", userId)
+            .execute();
+          await database
+            .insertInto("authAccounts")
+            .values({
+              id: createId("authAccount"),
+              userId,
+              accountId: "fixture-oidc-subject",
+              providerId: configuredProviderId,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .execute();
+        }
+        await identity.initialize();
+        const nativeAuthorization = new URL("/v1/auth/native/oauth2/authorize", publicOrigin);
+        nativeAuthorization.searchParams.set("client_id", "opensteer-desktop");
+        nativeAuthorization.searchParams.set(
+          "code_challenge",
+          createHash("sha256")
+            .update("oidc-native-pkce-verifier-with-at-least-forty-three-characters")
+            .digest("base64url"),
+        );
+        nativeAuthorization.searchParams.set("code_challenge_method", "S256");
+        nativeAuthorization.searchParams.set(
+          "redirect_uri",
+          "com.opensteer.opensteer:/oauth/host-callback",
+        );
+        nativeAuthorization.searchParams.set("response_type", "code");
+        nativeAuthorization.searchParams.set(
+          "scope",
+          "openid profile email offline_access host:access",
+        );
+        nativeAuthorization.searchParams.set("state", "oidc-native-state");
+        const nativePrompt = await identity.handleNativeOAuthRequest(
+          new Request(nativeAuthorization, { headers: { accept: "application/json" } }),
+        );
+        expect(nativePrompt.status).toBe(200);
+        const nativePromptBody = (await nativePrompt.json()) as { url?: unknown };
+        const nativeLoginUrl = new URL(String(nativePromptBody.url), publicOrigin);
+        expect(nativeLoginUrl.pathname).toBe("/");
+        const nativeOAuthQuery = nativeLoginUrl.search.slice(1);
+        expect(nativeOAuthQuery).toContain("sig=");
+        let admissionCookie = "";
+        if (invite) {
+          const url = new URL(invite.url);
+          const exchanged = await identity.exchangeTeamInvitation(
+            url.pathname.split("/").pop()!,
+            url.hash.slice(1),
+            new Headers({ origin: publicOrigin }),
+          );
+          admissionCookie = cookieHeader(exchanged.headers);
+        }
+        const started = await identity.beginOidcSignIn({
+          headers: new Headers({ origin: publicOrigin, "user-agent": "OIDC integration test" }),
+          oauthQuery: nativeOAuthQuery,
+          providerId: logicalProviderId,
+          returnPath: "/",
+        });
+        const authorizationUrl = new URL(started.data.redirectUrl);
+        expect(authorizationUrl.origin).toBe(issuerOrigin);
+        expect(authorizationUrl.pathname).toBe("/authorize");
+        expect(authorizationUrl.searchParams.get("client_id")).toBe("opensteer-test-client");
+        expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+        expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
+          `${publicOrigin}/v1/auth/oidc/callback`,
+        );
+        expectedCodeChallenge = authorizationUrl.searchParams.get("code_challenge");
+        const state = authorizationUrl.searchParams.get("state");
+        expect(expectedCodeChallenge).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+        expect(state).toBeTruthy();
+
+        const callback = await identity.handleOidcCallback(
+          new Request(
+            `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(state ?? "")}`,
+            {
+              headers: {
+                accept: "text/html",
+                cookie: [admissionCookie, cookieHeader(started.headers)].filter(Boolean).join("; "),
+                "sec-fetch-mode": "navigate",
+                "user-agent": "OIDC integration test",
+              },
+            },
+          ),
+        );
+        expect(callback.status).toBe(302);
+        const nativeConsentUrl = new URL(callback.headers.get("location") ?? "");
+        expect(nativeConsentUrl.origin).toBe(publicOrigin);
+        expect(nativeConsentUrl.pathname).toBe("/");
+        expect(nativeConsentUrl.searchParams.get("sig")).toBeTruthy();
+        expect(nativeConsentUrl.searchParams.get("client_id")).toBe("opensteer-desktop");
+        expect(tokenRequest?.authorization).toBe(
+          `Basic ${Buffer.from("opensteer-test-client:opensteer-test-client-secret").toString("base64")}`,
+        );
+        expect(tokenRequest?.body.get("grant_type")).toBe("authorization_code");
+        expect(tokenRequest?.body.get("redirect_uri")).toBe(
+          `${publicOrigin}/v1/auth/oidc/callback`,
+        );
+        expect(userinfoAuthorization).toBe(`Bearer ${accessToken}`);
+
+        const authenticated = await identity.authenticate(
+          new Headers({ cookie: sessionCookieHeader(callback.headers) }),
+        );
+        expect(authenticated).toMatchObject({
+          user: {
+            displayName: "OIDC User",
+            email: "oidc-user@example.com",
+          },
+        });
+        const account = await database
+          .selectFrom("authAccounts")
+          .select(["accessToken", "accountId", "providerId", "refreshToken"])
+          .executeTakeFirstOrThrow();
+        expect(account).toMatchObject({
           accountId: "fixture-oidc-subject",
           providerId: configuredProviderId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .execute();
-      await identity.initialize();
-      const nativeAuthorization = new URL("/v1/auth/native/oauth2/authorize", publicOrigin);
-      nativeAuthorization.searchParams.set("client_id", "opensteer-desktop");
-      nativeAuthorization.searchParams.set(
-        "code_challenge",
-        createHash("sha256")
-          .update("oidc-native-pkce-verifier-with-at-least-forty-three-characters")
-          .digest("base64url"),
-      );
-      nativeAuthorization.searchParams.set("code_challenge_method", "S256");
-      nativeAuthorization.searchParams.set(
-        "redirect_uri",
-        "com.opensteer.opensteer:/oauth/host-callback",
-      );
-      nativeAuthorization.searchParams.set("response_type", "code");
-      nativeAuthorization.searchParams.set(
-        "scope",
-        "openid profile email offline_access host:access",
-      );
-      nativeAuthorization.searchParams.set("state", "oidc-native-state");
-      const nativePrompt = await identity.handleNativeOAuthRequest(
-        new Request(nativeAuthorization, { headers: { accept: "application/json" } }),
-      );
-      expect(nativePrompt.status).toBe(200);
-      const nativePromptBody = (await nativePrompt.json()) as { url?: unknown };
-      const nativeLoginUrl = new URL(String(nativePromptBody.url), publicOrigin);
-      expect(nativeLoginUrl.pathname).toBe("/");
-      const nativeOAuthQuery = nativeLoginUrl.search.slice(1);
-      expect(nativeOAuthQuery).toContain("sig=");
-      const started = await identity.beginOidcSignIn({
-        headers: new Headers({ origin: publicOrigin, "user-agent": "OIDC integration test" }),
-        oauthQuery: nativeOAuthQuery,
-        providerId: "enterprise",
-        returnPath: "/",
-      });
-      const authorizationUrl = new URL(started.data.redirectUrl);
-      expect(authorizationUrl.origin).toBe(issuerOrigin);
-      expect(authorizationUrl.pathname).toBe("/authorize");
-      expect(authorizationUrl.searchParams.get("client_id")).toBe("opensteer-test-client");
-      expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
-      expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(
-        `${publicOrigin}/v1/auth/oidc/callback`,
-      );
-      expectedCodeChallenge = authorizationUrl.searchParams.get("code_challenge");
-      const state = authorizationUrl.searchParams.get("state");
-      expect(expectedCodeChallenge).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-      expect(state).toBeTruthy();
-
-      const callback = await identity.handleOidcCallback(
-        new Request(
-          `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(state ?? "")}`,
-          {
-            headers: {
-              accept: "text/html",
-              cookie: cookieHeader(started.headers),
-              "sec-fetch-mode": "navigate",
-              "user-agent": "OIDC integration test",
-            },
-          },
-        ),
-      );
-      expect(callback.status).toBe(302);
-      const nativeConsentUrl = new URL(callback.headers.get("location") ?? "");
-      expect(nativeConsentUrl.origin).toBe(publicOrigin);
-      expect(nativeConsentUrl.pathname).toBe("/");
-      expect(nativeConsentUrl.searchParams.get("sig")).toBeTruthy();
-      expect(nativeConsentUrl.searchParams.get("client_id")).toBe("opensteer-desktop");
-      expect(tokenRequest?.authorization).toBe(
-        `Basic ${Buffer.from("opensteer-test-client:opensteer-test-client-secret").toString("base64")}`,
-      );
-      expect(tokenRequest?.body.get("grant_type")).toBe("authorization_code");
-      expect(tokenRequest?.body.get("redirect_uri")).toBe(`${publicOrigin}/v1/auth/oidc/callback`);
-      expect(userinfoAuthorization).toBe(`Bearer ${accessToken}`);
-
-      const authenticated = await identity.authenticate(
-        new Headers({ cookie: sessionCookieHeader(callback.headers) }),
-      );
-      expect(authenticated).toMatchObject({
-        user: {
-          displayName: "OIDC User",
-          email: "oidc-user@example.com",
-          instanceRole: "administrator",
-        },
-      });
-      const account = await database
-        .selectFrom("authAccounts")
-        .select(["accessToken", "accountId", "providerId", "refreshToken"])
-        .executeTakeFirstOrThrow();
-      expect(account).toMatchObject({
-        accountId: "fixture-oidc-subject",
-        providerId: configuredProviderId,
-        refreshToken: null,
-      });
-      expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
-      expect(account.accessToken).not.toContain(accessToken);
-      await new OpensteerStore(database).ensureDeployment({
-        canonicalOrigin: publicOrigin,
-        deploymentId: createId("deployment"),
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
-      });
-      await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-      const selector = "oidc-team-selector-123456789";
-      const verifier = "v".repeat(43);
-      await database
-        .insertInto("teamInvitations")
-        .values({
-          id: crypto.randomUUID(),
-          selector,
-          tokenHash: createHash("sha256").update(verifier).digest("hex"),
-          intendedEmail: "oidc-user@example.com",
-          memberKind: "full",
-          createdBy: userId,
-          createdAt: new Date(),
-          expiresAt: new Date(Date.now() + 600_000),
-          commandId: "oidc-team",
-          requestFingerprint: "test",
-        })
-        .execute();
-      const exchange = await identity.exchangeTeamInvitation(
-        selector,
-        verifier,
-        new Headers({ origin: publicOrigin }),
-      );
-      const teamStarted = await identity.beginOidcSignIn({
-        headers: new Headers({ origin: publicOrigin, cookie: cookieHeader(exchange.headers) }),
-        providerId: "enterprise",
-        returnPath: `/join/${selector}`,
-      });
-      const teamAuthorization = new URL(teamStarted.data.redirectUrl);
-      expectedCodeChallenge = teamAuthorization.searchParams.get("code_challenge");
-      const teamCallback = await identity.handleOidcCallback(
-        new Request(
-          `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(teamAuthorization.searchParams.get("state") ?? "")}`,
-          {
-            headers: {
-              accept: "text/html",
-              cookie: `${cookieHeader(exchange.headers)}; ${cookieHeader(teamStarted.headers)}`,
-              "sec-fetch-mode": "navigate",
-            },
-          },
-        ),
-      );
-      expect(teamCallback.headers.get("location")).toBe(`${publicOrigin}/join/${selector}`);
-      const teamHeaders = new Headers({
-        cookie: `${cookieHeader(exchange.headers)}; ${sessionCookieHeader(teamCallback.headers)}`,
-      });
-      const teamSession = await identity.requireSession(teamHeaders);
-      const proof = await identity.teamInvitationAdmission(teamHeaders, teamSession);
-      expect(
-        await database
-          .selectFrom("authAdmissions")
-          .select("consumedAt")
-          .where("id", "=", proof.admissionId)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ consumedAt: null });
-      expect(
-        await database
-          .selectFrom("users")
-          .select("admittedAt")
-          .where("id", "=", userId)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ admittedAt: null });
-      await acceptTeamInvitation(database, proof);
-      expect(
-        await database
-          .selectFrom("users")
-          .select("admittedAt")
-          .where("id", "=", userId)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ admittedAt: expect.any(Date) });
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        issuer.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
-  });
+          refreshToken: null,
+        });
+        if (kind === "personal") {
+          expect(account.accessToken).toMatch(/^(?:\$ba\$|[a-f0-9]{96,})/u);
+          expect(account.accessToken).not.toContain(accessToken);
+        } else {
+          expect(account.accessToken).toBeNull();
+          const stored = await database
+            .selectFrom("authAccounts")
+            .select(["idToken", "password", "refreshToken"])
+            .where("providerId", "=", configuredProviderId)
+            .executeTakeFirstOrThrow();
+          expect(stored).toEqual({ idToken: null, password: null, refreshToken: null });
+          expect(
+            await database
+              .selectFrom("teamMembers")
+              .select(["role", "state"])
+              .where("userId", "=", authenticated!.user.id)
+              .executeTakeFirst(),
+          ).toEqual({ role: "member", state: "active" });
+          expect(
+            await database
+              .selectFrom("authSessions")
+              .select("memberGeneration")
+              .where("id", "=", authenticated!.id)
+              .executeTakeFirst(),
+          ).toEqual({ memberGeneration: "1" });
+        }
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          issuer.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    },
+  );
 
   it("declares a machine owner only for a seeded owner nobody can sign in as", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
@@ -647,14 +666,12 @@ integration("IdentityService", () => {
 
   it("issues and consumes one Account adoption proof bound to live Host authority", async () => {
     const origin = "http://127.0.0.1:4310";
-    const store = new OpensteerStore(database);
-    const deployment = await store.ensureDeployment({
+    const deployment = await ensureDeployment({
       canonicalOrigin: origin,
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "personal" as const,
       },
     });
     const identity = identityService({ signupPolicy: "open" });
@@ -668,7 +685,7 @@ integration("IdentityService", () => {
     );
     await database
       .updateTable("users")
-      .set({ instanceRole: "administrator" })
+      .set({ updatedAt: new Date() })
       .where("id", "=", signedUp.data.session.user.id)
       .executeTakeFirstOrThrow();
     const headers = new Headers({ cookie: cookieHeader(signedUp.headers), origin });
@@ -684,7 +701,7 @@ integration("IdentityService", () => {
       deployment: {
         canonicalOrigin: origin,
         deploymentId: deployment.id,
-        hostInstanceId: deployment.activeHostInstanceId,
+        hostInstanceId: deployment.hostInstanceId,
       },
     });
     expect(issued.proofId).toMatch(/^hap_/u);
@@ -764,14 +781,12 @@ integration("IdentityService", () => {
 
   it("atomically binds only a verified Account grant to the existing administrator", async () => {
     const origin = "http://127.0.0.1:4310";
-    const store = new OpensteerStore(database);
-    await store.ensureDeployment({
+    await ensureDeployment({
       canonicalOrigin: origin,
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "personal" as const,
       },
     });
     let verifiedGrant: VerifiedAccountAdoptionGrant | undefined;
@@ -797,7 +812,7 @@ integration("IdentityService", () => {
     );
     await database
       .updateTable("users")
-      .set({ instanceRole: "administrator" })
+      .set({ updatedAt: new Date() })
       .where("id", "=", signedUp.data.session.user.id)
       .executeTakeFirstOrThrow();
     const session = await identity.requireSession(
@@ -1506,10 +1521,10 @@ integration("IdentityService", () => {
         .executeTakeFirstOrThrow(),
     ).resolves.toEqual({ action: "instance.initial-owner-enrollment-rotated" });
 
-    const administratorId = await new OpensteerStore(database).createUser("Administrator");
+    const administratorId = await createUser("Administrator");
     await database
       .updateTable("users")
-      .set({ instanceRole: "administrator" })
+      .set({ updatedAt: new Date() })
       .where("id", "=", administratorId)
       .executeTakeFirstOrThrow();
     const completedIdentity = identityService({
@@ -1570,7 +1585,6 @@ integration("IdentityService", () => {
     expect(first.data.session.user).toMatchObject({
       displayName: "You",
       email: "owner@personal.opensteer.invalid",
-      instanceRole: "administrator",
     });
     await expect(identity.configuration()).resolves.toMatchObject({ setupState: "complete" });
     await expect(
@@ -1968,251 +1982,10 @@ integration("IdentityService", () => {
     await expect(
       database
         .selectFrom("users")
-        .select("instanceRole")
+        .select("id")
         .where("id", "=", completed.userId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ instanceRole: "administrator" });
-  });
-
-  it("keeps team admission separate from Workspace admission during signup", async () => {
-    const origin = "http://127.0.0.1:4310";
-    const owner = await identityService({ signupPolicy: "open" }).signUpPassword(
-      { displayName: "Owner", email: "owner@team.test", password: "correct horse battery staple" },
-      new Headers({ origin }),
-    );
-    await new OpensteerStore(database).ensureDeployment({
-      canonicalOrigin: origin,
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
-    });
-    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
-    const selector = "team-invitation-selector-12345";
-    const verifier = "v".repeat(43);
-    await database
-      .insertInto("teamInvitations")
-      .values({
-        id: crypto.randomUUID(),
-        selector,
-        tokenHash: createHash("sha256").update(verifier).digest("hex"),
-        intendedEmail: "invitee@team.test",
-        memberKind: "full",
-        createdBy: owner.data.session.user.id,
-        createdAt: new Date(),
-        expiresAt: new Date(Date.now() + 600_000),
-        commandId: "signup-team",
-        requestFingerprint: "test",
-      })
-      .execute();
-    const identity = identityService();
-    const exchange = await identity.exchangeTeamInvitation(
-      selector,
-      verifier,
-      new Headers({ origin }),
-    );
-    const headers = new Headers({ origin, cookie: cookieHeader(exchange.headers) });
-    await expect(
-      identity.signUpPassword(
-        {
-          displayName: "Wrong",
-          email: "wrong@team.test",
-          password: "correct horse battery staple",
-        },
-        headers,
-      ),
-    ).rejects.toThrow();
-    const signup = await identity.signUpPassword(
-      {
-        displayName: "Invitee",
-        email: "invitee@team.test",
-        password: "correct horse battery staple",
-      },
-      headers,
-    );
-    const authenticated = new Headers({
-      origin,
-      cookie: `${cookieHeader(exchange.headers)}; ${cookieHeader(signup.headers)}`,
-    });
-    await expect(identity.acceptInvitation(authenticated)).rejects.toThrow();
-    const proof = await identity.teamInvitationAdmission(authenticated, signup.data.session);
-    expect(
-      await database
-        .selectFrom("authAdmissions")
-        .select("consumedAt")
-        .where("id", "=", proof.admissionId)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ consumedAt: null });
-    expect(
-      await database
-        .selectFrom("users")
-        .select("admittedAt")
-        .where("id", "=", signup.data.session.user.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ admittedAt: null });
-  });
-
-  it("admits an invite-only signup into the whole Workspace with a single-use link", async () => {
-    const origin = "http://127.0.0.1:4310";
-    const openIdentity = identityService({ signupPolicy: "open" });
-    const ownerSignup = await openIdentity.signUpPassword(
-      {
-        displayName: "Owner",
-        email: "owner@example.com",
-        password: "correct horse battery staple",
-      },
-      new Headers({ origin }),
-    );
-    const ownerId = ownerSignup.data.session.user.id;
-    const store = new OpensteerStore(database);
-    await store.ensureDeployment({
-      canonicalOrigin: origin,
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
-      },
-    });
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: "identity-invitation-workspace",
-      name: "Shared client Workspace",
-      status: "ready",
-    });
-    const inviteOnlyIdentity = identityService();
-    const issued = await inviteOnlyIdentity.createWorkspaceInvitation({
-      createdBy: ownerId,
-      idempotencyKey: "identity-invitation-link",
-      lifetimeSeconds: 600,
-      role: "collaborator",
-      type: "link",
-      workspaceId: workspace.id,
-    });
-    await expect(
-      inviteOnlyIdentity.createWorkspaceInvitation({
-        createdBy: ownerId,
-        idempotencyKey: "identity-email-invitation-without-delivery",
-        intendedEmail: "client@example.com",
-        lifetimeSeconds: 600,
-        role: "collaborator",
-        type: "email",
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({
-      code: "bad_request",
-      message: "Email invitations are unavailable on this Host",
-    });
-    const revokedInvite = await inviteOnlyIdentity.createWorkspaceInvitation({
-      createdBy: ownerId,
-      idempotencyKey: "identity-revoked-invitation",
-      lifetimeSeconds: 600,
-      role: "collaborator",
-      type: "link",
-      workspaceId: workspace.id,
-    });
-    const revokedExchange = await inviteOnlyIdentity.exchangeInvitation(
-      revokedInvite.invitation.selector,
-      revokedInvite.verifier,
-    );
-    await store.revokeWorkspaceInvitation({
-      actorId: ownerId,
-      invitationId: revokedInvite.invitation.id,
-      workspaceId: workspace.id,
-    });
-    await expect(
-      inviteOnlyIdentity.signUpPassword(
-        {
-          displayName: "Revoked Client",
-          email: "revoked@example.com",
-          password: "revoked invitation password",
-        },
-        new Headers({ cookie: cookieHeader(revokedExchange.headers), origin }),
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    const exchanged = await inviteOnlyIdentity.exchangeInvitation(
-      issued.invitation.selector,
-      issued.verifier,
-    );
-    expect(exchanged.data.preview).toMatchObject({
-      role: "collaborator",
-      workspaceName: workspace.name,
-    });
-    const admissionCookie = cookieHeader(exchanged.headers);
-    await expect(
-      inviteOnlyIdentity.exchangeInvitation(issued.invitation.selector, issued.verifier),
-    ).rejects.toMatchObject({ code: "timeout", retryable: true });
-    await expect(
-      inviteOnlyIdentity.exchangeInvitation(
-        issued.invitation.selector,
-        issued.verifier,
-        new Headers({ cookie: admissionCookie }),
-      ),
-    ).resolves.toMatchObject({ status: 200 });
-    const clientSignup = await inviteOnlyIdentity.signUpPassword(
-      {
-        displayName: "Client",
-        email: "client@example.com",
-        password: "another correct horse battery staple",
-      },
-      new Headers({ cookie: admissionCookie, origin }),
-    );
-    const sessionCookie = cookieHeader(clientSignup.headers);
-    await expect(
-      inviteOnlyIdentity.teamInvitationAdmission(
-        new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
-        clientSignup.data.session,
-      ),
-    ).rejects.toMatchObject({ reason: "invite-unavailable" });
-    const collisionId = crypto.randomUUID();
-    await database
-      .insertInto("teamInvitations")
-      .values({
-        id: collisionId,
-        selector: issued.invitation.selector,
-        tokenHash: createHash("sha256").update("other verifier").digest("hex"),
-        intendedEmail: clientSignup.data.session.user.email,
-        memberKind: "full",
-        createdBy: ownerId,
-        createdAt: new Date(),
-        expiresAt: new Date(Date.now() + 600_000),
-        commandId: "selector-collision",
-        requestFingerprint: "test",
-      })
-      .execute();
-    await expect(
-      inviteOnlyIdentity.acceptInvitation(
-        new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
-      ),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await database.deleteFrom("teamInvitations").where("id", "=", collisionId).execute();
-    const accepted = await inviteOnlyIdentity.acceptInvitation(
-      new Headers({ cookie: `${admissionCookie}; ${sessionCookie}`, origin }),
-    );
-    expect(accepted.membership).toMatchObject({
-      role: "collaborator",
-      state: "active",
-      userId: clientSignup.data.session.user.id,
-      workspaceId: workspace.id,
-    });
-    expect((await store.listWorkspacesForOwner(clientSignup.data.session.user.id))[0]?.id).toBe(
-      workspace.id,
-    );
-    await expect(
-      inviteOnlyIdentity.exchangeInvitation(issued.invitation.selector, issued.verifier),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    expect(
-      JSON.stringify(await store.listActiveWorkspaceInvitations(workspace.id, ownerId)),
-    ).not.toContain(issued.verifier);
+    ).resolves.toEqual({ id: completed.userId });
   });
 });
 
@@ -2384,4 +2157,39 @@ function sessionCookieHeader(headers: Headers): string {
     .find((value) => /(?:^|\s)(?:__Host-)?opensteer\.session=.+/u.test(value ?? ""));
   if (!cookie) throw new Error("OIDC callback did not include a session cookie");
   return cookie;
+}
+
+async function createUser(displayName: string) {
+  const id = createId("user");
+  await database
+    .insertInto("users")
+    .values({
+      id,
+      displayName,
+      email: `${id}@example.invalid`,
+      emailVerified: false,
+      image: null,
+      disabledAt: null,
+    })
+    .execute();
+  return id;
+}
+async function ensureDeployment(input: {
+  canonicalOrigin: string;
+  deploymentId: ReturnType<typeof createId<"deployment">>;
+  hostInstanceId: ReturnType<typeof createId<"hostInstance">>;
+  deploymentShape: { kind: "personal" };
+}) {
+  await database
+    .insertInto("deployments")
+    .values({
+      id: input.deploymentId,
+      singletonKey: "primary",
+      activeHostInstanceId: input.hostInstanceId,
+      canonicalOrigin: input.canonicalOrigin,
+      lifecycle: "active",
+      deploymentShape: sql`${JSON.stringify(input.deploymentShape)}::jsonb`,
+    })
+    .execute();
+  return { ...input, id: input.deploymentId };
 }

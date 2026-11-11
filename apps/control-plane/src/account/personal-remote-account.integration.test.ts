@@ -886,7 +886,6 @@ function hostAuthority() {
       algorithm: "Ed25519",
     },
     deploymentShape: {
-      defaultWorkspaceBacking: "local-directory",
       kind: "personal" as const,
     },
   });

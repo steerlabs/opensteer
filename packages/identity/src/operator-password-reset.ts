@@ -44,15 +44,11 @@ export async function issueLocalAdministratorPasswordRecovery(
   await database.transaction().execute(async (transaction) => {
     const liveAdministrator = await transaction
       .selectFrom("users")
-      .select(["id", "email", "instanceRole", "disabledAt"])
+      .select(["id", "email", "disabledAt"])
       .where("id", "=", administrator.id)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    if (
-      !liveAdministrator ||
-      liveAdministrator.instanceRole !== "administrator" ||
-      liveAdministrator.disabledAt !== null
-    ) {
+    if (!liveAdministrator || liveAdministrator.disabledAt !== null) {
       throw new Error("The administrator changed while recovery was being issued; try again.");
     }
     const passwordAccount = await transaction
@@ -95,7 +91,6 @@ export async function issueLocalAdministratorPasswordRecovery(
         requestId: null,
         targetId: liveAdministrator.id,
         targetType: "user",
-        workspaceId: null,
       })
       .executeTakeFirstOrThrow();
   });
@@ -114,11 +109,7 @@ async function selectAdministrator(
   database: Kysely<DatabaseSchema>,
   requestedEmail: IdentityEmail | null,
 ): Promise<{ readonly email: string; readonly id: UserId }> {
-  let query = database
-    .selectFrom("users")
-    .select(["id", "email"])
-    .where("instanceRole", "=", "administrator")
-    .where("disabledAt", "is", null);
+  let query = database.selectFrom("users").select(["id", "email"]).where("disabledAt", "is", null);
   if (requestedEmail) query = query.where("email", "=", requestedEmail);
   const administrators = await query.orderBy("createdAt", "asc").limit(2).execute();
   if (administrators.length === 0) {
