@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
-import { RunPlaceStore } from "@opensteer/client/host";
+import { BrowserTabStore, RunPlaceStore } from "@opensteer/client/host";
 import { LivePlace } from "./viewfinder.js";
 
 vi.mock("./workspace-context.js", () => ({
@@ -67,6 +67,7 @@ it("keeps the card and its watch lease across independent inventories, Request w
     retain = vi.fn(() => release);
   const watchState = { status: "unavailable", frame: null, error: null };
   const client = {
+    browserTabs: new BrowserTabStore(),
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => {
       listeners.add(listener);

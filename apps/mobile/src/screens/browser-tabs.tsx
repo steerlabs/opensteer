@@ -1,8 +1,6 @@
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
-import type { BrowserCatalogTab as BrowserTabSummary } from "@opensteer/client/host";
 import {
   browserTabPicture,
-  browserTabTitle,
   browserThreadAgentTab,
   browserThreadTabs,
   placeAgents,
@@ -16,9 +14,17 @@ import {
   type HostSnapshot,
   type PlaceAgent,
   type PlaceEntry,
-  type PlaceItem,
 } from "@opensteer/client/host";
-import { useHostSelector, usePlaceList } from "@opensteer/client/react";
+import {
+  readPlaceIndex,
+  useBrowserSessionGroupId,
+  useBrowserTab,
+  useBrowserTabIcon,
+  useBrowserTabs,
+  useHostSelector,
+  usePlace,
+  useSyncingPlaceholder,
+} from "@opensteer/client/react";
 import {
   CommonActions,
   StackActions,
@@ -49,14 +55,11 @@ export type BrowserTabsScreenProps = StaticScreenProps<{
   readonly threadId?: string;
 }>;
 
-/** One of the browser's tabs as the sheet lists it. */
+/** One of the browser's tabs as the sheet lists it; its row reads the rest by key. */
 interface TabRowItem {
-  readonly favicon: string | null;
   readonly id: string;
-  /** Who is in the tab, when the sheet lists everyone rather than one task's agent. */
-  readonly place: PlaceItem | null;
-  readonly site: string | null;
-  readonly title: string;
+  /** Who is in the tab is shown, when the sheet lists everyone rather than one task's agent. */
+  readonly occupants: boolean;
 }
 
 type ListItem =
@@ -113,17 +116,10 @@ function sameTaskView(left: TaskView | null, right: TaskView | null): boolean {
 }
 
 function catalogRows(
-  session: Pick<HostSnapshot["browserSessions"][number], "tabs">,
-  tabs: readonly BrowserTabSummary[],
-  placeOf: (id: string) => PlaceItem | null,
+  tabs: readonly { readonly id: string }[],
+  occupants: boolean,
 ): readonly TabRowItem[] {
-  return tabs.map((tab) => ({
-    favicon: session.tabs.find(({ id }) => id === tab.id)?.favicon ?? null,
-    id: tab.id,
-    place: placeOf(tab.id),
-    site: pageSite(tab.site),
-    title: tab.title || pageSite(tab.site) || "New tab",
-  }));
+  return tabs.map(({ id }) => ({ id, occupants }));
 }
 
 function tabCount(count: number): string {
@@ -145,7 +141,9 @@ function BrowserTabs(props: {
     [sessionId],
   );
   const session = useHostSelector(hostClient, selectSession);
-  const places = usePlaceList(hostClient);
+  // The browser's tabs by key; each row reads its own, so a title repaints only its row.
+  const groupId = useBrowserSessionGroupId(hostClient, sessionId);
+  const list = useBrowserTabs(hostClient, groupId ?? "");
   // The pages this task's transcript says it worked in, when its transcript is held.
   const selectTaskPlaces = useCallback(
     (snapshot: HostSnapshot) => {
@@ -183,45 +181,30 @@ function BrowserTabs(props: {
   const remembered = useRef<BrowserThreadTabs | undefined>(undefined);
   const groups = useMemo(
     () =>
-      threadId === null || session === null || session.tabCatalog === undefined
+      threadId === null || session === null || !list.whole
         ? null
         : browserThreadTabs(session, threadId, taskPlaces, remembered.current),
-    [session, taskPlaces, threadId],
+    [list.whole, session, taskPlaces, threadId],
   );
   useEffect(() => {
     if (groups !== null) remembered.current = groups;
   }, [groups]);
 
-  const rows = useMemo((): readonly TabRowItem[] => {
-    if (session === null || groups !== null) return [];
-    const placeOf = (id: string) =>
-      places.find(
-        (place) => place.destination.kind === "browser" && place.destination.tabId === id,
-      ) ?? null;
-    const catalog = session.tabCatalog?.tabs;
-    if (catalog !== undefined)
-      return catalogRows(
-        session,
-        [...catalog].sort((left, right) => left.order - right.order),
-        placeOf,
-      );
-    return session.tabs.map((tab) => ({
-      favicon: tab.favicon ?? null,
-      id: tab.id,
-      place: placeOf(tab.id),
-      site: pageSite(tab.url),
-      title: browserTabTitle(tab),
-    }));
-  }, [groups, places, session]);
+  const rows = useMemo(
+    (): readonly TabRowItem[] =>
+      session === null || groups !== null ? [] : list.ids.map((id) => ({ id, occupants: true })),
+    [groups, list.ids, session],
+  );
+  // Still syncing with nothing to list: no count, and past a moment the list's loading line.
+  const syncing = list.syncing && rows.length === 0 && groups === null;
+  const finding = useSyncingPlaceholder(list.syncing && groups === null, rows.length);
   // A task's rows name only its own agent, so they look nobody else up.
   const taskRows = useMemo(
-    () =>
-      groups === null || session === null ? [] : catalogRows(session, groups.taskTabs, () => null),
+    () => (groups === null || session === null ? [] : catalogRows(groups.taskTabs, false)),
     [groups, session],
   );
   const otherRows = useMemo(
-    () =>
-      groups === null || session === null ? [] : catalogRows(session, groups.otherTabs, () => null),
+    () => (groups === null || session === null ? [] : catalogRows(groups.otherTabs, false)),
     [groups, session],
   );
   // Opens unfolded when the tab in front, or every tab, is not the task's.
@@ -255,11 +238,16 @@ function BrowserTabs(props: {
 
   // The device the browser runs on, when that is not this phone, and the profile it is signed in as.
   const hereId = useHereDeviceId(deploymentId);
-  const owner = places.find((place) => place.browser?.sessionId === sessionId);
-  const device = owner?.device && owner.device.machineId !== hereId ? owner.device.name : null;
-  const where = [device, owner?.identity?.name ?? null]
-    .filter((part): part is string => part !== null && part !== "")
-    .join(" · ");
+  const selectWhere = useCallback(() => {
+    const owner = readPlaceIndex(hostClient).items.find(
+      (place) => place.browser?.sessionId === sessionId,
+    );
+    const device = owner?.device && owner.device.machineId !== hereId ? owner.device.name : null;
+    return [device, owner?.identity?.name ?? null]
+      .filter((part): part is string => part !== null && part !== "")
+      .join(" · ");
+  }, [hereId, hostClient, sessionId]);
+  const where = useHostSelector(hostClient, selectWhere);
 
   // The page under this sheet takes the chosen tab; it is the screen the sheet
   // was presented over, so it is found by where it is rather than by name.
@@ -290,7 +278,7 @@ function BrowserTabs(props: {
       <View style={styles.head}>
         <View style={styles.headWords}>
           {groups === null || agent === null ? (
-            <AppText role="title">{tabCount(rows.length)}</AppText>
+            <AppText role="title">{syncing ? "Tabs" : tabCount(rows.length)}</AppText>
           ) : (
             <View style={styles.taskName}>
               {agent.mark === null ? (
@@ -326,6 +314,13 @@ function BrowserTabs(props: {
         contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + space[16] }]}
         data={items}
         keyExtractor={(item) => item.key}
+        ListEmptyComponent={
+          finding ? (
+            <AppText role="secondary" style={styles.finding} tone="muted">
+              Finding tabs…
+            </AppText>
+          ) : undefined
+        }
         renderItem={({ item }) => {
           if (item.kind === "more")
             return (
@@ -360,6 +355,7 @@ function BrowserTabs(props: {
                 }
                 current={item.row.id === tabId}
                 first={item.first}
+                groupId={groupId}
                 hostClient={hostClient}
                 last={item.last}
                 onChoose={choose}
@@ -387,20 +383,29 @@ const TabRow = memo(function TabRow(props: {
   readonly agentHere: PlaceAgent | null;
   readonly current: boolean;
   readonly first: boolean;
+  readonly groupId: string | undefined;
   readonly hostClient: HostClient;
   readonly last: boolean;
   readonly onChoose: (id: string) => void;
   readonly row: TabRowItem;
   readonly sessionId: string;
 }): ReactNode {
-  const { agentHere, row } = props;
-  const picture = browserTabPicture(props.hostClient, props.sessionId, row.id);
-  const { place } = row;
+  const { agentHere, hostClient, sessionId } = props;
+  const tab = useBrowserTab(hostClient, props.groupId, props.row.id);
+  const place = usePlace(
+    hostClient,
+    props.row.occupants ? `browser:${sessionId}:${props.row.id}` : null,
+  );
+  const favicon = useBrowserTabIcon(hostClient, sessionId, tab?.iconRef ?? null);
+  const site = tab ? pageSite(tab.site) : null;
+  const row = { id: props.row.id, favicon, site, title: tab?.title || site || "New tab" };
+  // The last picture held of it, a sleeping tab's included: reading it never wakes the tab.
+  const picture = browserTabPicture(hostClient, sessionId, row.id);
   const selectAgents = useCallback(
     (snapshot: HostSnapshot) => (place === null ? noAgents : placeAgents(place, snapshot)),
     [place],
   );
-  const agents = useHostSelector(props.hostClient, selectAgents, samePlaceAgents);
+  const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
   const label = [
     row.title,
     row.site,
@@ -462,6 +467,7 @@ const styles = StyleSheet.create({
   agent: { alignItems: "center", flexDirection: "row", gap: space[6] },
   all: { justifyContent: "center", minHeight: touchTarget },
   dim: { opacity: 0.6 },
+  finding: { paddingHorizontal: space[14], paddingTop: space[12] },
   head: {
     alignItems: "center",
     flexDirection: "row",

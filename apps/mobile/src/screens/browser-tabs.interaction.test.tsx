@@ -48,14 +48,27 @@ const snapshot = {
     },
   ],
 } as unknown as HostSnapshot;
+const currentPlace = {
+  key: "browser:browser:current",
+  browser: { sessionId: "browser" },
+  destination: { kind: "browser", sessionId: "browser", tabId: "current" },
+  occupants: [occupant(true)],
+};
+// The browser's tabs by key, as the snapshot's catalog lists them.
+const catalog = () =>
+  [...(snapshot.browserSessions[0]!.tabCatalog?.tabs ?? [])].sort((a, b) => a.order - b.order);
 vi.mock("@opensteer/client/react", () => ({
   useHostSelector: (_: unknown, select: (value: HostSnapshot) => unknown) => select(snapshot),
-  usePlaceList: () => [
-    {
-      destination: { kind: "browser", sessionId: "browser", tabId: "current" },
-      occupants: [occupant(true)],
-    },
-  ],
+  readPlaceIndex: () => ({ items: [currentPlace] }),
+  useBrowserSessionGroupId: () => "browser",
+  useBrowserTabs: () => ({ ids: catalog().map(({ id }) => id), syncing: false, whole: true }),
+  useBrowserTab: (_: unknown, _group: string, id: string) => {
+    const tab = catalog().find((candidate) => candidate.id === id);
+    return tab ? { ...tab, iconRef: null } : undefined;
+  },
+  useBrowserTabIcon: () => null,
+  usePlace: (_: unknown, key: string | null) => (key === currentPlace.key ? currentPlace : null),
+  useSyncingPlaceholder: () => false,
 }));
 vi.mock("@react-navigation/native", () => ({
   CommonActions: { setParams: (params: object) => ({ type: "SET_PARAMS", payload: { params } }) },

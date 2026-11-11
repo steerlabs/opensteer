@@ -17,6 +17,7 @@ import {
   type RunEntry,
   type ToolEntry,
   type TranscriptEntry,
+  BrowserTabStore,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { conversationHistoryHost, MemoryPrivateFilesystem } from "@opensteer/client/test-support";
@@ -1128,6 +1129,7 @@ function fakeHost(initial: HostSnapshot) {
     latestPlaceOfThread: () => null,
     retainBrowserWatch: vi.fn(() => watchRelease),
     subscribeBrowserWatch: () => () => undefined,
+    browserTabs: new BrowserTabStore(),
     subscribeLatestPlace: () => () => undefined,
     dispatch,
     getSnapshot: () => snapshot,

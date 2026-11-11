@@ -91,3 +91,43 @@ export function useBrowserViewerSurface(
   );
   return useSyncExternalStore(hostSnapshotStore(client).subscribe, get, get);
 }
+
+/**
+ * Whether this tab's page is awake. A Watch holds a sleeping tab's last
+ * picture and never retains it, which would wake it; a tab the client does
+ * not hold counts as awake.
+ */
+export function useBrowserTabAwake(
+  client: Pick<HostClient, "browserTabs">,
+  sessionId: string | undefined,
+  tabId: string | undefined,
+): boolean {
+  const store = client.browserTabs;
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      if (sessionId === undefined || tabId === undefined) return () => {};
+      let release = () => {};
+      const follow = () => {
+        release();
+        const groupId = store.groupForSession(sessionId);
+        release = groupId ? store.subscribeTab(groupId, tabId, listener) : () => {};
+        listener();
+      };
+      const stop = store.subscribeSessionGroup(sessionId, follow);
+      follow();
+      return () => {
+        stop();
+        release();
+      };
+    },
+    [sessionId, store, tabId],
+  );
+  const get = useCallback(() => {
+    const row =
+      sessionId === undefined || tabId === undefined
+        ? undefined
+        : store.sessionTab(sessionId, tabId);
+    return row === undefined || row.state === "live";
+  }, [sessionId, store, tabId]);
+  return useSyncExternalStore(subscribe, get, get);
+}
