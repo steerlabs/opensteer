@@ -389,6 +389,10 @@ describe("personal browser tab groups", () => {
       vi.spyOn(source, "getSnapshot").mockReturnValue({
         ...snapshot,
         workspaceTabs: [],
+        browserSessions: snapshot.browserSessions.map((session) => ({
+          ...session,
+          workspaceTabRestoreVersion: undefined,
+        })),
         browserTabGroups: {
           revision: 1,
           groups: [

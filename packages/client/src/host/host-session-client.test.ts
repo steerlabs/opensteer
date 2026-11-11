@@ -346,9 +346,10 @@ it.each([64, 500])(
       );
       expect(client.getSnapshot().workspaceTabs?.every((group) => group.whole)).toBe(true);
       const prefixBytes = keyedStreamBytes(prefix);
+      const browserSection = keyedStreamBytes(body.browser);
       const snapshotBytes = total();
       const bytesUntilWhole =
-        prefixBytes +
+        browserSection +
         (prefix.groups.complete && prefix.tabs.every((group) => group.complete)
           ? 0
           : snapshotBytes);
@@ -394,7 +395,7 @@ it.each([64, 500])(
         {
           tabs: count,
           groups: groups.length,
-          browserSection: keyedStreamBytes(body.browser),
+          browserSection,
           prefixBytes,
           snapshotBytes,
           bytesUntilWhole,
