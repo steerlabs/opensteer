@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { TriggerOutputSchema } from "@opensteer/agent-tools/outputs";
 import { type ProductToolResult } from "../mcp/product-tools.test-support.js";
@@ -1231,7 +1232,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const created = await personCreate(f, f.sibling);
       const barrier = holdQueryResult(
         database,
-        (node) => node.includes('"name":"triggers"') && !node.includes("SelectModifierNode"),
+        (node) =>
+          node.includes('"kind":"SelectQueryNode"') &&
+          node.includes('"name":"triggers"') &&
+          node.includes('"name":"anchor_thread_id"') &&
+          !node.includes('"name":"workspace_id"') &&
+          !node.includes("SelectModifierNode"),
       );
       const service = triggerService(new TriggerStore(barrier.database));
       const actor = change === "actor-downgrade" ? f.fullChild : f.child;
@@ -1247,7 +1253,26 @@ integration.sequential("Trigger authority through real Host services and Postgre
       const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
       void mutation.catch(() => undefined);
       try {
-        await barrier.reached;
+        await withTimeout(
+          Promise.race([
+            barrier.reached,
+            mutation.then(
+              () => {
+                throw new Error("Mutation completed before the authority-read barrier");
+              },
+              (error) => {
+                throw new Error("Mutation refused before the authority-read barrier", {
+                  cause: error,
+                });
+              },
+            ),
+          ]),
+          5_000,
+          {
+            timeoutError: () =>
+              new Error("Trigger identity read never reached the pre-lock authority barrier"),
+          },
+        );
         await store.updateThreadAccessMode({
           accessMode: change === "actor-downgrade" ? "auto" : "full-access",
           requestedBy: f.ownerId,
