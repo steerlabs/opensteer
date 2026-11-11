@@ -622,22 +622,47 @@ export function DeniedRequestBody({
   denied: NonNullable<SurfaceModel["denied"]>;
   request: Request;
 }) {
+  // The Host said who may answer, and the card says whose it is above.
+  const answered = "answer" in request && request.answer !== undefined;
   return (
     <>
       {request.payload.kind === "integration.install" ||
       (request.payload.kind === "integration.access" && request.payload.manifest !== null) ? (
         <IntegrationInstallReview manifest={request.payload.manifest} />
       ) : null}
-      <ActionNote>
-        {denied === "administrator"
-          ? "A Host administrator must complete this request."
-          : denied === "manager"
-            ? "A manager of this project must answer this request."
-            : denied === "other"
-              ? "You can’t answer this request."
-              : "The person who started this task must answer this request."}
-      </ActionNote>
+      {/* A team's card is read by everyone who can open the task; only its options are shown. */}
+      {answered ? <ReadOnlyOptions request={request} /> : null}
+      {answered ? null : (
+        <ActionNote>
+          {denied === "administrator"
+            ? "A Host administrator must complete this request."
+            : denied === "manager"
+              ? "A manager of this project must answer this request."
+              : denied === "other"
+                ? "You can’t answer this request."
+                : "The person who started this task must answer this request."}
+        </ActionNote>
+      )}
     </>
+  );
+}
+
+/** A question's options as words, for a reader who may not answer it. */
+function ReadOnlyOptions({ request }: { request: Request }) {
+  const { presentation } = request;
+  const items =
+    presentation.kind === "choice"
+      ? presentation.options.map(({ id, label }) => ({ id, text: label }))
+      : presentation.kind === "form"
+        ? presentation.fields.map(({ id, prompt }) => ({ id, text: prompt }))
+        : [];
+  if (items.length === 0) return null;
+  return (
+    <ul aria-label="Its options" className="action-panel__readonly">
+      {items.map(({ id, text }) => (
+        <li key={id}>{text}</li>
+      ))}
+    </ul>
   );
 }
 

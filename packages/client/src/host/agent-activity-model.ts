@@ -1,5 +1,6 @@
 import { foldedSubagentSummary, turnSubagentCount } from "./subagent-model.js";
 import { pageSiteLabel } from "./surfaces.js";
+import { requestCancelledLine } from "./team-thread.js";
 import {
   isIntegrationGatewayTool,
   placeIdentityKey,
@@ -1674,10 +1675,15 @@ export function activityStepHead(
       return delegationHead(entry);
     case "request":
       return {
-        // On a team, who settled it is part of what happened to the question.
+        // On a team, who settled it, or whose it was, is part of what happened to the question.
         detail: entry.resolvedByName
           ? `${entry.outcome} · by ${entry.resolvedByName}`
-          : entry.outcome,
+          : entry.cancelledFor || entry.outcome === "Cancelled · no-eligible-manager"
+            ? requestCancelledLine(
+                entry.outcome.replace(/^Cancelled · /u, ""),
+                entry.cancelledFor?.name ?? null,
+              )
+            : entry.outcome,
         detailKind: "prose",
         duration: null,
         errors: 0,

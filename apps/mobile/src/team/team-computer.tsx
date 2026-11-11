@@ -1,6 +1,7 @@
 import {
   formatRelativeTime,
   teamComputerCommand,
+  teamComputerReplace,
   teamComputerState,
   teamComputerTrustNote,
   type HostClient,
@@ -39,6 +40,7 @@ export function TeamComputer(props: { readonly hostClient: HostClient }): ReactN
       </RowGroup>
     );
   const state = teamComputerState(view.computer, teamName);
+  const action = teamComputerReplace(view, teamName);
   const replace = (): void => {
     setPending(true);
     void (
@@ -69,7 +71,7 @@ export function TeamComputer(props: { readonly hostClient: HostClient }): ReactN
     }
     Alert.alert(
       `Replace ${view.computer.name}?`,
-      `It stops running tasks for ${teamName} at once. Projects can run again when the new computer is connected and has their files. Whoever runs ${teamName}’s server must copy the projects’ files to it first; Opensteer doesn’t move them.`,
+      `${view.computer.name} stops working for ${teamName} at once. The new computer joins with the command that follows.`,
       [
         { style: "cancel", text: "Cancel" },
         { onPress: replace, style: "destructive", text: "Replace" },
@@ -108,12 +110,29 @@ export function TeamComputer(props: { readonly hostClient: HostClient }): ReactN
             onPress={() => void Share.share({ message: command.text }).catch(() => undefined)}
           />
         </TeamSection>
-      ) : view.can.replace.allowed ? (
-        view.computer ? (
-          <SecondaryButton busy={pending} label="Replace computer…" onPress={confirm} />
-        ) : (
-          <PrimaryButton busy={pending} label="Connect a computer" onPress={confirm} />
-        )
+      ) : action ? (
+        <>
+          {view.computer ? (
+            <SecondaryButton
+              busy={pending}
+              disabled={!action.enabled}
+              label={action.label}
+              onPress={confirm}
+            />
+          ) : (
+            <PrimaryButton
+              busy={pending}
+              disabled={!action.enabled}
+              label={action.label}
+              onPress={confirm}
+            />
+          )}
+          {action.note ? (
+            <AppText role="secondary" tone="muted">
+              {action.note}
+            </AppText>
+          ) : null}
+        </>
       ) : null}
     </>
   );

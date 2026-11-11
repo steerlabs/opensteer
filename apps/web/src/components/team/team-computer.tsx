@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import {
   formatRelativeTime,
   teamComputerCommand,
+  teamComputerReplace,
   teamComputerState,
   teamComputerTrustNote,
   teamErrorText,
@@ -81,6 +82,7 @@ export function TeamComputerPage() {
   };
 
   const state = view ? teamComputerState(view.computer, teamName) : null;
+  const action = view ? teamComputerReplace(view, teamName) : null;
   return (
     <>
       <SectionHeader
@@ -104,17 +106,23 @@ export function TeamComputerPage() {
                 </span>
               ) : null}
             </span>
-            {view.can.replace.allowed && !issued ? (
+            {action && !issued ? (
               <button
+                aria-describedby={action.note ? "team-computer-replace-note" : undefined}
                 className={view.computer ? "btn btn--small" : "btn btn--primary btn--small"}
-                disabled={pending}
+                disabled={pending || !action.enabled}
                 onClick={() => (view.computer ? setConfirming(true) : replace())}
                 type="button"
               >
-                {view.computer ? "Replace computer…" : "Connect a computer"}
+                {action.label}
               </button>
             ) : null}
           </div>
+          {action?.note && !issued ? (
+            <p className="card__row field__hint" id="team-computer-replace-note">
+              {action.note}
+            </p>
+          ) : null}
           {issued && command ? (
             <div className="card__row team-computer__connect">
               {command.kind === "command" ? (
@@ -152,9 +160,8 @@ export function TeamComputerPage() {
           title={`Replace ${view.computer.name}?`}
         >
           <p>
-            It stops running tasks for {teamName} at once. Projects can run again when the new
-            computer is connected and has their files. Whoever runs {teamName}’s server must copy
-            the projects’ files to it first; Opensteer doesn’t move them.
+            {view.computer.name} stops working for {teamName} at once. The new computer joins with
+            the command that follows.
           </p>
           {error ? (
             <p className="notice notice--error" role="alert">

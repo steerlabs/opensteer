@@ -53,11 +53,15 @@ export function TeamProjectSections({ access }: { readonly access: ProjectAccess
         viewerId={snapshot.user?.id ?? null}
       />
       {access.data ? <ProjectRuntimeSection access={access.data} teamName={teamName} /> : null}
-      {access.data && canDeleteProject(access.data) ? (
-        <TeamDeleteProject access={access.data} teamName={teamName} />
-      ) : null}
     </>
   );
+}
+
+/** A shared Project's delete, last on its page, where the Host allows it. */
+export function TeamProjectDelete({ access }: { readonly access: ProjectAccessRead }) {
+  const { summary } = useShellTeam();
+  if (!access.data || !canDeleteProject(access.data)) return null;
+  return <TeamDeleteProject access={access.data} teamName={summary?.team.name ?? "the team"} />;
 }
 
 /**
@@ -262,6 +266,7 @@ export function TeamProjectPage({ workspaceId }: { readonly workspaceId: string 
           )}
         </header>
         <TeamProjectSections access={access} />
+        <TeamProjectDelete access={access} />
       </div>
     </div>
   );

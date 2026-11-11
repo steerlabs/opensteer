@@ -100,7 +100,14 @@ export function TeamTaskFacts(props: {
   ).slice(-outcomesShown);
   const starter = thread.startedBy ? taskStarterLine(thread.startedBy, where.viewerId) : null;
   const lines = [
-    ...(thread.stopped ? [taskStoppedText(thread.stopped, place).long] : []),
+    ...(thread.stopped
+      ? [
+          taskStoppedText(thread.stopped, place, {
+            startedBy: thread.startedBy,
+            viewerId: where.viewerId,
+          }).long,
+        ]
+      : []),
     ...waits,
   ];
   if (
@@ -131,10 +138,10 @@ export function TeamTaskFacts(props: {
         </View>
       ) : null}
       {outcomes.length > 0 ? (
-        <View accessibilityLabel="Earlier questions" style={styles.earlier}>
+        <View accessibilityLabel="How earlier questions ended" style={styles.earlier}>
           {outcomes.map((outcome) => (
             <AppText key={outcome.requestId} role="caption" tone="muted">
-              {`Earlier question · ${requestOutcomeLine(outcome, place)} · ${formatRelativeTime(outcome.at)}`}
+              {`${requestOutcomeLine(outcome)} · ${formatRelativeTime(outcome.at)}`}
             </AppText>
           ))}
         </View>

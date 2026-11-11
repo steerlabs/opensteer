@@ -45,7 +45,7 @@ export function teamReasonText(reason: TeamReason, team = "the team"): string {
     case "guests-unavailable":
       return "Guests aren’t available on this team yet.";
     case "projects-prevent-replacement":
-      return "This team computer can’t be replaced while projects exist.";
+      return `This computer can’t be replaced while ${team} has projects. Delete the projects first, or keep this computer.`;
     case "requester-only":
       return "Only the person who started this task can answer.";
     case "manager-only":
@@ -502,4 +502,19 @@ export function teamComputerState(
 /** The trusted-members statement, as a footnote where nothing is being confirmed. */
 export function teamComputerTrustNote(team: string): string {
   return `${team} runs every project on one computer. People in ${team}, and the agents working for them, can reach that computer and anything on its network.`;
+}
+
+/**
+ * The team computer's one action, from the Host's `can.replace`: offered,
+ * shown disabled with the Host's reason in words, or absent when the Host
+ * gives no reason to show.
+ */
+export function teamComputerReplace(
+  view: TeamComputerView,
+  team: string,
+): { readonly label: string; readonly enabled: boolean; readonly note: string | null } | null {
+  const label = view.computer ? "Replace computer…" : "Connect a computer";
+  if (view.can.replace.allowed) return { label, enabled: true, note: null };
+  if (!view.can.replace.reason) return null;
+  return { label, enabled: false, note: teamReasonText(view.can.replace.reason, team) };
 }

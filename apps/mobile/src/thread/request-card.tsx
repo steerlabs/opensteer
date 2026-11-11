@@ -351,6 +351,25 @@ function CardAnswers(props: {
   readonly takesReason: boolean;
 }): ReactNode {
   const { answers, locked, onReview, onSend, overflows, pendingId, request, settled } = props;
+  if (answers.kind === "none" && props.denied !== null && "answer" in request && request.answer) {
+    // A team's card is read by everyone who can open the task; the line above says whose it is.
+    const presentation = request.presentation;
+    const items =
+      presentation.kind === "choice"
+        ? presentation.options.map(({ id, label }) => ({ id, text: label }))
+        : presentation.kind === "form"
+          ? presentation.fields.map(({ id, prompt }) => ({ id, text: prompt }))
+          : [];
+    return (
+      <View accessibilityLabel="Its options" style={styles.waiting}>
+        {items.map(({ id, text }) => (
+          <AppText key={id} role="secondary" tone="soft">
+            {`• ${text}`}
+          </AppText>
+        ))}
+      </View>
+    );
+  }
   if (answers.kind === "none") {
     return (
       <View style={styles.waiting}>

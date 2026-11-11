@@ -29,7 +29,12 @@ import { WorkspaceSharingDialog } from "./workspace-sharing-dialog.js";
 import { AreaLink, useAreaNavigate } from "./workspace/area-link.js";
 import { useProjectAccess } from "./team/project-access.js";
 import { useShellTeam } from "./team/team-ui.js";
-import { TeamProjectMarker, TeamProjectPage, TeamProjectSections } from "./team/team-project.js";
+import {
+  TeamProjectDelete,
+  TeamProjectMarker,
+  TeamProjectPage,
+  TeamProjectSections,
+} from "./team/team-project.js";
 
 /**
  * A Project's settings: who is in it, what it may use beyond its own folder,
@@ -178,8 +183,10 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
             </div>
           </section>
         ) : null}
+        {/* A destructive action goes last. */}
+        {teamProject ? <TeamProjectDelete access={teamAccess} /> : null}
         {/* The Host lets only an active owner delete a Project. */}
-        {workspace.status === "ready" && owner ? (
+        {!teamProject && workspace.status === "ready" && owner ? (
           <DeleteProjectSection connected={connected} workspace={workspace} />
         ) : null}
       </div>

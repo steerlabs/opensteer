@@ -36,11 +36,15 @@ describe("a shared task's facts, in words", () => {
     );
   });
 
-  it("names a departed starter only when the Host gives the name", () => {
-    expect(
-      taskStoppedText({ reason: "membership-revoked", starterName: "Sam Lee" }, place).short,
-    ).toBe("Stopped · Sam Lee is no longer in Acme");
-    expect(taskStoppedText({ reason: "membership-revoked" }, place).short).not.toContain("Sam");
+  it("says a stop came from the starter's access changing, never that anyone left", () => {
+    const maya = { kind: "person" as const, userId: createId("user"), name: "Maya Chen" };
+    const stopped = { reason: "membership-revoked" as const, starterName: "Sam Lee" };
+    const said = taskStoppedText(stopped, place, { startedBy: maya, viewerId: null }).long;
+    expect(said).toBe("Stopped because Maya Chen’s access changed.");
+    expect(said).not.toMatch(/Sam|left/u);
+    expect(taskStoppedText(stopped, place).long).toBe(
+      "Stopped because its starter’s access changed.",
+    );
   });
 
   it("says how many waits the Host's window left out, and leaves out the one the reader answers", () => {
@@ -60,20 +64,19 @@ describe("a shared task's facts, in words", () => {
     ).toEqual([]);
   });
 
-  it("names the departed person on a cancellation only when the Host captured it", () => {
+  it("names on a cancellation whose question it was, only when the Host gives the name", () => {
     const cancelled = { requestId, status: "cancelled" as const, at };
     expect(
-      requestOutcomeLine(
-        { ...cancelled, reason: "membership-revoked", cancelledFor: { name: "Sam Lee" } },
-        place,
-      ),
-    ).toBe("Cancelled: Sam Lee is no longer in Acme. The task stopped.");
-    expect(requestOutcomeLine({ ...cancelled, reason: "membership-revoked" }, place)).not.toContain(
-      "Sam",
-    );
+      requestOutcomeLine({
+        ...cancelled,
+        reason: "membership-revoked",
+        cancelledFor: { name: "Sam Lee" },
+      }),
+    ).toBe("This was Sam Lee’s question. It was cancelled when Sam Lee’s access changed.");
+    expect(requestOutcomeLine({ ...cancelled, reason: "membership-revoked" })).toBe("Cancelled");
   });
 
-  it("explains why the reader is asked only when the Host allows them to answer", () => {
+  it("says whose question a card is from the Host's answer, and nothing without it", () => {
     const managers = { kind: "managers" as const };
     expect(requestAnswerNote({ answer: { allowed: true }, waitingOn: managers }, "Support")).toBe(
       "Any manager of Support can answer.",
@@ -83,8 +86,18 @@ describe("a shared task's facts, in words", () => {
         { answer: { allowed: false, reason: "manager-only" }, waitingOn: managers },
         "Support",
       ),
-    ).toBeNull();
+    ).toBe("Any manager of Support can answer.");
     expect(requestAnswerNote({ waitingOn: managers }, "Support")).toBeNull();
+    // A reader outside the audience reads the card and is told whose it is.
+    expect(
+      requestAnswerNote(
+        {
+          answer: { allowed: false, reason: "requester-only" },
+          waitingOn: { kind: "person", name: "Maya Chen" },
+        },
+        "Support",
+      ),
+    ).toBe("Only Maya Chen can answer.");
   });
 
   it("reads an answer that lost to an earlier one from the Host's reason", () => {

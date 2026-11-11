@@ -2,7 +2,10 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { teamComputerCommand } from "./team-computer.js";
 import { placeHas } from "./team-place.js";
-import { canDeleteProject, canListAllProjects } from "./team-presentation.js";
+import { MockHostClient } from "../mock/mock-host-client.js";
+import { deriveSurface } from "./composer-surface.js";
+import { taskList } from "./task-list.js";
+import { canDeleteProject, canListAllProjects, teamComputerReplace } from "./team-presentation.js";
 import { unplacedOutcomes } from "./team-thread.js";
 
 const allowed = { allowed: true } as const;
@@ -64,5 +67,56 @@ describe("who sees what on a team place", () => {
         [{ kind: "request", requestId: placed }],
       ),
     ).toEqual([outcome(unseen)]);
+  });
+});
+
+describe("questions on a shared task", () => {
+  it("shows a question to everyone who can open its task, answer controls and Needs you only to its audience", () => {
+    const host = new MockHostClient({ team: "guest" });
+    const snapshot = host.getSnapshot();
+    const review = "thr_00000000-0000-4000-8000-0000000009a2";
+    const question = deriveSurface(snapshot.requests[review] ?? [], snapshot.user);
+    expect(question?.request.presentation.title).toContain("release notes");
+    expect(question?.denied).toBe("manager");
+    expect(
+      snapshot.waitingRequests.some(({ request }) => request.originatingThreadId === review),
+    ).toBe(false);
+    const list = taskList(snapshot);
+    const row = [...list.working, ...list.ready, ...list.done].find(
+      ({ threadId }) => threadId === review,
+    );
+    expect(row?.tone).toBe("waiting");
+    host.dispose();
+
+    const manager = new MockHostClient({ team: "admin" });
+    const asked = manager.getSnapshot();
+    expect(deriveSurface(asked.requests[review] ?? [], asked.user)?.denied).toBeNull();
+    expect(
+      asked.waitingRequests.some(({ request }) => request.originatingThreadId === review),
+    ).toBe(true);
+    manager.dispose();
+  });
+});
+
+describe("replacing the team computer", () => {
+  const computer = {
+    id: "rnr_00000000-0000-4000-8000-0000000000f1" as never,
+    name: "acme-runner",
+    state: "connected" as const,
+    lastSeenAt: null,
+  };
+  it("is disabled with the Host's reason while projects exist, and offered otherwise", () => {
+    const blocked = teamComputerReplace(
+      { computer, can: { replace: { allowed: false, reason: "projects-prevent-replacement" } } },
+      "Acme",
+    );
+    expect(blocked?.enabled).toBe(false);
+    expect(blocked?.note).toContain("while Acme has projects");
+    expect(teamComputerReplace({ computer, can: { replace: allowed } }, "Acme")?.enabled).toBe(
+      true,
+    );
+    expect(teamComputerReplace({ computer: null, can: { replace: allowed } }, "Acme")?.label).toBe(
+      "Connect a computer",
+    );
   });
 });

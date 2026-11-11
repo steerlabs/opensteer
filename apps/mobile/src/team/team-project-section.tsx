@@ -261,35 +261,6 @@ export function TeamProjectSection(props: {
       {view.can.manage.allowed ? (
         <RuntimeSummary deploymentId={deploymentId} hostClient={hostClient} view={view} />
       ) : null}
-      {canDeleteProject(view) ? (
-        <TeamSection
-          footer={`Removes ${project.name}, its tasks and its files, for everyone on it. This can’t be undone.`}
-          label="Delete project"
-        >
-          <SecondaryButton
-            label={`Delete ${project.name}…`}
-            onPress={() =>
-              Alert.alert(
-                `Delete ${project.name}?`,
-                `${project.name}, its tasks and its files are deleted for everyone in ${teamName} who uses it. This can’t be undone.`,
-                [
-                  { style: "cancel", text: "Cancel" },
-                  {
-                    style: "destructive",
-                    text: "Delete",
-                    onPress: () =>
-                      void team
-                        .deleteProject(view.accessRevision, project.id)
-                        .then(() => navigation.navigate("Home", { deploymentId }))
-                        .catch((error: unknown) => showError(error, teamName)),
-                  },
-                ],
-              )
-            }
-            tone="danger"
-          />
-        </TeamSection>
-      ) : null}
     </>
   );
 }
@@ -395,4 +366,52 @@ function RuntimeSummary(props: {
 
 export function teamProjectGone(error: unknown, team: string): string {
   return teamErrorText(error, team);
+}
+
+/** A shared Project's delete, last on its page, where the Host allows it. */
+export function TeamProjectDelete(props: {
+  readonly hostClient: HostClient;
+  readonly deploymentId: string;
+  readonly access: ReturnType<typeof useTeamProjectAccess>;
+}): ReactNode {
+  const { hostClient, deploymentId } = props;
+  const navigation = useNavigation();
+  const { team, summary } = useTeam(hostClient);
+  const teamName = summary?.team.name ?? "the team";
+  const view = props.access.data;
+  if (!team || !view) return null;
+  const { project } = view;
+  return (
+    <>
+      {canDeleteProject(view) ? (
+        <TeamSection
+          footer={`Removes ${project.name}, its tasks and its files, for everyone on it. This can’t be undone.`}
+          label="Delete project"
+        >
+          <SecondaryButton
+            label={`Delete ${project.name}…`}
+            onPress={() =>
+              Alert.alert(
+                `Delete ${project.name}?`,
+                `${project.name}, its tasks and its files are deleted for everyone in ${teamName} who uses it. This can’t be undone.`,
+                [
+                  { style: "cancel", text: "Cancel" },
+                  {
+                    style: "destructive",
+                    text: "Delete",
+                    onPress: () =>
+                      void team
+                        .deleteProject(view.accessRevision, project.id)
+                        .then(() => navigation.navigate("Home", { deploymentId }))
+                        .catch((error: unknown) => showError(error, teamName)),
+                  },
+                ],
+              )
+            }
+            tone="danger"
+          />
+        </TeamSection>
+      ) : null}
+    </>
+  );
 }
