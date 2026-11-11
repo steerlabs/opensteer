@@ -8,6 +8,26 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
       from public.deployments d
       where d.singleton_key = 'primary'
     $$;
+  create function public.opensteer_enforce_project_event_receipt() returns trigger language plpgsql set search_path = pg_catalog as $$
+  declare stored_model integer;
+  begin
+    select model into stored_model from public.opensteer_stored_execution_authority();
+    if stored_model is distinct from 2 or new.action <> 'project.event' or new.action_class <> 'project.event'
+      or not exists (
+        select 1 from public.runs r join public.threads t on t.id = r.thread_id
+          join public.principals p on p.id = r.actor_principal_id
+        where r.id = new.run_id and t.id = new.source_thread_id
+          and p.kind = 'project' and p.workspace_id = t.workspace_id
+          and public.opensteer_project_work_is_valid(r.thread_id, r.actor_principal_id, r.requested_by,
+            r.membership_generation, r.initiator_generation, r.origin_connection_id, r.authority_source)
+      ) then raise exception 'Project event receipts require live stored Project authority model 2' using errcode = '23514';
+    end if;
+    return new;
+  end $$;
+  create trigger agent_control_requests_project_event before insert or update of run_id, source_thread_id, action, action_class on public.agent_control_requests
+    for each row when (new.action = 'project.event' or new.action_class = 'project.event')
+    execute function public.opensteer_enforce_project_event_receipt();
+
   create function public.opensteer_project_principal_scope() returns trigger language plpgsql as $$
   begin
     if tg_op = 'UPDATE' and old.kind = 'project' then
