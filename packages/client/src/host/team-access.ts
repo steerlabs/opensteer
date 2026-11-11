@@ -231,8 +231,9 @@ export class TeamAccess {
     draft: TeamInvitationDraft,
     input: {
       readonly email: string;
-      readonly kind: "full" | "guest";
       readonly validFor: "1d" | "7d";
+      /** The inviter confirmed this person is trusted with the team's computer and its network. */
+      readonly trustedComputerConfirmed: true;
     },
   ) {
     const result = await this.#dispatch("team.invitation.create", {
@@ -243,8 +244,10 @@ export class TeamAccess {
       selector: draft.selector,
       tokenHash: draft.tokenHash,
       intendedEmail: input.email,
-      memberKind: input.kind,
+      // The trusted-members pilot admits one kind of member.
+      memberKind: "full",
       validFor: input.validFor,
+      trustedComputerConfirmed: input.trustedComputerConfirmed,
     });
     return result;
   }

@@ -1,4 +1,5 @@
 import type { HostClient, HostSnapshot } from "./client.js";
+import { isTeamPlace } from "./team-place.js";
 import { TeamAccess, type TeamSummaryView } from "./team-access.js";
 
 type SessionPort = Pick<HostClient, "rpc" | "dispatch" | "getSnapshot" | "subscribe">;
@@ -29,8 +30,7 @@ export interface TeamSessionState {
 }
 
 export function teamIdentity(snapshot: HostSnapshot): string | null {
-  if (snapshot.teamAdministrationAvailable !== true || snapshot.session !== "authenticated")
-    return null;
+  if (!isTeamPlace(snapshot) || snapshot.session !== "authenticated") return null;
   if (!snapshot.user || !snapshot.deploymentId) return null;
   return `${snapshot.deploymentId}\u0000${snapshot.user.id}\u0000${snapshot.sessionId ?? ""}`;
 }

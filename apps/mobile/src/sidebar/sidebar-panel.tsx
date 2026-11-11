@@ -105,6 +105,7 @@ import { DraftRow } from "./draft-row.js";
 import { sidebarFolders, type SidebarFolder } from "./project-folders.js";
 import { voiceRowMark, type VoiceRowMark } from "./voice-row.js";
 import { CreateProjectGate } from "../team/team-parts.js";
+import { isTeamPlace } from "@opensteer/client/host";
 
 /** The root destinations the sidebar switches between. */
 export type SidebarDestination = "Home" | "Schedules" | "Projects" | "Tabs";
@@ -346,6 +347,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     deploymentId !== null && selection.deploymentId === deploymentId && row?.signIn === null
       ? selection.hostClient
       : null;
+  // A team place has no Chat, Voice, Main tasks or tabs.
+  const team = hostClient !== null && isTeamPlace(hostClient.getSnapshot());
   // Read only while the sidebar is on screen: closed, it would otherwise
   // rebuild every row on every streamed update for a list nobody can see.
   // Opening reads the current snapshot in the same render that shows it.
@@ -535,29 +538,33 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         style={styles.scroll}
       >
         <View style={styles.nav}>
-          <DestinationRow
-            accessibilityLabel={
-              list === null || list.chat === null
-                ? CHAT_THREAD_TITLE
-                : taskRowLabel(list.chat, { chat: true })
-            }
-            accessory={list === null ? null : <ChatAccessory row={list.chat} />}
-            current={destination === "Home" || selectedRow.chat}
-            drafted={destination !== "Home" && unsentReply(list?.chat?.threadId)}
-            icon="bubble.left"
-            mark={<ChatOrb size={20} />}
-            label={CHAT_THREAD_TITLE}
-            onPress={actions.onChat}
-          />
-          <VoiceRow
-            current={selectedRow.voice}
-            drafted={unsentReply(model?.voiceThreadId)}
-            mark={model?.voice ?? null}
-            onOpen={openTask}
-            threadId={model?.voiceThreadId ?? null}
-            visible={visible}
-          />
-          {deploymentId === null ? null : (
+          {team ? null : (
+            <DestinationRow
+              accessibilityLabel={
+                list === null || list.chat === null
+                  ? CHAT_THREAD_TITLE
+                  : taskRowLabel(list.chat, { chat: true })
+              }
+              accessory={list === null ? null : <ChatAccessory row={list.chat} />}
+              current={destination === "Home" || selectedRow.chat}
+              drafted={destination !== "Home" && unsentReply(list?.chat?.threadId)}
+              icon="bubble.left"
+              mark={<ChatOrb size={20} />}
+              label={CHAT_THREAD_TITLE}
+              onPress={actions.onChat}
+            />
+          )}
+          {team ? null : (
+            <VoiceRow
+              current={selectedRow.voice}
+              drafted={unsentReply(model?.voiceThreadId)}
+              mark={model?.voice ?? null}
+              onOpen={openTask}
+              threadId={model?.voiceThreadId ?? null}
+              visible={visible}
+            />
+          )}
+          {deploymentId === null || team ? null : (
             <DestinationRow
               accessibilityLabel={
                 taskWorkspaceId === null ? "New task, unavailable until Main is ready" : "New task"
@@ -571,11 +578,12 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
               }}
             />
           )}
+          {/* A team place's root is its Projects, so this row returns to it. */}
           <DestinationRow
-            current={destination === "Projects"}
+            current={destination === "Projects" || (team && destination === "Home")}
             icon="folder"
             label="Projects"
-            onPress={actions.onProjects}
+            onPress={team ? actions.onChat : actions.onProjects}
           />
           <DestinationRow
             current={destination === "Schedules"}
@@ -750,19 +758,21 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           ]
         )}
 
-        <View style={styles.tabs}>
-          {hostClient === null || model === null ? (
-            <GroupHead title="Tabs" />
-          ) : (
-            <SidebarTabs hostClient={hostClient} onOpen={actions.onOpenPlace} />
-          )}
-          <DestinationRow
-            current={destination === "Tabs"}
-            icon="rectangle.on.rectangle"
-            label="All tabs"
-            onPress={actions.onTabs}
-          />
-        </View>
+        {team ? null : (
+          <View style={styles.tabs}>
+            {hostClient === null || model === null ? (
+              <GroupHead title="Tabs" />
+            ) : (
+              <SidebarTabs hostClient={hostClient} onOpen={actions.onOpenPlace} />
+            )}
+            <DestinationRow
+              current={destination === "Tabs"}
+              icon="rectangle.on.rectangle"
+              label="All tabs"
+              onPress={actions.onTabs}
+            />
+          </View>
+        )}
       </ScrollView>
 
       <View

@@ -502,3 +502,61 @@
     flex-direction: column;
   }
 }
+
+.team-home__title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.settings-navigation__elsewhere {
+  margin: var(--space-12) var(--space-12) 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.team-trust {
+  padding: var(--space-12) var(--space-14);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--fill-quiet);
+  color: var(--text-soft);
+  font-size: var(--text-sm);
+}
+
+.team-trust p {
+  margin: 0;
+}
+
+.team-trust__confirm {
+  display: flex;
+  gap: var(--space-8);
+  align-items: flex-start;
+  margin-top: var(--space-10);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.team-join__app {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding-top: var(--space-14);
+  border-top: 1px solid var(--rim-plate);
+}
+
+.team-join__address {
+  display: flex;
+  gap: var(--space-8);
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-6);
+}
+
+.team-join__address code {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

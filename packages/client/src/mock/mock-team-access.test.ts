@@ -94,8 +94,8 @@ describe("the shared team mock", () => {
     const draft = createTeamInvitationDraft();
     const created = await team.createInvitation(await revision(), draft, {
       email: "nina2@acme.example",
-      kind: "guest",
       validFor: "1d",
+      trustedComputerConfirmed: true,
     });
     const listed = async () =>
       (await new TeamAccess(host).invitations()).items.find(

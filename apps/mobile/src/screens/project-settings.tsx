@@ -12,6 +12,7 @@ import {
   type PluginSummary,
   type WorkspaceMemberSummary,
   type WorkspaceSummary,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostRead, useHostSnapshot, type HostRead } from "@opensteer/client/react";
 import { WorkspaceIdSchema, type SpecialistRegistration } from "@opensteer/core";
@@ -116,7 +117,7 @@ function ProjectSettings(props: {
   const administrator = snapshot.user?.instanceRole === "administrator";
   const connected = canRespondToRequests(snapshot);
   const readable = project !== null && userId !== null;
-  const teamProject = snapshot.teamAdministrationAvailable === true;
+  const teamProject = isTeamPlace(snapshot);
   const teamAccess = useTeamProjectAccess(hostClient, workspaceId);
   const { summary } = useTeam(hostClient);
   const teamName = summary?.team.name ?? "the team";
@@ -128,7 +129,7 @@ function ProjectSettings(props: {
     `members:${workspaceId}:${userId}`,
   );
   const grants = useHostRead<readonly ProjectGrant[]>(
-    readable ? () => readGrants(hostClient, workspaceId) : null,
+    readable && !teamProject ? () => readGrants(hostClient, workspaceId) : null,
     `grants:${workspaceId}:${userId}`,
   );
   const owner =
@@ -278,25 +279,30 @@ function ProjectSettings(props: {
             workspace={project}
           />
         )}
-        <AccessSection
-          destinations={destinations}
-          grants={grants}
-          snapshot={snapshot}
-          workspace={project}
-        />
-        <PluginsSection
-          administrator={administrator}
-          canChange={connected && (owner || administrator)}
-          destinations={destinations}
-          hostClient={hostClient}
-          workspace={project}
-        />
-        <SpecialistsSection
-          connected={connected}
-          hostClient={hostClient}
-          userId={userId}
-          workspace={project}
-        />
+        {/* A team Project has no personal accounts, plugins or specialists to show. */}
+        {teamProject ? null : (
+          <>
+            <AccessSection
+              destinations={destinations}
+              grants={grants}
+              snapshot={snapshot}
+              workspace={project}
+            />
+            <PluginsSection
+              administrator={administrator}
+              canChange={connected && (owner || administrator)}
+              destinations={destinations}
+              hostClient={hostClient}
+              workspace={project}
+            />
+            <SpecialistsSection
+              connected={connected}
+              hostClient={hostClient}
+              userId={userId}
+              workspace={project}
+            />
+          </>
+        )}
 
         {project.status === "ready" ? (
           <MuteSection

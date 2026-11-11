@@ -7,6 +7,7 @@ import {
   teamReasonText,
   type HostClient,
   type TeamAccess,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useHostSelector, useTeam } from "@opensteer/client/react";
 import type { AccessChange, Can } from "@opensteer/protocol";
@@ -234,10 +235,7 @@ function TeamCreateGate(props: {
 
 export function useCanCreateProject(hostClient: HostClient): boolean {
   const { summary } = useTeam(hostClient);
-  const team = useHostSelector(
-    hostClient,
-    (snapshot) => snapshot.teamAdministrationAvailable === true,
-  );
+  const team = useHostSelector(hostClient, (snapshot) => isTeamPlace(snapshot));
   return !team || summary?.can.createProject.allowed === true;
 }
 

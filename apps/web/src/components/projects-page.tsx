@@ -6,6 +6,7 @@ import {
   projectStatusLabel,
   taskList,
   type ProjectFolder,
+  isTeamPlace,
 } from "@opensteer/client/host";
 import { useMinuteClock } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
@@ -15,7 +16,7 @@ import { useTaskSnapshot } from "./task-rows.js";
 import { WorkspaceOrb } from "./workspace-orb.js";
 import { AreaLink } from "./workspace/area-link.js";
 import { TaskState } from "./workspace/task-mark.js";
-import { useShellTeam } from "./team/team-ui.js";
+import { TeamMark, useShellTeam } from "./team/team-ui.js";
 
 /** Past this many, the directory offers to narrow itself by name. */
 const filterFrom = 7;
@@ -32,8 +33,10 @@ export function ProjectsPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [query, setQuery] = useState("");
   const { summary } = useShellTeam();
-  const canCreate =
-    snapshot.teamAdministrationAvailable !== true || summary?.can.createProject.allowed === true;
+  const team = isTeamPlace(snapshot);
+  const canCreate = !team || summary?.can.createProject.allowed === true;
+  // Known before the first paint from the place's own identity; the summary may follow.
+  const teamName = snapshot.identityConfig?.deployment.name ?? summary?.team.name ?? null;
   const folders = useMemo(
     () => groupTasksByProject(snapshot, taskList(snapshot)).folders,
     [snapshot],
@@ -46,13 +49,28 @@ export function ProjectsPage() {
     : folders;
   return (
     <div className="page projects-page">
-      <PageTopbar onOpenNavigation={openMobileNavigation} title="Projects" />
+      <PageTopbar
+        onOpenNavigation={openMobileNavigation}
+        title={team ? (teamName ?? "Projects") : "Projects"}
+      />
       <div className="page__inner">
         <div className="automations-head">
-          <PageHeader
-            description="Each Project is a folder inside Main with its own chat, tasks, people and access. Agents can start work in one, or you can."
-            title="Projects"
-          />
+          {team ? (
+            <PageHeader
+              description={`Projects you can use. Each one does its work on ${teamName ?? "the team"}’s computer.`}
+              title={
+                <span className="team-home__title">
+                  {teamName ? <TeamMark name={teamName} size="large" /> : null}
+                  {teamName ?? "Projects"}
+                </span>
+              }
+            />
+          ) : (
+            <PageHeader
+              description="Each Project is a folder inside Main with its own chat, tasks, people and access. Agents can start work in one, or you can."
+              title="Projects"
+            />
+          )}
           {canCreate ? (
             <div className="automations-head__actions">
               <button
@@ -87,8 +105,11 @@ export function ProjectsPage() {
             </span>
             <h2 className="projects-empty__title">No projects yet</h2>
             <p className="projects-empty__body">
-              Give recurring or long-running work its own folder, chat and instructions — a launch,
-              your finances, a client. Opensteer can also make one when work calls for it.
+              {team
+                ? canCreate
+                  ? "When someone adds you to a project, it appears here. You can also start one."
+                  : "When someone adds you to a project, it appears here."
+                : "Give recurring or long-running work its own folder, chat and instructions — a launch, your finances, a client. Opensteer can also make one when work calls for it."}
             </p>
             {canCreate ? (
               <button className="btn btn--primary" onClick={openNewWorkspace} type="button">

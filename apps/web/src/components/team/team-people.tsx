@@ -8,12 +8,14 @@ import {
   memberPreviewCopy,
   memberStateLabel,
   teamReasonText,
+  invitationTrustConfirmation,
+  invitationTrustNote,
   teamInvitationUrl,
   type MemberDetailView,
   type TeamAccess,
 } from "@opensteer/client/host";
 import { useHostRead, usePagedList } from "@opensteer/client/react";
-import type { MemberChange, MemberKind, MemberState, MemberSummary } from "@opensteer/protocol";
+import type { MemberChange, MemberState, MemberSummary } from "@opensteer/protocol";
 import { useShell } from "../app-shell.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
@@ -307,7 +309,13 @@ function Invitations({
   );
 }
 
-function CopyButton({ text }: { readonly text: string }) {
+export function CopyButton({
+  label = "Copy link",
+  text,
+}: {
+  readonly label?: string;
+  readonly text: string;
+}) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -320,7 +328,7 @@ function CopyButton({ text }: { readonly text: string }) {
       }}
       type="button"
     >
-      <Icon name={copied ? "check" : "copy"} /> {copied ? "Copied" : "Copy link"}
+      <Icon name={copied ? "check" : "copy"} /> {copied ? "Copied" : label}
     </button>
   );
 }
@@ -339,7 +347,7 @@ function InviteDialog({
   const { snapshot } = useShell();
   const { holdLink } = useShellTeam();
   const [email, setEmail] = useState("");
-  const [kind, setKind] = useState<MemberKind>("full");
+  const [trusted, setTrusted] = useState(false);
   const [validFor, setValidFor] = useState<"1d" | "7d">("7d");
   const [draft] = useState(() => createTeamInvitationDraft());
   const [pending, setPending] = useState(false);
@@ -393,12 +401,16 @@ function InviteDialog({
         className="card__form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (!valid || pending) return;
+          if (!valid || !trusted || pending) return;
           setPending(true);
           setError(null);
           const intended = email.trim();
           void team
-            .createInvitation(revision, draft, { email: intended, kind, validFor })
+            .createInvitation(revision, draft, {
+              email: intended,
+              validFor,
+              trustedComputerConfirmed: true,
+            })
             .then((result) => {
               const url = teamInvitationUrl(origin, draft);
               holdLink(result.invitationId, url);
@@ -421,23 +433,6 @@ function InviteDialog({
           <span className="field__hint">Only someone signed in with this email can join.</span>
         </label>
         <div className="field">
-          <span className="field__label">As</span>
-          <SettingsSegmented
-            label="As"
-            onChange={setKind}
-            options={[
-              { value: "full", label: "Member" },
-              { value: "guest", label: "Guest" },
-            ]}
-            value={kind}
-          />
-          <span className="field__hint">
-            {kind === "full"
-              ? `Members are in Everyone, so they get every project shared with Everyone.`
-              : "Guests see only the projects they’re added to."}
-          </span>
-        </div>
-        <div className="field">
           <span className="field__label">Link works for</span>
           <SettingsSegmented
             label="Link works for"
@@ -449,12 +444,28 @@ function InviteDialog({
             value={validFor}
           />
         </div>
+        <div className="team-trust">
+          <p>{invitationTrustNote(teamName)}</p>
+          <label className="team-trust__confirm">
+            <input
+              checked={trusted}
+              className="team-check"
+              onChange={(event) => setTrusted(event.currentTarget.checked)}
+              type="checkbox"
+            />
+            <span>{invitationTrustConfirmation(email, teamName)}</span>
+          </label>
+        </div>
         <TeamError error={error} team={teamName} />
         <div className="form-actions">
           <button className="btn" disabled={pending} onClick={onClose} type="button">
             Cancel
           </button>
-          <button className="btn btn--primary" disabled={!valid || pending} type="submit">
+          <button
+            className="btn btn--primary"
+            disabled={!valid || !trusted || pending}
+            type="submit"
+          >
             {pending ? "Making link…" : "Make invite link"}
           </button>
         </div>
