@@ -17,12 +17,24 @@ function same<T extends object>(previous: T | undefined, next: T): T {
 
 export class BrowserSnapshotDerivation {
   #previous: BrowserSessionSummary[] = [];
+  #source: readonly BrowserSessionSummary[] | undefined;
+  #store: BrowserTabStore | undefined;
+  #revision = -1;
   readonly #sessions = new WeakMap<BrowserGroupRow, ReturnType<typeof groupSession>>();
 
   derive(
     snapshot: Pick<HostSnapshot, "browserSessions">,
     store: BrowserTabStore,
   ): Pick<HostSnapshot, "browserSessions" | "workspaceTabRestoreVersion" | "browserTabs"> {
+    if (
+      this.#store === store &&
+      this.#revision === store.groupRevision &&
+      (snapshot.browserSessions === this.#source || snapshot.browserSessions === this.#previous)
+    )
+      return { browserTabs: store, workspaceTabRestoreVersion: 1, browserSessions: this.#previous };
+    this.#store = store;
+    this.#revision = store.groupRevision;
+    this.#source = snapshot.browserSessions;
     const previous = new Map(this.#previous.map((session) => [session.id, session]));
     const statuses = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
     const sessions = store.groups().ids.map((id) => {

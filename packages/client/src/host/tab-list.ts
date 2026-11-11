@@ -9,7 +9,7 @@ import {
   type ComputerGlyph,
   type DeviceElsewhere,
 } from "../computers/computers.js";
-import { placeHasAgents, type PlaceItem } from "./places.js";
+import { placeHasAgents, type PlaceItem, type PlaceFilterItem } from "./places.js";
 import { sameIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
 
 /**
@@ -31,7 +31,7 @@ export function tabFilterActive(filter: TabFilter): boolean {
 }
 
 /** A device filter leaves out what runs on none, as Opensteer Apps do; a profile one, what browses as none. */
-export function tabMatchesFilter(place: PlaceItem, filter: TabFilter): boolean {
+export function tabMatchesFilter(place: PlaceFilterItem, filter: TabFilter): boolean {
   return (
     (!filter.agents || placeHasAgents(place)) &&
     (!filter.profile ||
@@ -67,7 +67,7 @@ export interface TabDeviceChoice {
  * still list it.
  */
 export function tabDeviceChoice(input: {
-  readonly places: readonly PlaceItem[];
+  readonly places: readonly PlaceFilterItem[];
   readonly machines: readonly MachineSummary[];
   readonly hereId: string | null;
   readonly homeId: string | null;

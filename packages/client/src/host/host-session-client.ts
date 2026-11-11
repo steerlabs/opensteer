@@ -149,8 +149,8 @@ import {
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
-import { placeList } from "./places.js";
-import { keepBrowserLastPictures } from "./browser-last-picture.js";
+import { placeByKey } from "./places.js";
+import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
 import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
@@ -508,7 +508,7 @@ export class HttpHostClient {
   );
   readonly browserTabs = this.#browserTabs;
   #browserStructure: ReturnType<BrowserTabStore["structure"]> = [];
-  #browserRevision = -1;
+  #browserTargetRevision = -1;
   #browserTabIds = new Map<string, readonly string[]>();
   browserViewerSurface(sessionId: string, surfaceId: string) {
     return (
@@ -5818,7 +5818,7 @@ export class HttpHostClient {
       };
     const structure = this.#browserTabs.structure();
     const browserStructureChanged = structure !== this.#browserStructure;
-    const browserTabsChanged = this.#browserRevision !== this.#browserTabs.revision;
+    const browserTargetsChanged = this.#browserTargetRevision !== this.#browserTabs.targetRevision;
     const closedBrowserTabs: string[] = [];
     if (browserStructureChanged) {
       const tabIds = new Map<string, readonly string[]>();
@@ -5834,7 +5834,7 @@ export class HttpHostClient {
       this.#browserTabIds = tabIds;
     }
     this.#browserStructure = structure;
-    this.#browserRevision = this.#browserTabs.revision;
+    this.#browserTargetRevision = this.#browserTabs.targetRevision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
       for (const check of this.#browserWaiters) check();
@@ -5877,17 +5877,12 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        browserTabsChanged ||
+        browserTargetsChanged ||
+        snapshot.appTabs !== this.#snapshot.appTabs ||
+        snapshot.browserPlacements !== this.#snapshot.browserPlacements ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
-        const places = placeList(snapshot);
-        keepBrowserLastPictures(this.browserWatchFrames, places);
-        keepBrowserLastPictures(this.browserFrames, places);
-        if (snapshot.connection === "connected")
-          this.#placeActivity.reconcile(
-            new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),
-          );
         const authorized = (sessionId: string, surfaceId: string) =>
           this.#browserTargetAuthorized(sessionId, surfaceId);
         const allowed = (sessionId: string, surfaceId: string) => {
@@ -5902,6 +5897,14 @@ export class HttpHostClient {
           );
         };
         reconcileBrowserTargets = () => {
+          const document = (sessionId: string, tabId: string) =>
+            placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;
+          reconcileBrowserLastPictures(this.browserWatchFrames, document);
+          reconcileBrowserLastPictures(this.browserFrames, document);
+          if (this.#snapshot.connection === "connected")
+            this.#placeActivity.reconcile(
+              (key) => placeByKey(this.#snapshot, key)?.availability === "ready",
+            );
           this.#targetedWatch.reconcile(allowed, authorized);
           this.#targetedControl.reconcile(allowed, authorized);
         };

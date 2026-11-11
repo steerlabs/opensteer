@@ -1,6 +1,6 @@
 import { AppTabSchema } from "@opensteer/protocol";
 import { defaultTaskSymbol, BrowserSurfaceIdSchema } from "@opensteer/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList, placeDestinationEnded, samePlaceListSource } from "./places.js";
@@ -12,6 +12,57 @@ import { PlaceProjection } from "./places.js";
 const now = () => new Date("2026-10-19T12:00:00.000Z");
 
 describe("place catalog", () => {
+  it("visits no rows on unchanged reads and only the changed row after a keyed title update", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const source = client.getSnapshot();
+      const store = client.browserTabs;
+      const first = store.structure()[0]!;
+      const row = store.tab(first.groupId, first.tabId)!;
+      const rows = Array.from({ length: 10_000 }, (_, i) => ({
+        ...row,
+        id: BrowserSurfaceIdSchema.parse(`large-${i}`),
+        order: i,
+        openerId: null,
+      }));
+      store.applyTabs(first.groupId, { op: "begin", generation: "large" });
+      store.applyTabs(first.groupId, { op: "rows", rows });
+      store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+      const projection = new PlaceProjection(store);
+      const before = projection.list(source);
+      const visit = vi.spyOn(projection, "place");
+      for (let i = 0; i < 20; i++)
+        expect(projection.list({ ...source, openingAppTabs: [] })).toBe(before);
+      expect(visit).toHaveBeenCalledTimes(0);
+      store.applyTabs(first.groupId, {
+        op: "change",
+        generation: "large",
+        base: 0,
+        revision: 1,
+        update: [{ id: rows[0]!.id, title: "Fresh title" }],
+      });
+      const after = projection.list(source);
+      expect(visit).toHaveBeenCalledTimes(1);
+      expect(after.find((place) => place.key.endsWith(":large-0"))?.title).toBe("Fresh title");
+      expect(after.find((place) => place.key.endsWith(":large-1"))).toBe(
+        before.find((place) => place.key.endsWith(":large-1")),
+      );
+      visit.mockClear();
+      expect(projection.list(source)).toBe(after);
+      expect(visit).not.toHaveBeenCalled();
+      store.applyTabs(first.groupId, {
+        op: "change",
+        generation: "large",
+        base: 1,
+        revision: 2,
+        remove: [rows[0]!.id],
+      });
+      expect(projection.list(source)).toHaveLength(after.length - 1);
+      expect(projection.list(source).some((place) => place.key.endsWith(":large-0"))).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
   it("projects keyed rows without rebuilding structure or unchanged places", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {

@@ -35,8 +35,13 @@ class Rows<Row extends { id: string }> {
   readonly listeners = new Set<Listener>();
   readonly rows = new Map<string, Set<Listener>>();
   readonly #order: (a: Row, b: Row) => number;
-  readonly #changed: (structural: boolean) => void;
-  readonly #structure = new Map<string, readonly unknown[]>();
+  readonly #changed: (
+    structural: boolean,
+    change: KeyedStreamChanges | null,
+    fields: ReadonlySet<keyof Row>,
+  ) => void;
+  readonly #previous = new Map<string, Row>();
+  #fields = new Set<keyof Row>();
   readonly #structureKeys: readonly (keyof Row)[];
   readonly #removed: ((id: string) => void) | undefined;
   #changes: KeyedStreamChanges | null = null;
@@ -44,25 +49,34 @@ class Rows<Row extends { id: string }> {
   revision = 0;
   constructor(
     order: (a: Row, b: Row) => number,
-    changed: (structural: boolean) => void,
+    changed: (
+      structural: boolean,
+      change: KeyedStreamChanges | null,
+      fields: ReadonlySet<keyof Row>,
+    ) => void,
     structureKeys: readonly (keyof Row)[],
     removed?: (id: string) => void,
-    received?: (change: KeyedStreamChanges) => void,
+    received?: (change: KeyedStreamChanges, fields: ReadonlySet<keyof Row>) => void,
   ) {
     this.#order = order;
     this.#changed = changed;
     this.#structureKeys = structureKeys;
     this.#removed = removed;
     this.receiver.onChange((change) => {
-      for (const id of change.removed) this.#structure.delete(id);
+      this.#fields = new Set();
+      for (const id of change.removed) this.#previous.delete(id);
       for (const id of [...change.added, ...change.updated]) {
         const row = this.receiver.rows.get(id)!;
-        const values = this.#structureKeys.map((key) => row[key]);
-        if (!equal(values, this.#structure.get(id))) change.structural = true;
-        this.#structure.set(id, values);
+        const before = this.#previous.get(id);
+        for (const key of new Set([...Object.keys(before ?? {}), ...Object.keys(row)]) as Set<
+          keyof Row
+        >)
+          if (!before || !equal(before[key], row[key])) this.#fields.add(key);
+        if (this.#structureKeys.some((key) => this.#fields.has(key))) change.structural = true;
+        this.#previous.set(id, row);
       }
       this.#changes = change;
-      received?.(change);
+      received?.(change, this.#fields);
     });
   }
   #flush() {
@@ -85,7 +99,7 @@ class Rows<Row extends { id: string }> {
       !!(change && (change.added.length || change.updated.length || change.removed.length));
     if (changed) {
       this.revision++;
-      this.#changed(change?.structural ?? false);
+      this.#changed(change?.structural ?? false, change, this.#fields);
     }
     if (change) {
       for (const id of [...change.added, ...change.updated, ...change.removed])
@@ -133,6 +147,11 @@ function keySubscribe(rows: Map<string, Set<Listener>>, id: string, listener: Li
 export class BrowserTabStore {
   readonly #listeners = new Set<Listener>();
   readonly #structureListeners = new Set<Listener>();
+  readonly #tabChangeListeners = new Set<(groupId: string, ids: readonly string[]) => void>();
+  readonly #occupancyRevisions = new Map<string, number>();
+  groupRevision = 0;
+  targetRevision = 0;
+  filterRevision = 0;
   #structure: readonly BrowserTabKey[] | undefined;
   #groupKeys = new Map<string, readonly BrowserTabKey[]>();
   #keys = new Map<string, BrowserTabKey>();
@@ -145,7 +164,28 @@ export class BrowserTabStore {
   readonly #groupSessions = new Map<string, string>();
   readonly #groups = new Rows<BrowserGroupRow>(
     (a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id),
-    (structural) => this.#changed(structural),
+    (structural, change, fields) => {
+      if (change) {
+        this.groupRevision++;
+        if (change.structural || fields.has("profileId") || fields.has("placement"))
+          this.filterRevision++;
+        if (
+          change.added.length ||
+          change.removed.length ||
+          [
+            "sessionId",
+            "state",
+            "workspaceId",
+            "profileId",
+            "placement",
+            "unavailableReason",
+            "opener",
+          ].some((key) => fields.has(key as keyof BrowserGroupRow))
+        )
+          this.targetRevision++;
+      }
+      this.#changed(structural);
+    },
     ["sessionId", "createdAt", "placement", "profileId"],
     (id) => this.#drop(id),
     (change) => {
@@ -183,12 +223,11 @@ export class BrowserTabStore {
     this.surface = surface;
   }
   revision = 0;
-  #changed(structural = false) {
+  #changed(structural = false, tabs?: { groupId: string; ids: readonly string[] }) {
     this.revision++;
-    if (structural) {
-      this.#structure = undefined;
-      for (const listener of this.#structureListeners) listener();
-    }
+    if (structural) this.#structure = undefined;
+    if (tabs) for (const listener of this.#tabChangeListeners) listener(tabs.groupId, tabs.ids);
+    if (structural) for (const listener of this.#structureListeners) listener();
     const sessions = [...this.#changedSessions];
     this.#changedSessions.clear();
     for (const sessionId of sessions)
@@ -197,7 +236,10 @@ export class BrowserTabStore {
   }
   #prune(id: string) {
     const rows = this.#tabs.get(id);
-    if (!this.group(id) && rows && !rows.listeners.size && !rows.rows.size) this.#tabs.delete(id);
+    if (!this.group(id) && rows && !rows.listeners.size && !rows.rows.size) {
+      this.#tabs.delete(id);
+      this.#occupancyRevisions.delete(id);
+    }
   }
   #drop(id: string) {
     this.#sessionRows.delete(id);
@@ -207,16 +249,47 @@ export class BrowserTabStore {
   #ensure(id: string) {
     let rows = this.#tabs.get(id);
     if (!rows) {
+      const occupied = new Set<string>();
       rows = new Rows<BrowserTabRow>(
         (a, b) => a.order - b.order || a.id.localeCompare(b.id),
-        (structural) => this.#changed(structural),
+        (structural, change, fields) => {
+          if (change) {
+            if (change.added.length || change.removed.length || fields.has("occupants")) {
+              this.#occupancyRevisions.set(id, this.occupancyRevision(id) + 1);
+            }
+            if (
+              change.added.length ||
+              change.removed.length ||
+              ["sessionId", "documentId", "state", "availability"].some((key) =>
+                fields.has(key as keyof BrowserTabRow),
+              )
+            )
+              this.targetRevision++;
+          }
+          this.#changed(
+            structural,
+            change
+              ? { groupId: id, ids: [...change.added, ...change.updated, ...change.removed] }
+              : undefined,
+          );
+        },
         ["order", "openerId", "sessionId", "createdAt"],
         (tabId) => {
           const groups = this.#tabGroups.get(tabId);
           groups?.delete(id);
           if (!groups?.size) this.#tabGroups.delete(tabId);
         },
-        (change) => {
+        (change, fields) => {
+          if (change.added.length || change.removed.length || fields.has("occupants"))
+            for (const tabId of [...change.added, ...change.updated, ...change.removed]) {
+              const present =
+                this.tab(id, tabId)?.occupants.some(
+                  (occupant) => occupant.holding || occupant.acting,
+                ) ?? false;
+              if (present !== occupied.has(tabId)) this.filterRevision++;
+              if (present) occupied.add(tabId);
+              else occupied.delete(tabId);
+            }
           for (const tabId of change.added) {
             const groups = this.#tabGroups.get(tabId) ?? new Set<string>();
             groups.add(id);
@@ -233,6 +306,13 @@ export class BrowserTabStore {
   tabs = (groupId: string): BrowserTabList => this.#tabs.get(groupId)?.list ?? empty;
   tabRevision = (groupId: string) => this.#tabs.get(groupId)?.revision ?? 0;
   tab = (groupId: string, tabId: string) => this.#tabs.get(groupId)?.receiver.rows.get(tabId);
+  occupancyRevision = (groupId: string) => this.#occupancyRevisions.get(groupId) ?? 0;
+  subscribeTabChanges = (listener: (groupId: string, ids: readonly string[]) => void) => {
+    this.#tabChangeListeners.add(listener);
+    return () => {
+      this.#tabChangeListeners.delete(listener);
+    };
+  };
   subscribe = (listener: Listener) => subscribe(this.#listeners, listener);
   subscribeGroups = (listener: Listener) => subscribe(this.#groups.listeners, listener);
   subscribeGroup = (id: string, listener: Listener) =>

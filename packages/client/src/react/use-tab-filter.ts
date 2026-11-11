@@ -1,6 +1,6 @@
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import type { HostClient, HostSnapshot } from "../host/client.js";
-import { placeList } from "../host/places.js";
+import { placeFilterList } from "../host/places.js";
 import {
   sameTabDeviceChoice,
   tabDeviceChoice,
@@ -22,17 +22,20 @@ export function useTabDeviceChoice(
   homeId: string | null,
   filter: TabFilter,
 ): TabDeviceChoice {
-  const select = useCallback(
-    (snapshot: HostSnapshot) =>
-      tabDeviceChoice({
-        places: placeList(snapshot),
-        machines: snapshot.machines,
-        hereId,
-        homeId,
-        filter,
-      }),
-    [filter, hereId, homeId],
-  );
+  const select = useMemo(() => {
+    let places: ReturnType<typeof placeFilterList> | undefined;
+    let machines: HostSnapshot["machines"] | undefined;
+    let choice: TabDeviceChoice;
+    return (snapshot: HostSnapshot) => {
+      const next = placeFilterList(snapshot);
+      if (next !== places || snapshot.machines !== machines) {
+        places = next;
+        machines = snapshot.machines;
+        choice = tabDeviceChoice({ places, machines, hereId, homeId, filter });
+      }
+      return choice;
+    };
+  }, [filter, hereId, homeId]);
   return useHostSelector(hostClient, select, sameTabDeviceChoice);
 }
 
@@ -44,16 +47,22 @@ export function useTabFilterMatches(
   hostClient: HostClient,
   filter: TabFilter,
 ): ReadonlySet<string> | null {
-  const select = useCallback(
-    (snapshot: HostSnapshot) =>
-      tabFilterActive(filter)
-        ? placeList(snapshot)
-            .filter((place) => tabMatchesFilter(place, filter))
-            .map((place) => place.key)
-            .join("\n")
-        : null,
-    [filter],
-  );
+  const select = useMemo(() => {
+    let places: ReturnType<typeof placeFilterList> | undefined;
+    let keys: string | null = null;
+    return (snapshot: HostSnapshot) => {
+      if (!tabFilterActive(filter)) return null;
+      const next = placeFilterList(snapshot);
+      if (places !== next) {
+        places = next;
+        keys = places
+          .filter((place) => tabMatchesFilter(place, filter))
+          .map((place) => place.key)
+          .join("\n");
+      }
+      return keys;
+    };
+  }, [filter]);
   const keys = useHostSelector(hostClient, select);
   return useMemo(() => (keys === null ? null : new Set(keys ? keys.split("\n") : [])), [keys]);
 }

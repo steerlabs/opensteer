@@ -21,6 +21,7 @@ import {
   useBrowserTab,
   useBrowserTabIcon,
   useBrowserTabs,
+  useBrowserTabOccupancy,
   useHostSelector,
   usePlace,
   useSyncingPlaceholder,
@@ -144,6 +145,7 @@ function BrowserTabs(props: {
   // The browser's tabs by key; each row reads its own, so a title repaints only its row.
   const groupId = useBrowserSessionGroupId(hostClient, sessionId);
   const list = useBrowserTabs(hostClient, groupId ?? "");
+  const occupancy = useBrowserTabOccupancy(hostClient, groupId ?? "");
   // The pages this task's transcript says it worked in, when its transcript is held.
   const selectTaskPlaces = useCallback(
     (snapshot: HostSnapshot) => {
@@ -184,7 +186,7 @@ function BrowserTabs(props: {
       threadId === null || session === null || !list.whole
         ? null
         : browserThreadTabs(session, threadId, taskPlaces, remembered.current),
-    [list.whole, session, taskPlaces, threadId],
+    [list.ids, list.whole, occupancy, session, taskPlaces, threadId],
   );
   useEffect(() => {
     if (groups !== null) remembered.current = groups;

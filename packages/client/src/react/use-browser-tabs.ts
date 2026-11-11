@@ -131,3 +131,9 @@ export function useBrowserTabAwake(
   }, [sessionId, store, tabId]);
   return useSyncExternalStore(subscribe, get, get);
 }
+
+/** Task membership follows occupants independently of a tab's title or loading. */
+export function useBrowserTabOccupancy(client: HostClient, groupId: string) {
+  const get = useCallback(() => client.browserTabs.occupancyRevision(groupId), [client, groupId]);
+  return useSyncExternalStore(client.browserTabs.subscribe, get, get);
+}

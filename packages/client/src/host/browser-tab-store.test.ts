@@ -3,7 +3,8 @@ import { BrowserTabStore } from "./browser-tab-store.js";
 import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { BrowserSessionIdSchema } from "@opensteer/core";
 const group = { id: "g", createdAt: "2026-01-01", sessionId: "s" } as BrowserGroupRow;
-const tab = (id: string): BrowserTabRow => ({ id, order: Number(id), title: id }) as BrowserTabRow;
+const tab = (id: string): BrowserTabRow =>
+  ({ id, order: Number(id), title: id, occupants: [] }) as unknown as BrowserTabRow;
 const commit = (store: BrowserTabStore) => {
   store.applyGroups({ op: "begin", generation: "g" });
   store.applyGroups({ op: "rows", rows: [group] });

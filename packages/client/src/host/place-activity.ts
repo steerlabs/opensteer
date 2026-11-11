@@ -82,8 +82,10 @@ export class PlaceActivityStore {
     if (message.type === "host.place-activity") held.push({ ...message.activity, placeKey: key });
     this.#set(key, held);
   }
-  reconcile(allowedPlaces: ReadonlySet<string>): void {
-    for (const key of this.#values.keys()) if (!allowedPlaces.has(key)) this.#set(key, []);
+  reconcile(allowedPlaces: ReadonlySet<string> | ((key: string) => boolean)): void {
+    const allowed =
+      typeof allowedPlaces === "function" ? allowedPlaces : (key: string) => allowedPlaces.has(key);
+    for (const key of this.#values.keys()) if (!allowed(key)) this.#set(key, []);
   }
   clear(): void {
     for (const key of this.#values.keys()) this.#set(key, []);
