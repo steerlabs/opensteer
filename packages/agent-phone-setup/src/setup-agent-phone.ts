@@ -148,7 +148,9 @@ type AgentPhoneSetupIssueCode =
   | "pairing-timed-out"
   | "phone-app-refused"
   | "phone-app-unresponsive"
-  | "signature-mismatch";
+  | "signature-mismatch"
+  /** Android refused a change over USB: an OEM developer option or device policy withholds it. */
+  | "usb-restricted";
 
 export interface AgentPhoneSetupIssue {
   readonly code: AgentPhoneSetupIssueCode;
@@ -386,18 +388,7 @@ class PhoneSetup {
     const current = installed !== null && installed >= manifest.versionCode;
     // A build at least as new as this one, signed by us, is kept: Android
     // would refuse the downgrade, and an equal build is already this one.
-    if (current && (await this.#installedSignedBy(manifest))) {
-      if (!(await this.#installerIsSelf())) {
-        const bytes = await this.#installedApk();
-        if (bytes === null)
-          stop("install-failed", "The installed APK could not be read to retain its version.");
-        const result = await this.#adb.install(bytes);
-        if (!result.ok) stop("install-failed", result.output);
-        if (!(await this.#installerIsSelf()))
-          stop("configure-failed", "Android did not keep Agent Phone as its own installer.");
-      }
-      return;
-    }
+    if (current && (await this.#installedSignedBy(manifest))) return;
     // The installed build is not ours, so `pm` could only refuse to replace it.
     if (current) await this.#removeForeignBuild();
     let result = await this.#adb.install(this.#artifact.bytes);
@@ -405,32 +396,20 @@ class PhoneSetup {
       await this.#removeForeignBuild();
       result = await this.#adb.install(this.#artifact.bytes);
     }
-    if (!result.ok) stop("install-failed", result.output);
+    if (!result.ok) {
+      stop(
+        result.output.includes("INSTALL_FAILED_USER_RESTRICTED")
+          ? "usb-restricted"
+          : "install-failed",
+        result.output,
+      );
+    }
     if (!(await this.#installedSignedBy(manifest))) {
       stop(
         "artifact-invalid",
         "The installed app is not signed by the certificate this Opensteer build names.",
       );
     }
-    // Android 16 can discard an installer name that did not exist on the first install.
-    // Replacing those same bytes now that the package exists records the installer without erasing data.
-    if (!(await this.#installerIsSelf())) {
-      const recorded = await this.#adb.install(this.#artifact.bytes);
-      if (!recorded.ok) stop("install-failed", recorded.output);
-      if (!(await this.#installerIsSelf()))
-        stop("configure-failed", "Android did not keep Agent Phone as its own installer.");
-    }
-  }
-
-  async #installerIsSelf(): Promise<boolean> {
-    const listed = await this.#required(["pm", "list", "packages", "-i", agentPhonePackageName]);
-    return listed.split("\n").some((line) => {
-      const fields = line.trim().split(/\s+/u);
-      return (
-        fields[0] === `package:${agentPhonePackageName}` &&
-        fields[1] === `installer=${agentPhonePackageName}`
-      );
-    });
   }
 
   async #installedVersionCode(): Promise<number | null> {
@@ -482,13 +461,20 @@ class PhoneSetup {
 
   /* ---- Configure --------------------------------------------------------- */
 
+  /**
+   * Writes only what does not already hold: some Android builds refuse the
+   * shell's writes until the person allows them on the phone, and a phone set
+   * up before then must still pass setup.
+   */
   async #configure(phone: AgentPhoneFacts): Promise<void> {
     this.#emit({ step: "configure" });
     await this.#enableAccessibility();
-    await this.#exemptFromBatteryOptimization();
+    if (!(await this.#readStatus())?.batteryOptimizationExempt) {
+      await this.#exemptFromBatteryOptimization();
+    }
     // Android 13 made notifications a runtime permission; older versions
     // reject the grant of a permission they do not have.
-    if (phone.sdk >= 33) {
+    if (phone.sdk >= 33 && !(await this.#notificationsGranted())) {
       await this.#configureCommand([
         "pm",
         "grant",
@@ -496,17 +482,13 @@ class PhoneSetup {
         "android.permission.POST_NOTIFICATIONS",
       ]);
     }
-    // AppOps checks uid mode before package mode. Grant both so a previous
-    // uid denial cannot override the package grant (AOSP AppOpsService.Shell).
-    for (const target of [["--uid", agentPhonePackageName], [agentPhonePackageName]]) {
-      await this.#configureCommand(["appops", "set", ...target, "PROJECT_MEDIA", "allow"]);
-      await this.#configureCommand([
-        "appops",
-        "set",
-        ...target,
-        "REQUEST_INSTALL_PACKAGES",
-        "allow",
-      ]);
+    for (const op of ["PROJECT_MEDIA", "REQUEST_INSTALL_PACKAGES"] as const) {
+      if (await this.#appOpAllowed(op)) continue;
+      // AppOps checks uid mode before package mode. Grant both so a previous
+      // uid denial cannot override the package grant (AOSP AppOpsService.Shell).
+      for (const target of [["--uid", agentPhonePackageName], [agentPhonePackageName]]) {
+        await this.#configureCommand(["appops", "set", ...target, op, "allow"]);
+      }
     }
     let projectionAllowed = false;
     let updatesAllowed = false;
@@ -527,28 +509,8 @@ class PhoneSetup {
         const status = await this.#readStatus();
         if (status) last = status;
         held = await this.#accessibilityHeld();
-        const projection = await this.#configureCommand([
-          "appops",
-          "get",
-          agentPhonePackageName,
-          "PROJECT_MEDIA",
-        ]);
-        // AOSP's get prints "Uid mode: " on uid entries and usage metadata
-        // after the mode. Missing uid entries mean the package mode applies.
-        const modes = [...projection.matchAll(/^\s*(?:Uid mode: )?PROJECT_MEDIA:\s*(\w+)/gm)];
-        projectionAllowed = modes.length > 0 && modes.every((match) => match[1] === "allow");
-
-        const updates = await this.#configureCommand([
-          "appops",
-          "get",
-          agentPhonePackageName,
-          "REQUEST_INSTALL_PACKAGES",
-        ]);
-        const updateModes = [
-          ...updates.matchAll(/^\s*(?:Uid mode: )?REQUEST_INSTALL_PACKAGES:\s*(\w+)/gm),
-        ];
-        updatesAllowed =
-          updateModes.length > 0 && updateModes.every((match) => match[1] === "allow");
+        projectionAllowed = await this.#appOpAllowed("PROJECT_MEDIA");
+        updatesAllowed = await this.#appOpAllowed("REQUEST_INSTALL_PACKAGES");
         return held &&
           updatesAllowed &&
           projectionAllowed &&
@@ -569,6 +531,26 @@ class PhoneSetup {
         stop("configure-failed", "Android did not exempt the app from battery optimization.");
       },
     );
+  }
+
+  async #appOpAllowed(op: "PROJECT_MEDIA" | "REQUEST_INSTALL_PACKAGES"): Promise<boolean> {
+    const listed = await this.#configureCommand(["appops", "get", agentPhonePackageName, op]);
+    // AOSP's get prints "Uid mode: " on uid entries and usage metadata
+    // after the mode. Missing uid entries mean the package mode applies.
+    const modes = [...listed.matchAll(new RegExp(`^\\s*(?:Uid mode: )?${op}:\\s*(\\w+)`, "gmu"))];
+    return modes.length > 0 && modes.every((match) => match[1] === "allow");
+  }
+
+  async #notificationsGranted(): Promise<boolean> {
+    const listed = await this.#configureCommand(["dumpsys", "package", agentPhonePackageName]);
+    // The dump lists each user's grants under its own "User N:" line; `pm grant` acts for user 0.
+    let user: string | undefined;
+    return listed.split("\n").some((line) => {
+      user = /^\s*User (\d+):/u.exec(line)?.[1] ?? user;
+      return (
+        user === "0" && /^\s*android\.permission\.POST_NOTIFICATIONS: granted=true\b/u.test(line)
+      );
+    });
   }
 
   async #exemptFromBatteryOptimization(): Promise<void> {
@@ -616,7 +598,10 @@ class PhoneSetup {
   async #configureCommand(argv: readonly string[]): Promise<string> {
     const result = await this.#adb.shell(argv);
     if (result.exitCode !== 0) {
-      stop("configure-failed", `${argv.join(" ")}: ${(result.stderr || result.stdout).trim()}`);
+      const output = (result.stderr || result.stdout).trim();
+      const refusal = /java\.lang\.SecurityException: (.+)/u.exec(output)?.[1];
+      if (refusal) stop("usb-restricted", `${argv.join(" ")}: ${refusal}`);
+      stop("configure-failed", `${argv.join(" ")}: ${output}`);
     }
     return result.stdout;
   }
