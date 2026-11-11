@@ -1357,6 +1357,7 @@ export interface AgentControlRequestTable {
   requestId: string;
   sourceThreadId: ThreadId;
   action:
+    | "project.event"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
     | "browser.access.request"
@@ -1383,6 +1384,7 @@ export interface AgentControlRequestTable {
     | "environment.list"
     | "project.list";
   actionClass:
+    | "project.event"
     | "person.show"
     | "assignment.cancel"
     | "machine.full-disk-access.request"
@@ -1419,8 +1421,8 @@ export interface AgentControlRequestTable {
 interface TriggerControlRequestTable {
   occurrenceId: TriggerOccurrenceId;
   requestId: string;
-  action: AgentControlRequestTable["action"];
-  actionClass: AgentControlRequestTable["actionClass"];
+  action: Exclude<AgentControlRequestTable["action"], "project.event">;
+  actionClass: Exclude<AgentControlRequestTable["actionClass"], "project.event">;
   requestFingerprint: string;
   createdAt: Timestamp;
 }

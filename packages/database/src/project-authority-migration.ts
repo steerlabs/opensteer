@@ -4,6 +4,32 @@ import { PROJECT_AUTHORITY_GUARDS_SQL } from "./project-authority-guards.js";
 
 export const projectAuthorityCutoverMigration: Migration = {
   async up(database) {
+    for (const name of [
+      "agent_control_requests_action_check",
+      "agent_control_requests_action_class_check",
+    ] as const) {
+      const result = await sql<{
+        definition: string;
+      }>`select pg_get_constraintdef(oid) as definition from pg_constraint
+        where conrelid = 'public.agent_control_requests'::regclass and conname = ${name}`.execute(
+        database,
+      );
+      const definition = result.rows[0]?.definition;
+      if (!definition?.includes("'thread.read'::text"))
+        throw new Error("Cannot extend the Run ledger for Project event receipts");
+      if (definition.includes("'project.event'::text")) continue;
+      const extended = definition
+        .replace(/\s+NOT VALID$/u, "")
+        .replace("'thread.read'::text", "'thread.read'::text, 'project.event'::text");
+      await sql
+        .raw(`alter table public.agent_control_requests drop constraint ${name}`)
+        .execute(database);
+      await sql
+        .raw(
+          `alter table public.agent_control_requests add constraint ${name} ${extended} not valid`,
+        )
+        .execute(database);
+    }
     await sql`
       alter table public.principals add column workspace_id text;
       alter table public.principals
