@@ -1,3 +1,4 @@
+import { isProjectDeploymentAuthority } from "@opensteer/database";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
 import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
 import {
@@ -36,6 +37,8 @@ interface WorkspaceLifecycleDrivers {
 
 type WorkspaceStore = Pick<
   OpensteerStore,
+  | "assertTeamProjectManager"
+  | "securityEffectAuthority"
   | "createWorkspace"
   | "findMainWorkspaceForOwner"
   | "getEnvironment"
@@ -99,6 +102,11 @@ export class WorkspaceService {
     readonly kind?: WorkspaceKind;
     readonly name: string;
   }): Promise<Workspace> {
+    if (await this.#team())
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team Projects must be created through the access writer",
+      });
     const id = workspaceIdForCreate(input.createdBy, input.idempotencyKey);
     const provisioningKey = workspaceProvisioningKey(id);
     let main: Workspace | null = null;
@@ -201,6 +209,8 @@ export class WorkspaceService {
   }
 
   async ensureMainWorkspace(ownerId: UserId): Promise<Workspace> {
+    if (await this.#team())
+      throw new OpensteerError({ code: "forbidden", message: "A team server has no Main" });
     const existing = await this.#store.findMainWorkspaceForOwner(ownerId);
     if (existing) {
       if (existing.status === "deleting" || existing.status === "deleted") return existing;
@@ -221,6 +231,7 @@ export class WorkspaceService {
     requestedBy: UserId,
     administration?: AdministrationCommandIdentity | undefined,
   ): Promise<Workspace> {
+    if (await this.#team()) await this.#store.assertTeamProjectManager(workspaceId, requestedBy);
     const workspace = await this.#store.getWorkspaceForOwner(workspaceId, requestedBy);
     if (!workspace) {
       throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
@@ -408,8 +419,10 @@ export class WorkspaceService {
 
   async reconcile(): Promise<WorkspaceReconciliationResult> {
     await this.validateDeploymentCompatibility();
+    const team = await this.#team();
     for (const workspace of await this.#store.listWorkspaces()) {
       if (
+        team ||
         workspace.kind !== "project" ||
         !workspace.slug ||
         ["deleting", "deleted"].includes(workspace.status) ||
@@ -505,7 +518,7 @@ export class WorkspaceService {
       return { status: "failed", issue: relocationIssue() };
     if (workspace.storageIssue?.code === "relocation-required")
       return { status: "failed", issue: workspace.storageIssue };
-    if (workspace.kind === "project" && workspace.slug) {
+    if (!(await this.#team()) && workspace.kind === "project" && workspace.slug) {
       const main = await this.#store.findMainWorkspaceForOwner(workspace.createdBy);
       if (
         workspace.backing.kind !== "local-directory" ||
@@ -560,6 +573,11 @@ export class WorkspaceService {
     return workspace.backing.kind === "local-directory"
       ? this.#requiredLocal().issueFromError(error)
       : relocationIssue();
+  }
+
+  async #team(): Promise<boolean> {
+    const authority = await this.#store.securityEffectAuthority();
+    return isProjectDeploymentAuthority(authority);
   }
 
   #requiredLocal(): WorkspaceBackingLifecycleDriver<"local-directory"> {

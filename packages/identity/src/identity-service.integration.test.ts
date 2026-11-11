@@ -2039,6 +2039,52 @@ integration("IdentityService", () => {
     ).resolves.toEqual({ instanceRole: "administrator" });
   });
 
+  it("requires and durably records the first team administrator's trust without Main", async () => {
+    const origin = "http://127.0.0.1:4310";
+    await new OpensteerStore(database).ensureDeployment({
+      canonicalOrigin: origin,
+      hostInstanceId: createId("hostInstance"),
+      deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    });
+    await database.updateTable("deployments").set({ authorityModelVersion: 2 }).execute();
+    const token = "team-owner-enrollment-token-with-enough-entropy";
+    const identity = identityService({
+      initialOwnerEnrollment: { expiresAt: new Date(Date.now() + 3600000), token },
+    });
+    await identity.initialize();
+    const exchange = await identity.exchangeInitialOwnerEnrollment(token);
+    const headers = new Headers({ origin, cookie: cookieHeader(exchange.headers) });
+    const credentials = {
+      email: "first-admin@team.test",
+      password: "correct horse battery staple",
+    };
+    await expect(identity.claimInitialOwner(credentials, headers)).rejects.toMatchObject({
+      reason: "invalid-selection",
+    });
+    expect(await database.selectFrom("users").select("id").execute()).toEqual([]);
+    const result = await identity.claimInitialOwner(
+      { ...credentials, trustedMembersAcknowledged: true },
+      headers,
+    );
+    expect(result.data.session.user.instanceRole).toBe("administrator");
+    expect(
+      await database
+        .selectFrom("users")
+        .select(["admittedAt", "memberKind", "memberState"])
+        .where("id", "=", result.data.session.user.id)
+        .executeTakeFirst(),
+    ).toMatchObject({ admittedAt: expect.any(Date), memberKind: "full", memberState: "active" });
+    expect(
+      await database
+        .selectFrom("deployments")
+        .select("trustedMembersAcknowledgedAt")
+        .executeTakeFirst(),
+    ).toEqual({ trustedMembersAcknowledgedAt: expect.any(Date) });
+    expect(
+      await database.selectFrom("workspaces").select("id").where("kind", "=", "main").execute(),
+    ).toEqual([]);
+  });
+
   it("keeps team admission separate from Workspace admission during signup", async () => {
     const origin = "http://127.0.0.1:4310";
     const owner = await identityService({ signupPolicy: "open" }).signUpPassword(

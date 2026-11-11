@@ -1749,7 +1749,7 @@ export class IdentityService {
    * removes the window instead of recovering from it.
    */
   async claimInitialOwner(
-    credentials: PasswordCredentials,
+    credentials: PasswordCredentials & { readonly trustedMembersAcknowledged?: true | undefined },
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
     if (!this.#options.localPasswordEnabled) {
@@ -1759,13 +1759,14 @@ export class IdentityService {
   }
 
   async #claimInitialOwner(
-    credentials: PasswordSignup,
+    credentials: PasswordSignup & { readonly trustedMembersAcknowledged?: true | undefined },
     headers: Headers,
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
     }
+    await this.#acknowledgeTeamSetup(admission, credentials.trustedMembersAcknowledged);
     const email = normalizeIdentityEmail(credentials.email);
     const existing = await this.#database
       .selectFrom("users")
@@ -1860,6 +1861,7 @@ export class IdentityService {
   }
 
   async beginOidcSignIn(input: {
+    readonly trustedMembersAcknowledged?: true | undefined;
     readonly headers: Headers;
     readonly oauthQuery?: string;
     readonly providerId: string;
@@ -1871,6 +1873,9 @@ export class IdentityService {
     if (!provider) {
       throw new OpensteerError({ code: "not_found", message: "Identity provider not found" });
     }
+    const admission = await this.#admissionFromHeaders(input.headers);
+    if (admission?.purpose === "setup")
+      await this.#acknowledgeTeamSetup(admission, input.trustedMembersAcknowledged);
     const callbackUrl = new URL(input.returnPath, this.#options.publicOrigin);
     if (callbackUrl.origin !== this.#options.publicOrigin.origin) {
       throw new OpensteerError({ code: "bad_request", message: "OIDC return path is invalid" });
@@ -2250,6 +2255,26 @@ export class IdentityService {
     return { data: { admitted: true }, headers: admission.headers, status: 200 };
   }
 
+  async #acknowledgeTeamSetup(
+    admission: { readonly id: import("@opensteer/core").AuthAdmissionId },
+    acknowledged: true | undefined,
+  ): Promise<void> {
+    if (!(await this.#isTeam())) return;
+    if (acknowledged !== true)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "invalid-selection",
+        message: "The team trusted-members acknowledgement is required",
+      });
+    await this.#database
+      .updateTable("authAdmissions")
+      .set({ trustedMembersAcknowledgedAt: sql`coalesce(trusted_members_acknowledged_at, now())` })
+      .where("id", "=", admission.id)
+      .where("purpose", "=", "setup")
+      .where("expiresAt", ">", new Date())
+      .executeTakeFirstOrThrow();
+  }
+
   async completeInitialOwnerSetup(headers: Headers): Promise<{
     readonly headers: Headers;
     readonly userId: UserId;
@@ -2266,6 +2291,29 @@ export class IdentityService {
     }
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-setup");
+      if (team) {
+        const trusted = await transaction
+          .selectFrom("authAdmissions")
+          .select("trustedMembersAcknowledgedAt")
+          .where("id", "=", admission.id)
+          .where("purpose", "=", "setup")
+          .where("expiresAt", ">", new Date())
+          .forShare()
+          .executeTakeFirst();
+        if (!trusted?.trustedMembersAcknowledgedAt)
+          throw new OpensteerError({
+            code: "forbidden",
+            reason: "invalid-selection",
+            message: "The team trusted-members acknowledgement is required",
+          });
+        // FOR UPDATE: owner setup records trust and administrator admission in one step.
+        await transaction
+          .selectFrom("deployments")
+          .select("id")
+          .where("singletonKey", "=", "primary")
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+      }
       const enrollment = await transaction
         .selectFrom("ownerEnrollments")
         .selectAll()
@@ -2326,6 +2374,14 @@ export class IdentityService {
         })
         .where("id", "=", session.user.id)
         .executeTakeFirstOrThrow();
+      if (team)
+        await transaction
+          .updateTable("deployments")
+          .set({
+            trustedMembersAcknowledgedAt: sql`coalesce(trusted_members_acknowledged_at, ${now})`,
+          })
+          .where("singletonKey", "=", "primary")
+          .execute();
       await transaction
         .updateTable("ownerEnrollments")
         .set({ consumedAt: now, consumedBy: session.user.id })
