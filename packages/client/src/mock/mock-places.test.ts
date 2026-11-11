@@ -62,7 +62,7 @@ describe("moving mock workspace", () => {
         data: { title: homePlace.title },
       });
       expect(client.placeActivity(homePlace.key)[0]?.runId).toBe(homeRun.id);
-      expect(runPages(snapshot.browserSessions, [homeRun.id])).toEqual([
+      expect(runPages(snapshot.browserUses, snapshot.browserSessions, [homeRun.id])).toEqual([
         expect.objectContaining({
           destination: homePlace.destination,
           title: "Weekend ideas",
@@ -73,9 +73,9 @@ describe("moving mock workspace", () => {
         (run) => run.threadId === browser.occupants.find((occupant) => occupant.acting)?.threadId,
       )!;
       expect(client.placeActivity(browser.key)[0]?.runId).toBe(actingRun.id);
-      expect(runPages(snapshot.browserSessions, [actingRun.id])).toContainEqual(
-        expect.objectContaining({ destination: browser.destination, acting: true }),
-      );
+      expect(
+        runPages(snapshot.browserUses, snapshot.browserSessions, [actingRun.id]),
+      ).toContainEqual(expect.objectContaining({ destination: browser.destination, acting: true }));
       const phone = places.find(
         (place) => place.kind === "phone" && place.occupants.some((occupant) => occupant.acting),
       )!;

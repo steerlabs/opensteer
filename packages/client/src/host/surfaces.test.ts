@@ -170,24 +170,26 @@ describe("runPages", () => {
         url: "https://wayfair.com/",
       },
     ],
-    uses: [
-      {
-        firstUsedAt: "2026-10-15T10:00:00.000Z",
-        lastUsedAt: "2026-10-15T10:01:00.000Z",
-        runId: run,
-        tabId: "tab-a",
-        threadId: threadId(1),
-      },
-      {
-        firstUsedAt: "2026-10-15T10:02:00.000Z",
-        lastUsedAt: "2026-10-15T10:03:00.000Z",
-        runId: run,
-        tabId: "tab-b",
-        threadId: threadId(1),
-      },
-    ],
   });
 
+  const uses = [
+    {
+      sessionId: browser(1, "", []).id,
+      firstUsedAt: "2026-10-15T10:00:00.000Z",
+      lastUsedAt: "2026-10-15T10:01:00.000Z",
+      runId: run,
+      tabId: "tab-a",
+      threadId: threadId(1),
+    },
+    {
+      sessionId: browser(1, "", []).id,
+      firstUsedAt: "2026-10-15T10:02:00.000Z",
+      lastUsedAt: "2026-10-15T10:03:00.000Z",
+      runId: run,
+      tabId: "tab-b",
+      threadId: threadId(1),
+    },
+  ];
   const stop = (overrides: Partial<PlaceEntry> = {}): PlaceEntry => ({
     kind: "place",
     id: "stop",
@@ -297,9 +299,54 @@ describe("runPages", () => {
     expect(conversationSurfaces(source, threadId(1))).toEqual([]);
   });
 
+  it("keeps a Run's recorded page when its session has no live row", () => {
+    const sessionId = twoTabs("ready").id;
+    expect(
+      runPages(
+        [
+          {
+            sessionId,
+            threadId: threadId(1),
+            runId: run,
+            tabId: "tab-ended",
+            firstUsedAt: "2026-10-15T10:00:00.000Z",
+            lastUsedAt: "2026-10-15T10:01:00.000Z",
+            pageTitle: "Recorded page",
+            pageSite: "https://recorded.example",
+          },
+        ],
+        [],
+        [run],
+      ),
+    ).toEqual([
+      {
+        key: `${sessionId}:tab-ended`,
+        destination: { kind: "browser", sessionId, tabId: "tab-ended" },
+        title: "Recorded page",
+        site: "recorded.example",
+        ended: true,
+        acting: false,
+        favicon: null,
+      },
+    ]);
+  });
+
+  it("keeps a missing tab open until the session's list is whole", () => {
+    const session = twoTabs("ready");
+    const { tabCatalog: _incomplete, ...prefix } = session;
+    expect(runPages(uses, [prefix], [run]).every((page) => !page.ended)).toBe(true);
+    expect(
+      runPages(
+        uses,
+        [{ ...session, tabCatalog: { ...session.tabCatalog!, tabs: [] } }],
+        [run],
+      ).every((page) => page.ended),
+    ).toBe(true);
+  });
+
   it("marks only the tab the agent is in, not every page of its browser", () => {
     expect(
-      runPages([twoTabs("ready")], [run]).map(({ acting, title }) => ({ acting, title })),
+      runPages(uses, [twoTabs("ready")], [run]).map(({ acting, title }) => ({ acting, title })),
     ).toEqual([
       { acting: false, title: "Amazon" },
       { acting: true, title: "Wayfair" },
@@ -307,8 +354,11 @@ describe("runPages", () => {
   });
 
   it("carries each open tab's site icon, and none once its browser is gone", () => {
-    expect(runPages([twoTabs("ready")], [run]).map((page) => page.favicon)).toEqual([icon, null]);
-    const closed = runPages([twoTabs("closed")], [run]);
+    expect(runPages(uses, [twoTabs("ready")], [run]).map((page) => page.favicon)).toEqual([
+      icon,
+      null,
+    ]);
+    const closed = runPages(uses, [twoTabs("closed")], [run]);
     expect(closed.map((page) => page.favicon)).toEqual([null, null]);
     expect(closed.every((page) => !page.acting)).toBe(true);
   });
@@ -359,7 +409,7 @@ it("keeps reply chips from place entries alone, unioned with browser usage and n
     },
   ];
   const turn = { runId, work: places, subagentWork: {} };
-  const chips = replyPlaces(turn, [], []);
+  const chips = replyPlaces(turn, [], [], []);
   expect(chips.map((chip) => chip.kind)).toEqual(["page", "app", "phone"]);
   expect(
     chips.every((chip) =>
@@ -370,19 +420,18 @@ it("keeps reply chips from place entries alone, unioned with browser usage and n
           : chip.phone.ended,
     ),
   ).toBe(true);
-  const session = {
-    ...browser(1, "example.com", []),
-    uses: [
-      {
-        threadId: "thread-example",
-        runId,
-        tabId: "tab-1",
-        firstUsedAt: places[0]!.createdAt,
-        lastUsedAt: places[0]!.createdAt,
-        pageTitle: "Browser",
-        pageSite: "https://example.com",
-      },
-    ],
-  };
-  expect(replyPlaces(turn, [session], [])).toHaveLength(3);
+  const session = browser(1, "example.com", []);
+  const browserUses = [
+    {
+      sessionId: session.id,
+      threadId: "thread-example",
+      runId,
+      tabId: "tab-1",
+      firstUsedAt: places[0]!.createdAt,
+      lastUsedAt: places[0]!.createdAt,
+      pageTitle: "Browser",
+      pageSite: "https://example.com",
+    },
+  ];
+  expect(replyPlaces(turn, browserUses, [session], [])).toHaveLength(3);
 });

@@ -107,46 +107,48 @@ function RunSurfaces(props: {
   const { surfaces } = props;
   const turn = surfaces.turns?.get(props.turnKey ?? "") ?? props.turn;
   const sessions = useHostSelector(surfaces.hostClient, selectBrowserSessions);
+  const uses = useHostSelector(surfaces.hostClient, selectBrowserUses);
   const machines = useHostSelector(surfaces.hostClient, selectMachines);
   const connection = useHostSelector(surfaces.hostClient, selectConnection);
   const [open, setOpen] = useState(false);
   const chips = useMemo(
     (): readonly Chip[] =>
-      replyPlaces(turn, sessions, connection === "connected" ? machines : []).map((place): Chip =>
-        place.kind === "page"
-          ? {
-              acting: place.page.acting,
-              destination: place.page.destination,
-              ended: place.page.ended,
-              favicon: place.page.favicon,
-              glyph: "globe",
-              key: place.page.key,
-              secondary: place.page.site,
-              title: place.page.title,
-            }
-          : place.kind === "phone"
+      replyPlaces(turn, uses, sessions, connection === "connected" ? machines : []).map(
+        (place): Chip =>
+          place.kind === "page"
             ? {
-                acting: false,
-                destination: place.phone.destination,
-                ended: place.phone.ended,
-                favicon: null,
-                glyph: "smartphone",
-                key: place.phone.key,
-                secondary: null,
-                title: place.phone.title,
+                acting: place.page.acting,
+                destination: place.page.destination,
+                ended: place.page.ended,
+                favicon: place.page.favicon,
+                glyph: "globe",
+                key: place.page.key,
+                secondary: place.page.site,
+                title: place.page.title,
               }
-            : {
-                acting: place.app.acting,
-                destination: place.app.destination,
-                ended: place.app.ended,
-                favicon: null,
-                glyph: "laptopcomputer",
-                key: place.app.key,
-                secondary: null,
-                title: place.app.title,
-              },
+            : place.kind === "phone"
+              ? {
+                  acting: false,
+                  destination: place.phone.destination,
+                  ended: place.phone.ended,
+                  favicon: null,
+                  glyph: "smartphone",
+                  key: place.phone.key,
+                  secondary: null,
+                  title: place.phone.title,
+                }
+              : {
+                  acting: place.app.acting,
+                  destination: place.app.destination,
+                  ended: place.app.ended,
+                  favicon: null,
+                  glyph: "laptopcomputer",
+                  key: place.app.key,
+                  secondary: null,
+                  title: place.app.title,
+                },
       ),
-    [connection, machines, turn, sessions],
+    [connection, machines, turn, uses, sessions],
   );
   if (chips.length === 0) return null;
   const shown = open ? chips : chips.slice(0, shownChips);
@@ -370,6 +372,7 @@ function SurfaceChip(props: {
 }
 
 /** The Mac apps a Run is holding now, one per app per Mac. */
+const selectBrowserUses = (snapshot: HostSnapshot) => snapshot.browserUses;
 const selectBrowserSessions = (snapshot: HostSnapshot) => snapshot.browserSessions;
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 const selectConnection = (snapshot: HostSnapshot) => snapshot.connection;

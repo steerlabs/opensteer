@@ -270,6 +270,7 @@ function baseSnapshot(): HostSnapshot {
     browserProfileGrants: [],
     browserProfiles: [],
     browserSessions: [],
+    browserUses: [],
     connection: "connected",
     connectionInterrupted: false,
     deploymentShape: null,

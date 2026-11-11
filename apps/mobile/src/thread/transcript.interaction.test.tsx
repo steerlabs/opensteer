@@ -808,18 +808,19 @@ describe("native page rail", () => {
       .browserSessions.find((session) => session.tabCatalog?.tabs.length)!;
     const tab = original.tabCatalog!.tabs[0]!;
     const threadId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001");
+    const browserUses = [
+      {
+        sessionId: original.id,
+        runId: run.runId!,
+        threadId,
+        tabId: tab.id,
+        firstUsedAt: run.createdAt,
+        lastUsedAt: run.createdAt,
+      },
+    ];
     const session: BrowserSessionSummary = {
       ...original,
       attachedRunIds: [run.runId!],
-      uses: [
-        {
-          runId: run.runId!,
-          threadId,
-          tabId: tab.id,
-          firstUsedAt: run.createdAt,
-          lastUsedAt: run.createdAt,
-        },
-      ],
       tabCatalog: {
         ...original.tabCatalog!,
         tabs: [
@@ -848,6 +849,7 @@ describe("native page rail", () => {
     vi.spyOn(client, "getSnapshot").mockReturnValue({
       ...client.getSnapshot(),
       browserSessions: [session],
+      browserUses,
     });
     const open = vi.fn();
     return { client, session, stop, open, surfaces: { hostClient: client, threadId, open } };

@@ -101,6 +101,7 @@ const taskListSourceKeys = [
   "activeTasks",
   "assignments",
   "browserSessions",
+  "browserUses",
   "browserProfiles",
   "connection",
   "homeThreadId",

@@ -110,6 +110,7 @@ export function seedMockPlaces(
     };
   };
   const sessions: BrowserSessionSummary[] = [];
+  const browserUses: HostSnapshot["browserUses"][number][] = [];
   const add = (
     index: number,
     origin: BrowserSessionSummary["origin"],
@@ -137,6 +138,33 @@ export function seedMockPlaces(
         occupants: page.occupants,
       })),
     });
+    browserUses.push(
+      ...catalog.tabs.flatMap((tab) =>
+        tab.occupants
+          .filter((occupant) => occupant.acting)
+          .flatMap((occupant) => {
+            const run = snapshot.runQueue.find(
+              (candidate) =>
+                candidate.threadId === occupant.threadId &&
+                (candidate.status === "running" || candidate.status === "waiting"),
+            );
+            return run
+              ? [
+                  {
+                    sessionId: id,
+                    threadId: occupant.threadId,
+                    runId: run.id,
+                    tabId: tab.id,
+                    firstUsedAt: at,
+                    lastUsedAt: at,
+                    pageTitle: tab.title,
+                    pageSite: tab.site,
+                  },
+                ]
+              : [];
+          }),
+      ),
+    );
     sessions.push({
       access: "read-write",
       acting: pages.some((page) => page.occupants.some((value) => value.acting)),
@@ -196,30 +224,6 @@ export function seedMockPlaces(
       threadIds: [
         ...new Set(pages.flatMap((page) => page.occupants.map(({ threadId }) => threadId))),
       ],
-      uses: catalog.tabs.flatMap((tab) =>
-        tab.occupants
-          .filter((occupant) => occupant.acting)
-          .flatMap((occupant) => {
-            const run = snapshot.runQueue.find(
-              (candidate) =>
-                candidate.threadId === occupant.threadId &&
-                (candidate.status === "running" || candidate.status === "waiting"),
-            );
-            return run
-              ? [
-                  {
-                    threadId: occupant.threadId,
-                    runId: run.id,
-                    tabId: tab.id,
-                    firstUsedAt: at,
-                    lastUsedAt: at,
-                    pageTitle: tab.title,
-                    pageSite: tab.site,
-                  },
-                ]
-              : [];
-          }),
-      ),
       page: { title: pages[0]?.title ?? "New tab", url: pages[0]?.site ?? "about:blank" },
       viewerError: null,
       viewerState: "disconnected",
@@ -508,6 +512,7 @@ export function seedMockPlaces(
         environmentIds: [],
       })),
     browserSessions: sessions,
+    browserUses,
     machines,
     threads: [...snapshot.threads, waitingThread, phoneThread],
     transcripts: {
@@ -1771,16 +1776,23 @@ export class MockPlaceWorld {
         .map((run) => [run.threadId, run.id]),
     );
     let recorded = false;
-    const browserSessions = current.browserSessions.map((session) => {
-      if (session.state !== "ready") return session;
-      const uses = [...(session.uses ?? [])];
+    const uses = [...current.browserUses];
+    for (const session of current.browserSessions) {
+      if (session.state !== "ready") continue;
       for (const tab of session.tabCatalog?.tabs ?? [])
         for (const occupant of tab.occupants) {
           const runId = occupant.acting ? liveRuns.get(occupant.threadId) : undefined;
-          if (!runId || uses.some((use) => use.runId === runId && use.tabId === tab.id)) continue;
+          if (
+            !runId ||
+            uses.some(
+              (use) => use.sessionId === session.id && use.runId === runId && use.tabId === tab.id,
+            )
+          )
+            continue;
           recorded = true;
           const at = this.#now().toISOString();
           uses.push({
+            sessionId: session.id,
             threadId: occupant.threadId,
             runId,
             tabId: tab.id,
@@ -1790,9 +1802,8 @@ export class MockPlaceWorld {
             pageSite: tab.site,
           });
         }
-      return uses.length === (session.uses?.length ?? 0) ? session : { ...session, uses };
-    });
-    if (recorded) this.#update({ ...current, browserSessions });
+    }
+    if (recorded) this.#update({ ...current, browserUses: uses });
     this.#seq++;
     const places = placeList(this.#snapshot());
     // Seeded native sessions predate the browser actions animated by this tick.

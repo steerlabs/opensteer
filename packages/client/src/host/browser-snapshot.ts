@@ -1,10 +1,5 @@
 import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
-import type {
-  BrowserSessionSummary,
-  BrowserSessionUseSummary,
-  HostSnapshot,
-  WorkspaceTabLineage,
-} from "./client.js";
+import type { BrowserSessionSummary, HostSnapshot, WorkspaceTabLineage } from "./client.js";
 import type { BrowserTabStore } from "./browser-tab-store.js";
 
 function shared<T>(previous: T[] | undefined, next: T[]): T[] {
@@ -102,7 +97,6 @@ export class BrowserSnapshotDerivation {
   derive(
     snapshot: HostSnapshot,
     store: BrowserTabStore,
-    uses: (sessionId: string) => readonly BrowserSessionUseSummary[] = () => [],
   ): Pick<HostSnapshot, "browserSessions" | "workspaceTabs" | "workspaceTabRestoreVersion"> {
     const heldSessions = new Map(snapshot.browserSessions.map((session) => [session.id, session]));
     const heldGroups = new Map<string, WorkspaceTabLineage>(
@@ -170,7 +164,6 @@ export class BrowserSnapshotDerivation {
           ...session,
           opener: group.opener,
           ...(tabCatalog ? { tabCatalog } : {}),
-          uses: previous?.uses ?? uses(group.sessionId),
           dialog: terminal ? null : (previous?.dialog ?? null),
           error: previous?.error ?? null,
           tabs,
