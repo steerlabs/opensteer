@@ -501,17 +501,23 @@ describeStore("shaped agent Thread tools", (it) => {
       },
       { timeout: 1000 },
     );
+    // Settled first and announced after, each on its own: an event locks the Workspace, which
+    // comes before an Assignment in the lock order.
+    await storeFixture.database
+      .updateTable("delegations")
+      .set((eb) => ({
+        status: "completed",
+        resultText: "84",
+        resultRunId: eb.ref("childRunId"),
+        finishedAt: new Date(),
+      }))
+      .where("id", "=", assignmentId!)
+      .execute();
     const event = await withDatabaseTransaction(storeFixture.database, async (tx) => {
       const row = await tx
-        .updateTable("delegations")
-        .set((eb) => ({
-          status: "completed",
-          resultText: "84",
-          resultRunId: eb.ref("childRunId"),
-          finishedAt: new Date(),
-        }))
+        .selectFrom("delegations")
+        .selectAll()
         .where("id", "=", assignmentId!)
-        .returningAll()
         .executeTakeFirstOrThrow();
       return appendHostWorkspaceEvent(tx, {
         type: "assignment.updated",
