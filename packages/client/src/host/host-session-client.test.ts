@@ -7596,7 +7596,7 @@ describe("HttpHostClient hosted browser", () => {
           dialog: null,
           surfaces: [{ id: "page-1", active: true, title: "Page", url: "https://example.com" }],
         });
-        socket.receiveBinary(browserFrame(1, true));
+        socket.receiveBinary(browserFrame(1));
         expect(client.browserWatchFrames.get(sessionId, "page-1")).not.toBeNull();
         const before = client.browserWatchFrames.invalidationKey!(sessionId, "page-1");
         // The presenter remains subscribed while its offscreen card releases transport.
@@ -7716,7 +7716,7 @@ describe("HttpHostClient hosted browser", () => {
           { id: "page-1", active: true, title: "Brex", url: "https://dashboard.brex.com" },
         ],
       });
-      viewer!.socket.receiveBinary(browserFrame(1, true));
+      viewer!.socket.receiveBinary(browserFrame(1));
       const before = client.browserWatchFrames.invalidationKey!(sessionId, "page-1");
       browser.profileGrants = [grant];
       await client.refresh();
@@ -7917,7 +7917,7 @@ describe("HttpHostClient hosted browser", () => {
     const frameListener = vi.fn();
     const unsubscribeSnapshot = client.subscribe(snapshotListener);
     const unsubscribeFrame = client.browserFrames.subscribe(sessionId, frameListener, "page-1");
-    browserSocket?.receiveBinary(browserFrame(9, true));
+    browserSocket?.receiveBinary(browserFrame(9));
 
     expect(client.getSnapshot()).toBe(snapshotBeforeFrame);
     expect(snapshotListener).not.toHaveBeenCalled();
@@ -10226,7 +10226,7 @@ describe("HttpHostClient command projection", () => {
       targetedStreamingVersion: 1,
       type: "browser.snapshot",
     });
-    viewer?.receiveBinary(browserFrame(1, true));
+    viewer?.receiveBinary(browserFrame(1));
     expect(client.browserFrames.get(sessionId, "page-1")).not.toBeNull();
 
     // Re-opening the same session must keep the viewer state only the client
@@ -13529,7 +13529,12 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     const seed = new MockHostClient();
     const initial = seed.getSnapshot();
     const saved = initial.workspaceTabs!.find(
-      (group) => group.session.profileId && group.tabs?.length,
+      (group) =>
+        group.session.profileId &&
+        group.tabs?.length &&
+        initial.browserPlacements.some(
+          (placement) => placement.runnerId === group.session.placement.runnerId,
+        ),
     )!;
     const session = initial.browserSessions.find((value) => value.id === saved.session.id)!;
     const workspace = makeWorkspace();
@@ -15498,14 +15503,13 @@ function authenticatedSession() {
   };
 }
 
-function browserFrame(frameId: number, targeted = false): ArrayBuffer {
+function browserFrame(frameId: number): ArrayBuffer {
   const header = new TextEncoder().encode(
     JSON.stringify({
       encoding: "jpeg",
       frameId,
-      ...(targeted
-        ? { geometryRevision: 1, watchToken: "00000000-0000-4000-8000-000000000001" }
-        : {}),
+      geometryRevision: 1,
+      watchToken: "00000000-0000-4000-8000-000000000001",
       rasterHeight: 1,
       rasterWidth: 1,
       surfaceId: "page-1",

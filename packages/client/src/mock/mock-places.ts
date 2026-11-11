@@ -1,3 +1,4 @@
+import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
@@ -891,6 +892,24 @@ export class MockPlaceWorld {
       if (!listeners.size) this.#watchListeners.delete(key);
     };
   };
+  viewerSurface(sessionId: string, surfaceId: string): BrowserViewerSurface | undefined {
+    if (!this.#watches.has(this.#key(sessionId, surfaceId))) return undefined;
+    const session = this.#snapshot().browserSessions.find((s) => s.id === sessionId);
+    const tab = session?.tabs.find((t) => t.id === surfaceId);
+    if (!tab || session?.state !== "ready") return undefined;
+    return {
+      id: tab.id,
+      state: "live",
+      title: tab.title,
+      url: tab.url,
+      documentId: tab.documentId ?? `document-${tab.id}`,
+      geometryRevision: 1,
+      loading: tab.loading ?? false,
+      navigationFailed: false,
+      sizedByAgent: tab.sizedByAgent ?? false,
+      favicon: tab.favicon ?? null,
+    };
+  }
   retain(sessionId: string, surfaceId: string): () => void {
     if (sessionId === sessionIdForBasicInput) this.input.retain(sessionId, surfaceId);
     const key = this.#key(sessionId, surfaceId);
@@ -945,7 +964,12 @@ export class MockPlaceWorld {
       return;
     }
     if (command.type === "surface.close") {
-      void this.close(sessionId, command.surfaceId, session.tabCatalog, false);
+      void this.close(
+        sessionId,
+        command.surfaceId,
+        session.tabCatalog.inventoryRevision ?? session.tabCatalog.revision,
+        false,
+      );
       return;
     }
     let tabs = session.tabCatalog.tabs;
@@ -1473,27 +1497,11 @@ export class MockPlaceWorld {
       catalog,
     });
   }
-  async close(
-    sessionId: string,
-    surfaceId: string,
-    expected: {
-      readonly generation: number;
-      readonly revision: number;
-      readonly inventoryRevision?: number | undefined;
-    },
-    person = true,
-  ) {
+  async close(sessionId: string, surfaceId: string, inventoryRevision: number, person = true) {
     const snapshot = this.#snapshot();
     const session = snapshot.browserSessions.find((session) => session.id === sessionId);
     const catalog = session?.tabCatalog;
-    if (
-      !catalog ||
-      catalog.generation !== expected.generation ||
-      (expected.inventoryRevision ??
-        (expected.revision === catalog.revision
-          ? (catalog.inventoryRevision ?? catalog.revision)
-          : expected.revision)) !== (catalog.inventoryRevision ?? catalog.revision)
-    )
+    if (!catalog || inventoryRevision !== (catalog.inventoryRevision ?? catalog.revision))
       throw new HostClientRequestError({
         code: "conflict",
         reason: "stale-tab-inventory",

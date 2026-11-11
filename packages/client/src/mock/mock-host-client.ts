@@ -1,3 +1,4 @@
+import { MockBrowserStream } from "./mock-browser-stream.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
@@ -3531,7 +3532,11 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
             continue;
           }
           if (!client.places || !sessionId || !catalog) throw new Error("The tab is unavailable.");
-          await client.places.close(sessionId, tabId, catalog);
+          await client.places.close(
+            sessionId,
+            tabId,
+            catalog.inventoryRevision ?? catalog.revision,
+          );
           closed.push(tabId);
         } catch (error) {
           failed.push({ tabId, message: error instanceof Error ? error.message : String(error) });
@@ -3560,13 +3565,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "browser.tab.close": {
       if (!client.places) return unsupportedMockRpc();
       return rpcSuccess(
-        await client.places.close(command.sessionId, command.surfaceId, {
-          generation:
-            client.getSnapshot().browserSessions.find((session) => session.id === command.sessionId)
-              ?.tabCatalog?.generation ?? 0,
-          revision: command.inventoryRevision,
-          inventoryRevision: command.inventoryRevision,
-        }),
+        await client.places.close(command.sessionId, command.surfaceId, command.inventoryRevision),
       );
     }
     case "browser.session.close":
@@ -4126,12 +4125,12 @@ export class MockHostClient implements HostClient {
 
   readonly getSnapshot = (): HostSnapshot => {
     this.#ownerViews.expire();
-    return this.#state.getSnapshot();
+    return this.#state.publishedSnapshot();
   };
   setBrowserProfileDeletions(
     deletions: NonNullable<HostSnapshot["browserProfileDeletions"]>,
   ): void {
-    this.#state.updatePlaces({ ...this.getSnapshot(), browserProfileDeletions: deletions });
+    this.#state.updatePlaces({ ...this.#state.getSnapshot(), browserProfileDeletions: deletions });
   }
 
   /**
@@ -4143,7 +4142,7 @@ export class MockHostClient implements HostClient {
     profileHomes: readonly string[] | undefined,
     homes: Readonly<Record<string, string | null>> = {},
   ): void {
-    const snapshot = this.getSnapshot();
+    const snapshot = this.#state.getSnapshot();
     this.#state.updatePlaces({
       ...snapshot,
       browserProfileHomes: profileHomes,
@@ -4154,7 +4153,10 @@ export class MockHostClient implements HostClient {
   }
 
   setSearchSuggestionsAvailable(available: boolean): void {
-    this.#state.updatePlaces({ ...this.getSnapshot(), searchSuggestionsAvailable: available });
+    this.#state.updatePlaces({
+      ...this.#state.getSnapshot(),
+      searchSuggestionsAvailable: available,
+    });
   }
 
   #dormantBrowser: {
@@ -4320,8 +4322,14 @@ export class MockHostClient implements HostClient {
       ),
     });
   }
-  readonly retainBrowserViewer = (sessionId: string, surfaceId: string): (() => void) =>
-    this.#places.retain(sessionId, surfaceId);
+  readonly retainBrowserViewer = (sessionId: string, surfaceId: string): (() => void) => {
+    const release = this.#places.retain(sessionId, surfaceId);
+    this.#state.refreshBrowserView();
+    return () => {
+      release();
+      this.#state.refreshBrowserView();
+    };
+  };
   readonly placeActivity = (placeKey: string) => this.#places.activity.get(placeKey);
   readonly subscribePlaceActivity = (placeKey: string, listener: () => void) =>
     this.#places.subscribeActivity(placeKey, listener);
@@ -4400,7 +4408,7 @@ export class MockHostClient implements HostClient {
       this.closeBrowserTab(
         result.sessionId,
         result.tabId,
-        this.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
+        this.#state.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
           ?.tabCatalog ?? result.catalog,
       ),
     changed: (pendingBrowserTabs) =>
@@ -4460,15 +4468,20 @@ export class MockHostClient implements HostClient {
   readonly closeBrowserTab = (
     sessionId: string,
     surfaceId: string,
-    expected: { readonly generation: number; readonly revision: number },
+    expected: Pick<
+      NonNullable<BrowserSessionSummary["tabCatalog"]>,
+      "generation" | "revision" | "inventoryRevision"
+    >,
   ) =>
-    this.#places.close(sessionId, surfaceId, expected).then((result) => {
-      this.#state.updatePlaces({
-        ...this.#state.getSnapshot(),
-        browserTabGroups: this.#tabGroups.receive(this.#state.tabGroups),
+    this.#places
+      .close(sessionId, surfaceId, expected.inventoryRevision ?? expected.revision)
+      .then((result) => {
+        this.#state.updatePlaces({
+          ...this.#state.getSnapshot(),
+          browserTabGroups: this.#tabGroups.receive(this.#state.tabGroups),
+        });
+        return result;
       });
-      return result;
-    });
   readonly browserWatchFrame = (sessionId: string, surfaceId: string) =>
     this.#places.watchFrame(sessionId, surfaceId);
   readonly browserWatchState = (sessionId: string, surfaceId: string) =>
@@ -4490,7 +4503,7 @@ export class MockHostClient implements HostClient {
   readonly readBrowserTabIcon = (sessionId: string, iconRef: string) =>
     this.#places.icon(sessionId, iconRef);
   readonly retainBrowserWatch = (sessionId: string, surfaceId: string): (() => void) =>
-    this.#places.retain(sessionId, surfaceId);
+    this.retainBrowserViewer(sessionId, surfaceId);
   readonly subscribeLifecycle = (
     listener: (event: "background" | "foreground" | "network") => void,
   ): (() => void) => {
@@ -4507,22 +4520,24 @@ export class MockHostClient implements HostClient {
     };
   };
   connectComputerDisplay(source: NativeViewerSource): WebSocketClient {
-    const phone = this.getSnapshot().machines.find((machine) =>
-      source.kind === "task-session"
-        ? machine.computerUse?.sessions.some(
-            (session) =>
-              session.sessionId === source.sessionId &&
-              (source.appKey
-                ? session.apps.some((app) => computerAppIdentityKey(app) === source.appKey)
-                : session.display),
-          )
-        : machine.computerUse?.ownerViews?.some(
-            (view) =>
-              view.viewId === source.viewId &&
-              view.generation === source.generation &&
-              view.state === "ready",
-          ),
-    );
+    const phone = this.#state
+      .getSnapshot()
+      .machines.find((machine) =>
+        source.kind === "task-session"
+          ? machine.computerUse?.sessions.some(
+              (session) =>
+                session.sessionId === source.sessionId &&
+                (source.appKey
+                  ? session.apps.some((app) => computerAppIdentityKey(app) === source.appKey)
+                  : session.display),
+            )
+          : machine.computerUse?.ownerViews?.some(
+              (view) =>
+                view.viewId === source.viewId &&
+                view.generation === source.generation &&
+                view.state === "ready",
+            ),
+      );
     const socket = new MockPhoneDisplaySocket(
       !phone ? "ended" : phone.computerUse?.displayStreamSupported ? "live" : "unsupported",
       () =>
@@ -4701,7 +4716,7 @@ export class MockHostClient implements HostClient {
       modelSelection: input.modelSelection,
       ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
       ...(input.home ? { home: true } : {}),
-      ...(input.generateTitle && this.getSnapshot().threadRenameAvailable
+      ...(input.generateTitle && this.#state.getSnapshot().threadRenameAvailable
         ? { generateTitle: true }
         : {}),
       title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
@@ -4709,7 +4724,7 @@ export class MockHostClient implements HostClient {
       workspaceId: input.workspaceId,
     });
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
-    const thread = this.getSnapshot().threads.find(({ id }) => id === result.thread.id);
+    const thread = this.#state.getSnapshot().threads.find(({ id }) => id === result.thread.id);
     if (!thread) throw new Error("The mock Thread was not projected.");
     await this.#rememberQuietly(
       input.home
@@ -4727,7 +4742,7 @@ export class MockHostClient implements HostClient {
   }
 
   async renameThread(threadId: string, title: string): Promise<ThreadSummary> {
-    if (!this.getSnapshot().threadRenameAvailable)
+    if (!this.#state.getSnapshot().threadRenameAvailable)
       throw new Error("This Host does not support task renaming.");
     const result = await this.dispatch({
       type: "thread.rename",
@@ -4736,7 +4751,7 @@ export class MockHostClient implements HostClient {
       idempotencyKey: `mock-thread-rename:${crypto.randomUUID()}`,
     });
     if (result.type !== "thread.rename") throw new Error("Thread command mismatch.");
-    return this.getSnapshot().threads.find(({ id }) => id === threadId)!;
+    return this.#state.getSnapshot().threads.find(({ id }) => id === threadId)!;
   }
 
   async createHome(
@@ -4764,13 +4779,14 @@ export class MockHostClient implements HostClient {
     if (!result.ok) throw new Error(result.error.message);
     // The preview keeps the whole transcript resident, including the requested source.
     this.#state.updatePlaces({
-      ...this.getSnapshot(),
+      ...this.#state.getSnapshot(),
       savedViewReadiness: {
-        ...(this.getSnapshot().savedViewReadiness ?? emptySavedViewReadiness()),
+        ...(this.#state.getSnapshot().savedViewReadiness ?? emptySavedViewReadiness()),
         home: {
           status: "window",
           threadId,
-          workspaceId: this.getSnapshot().threads.find(({ id }) => id === threadId)!.workspaceId,
+          workspaceId: this.#state.getSnapshot().threads.find(({ id }) => id === threadId)!
+            .workspaceId,
           latest: false,
         },
       },
@@ -4778,9 +4794,9 @@ export class MockHostClient implements HostClient {
   }
 
   async loadLatestTranscript(threadId: string): Promise<void> {
-    if (!this.getSnapshot().threads.some((thread) => thread.id === threadId))
+    if (!this.#state.getSnapshot().threads.some((thread) => thread.id === threadId))
       throw new Error("Thread not found.");
-    const snapshot = this.getSnapshot();
+    const snapshot = this.#state.getSnapshot();
     if (threadId === snapshot.homeThreadId && snapshot.homeWorkspaceId)
       this.#state.updatePlaces({
         ...snapshot,
@@ -4833,7 +4849,7 @@ export class MockHostClient implements HostClient {
   async loadEarlierTasks(_workspaceId?: string): Promise<void> {}
 
   async loadDoneTasks(workspaceId?: string): Promise<void> {
-    if (this.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(workspaceId);
+    if (this.#state.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(workspaceId);
   }
 
   async loadEarlierDoneTasks(_workspaceId?: string): Promise<void> {}
@@ -4881,7 +4897,7 @@ export class MockHostClient implements HostClient {
     selection: Pick<ExecutionSelection, "harnessInstanceId" | "modelSelection">,
     continuation?: { expectedProviderSessionId: string | null },
   ): Promise<ThreadSummary> {
-    const thread = this.getSnapshot().threads.find(({ id }) => id === threadId);
+    const thread = this.#state.getSnapshot().threads.find(({ id }) => id === threadId);
     if (!thread) throw new Error("Thread not found.");
     const result = await this.dispatch({
       harnessInstanceId: selection.harnessInstanceId,
@@ -4892,7 +4908,7 @@ export class MockHostClient implements HostClient {
       type: "thread.execution.update",
     });
     if (result.type !== "thread.execution.update") throw new Error("Thread command mismatch.");
-    if (thread.id !== this.getSnapshot().homeThreadId) {
+    if (thread.id !== this.#state.getSnapshot().homeThreadId) {
       await this.#rememberQuietly({
         selection: {
           environmentId: thread.environmentId,
@@ -4905,7 +4921,7 @@ export class MockHostClient implements HostClient {
   }
 
   async updateThreadAccess(threadId: string, accessMode: ThreadAccessMode): Promise<ThreadSummary> {
-    const thread = this.getSnapshot().threads.find(({ id }) => id === threadId);
+    const thread = this.#state.getSnapshot().threads.find(({ id }) => id === threadId);
     if (!thread) throw new Error("Thread not found.");
     const result = await this.dispatch({
       accessMode,
@@ -4919,7 +4935,7 @@ export class MockHostClient implements HostClient {
   }
 
   #projectedThread(threadId: string): ThreadSummary {
-    const thread = this.getSnapshot().threads.find(({ id }) => id === threadId);
+    const thread = this.#state.getSnapshot().threads.find(({ id }) => id === threadId);
     if (!thread) throw new Error("The mock Thread was not projected.");
     return thread;
   }
@@ -4931,7 +4947,7 @@ export class MockHostClient implements HostClient {
 
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const result = await this.rpc["commands.dispatch"](
-      browserProfileHomeCommand(command, this.getSnapshot().browserProfileHomes),
+      browserProfileHomeCommand(command, this.#state.getSnapshot().browserProfileHomes),
     );
     if (result.ok) return result.data;
     // The same typed refusal the real client raises, so a surface branches on
@@ -5098,7 +5114,8 @@ export class MockHostClient implements HostClient {
         consumerToken: "00000000-0000-4000-8000-000000000001",
         cursorSequence: command.cursorSequence,
         documentId:
-          this.getSnapshot()
+          this.#state
+            .getSnapshot()
             .browserSessions.find((session) => session.id === sessionId)
             ?.tabs.find((tab) => tab.id === command.surfaceId)?.documentId ?? "mock-document",
         geometryRevision: command.geometryRevision ?? 0,
@@ -5112,7 +5129,7 @@ export class MockHostClient implements HostClient {
     if (
       command.type === "navigation.reload" &&
       command.ignoreCache !== undefined &&
-      this.getSnapshot().browserSessions.find((session) => session.id === sessionId)
+      this.#state.getSnapshot().browserSessions.find((session) => session.id === sessionId)
         ?.navigationVersion !== 1
     )
       throw new Error("This browser does not support reloading without cache.");
@@ -5142,13 +5159,15 @@ export class MockHostClient implements HostClient {
       workspaceId,
     });
     if (result.type !== "browser.session.start") throw new Error("Browser command mismatch.");
-    const session = this.getSnapshot().browserSessions.find(({ id }) => id === result.session.id);
+    const session = this.#state
+      .getSnapshot()
+      .browserSessions.find(({ id }) => id === result.session.id);
     if (!session) throw new Error("The mock Browser Session was not projected.");
     return session;
   }
 
   async stopRun(threadId: string): Promise<void> {
-    const snapshot = this.getSnapshot();
+    const snapshot = this.#state.getSnapshot();
     const thread = snapshot.threads.find(({ id }) => id === threadId);
     const run = thread ? threadStopTarget({ runQueue: snapshot.runQueue, thread }) : null;
     if (!run) throw new Error("This Thread has nothing to stop.");
@@ -6272,6 +6291,31 @@ class MockHostState {
   /** The sessions this client can see, until it revokes them. */
   private sessions: AuthSessionSummary[];
   private snapshot: HostSnapshot;
+  #published: HostSnapshot | null = null;
+  #browserStream = new MockBrowserStream();
+  publishedSnapshot(): HostSnapshot {
+    if (!this.#published) this.publishBrowser();
+    return this.#published!;
+  }
+  refreshBrowserView(): void {
+    this.emit();
+  }
+  private publishBrowser(): void {
+    if (
+      this.#published &&
+      (this.#published.deploymentId !== this.snapshot.deploymentId ||
+        this.#published.user?.id !== this.snapshot.user?.id ||
+        this.snapshot.session !== "authenticated")
+    ) {
+      this.#browserStream = new MockBrowserStream();
+      this.#published = null;
+    }
+    this.#published = this.#browserStream.publish(
+      this.snapshot,
+      this.#published,
+      (sessionId, surfaceId) => this.places?.viewerSurface(sessionId, surfaceId),
+    );
+  }
   tabGroups: BrowserTabLayout = { revision: 0, groups: [], order: [] };
   projectTabGroups: (() => BrowserTabLayout | undefined) | undefined;
   setTabGroups(layout: BrowserTabLayout): void {
@@ -12128,6 +12172,7 @@ class MockHostState {
   }
 
   private emit(): void {
+    this.publishBrowser();
     for (const listener of this.listeners) listener();
   }
 

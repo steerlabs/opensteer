@@ -18,7 +18,13 @@ function fixture() {
       available: true,
     })),
   };
-  const group = snapshot.workspaceTabs!.find((value) => value.tabs?.length)!;
+  const group = snapshot.workspaceTabs!.find(
+    (value) =>
+      value.tabs?.length &&
+      snapshot.browserPlacements.some(
+        (placement) => placement.runnerId === value.session.placement.runnerId,
+      ),
+  )!;
   const tabId = group.tabs![0]!.id;
   const result: Result = {
     type: "workspace.tab.activate",
