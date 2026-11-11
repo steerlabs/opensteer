@@ -76,7 +76,12 @@ async function requireWorkspaceSharingCapability(
 ): Promise<void> {
   const deployment = await transaction
     .selectFrom("deployments")
-    .select(["deploymentShape", "authorityModelVersion"])
+    .select("deploymentShape")
+    .select(
+      sql<number>`case when to_jsonb(deployments) ? 'authority_model_version' then (to_jsonb(deployments)->>'authority_model_version')::integer else 1 end`.as(
+        "authorityModelVersion",
+      ),
+    )
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
   if (isProjectDeploymentAuthority(deploymentAuthorityFromStoredRow(deployment)))
