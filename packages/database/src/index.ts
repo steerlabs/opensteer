@@ -119,3 +119,6 @@ export {
   type ProjectRequestRevocationHooks,
   type PlannedManagerlessRequestHooks,
 } from "./project-work-revocation.js";
+
+export { ProjectRunRecoveryStore } from "./project-run-recovery.js";
+export { type ProjectRunRequestCancellation } from "./run-finalization.js";
