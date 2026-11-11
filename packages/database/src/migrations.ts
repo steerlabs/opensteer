@@ -32,6 +32,37 @@ import { BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
 
+const taskQuestionNoticesMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table requests drop constraint requests_terminal_check;
+      alter table requests add constraint requests_terminal_check check (
+        (status = 'pending' and response is null and cancellation_reason is null and resolved_at is null and resolved_by is null)
+        or (status in ('fulfilled', 'declined') and jsonb_typeof(response) = 'object'
+          and response_command_id is null and cancellation_reason is null and resolved_at is not null
+          and ((resolved_by is not null and coalesce(settlement_provenance->>'kind', '') <> 'agent')
+            or (resolved_by is null and kind = 'harness.input' and originating_node_id is null
+              and coalesce(settlement_provenance->>'kind', '') = 'agent'
+              and coalesce(settlement_provenance->>'runId', '') ~ '^run_[0-9a-f-]{36}$'
+              and coalesce(settlement_provenance->>'threadId', '') ~ '^thr_[0-9a-f-]{36}$')))
+        or (status = 'withdrawn' and response is null and response_command_id is null
+          and cancellation_reason is null and resolved_at is not null and resolved_by is not null)
+        or (status = 'cancelled' and response is null and response_command_id is null
+          and cancellation_reason is not null and resolved_at is not null and resolved_by is null)
+      )
+    `.execute(database);
+    await database.schema
+      .createTable("taskQuestionNotices")
+      .addColumn("requestId", "text", (column) =>
+        column.primaryKey().references("requests.id").onDelete("cascade"),
+      )
+      .addColumn("messageId", "text", (column) =>
+        column.unique().references("messages.id").onDelete("set null"),
+      )
+      .execute();
+  },
+};
+
 export const projectExecutionPreparationMigration: Migration = {
   async up(database) {
     await sql`
@@ -4848,6 +4879,7 @@ export function migrationProvider() {
         "0174_assignment_result_reads": assignmentResultReadsMigration,
         "0175_program_tool_names": programToolNamesMigration,
         "0176_assignment_result_waits": assignmentResultWaitsMigration,
+        "0177_task_question_notices": taskQuestionNoticesMigration,
       };
     },
   };

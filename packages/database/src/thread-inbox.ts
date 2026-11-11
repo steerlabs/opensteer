@@ -6,6 +6,12 @@ import {
 } from "./memory-pass-store.js";
 import { assertLineageCompatibleReuse } from "./resource-access.js";
 import { recordPersonWaited } from "./run-visibility.js";
+import {
+  taskQuestionCause,
+  taskQuestionNoticeSource,
+  taskQuestionNoticeIsPending,
+} from "./task-question-notices.js";
+import { finalizeRunTransaction } from "./run-finalization.js";
 import { z } from "zod";
 import { isPlaceContentPart } from "@opensteer/core";
 import { lockRunProjectionRows, lockThreadProjectionParents } from "./run-projection-locks.js";
@@ -41,6 +47,10 @@ import {
   createId,
   moveQueueItem,
   threadReachScope,
+  threadAccessModeAtMost,
+  requestTitleText,
+  RequestIdSchema,
+  type RequestId,
   threadReportMaxPendingEntries,
   threadReportMaxPendingSerializedBytes,
   threadReportBatchMaxEntries,
@@ -105,6 +115,7 @@ import {
   safeGeneration,
   systemPrincipalId,
   threadExecutionIsAvailableToUser,
+  threadPathLinks,
 } from "./store-primitives.js";
 import type {
   CancelledThreadInput,
@@ -1911,6 +1922,12 @@ async function lockThreadInputPreconditions(
           .executeTakeFirst()
       : null,
   ]);
+  const question =
+    input.source.kind === "platform" && input.source.cause === taskQuestionCause
+      ? await taskQuestionNoticeSource(transaction, RequestIdSchema.parse(input.source.referenceId))
+      : null;
+  if (input.source.kind === "platform" && input.source.cause === taskQuestionCause && !question)
+    throw new OpensteerError({ code: "conflict", message: "Task question is no longer pending" });
   if ((input.source.kind === "agent" || input.source.kind === "platform") && !sourceRun) {
     throw new OpensteerError({ code: "forbidden", message: "Source Run is invalid" });
   }
@@ -1936,9 +1953,12 @@ async function lockThreadInputPreconditions(
   }
   const workspaceIds = [
     ...new Set(
-      [observedThread.workspaceId, observedActive?.workspaceId, sourceRun?.workspaceId].filter(
-        Boolean,
-      ),
+      [
+        observedThread.workspaceId,
+        observedActive?.workspaceId,
+        sourceRun?.workspaceId,
+        question?.request.originatingWorkspaceId,
+      ].filter(Boolean),
     ),
   ].sort() as WorkspaceId[];
   const lockedWorkspaces = await transaction
@@ -1986,6 +2006,25 @@ async function lockThreadInputPreconditions(
       code: "conflict",
       message: "Thread execution binding changed while the input was being created",
     });
+  }
+  if (question) {
+    const current = await taskQuestionNoticeSource(transaction, question.request.id);
+    const worker = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", question.request.originatingThreadId)
+      .executeTakeFirstOrThrow();
+    const reach = threadReachScope(thread);
+    if (
+      !current ||
+      current.parentThreadId !== thread.id ||
+      current.parentRunId !== sourceRun?.id ||
+      !threadAccessModeAtMost(worker.accessMode, thread.accessMode) ||
+      (reach.kind === "workspace" && reach.workspaceId !== worker.workspaceId) ||
+      (reach.kind === "lineage" && reach.lineageRootThreadId !== worker.lineageRootThreadId) ||
+      !(await threadExecutionIsAvailableToUser(transaction, worker.id, input.requestedBy))
+    )
+      throw new OpensteerError({ code: "conflict", message: "Task question is unavailable" });
   }
   if (input.source.kind === "watch") {
     await transaction
@@ -2187,6 +2226,118 @@ function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSour
     case "automation":
       return { kind: "automation", noticeId: source.noticeId, triggerId: source.triggerId };
   }
+}
+
+export function deliverTaskQuestionNotice(
+  database: Kysely<DatabaseSchema>,
+  requestId: RequestId,
+  isWaiting: (parentThreadId: ThreadId, workerThreadId: ThreadId) => boolean,
+): Promise<readonly AgentEvent[]> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    const source = await taskQuestionNoticeSource(transaction, requestId);
+    if (!source) return [];
+    const key = `task-question:${requestId}`;
+    await lockCommandIdempotency(transaction, source.request.requestedBy, key);
+    if (
+      await transaction
+        .selectFrom("taskQuestionNotices")
+        .select("requestId")
+        .where("requestId", "=", requestId)
+        .executeTakeFirst()
+    )
+      return [];
+    const input: EnqueueThreadInputRequest = {
+      idempotencyKey: key,
+      policy: "queue",
+      requestedBy: source.request.requestedBy,
+      threadId: source.parentThreadId,
+      source: {
+        kind: "platform",
+        cause: taskQuestionCause,
+        referenceId: requestId,
+        sourceRunId: source.parentRunId,
+      },
+      content: [
+        {
+          type: "text",
+          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with pending_request action read, requestId ${requestId}. Answer with action respond when the answer follows from the task or the person's instructions, or leave it for the person.`,
+        },
+      ],
+    };
+    await lockThreadInputPreconditions(transaction, input);
+    if (isWaiting(source.parentThreadId, source.request.originatingThreadId)) {
+      await transaction
+        .insertInto("taskQuestionNotices")
+        .values({ requestId, messageId: null })
+        .execute();
+      return [];
+    }
+    const queued = await enqueueThreadInputInTransaction(transaction, input);
+    await transaction
+      .insertInto("taskQuestionNotices")
+      .values({ requestId, messageId: queued.message.id })
+      .execute();
+    return queued.events;
+  });
+}
+
+export function cancelSettledTaskQuestionNotice(
+  database: Kysely<DatabaseSchema>,
+  requestId: RequestId,
+): Promise<readonly AgentEvent[]> {
+  return withDatabaseTransaction(database, async (transaction) => {
+    const notice = await transaction
+      .selectFrom("taskQuestionNotices")
+      .innerJoin("threadInputs", "threadInputs.messageId", "taskQuestionNotices.messageId")
+      .innerJoin("threads", "threads.id", "threadInputs.threadId")
+      .select([
+        "taskQuestionNotices.messageId",
+        "threads.id",
+        "threads.workspaceId",
+        "threads.environmentId",
+      ])
+      .where("taskQuestionNotices.requestId", "=", requestId)
+      .where("threadInputs.state", "=", "pending")
+      .executeTakeFirst();
+    if (!notice?.messageId) return [];
+    const reserved = await transaction
+      .selectFrom("runs")
+      .select(["id", "status"])
+      .where("seedInputId", "=", notice.messageId)
+      .where("status", "in", nonTerminalRunStatuses)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    if (reserved.some(({ status }) => status !== "queued")) return [];
+    await lockWorkspaceRow(transaction, notice.workspaceId);
+    await lockThreadRow(transaction, notice.id);
+    await lockRunProjectionRows(transaction, {
+      threadIds: [notice.id],
+      runIds: reserved.map(({ id }) => id),
+    });
+    if (await taskQuestionNoticeIsPending(transaction, notice.messageId)) return [];
+    const cancelled = await transaction
+      .updateTable("threadInputs")
+      .set({ state: "cancelled", cancelReason: "withdrawn", updatedAt: new Date() })
+      .where("messageId", "=", notice.messageId)
+      .where("state", "=", "pending")
+      .returningAll()
+      .executeTakeFirst();
+    if (!cancelled) return [];
+    const events = [await inputUpdatedEvent(transaction, notice, cancelled)];
+    for (const run of reserved)
+      events.push(
+        ...(await finalizeRunTransaction(transaction, {
+          runId: run.id,
+          status: "interrupted",
+          source: "host",
+          links: threadPathLinks,
+          queuedInputCancellation: "seed-input",
+          completedAt: new Date(),
+        })),
+      );
+    return events;
+  });
 }
 
 export async function enqueueThreadInputInTransaction(
@@ -3317,6 +3468,17 @@ export async function ensureQueuedRun(
       .executeTakeFirst();
     if (!lockedCandidate) continue;
     candidate = lockedCandidate;
+
+    if (!(await taskQuestionNoticeIsPending(transaction, candidate.messageId))) {
+      const cancelled = await transaction
+        .updateTable("threadInputs")
+        .set({ state: "cancelled", cancelReason: "withdrawn", updatedAt: new Date() })
+        .where("messageId", "=", candidate.messageId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      events.push(await inputUpdatedEvent(transaction, thread, cancelled));
+      continue;
+    }
 
     if (candidate.assignmentId) {
       const assignment = await transaction

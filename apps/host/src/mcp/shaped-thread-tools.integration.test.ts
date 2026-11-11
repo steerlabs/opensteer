@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
 import {
@@ -8,6 +9,10 @@ import {
   type RunId,
   type PlaceIdentity,
   ThreadAccessModeSchema,
+  RequestKindSchema,
+  PendingRequestSchema,
+  type RequestPayload,
+  type RequestResponse,
 } from "@opensteer/core";
 import {
   thread_read,
@@ -31,11 +36,16 @@ import {
   assignmentSummaryInTransaction,
   withDatabaseOperationSignal,
   AgentConnectionStore,
+  requestRevision,
+  deliverTaskQuestionNotice,
+  cancelSettledTaskQuestionNotice,
+  requestInsert,
 } from "@opensteer/database";
 import {
   describeStore,
   testModelSelection,
   pendingEvent,
+  liveRequest,
   enrollTestRunner,
   testContinuationIdentity,
   type StoreFixture,
@@ -53,12 +63,25 @@ import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js"
 import { ThreadService } from "../threads/thread-service.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
+import { TaskQuestionNotices } from "../threads/task-question-notices.js";
+import { openRequestResponse, sealRequestResponse } from "../identity/request-response-vault.js";
 
 type Fixture = Awaited<ReturnType<StoreFixture["startRunFixture"]>>;
 function setup(storeFixture: StoreFixture, f: Fixture) {
   const { store } = storeFixture;
   const frames: PersonShowMessage[] = [];
   const realtime = new RealtimeHub({ store });
+  const vault = new AesGcmSecretVault(
+    new StaticEncryptionKeyProvider(new Map([[1, Buffer.alloc(32, 7)]]), 1),
+  );
+  const questionNotices = new TaskQuestionNotices({
+    database: store.database,
+    publish: (event) => realtime.publish(event),
+    wake: () => {},
+    onError: (error) => {
+      throw error;
+    },
+  });
   const commands = new CommandService({
     store,
     admission: new KeyedAdmissionQueue({
@@ -107,6 +130,8 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     browserTabs,
     threads,
     realtime,
+    requestResponseVault: vault,
+    questionNotices,
     computerUse,
     personShow: async (_userId, frame) => {
       frames.push(frame);
@@ -159,7 +184,19 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       input: person_show.input.parse({ target }),
       operationKey: randomUUID(),
     });
-  return { product, caller, read, show, frames, browser, computerUse, commands, realtime };
+  return {
+    product,
+    caller,
+    read,
+    show,
+    frames,
+    browser,
+    computerUse,
+    commands,
+    realtime,
+    vault,
+    questionNotices,
+  };
 }
 
 async function waitingTask(storeFixture: StoreFixture, suffix: string) {
@@ -235,6 +272,7 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
         workspaceId: f.workspace.id,
       }),
     });
+    return binding;
   };
   const checkLive = vi.fn(async () => {});
   const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller, signal?: AbortSignal) =>
@@ -286,6 +324,574 @@ async function share(storeFixture: StoreFixture, f: Fixture) {
     .execute();
   return reader;
 }
+
+async function questionTask(
+  storeFixture: StoreFixture,
+  suffix: string,
+  beforeOpen?: (task: Awaited<ReturnType<typeof waitingTask>>) => Promise<void>,
+) {
+  const s = await waitingTask(storeFixture, suffix);
+  const binding = await s.startWorker();
+  await beforeOpen?.(s);
+  const request = liveRequest({
+    id: createId("request"),
+    harnessInstanceId: s.f.harnessInstance.id,
+    requestedBy: s.f.userId,
+    runId: s.task.runId!,
+    threadId: s.task.threadId,
+    workspaceId: s.task.workspaceId,
+    presentation: {
+      kind: "form",
+      title: "Which format?",
+      fields: [
+        { id: "format", prompt: "Choose the export format", multiSelect: false, secret: false },
+      ],
+    },
+  });
+  const opened = await storeFixture.store.commitRunnerEvent({
+    environmentId: s.f.environmentId,
+    runnerBootId: s.f.runnerBootId,
+    runnerId: s.f.runnerId,
+    event: pendingEvent({
+      environmentId: s.f.environmentId,
+      workspaceId: s.task.workspaceId,
+      runId: s.task.runId!,
+      threadId: s.task.threadId,
+      bindingGeneration: binding.bindingGeneration,
+      ordinal: 1,
+      type: "request.opened",
+      data: { request },
+    }),
+  });
+  const readRequest = (actor: AgentCaller = s.caller, requestId = request.id) =>
+    s.product.pending_request({
+      caller: actor,
+      input: pending_request.input.parse({ action: "read", requestId }),
+      operationKey: randomUUID(),
+    });
+  const respond = (
+    actor: AgentCaller = s.caller,
+    expectedRevision = requestRevision(request),
+    requestId = request.id,
+  ) =>
+    s.product.pending_request({
+      caller: actor,
+      input: pending_request.input.parse({
+        action: "respond",
+        requestId,
+        expectedRevision,
+        response: { kind: "form", answers: { format: ["CSV"] } },
+      }),
+      operationKey: randomUUID(),
+    });
+  const dispatch = async () => {
+    const command = await storeFixture.database
+      .selectFrom("commands")
+      .selectAll()
+      .where("type", "=", "request.respond")
+      .where("runId", "=", s.task.runId)
+      .executeTakeFirstOrThrow();
+    await storeFixture.store.claimCommand(command.id, `${suffix}-response`);
+    let received: RequestResponse | undefined;
+    const events = await storeFixture.store.dispatchRequestResponse(
+      command.id,
+      async (beforeAck) => {
+        received = await openRequestResponse(s.vault, command.encryptedRequestResponse!, {
+          requestId: request.id,
+          runId: s.task.runId!,
+          threadId: s.task.threadId,
+        });
+        await beforeAck();
+      },
+    );
+    return { events, received, command };
+  };
+  const stored = (await storeFixture.store.requests.get(request.id))!;
+  return {
+    ...s,
+    request: stored,
+    opened,
+    binding,
+    readRequest,
+    respond: (
+      actor: AgentCaller = s.caller,
+      expectedRevision = requestRevision(stored),
+      requestId = request.id,
+    ) => respond(actor, expectedRevision, requestId),
+    dispatch,
+  };
+}
+
+describeStore("agents answering task questions", (it) => {
+  it("allows an unrelated agent with write authority to answer", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-unrelated");
+    const { thread } = await storeFixture.store.createThread({
+      createdBy: s.f.userId,
+      environmentId: s.f.environmentId,
+      harnessInstanceId: s.f.harnessInstance.id,
+      idempotencyKey: randomUUID(),
+      modelSelection: testModelSelection,
+      title: "Independent reviewer",
+      workspaceId: s.f.workspace.id,
+    });
+    const turn = await storeFixture.enqueueHumanTrigger({
+      content: [{ type: "text", text: "Review the export" }],
+      idempotencyKey: randomUUID(),
+      requestedBy: s.f.userId,
+      threadId: thread.id,
+    });
+    await storeFixture.store.claimCommand(turn.command.id, "independent-reviewer");
+    const binding = await storeFixture.store.acquireExecutionBinding({
+      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+      continuationIdentity: testContinuationIdentity,
+      harnessInstanceId: s.f.harnessInstance.id,
+      leaseTokenHash: randomUUID(),
+      membershipGeneration: 1,
+      runnerBootId: s.f.runnerBootId,
+      runnerId: s.f.runnerId,
+      runId: turn.run.id,
+      threadId: thread.id,
+    });
+    await storeFixture.store.commitRunnerEvent({
+      environmentId: s.f.environmentId,
+      runnerBootId: s.f.runnerBootId,
+      runnerId: s.f.runnerId,
+      event: pendingEvent({
+        environmentId: s.f.environmentId,
+        workspaceId: s.f.workspace.id,
+        threadId: thread.id,
+        runId: turn.run.id,
+        bindingGeneration: binding.bindingGeneration,
+        ordinal: 0,
+        type: "run.started",
+        data: { status: "running" },
+      }),
+    });
+    const reviewer: RunCaller = {
+      ...s.caller,
+      thread,
+      key: `run:${turn.run.id}`,
+      claims: {
+        ...s.caller.claims,
+        runId: turn.run.id,
+        threadId: thread.id,
+        bindingGeneration: binding.bindingGeneration,
+      },
+    };
+    await s.respond(reviewer);
+    await s.dispatch();
+    expect(await storeFixture.store.requests.get(s.request.id)).toMatchObject({
+      status: "fulfilled",
+      resolvedBy: null,
+      settlementProvenance: { kind: "agent", runId: turn.run.id, title: "Independent reviewer" },
+    });
+  });
+
+  it("delivers the parent's answer to the waiting Run with agent attribution and clears Needs you", async ({
+    storeFixture,
+  }) => {
+    const s = await questionTask(storeFixture, "question-answer");
+    expect(await s.readRequest()).toMatchObject({
+      request: { presentation: s.request.presentation, revision: requestRevision(s.request) },
+    });
+    await s.respond();
+    const { received, events, command } = await s.dispatch();
+    expect(received).toEqual({ kind: "form", answers: { format: ["CSV"] } });
+    expect(command.authoritySource).toMatchObject({ kind: "thread-agent", runId: s.f.run.id });
+    expect(events.filter((event) => event.type === "request.resolved")).toHaveLength(1);
+    const settled = await storeFixture.store.requests.get(s.request.id);
+    expect(settled).toMatchObject({
+      status: "fulfilled",
+      resolvedBy: null,
+      settlementProvenance: {
+        kind: "agent",
+        runId: s.f.run.id,
+        threadId: s.f.thread.id,
+        title: s.f.thread.title,
+      },
+    });
+    expect((await storeFixture.store.workspaceSnapshot(s.f.workspace.id)).pendingRequests).toEqual(
+      [],
+    );
+    expect(
+      await storeFixture.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", s.task.runId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "running" });
+  });
+
+  it("refuses every human-only kind without exposing question fields", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-human-only");
+    const reason = "Person must decide";
+    const payloads: Record<typeof s.request.kind, RequestPayload> = {
+      "harness.input": { kind: "harness.input" },
+      "harness.approval": { kind: "harness.approval" },
+      "browser.access": { kind: "browser.access", reason, suggestion: { kind: "user_choice" } },
+      "browser.profile.save": { kind: "browser.profile.save", reason, sessionId: "session" },
+      "browser.profile.import": {
+        kind: "browser.profile.import",
+        reason,
+        sourceId: createId("browserSource"),
+        sourceName: "Chrome",
+        site: "https://example.com",
+      },
+      "browser.sign-in": {
+        kind: "browser.sign-in",
+        reason,
+        sessionId: "session",
+        site: "https://example.com",
+      },
+      "browser.password-sign-in": {
+        kind: "browser.password-sign-in",
+        reason,
+        computerName: "Mac",
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        operationId: randomUUID(),
+        runnerId: s.f.runnerId,
+        sessionId: "session",
+        site: "https://example.com",
+      },
+      "integration.access": {
+        kind: "integration.access",
+        reason,
+        access: "read",
+        installationId: "installation",
+        manifest: null,
+        requestedConnectionId: null,
+        requestedServerId: null,
+      },
+      "integration.install": { kind: "integration.install", reason, manifest: {} },
+      "machine.full-disk-access": {
+        kind: "machine.full-disk-access",
+        reason,
+        machineId: s.f.runnerId,
+        machineName: "Mac",
+      },
+      "computer.app.access": {
+        kind: "computer.app.access",
+        reason,
+        access: "read",
+        app: null,
+        definitionId: "android-phone",
+        runnerId: s.f.runnerId,
+        setupRequestId: randomUUID(),
+        workspaceId: s.f.workspace.id,
+      },
+      "integration.input": {
+        kind: "integration.input",
+        installationId: "installation",
+        serverId: "server",
+      },
+    };
+    for (const kind of RequestKindSchema.options.filter((kind) => kind !== "harness.input")) {
+      const request = PendingRequestSchema.parse({
+        ...s.request,
+        id: createId("request"),
+        callId: randomUUID(),
+        kind,
+        mode: kind.startsWith("harness.") ? "live" : "durable",
+        payload: payloads[kind],
+      });
+      await storeFixture.database.insertInto("requests").values(requestInsert(request)).execute();
+      const read = await s.readRequest(s.caller, request.id);
+      expect(read).not.toHaveProperty("request.presentation");
+      await expect(
+        s.respond(s.caller, requestRevision(request), request.id),
+        kind,
+      ).rejects.toMatchObject({ code: "forbidden" });
+    }
+  });
+
+  it("refuses self answers and stale revisions", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-stale-self");
+    const thread = (await storeFixture.store.getThreadForOwner(s.task.threadId, s.f.userId))!;
+    const worker: RunCaller = {
+      ...s.caller,
+      thread,
+      key: `run:${s.task.runId}`,
+      claims: {
+        ...s.caller.claims,
+        runId: s.task.runId!,
+        threadId: s.task.threadId,
+        bindingGeneration: s.binding.bindingGeneration,
+      },
+    };
+    await expect(s.respond(worker)).rejects.toMatchObject({ code: "forbidden" });
+    await storeFixture.database
+      .updateTable("requests")
+      .set({
+        presentation: sql`${JSON.stringify({ ...s.request.presentation, title: "Updated export question" })}::jsonb`,
+      })
+      .where("id", "=", s.request.id)
+      .execute();
+    await expect(s.respond(s.caller, requestRevision(s.request))).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
+  });
+
+  it("refuses out-of-reach callers without revealing the Request", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-reach");
+    const caller: RunCaller = {
+      ...s.caller,
+      reach: { kind: "lineage", lineageRootThreadId: createId("thread") },
+    };
+    for (const id of [s.request.id, createId("request")]) {
+      await expect(s.readRequest(caller, id)).rejects.toMatchObject({
+        code: "forbidden",
+        message: "Request is unavailable",
+      });
+      await expect(s.respond(caller, requestRevision(s.request), id)).rejects.toMatchObject({
+        code: "forbidden",
+        message: "Request is unavailable",
+      });
+    }
+  });
+
+  it("rechecks a removed member at admission and again before engine delivery", async ({
+    storeFixture,
+  }) => {
+    const s = await questionTask(storeFixture, "question-revoked");
+    await s.respond();
+    const replacement = await share(storeFixture, s.f);
+    await storeFixture.database
+      .updateTable("workspaceMemberships")
+      .set({ role: "owner" })
+      .where("workspaceId", "=", s.f.workspace.id)
+      .where("userId", "=", replacement)
+      .execute();
+    await storeFixture.database
+      .updateTable("workspaceMemberships")
+      .set({ state: "revoked", revokedAt: new Date(), revokedBy: s.f.userId })
+      .where("workspaceId", "=", s.f.workspace.id)
+      .where("userId", "=", s.f.userId)
+      .execute();
+    await expect(s.respond()).rejects.toMatchObject({ code: "forbidden" });
+    await expect(s.dispatch()).rejects.toMatchObject({ code: "forbidden" });
+    expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
+  });
+
+  it("lets exactly one answer win when a person and an agent race", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-answer-race");
+    const response = { kind: "form" as const, answers: { format: ["JSON"] } };
+    const sealedResponse = await sealRequestResponse(s.vault, response, {
+      requestId: s.request.id,
+      runId: s.task.runId!,
+      threadId: s.task.threadId,
+    });
+    const results = await Promise.allSettled([
+      s.respond(),
+      s.commands.sendControl({
+        type: "request.respond",
+        requestId: s.request.id,
+        runId: s.task.runId!,
+        threadId: s.task.threadId,
+        requestedBy: s.f.userId,
+        idempotencyKey: randomUUID(),
+        response,
+        sealedResponse,
+      }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const { received } = await s.dispatch();
+    expect(["CSV", "JSON"]).toContain(
+      received?.kind === "form" ? received.answers.format?.[0] : null,
+    );
+    expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("fulfilled");
+  });
+
+  it("queues one Host-authored notice and cancels it if the question settles before it is taken", async ({
+    storeFixture,
+  }) => {
+    const s = await questionTask(storeFixture, "question-notice");
+    const notices = await Promise.all([
+      deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
+      deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
+    ]);
+    expect(notices.flat().filter((event) => event.type === "message.created")).toHaveLength(1);
+    const row = await storeFixture.database
+      .selectFrom("taskQuestionNotices")
+      .innerJoin("messages", "messages.id", "taskQuestionNotices.messageId")
+      .selectAll("messages")
+      .where("requestId", "=", s.request.id)
+      .executeTakeFirstOrThrow();
+    expect(row.author).toMatchObject({ kind: "platform", cause: "task-question" });
+    expect(JSON.stringify(row.content)).toContain("pending_request");
+    await s.respond();
+    await s.dispatch();
+    await cancelSettledTaskQuestionNotice(storeFixture.database, s.request.id);
+    expect(
+      await storeFixture.database
+        .selectFrom("threadInputs")
+        .select("state")
+        .where("messageId", "=", row.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "cancelled" });
+    expect(
+      await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
+    ).toEqual([]);
+  });
+
+  it("delivers a waiting parent's question through thread_wait without a second notice", async ({
+    storeFixture,
+  }) => {
+    let waiting: ReturnType<Awaited<ReturnType<typeof waitingTask>>["wait"]> | undefined;
+    const s = await questionTask(storeFixture, "question-notice-wait", async (task) => {
+      waiting = task.wait();
+      await vi.waitFor(() => expect(task.checkLive).toHaveBeenCalledTimes(2), { timeout: 1000 });
+    });
+    s.questionNotices.observe(s.opened.event);
+    s.realtime.publish(s.opened.event);
+    expect(await waiting).toMatchObject({ pendingRequest: { id: s.request.id } });
+    await s.questionNotices.close();
+    expect(
+      await storeFixture.database
+        .selectFrom("taskQuestionNotices")
+        .selectAll()
+        .where("requestId", "=", s.request.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ requestId: s.request.id, messageId: null });
+    expect(
+      await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
+    ).toEqual([]);
+  });
+
+  it("creates no parent notice for a program task", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-notice-program");
+    const occurrence = await storeFixture.startTriggerOccurrence(s.f, "question-notice-program");
+    await storeFixture.database
+      .updateTable("delegations")
+      .set({ origin: "trigger", parentRunId: null, parentOccurrenceId: occurrence.id })
+      .where("id", "=", s.assignmentId)
+      .execute();
+    expect(
+      await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false),
+    ).toEqual([]);
+    expect(
+      await storeFixture.database.selectFrom("taskQuestionNotices").selectAll().execute(),
+    ).toEqual([]);
+  });
+
+  it("keeps the notice when a wait ends without delivering the question", async ({
+    storeFixture,
+  }) => {
+    const s = await questionTask(storeFixture, "question-notice-timeout");
+    const finish = s.questionNotices.wait(s.f.thread.id, s.task.threadId);
+    s.questionNotices.observe(s.opened.event);
+    finish();
+    await s.questionNotices.close();
+    expect(
+      await storeFixture.database
+        .selectFrom("taskQuestionNotices")
+        .select("messageId")
+        .where("requestId", "=", s.request.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ messageId: expect.any(String) });
+  });
+
+  it("keeps a native subagent's question with the person", async ({ storeFixture }) => {
+    const s = await questionTask(storeFixture, "question-native");
+    const nodeId = createId("executionNode");
+    const base = {
+      environmentId: s.f.environmentId,
+      workspaceId: s.task.workspaceId,
+      runId: s.task.runId!,
+      threadId: s.task.threadId,
+      bindingGeneration: s.binding.bindingGeneration,
+    };
+    await storeFixture.store.commitRunnerEvent({
+      environmentId: s.f.environmentId,
+      runnerBootId: s.f.runnerBootId,
+      runnerId: s.f.runnerId,
+      event: pendingEvent({
+        ...base,
+        ordinal: 2,
+        type: "node.started",
+        data: {
+          nodeId,
+          kind: "subagent",
+          nativeRef: "native-question",
+          title: "Native helper",
+          model: null,
+          originCallId: null,
+          parentNodeId: null,
+          prompt: null,
+          sessionRef: null,
+        },
+      }),
+    });
+    const request = PendingRequestSchema.parse({
+      ...s.request,
+      id: createId("request"),
+      callId: randomUUID(),
+      originatingNodeId: nodeId,
+    });
+    await storeFixture.store.commitRunnerEvent({
+      environmentId: s.f.environmentId,
+      runnerBootId: s.f.runnerBootId,
+      runnerId: s.f.runnerId,
+      event: pendingEvent({ ...base, ordinal: 3, type: "request.opened", data: { request } }),
+    });
+    expect(await deliverTaskQuestionNotice(storeFixture.database, request.id, () => false)).toEqual(
+      [],
+    );
+    await expect(s.respond(s.caller, requestRevision(request), request.id)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+  });
+
+  it("cancels a queued notice Run when the question is withdrawn before dispatch", async ({
+    storeFixture,
+  }) => {
+    const s = await questionTask(storeFixture, "question-notice-queued");
+    await storeFixture.store.commitRunnerEvent({
+      environmentId: s.f.environmentId,
+      runnerBootId: s.f.runnerBootId,
+      runnerId: s.f.runnerId,
+      event: pendingEvent({
+        environmentId: s.f.environmentId,
+        workspaceId: s.f.workspace.id,
+        runId: s.f.run.id,
+        threadId: s.f.thread.id,
+        bindingGeneration: s.f.bindingGeneration,
+        ordinal: 1,
+        type: "run.completed",
+        data: { status: "completed" },
+      }),
+    });
+    await deliverTaskQuestionNotice(storeFixture.database, s.request.id, () => false);
+    const notice = await storeFixture.database
+      .selectFrom("taskQuestionNotices")
+      .select("messageId")
+      .where("requestId", "=", s.request.id)
+      .executeTakeFirstOrThrow();
+    const queued = await storeFixture.database
+      .selectFrom("runs")
+      .select(["id", "status"])
+      .where("seedInputId", "=", notice.messageId)
+      .executeTakeFirstOrThrow();
+    expect(queued.status).toBe("queued");
+    await storeFixture.store.requests.cancelForRun(s.task.runId!, "source-closed");
+    await cancelSettledTaskQuestionNotice(storeFixture.database, s.request.id);
+    expect(
+      await storeFixture.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", queued.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "interrupted" });
+    expect(
+      await storeFixture.database
+        .selectFrom("threadInputs")
+        .select("state")
+        .where("messageId", "=", notice.messageId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ state: "cancelled" });
+  });
+});
 async function place(
   storeFixture: StoreFixture,
   f: Fixture,

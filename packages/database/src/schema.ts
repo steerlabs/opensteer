@@ -2243,6 +2243,10 @@ export interface DatabaseSchema extends KnowledgeTables {
   grants: GrantTable;
   delegations: DelegationTable;
   requests: RequestTable;
+  taskQuestionNotices: {
+    requestId: RequestId;
+    messageId: MessageId | null;
+  };
   integrationRequestDetails: IntegrationRequestDetailTable;
   requestCallJoins: RequestCallJoinTable;
   requestContinuations: RequestContinuationTable;

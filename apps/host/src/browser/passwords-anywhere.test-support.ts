@@ -301,8 +301,10 @@ export function passwordsAnywhereJourneys() {
                 const row = await host.store.requests.get(request.id);
                 return row?.status === "fulfilled" ? row : undefined;
               });
-              expect(fulfilled.settlementProvenance?.sessionId).toBeTruthy();
-              expect(fulfilled.settlementProvenance?.deviceLabel).toBeTruthy();
+              expect(fulfilled.settlementProvenance).toMatchObject({
+                sessionId: expect.any(String),
+                deviceLabel: expect.any(String),
+              });
               expect(authority.commands.some((c) => c.type === "login.commit")).toBe(true);
               expect(fulfilled.response).toEqual({
                 kind: "external",

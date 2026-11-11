@@ -1201,6 +1201,8 @@ function requestOutcome(request: Request): string {
   if (request.status === "pending") return "Pending";
   if (request.status === "cancelled") return `Cancelled · ${request.cancellationReason}`;
   if (request.status === "withdrawn") return "Withdrawn";
+  if (request.settlementProvenance && "kind" in request.settlementProvenance)
+    return requestSettlementLabel(request)!;
   if (request.kind === "browser.sign-in") return browserSignInReceipt(request);
   if (request.kind === "browser.password-sign-in") return passwordSignInReceipt(request);
   if (request.kind === "computer.app.access") {

@@ -8,11 +8,15 @@ import {
   beginAssignmentResultWait,
   endAssignmentResultWait,
   withoutDatabaseOperationSignal,
+  readAgentRequest,
+  requestRevision,
+  AgentRequestResponderSchema,
 } from "@opensteer/database";
 import { activityItem, messageItem, taskItem, boundedThreadItems } from "../thread-items.js";
 import { isDeepStrictEqual } from "node:util";
 import { ThreadService } from "../../threads/thread-service.js";
 import { ThreadWaitService } from "../../threads/thread-wait.js";
+import type { TaskQuestionNotices } from "../../threads/task-question-notices.js";
 import { readThreadWaitSnapshot } from "@opensteer/database";
 import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
@@ -33,6 +37,7 @@ import {
   placeContentLabel,
   provisionalThreadTitle,
   requestTitleText,
+  requestIsAgentAnswerable,
   type Request,
   type AssignmentSummary,
   compareSequence,
@@ -76,6 +81,10 @@ import type { AgentWorkspaceMountService } from "../../agents/agent-workspace-mo
 import type { MemoryPassService } from "../../agents/memory-pass-service.js";
 import { callerThread, type AgentCaller } from "../agent-caller.js";
 import type { ToolCall } from "./index.js";
+import {
+  sealRequestResponse,
+  type RequestResponseVault,
+} from "../../identity/request-response-vault.js";
 import {
   assertMutableTarget,
   messageSource,
@@ -141,6 +150,8 @@ export class ProductToolHandlers {
     driverKind: HarnessId,
   ) => readonly ThreadAccessMode[] | undefined;
   readonly #commands: CommandService;
+  readonly #requestResponseVault: RequestResponseVault | undefined;
+  readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
   readonly #environmentWorkspaceBackings: (
     environmentId: EnvironmentId,
   ) => readonly WorkspaceBackingKind[];
@@ -183,6 +194,8 @@ export class ProductToolHandlers {
       driverKind: HarnessId,
     ) => readonly ThreadAccessMode[] | undefined;
     readonly commands: CommandService;
+    readonly requestResponseVault?: RequestResponseVault;
+    readonly questionNotices?: Pick<TaskQuestionNotices, "wait">;
     readonly defaultWorkspaceBacking: WorkspaceBackingKind;
     readonly environmentWorkspaceBackings: (
       environmentId: EnvironmentId,
@@ -209,6 +222,8 @@ export class ProductToolHandlers {
     this.#canRunHarness = options.canRunHarness;
     this.#harnessAccessModes = options.harnessAccessModes;
     this.#commands = options.commands;
+    this.#requestResponseVault = options.requestResponseVault;
+    this.#questionNotices = options.questionNotices;
     this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
     this.#onWorkspaceEvent = options.onWorkspaceEvent;
@@ -945,27 +960,58 @@ export class ProductToolHandlers {
     return taskItem(read.assignment, read.result);
   }
 
-  async pending_request({ caller, input }: ToolCall<"pending_request">) {
+  async pending_request({ caller, input, operationKey }: ToolCall<"pending_request">) {
+    if (input.action === "respond") {
+      const run = requireRun(caller);
+      const request = await readAgentRequest(
+        this.#store.database,
+        threadCallerAuthority(run),
+        input.requestId!,
+      );
+      if (!requestIsAgentAnswerable(request))
+        throw forbidden("This Request needs the person to answer");
+      if (!this.#requestResponseVault)
+        throw conflict("Request answers are unavailable on this Host");
+      if (!request.originatingRunId) throw conflict("This Request has no waiting Run");
+      const agentResponder = AgentRequestResponderSchema.parse({
+        authority: threadCallerAuthority(run),
+        expectedRevision: input.expectedRevision,
+      });
+      const response = input.response!;
+      const sealedResponse = await sealRequestResponse(this.#requestResponseVault, response, {
+        requestId: request.id,
+        runId: request.originatingRunId,
+        threadId: request.originatingThreadId,
+      });
+      await this.#commands.sendControl({
+        type: "request.respond",
+        requestId: request.id,
+        response,
+        sealedResponse,
+        requestedBy: caller.userId,
+        runId: request.originatingRunId,
+        threadId: request.originatingThreadId,
+        idempotencyKey: idempotencyKey(
+          caller,
+          operationId(caller, operationKey, "pending_request"),
+          "respond",
+        ),
+        agentResponder,
+      });
+      return { request: agentRequest((await this.#store.requests.get(request.id))!) };
+    }
     if (input.action === "read") {
-      const request = await this.#store.requests.get(input.requestId!);
-      let visible = false;
-      if (request && caller.kind === "connection" && request.originatingWorkspaceId) {
-        visible =
-          !!(await this.#store.getWorkspaceForOwner(
-            request.originatingWorkspaceId,
-            caller.userId,
-          )) &&
-          (caller.reach.kind === "user" ||
-            (caller.reach.kind === "workspace" &&
-              caller.reach.workspaceId === request.originatingWorkspaceId));
-      } else if (request && caller.kind !== "connection") {
-        const thread = callerThread(caller);
-        visible =
-          request.originatingThreadId === thread.id ||
-          request.targetWorkspaceId === thread.workspaceId;
-      }
-      if (!request || !visible) throw forbidden("Request is unavailable");
-      return { request: agentRequest(request) };
+      const request = await readAgentRequest(
+        this.#store.database,
+        threadCallerAuthority(caller),
+        input.requestId!,
+      );
+      return {
+        request: {
+          ...agentRequest(request),
+          ...(requestIsAgentAnswerable(request) ? { presentation: request.presentation } : {}),
+        },
+      };
     }
     if (caller.kind === "connection") {
       const page = await this.#store.requests.connectionPage({
@@ -1830,10 +1876,23 @@ export class ProductToolHandlers {
           };
         },
       });
-      const result = await wait.wait({
-        timeoutMs: input.timeoutMs,
-        ...(call.signal ? { signal: call.signal } : {}),
-      });
+      const finishWait =
+        caller.kind === "run" ? this.#questionNotices?.wait(caller.thread.id, threadId) : undefined;
+      const result = await wait
+        .wait({
+          timeoutMs: input.timeoutMs,
+          ...(call.signal ? { signal: call.signal } : {}),
+        })
+        .then(
+          (result) => {
+            finishWait?.(result.pendingRequest?.id);
+            return result;
+          },
+          (error: unknown) => {
+            finishWait?.();
+            throw error;
+          },
+        );
       await call.checkLive?.();
       const target = await this.#store.getThreadForOwner(threadId, caller.userId);
       if (!target) throw forbidden("Thread is unavailable");
@@ -1961,8 +2020,11 @@ function agentRequest(request: Request) {
     originatingThreadId: request.originatingThreadId,
     targetWorkspaceId: request.targetWorkspaceId,
     createdAt: request.createdAt,
+    revision: requestRevision(request),
     settlementProvenance: request.settlementProvenance
-      ? { deviceLabel: request.settlementProvenance.deviceLabel }
+      ? "kind" in request.settlementProvenance
+        ? request.settlementProvenance
+        : { deviceLabel: request.settlementProvenance.deviceLabel }
       : request.settlementProvenance,
   };
 }

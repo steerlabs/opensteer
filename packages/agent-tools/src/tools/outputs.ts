@@ -21,6 +21,8 @@ import {
   RequestIdSchema,
   RequestKindSchema,
   RequestStatusSchema,
+  RequestPresentationSchema,
+  RequestAnswererViewSchema,
   RunSchema,
   RunnerIdSchema,
   ThreadIdSchema,
@@ -291,7 +293,9 @@ export const RequestOutputSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string().optional(),
   title: z.string().optional(),
-  settlementProvenance: z.object({ deviceLabel: z.string() }).nullable().optional(),
+  revision: z.string().optional(),
+  presentation: RequestPresentationSchema.optional(),
+  settlementProvenance: RequestAnswererViewSchema.nullable().optional(),
 });
 export const RequestListOutputSchema = z.object({
   requests: z.array(RequestOutputSchema),
