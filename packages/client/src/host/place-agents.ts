@@ -88,11 +88,12 @@ function actingWithoutIdentity(
   if (destination.kind === "browser") {
     const session = snapshot.browserSessions.find(({ id }) => id === destination.sessionId);
     if (session?.state !== "ready" || session.acting !== true) return false;
-    const tabs = session.tabCatalog?.tabs ?? session.tabs;
+    const tabs = session.browserTabs?.sessionTabs(session.id) ?? [];
     return (
+      session.browserTabs?.sessionList(session.id).whole === true &&
       tabs.length === 1 &&
       tabs.every((tab) => tab.id === destination.tabId) &&
-      !session.tabCatalog?.tabs.some((tab) => tab.occupants.some(({ acting }) => acting))
+      !tabs.some((tab) => tab.occupants.some(({ acting }) => acting))
     );
   }
   if (destination.kind === "opensteer-app") return false;

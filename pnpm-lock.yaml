@@ -720,6 +720,9 @@ importers:
       '@opensteer/agent-phone-setup':
         specifier: workspace:*
         version: link:../../packages/agent-phone-setup
+      '@opensteer/browser-runtime-core':
+        specifier: workspace:*
+        version: link:../../packages/browser-runtime-core
       '@opensteer/channel-runtime':
         specifier: workspace:*
         version: link:../channel-runtime

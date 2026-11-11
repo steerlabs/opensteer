@@ -584,7 +584,9 @@ try {
         const session = snapshot.browserSessions.find(
           (session) => session.id === params.get("browser"),
         )!;
-        const tab = session.tabs.find((tab) => tab.id === params.get("browserTab"))!;
+        const tab = (session.browserTabs?.sessionTabs(session?.id) ?? []).find(
+          (tab) => tab.id === params.get("browserTab"),
+        )!;
         const identity = { kind: "profile", profileId: session.profileId! } as const;
         await client.browserHistory.load(identity.profileId);
         const entry = client.browserHistory

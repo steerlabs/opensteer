@@ -49,7 +49,7 @@ afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.shutdown();
   for (const root of roots.splice(0)) await rm(root, { force: true, recursive: true });
 });
-async function fixture(maxProfileHosts = 8, existingRoot?: string) {
+async function fixture(existingRoot?: string) {
   const root = await realpath(
     existingRoot ?? (await mkdtemp(path.join(tmpdir(), "native-runtime-"))),
   );
@@ -83,7 +83,6 @@ async function fixture(maxProfileHosts = 8, existingRoot?: string) {
     ticketVerifier: verifier,
     localProfiles: { root },
     acknowledgeProfileReady: acknowledge,
-    maxProfileHosts,
     runtimeId: "runtime_test",
     sessionFilesRoot: filesRoot,
   });
@@ -326,7 +325,7 @@ describe("native profile runtime", () => {
   });
   it("allows only one runtime to own a storage root", async () => {
     const f = await fixture();
-    await expect(fixture(8, f.root)).rejects.toThrow(/in use/);
+    await expect(fixture(f.root)).rejects.toThrow(/in use/);
   });
   it("retains a live engine's deleted data across logical runtime restarts", async () => {
     const f = await fixture();
@@ -340,48 +339,30 @@ describe("native profile runtime", () => {
     ]);
     await tab.close();
     await f.runtime.shutdown();
-    const next = await fixture(8, f.root);
+    const next = await fixture(f.root);
     expect(await next.runtime.localProfileInventory()).toEqual([
       expect.objectContaining({ phase: "deleted", erasure: "pending-restart" }),
     ]);
     await expect(next.open(1, 2)).rejects.toThrow(/deleted/);
     expect(next.launcher.launchCount).toBe(0);
   });
-  it("evicts the least recently used host when several hosts are idle", async () => {
-    const f = await fixture(2);
-    const a = await f.open(1, 1);
-    const b = await f.open(2, 2);
-    await a.close();
-    await b.close();
-    const again = await f.open(1, 3);
-    await again.close();
-    const third = await f.open(3, 4);
-    expect(
-      f.launcher.browsersByPartition.get("profile:" + f.binding(1).profileId)?.closeCount,
-    ).toBe(0);
-    expect(
-      f.launcher.browsersByPartition.get("profile:" + f.binding(2).profileId)?.closeCount,
-    ).toBe(1);
-    await third.close();
+  it("keeps idle native hosts warm without a host count limit", async () => {
+    const f = await fixture();
+    for (let index = 1; index <= 9; index++) {
+      const tab = await f.open(index, index);
+      await tab.close();
+    }
+    expect(f.runtime.health().profileHostCount).toBe(9);
     expect(f.launcher.localProfiles.release).not.toHaveBeenCalled();
   });
 
-  it("keeps native hosts warm and evicts only the least recently used idle host", async () => {
-    const f = await fixture(2);
-    const a = await f.open(1, 1);
-    const b = await f.open(2, 2);
-    await expect(f.open(3, 3)).rejects.toThrow(/capacity/);
-    await a.close();
-    const c = await f.open(3, 4);
-    expect(
-      f.launcher.browsersByPartition.get("profile:" + f.binding(1).profileId)?.closeCount,
-    ).toBe(1);
-    expect(
-      f.launcher.browsersByPartition.get("profile:" + f.binding(2).profileId)?.closeCount,
-    ).toBe(0);
-    await b.close();
-    await c.close();
+  it("attaches session 33 of one profile", async () => {
+    const f = await fixture();
+    for (let index = 1; index <= 33; index++) await f.open(1, index);
+    expect(f.runtime.health()).toMatchObject({ profileHostCount: 1, sessionCount: 33 });
+    expect(f.launcher.launchCount).toBe(1);
   });
+
   it("never starts another browser when an initial start has an uncertain outcome", async () => {
     const f = await fixture();
     f.verifier.setClaims("uncertain", f.claims(1, 1, true));

@@ -39,7 +39,7 @@ export interface RunnerModuleLogger {
 }
 
 export interface RunnerModuleStream {
-  readonly browserWireVersion?: 1;
+  readonly browserWireVersion?: 2;
   readonly passkeys?: 1;
   readonly loginText?: 1;
   readonly passwordSignIn?: 2;

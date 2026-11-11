@@ -831,6 +831,19 @@ button.side-needs:hover {
   scroll-snap-align: start;
 }
 
+/* A long list draws the rows in view; these stand in for the rest. They are
+   neither snap points nor anything to see or point at. */
+.side-list > .side-list__spacer {
+  flex: none;
+  scroll-snap-align: none;
+  pointer-events: none;
+}
+
+/* A syncing list with no rows yet: its skeleton, at the rows' own inset. */
+.side-list__loading > .loading-rows {
+  padding: var(--space-6) var(--space-8);
+}
+
 /* A list with more above or below says so with a hairline at that edge, and
    only then; no row is ever dimmed by scrolling. Its scrollbar is slim and
    shows while the list is hovered or scrolling, in a gutter it always keeps. */

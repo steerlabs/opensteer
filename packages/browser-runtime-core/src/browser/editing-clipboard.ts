@@ -6,7 +6,10 @@ import {
   editingClipboardPartCount,
   type EditingClipboardItem,
 } from "@opensteer/protocol/editing";
-import type { BrowserClientMessage, BrowserServerMessage } from "@opensteer/protocol/browser";
+import type {
+  BrowserClientMessage,
+  BrowserRuntimeServerMessage,
+} from "@opensteer/protocol/browser";
 import { AsyncMutex } from "../async.js";
 import type {
   BrowserPage,
@@ -243,9 +246,9 @@ class EngineClipboardCoordinator {
 }
 
 export async function publishClipboardItems(
-  message: Extract<BrowserServerMessage, { type: "clipboard.result" | "clipboard.written" }>,
+  message: Extract<BrowserRuntimeServerMessage, { type: "clipboard.result" | "clipboard.written" }>,
   items: readonly EngineClipboardItem[] | null,
-  send: (message: BrowserServerMessage) => Promise<void>,
+  send: (message: BrowserRuntimeServerMessage) => Promise<void>,
 ): Promise<void> {
   const size = items?.reduce((sum, item) => sum + item.bytes.length, 0) ?? 0;
   if (!items?.length || size === 0) {
@@ -287,9 +290,9 @@ export async function publishClipboardItems(
 }
 
 export function pageClipboardWrite(
-  surfaceId: Extract<BrowserServerMessage, { type: "clipboard.written" }>["surfaceId"],
+  surfaceId: Extract<BrowserRuntimeServerMessage, { type: "clipboard.written" }>["surfaceId"],
   consumerToken: string,
-): Extract<BrowserServerMessage, { type: "clipboard.written" }> {
+): Extract<BrowserRuntimeServerMessage, { type: "clipboard.written" }> {
   return {
     type: "clipboard.written",
     surfaceId,

@@ -7,10 +7,18 @@ export class BrowserInputLane extends PortableInputLane {
     execute: (message: BrowserClientMessage) => Promise<void>,
     refuse: (message: BrowserClientMessage, reason: string) => Promise<void>,
     surfaceId?: string,
+    onIdle?: () => void,
   ) {
-    super(limit, execute, refuse, surfaceId, (record) => {
-      if (process.env.OPENSTEER_BROWSER_DIAGNOSTICS === "1")
-        console.info(JSON.stringify({ browserInput: true, ...record }));
-    });
+    super(
+      limit,
+      execute,
+      refuse,
+      surfaceId,
+      (record) => {
+        if (process.env.OPENSTEER_BROWSER_DIAGNOSTICS === "1")
+          console.info(JSON.stringify({ browserInput: true, ...record }));
+      },
+      onIdle,
+    );
   }
 }

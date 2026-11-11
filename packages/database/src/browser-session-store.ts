@@ -49,6 +49,7 @@ import {
   browserSessionMaxThreads,
   browserTabOpenReplayWindowMs,
   browserUsageRunBatchSize,
+  browserUsageSessionsPerRead,
   browserUsageTabsPerRun,
 } from "@opensteer/protocol";
 import { type ExpressionBuilder, type Kysely, type Transaction, sql } from "kysely";
@@ -534,24 +535,18 @@ export async function createBrowserSession(
           message: "Open this browser profile on its owning computer with an updated runtime.",
         });
       }
-      const placementHolders = await transaction
+      const otherPlacement = await transaction
         .selectFrom("browserSessions")
-        .select(["id", "placementKey", "state"])
+        .select("id")
         .where("profileId", "=", profileId)
         .where("state", "in", ["starting", "ready", "closing"])
-        .limit(65)
-        .execute(databaseOperationOptions());
-      if (placementHolders.some((session) => session.placementKey !== input.placementKey)) {
+        .where("placementKey", "!=", input.placementKey)
+        .limit(1)
+        .executeTakeFirst(databaseOperationOptions());
+      if (otherPlacement) {
         throw new OpensteerError({
           code: "conflict",
           message: "This browser profile is already active on another placement",
-        });
-      }
-      const active = placementHolders.filter((session) => session.state !== "closed");
-      if (active.length >= 32) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Browser profile session limit reached",
         });
       }
     }
@@ -651,7 +646,6 @@ export async function listActiveBrowserSessionsForAgentBinding(
     .where("browserSessions.state", "in", ["starting", "ready", "closing"])
     .orderBy("browserSessionAttachments.updatedAt", "desc")
     .orderBy("browserSessionAttachments.sessionId", "desc")
-    .limit(100)
     .execute(databaseOperationOptions());
 }
 
@@ -1446,33 +1440,28 @@ export async function listBrowserSessions(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
 ): Promise<readonly BrowserSessionRecord[]> {
-  return (
-    database
-      .selectFrom("browserSessions")
-      .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
-      .select([
-        "browserSessions.createdAt",
-        "browserSessions.runnerId",
-        "browserSessions.id",
-        "browserSessions.origin",
-        "browserSessions.opener",
-        "browserSessions.placementKey",
-        "browserSessions.profileId",
-        "browserSessions.runtimeId",
-        "browserSessions.state",
-        "browserSessions.updatedAt",
-        "browserSessions.workspaceId",
-      ])
-      .where((expression) => ownedBrowserSession(expression, ownerId))
-      // The bounded bootstrap catalog must never hide a live session behind
-      // newer closed sessions kept as history.
-      .orderBy(
-        sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
-      )
-      .orderBy("browserSessions.createdAt", "desc")
-      .limit(100)
-      .execute(databaseOperationOptions())
-  );
+  return database
+    .selectFrom("browserSessions")
+    .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
+    .select([
+      "browserSessions.createdAt",
+      "browserSessions.runnerId",
+      "browserSessions.id",
+      "browserSessions.origin",
+      "browserSessions.opener",
+      "browserSessions.placementKey",
+      "browserSessions.profileId",
+      "browserSessions.runtimeId",
+      "browserSessions.state",
+      "browserSessions.updatedAt",
+      "browserSessions.workspaceId",
+    ])
+    .where((expression) => ownedBrowserSession(expression, ownerId))
+    .orderBy(
+      sql<number>`case when ${sql.ref("browserSessions.state")} in ('starting', 'ready', 'closing') then 0 else 1 end`,
+    )
+    .orderBy("browserSessions.createdAt", "desc")
+    .execute(databaseOperationOptions());
 }
 
 /**
@@ -1517,7 +1506,7 @@ export async function listBrowserSessionThreads(
 }
 
 /**
- * One conversation's browser use, within the reader's bounded catalog: per
+ * One conversation's browser use, within its most recently used sessions: per
  * session, its membership (no Run, no page), the latest pages people included,
  * and for each requested Run the latest distinct pages it used — or, for a Run
  * that never chose a page, its use of the session. Each Run and the people
@@ -1534,18 +1523,23 @@ export async function getThreadBrowserUsage(
   if (input.runIds.length > browserUsageRunBatchSize) {
     throw new OpensteerError({ code: "bad_request", message: "Too many browser Run references" });
   }
-  // The catalog read already applies who may see which session.
-  const sessions = await listBrowserSessions(database, input.ownerId);
-  if (sessions.length === 0) return [];
-  const sessionIds = sessions.map(({ id }) => id);
-  const uses = database
+  const authorized = database
     .selectFrom("browserSessionUses")
+    .innerJoin("browserSessions", "browserSessions.id", "browserSessionUses.sessionId")
+    .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
     .innerJoin("threads", "threads.id", "browserSessionUses.threadId")
     .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .where("browserSessionUses.threadId", "=", input.threadId)
-    .where("browserSessionUses.sessionId", "in", sessionIds)
+    .where((eb) => ownedBrowserSession(eb, input.ownerId))
     .where("workspaceMemberships.userId", "=", input.ownerId)
     .where("workspaceMemberships.state", "=", "active");
+  const sessionIds = authorized
+    .select("browserSessionUses.sessionId")
+    .groupBy("browserSessionUses.sessionId")
+    .orderBy((eb) => eb.fn.max("browserSessionUses.lastUsedAt"), "desc")
+    .orderBy("browserSessionUses.sessionId")
+    .limit(browserUsageSessionsPerRead);
+  const uses = authorized.where("browserSessionUses.sessionId", "in", sessionIds);
   const latestSeen = (column: "page_site" | "page_title") =>
     sql<
       string | null
@@ -1663,7 +1657,6 @@ export async function listActiveBrowserSessionsForAgent(
   }
   const rows = await query
     .orderBy("browserSessions.createdAt", "desc")
-    .limit(100)
     .execute(databaseOperationOptions());
   return rows.map((row) => ({
     ...row,

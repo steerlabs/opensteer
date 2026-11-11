@@ -28,7 +28,7 @@ import {
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
   type BrowserClientMessage,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
   type BrowserSurfaceId,
 } from "@opensteer/protocol";
 
@@ -336,14 +336,7 @@ describe("real Chromium pages follow the person's view", () => {
     // and in the latest list the viewer received.
     const sizedByAgentLog: Record<string, unknown>[] = [];
     const expectSizedByAgent = async (label: string, expected: boolean) => {
-      const listed = () => {
-        const latest = session.sink.messages
-          .filter((message) => message.type === "browser.surfaces.changed")
-          .at(-1);
-        return latest?.type === "browser.surfaces.changed"
-          ? latest.surfaces.find((surface) => surface.id === root)?.sizedByAgent
-          : undefined;
-      };
+      const listed = () => session.sink.tabs.rows.get(root)?.sizedByAgent;
       await waitFor(() => listed() === expected);
       const inLedger = session.ledger.snapshot().find((surface) => surface.id === root);
       expect(inLedger?.sizedByAgent, label).toBe(expected);
@@ -1190,9 +1183,9 @@ describe("real Chromium pages follow the person's view", () => {
     const socket = new WebSocket(`ws://${address.host}:${address.port}/v1/browser`, {
       headers: { authorization: "Bearer ticket-socket" },
     });
-    const received: BrowserServerMessage[] = [];
+    const received: BrowserRuntimeServerMessage[] = [];
     socket.on("message", (raw, isBinary) => {
-      if (!isBinary) received.push(JSON.parse(raw.toString()) as BrowserServerMessage);
+      if (!isBinary) received.push(JSON.parse(raw.toString()) as BrowserRuntimeServerMessage);
     });
     await waitFor(() => received.some((message) => message.type === "browser.snapshot"));
     const socketAgent = async (method: string, parameters?: CdpParameters, sessionId?: string) => {
@@ -1989,7 +1982,7 @@ describe("real Chromium pages follow the person's view", () => {
     const session = await startFollowSession({ path: "/plain" });
     const tabA = session.rootSurfaceId;
     // When each message reached the viewer, to order it against the frames.
-    const timed: Array<{ readonly at: number; readonly message: BrowserServerMessage }> = [];
+    const timed: Array<{ readonly at: number; readonly message: BrowserRuntimeServerMessage }> = [];
     session.sink.sendServerImplementation = async (message) => {
       timed.push({ at: performance.now(), message });
     };
@@ -2039,8 +2032,9 @@ describe("real Chromium pages follow the person's view", () => {
       timed.find(
         ({ at, message }) =>
           at >= returnedAt &&
-          message.type === "browser.surfaces.changed" &&
-          message.surfaces.some((surface) => surface.active && surface.id === tabA),
+          message.type === "browser.tabs" &&
+          message.stream.op === "change" &&
+          message.stream.meta?.activeId === tabA,
       );
     await session.controller.handle({ surfaceId: tabA, type: "surface.activate" });
     await pictureReceived.promise;
@@ -3038,8 +3032,9 @@ console.log(JSON.stringify(await js("window.answers")));`);
             dialog !== null &&
             messages.some(
               (message) =>
-                message.type === "browser.surfaces.changed" &&
-                message.surfaces.some((surface) => surface.id === popup),
+                message.type === "browser.tabs" &&
+                message.stream.op === "change" &&
+                message.stream.add?.some((surface) => surface.id === popup),
             ) &&
             messages.some(
               (message) =>
@@ -3106,8 +3101,7 @@ console.log(JSON.stringify(await js("window.answers")));`);
             .slice(from)
             .filter(
               (message) =>
-                message.type === "browser.surfaces.changed" ||
-                message.type === "browser.dialog.changed",
+                message.type === "browser.tabs" || message.type === "browser.dialog.changed",
             ),
           metrics: session.metricsWrites(popup!),
           errors: session.errors(),

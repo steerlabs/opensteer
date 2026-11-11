@@ -55,7 +55,7 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
       let storageId = storage["storageInstanceId"] as? String, UUID(uuidString: storageId) != nil else { throw PhoneBrowserFailure.forbidden }
     let expected = ["wireVersion", "navigationVersion", "navigationAttributionVersion", "workspaceTabRestoreVersion", "popupFollowVersion", "sharedControl", "targetControl", "rasterDemand", "basicInput", "surfaceState"]
     guard Set(descriptor.keys).isSubset(of: Set(expected + ["runtimeId", "localProfileStorage", "fileStaging", "agentActions"])) else { throw PhoneBrowserFailure.forbidden }
-    for field in expected { _ = try WireField.int(descriptor, field, range: 1...1) }
+    for field in expected { _ = try WireField.int(descriptor, field, range: field == "wireVersion" ? 2...2 : 1...1) }
     if descriptor["agentActions"] != nil {
       guard qualification["agentActions"] as? Bool == true else { throw PhoneBrowserFailure.forbidden }
       _ = try WireField.int(descriptor, "agentActions", range: 1...1)

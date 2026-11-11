@@ -10,10 +10,8 @@ import {
 import type { OpensteerStore } from "@opensteer/database";
 import {
   BrowserSurfaceIdSchema,
-  createBrowserSessionId,
   type HostToClientMessage,
   type WorkspaceSnapshot,
-  type WorkspaceTabLineage,
 } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
@@ -481,12 +479,6 @@ describe("snapshot-before-live synchronization", () => {
       [createId("user"), createId("user")],
       "browser.catalog-flush",
     );
-    hub.publishBrowserSessionsChanged(
-      createId("workspace"),
-      [createId("user")],
-      "browser.catalog-flush",
-      tabLineage(createId("workspace")),
-    );
     hub.broadcast({ type: "host.machines.changed" }, "computer-apps.status");
     hub.sendToUsers(
       [createId("user")],
@@ -584,14 +576,6 @@ describe("snapshot-before-live synchronization", () => {
     hub.publishBrowserSessionsChanged(workspaceId, [userId]);
     // A second notice of the same kind says what the first one says.
     hub.publishBrowserSessionsChanged(workspaceId, [userId]);
-    const first = { ...tabLineage(workspaceId), revision: 2 };
-    const second = tabLineage(workspaceId);
-    hub.publishBrowserSessionsChanged(workspaceId, [userId], "browser.catalog-flush", first);
-    hub.publishBrowserSessionsChanged(workspaceId, [userId], "browser.catalog-flush", second);
-    hub.publishBrowserSessionsChanged(workspaceId, [userId], "browser.catalog-flush", {
-      ...first,
-      revision: 1,
-    });
     hub.publishTriggersChanged(workspaceId);
     releaseSnapshot();
 
@@ -599,18 +583,12 @@ describe("snapshot-before-live synchronization", () => {
     expect(sink.messages.map(({ type }) => type)).toEqual([
       "host.snapshot",
       "host.browser-sessions-changed",
-      "host.browser-sessions-changed",
-      "host.browser-sessions-changed",
       "host.triggers-changed",
       "host.synchronized",
     ]);
     expect(
       sink.messages.filter((message) => message.type === "host.browser-sessions-changed"),
-    ).toEqual([
-      { type: "host.browser-sessions-changed", workspaceId },
-      { type: "host.browser-sessions-changed", workspaceId, group: first },
-      { type: "host.browser-sessions-changed", workspaceId, group: second },
-    ]);
+    ).toEqual([{ type: "host.browser-sessions-changed", workspaceId }]);
     unsubscribe();
   });
 
@@ -1171,29 +1149,6 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
     if (Date.now() > deadline) throw new Error("Timed out waiting for the subscriber");
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-}
-
-function tabLineage(workspaceId: WorkspaceId): WorkspaceTabLineage {
-  const id = createBrowserSessionId(),
-    at = new Date().toISOString();
-  return {
-    id,
-    revision: 1,
-    createdAt: at,
-    tabs: [],
-    session: {
-      id,
-      access: "read-write",
-      createdAt: at,
-      updatedAt: at,
-      origin: "workspace",
-      profileId: null,
-      runtimeId: "runtime-1",
-      state: "ready",
-      workspaceId,
-      placement: { kind: "runner", runnerId: createId("runner") },
-    },
-  };
 }
 
 it.each([false, true])("sends tool previews only to opted-in subscribers (%s)", async (opted) => {

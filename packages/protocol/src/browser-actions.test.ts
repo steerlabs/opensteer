@@ -7,6 +7,8 @@ import {
   BrowserActionLocatorSchema,
   BrowserAgentBackendSchema,
   type BrowserAction,
+  pageBrowserTabs,
+  browserListTabsMaxBytes,
 } from "./browser-actions.js";
 import {
   BrowserClientMessageSchema,
@@ -35,7 +37,7 @@ const binding = {
 };
 const request = { id: 1, sessionId, surfaceId, documentId: "doc", geometryRevision: 1 };
 const examples: readonly { action: BrowserAction; result: unknown }[] = [
-  { action: { type: "session.tabs" }, result: { tabs: [binding] } },
+  { action: { type: "session.tabs" }, result: { tabs: [binding], nextCursor: null } },
   ...["surface.attach", "surface.resume", "surface.open", "page.navigate", "page.wait"].map(
     (type) => ({
       action: {
@@ -110,6 +112,51 @@ const relay = {
 };
 
 describe("typed browser agent wire", () => {
+  it("includes the final null cursor in a tab page's byte budget", () => {
+    const empty = { tabs: ["x", ""], nextCursor: "1" };
+    const record =
+      "界".repeat(100) +
+      "x".repeat(browserListTabsMaxBytes - Buffer.byteLength(JSON.stringify(empty)) - 300);
+    const result = pageBrowserTabs(
+      [
+        { order: 0, tab: "x" },
+        { order: 1, tab: record },
+      ],
+      undefined,
+      (page) => page,
+    );
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(browserListTabsMaxBytes);
+    expect(result.nextCursor).toBe("0");
+    expect(
+      pageBrowserTabs([{ order: 1, tab: record }], result.nextCursor!, (page) => page),
+    ).toEqual({ tabs: [record], nextCursor: null });
+  });
+
+  it("carries a tab-list cursor and requires the next page identity", () => {
+    expect(
+      BrowserActionRequestSchema.parse({
+        id: 1,
+        sessionId,
+        action: { type: "session.tabs", cursor: "42" },
+      }).action,
+    ).toEqual({ type: "session.tabs", cursor: "42" });
+    expect(
+      BrowserActionResultSchema.parse({
+        type: "session.tabs",
+        tabs: [binding],
+        nextCursor: "43",
+      }),
+    ).toMatchObject({ nextCursor: "43" });
+    for (const cursor of ["-1", "1.5", "9007199254740992", "x"])
+      expect(
+        BrowserActionRequestSchema.safeParse({
+          id: 1,
+          sessionId,
+          action: { type: "session.tabs", cursor },
+        }).success,
+      ).toBe(false);
+  });
+
   it("admits payload-free focus and surface-free session actions, keeping existing target fences", () => {
     const focus = { type: "dom.act", kind: "focus", locator };
     expect(BrowserActionRequestSchema.safeParse({ ...request, action: focus }).success).toBe(true);
@@ -293,7 +340,7 @@ describe("typed browser agent wire", () => {
   it("negotiates narrow input and surface state without granting full editing or altering older peers", () => {
     const descriptor = {
       runtimeId: "phone",
-      wireVersion: 1,
+      wireVersion: 2,
       basicInput: 1,
       surfaceState: 1,
       agentActions: 1,
@@ -306,7 +353,8 @@ describe("typed browser agent wire", () => {
     const claims = {
       access: "read-write",
       audience: "opensteer-browser-runtime",
-      wireVersion: 1,
+      creationOrigin: "person",
+      wireVersion: 2,
       operationExpiresAt: "2026-11-09T12:00:18Z",
       remainingBudgetMs: 18_000,
       expiresAt: "2026-11-09T12:01:00Z",
@@ -321,6 +369,11 @@ describe("typed browser agent wire", () => {
       BrowserAttachTicketClaimsSchema.parse({ ...claims, basicInput: 1, surfaceState: 1 }),
     ).not.toHaveProperty("editingVersion");
     expect(BrowserAttachTicketClaimsSchema.parse(claims)).not.toHaveProperty("surfaceState");
+    const state = { type: "session.state", runs: 0, viewed: [], pinned: [], personUsed: [] };
+    expect(BrowserClientMessageSchema.parse(state)).toEqual(state);
+    expect(BrowserClientMessageSchema.safeParse({ ...state, personUsed: undefined }).success).toBe(
+      false,
+    );
     const snapshot = {
       type: "browser.snapshot",
       access: "read-write",

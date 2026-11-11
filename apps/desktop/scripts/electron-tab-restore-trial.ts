@@ -1,10 +1,29 @@
+import { browserLineages } from "@opensteer/client/test-support";
+import { browserSnapshotFromRows } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { BrowserRuntime, sessionFilesRoot } from "@opensteer/browser-runtime-core";
+import {
+  FakeSink,
+  FakeTicketVerifier,
+  freshClaims,
+} from "@opensteer/browser-runtime-core/test-support";
+import { createId } from "@opensteer/core";
+import { ElectronBrowserLauncher } from "../src/browser/electron-browser-launcher.js";
+import { smokeDesktopDownloads } from "./test-support/smoke-downloads.js";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { nativeImage, webContents, type BrowserWindow, type WebContents } from "electron";
-import { HostBootstrapSchema, BrowserTabOpenResultSchema } from "@opensteer/protocol";
+import { app, nativeImage, webContents, type BrowserWindow, type WebContents } from "electron";
+import {
+  HostBootstrapSchema,
+  BrowserTabOpenResultSchema,
+  LocalProfileBindingSchema,
+  BrowserSessionIdSchema,
+} from "@opensteer/protocol";
 import { z } from "zod";
 
 const State = z.object({
@@ -57,13 +76,17 @@ export async function runTabRestoreTrial(input: {
   let state = existsSync(statePath)
     ? State.parse(JSON.parse(readFileSync(statePath, "utf8")))
     : null;
-  const bootstrap = async () => HostBootstrapSchema.parse(await rpc("bootstrap.get"));
+  const parseBootstrap = (input: unknown) => {
+    const value = HostBootstrapSchema.parse(input);
+    return { ...value, browserView: browserSnapshotFromRows(value.browser) };
+  };
+  const bootstrap = async () => parseBootstrap(await rpc("bootstrap.get"));
   const rows = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.browser.workspaceTabs?.flatMap((group) => group.tabs ?? []) ?? [];
+    browserLineages(value.browserView)?.flatMap((group) => group.tabs ?? []) ?? [];
   const targets = (value: Awaited<ReturnType<typeof bootstrap>>) =>
-    value.browser.sessions
+    value.browserView.browserSessions
       .filter((session) => session.state === "ready")
-      .flatMap((session) => session.tabCatalog?.tabs ?? []);
+      .flatMap((session) => session.browserTabs?.sessionTabs(session?.id) ?? []);
   const page = (pathname: string) =>
     webContents
       .getAllWebContents()
@@ -648,7 +671,7 @@ export async function runTabRestoreTrial(input: {
     "workspace sidebar",
   );
 
-  const initial = HostBootstrapSchema.parse(
+  const initial = parseBootstrap(
     z
       .object({ ok: z.literal(true), data: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(root, `${trial}.before-window.json`), "utf8"))).data,
@@ -732,7 +755,7 @@ export async function runTabRestoreTrial(input: {
       icons: rows(value).map((row) => ({ id: row.id, ref: z.string().parse(row.iconRef) })),
       tabGroup: null,
     };
-    const group = value.browser.workspaceTabs!.find((group) =>
+    const group = browserLineages(value.browserView)!.find((group) =>
       group.tabs?.some((tab) => tab.id === p1.tabId),
     )!;
     assert.deepEqual(
@@ -844,7 +867,11 @@ export async function runTabRestoreTrial(input: {
         await checkGroup("tab-groups-before-member-selection", true);
       });
       for (const id of state.oldSessions)
-        await assert.rejects(rpc("browser.tabs.get", { sessionId: id }));
+        assert(
+          !value.browser.groups.rows.some(
+            (group) => group.sessionId === id && group.state === "ready",
+          ),
+        );
       await screenshot("reopened");
       await newTab();
       await close(state.pop);
@@ -1060,4 +1087,242 @@ export async function runTabRestoreTrial(input: {
       2,
     ),
   );
+}
+
+export async function runPageSleepRestoreTrial(root: string): Promise<void> {
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://fixture.test");
+    const finish = () => {
+      response.writeHead(200, { "content-type": "text/html", "cache-control": "max-age=3600" });
+      response.end(`<!doctype html><title>Sleep fixture</title>
+        <form method="post" action="/post"><input id="text" value="original"><textarea id="area">original</textarea>
+        <select id="select"><option>a</option><option>b</option></select><input id="check" type="checkbox">
+        <input id="radio" type="radio"><input id="range" type="range" value="10">
+        <input id="password" type="password"><input id="off" autocomplete="off"></form>
+        <div style="height:5000px"></div>
+        <script>window.seedSeen=sessionStorage.getItem('sleep-proof');
+        ${url.pathname === "/storage" ? "sessionStorage.setItem('sleep-proof','session');localStorage.setItem('sleep-proof','local');" : ""}
+        </script>`);
+    };
+    if (request.method === "POST") setTimeout(finish, 2_000);
+    else finish();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const results: object[] = [];
+  try {
+    for (const mode of ["guest", "local-profile", "passkey"] as const) {
+      const profileRoot = path.join(root, mode, "profiles");
+      const downloads = smokeDesktopDownloads(path.join(root, mode, "downloads"));
+      const launcher = new ElectronBrowserLauncher({
+        downloads,
+        localProfileRoot: profileRoot,
+        pagePolicyPreloadPath: path.join(import.meta.dirname, "browser-page-preload.cjs"),
+      });
+      const verifier = new FakeTicketVerifier();
+      const runtime = new BrowserRuntime({
+        launcher,
+        runtimeId: "runtime_test",
+        localProfiles: { root: profileRoot },
+        sessionFilesRoot: sessionFilesRoot(profileRoot),
+        ticketVerifier: verifier,
+        acknowledgeProfileReady: async () => {},
+        memoryBudgetBytes: 100 * 1024 ** 2,
+      });
+      const sink = new FakeSink();
+      try {
+        await runtime.prepare();
+        const claims = freshClaims({
+          sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
+          workspaceTabRestoreVersion: 1,
+          surfaceState: 1,
+          ...(mode === "passkey" ? { passkeys: 1 } : {}),
+        });
+        if (mode === "local-profile")
+          claims.identity = {
+            kind: "profile-local",
+            initialized: false,
+            readyUrl: `${origin}/ready`,
+            binding: LocalProfileBindingSchema.parse({
+              version: 1,
+              deploymentId: createId("deployment"),
+              profileId: createId("browserProfile"),
+              runnerId: createId("runner"),
+              storageInstanceId: runtime.localProfileStorage!.storageInstanceId,
+              bindingId: randomUUID(),
+              engine: "electron",
+            }),
+          };
+        verifier.claims = claims;
+        const attachment = await runtime.attach("fixture-only-ticket", sink, {
+          passkeys: mode === "passkey",
+        });
+        const id = [...sink.tabs.rows.keys()][0]!;
+        const state = (viewed: string[]) =>
+          attachment.handle(
+            JSON.stringify({ type: "session.state", runs: 1, personUsed: [], viewed, pinned: [] }),
+          );
+        await state([id]);
+        const contents = webContents
+          .getAllWebContents()
+          .find((contents) => contents.getURL() === "about:blank");
+        assert(contents, "No initial page");
+        await contents.loadURL(`${origin}/static`);
+        await contents.loadURL(`${origin}/storage`);
+        await contents.executeJavaScript(
+          "history.pushState({step:1},'', '#one');history.pushState({step:2},'', '#two')",
+        );
+        await contents.loadURL(`${origin}/form`);
+        const postFinished = once(contents, "did-finish-load");
+        await contents.executeJavaScript("document.querySelector('form').submit()");
+        await withTimeout(postFinished, 10_000, {
+          timeoutError: () => new Error("History POST never loaded"),
+        });
+        await contents.loadURL(`${origin}/form?active=1`);
+        assert.equal(contents.navigationHistory.length(), 8);
+        const command = async (method: string, parameters: object) => {
+          const requestId = randomUUID();
+          await attachment.handle(
+            JSON.stringify({ type: "cdp.command", requestId, command: { method, parameters } }),
+          );
+          const result = sink.messages.findLast(
+            (message) =>
+              (message.type === "cdp.result" || message.type === "cdp.error") &&
+              message.requestId === requestId,
+          );
+          assert(result?.type === "cdp.result", `Command failed: ${method}`);
+          return result.result;
+        };
+        await command("Target.createTarget", { url: "about:blank" });
+        const postContents = webContents
+          .getAllWebContents()
+          .find((other) => other !== contents && other.getURL() === "about:blank");
+        assert(postContents);
+        await postContents.loadURL(`${origin}/form?post=1`);
+        await contents.executeJavaScript(
+          `text.value='typed';area.value='multiline';select.value='b';check.checked=true;radio.checked=true;range.value='73';history.replaceState({active:true},'');scrollTo(0,1800)`,
+        );
+        const suspended = Promise.withResolvers<void>();
+        sink.sendServerImplementation = async () => {
+          if (sink.tabs.rows.get(id)?.state === "suspended") suspended.resolve();
+        };
+        await state([]);
+        const secondPost = once(postContents, "did-finish-load");
+        await postContents.executeJavaScript("document.querySelector('form').submit()");
+        await withTimeout(secondPost, 10_000, {
+          timeoutError: () => new Error("Protected POST never loaded"),
+        });
+        assert.equal(sink.tabs.rows.get(id)?.state, "live", "A two-second-old edit slept");
+        await withTimeout(suspended.promise, 20_000, {
+          timeoutError: () => new Error(`${mode} did not sleep through the budget policy`),
+        });
+        assert(!postContents.isDestroyed(), "POST result slept");
+        const wakeNavigations: string[] = [];
+        const observeWake = (_event: Electron.Event, contents: WebContents) => {
+          contents.on("did-start-navigation", (_event, url) => wakeNavigations.push(url));
+        };
+        app.on("web-contents-created", observeWake);
+        await state([id]);
+        const reply = z
+          .object({ reloaded: z.boolean() })
+          .parse(await command("Opensteer.resumeTab", { surfaceId: id }));
+        assert(reply.reloaded);
+        const restored = webContents
+          .getAllWebContents()
+          .find((other) => other.getURL() === `${origin}/form?active=1`);
+        assert(restored);
+        const actual: unknown = await restored.executeJavaScript(
+          `({ text:text.value,area:area.value,select:select.value,check:check.checked,radio:radio.checked,range:range.value,scroll:scrollY,state:history.state,local:localStorage.getItem('sleep-proof'),session:sessionStorage.getItem('sleep-proof'),early:window.seedSeen })`,
+        );
+        assert.deepEqual(actual, {
+          text: "typed",
+          area: "multiline",
+          select: "b",
+          check: true,
+          radio: true,
+          range: "73",
+          scroll: 1800,
+          state: { active: true },
+          local: "local",
+          session: "session",
+          early: "session",
+        });
+        assert.equal(restored.navigationHistory.length(), 8, "Wake added a blank history entry");
+        assert.equal(restored.navigationHistory.getActiveIndex(), 7);
+        app.off("web-contents-created", observeWake);
+        assert(!wakeNavigations.includes("about:blank"), "Wake loaded about:blank");
+        const back = once(restored, "did-finish-load");
+        restored.navigationHistory.goToIndex(4);
+        await withTimeout(back, 10_000, {
+          timeoutError: () => new Error("Older history entry never loaded"),
+        });
+        assert.deepEqual(await restored.executeJavaScript("history.state"), { step: 2 });
+        const forward = once(restored, "did-finish-load");
+        restored.navigationHistory.goToIndex(7);
+        await withTimeout(forward, 10_000, {
+          timeoutError: () => new Error("Forward history entry never loaded"),
+        });
+        assert.deepEqual(await restored.executeJavaScript("history.state"), { active: true });
+        results.push({
+          mode,
+          passed: true,
+          historyEntries: 8,
+          postProtected: true,
+          passkeysEnabled: mode === "passkey",
+          wakeNavigations,
+          restoredState: actual,
+          backForwardPassed: true,
+        });
+        writeFileSync(
+          path.join(root, "sleep-restore-results.json"),
+          JSON.stringify(results, null, 2),
+        );
+      } catch (error) {
+        results.push({
+          mode,
+          passed: false,
+          error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        });
+        writeFileSync(
+          path.join(root, "sleep-restore-results.json"),
+          JSON.stringify(results, null, 2),
+        );
+      } finally {
+        await runtime.shutdown();
+        launcher.close();
+        await downloads.close();
+      }
+    }
+    writeFileSync(path.join(root, "sleep-restore-results.json"), JSON.stringify(results, null, 2));
+    assert(
+      results.every((result) => Reflect.get(result, "passed") === true),
+      "Restore mode failed",
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+}
+
+const sleepTrialRoot = process.env.OPENSTEER_TAB_SLEEP_RESTORE_TRIAL_ROOT;
+if (sleepTrialRoot) {
+  mkdirSync(sleepTrialRoot, { recursive: true });
+  const userData = path.join(sleepTrialRoot, "user-data");
+  mkdirSync(userData, { recursive: true });
+  app.setPath("userData", userData);
+  app.on("window-all-closed", () => undefined);
+  void app.whenReady().then(async () => {
+    try {
+      await runPageSleepRestoreTrial(sleepTrialRoot);
+      console.log("Sleep restore trial passed: Guest, local profile, passkey");
+      app.exit(0);
+    } catch (error) {
+      console.error(error);
+      app.exit(1);
+    }
+  });
 }

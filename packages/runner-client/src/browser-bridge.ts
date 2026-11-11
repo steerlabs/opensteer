@@ -3,14 +3,14 @@ import {
   BrowserAttachPublicKeysSchema,
   BrowserClientMessageSchema,
   BrowserEngineSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   createBrowserBridgeAttachedSchema,
   HeldLocalProfileSchema,
   serializeJsonFrame,
   type BrowserAttachPublicKey,
   type BrowserBridgeAttached,
   type BrowserClientMessage,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
   type LocalProfileBinding,
 } from "@opensteer/protocol";
 import {
@@ -22,8 +22,6 @@ import { readBoundedText } from "@opensteer/shared/boundedJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { WebSocket, type RawData } from "ws";
 import { z } from "zod";
-
-const maxBrowserRelayChannels = 32;
 
 const LocalHealthSchema = z.object({
   wireVersion: z.number().int().optional(),
@@ -39,7 +37,7 @@ const LocalHealthSchema = z.object({
 export interface BrowserChannelSink {
   onClosed(channelId: BrowserChannelId, code: number, reason: string): void;
   onFrame(channelId: BrowserChannelId, frame: Buffer): void;
-  onServerMessage(channelId: BrowserChannelId, message: BrowserServerMessage): void;
+  onServerMessage(channelId: BrowserChannelId, message: BrowserRuntimeServerMessage): void;
 }
 
 export class BrowserRelayError extends Error {
@@ -213,9 +211,6 @@ export class LocalBrowserRuntimeBridge {
     if (this.#channels.has(channelId)) {
       throw new BrowserRelayError("The browser relay channel already exists.");
     }
-    if (this.#channels.size >= maxBrowserRelayChannels) {
-      throw new BrowserRelayError("The local browser runtime relay capacity is full.");
-    }
     if (
       Buffer.byteLength(attachTicket, "utf8") > 16_384 ||
       !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(attachTicket)
@@ -258,7 +253,7 @@ export class LocalBrowserRuntimeBridge {
             readiness.resolve(ready.data);
             return;
           }
-          const message = BrowserServerMessageSchema.parse(value);
+          const message = BrowserRuntimeServerMessageSchema.parse(value);
           if (message.type === "browser.error")
             readiness.reject(new BrowserRelayError(message.error.message));
           sink.onServerMessage(channelId, message);

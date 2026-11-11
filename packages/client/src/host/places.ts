@@ -7,10 +7,10 @@ import {
   type ComputerView,
   type ComputerViewRef,
   computerAppIdentityKey,
-  type BrowserTabCatalog,
   type ComputerAppIdentity,
   type PlaceOccupant,
 } from "@opensteer/protocol";
+import { BrowserTabStore, type BrowserTabKey } from "./browser-tab-store.js";
 import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
 import { phoneOwnerView, phonePlaceKey, phoneTabOpen, phoneTaskSession } from "./phone-tab.js";
 import type { WorkspaceSurfaceDestination as SurfaceDestination } from "./surfaces.js";
@@ -93,30 +93,17 @@ const sourceKeys = [
   "appTabs",
   "openingAppTabs",
   "browserTabGroups",
-  "workspaceTabs",
-  "workspaceTabRestoreVersion",
-  "activatingWorkspaceTabs",
+  "browserTabs",
   "browserSessions",
+  "activatingWorkspaceTabs",
   "browserProfiles",
   "browserPlacements",
   "machines",
 ] as const;
-export type PlaceListSource = Pick<HostSnapshot, (typeof sourceKeys)[number]>;
+export type PlaceListSource = Pick<HostSnapshot, (typeof sourceKeys)[number]> &
+  Partial<Pick<HostSnapshot, "workspaceTabRestoreVersion">>;
 export function samePlaceListSource(a: PlaceListSource, b: PlaceListSource): boolean {
   return sourceKeys.every((key) => a[key] === b[key]);
-}
-export function newerBrowserTabCatalog(
-  previous: BrowserTabCatalog | undefined,
-  next: BrowserTabCatalog | undefined,
-): BrowserTabCatalog | undefined {
-  if (!next) return previous;
-  if (
-    !previous ||
-    next.generation > previous.generation ||
-    (next.generation === previous.generation && next.revision > previous.revision)
-  )
-    return next;
-  return previous;
 }
 function occupants(values: readonly PlaceOccupant[]): PlaceOccupant[] {
   values = values.filter((value) => value.holding || value.acting);
@@ -129,8 +116,303 @@ function occupants(values: readonly PlaceOccupant[]): PlaceOccupant[] {
     (a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt) || a.threadId.localeCompare(b.threadId),
   );
 }
-/** Uses only the reader-authorized catalog, never historical lineage or viewer selection. */
+export interface PlaceDescriptor {
+  readonly key: string;
+  readonly kind: PlaceKind;
+  readonly destination: SurfaceDestination;
+  readonly device: PlaceItem["device"];
+  readonly browser: { readonly sessionId: string } | null;
+  readonly workspaceTab?: BrowserTabOrderTab & { readonly lineageId: string };
+}
+const noTabs = new BrowserTabStore();
+const projections = new WeakMap<BrowserTabStore, PlaceProjection>();
+function projection(source: PlaceListSource) {
+  const store = source.browserTabs ?? noTabs;
+  let held = projections.get(store);
+  if (!held) projections.set(store, (held = new PlaceProjection(store)));
+  return held;
+}
 export function placeList(source: PlaceListSource): readonly PlaceItem[] {
+  return projection(source).list(source);
+}
+export type PlaceFilterItem = Pick<PlaceItem, "key" | "identity" | "device" | "occupants">;
+export function placeFilterList(source: PlaceListSource): readonly PlaceFilterItem[] {
+  return projection(source).filterList(source);
+}
+export function placeStructure(source: PlaceListSource): readonly PlaceDescriptor[] {
+  return projection(source).structure(source);
+}
+export function placeByKey(source: PlaceListSource, key: string): PlaceItem | undefined {
+  return projection(source).place(source, key);
+}
+function sameDependencies(a: readonly unknown[] | undefined, b: readonly unknown[]) {
+  return a?.length === b.length && b.every((value, i) => value === a[i]);
+}
+
+/** Structural selectors never depend on a tab's title, loading or occupants. */
+export class PlaceProjection {
+  readonly #store: BrowserTabStore;
+  readonly #rows = new Map<string, { dependencies: readonly unknown[]; item: PlaceItem }>();
+  #bindings = new Map<string, BrowserTabKey>();
+  #versions: readonly (1 | undefined)[] = [];
+  #descriptors = new Map<string, PlaceDescriptor>();
+  #structure: readonly PlaceDescriptor[] = [];
+  #sessionSource: PlaceListSource["browserSessions"] | undefined;
+  #sessions: readonly string[] | undefined;
+  #structureDependencies: readonly unknown[] | undefined;
+  #nativeDependencies: readonly unknown[] | undefined;
+  #native: readonly PlaceItem[] = [];
+  #list: readonly PlaceItem[] = [];
+  #listDependencies: readonly unknown[] | undefined;
+  #filterDependencies: readonly unknown[] | undefined;
+  #filterList: readonly PlaceFilterItem[] = [];
+  #indices = new Map<string, number>();
+  readonly #dirty = new Set<string>();
+  constructor(store: BrowserTabStore) {
+    this.#store = store;
+    store.subscribeTabChanges((groupId, ids) => {
+      const sessionId = store.group(groupId)?.sessionId;
+      for (const id of ids) {
+        const key = `browser:${sessionId}:${id}`;
+        if (this.#indices.has(key)) this.#dirty.add(key);
+      }
+    });
+  }
+  #nativePlaces(source: PlaceListSource) {
+    const dependencies = [source.appTabs, source.machines];
+    if (!sameDependencies(this.#nativeDependencies, dependencies)) {
+      this.#nativeDependencies = dependencies;
+      // A computer reporting in anew rebuilds these; a place that reads the same keeps its identity.
+      const held = new Map(this.#native.map((place) => [place.key, place]));
+      const next = nativePlaces(source).map((place) => {
+        const before = held.get(place.key);
+        return before && JSON.stringify(before) === JSON.stringify(place) ? before : place;
+      });
+      if (!sameDependencies(this.#native, next)) this.#native = next;
+    }
+    return this.#native;
+  }
+  structure(source: PlaceListSource): readonly PlaceDescriptor[] {
+    if (this.#sessionSource !== source.browserSessions) {
+      this.#sessionSource = source.browserSessions;
+      const sessions = source.browserSessions?.map((session) => session.id);
+      if (!sessions || !sameDependencies(this.#sessions, sessions)) this.#sessions = sessions;
+      const versions = source.browserSessions.map((session) => session.workspaceTabRestoreVersion);
+      if (!sameDependencies(this.#versions, versions)) this.#versions = versions;
+    }
+    const dependencies = [
+      this.#sessions,
+      this.#versions,
+      this.#store.structure(),
+      this.#nativePlaces(source),
+      source.browserTabGroups,
+      source.browserPlacements,
+      source.machines,
+    ];
+    if (sameDependencies(this.#structureDependencies, dependencies)) return this.#structure;
+    this.#structureDependencies = dependencies;
+    const descriptors = new Map<string, PlaceDescriptor>();
+    const bindings = new Map<string, BrowserTabKey>();
+    const durable = new Set(
+      source.browserSessions
+        .filter((session) => session.workspaceTabRestoreVersion === 1)
+        .map((session) => session.id),
+    );
+    const next: PlaceDescriptor[] = [];
+    const authorized = this.#sessions ? new Set(this.#sessions) : undefined;
+    for (const tab of this.#store.structure()) {
+      const group = this.#store.group(tab.groupId)!;
+      if (authorized && !authorized.has(group.sessionId)) continue;
+      const machineId = group.placement.runnerId;
+      const name =
+        source.browserPlacements.find((placement) => placement.runnerId === machineId)?.label ??
+        source.machines.find((machine) => machine.id === machineId)?.name ??
+        "Computer unavailable";
+      const key = `browser:${tab.sessionId}:${tab.tabId}`;
+      const held = this.#descriptors.get(key);
+      const persistent = durable.has(group.sessionId);
+      const item: PlaceDescriptor =
+        held &&
+        this.#bindings.get(key) === tab &&
+        !!held.workspaceTab === persistent &&
+        held.device?.machineId === machineId &&
+        held.device.name === name
+          ? held
+          : {
+              key,
+              kind: "browser",
+              destination: { kind: "browser", sessionId: tab.sessionId, tabId: tab.tabId },
+              device: { machineId, name },
+              browser: { sessionId: tab.sessionId },
+              ...(persistent
+                ? {
+                    workspaceTab: {
+                      id: tab.tabId,
+                      order: tab.order,
+                      openerId: tab.openerId,
+                      createdAt: tab.createdAt,
+                      lineageCreatedAt: tab.lineageCreatedAt,
+                      lineageId: tab.groupId,
+                    },
+                  }
+                : {}),
+            };
+      bindings.set(key, tab);
+      descriptors.set(key, item);
+      next.push(item);
+    }
+    for (const place of this.#nativePlaces(source)) {
+      const held = this.#descriptors.get(place.key);
+      const item =
+        held?.kind === place.kind &&
+        held.destination === place.destination &&
+        held.device === place.device
+          ? held
+          : {
+              key: place.key,
+              kind: place.kind,
+              destination: place.destination,
+              device: place.device,
+              browser: null,
+            };
+      descriptors.set(place.key, item);
+      next.push(item);
+    }
+    this.#descriptors = descriptors;
+    this.#bindings = bindings;
+    const layout = source.browserTabGroups;
+    const saved = new Map(
+      next.flatMap((place) =>
+        place.workspaceTab ? [[place.workspaceTab.id, place] as const] : [],
+      ),
+    );
+    const groupOf = new Map(
+      layout?.groups.flatMap((group) => group.tabIds.map((id) => [id, group.id] as const)),
+    );
+    const ordered = layout?.order
+      ? [
+          ...resolveBrowserTabOrder(
+            layout.order,
+            [...saved.values()].map((place) => place.workspaceTab!),
+            groupOf,
+          ).map((id) => saved.get(id)!),
+          ...next.filter((place) => !place.workspaceTab),
+        ]
+      : next;
+    if (!sameDependencies(this.#structure, ordered)) this.#structure = ordered;
+    for (const key of this.#rows.keys()) if (!descriptors.has(key)) this.#rows.delete(key);
+    return this.#structure;
+  }
+  place(source: PlaceListSource, key: string): PlaceItem | undefined {
+    this.structure(source);
+    const descriptor = this.#descriptors.get(key);
+    if (!descriptor) return undefined;
+    const binding = this.#bindings.get(key);
+    if (!binding) return this.#nativePlaces(source).find((place) => place.key === key);
+    const group = this.#store.group(binding.groupId)!;
+    const tab = this.#store.tab(group.id, binding.tabId)!;
+    const profile = source.browserProfiles.find((profile) => profile.id === group.profileId);
+    const placement = source.browserPlacements.find(
+      (placement) => placement.runnerId === group.placement.runnerId,
+    );
+    const activating = source.activatingWorkspaceTabs?.includes(tab.id) === true;
+    const dependencies = [
+      descriptor,
+      tab,
+      profile,
+      group.profileId,
+      placement,
+      group.opener,
+      group.unavailableReason,
+      activating,
+    ];
+    const held = this.#rows.get(key);
+    if (sameDependencies(held?.dependencies, dependencies)) return held!.item;
+    const identity = browserIdentity(group.profileId, source.browserProfiles);
+    const reason = browserPlaceUnavailableReason(
+      identity,
+      group.unavailableReason ?? undefined,
+      placement?.unavailableReason,
+    );
+    const live = tab.state === "live";
+    const { workspaceTab, ...base } = descriptor;
+    const item: PlaceItem = {
+      ...base,
+      ...(workspaceTab
+        ? {
+            workspaceTab: {
+              ...workspaceTab,
+              state: tab.state,
+              unavailableReason: group.unavailableReason ?? undefined,
+            },
+          }
+        : {}),
+      identity,
+      browser: { sessionId: tab.sessionId, opener: group.opener, documentId: tab.documentId },
+      task: null,
+      ownerView: null,
+      ownerClose: null,
+      title: tab.title.trim() || tab.site || "New tab",
+      site: tab.site,
+      icon: { kind: "site", sessionId: tab.sessionId, ref: tab.iconRef },
+      occupants: occupants(tab.occupants),
+      availability: reason
+        ? "unavailable"
+        : live
+          ? tab.availability
+          : placement?.available
+            ? "ready"
+            : "starting",
+      loading: !reason && (activating || tab.state === "restoring" || tab.loading),
+      closable: true,
+    };
+    this.#rows.set(key, { dependencies, item });
+    return item;
+  }
+  list(source: PlaceListSource): readonly PlaceItem[] {
+    const structure = this.structure(source);
+    const dependencies = [
+      structure,
+      this.#store.groupRevision,
+      source.browserProfiles,
+      source.browserPlacements,
+      source.activatingWorkspaceTabs,
+    ];
+    if (!sameDependencies(this.#listDependencies, dependencies)) {
+      this.#listDependencies = dependencies;
+      const next = structure.map(({ key }) => this.place(source, key)!);
+      this.#indices = new Map(structure.map(({ key }, index) => [key, index]));
+      if (!sameDependencies(this.#list, next)) this.#list = next;
+    } else if (this.#dirty.size) {
+      let next: PlaceItem[] | undefined;
+      for (const key of this.#dirty) {
+        const index = this.#indices.get(key);
+        if (index === undefined) continue;
+        const item = this.place(source, key)!;
+        if (item === this.#list[index]) continue;
+        next ??= [...this.#list];
+        next[index] = item;
+      }
+      if (next) this.#list = next;
+    }
+    this.#dirty.clear();
+    return this.#list;
+  }
+  filterList(source: PlaceListSource): readonly PlaceFilterItem[] {
+    const dependencies = [
+      this.structure(source),
+      this.#store.filterRevision,
+      source.browserProfiles,
+      source.browserPlacements,
+    ];
+    if (!sameDependencies(this.#filterDependencies, dependencies)) {
+      this.#filterDependencies = dependencies;
+      this.#filterList = this.list(source);
+    }
+    return this.#filterList;
+  }
+}
+function nativePlaces(source: PlaceListSource): readonly PlaceItem[] {
   const result: { item: PlaceItem; openedAt: string; order: number }[] = [];
   for (const tab of source.appTabs ?? [])
     result.push({
@@ -156,164 +438,6 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
         loading: false,
       },
     });
-  for (const group of source.workspaceTabs ?? []) {
-    const session = source.browserSessions.find((session) => session.id === group.session.id);
-    const identity = browserIdentity(group.session.profileId, source.browserProfiles);
-    const placement = source.browserPlacements.find(
-      (placement) => placement.runnerId === group.session.placement.runnerId,
-    );
-    const machine = source.machines.find(
-      (machine) => machine.id === group.session.placement.runnerId,
-    );
-    const lastingReason = browserPlaceUnavailableReason(
-      identity,
-      group.unavailableReason,
-      placement?.unavailableReason,
-    );
-    const rows = group.tabs ?? [];
-    const inserted = new Set<string>();
-    const append = (row: (typeof rows)[number]) => {
-      if (inserted.has(row.id)) return;
-      inserted.add(row.id);
-      const live =
-        session?.state === "ready" && row.sessionId === session.id
-          ? session.tabCatalog?.tabs.find((tab) => tab.id === row.id)
-          : undefined;
-      const destination: SurfaceDestination = {
-        kind: "browser",
-        sessionId: row.sessionId,
-        tabId: row.id,
-      };
-      const availability: PlaceItem["availability"] = lastingReason
-        ? "unavailable"
-        : live
-          ? live.availability
-          : placement?.available
-            ? "ready"
-            : "starting";
-      result.push({
-        openedAt: group.createdAt,
-        order: result.length,
-        item: {
-          workspaceTab: {
-            id: row.id,
-            openerId: row.openerId,
-            createdAt: row.createdAt ?? group.createdAt,
-            lineageCreatedAt: group.createdAt,
-            order: row.order,
-            lineageId: group.id,
-            unavailableReason: group.unavailableReason,
-            state: live ? "live" : row.state === "live" ? "suspended" : row.state,
-          },
-          key: `browser:${row.sessionId}:${row.id}`,
-          destination,
-          task: null,
-          kind: "browser",
-          identity,
-          browser: {
-            sessionId: row.sessionId,
-            opener: group.session.opener ?? { kind: "unknown" },
-            documentId: live?.documentId ?? null,
-          },
-          ownerView: null,
-          ownerClose: null,
-          title: (live?.title ?? row.title).trim() || row.site || "New tab",
-          site: live?.site ?? row.site,
-          icon: {
-            kind: "site",
-            sessionId: row.sessionId,
-            ref: live ? live.iconRef : (row.iconRef ?? null),
-          },
-          device: {
-            machineId: group.session.placement.runnerId,
-            name: placement?.label ?? machine?.name ?? "Computer unavailable",
-          },
-          occupants: occupants(live?.occupants ?? []),
-          availability,
-          loading:
-            !lastingReason &&
-            (source.activatingWorkspaceTabs?.includes(row.id) === true ||
-              row.state === "restoring" ||
-              (session?.tabs.find((tab) => tab.id === row.id)?.loading ?? live?.loading) === true),
-          closable: true,
-        },
-      });
-      for (const child of rows) if (child.openerId === row.id) append(child);
-    };
-    for (const row of rows)
-      if (!row.openerId || !rows.some((parent) => parent.id === row.openerId)) append(row);
-    for (const row of rows) append(row);
-  }
-  for (const session of source.browserSessions) {
-    if (
-      source.workspaceTabRestoreVersion === 1 &&
-      (session.workspaceTabRestoreVersion === 1 ||
-        source.workspaceTabs?.some((group) => group.session.id === session.id))
-    )
-      continue;
-    const identity = browserIdentity(session.profileId, source.browserProfiles);
-    const placement = source.browserPlacements.find(
-      (placement) => placement.runnerId === session.placement.runnerId,
-    );
-    const machine = source.machines.find((machine) => machine.id === session.placement.runnerId);
-    const tabs = session.tabCatalog?.tabs ?? [];
-    const ordered = [...tabs].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-    const inserted = new Set<string>();
-    const append = (tab: (typeof tabs)[number]) => {
-      if (inserted.has(tab.id)) return;
-      inserted.add(tab.id);
-      const destination: SurfaceDestination = {
-        kind: "browser",
-        sessionId: session.id,
-        tabId: tab.id,
-      };
-      const availability: PlaceItem["availability"] =
-        (identity.kind === "profile" && !identity.available) ||
-        placement?.available === false ||
-        session.state === "closed" ||
-        session.state === "failed" ||
-        session.state === "closing"
-          ? "unavailable"
-          : session.state === "starting"
-            ? "starting"
-            : tab.availability;
-      result.push({
-        openedAt: session.createdAt ?? "",
-        order: result.length,
-        item: {
-          key: `browser:${session.id}:${tab.id}`,
-          destination,
-          task: null,
-          kind: "browser",
-          title: tab.title.trim() || tab.site || "New tab",
-          site: tab.site || null,
-          icon: { kind: "site", sessionId: session.id, ref: tab.iconRef },
-          identity,
-          browser: {
-            sessionId: session.id,
-            opener: session.opener ?? { kind: "unknown" },
-            documentId: tab.documentId ?? null,
-          },
-          ownerView: null,
-          ownerClose: null,
-          device: {
-            machineId: session.placement.runnerId,
-            name: placement?.label ?? machine?.name ?? "Computer unavailable",
-          },
-          occupants: occupants(tab.occupants),
-          availability,
-          loading:
-            !browserPlaceUnavailableReason(identity, undefined, placement?.unavailableReason) &&
-            (session.tabs.find((value) => value.id === tab.id)?.loading ?? tab.loading) === true,
-          closable: true,
-        },
-      });
-      for (const child of ordered) if (child.openerId === tab.id) append(child);
-    };
-    for (const tab of ordered)
-      if (!tab.openerId || !tabs.some(({ id }) => id === tab.openerId)) append(tab);
-    for (const tab of ordered) append(tab);
-  }
   const native = new Map<string, { item: PlaceItem; openedAt: string; lastActiveAt: string }>();
   for (const machine of source.machines) {
     for (const session of machine.computerUse?.sessions ?? []) {
@@ -428,35 +552,9 @@ export function placeList(source: PlaceListSource): readonly PlaceItem[] {
     native.set(item.key, { item, openedAt, lastActiveAt: openedAt });
   }
   for (const value of native.values()) result.push({ ...value, order: 0 });
-  const sorted = result
-    .sort(
-      (a, b) =>
-        Number(a.item.kind !== "browser") - Number(b.item.kind !== "browser") ||
-        ((source.workspaceTabs?.length ?? 0) > 0 && a.item.kind === "browser"
-          ? b.openedAt.localeCompare(a.openedAt)
-          : a.openedAt.localeCompare(b.openedAt)) ||
-        a.order - b.order ||
-        a.item.key.localeCompare(b.item.key),
-    )
+  return result
+    .sort((a, b) => a.openedAt.localeCompare(b.openedAt) || a.item.key.localeCompare(b.item.key))
     .map(({ item }) => item);
-  // A Host that keeps each person's order has the last word on the saved tabs;
-  // live tabs no browser saves follow them, then the Mac apps and phones.
-  const layout = source.browserTabGroups;
-  if (layout?.order === undefined) return sorted;
-  const saved = new Map(
-    sorted.flatMap((item) => (item.workspaceTab ? [[item.workspaceTab.id, item] as const] : [])),
-  );
-  const groupOf = new Map(
-    layout.groups.flatMap((group) => group.tabIds.map((id) => [id, group.id] as const)),
-  );
-  return [
-    ...resolveBrowserTabOrder(
-      layout.order,
-      [...saved.values()].map((item) => item.workspaceTab!),
-      groupOf,
-    ).map((id) => saved.get(id)!),
-    ...sorted.filter((item) => !item.workspaceTab),
-  ];
 }
 /**
  * A phone's one row. It shows the person's own view while that can show
@@ -516,25 +614,12 @@ export function placeDestinationEnded(
   destination: SurfaceDestination,
 ): boolean {
   if (destination.kind === "browser") {
-    const session = source.browserSessions.find((item) => item.id === destination.sessionId);
-    if (source.workspaceTabRestoreVersion === 1) {
-      const group = source.workspaceTabs?.find(
-        (group) =>
-          group.id === destination.sessionId ||
-          group.session.id === destination.sessionId ||
-          group.tabs?.some((tab) => tab.id === destination.tabId),
-      );
-      if (group) return !!group.tabs && !group.tabs.some((tab) => tab.id === destination.tabId);
-      // A bounded catalog cannot prove that an unlisted durable group ended.
-      if (
-        !session ||
-        session.workspaceTabRestoreVersion === 1 ||
-        session.state === "closed" ||
-        session.state === "failed"
-      )
-        return false;
-    }
-    return !session?.tabCatalog?.tabs.some((tab) => tab.id === destination.tabId);
+    const store = source.browserTabs;
+    const groupId = store?.groupForSession(destination.sessionId);
+    if (groupId === undefined) return source.workspaceTabRestoreVersion !== 1;
+    return (
+      groupId !== undefined && store!.tabs(groupId).whole && !store!.tab(groupId, destination.tabId)
+    );
   }
   if (destination.kind === "opensteer-app") return !isAppTabOpen(source, destination.appId);
   const machine = source.machines.find((item) => item.id === destination.machineId);
@@ -562,7 +647,10 @@ export interface BrowserTabCloseImpact {
 export function browserTabCloseImpact(session: BrowserSessionSummary): BrowserTabCloseImpact {
   return {
     heldByLiveWork: session.attachedRunIds.length > 0,
-    discardsFreshSignIns: session.tabCatalog?.tabs.length === 1 && session.profileId === null,
+    discardsFreshSignIns:
+      session.browserTabs?.sessionList(session.id).whole === true &&
+      session.browserTabs.sessionTabs(session.id).length === 1 &&
+      session.profileId === null,
   };
 }
 

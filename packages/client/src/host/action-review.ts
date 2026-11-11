@@ -142,8 +142,8 @@ function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | n
     case "close-tab": {
       const session = snapshot.browserSessions.find((item) => item.id === action.sessionId);
       if (session?.state !== "ready") return null;
-      const catalog = session.tabCatalog;
-      if (!catalog?.tabs.some((tab) => tab.id === action.tabId)) return null;
+      const store = snapshot.browserTabs;
+      if (!store?.sessionTab(session.id, action.tabId)) return null;
       // The person reviewed this tab, its holders and whether it is the last
       // one; other tabs opening or closing change none of that. Confirming
       // sends the inventory current then.
@@ -152,8 +152,8 @@ function actionState(snapshot: HostSnapshot, action: ReviewedAction): string | n
         action,
         session.profileId,
         [...session.attachedRunIds].sort(),
-        catalog.generation,
-        catalog.tabs.length === 1,
+        store.groupForSession(session.id),
+        store.sessionList(session.id).whole && store.sessionTabs(session.id).length === 1,
       ]);
     }
   }
@@ -172,15 +172,8 @@ async function performAction(client: HostClient, action: ReviewedAction): Promis
     case "close-view":
       return client.closeComputerView(action.viewId, action.generation);
     case "close-tab": {
-      const catalog = client
-        .getSnapshot()
-        .browserSessions.find((item) => item.id === action.sessionId)?.tabCatalog;
-      if (catalog)
-        return client.closeBrowserTab(action.sessionId, action.tabId, {
-          generation: catalog.generation,
-          revision: catalog.revision,
-          inventoryRevision: catalog.inventoryRevision ?? catalog.revision,
-        });
+      const inventory = client.browserTabs.inventory(action.sessionId);
+      if (inventory) return client.closeBrowserTab(action.sessionId, action.tabId, inventory);
       return undefined;
     }
   }

@@ -1,3 +1,4 @@
+import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
   type BrowserRasterDensity,
   type BrowserServerMessage,
@@ -87,6 +88,16 @@ export class BrowserWatchStore {
   #suspended = false;
   #keepControlOnly = false;
   #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
+  readonly #surfaces = new Map<string, Map<string, BrowserViewerSurface>>();
+  surface(sessionId: string, surfaceId: string): BrowserViewerSurface | undefined {
+    return this.#surfaces.get(sessionId)?.get(surfaceId);
+  }
+  #disconnect(target: Watch): void {
+    const surfaces = this.#surfaces.get(target.sessionId);
+    const hadSurface = surfaces?.delete(target.surfaceId) ?? false;
+    if (!surfaces?.size) this.#surfaces.delete(target.sessionId);
+    this.onDisconnect?.(target.sessionId, target.surfaceId, hadSurface);
+  }
   readonly #targets = new Map<string, Watch>();
   /** Presenter leases by exact target; a lease may exist before or after its target. */
   readonly #demands = new Map<string, Map<object, BrowserRasterDensity>>();
@@ -114,7 +125,8 @@ export class BrowserWatchStore {
   readonly rasterDemands: () => boolean;
   readonly onMessage:
     ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined;
-  readonly onDisconnect: ((sessionId: string, surfaceId: string) => void) | undefined;
+  readonly onDisconnect:
+    ((sessionId: string, surfaceId: string, hadSurface: boolean) => void) | undefined;
   constructor(
     connect: (sessionId: string, surfaceId: string) => WebSocketClient,
     mode: "watch" | "control",
@@ -122,7 +134,7 @@ export class BrowserWatchStore {
       ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined,
     retryDelay: (attempt: number, unreadableFrames: number) => number,
     captureRegions: () => boolean = () => false,
-    onDisconnect?: (sessionId: string, surfaceId: string) => void,
+    onDisconnect?: (sessionId: string, surfaceId: string, hadSurface: boolean) => void,
     frameWindows: () => boolean = () => false,
     rasterDemands: () => boolean = () => false,
   ) {
@@ -480,6 +492,7 @@ export class BrowserWatchStore {
     socket.binaryType = "arraybuffer";
     this.#set(target, { ...this.#kept(target), status: "connecting" });
     let synchronized = false;
+    const icons = new Map<string, string>();
     const openedAt = Date.now();
     const forgetFailures = () => {
       if (Date.now() - openedAt >= healthySocketMs) target.unreadableFrames = 0;
@@ -492,7 +505,7 @@ export class BrowserWatchStore {
       unreadable = error instanceof z.ZodError || error instanceof SyntaxError,
     ) => {
       if (target.socket !== socket) return;
-      this.onDisconnect?.(target.sessionId, target.surfaceId);
+      this.#disconnect(target);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
@@ -519,7 +532,7 @@ export class BrowserWatchStore {
         if (typeof data === "string") {
           if (data.length > 1024 * 1024)
             return fail(new Error("Browser message exceeds its byte limit."), true);
-          const message = BrowserServerMessageSchema.parse(JSON.parse(data));
+          let message = BrowserServerMessageSchema.parse(JSON.parse(data));
           forgetFailures();
           if (message.type === "browser.snapshot") {
             if (
@@ -540,7 +553,28 @@ export class BrowserWatchStore {
               status: target.pictureHolds ? "connecting" : "live",
             });
           } else if (!synchronized) throw new Error("Browser event arrived before its snapshot.");
-          else if (message.type === "browser.status") {
+          else if (message.type === "browser.tab.icon") {
+            icons.set(message.key, message.favicon);
+            return;
+          } else if (message.type === "browser.surface") {
+            if (
+              message.surfaceId !== target.surfaceId ||
+              (message.surface && message.surface.id !== target.surfaceId)
+            )
+              throw new Error("The surface metadata does not match the subscribed target.");
+            if (message.surface && message.icon !== undefined) {
+              const favicon = message.icon === null ? null : icons.get(message.icon);
+              if (favicon === undefined) throw new Error("The viewer icon has not been delivered.");
+              message = { ...message, surface: { ...message.surface, favicon } };
+            }
+            const surfaces =
+              this.#surfaces.get(target.sessionId) ?? new Map<string, BrowserViewerSurface>();
+            if (message.surface) surfaces.set(target.surfaceId, message.surface);
+            else surfaces.delete(target.surfaceId);
+            if (surfaces.size) this.#surfaces.set(target.sessionId, surfaces);
+            else this.#surfaces.delete(target.sessionId);
+            subscribed = true;
+          } else if (message.type === "browser.status") {
             this.#close(target);
             this.#set(target, empty);
           } else if (message.type === "browser.stream.state") {
@@ -660,7 +694,7 @@ export class BrowserWatchStore {
         reason:
           event.code === 4003 ? "access-ended" : event.code === 4002 ? "protocol" : "transport",
       });
-      this.onDisconnect?.(target.sessionId, target.surfaceId);
+      this.#disconnect(target);
       target.socket = null;
       target.synchronized = false;
       target.awaiting.clear();
@@ -710,7 +744,7 @@ export class BrowserWatchStore {
     this.#scheduleDemand(this.#key(target.sessionId, target.surfaceId));
   }
   #close(target: Watch): void {
-    this.onDisconnect?.(target.sessionId, target.surfaceId);
+    this.#disconnect(target);
     if (target.timer) clearTimeout(target.timer);
     target.timer = null;
     const socket = target.socket;

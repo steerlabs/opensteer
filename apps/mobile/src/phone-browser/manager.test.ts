@@ -1,10 +1,12 @@
+import { KeyedStreamReceiver } from "@opensteer/protocol/keyed-stream";
+import type { BrowserTabRecord, BrowserTabStreamMeta } from "@opensteer/protocol/browser-tabs";
 import { afterEach, describe, expect, test } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
   BrowserDialogSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   LocalProfileBindingSchema,
   type BrowserClientMessage,
 } from "@opensteer/protocol/browser";
@@ -101,7 +103,8 @@ async function setup(
     BrowserAttachTicketClaimsSchema.parse({
       access: "read-write",
       audience: "opensteer-browser-runtime",
-      wireVersion: 1,
+      creationOrigin: "person",
+      wireVersion: 2,
       issuedAt: new Date(clock.now()).toISOString(),
       expiresAt: new Date(clock.now() + 30_000).toISOString(),
       operationExpiresAt: new Date(clock.now() + 20_000).toISOString(),
@@ -202,8 +205,9 @@ async function setup(
     );
   };
   const revision = () => {
-    const message = server().findLast((entry) => entry.type === "browser.surfaces.changed");
-    return message?.type === "browser.surfaces.changed" ? message.inventoryRevision : undefined;
+    const receiver = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
+    for (const entry of server()) if (entry.type === "browser.tabs") receiver.apply(entry.stream);
+    return receiver.meta?.inventoryRevision;
   };
   const attachmentId = uuid();
   const actorToken = uuid();
@@ -330,6 +334,24 @@ describe("phone browser manager", () => {
       loads: 1,
     });
   });
+  test("restarts a saved-tab snapshot without retaining its abandoned adoptions", async () => {
+    const fixture = await setup();
+    await fixture.open("keep");
+    await fixture.open("drop");
+    await fixture.manager.setForeground(false);
+    await fixture.manager.setForeground(true);
+    await fixture.reconnect({ sessionId: `bsn_${uuid()}` });
+    const saved = (stream: unknown) => fixture.client({ type: "session.saved", stream });
+    await saved({ op: "begin", generation: "abandoned" });
+    await saved({ op: "rows", rows: [{ id: fixture.surfaceId }, { id: "drop" }] });
+    expect(fixture.native.tabs.has("drop")).toBe(true);
+    await saved({ op: "begin", generation: "current" });
+    await saved({ op: "rows", rows: [{ id: fixture.surfaceId }, { id: "keep" }] });
+    expect(fixture.native.tabs.has("drop")).toBe(true);
+    await saved({ op: "end", revision: 0, count: 2, meta: {} });
+    expect(fixture.native.tabs.has("drop")).toBe(false);
+    expect(fixture.native.tabs.has("keep")).toBe(true);
+  });
   test.each(["ios", "android"] as const)(
     "%s adopts the retained surface into a new Host session without reloading",
     async (platform) => {
@@ -358,7 +380,29 @@ describe("phone browser manager", () => {
       await fixture.manager.setForeground(false);
       await fixture.manager.setForeground(true);
       const sessionId = `bsn_${uuid()}`;
-      await fixture.reconnect({ sessionId, dormantSurfaceIds: ["dormant", "discarded"] });
+      await fixture.reconnect({ sessionId });
+      await fixture.relay({
+        ...fixture.currentEnvelope(),
+        type: "browser.client-message",
+        message: { type: "session.saved", stream: { op: "begin", generation: "saved" } },
+      });
+      await fixture.relay({
+        ...fixture.currentEnvelope(),
+        type: "browser.client-message",
+        message: {
+          type: "session.saved",
+          stream: {
+            op: "rows",
+            rows: [fixture.surfaceId, "dormant", "discarded"].map((id) => ({ id })),
+          },
+        },
+      });
+      expect(fixture.native.tabs.has("removed-while-offline")).toBe(true);
+      await fixture.relay({
+        ...fixture.currentEnvelope(),
+        type: "browser.client-message",
+        message: { type: "session.saved", stream: { op: "end", revision: 0, count: 3, meta: {} } },
+      });
       expect(fixture.native.tabs.has("removed-while-offline")).toBe(false);
       expect(fixture.presentation("removed-while-offline").state).toBe("closed");
       expect(fixture.presentation("discarded").state).toBe("discarded");
@@ -392,7 +436,6 @@ describe("phone browser manager", () => {
         expect.objectContaining({
           type: "browser.snapshot",
           sessionId,
-          surfaces: expect.arrayContaining([expect.objectContaining({ id: fixture.surfaceId })]),
         }),
       );
     },
@@ -552,6 +595,52 @@ describe("phone browser manager", () => {
       result: { type: "surface.open", binding: { url: "about:blank" } },
     });
     expect(fixture.native.tabs.size).toBe(2);
+  });
+
+  test("pages 1,000 typed-action tabs within the byte budget without losing long records", async () => {
+    const fixture = await setup();
+    await fixture.agentAttach();
+    for (let index = 1; index < 1000; index++) {
+      await fixture.sessionAction({
+        type: "surface.open",
+        url: `https://example.test/${"界".repeat(200)}?${index}`,
+      });
+      expect(fixture.server().at(-1)).toMatchObject({
+        type: "agent.result",
+        result: { type: "surface.open" },
+      });
+    }
+    await fixture.sessionAction({
+      type: "surface.open",
+      url: `https://large.test/${"\u0001".repeat(16_000)}`,
+    });
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    let oversized = 0;
+    do {
+      await fixture.sessionAction({ type: "session.tabs", ...(cursor ? { cursor } : {}) });
+      const listed = fixture.server().at(-1);
+      expect(listed).toMatchObject({ type: "agent.result", result: { type: "session.tabs" } });
+      if (listed?.type !== "agent.result" || listed.result.type !== "session.tabs")
+        throw new Error("Tabs were not listed");
+      const result = listed.result;
+      const bytes = Buffer.byteLength(JSON.stringify(listed));
+      expect(bytes).toBeLessThan(432 * 1024);
+      if (bytes > 64 * 1024) {
+        expect(result.tabs).toHaveLength(1);
+        expect(result.tabs[0]?.url).toBe(`https://large.test/${"\u0001".repeat(16_000)}`);
+        oversized++;
+      }
+      ids.push(...result.tabs.map((tab) => tab.surfaceId));
+      cursor = result.nextCursor ?? undefined;
+      pages++;
+      expect(pages).toBeLessThan(100);
+    } while (cursor !== undefined);
+    expect(new Set(ids).size).toBe(1001);
+    expect(ids).toHaveLength(1001);
+    expect(pages).toBeGreaterThan(1);
+    expect(oversized).toBe(1);
   });
 
   test.each(["retained", "discarded"] as const)(
@@ -724,7 +813,7 @@ describe("phone browser manager", () => {
     for (const entry of fixture.native.output)
       expect(BrowserRelayToHostMessageSchema.safeParse(entry).success).toBe(true);
     for (const entry of fixture.server())
-      expect(BrowserServerMessageSchema.safeParse(entry).success).toBe(true);
+      expect(BrowserRuntimeServerMessageSchema.safeParse(entry).success).toBe(true);
     expect(fixture.native.calls.findIndex((entry) => entry.method === "commitAttach")).toBeLessThan(
       fixture.native.calls.findIndex((entry) => entry.method === "createTab"),
     );
@@ -752,15 +841,19 @@ describe("phone browser manager", () => {
         ? [entry.message]
         : [],
     );
-    expect(heard[0]).toMatchObject({
-      type: "browser.snapshot",
-      surfaces: [expect.objectContaining({ title: "Loaded" })],
-    });
+    expect(heard[0]).toMatchObject({ type: "browser.snapshot" });
+    expect(heard).toContainEqual(
+      expect.objectContaining({
+        type: "browser.tabs",
+        stream: { op: "rows", rows: [expect.objectContaining({ title: "Loaded" })] },
+      }),
+    );
     expect(heard.map((message) => message.type)).toEqual([
       "browser.snapshot",
+      "browser.tabs",
+      "browser.tabs",
+      "browser.tabs",
       "navigation.committed",
-      "browser.surfaces.changed",
-      "browser.workspace-tabs",
     ]);
   });
 
@@ -1748,7 +1841,7 @@ test("descriptors declare only the actually qualified platform abilities", () =>
     const descriptor = phoneBrowserDescriptor(native.qualification)!;
     expect(RunnerBrowserModuleSchema.safeParse(descriptor).success).toBe(true);
     expect(descriptor).toMatchObject({
-      wireVersion: 1,
+      wireVersion: 2,
       basicInput: 1,
       surfaceState: 1,
       localProfileStorage: { engine: platform === "ios" ? "wkwebview" : "android-webview" },
@@ -2038,4 +2131,58 @@ test("a CDP session never receives another Host session's targets or native meta
       .findLast((entry) => entry.type === "cdp.error" && entry.requestId === requestId),
   ).toMatchObject({ type: "cdp.error" });
   expect(fixture.native.pipes.size).toBe(0);
+});
+
+test("Android CDP lists sleeping surfaces and resumes only this attachment's session", async () => {
+  const f = await setup("android");
+  await f.open("sleeping-agent-tab");
+  await f.client({
+    type: "agent.attach",
+    sessionId: f.sessionId,
+    attachmentId: f.attachmentId,
+    actorToken: f.actorToken,
+    backend: "cdp",
+  });
+  const command = async (method: string, parameters: Record<string, unknown> = {}) => {
+    const requestId = uuid();
+    await f.client({
+      type: "cdp.command",
+      actorToken: f.actorToken,
+      attachmentId: f.attachmentId,
+      requestId,
+      command: { method, parameters },
+    });
+    return f
+      .server()
+      .findLast(
+        (message) =>
+          (message.type === "cdp.result" || message.type === "cdp.error") &&
+          message.requestId === requestId,
+      );
+  };
+  expect(await command("Opensteer.listTabs")).toMatchObject({
+    type: "cdp.result",
+    result: {
+      tabs: expect.arrayContaining([
+        expect.objectContaining({
+          surfaceId: "sleeping-agent-tab",
+          state: "suspended",
+          targetId: null,
+        }),
+      ]),
+      nextCursor: null,
+    },
+  });
+  expect(await command("Opensteer.resumeTab", { surfaceId: "sleeping-agent-tab" })).toMatchObject({
+    type: "cdp.result",
+    result: {
+      surfaceId: "sleeping-agent-tab",
+      targetId: "sleeping-agent-tab",
+      documentId: expect.any(String),
+      reloaded: false,
+    },
+  });
+  expect(await command("Opensteer.resumeTab", { surfaceId: "another-session-tab" })).toMatchObject({
+    type: "cdp.error",
+  });
 });

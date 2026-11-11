@@ -141,7 +141,7 @@ describe("reach-only Runner startup", () => {
     const runtimeId = "browser-without-agents";
     const server = createServer((_request, response) => {
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ wireVersion: 1, runtimeId, state: "ready" }));
+      response.end(JSON.stringify({ wireVersion: 2, runtimeId, state: "ready" }));
     });
     const webSockets = new WebSocketServer({ perMessageDeflate: false, server });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -186,7 +186,7 @@ describe("reach-only Runner startup", () => {
                 ...fence,
                 auxiliaryStreamId,
                 browserAttachPublicKeys: [attachKey],
-                browserWireVersion: 1,
+                browserWireVersion: 2,
                 heartbeatIntervalMs: 60_000,
                 module: "browser",
                 serverTime: new Date().toISOString(),

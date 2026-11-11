@@ -1,9 +1,11 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { act } from "react";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import {
   assignmentPresentation,
   HostClientRequestError,
@@ -52,7 +54,13 @@ afterEach(() => {
 async function setup() {
   client = new MockHostClient({ latencyMs: 0 });
   await client.load();
-  snapshot = client.getSnapshot();
+  snapshot = seedBrowserSnapshot(
+    seedBrowserSnapshot(
+      { ...client.getSnapshot(), workspaceTabRestoreVersion: undefined } as HostSnapshot,
+      undefined,
+    ),
+  );
+  vi.spyOn(client, "browserTabs", "get").mockImplementation(() => snapshot.browserTabs!);
   vi.spyOn(client, "getSnapshot").mockImplementation(() => snapshot);
   vi.spyOn(client, "subscribe").mockImplementation((listener) => {
     listeners.add(listener);
@@ -63,7 +71,7 @@ async function setup() {
 }
 async function emit(next: HostSnapshot) {
   await act(async () => {
-    snapshot = next;
+    snapshot = seedBrowserSnapshot(next);
     for (const listener of listeners) listener();
   });
 }
@@ -127,10 +135,16 @@ it("Expo dismisses tab-close review when its holders change, without closing the
   await setup();
   const session = snapshot.browserSessions.find(
     (item) =>
-      item.state === "ready" && item.attachedRunIds.length > 0 && item.tabCatalog?.tabs.length,
+      item.state === "ready" &&
+      item.attachedRunIds.length > 0 &&
+      (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
   )!;
   const close = vi.spyOn(client, "closeBrowserTab");
-  await mount({ kind: "close-tab", sessionId: session.id, tabId: session.tabCatalog!.tabs[0]!.id });
+  await mount({
+    kind: "close-tab",
+    sessionId: session.id,
+    tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
+  });
   await emit({
     ...snapshot,
     browserSessions: snapshot.browserSessions.map((item) =>
@@ -193,11 +207,15 @@ it("a stale Mark Done is a no-op after the task starts work again", async () => 
 it("confirming twice dispatches once, while current failures are reported", async () => {
   await setup();
   const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && item.tabCatalog?.tabs.length,
+    (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
   )!;
   const failure = new Error("Host unavailable");
   const close = vi.spyOn(client, "closeBrowserTab").mockRejectedValue(failure);
-  await mount({ kind: "close-tab", sessionId: session.id, tabId: session.tabCatalog!.tabs[0]!.id });
+  await mount({
+    kind: "close-tab",
+    sessionId: session.id,
+    tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
+  });
   const confirm = document.querySelector<HTMLButtonElement>("section button:last-child")!;
   await act(async () => {
     confirm.click();
@@ -213,13 +231,13 @@ it.each(["viewer", "offline", "cancel", "unmount"] as const)(
   async (change) => {
     await setup();
     const session = snapshot.browserSessions.find(
-      (item) => item.state === "ready" && item.tabCatalog?.tabs.length,
+      (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
     )!;
     const close = vi.spyOn(client, "closeBrowserTab");
     await mount({
       kind: "close-tab",
       sessionId: session.id,
-      tabId: session.tabCatalog!.tabs[0]!.id,
+      tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
     });
     const retained = heldReview!;
     if (change === "viewer") await emit({ ...snapshot, user: null });
@@ -238,9 +256,9 @@ it.each(["viewer", "offline", "cancel", "unmount"] as const)(
 it("dismisses a tab review when its last-tab consequence changes", async () => {
   await setup();
   const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && item.tabCatalog?.tabs.length,
+    (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
   )!;
-  const tab = session.tabCatalog!.tabs[0]!;
+  const tab = (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!;
   const close = vi.spyOn(client, "closeBrowserTab");
   await mount({ kind: "close-tab", sessionId: session.id, tabId: tab.id });
   const retained = heldReview!;
@@ -248,15 +266,16 @@ it("dismisses a tab review when its last-tab consequence changes", async () => {
     ...snapshot,
     browserSessions: snapshot.browserSessions.map((item) =>
       item.id === session.id
-        ? {
-            ...item,
-            tabCatalog: {
-              ...item.tabCatalog!,
+        ? seedBrowserSession(
+            { ...item },
+            {
+              ...item.browserTabs!.inventory(item.id)!,
               inventoryRevision:
-                (item.tabCatalog!.inventoryRevision ?? item.tabCatalog!.revision) + 1,
-              tabs: [tab],
+                (item.browserTabs!.inventory(item.id)!.inventoryRevision ??
+                  item.browserTabs!.inventory(item.id)!.revision) + 1,
+              rows: [tab],
             },
-          }
+          )
         : item,
     ),
   });
@@ -268,25 +287,30 @@ it("dismisses a tab review when its last-tab consequence changes", async () => {
 it("keeps a tab review while the browser's other tabs open and close, and closes the current inventory", async () => {
   await setup();
   const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && (item.tabCatalog?.tabs.length ?? 0) > 1,
+    (item) =>
+      item.state === "ready" && ((item.browserTabs?.sessionTabs(item?.id) ?? []).length ?? 0) > 1,
   )!;
-  const [tab, other] = session.tabCatalog!.tabs;
+  const [tab, other] = session.browserTabs?.sessionTabs(session?.id) ?? [];
   const close = vi.spyOn(client, "closeBrowserTab").mockResolvedValue(undefined as never);
   await mount({ kind: "close-tab", sessionId: session.id, tabId: tab!.id });
   // An agent opens a tab and closes another while the question is up.
   const changed = {
-    ...session.tabCatalog!,
-    revision: session.tabCatalog!.revision + 2,
-    inventoryRevision: (session.tabCatalog!.inventoryRevision ?? session.tabCatalog!.revision) + 2,
-    tabs: [
-      ...session.tabCatalog!.tabs.filter((item) => item.id !== other!.id),
+    ...session.browserTabs!.inventory(session.id)!,
+    revision: session.browserTabs!.inventory(session.id)!.revision + 2,
+    inventoryRevision:
+      (session.browserTabs!.inventory(session.id)!.inventoryRevision ??
+        session.browserTabs!.inventory(session.id)!.revision) + 2,
+    rows: [
+      ...(session.browserTabs?.sessionTabs(session?.id) ?? []).filter(
+        (item) => item.id !== other!.id,
+      ),
       { ...other!, id: BrowserSurfaceIdSchema.parse("agent-opened-tab") },
     ],
   };
   await emit({
     ...snapshot,
     browserSessions: snapshot.browserSessions.map((item) =>
-      item.id === session.id ? { ...item, tabCatalog: changed } : item,
+      item.id === session.id ? seedBrowserSession({ ...item }, changed) : item,
     ),
   });
   expect(document.querySelector("section")).not.toBeNull();
@@ -326,7 +350,7 @@ it("a delegated review closes when its summary's run ends before the worker has 
 it("a Host conflict that reveals an already ended action is quiet", async () => {
   await setup();
   const session = snapshot.browserSessions.find(
-    (item) => item.state === "ready" && item.tabCatalog?.tabs.length,
+    (item) => item.state === "ready" && (item.browserTabs?.sessionTabs(item?.id) ?? []).length,
   )!;
   vi.spyOn(client, "closeBrowserTab").mockRejectedValue(
     new HostClientRequestError({ code: "conflict", status: 409, message: "Already finished" }),
@@ -338,7 +362,11 @@ it("a Host conflict that reveals an already ended action is quiet", async () => 
     };
     for (const listener of listeners) listener();
   });
-  await mount({ kind: "close-tab", sessionId: session.id, tabId: session.tabCatalog!.tabs[0]!.id });
+  await mount({
+    kind: "close-tab",
+    sessionId: session.id,
+    tabId: (session.browserTabs?.sessionTabs(session?.id) ?? [])[0]!.id,
+  });
   await press("Confirm");
   expect(refresh).toHaveBeenCalledOnce();
   expect(errors).not.toHaveBeenCalled();

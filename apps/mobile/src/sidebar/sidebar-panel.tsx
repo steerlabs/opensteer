@@ -25,7 +25,13 @@ import {
   type TaskRow,
   type WorkspaceSurfaceDestination,
 } from "@opensteer/client/host";
-import { usePlaceList, VoiceContext } from "@opensteer/client/react";
+import {
+  useBrowserGroups,
+  usePlace,
+  usePlaceStructure,
+  useSyncingPlaceholder,
+  VoiceContext,
+} from "@opensteer/client/react";
 import {
   memo,
   useCallback,
@@ -907,15 +913,37 @@ const SidebarTabs = memo(function SidebarTabs(props: {
   readonly hostClient: HostClient;
   readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
 }): ReactNode {
-  const places = usePlaceList(props.hostClient);
+  // The panel arranges slots; each row reads its own place, so a title repaints one row.
+  const places = usePlaceStructure(props.hostClient);
+  const syncing = useBrowserGroups(props.hostClient).syncing && places.length === 0;
+  const finding = useSyncingPlaceholder(syncing, places.length);
   return (
     <>
-      <GroupHead count={places.length} title="Tabs" />
+      <GroupHead {...(syncing ? {} : { count: places.length })} title="Tabs" />
+      {finding ? (
+        <AppText role="caption" style={styles.finding} tone="muted">
+          Finding tabs…
+        </AppText>
+      ) : null}
       {places.slice(0, sidebarTabLimit).map((place) => (
-        <PlaceRow key={place.key} onOpen={props.onOpen} place={place} />
+        <KeyedPlaceRow
+          hostClient={props.hostClient}
+          key={place.key}
+          onOpen={props.onOpen}
+          placeKey={place.key}
+        />
       ))}
     </>
   );
+});
+
+const KeyedPlaceRow = memo(function KeyedPlaceRow(props: {
+  readonly hostClient: HostClient;
+  readonly onOpen: (destination: WorkspaceSurfaceDestination) => void;
+  readonly placeKey: string;
+}): ReactNode {
+  const place = usePlace(props.hostClient, props.placeKey);
+  return place ? <PlaceRow onOpen={props.onOpen} place={place} /> : null;
 });
 
 const placeGlyph: Record<PlaceItem["kind"], SFSymbolName> = {
@@ -1362,6 +1390,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12] - 1,
   },
   deploymentName: { flexShrink: 1 },
+  finding: { paddingHorizontal: space[12], paddingVertical: space[6] },
   destination: {
     borderColor: "transparent",
     borderWidth: 1,

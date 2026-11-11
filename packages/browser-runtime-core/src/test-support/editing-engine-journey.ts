@@ -1,5 +1,5 @@
 import { SessionCdpRouter, type CdpEvent } from "@opensteer/browser-core";
-import type { BrowserServerMessage } from "@opensteer/protocol/browser";
+import type { BrowserRuntimeServerMessage } from "@opensteer/protocol/browser";
 import type { EditingContext } from "@opensteer/protocol/editing";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -74,7 +74,7 @@ export async function runEditingEngineJourney(
   });
   let controller: BrowserController | undefined;
   const signIns = new HostSignIns({ authority: undefined, runtimeId: "editing-engine" });
-  const messages: BrowserServerMessage[] = [];
+  const messages: BrowserRuntimeServerMessage[] = [];
   const events: CdpEvent[] = [];
   const machineClipboardShared = browser.clipboard?.machineClipboardShared ?? true;
   const router = new SessionCdpRouter(browser.cdp, {}, machineClipboardShared);

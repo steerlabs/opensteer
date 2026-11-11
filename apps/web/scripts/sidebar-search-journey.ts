@@ -213,13 +213,12 @@ const focused = (page: Page) =>
 /** Closes the tabs with these titles through the mock Host, as another device would. */
 async function closeTabs(page: Page, titles: readonly string[]) {
   await page.evaluate(async (wanted) => {
-    const client = Reflect.get(window, "opensteerMock") as {
-      getSnapshot(): {
-        workspaceTabs?: { tabs: { id: string; title: string }[] }[];
-      };
-      closeWorkspaceTabs(ids: string[]): Promise<unknown>;
-    };
-    const tabs = (client.getSnapshot().workspaceTabs ?? []).flatMap((lineage) => lineage.tabs);
+    const client = Reflect.get(
+      window,
+      "opensteerMock",
+    ) as import("@opensteer/client/host").HostClient;
+    const store = client.browserTabs;
+    const tabs = store.structure().map((key) => store.tab(key.groupId, key.tabId)!);
     const ids = wanted.map((title) => tabs.find((tab) => tab.title === title)?.id);
     if (ids.some((id) => !id)) throw new Error(`No tab titled ${wanted.join(", ")}`);
     await client.closeWorkspaceTabs(ids as string[]);

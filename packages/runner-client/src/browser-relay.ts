@@ -20,8 +20,6 @@ import {
 } from "./browser-bridge.js";
 import type { RunnerModuleStream } from "./module-connection.js";
 
-const maxBrowserRelayChannels = 32;
-
 interface ActiveChannel {
   capability: BrowserCapabilityReference;
   expiryTimer: NodeJS.Timeout;
@@ -59,10 +57,10 @@ export class BrowserModuleRelay {
 
   async attach(stream: RunnerModuleStream): Promise<void> {
     this.#stream = stream;
-    if (stream.browserWireVersion !== 1)
+    if (stream.browserWireVersion !== 2)
       throw new BrowserRelayError("Update this Host to use the current browser runtime contract.");
     const capabilities = await this.#bridge.capabilities();
-    if (capabilities.wireVersion !== 1)
+    if (capabilities.wireVersion !== 2)
       throw new BrowserRelayError(
         "Update the Browser Runtime on this computer. The current native browser contract is required.",
       );
@@ -214,9 +212,6 @@ export class BrowserModuleRelay {
         if (this.#channels.has(message.channelId)) {
           throw new BrowserRelayError("The browser relay channel already exists.");
         }
-        if (this.#channels.size >= maxBrowserRelayChannels) {
-          throw new BrowserRelayError("This browser relay capacity is full.");
-        }
         const expiryTimer = setTimeout(
           () => this.#expireChannel(message.channelId),
           Math.max(0, Date.parse(lease.expiresAt) - Date.now()),
@@ -337,13 +332,22 @@ export class BrowserModuleRelay {
         const channel = this.#channels.get(channelId);
         const stream = this.#stream;
         if (!channel || channel !== owner || !stream) return;
-        void this.#send({
+        const envelope = {
           ...stream.fence,
           capability: channel.capability,
           channelId,
           message,
-          type: "browser.server-message",
-        }).catch(() => undefined);
+          type: "browser.server-message" as const,
+        };
+        if (Buffer.byteLength(JSON.stringify(envelope)) > 1024 * 1024) {
+          void this.#failChannel(
+            channelId,
+            channel,
+            new BrowserRelayError("Browser Runtime sent an oversized text frame."),
+          ).catch(() => undefined);
+          return;
+        }
+        void this.#send(envelope).catch(() => undefined);
       },
     };
   }

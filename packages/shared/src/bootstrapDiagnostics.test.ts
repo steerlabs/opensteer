@@ -82,7 +82,7 @@ describe("bootstrap diagnostics", () => {
     notices.record("host.browser-sessions-changed", "browser.catalog-flush", 0);
     notices.record("host.machines.changed", "computer-apps.status", 59_000);
     notices.record("host.machines.changed", "computer-apps.status", 59_500);
-    notices.record("host.browser-tabs-changed", "browser.tabs", 59_500);
+    notices.record("host.browser-tabs", "browser.tabs", 59_500);
     notices.record("private payload", "unspecified", 59_500);
     const summary = JSON.stringify({
       windowMs: 3_600,

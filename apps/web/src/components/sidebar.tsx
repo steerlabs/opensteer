@@ -1,3 +1,4 @@
+import { placeByKey } from "@opensteer/client/host";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
 import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
 import { taskMark, taskMarkQuiet } from "@opensteer/client/host";
@@ -33,10 +34,8 @@ import {
   placeDeviceLabels,
   sameDevicesElsewhere,
   tabListHomeId,
-  tabDeviceChoice,
   tabFilterActive,
   tabFilterEmptyWords,
-  tabMatchesFilter,
   type TabFilter,
   describeHostConnection,
   doneDays,
@@ -50,15 +49,23 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
+  type PlaceDescriptor,
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
   VoiceContext,
+  useBrowserGroups,
   useHostSelector,
-  usePlaceList,
+  usePlace,
+  usePlaceStructure,
+  useSyncingPlaceholder,
+  useTabDeviceChoice,
+  useTabFilterMatches,
   useVoiceValue,
 } from "@opensteer/client/react";
+import { LoadingRows } from "./loading-rows.js";
+import { useWindowedRows } from "./workspace/windowed-rows.js";
 import type { VoiceSnapshot } from "@opensteer/client/voice";
 import { VoiceClock } from "./voice.js";
 import { voiceRowKey } from "./voice-cursor.js";
@@ -82,7 +89,7 @@ import { TaskMark, TaskState, ChatOrb, UnsentMark, taskStateWords } from "./work
 import {
   ProfileAvatar,
   browserWords,
-  useBrowserPresentations,
+  useListedBrowserPresentations,
   type BrowserPresentation,
 } from "./workspace/identity.js";
 import { OccupantMarks, useFocusRescue } from "./workspace/occupant-marks.js";
@@ -174,10 +181,11 @@ export function Sidebar({
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
   const drafts = useComposerDraftIndex(deploymentId, userId);
-  const places = usePlaceList(hostClient);
+  // The list arranges slots; each row reads its own place, so a title repaints one row.
+  const slots = usePlaceStructure(hostClient);
+  const groupList = useBrowserGroups(hostClient);
   const layout = useHostSelector(hostClient, (snapshot) => snapshot.browserTabGroups);
   const hereId = useHereId();
-  const machines = useHostSelector(hostClient, (snapshot) => snapshot.machines);
   const selectHome = useCallback(
     (snapshot: HostSnapshot) => tabListHomeId(snapshot, hereId),
     [hereId],
@@ -190,11 +198,10 @@ export function Sidebar({
   // Labels keep their identity while their devices stay the same, so rows stay undrawn.
   const elsewhere = useHostSelector(hostClient, selectElsewhere, sameDevicesElsewhere);
   const pendingTabs = useHostSelector(hostClient, (snapshot) => snapshot.pendingBrowserTabs);
+  // A list still syncing with nothing to show shows its skeleton, never an empty state.
+  const tabsSyncing = useSyncingPlaceholder(groupList.syncing, slots.length);
   const [chosenFilter, setFilter] = useState<TabFilter>(allTabs);
-  const deviceChoice = useMemo(
-    () => tabDeviceChoice({ places, machines, hereId, homeId, filter: chosenFilter }),
-    [places, machines, hereId, homeId, chosenFilter],
-  );
+  const deviceChoice = useTabDeviceChoice(hostClient, hereId, homeId, chosenFilter);
   const filter = deviceChoice.filter;
   const filterDeviceName =
     deviceChoice.devices.find(({ id }) => id === filter.device)?.name ?? null;
@@ -212,31 +219,26 @@ export function Sidebar({
   const filterTabs = (next: TabFilter) => {
     if (!tabFilterActive(next)) setHeldTabs(null);
     else if (!tabFilterActive(filter) && tabsSection.current)
-      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: places.length });
+      setHeldTabs({ height: fullHeightOf(tabsSection.current), rows: slots.length });
     setFilter(next);
   };
   const shownPlaceKey =
     workspace.selection.kind === "place"
       ? destinationPlaceKey(workspace.selection.destination)
       : null;
+  const matched = useTabFilterMatches(hostClient, filter);
   // The tab in front stays listed whatever the filter, so opening one never hides where you are.
-  const filteredPlaces = useMemo(
+  const filteredSlots = useMemo(
     () =>
-      tabFilterActive(filter)
-        ? places.filter((place) => place.key === shownPlaceKey || tabMatchesFilter(place, filter))
-        : places,
-    [places, filter, shownPlaceKey],
+      matched ? slots.filter((slot) => slot.key === shownPlaceKey || matched.has(slot.key)) : slots,
+    [slots, matched, shownPlaceKey],
   );
-  const liveStrip = browserTabStrip(filteredPlaces, layout);
+  const liveStrip = browserTabStrip(filteredSlots, layout);
   const deviceLabels = useMemo(
-    () => placeDeviceLabels(filteredPlaces, elsewhere),
-    [filteredPlaces, elsewhere],
+    () => placeDeviceLabels(filteredSlots, elsewhere),
+    [filteredSlots, elsewhere],
   );
-  const searchDeviceLabels = useMemo(
-    () => placeDeviceLabels(places, elsewhere),
-    [places, elsewhere],
-  );
-  const searchStrip = browserTabStrip(places, layout);
+  const searchDeviceLabels = useMemo(() => placeDeviceLabels(slots, elsewhere), [slots, elsewhere]);
   const toast = useToast();
   const tabsList = useRef<HTMLUListElement | null>(null);
   const motion = useRef<RowMotion | null>(null);
@@ -256,7 +258,7 @@ export function Sidebar({
     announce: (words) => {
       if (announcer.current) announcer.current.textContent = words;
     },
-    title: (row) => rowTitle(liveStrip, row),
+    title: (row) => rowTitle(hostClient, liveStrip, row),
   });
   // A lifted row must draw and take the pointer above a native page.
   useNativeBrowserOverlay(sort.lift !== null);
@@ -267,7 +269,7 @@ export function Sidebar({
     [strip.ordered],
   );
   const [editingGroup, editGroup] = useState<string | null>(null);
-  const presentations = useBrowserPresentations(places);
+  const presentations = useListedBrowserPresentations(hostClient);
   const deployment = selectedDeploymentFrom(deploymentAccess, desktopDeployment);
   const connection = describeHostConnection(snapshot);
   const placeName = deploymentNameFrom(deployment, snapshot) ?? "Opensteer";
@@ -331,9 +333,8 @@ export function Sidebar({
       tasks: allTasks,
       attention: directory.attentionByThread,
       snapshot,
-      strip: searchStrip,
     }),
-    [allTasks, directory.attentionByThread, snapshot, searchStrip],
+    [allTasks, directory.attentionByThread, snapshot],
   );
 
   const openSearch = useCallback(() => {
@@ -594,32 +595,127 @@ export function Sidebar({
     onCloseMobile();
     onNewTab();
   };
-  const tabRow = (place: PlaceItem, index: number, groupColor?: BrowserTabGroupColor) => {
-    const presentation = place.browser
-      ? (presentations.bySession.get(place.browser.sessionId) ?? null)
-      : null;
-    return (
-      <TabRowItem
-        sort={place.workspaceTab ? sort.handle : null}
-        groupColor={groupColor}
-        onEditGroup={editGroup}
-        active={place.key === shownPlaceKey}
-        badge={presentations.badges ? place.identity : null}
+  const tabRow = (slot: PlaceDescriptor, index: number, groupColor?: BrowserTabGroupColor) => (
+    <TabRowItem
+      sort={slot.workspaceTab ? sort.handle : null}
+      groupColor={groupColor}
+      onEditGroup={editGroup}
+      active={slot.key === shownPlaceKey}
+      badges={presentations.badges}
+      directory={directory}
+      hostClient={hostClient}
+      index={index}
+      device={deviceLabels.get(slot.key) ?? null}
+      hereId={hereId}
+      key={slot.key}
+      onOpen={openPlace}
+      onOpenMark={openMark}
+      placeKey={slot.key}
+      highlight={workspace.highlight}
+      localMachine={workspace.localMachine}
+      presentation={
+        slot.browser ? (presentations.bySession.get(slot.browser.sessionId) ?? null) : null
+      }
+    />
+  );
+  // Every row the tab list has, in order; the window draws those in view.
+  const tabEntries: TabEntry[] = [];
+  const entry = (key: string, size: number, render: () => ReactNode) =>
+    tabEntries.push({ key, size, render });
+  if (matched && matched.size === 0)
+    entry("filter-empty", rowSize, () => (
+      <li
+        className="sidebar__empty"
+        data-motion-key="filter-empty"
+        key="filter-empty"
+        role="status"
+      >
+        {`${tabFilterEmptyWords(filter, filterDeviceName)}.`}
+      </li>
+    ));
+  if (tabsSyncing)
+    entry("syncing", rowSize * 3, () => (
+      <li className="side-list__loading" data-motion-key="syncing" key="syncing">
+        <LoadingRows label="Loading tabs" />
+      </li>
+    ));
+  for (const row of strip.web) {
+    if (row.kind === "place") {
+      const slot = row.place;
+      entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!));
+      continue;
+    }
+    // A group on the move folds its tabs under its header until it lands.
+    const moving = row.group.id === sort.lift?.groupId;
+    entry(row.group.id, rowSize, () => (
+      <TabGroupHeader
+        active={row.places.some((place) => place.key === shownPlaceKey)}
         directory={directory}
+        editing={editingGroup === row.group.id}
+        group={moving ? { ...row.group, collapsed: true } : row.group}
         hostClient={hostClient}
-        index={index}
-        device={deviceLabels.get(place.key) ?? null}
-        hereId={hereId}
-        key={place.key}
-        onOpen={openPlace}
+        key={row.group.id}
+        onEdit={editGroup}
         onOpenMark={openMark}
-        place={place}
-        highlight={workspace.highlight}
-        localMachine={workspace.localMachine}
-        presentation={presentation}
+        places={row.places}
+        sort={sort.handle}
       />
-    );
-  };
+    ));
+    if (!row.group.collapsed && !moving)
+      for (const slot of row.places)
+        entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!, row.group.color));
+  }
+  for (const pending of pendingTabs ?? [])
+    entry(`pending:${pending.idempotencyKey}`, rowSize, () => (
+      <PendingBrowserTabRows
+        hostClient={hostClient}
+        key={`pending:${pending.idempotencyKey}`}
+        onOpen={onCloseMobile}
+        rows={[pending]}
+      />
+    ));
+  if (strip.native.length > 0 && strip.web.length > 0)
+    entry("divider", 0, () => (
+      <li aria-hidden className="side-divider" data-motion-key="divider" key="divider" />
+    ));
+  for (const slot of strip.native)
+    entry(slot.key, rowSize, () => tabRow(slot, tabIndices.get(slot.key)!));
+  entry(startPageOpen ? "start" : "new", rowSize, () =>
+    startPageOpen ? (
+      <li className="side-tab side-tab--start is-active" data-motion-key="start" key="start">
+        <button
+          aria-current="true"
+          className="side-tab__main"
+          onClick={() => {
+            onCloseMobile();
+            newTab();
+          }}
+          type="button"
+        >
+          <span aria-hidden className="place-mark place-mark--glyph">
+            <Icon name="plus" />
+          </span>
+          <span className="side-tab__title">New tab</span>
+        </button>
+        <button
+          aria-label="Close New tab"
+          className="side-row-action side-tab__close"
+          onClick={() => workspace.startPage.leave()}
+          title="Close"
+          type="button"
+        >
+          <Icon name="close" />
+        </button>
+      </li>
+    ) : (
+      <li className="side-new" data-motion-key="new" key="new">
+        <button className="side-new__main" onClick={newTab} type="button">
+          <Icon name="plus" />
+          <span>New tab</span>
+        </button>
+      </li>
+    ),
+  );
 
   return (
     <nav
@@ -933,7 +1029,7 @@ export function Sidebar({
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
           ref={tabsSection}
-          style={{ ...sectionFloor(heldTabs?.rows ?? places.length), maxHeight: heldTabs?.height }}
+          style={{ ...sectionFloor(heldTabs?.rows ?? slots.length), maxHeight: heldTabs?.height }}
         >
           <div className="side-head">
             <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
@@ -941,11 +1037,11 @@ export function Sidebar({
             </h2>
             <TabFilterControl
               devices={deviceChoice.devices}
+              hostClient={hostClient}
               onChange={filterTabs}
-              places={places}
               value={filter}
             />
-            {places.length > 0 ? (
+            {slots.length > 0 ? (
               <button
                 aria-label="New tab"
                 className="icon-btn icon-btn--small side-head__action"
@@ -964,80 +1060,21 @@ export function Sidebar({
               ref={motion}
               signature={motionSignature}
             >
-              {tabFilterActive(filter) &&
-              !filteredPlaces.some((place) => tabMatchesFilter(place, filter)) ? (
-                <li className="sidebar__empty" data-motion-key="filter-empty" role="status">
-                  {`${tabFilterEmptyWords(filter, filterDeviceName)}.`}
-                </li>
-              ) : null}
-              {strip.web.flatMap((row) => {
-                if (row.kind === "place")
-                  return [tabRow(row.place, tabIndices.get(row.place.key)!)];
-                // A group on the move folds its tabs under its header until it lands.
-                const folded = row.group.id === sort.lift?.groupId;
-                return [
-                  <TabGroupHeader
-                    active={row.places.some((place) => place.key === shownPlaceKey)}
-                    directory={directory}
-                    editing={editingGroup === row.group.id}
-                    group={folded ? { ...row.group, collapsed: true } : row.group}
-                    hostClient={hostClient}
-                    key={row.group.id}
-                    onEdit={editGroup}
-                    onOpenMark={openMark}
-                    places={row.places}
-                    sort={sort.handle}
-                  />,
-                  ...(row.group.collapsed || folded
-                    ? []
-                    : row.places.map((place) =>
-                        tabRow(place, tabIndices.get(place.key)!, row.group.color),
-                      )),
-                ];
-              })}
-              <PendingBrowserTabRows
-                hostClient={hostClient}
-                onOpen={onCloseMobile}
-                rows={pendingTabs ?? []}
+              <WindowedTabRows
+                all={sort.lift !== null}
+                entries={tabEntries}
+                list={tabsList}
+                pinned={[
+                  shownPlaceKey ?? "",
+                  editingGroup ?? "",
+                  workspace.selection.kind === "pending"
+                    ? `pending:${workspace.selection.idempotencyKey}`
+                    : "",
+                  "filter-empty",
+                  "syncing",
+                  startPageOpen ? "start" : "new",
+                ]}
               />
-              {strip.native.length > 0 && strip.web.length > 0 ? (
-                <li aria-hidden className="side-divider" data-motion-key="divider" />
-              ) : null}
-              {strip.native.map((place) => tabRow(place, tabIndices.get(place.key)!))}
-              {startPageOpen ? (
-                <li className="side-tab side-tab--start is-active" data-motion-key="start">
-                  <button
-                    aria-current="true"
-                    className="side-tab__main"
-                    onClick={() => {
-                      onCloseMobile();
-                      newTab();
-                    }}
-                    type="button"
-                  >
-                    <span aria-hidden className="place-mark place-mark--glyph">
-                      <Icon name="plus" />
-                    </span>
-                    <span className="side-tab__title">New tab</span>
-                  </button>
-                  <button
-                    aria-label="Close New tab"
-                    className="side-row-action side-tab__close"
-                    onClick={() => workspace.startPage.leave()}
-                    title="Close"
-                    type="button"
-                  >
-                    <Icon name="close" />
-                  </button>
-                </li>
-              ) : (
-                <li className="side-new" data-motion-key="new">
-                  <button className="side-new__main" onClick={newTab} type="button">
-                    <Icon name="plus" />
-                    <span>New tab</span>
-                  </button>
-                </li>
-              )}
             </RowMotion>
           </SideList>
           <p aria-live="polite" className="visually-hidden" ref={announcer} />
@@ -1053,6 +1090,77 @@ export function Sidebar({
         workspace={workspace}
       />
     </nav>
+  );
+}
+
+/** One row of the tab list, drawn only while the window holds it. */
+interface TabEntry {
+  readonly key: string;
+  /** Its size before it is measured. */
+  readonly size: number;
+  readonly render: () => ReactNode;
+}
+
+/** A tab row's height and the list's gap after it, before one is measured. */
+const rowSize =
+  typeof window !== "undefined" && window.matchMedia?.("(any-pointer: coarse)").matches ? 45 : 33;
+
+/**
+ * The tab list's rows, windowed: a long list draws the rows in view and the
+ * ones a person is on (the tab in the middle, the focused row, an open
+ * editor), so scrolling renders only this and a title repaints only its row.
+ */
+function WindowedTabRows({
+  all,
+  entries,
+  list,
+  pinned,
+}: {
+  /** A drag measures every row, so all are drawn until it drops. */
+  readonly all: boolean;
+  readonly entries: readonly TabEntry[];
+  readonly list: RefObject<HTMLUListElement | null>;
+  readonly pinned: readonly string[];
+}) {
+  const [focused, setFocused] = useState<string | null>(null);
+  useEffect(() => {
+    const node = list.current;
+    if (!node) return;
+    const keyOf = (target: EventTarget | null) =>
+      target instanceof HTMLElement
+        ? (target.closest<HTMLElement>("[data-motion-key]")?.dataset.motionKey ?? null)
+        : null;
+    const focus = (event: FocusEvent) => setFocused(keyOf(event.target));
+    const blur = (event: FocusEvent) => {
+      if (!(event.relatedTarget instanceof Node) || !node.contains(event.relatedTarget))
+        setFocused(null);
+    };
+    node.addEventListener("focusin", focus);
+    node.addEventListener("focusout", blur);
+    return () => {
+      node.removeEventListener("focusin", focus);
+      node.removeEventListener("focusout", blur);
+    };
+  }, [list]);
+  const keys = useMemo(() => entries.map(({ key }) => key), [entries]);
+  const plan = useWindowedRows({
+    list,
+    keys,
+    estimate: (index) => entries[index]!.size,
+    pinned: focused === null ? pinned : [...pinned, focused],
+    all,
+  });
+  return plan.map((item, order) =>
+    "index" in item ? (
+      entries[item.index]!.render()
+    ) : (
+      <li
+        aria-hidden
+        className="side-list__spacer"
+        key={`spacer:${order}`}
+        style={{ height: item.spacer }}
+      />
+    ),
   );
 }
 
@@ -1502,7 +1610,19 @@ const TaskRowItem = memo(function TaskRowItem({
 
 /* ---- Tabs ---- */
 
-const TabRowItem = memo(function TabRowItem({
+type TabRowProps = Omit<Parameters<typeof TabRow>[0], "badge" | "place"> & {
+  /** Two or more identities are in use: site icons wear profile badges. */
+  readonly badges: boolean;
+  readonly placeKey: string;
+};
+
+/** A tab row reads its own place, so one tab's title or loading repaints only it. */
+const TabRowItem = memo(function TabRowItem({ badges, placeKey, ...props }: TabRowProps) {
+  const place = usePlace(props.hostClient, placeKey);
+  return place ? <TabRow {...props} badge={badges ? place.identity : null} place={place} /> : null;
+});
+
+const TabRow = memo(function TabRow({
   sort,
   active,
   badge,
@@ -1972,8 +2092,8 @@ function SidebarFooter({
 }
 
 /** The tab list's saved web tabs and group headers, as drag-and-drop sees them. */
-function sortRowsOf(strip: BrowserTabStrip): SortRow[] {
-  const tab = (place: PlaceItem, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
+function sortRowsOf(strip: BrowserTabStrip<PlaceDescriptor>): SortRow[] {
+  const tab = (place: PlaceDescriptor, group: (SortRow & { kind: "group" }) | null): SortRow[] =>
     place.workspaceTab && place.destination.kind === "browser" && place.destination.tabId
       ? [
           {
@@ -2000,12 +2120,16 @@ function sortRowsOf(strip: BrowserTabStrip): SortRow[] {
   });
 }
 
-function rowTitle(strip: BrowserTabStrip, row: SortRow): string {
+function rowTitle(
+  hostClient: HostClient,
+  strip: BrowserTabStrip<PlaceDescriptor>,
+  row: SortRow,
+): string {
   if (row.kind === "group") {
     const group = strip.web.find(
       (entry) => entry.kind === "group" && entry.group.id === row.groupId,
     );
     return (group?.kind === "group" && group.group.title) || "Untitled group";
   }
-  return strip.ordered.find((place) => place.key === row.key)?.title ?? "tab";
+  return placeByKey(hostClient.getSnapshot(), row.key)?.title ?? "tab";
 }

@@ -1,3 +1,4 @@
+import { BrowserGroupStreamSchema, BrowserClientTabStreamSchema } from "./browser-tabs.js";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
@@ -22,6 +23,7 @@ import {
 } from "@opensteer/core";
 import {
   BrowserProfileIdSchema,
+  BrowserSessionIdSchema,
   ExecutionNodeIdSchema,
   ExecutionNodeViewSchema,
   RunnerIdSchema,
@@ -32,11 +34,6 @@ import {
   ThreadPlaceChangedSchema,
   PlaceActivityNoticeViewSchema,
 } from "./places.js";
-import {
-  BrowserTabsChangedSchema,
-  BrowserPresenceSchema,
-  WorkspaceTabLineageSchema,
-} from "./browser.js";
 import { ProtocolErrorSchema, type RealtimeFrameDiagnostic } from "./common.js";
 import { ComputerUseSessionIdSchema, computerUseMaxSessionApps } from "./computer-use.js";
 import { ShellCloseReasonSchema, ShellSessionSummarySchema } from "./shell.js";
@@ -161,6 +158,14 @@ export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView 
 export const unsupportedVersionCloseCode = 4011;
 
 export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("client.browser.resync"),
+    continuation: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u)
+      .optional(),
+    groupId: BrowserSessionIdSchema.optional(),
+  }),
   z.strictObject({
     ...clientMessageBase,
     type: z.literal("client.subscribe"),
@@ -392,26 +397,21 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ ...clientMessageBase, type: z.literal("host.app-tabs-changed") }),
   ThreadPlaceChangedSchema,
-  BrowserTabsChangedSchema,
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.browser-groups"),
+    stream: BrowserGroupStreamSchema,
+  }),
+  z.object({
+    ...clientMessageBase,
+    type: z.literal("host.browser-tabs"),
+    groupId: BrowserSessionIdSchema,
+    stream: BrowserClientTabStreamSchema,
+  }),
   ...PlaceActivityNoticeViewSchema.options,
-  // A Workspace's browser sessions changed — one opened, or one moved between
-  // starting, ready, closing and its terminal state — and a client rereads the
-  // list. With `group`, only that saved tab lineage changed, as this reader may
-  // see it: a client takes it instead of rereading. Older clients ignore it.
   z.object({
     ...clientMessageBase,
     type: z.literal("host.browser-sessions-changed"),
-    workspaceId: WorkspaceIdSchema,
-    // Unreadable, it is a bare notice: a reread now, not a lost frame.
-    group: WorkspaceTabLineageSchema.optional().catch(undefined),
-  }),
-  // What changed about browsers this socket's person can see: the page each
-  // shows and whether an agent is acting in it. A client patches its sessions
-  // in place; nothing is reread. Only changed sessions are named.
-  z.object({
-    ...clientMessageBase,
-    sessions: z.array(BrowserPresenceSchema).min(1).max(100),
-    type: z.literal("host.browser-presence"),
     workspaceId: WorkspaceIdSchema,
   }),
   // These conversations gained a browser page in their durable usage record:

@@ -5,22 +5,21 @@ import {
 } from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
-  browserSessionTabLimit,
-  browserSessionTabsFullReason,
   browserWorkspaceTabUrlMaxLength,
   type BrowserDialog,
   type BrowserNavigationCommitted,
   type BrowserSurface,
   type BrowserSurfaceId,
-  type BrowserWorkspaceTabDescriptor,
+  type BrowserTabRecord,
 } from "@opensteer/protocol/browser";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AsyncMutex } from "../async.js";
 import { BrowserRuntimeError } from "../errors.js";
 import type { BrowserContext, BrowserPage, CdpSession, PageGeometry, Viewport } from "./backend.js";
+import { TabLease } from "./tab-lease.js";
 import { PageFavicon } from "./favicon.js";
 import { PageTitleReader } from "./page-title.js";
 import { PageScriptTargets, type ScriptTarget } from "./script-targets.js";
@@ -74,12 +73,12 @@ interface SurfaceLedgerOptions {
    * runs before the page is announced; throwing refuses the page.
    */
   claimTarget?: (targetId: string) => void;
+  releaseTarget?: (targetId: string) => void;
   /** The size the session starts at, until the person's view gives it one. */
   initialViewport?: Viewport;
-  maxSurfaces?: number;
   rootPages?: readonly BrowserPage[];
   initialSurfaceId?: BrowserSurfaceId;
-  dormantSurfaceIds?: readonly BrowserSurfaceId[];
+  creationOrigin?: "agent" | "person";
 }
 
 export interface PageSize {
@@ -103,31 +102,11 @@ interface NavigationCommit {
   loaderId: string | null;
 }
 
-interface SurfaceRecord {
-  commitSequence: number;
-  pendingNavigations: Map<string, NavigationBinding>;
-  recentCommits: Map<string, NavigationCommit>;
-  navigation: { canGoBack: boolean; canGoForward: boolean } | null;
-  navigationRevision: number;
-  navigationFailed: boolean;
-  navigationAttempt: number;
-  committedUrl: string;
-  /** What a failed navigation meant to reach; the document is Chromium's error page. */
-  unreachableUrl: string | null;
-  /** The committed document's loader, from its commit or the first title sample. */
-  loaderId: string | null;
-  titleReader: PageTitleReader | null;
-  onSameDocumentNavigation: (parameters: unknown) => void;
+export interface TabRecord {
   documentId: string;
   geometryRevision: number;
-  pageScale: number;
   order: number;
   openerId: BrowserSurfaceId | null;
-  onFrameNavigated: (parameters: unknown) => void;
-  onFrameStartedLoading: (parameters: unknown) => void;
-  onFrameStoppedLoading: (parameters: unknown) => void;
-  /** The page's own document is loading; a frame inside it loading is not. */
-  loading: boolean;
   /** Sequence number of the latest agent command sent to this page. */
   agentSequence: number;
   /**
@@ -137,31 +116,11 @@ interface SurfaceRecord {
   agentMetrics: CdpParameters | null;
   /** Other pages' snapshots must not expose initialization before size or dialog ownership. */
   announced: boolean;
-  /** The metrics Chromium has acknowledged; null until the starting size reaches it. */
-  applied: CdpParameters | null;
-  appliedGeometry: PageGeometry | null;
-  stopObservingHumanInput: (() => void) | undefined;
-  unbindGeometry: (() => void) | undefined;
-  cdp: CdpSession;
-  /**
-   * The JavaScript dialog open on the page, kept from the moment it opens so
-   * it can be shown and answered whenever the page is shown. Chromium answers
-   * no size write to the page until it closes, so the person's size waits
-   * here instead of in a queue. `answering` holds off a second answer.
-   */
-  dialog: (Omit<BrowserDialog, "surfaceId"> & { answering: boolean }) | null;
   /** The page's site icon as a data URL, while it names one that loads. */
   favicon: string | null;
-  faviconReader: PageFavicon | null;
-  scriptTargets: PageScriptTargets | null;
   id: BrowserSurfaceId;
-  onClose: () => void;
-  onDialogClosed: (parameters: unknown) => void;
-  onDialogOpening: (parameters: unknown) => void;
-  onMetadataChanged: () => void;
   /** The person's size for this page: where they read it, like a window's size. */
   ordinary: PageSize;
-  page: BrowserPage;
   /** The latest time the person's view changed this page's size. */
   pageResize?: BrowserPageResize;
   /** Sequence number of `pageResize`; 0 while the person has not resized it. */
@@ -171,18 +130,6 @@ interface SurfaceRecord {
    * Chromium holds, as it holds any under a dialog, keeps no other page waiting.
    */
   readonly sizeLock: AsyncMutex;
-  /**
-   * The person's size changed while a dialog was open and reaches the page
-   * when it closes, after releasing what that write would have released.
-   */
-  sizeWaiting: {
-    readonly beforeResize: BeforePageResize | undefined;
-    /** The person fit the page: the agent's size goes when the size lands. */
-    readonly fit: boolean;
-    readonly followSize?: () => PageSize | null;
-    readonly hasPersonSize: boolean;
-  } | null;
-  targetId: string;
   title: string;
   url: string;
   userActivity?: BrowserUserActivity;
@@ -202,7 +149,75 @@ interface SurfaceRecord {
   /** When the newest input dropped from the timeline arrived: nothing after it is missing. */
   inputTimelineFloor: number;
   popupInputSequence: number;
+  readonly lease: TabLease;
+  live: LivePage | null;
+  lastTargetId: string;
+  origin: "agent" | "person";
+  personUsed: boolean;
+  agentActed: boolean;
+  typed: boolean;
+  usedAt: number;
+  unrestorable: boolean;
+  restore: { url: string; engine: unknown | null; bytes: number } | null;
 }
+
+export interface LivePage {
+  commitSequence: number;
+  pendingNavigations: Map<string, NavigationBinding>;
+  recentCommits: Map<string, NavigationCommit>;
+  navigation: { canGoBack: boolean; canGoForward: boolean } | null;
+  navigationRevision: number;
+  navigationFailed: boolean;
+  navigationAttempt: number;
+  committedUrl: string;
+  /** What a failed navigation meant to reach; the document is Chromium's error page. */
+  unreachableUrl: string | null;
+  /** The committed document's loader, from its commit or the first title sample. */
+  loaderId: string | null;
+  titleReader: PageTitleReader | null;
+  onSameDocumentNavigation: (parameters: unknown) => void;
+  pageScale: number;
+  onFrameNavigated: (parameters: unknown) => void;
+  onFrameStartedLoading: (parameters: unknown) => void;
+  onFrameStoppedLoading: (parameters: unknown) => void;
+  /** The page's own document is loading; a frame inside it loading is not. */
+  loading: boolean;
+  /** The metrics Chromium has acknowledged; null until the starting size reaches it. */
+  applied: CdpParameters | null;
+  appliedGeometry: PageGeometry | null;
+  stopObservingHumanInput: (() => void) | undefined;
+  unbindGeometry: (() => void) | undefined;
+  cdp: CdpSession;
+  /**
+   * The JavaScript dialog open on the page, kept from the moment it opens so
+   * it can be shown and answered whenever the page is shown. Chromium answers
+   * no size write to the page until it closes, so the person's size waits
+   * here instead of in a queue. `answering` holds off a second answer.
+   */
+  dialog: (Omit<BrowserDialog, "surfaceId"> & { answering: boolean }) | null;
+  faviconReader: PageFavicon | null;
+  scriptTargets: PageScriptTargets | null;
+  onClose: () => void;
+  onDialogClosed: (parameters: unknown) => void;
+  onDialogOpening: (parameters: unknown) => void;
+  onMetadataChanged: () => void;
+  page: BrowserPage;
+  /**
+   * The person's size changed while a dialog was open and reaches the page
+   * when it closes, after releasing what that write would have released.
+   */
+  sizeWaiting: {
+    readonly beforeResize: BeforePageResize | undefined;
+    /** The person fit the page: the agent's size goes when the size lands. */
+    readonly fit: boolean;
+    readonly followSize?: () => PageSize | null;
+    readonly hasPersonSize: boolean;
+  } | null;
+  targetId: string;
+  restoring: boolean;
+}
+
+type SurfaceRecord = TabRecord & { live: LivePage };
 
 export interface BrowserViewerInput {
   readonly at: number;
@@ -264,24 +279,26 @@ export class SurfaceLedger {
   private nextOrder = 0;
   private inventorySealed = false;
   private inventoryVersion = 0;
-  private inventoryIds = "";
   private legacyPersonUntil = 0;
+  get closing(): boolean {
+    return (
+      this.closed ||
+      this.tearingDown ||
+      this.inventorySealed ||
+      this.context.isConnected?.() === false
+    );
+  }
   get sealed(): boolean {
     return this.inventorySealed;
   }
   get inventoryRevision(): number {
-    const ids = JSON.stringify(this.snapshot().map(({ id, order }) => [id, order]));
-    if (ids !== this.inventoryIds) {
-      this.inventoryIds = ids;
-      this.inventoryVersion++;
-    }
     return this.inventoryVersion;
   }
   recordLegacyPersonActivity(targeted: boolean): void {
     this.legacyPersonUntil = targeted ? 0 : Date.now() + 15_000;
   }
   pageScaleOf(surfaceId: BrowserSurfaceId): number {
-    return this.records.get(surfaceId)?.pageScale ?? 1;
+    return this.liveRecord(surfaceId)?.live.pageScale ?? 1;
   }
   /**
    * Hears where scripts aim events in one page's top frame, until the
@@ -291,26 +308,28 @@ export class SurfaceLedger {
     surfaceId: BrowserSurfaceId,
     watcher: (target: ScriptTarget) => void,
   ): () => void {
-    return this.records.get(surfaceId)?.scriptTargets?.watch(watcher) ?? (() => undefined);
+    return this.liveRecord(surfaceId)?.live.scriptTargets?.watch(watcher) ?? (() => undefined);
   }
   private discoveries = 0;
   private activeId: BrowserSurfaceId | null = null;
   private readonly adoptedTargetIds = new Set<string>();
+  private readonly releaseTarget: SurfaceLedgerOptions["releaseTarget"];
   private readonly claimTarget: ((targetId: string) => void) | undefined;
   private readonly beforeResize: SurfaceLedgerOptions["beforeResize"];
   private closed = false;
   private tearingDown = false;
   private creatingPage: Promise<void> | null = null;
+  private readonly creationLock = new AsyncMutex();
+  private readonly creationOrigin: "agent" | "person";
   private readonly initialSurfaceId: BrowserSurfaceId | undefined;
-  private readonly dormantSurfaceIds: Set<BrowserSurfaceId>;
   private readonly context: BrowserContext;
   /** The size the person's view last followed on any page here; new pages start at it. */
   private followedSize: PageSize;
   private readonly listeners = new Set<(event: SurfaceLedgerEvent) => void>();
-  private readonly maxSurfaces: number;
   private readonly pageIds = new Map<BrowserPage, BrowserSurfaceId>();
+  private readonly surfaceIdsByTarget = new Map<string, BrowserSurfaceId>();
   private readonly rootPages: readonly BrowserPage[] | null;
-  private readonly records = new Map<BrowserSurfaceId, SurfaceRecord>();
+  private readonly records = new Map<BrowserSurfaceId, TabRecord>();
   private readonly registrations = new Map<BrowserPage, Promise<void>>();
   private readonly removals = new Map<BrowserSurfaceId, Promise<void>>();
   private readonly agentCommandListeners = new Set<(surfaceId: BrowserSurfaceId) => void>();
@@ -334,8 +353,9 @@ export class SurfaceLedger {
     this.context = context;
     this.navigationVersion = options.navigationVersion;
     this.initialSurfaceId = options.initialSurfaceId;
-    this.dormantSurfaceIds = new Set(options.dormantSurfaceIds);
+    this.creationOrigin = options.creationOrigin ?? "person";
     this.claimTarget = options.claimTarget;
+    this.releaseTarget = options.releaseTarget;
     this.beforeResize = options.beforeResize;
     const initialViewport = options.initialViewport ?? {
       devicePixelRatio: 1,
@@ -347,16 +367,6 @@ export class SurfaceLedger {
       width: initialViewport.width,
     };
     this.rootPages = options.rootPages ? [...options.rootPages] : null;
-    this.maxSurfaces = options.maxSurfaces ?? browserSessionTabLimit;
-    if (
-      !Number.isInteger(this.maxSurfaces) ||
-      this.maxSurfaces < 1 ||
-      this.maxSurfaces > browserSessionTabLimit
-    ) {
-      throw new Error(
-        `Surface maxSurfaces must be an integer from 1 through ${browserSessionTabLimit}.`,
-      );
-    }
   }
 
   async start(): Promise<void> {
@@ -377,40 +387,282 @@ export class SurfaceLedger {
     return () => this.listeners.delete(listener);
   }
 
-  durableSnapshot(): BrowserWorkspaceTabDescriptor[] {
-    return [...this.records.values()]
-      .filter((record) => record.announced)
-      .map((record) => {
-        const url = record.unreachableUrl ?? record.committedUrl;
-        return {
-          id: record.id,
-          title: record.title.slice(0, 256),
-          url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
-          order: record.order,
-          openerId: record.openerId,
-        };
+  private readonly policyListeners = new Set<() => void>();
+  onPolicyChanged(listener: () => void): () => void {
+    this.policyListeners.add(listener);
+    return () => this.policyListeners.delete(listener);
+  }
+  private policyChanged(): void {
+    for (const listener of this.policyListeners) listener();
+  }
+  policyRecords(): Iterable<TabRecord> {
+    return this.records.values();
+  }
+  stateOf(id: BrowserSurfaceId): "live" | "suspended" | undefined {
+    const record = this.records.get(id);
+    return record ? surfaceState(record) : undefined;
+  }
+  faviconOf(id: BrowserSurfaceId): string | null {
+    return this.records.get(id)?.favicon ?? null;
+  }
+  demand(id: BrowserSurfaceId): void {
+    this.records.get(id)?.lease.demand();
+  }
+  use<T>(id: BrowserSurfaceId, operation: () => Promise<T>): Promise<T> {
+    const record = this.records.get(id);
+    if (!record)
+      return Promise.reject(new BrowserRuntimeError("not_found", "The browser tab closed."));
+    this.touch(id);
+    return record.lease.use(operation).catch((error) => {
+      if (error instanceof BrowserRuntimeError && error.reason === "target-suspended")
+        throw new BrowserRuntimeError(
+          "conflict",
+          `Resume tab ${id} before using its new document.`,
+          { reason: "target-suspended", retryable: true },
+        );
+      throw error;
+    });
+  }
+  touch(id: BrowserSurfaceId, person = false): void {
+    const record = this.records.get(id);
+    if (!record) return;
+    record.usedAt = Date.now();
+    if (person) record.personUsed = true;
+    this.policyChanged();
+  }
+  markPersonUsed(id: BrowserSurfaceId): void {
+    const record = this.records.get(id);
+    if (record && !record.personUsed) this.touch(id, true);
+  }
+  recordAgentInput(id: BrowserSurfaceId, typed = false): void {
+    const record = this.records.get(id);
+    if (!record) return;
+    record.agentActed = true;
+    record.typed ||= typed;
+    this.touch(id);
+  }
+  async sleep(
+    id: BrowserSurfaceId,
+    blocked: (record: TabRecord) => string | null,
+  ): Promise<boolean> {
+    const record = this.liveRecord(id);
+    if (!record || this.closing || blocked(record) || !record.lease.beginSleep()) return false;
+    const live = record.live;
+    const documentId = record.documentId;
+    try {
+      if (await this.engineProtection(record)) return false;
+      const engine = await withTimeout(
+        live.page.captureRestore ? live.page.captureRestore() : Promise.resolve(null),
+        2_000,
+        { timeoutError: () => new Error("Tab capture timed out.") },
+      );
+      if (
+        live.page.captureRestore &&
+        engine === null &&
+        record.live === live &&
+        record.documentId === documentId
+      )
+        record.unrestorable = true;
+      const finalProtection = await this.engineProtection(record);
+      if (
+        record.lease.demanded ||
+        record.lease.state !== "sleeping" ||
+        this.closing ||
+        this.records.get(id) !== record ||
+        record.documentId !== documentId ||
+        blocked(record) ||
+        finalProtection ||
+        record.unrestorable
+      )
+        return false;
+      record.restore = {
+        url: record.url,
+        engine,
+        bytes: engine == null ? 0 : Buffer.byteLength(JSON.stringify(engine)),
+      };
+      const suspend = () => {
+        if (this.records.get(id) !== record || record.live !== live) return;
+        if (record.lease.state === "closing") return;
+        if (record.documentId !== documentId)
+          record.restore = { url: record.url, engine: null, bytes: 0 };
+        void this.disposeRecord(record).catch(() => undefined);
+        this.pageIds.delete(live.page);
+        this.releaseTarget?.(live.targetId);
+        (record as TabRecord).live = null;
+        // A timed-out close can still finish after the lease returned to live.
+        record.lease.endSleep(true);
+        this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
+      };
+      live.page.offClose(live.onClose);
+      live.onClose = suspend;
+      live.page.onClose(suspend);
+      await withTimeout(live.page.close(), 2_000, {
+        timeoutError: () => new Error("Tab close timed out."),
       });
+      if (record.live === live && !live.page.isClosed())
+        throw new Error("Tab close did not release its page.");
+      suspend();
+      return true;
+    } catch {
+      if (record.live === live && record.documentId === documentId) {
+        record.unrestorable = true;
+        if (record.restore) record.restore = { url: record.url, engine: null, bytes: 0 };
+      }
+      return false;
+    } finally {
+      if (record.lease.state === "sleeping") record.lease.endSleep(false);
+    }
+  }
+  private async engineProtection(record: TabRecord): Promise<boolean> {
+    return withTimeout(this.readEngineProtection(record), 2_000, {
+      timeoutError: () => new Error("Tab protection read timed out."),
+    });
+  }
+  private async readEngineProtection(record: TabRecord): Promise<boolean> {
+    if (!record.live || (await record.live.page.hasOpenerAccess?.())) return true;
+    for (const other of this.records.values()) {
+      if (!other.live || !other.openerId || !this.records.get(other.openerId)?.live) continue;
+      if (other.id !== record.id && other.openerId !== record.id) continue;
+      if (other.live.page.hasOpenerAccess ? await other.live.page.hasOpenerAccess() : true)
+        return true;
+    }
+    return Boolean(await record.live.page.keepAwake?.());
+  }
+  async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
+    const record = this.records.get(id);
+    if (!record) throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+    let resumed = false;
+    await record.lease.resume(() =>
+      this.creationLock.run(async () => {
+        if (this.records.get(id) !== record || record.lease.state === "closing")
+          throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+        const restore = record.restore;
+        if (!restore || this.closing)
+          throw new BrowserRuntimeError("not_found", "The browser session closed.");
+        await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
+          timeoutError: () =>
+            new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+              retryable: true,
+            }),
+        });
+        const created = Promise.withResolvers<void>();
+        this.creatingPage = created.promise;
+        let page: BrowserPage | undefined;
+        let accepting = true;
+        try {
+          const creating = this.context.createPage(
+            restore.engine === null ? undefined : { restore: restore.engine },
+          );
+          void creating.then(
+            (p) => {
+              if (!accepting) void p.close().catch(() => undefined);
+            },
+            () => undefined,
+          );
+          page = await withTimeout(creating, 18_000, {
+            timeoutError: () =>
+              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                retryable: true,
+              }),
+          });
+          await withTimeout(this.registerOnce(page, false, undefined, id, record), 18_000, {
+            timeoutError: () =>
+              new BrowserRuntimeError("conflict", "Resuming this tab timed out.", {
+                retryable: true,
+              }),
+          });
+          if (this.records.get(id) !== record || this.closing)
+            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+          if (restore.engine === null && isLive(record))
+            await this.navigateLive(record, restore.url);
+          if (this.records.get(id) !== record || !record.live)
+            throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+          record.restore = null;
+          record.usedAt = Date.now();
+          resumed = true;
+        } catch (error) {
+          if (isLive(record)) await this.disposeRecord(record);
+          if (page) {
+            this.pageIds.delete(page);
+            await page.close().catch(() => undefined);
+          }
+          this.releaseTarget?.(record.lastTargetId);
+          record.live = null;
+          if (record.restore) {
+            record.restore.engine = null;
+            record.restore.bytes = 0;
+          }
+          if (error instanceof BrowserRuntimeError) throw error;
+          throw new BrowserRuntimeError(
+            "conflict",
+            "Resuming this tab failed. Retry to reopen its address.",
+            { cause: error, retryable: true },
+          );
+        } finally {
+          accepting = false;
+          this.creatingPage = null;
+          created.resolve();
+        }
+      }),
+    );
+    const binding = this.binding(id);
+    if (!binding || record.lease.state === "closing")
+      throw new BrowserRuntimeError("not_found", "The browser tab closed.");
+    if (resumed) this.emit({ type: "changed", change: "updated", surface: binding.surface });
+    return binding;
+  }
+
+  get activeSurfaceId(): BrowserSurfaceId | null {
+    return this.activeId;
+  }
+  toRecord(id: BrowserSurfaceId): BrowserTabRecord | undefined {
+    const record = this.records.get(id);
+    if (!record?.announced) return undefined;
+    const url = record.url;
+    return {
+      id,
+      state: surfaceState(record),
+      title: record.title.slice(0, 256),
+      url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
+      icon: record.favicon ? createHash("sha256").update(record.favicon).digest("base64url") : null,
+      order: record.order,
+      openerId: record.openerId,
+      documentId: record.documentId,
+      geometryRevision: record.geometryRevision,
+      loading: record.live?.loading ?? false,
+      navigationFailed: record.live?.navigationFailed ?? false,
+      canGoBack: record.live?.navigation?.canGoBack ?? false,
+      canGoForward: record.live?.navigation?.canGoForward ?? false,
+      sizedByAgent: record.agentMetrics !== null,
+    };
   }
 
   /** Correlates only this Page.navigate with the document Chromium says it produced. */
   async navigate(surfaceId: BrowserSurfaceId, url: string, navigationId?: string) {
-    const record = this.records.get(surfaceId);
-    if (!record) throw new BrowserRuntimeError("not_found", "The browser page closed.");
-    const attempt = ++record.navigationAttempt;
+    const record = this.liveRecord(surfaceId);
+    if (!record)
+      return this.use(surfaceId, async () => {
+        throw new BrowserRuntimeError("not_found", "The browser page closed.");
+      });
+    return this.use(surfaceId, () => this.navigateLive(record, url, navigationId));
+  }
+  private async navigateLive(record: SurfaceRecord, url: string, navigationId?: string) {
+    const surfaceId = record.id;
+    const attempt = ++record.live.navigationAttempt;
     this.setNavigationFailed(record, false);
     const pending: NavigationBinding | undefined = navigationId
       ? {
           url,
           documentId: record.documentId,
-          sequence: record.commitSequence,
-          sameDocument: url.split("#", 1)[0] === record.committedUrl.split("#", 1)[0],
+          sequence: record.live.commitSequence,
+          sameDocument: url.split("#", 1)[0] === record.live.committedUrl.split("#", 1)[0],
           loaderId: undefined,
         }
       : undefined;
     if (pending && navigationId) {
-      record.pendingNavigations.set(navigationId, pending);
-      if (record.pendingNavigations.size > 32)
-        record.pendingNavigations.delete(record.pendingNavigations.keys().next().value!);
+      record.live.pendingNavigations.set(navigationId, pending);
+      if (record.live.pendingNavigations.size > 32)
+        record.live.pendingNavigations.delete(record.live.pendingNavigations.keys().next().value!);
     }
     try {
       const result = z
@@ -420,10 +672,10 @@ export class SurfaceLedger {
           errorText: z.string().optional(),
           isDownload: z.boolean().optional(),
         })
-        .parse(await record.cdp.send("Page.navigate", { url }));
-      if (attempt === record.navigationAttempt)
+        .parse(await record.live.cdp.send("Page.navigate", { url }));
+      if (attempt === record.live.navigationAttempt)
         this.setNavigationFailed(record, !!result.errorText);
-      if (!pending || !navigationId || record.pendingNavigations.get(navigationId) !== pending)
+      if (!pending || !navigationId || record.live.pendingNavigations.get(navigationId) !== pending)
         return result;
       if (
         this.records.get(surfaceId) !== record ||
@@ -431,23 +683,23 @@ export class SurfaceLedger {
         result.isDownload ||
         (!result.loaderId && (!result.frameId || !pending.sameDocument))
       ) {
-        record.pendingNavigations.delete(navigationId);
+        record.live.pendingNavigations.delete(navigationId);
         return result;
       }
       pending.loaderId = result.loaderId || null;
       this.matchNavigation(record, navigationId, pending);
       return result;
     } catch (error) {
-      if (navigationId) record.pendingNavigations.delete(navigationId);
-      if (attempt === record.navigationAttempt) this.setNavigationFailed(record, true);
+      if (navigationId) record.live.pendingNavigations.delete(navigationId);
+      if (attempt === record.live.navigationAttempt) this.setNavigationFailed(record, true);
       throw error;
     }
   }
 
   private setNavigationFailed(record: SurfaceRecord, failed: boolean): void {
-    if (this.records.get(record.id) !== record || record.navigationFailed === failed) return;
-    record.navigationFailed = failed;
-    if (failed) record.loading = false;
+    if (this.records.get(record.id) !== record || record.live.navigationFailed === failed) return;
+    record.live.navigationFailed = failed;
+    if (failed) record.live.loading = false;
     if (record.announced)
       this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
   }
@@ -460,21 +712,21 @@ export class SurfaceLedger {
     if (pending.loaderId === undefined) return;
     const matched =
       pending.loaderId === null
-        ? [...record.recentCommits.entries()].find(
+        ? [...record.live.recentCommits.entries()].find(
             ([, commit]) =>
               commit.loaderId === null &&
               commit.sequence > pending.sequence &&
               commit.documentId === pending.documentId &&
               commit.url === pending.url,
           )
-        : record.recentCommits.has(pending.loaderId)
-          ? ([pending.loaderId, record.recentCommits.get(pending.loaderId)!] as const)
+        : record.live.recentCommits.has(pending.loaderId)
+          ? ([pending.loaderId, record.live.recentCommits.get(pending.loaderId)!] as const)
           : undefined;
     if (!matched) return;
     const [key, commit] = matched;
     if (commit.sequence <= pending.sequence) return;
-    record.recentCommits.delete(key);
-    record.pendingNavigations.delete(navigationId);
+    record.live.recentCommits.delete(key);
+    record.live.pendingNavigations.delete(navigationId);
     this.emit({
       type: "navigation.committed",
       navigationId,
@@ -485,16 +737,16 @@ export class SurfaceLedger {
   }
 
   private navigationCommitted(record: SurfaceRecord, loaderId: string | null): void {
-    const sequence = ++record.commitSequence;
-    record.recentCommits.set(loaderId ?? `same-document:${sequence}`, {
+    const sequence = ++record.live.commitSequence;
+    record.live.recentCommits.set(loaderId ?? `same-document:${sequence}`, {
       documentId: record.documentId,
-      url: record.committedUrl,
+      url: record.live.committedUrl,
       sequence,
       loaderId,
     });
-    if (record.recentCommits.size > 32)
-      record.recentCommits.delete(record.recentCommits.keys().next().value!);
-    for (const [navigationId, pending] of record.pendingNavigations)
+    if (record.live.recentCommits.size > 32)
+      record.live.recentCommits.delete(record.live.recentCommits.keys().next().value!);
+    for (const [navigationId, pending] of record.live.pendingNavigations)
       this.matchNavigation(record, navigationId, pending);
   }
 
@@ -556,36 +808,38 @@ export class SurfaceLedger {
     }
     const found = this.recordForTarget(targetId);
     if (!found) return Promise.resolve(null);
-    return found.sizeLock.run(async () => {
-      if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
-      const record = this.recordForTarget(targetId);
-      if (record !== found) return null;
-      if (record.dialog) {
-        throw new BrowserRuntimeError(
-          "conflict",
-          "A JavaScript dialog is open on this page. Chromium changes its size only after the dialog is answered with Page.handleJavaScriptDialog.",
-        );
-      }
-      const next = this.metricsFor(record, metrics);
-      if (!metricsFit(next)) {
-        throw new BrowserRuntimeError(
-          "bad_message",
-          "CDP device metrics exceed the bounded browser frame size.",
-        );
-      }
-      const write = await this.applyMetrics(record, next, beforeResize, metrics);
-      if (this.records.get(record.id) !== record) return write;
-      const wasSized = record.agentMetrics !== null;
-      record.agentMetrics = metrics;
-      if (write.changed || wasSized !== (metrics !== null)) {
-        this.emit({
-          change: "updated",
-          surface: this.toSurface(record),
-          type: "changed",
-        });
-      }
-      return write;
-    });
+    return this.use(found.id, () =>
+      found.sizeLock.run(async () => {
+        if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
+        const record = this.recordForTarget(targetId);
+        if (record !== found) return null;
+        if (record.live.dialog) {
+          throw new BrowserRuntimeError(
+            "conflict",
+            "A JavaScript dialog is open on this page. Chromium changes its size only after the dialog is answered with Page.handleJavaScriptDialog.",
+          );
+        }
+        const next = this.metricsFor(record, metrics);
+        if (!metricsFit(next)) {
+          throw new BrowserRuntimeError(
+            "bad_message",
+            "CDP device metrics exceed the bounded browser frame size.",
+          );
+        }
+        const write = await this.applyMetrics(record, next, beforeResize, metrics);
+        if (this.records.get(record.id) !== record) return write;
+        const wasSized = record.agentMetrics !== null;
+        record.agentMetrics = metrics;
+        if (write.changed || wasSized !== (metrics !== null)) {
+          this.emit({
+            change: "updated",
+            surface: this.toSurface(record),
+            type: "changed",
+          });
+        }
+        return write;
+      }),
+    );
   }
 
   /**
@@ -593,8 +847,8 @@ export class SurfaceLedger {
    * pictures, a scrollbar included. Null for a page that is gone.
    */
   viewportOf(surfaceId: BrowserSurfaceId): PageSize | null {
-    const record = this.records.get(surfaceId);
-    return record?.applied ? metricsSize(record.applied) : null;
+    const record = this.liveRecord(surfaceId);
+    return record?.live?.applied ? metricsSize(record.live.applied) : null;
   }
 
   /** Keeps a page read and the operation using it atomic with ledger geometry writes. */
@@ -602,26 +856,26 @@ export class SurfaceLedger {
     surfaceId: BrowserSurfaceId,
     operation: (cdp: CdpSession, geometry: PageGeometry | null) => Promise<T>,
   ): Promise<T> {
-    const record = this.records.get(surfaceId);
-    if (!record)
-      return Promise.reject(
-        new BrowserRuntimeError("not_found", "The browser surface does not exist."),
-      );
-    return record.sizeLock.run(() => {
-      if (this.closed || this.records.get(surfaceId) !== record || record.page.isClosed())
+    return this.use(surfaceId, () => {
+      const record = this.liveRecord(surfaceId);
+      if (!record)
         throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
-      return operation(record.cdp, record.appliedGeometry);
+      return record.sizeLock.run(() => {
+        if (this.closed || this.records.get(surfaceId) !== record || record.live.page.isClosed())
+          throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
+        return operation(record.live.cdp, record.live.appliedGeometry);
+      });
     });
   }
 
   /** A JavaScript dialog is open on one page, an answer under way included. */
   dialogOpen(surfaceId: BrowserSurfaceId): boolean {
-    return (this.records.get(surfaceId)?.dialog ?? null) !== null;
+    return (this.liveRecord(surfaceId)?.live.dialog ?? null) !== null;
   }
 
   /** The JavaScript dialog open on one page, if any, until it is answered. */
   dialogOf(surfaceId: BrowserSurfaceId): BrowserDialog | null {
-    const dialog = this.records.get(surfaceId)?.dialog;
+    const dialog = this.liveRecord(surfaceId)?.live.dialog;
     if (!dialog || dialog.answering) return null;
     return {
       id: dialog.id,
@@ -640,8 +894,10 @@ export class SurfaceLedger {
     accept: boolean,
     promptText: string | undefined,
   ): Promise<BrowserSurfaceId> {
-    const record = [...this.records.values()].find((entry) => entry.dialog?.id === dialogId);
-    const dialog = record?.dialog;
+    const record = [...this.records.values()]
+      .filter(isLive)
+      .find((entry) => entry.live.dialog?.id === dialogId);
+    const dialog = record?.live.dialog;
     if (!record || !dialog || dialog.answering) {
       throw new BrowserRuntimeError("conflict", "There is no active browser dialog.");
     }
@@ -649,10 +905,12 @@ export class SurfaceLedger {
     dialog.answering = true;
     this.emit({ surfaceId, type: "dialog" });
     try {
-      await record.cdp.send("Page.handleJavaScriptDialog", {
-        accept,
-        ...(promptText === undefined ? {} : { promptText }),
-      });
+      await this.use(surfaceId, () =>
+        record.live.cdp.send("Page.handleJavaScriptDialog", {
+          accept,
+          ...(promptText === undefined ? {} : { promptText }),
+        }),
+      );
     } catch (error) {
       dialog.answering = false;
       this.emit({ surfaceId, type: "dialog" });
@@ -677,6 +935,9 @@ export class SurfaceLedger {
   ): void {
     const record = this.records.get(surfaceId);
     if (!record) return;
+    record.personUsed = true;
+    record.typed ||= activity.kind === "typing";
+    this.touch(surfaceId, true);
     record.userActivity = { ...activity, at: new Date().toISOString() };
     record.userActivitySequence = ++this.sequence;
   }
@@ -692,6 +953,7 @@ export class SurfaceLedger {
   ): void {
     const record = this.records.get(surfaceId);
     if (!record) return;
+    this.touch(surfaceId, true);
     const at = Date.now();
     record.viewerInput = consumerToken
       ? { at, consumerToken, sequence: ++this.sequence, native }
@@ -716,7 +978,7 @@ export class SurfaceLedger {
   }
 
   latestViewerInput(surfaceId: BrowserSurfaceId): BrowserViewerInput | null {
-    const record = this.records.get(surfaceId);
+    const record = this.liveRecord(surfaceId);
     const input = record?.viewerInput;
     return record &&
       input &&
@@ -741,7 +1003,7 @@ export class SurfaceLedger {
     const record = this.records.get(surfaceId);
     // A window the timeline no longer covers could have held an agent's command.
     if (!record || record.inputTimelineFloor > since) return null;
-    let input: SurfaceRecord["inputTimeline"][number] | undefined;
+    let input: TabRecord["inputTimeline"][number] | undefined;
     for (const entry of record.inputTimeline) {
       if (entry.at > at || entry.at <= since) continue;
       if (!entry.consumerToken) return null;
@@ -752,7 +1014,7 @@ export class SurfaceLedger {
       : null;
   }
 
-  #recordInput(record: SurfaceRecord, entry: SurfaceRecord["inputTimeline"][number]): void {
+  #recordInput(record: TabRecord, entry: TabRecord["inputTimeline"][number]): void {
     const timeline = record.inputTimeline;
     timeline.push(entry);
     // Input older than any edit still being judged can go; past the cap, the
@@ -767,6 +1029,7 @@ export class SurfaceLedger {
   recordAgentCommand(targetId: string): void {
     const record = this.recordForTarget(targetId);
     if (record) {
+      this.touch(record.id);
       this.#recordInput(record, { at: Date.now(), consumerToken: null, native: false });
       record.agentSequence = ++this.sequence;
       for (const listener of this.agentCommandListeners) listener(record.id);
@@ -793,7 +1056,7 @@ export class SurfaceLedger {
   }
 
   surfaceIdForTarget(targetId: string): BrowserSurfaceId | undefined {
-    return this.recordForTarget(targetId)?.id;
+    return this.surfaceIdsByTarget.get(targetId);
   }
 
   /**
@@ -804,7 +1067,7 @@ export class SurfaceLedger {
   async settleTarget(targetId: string): Promise<void> {
     const record = this.recordForTarget(targetId);
     if (record) {
-      if (!record.dialog) await this.registrations.get(record.page);
+      if (!record.live.dialog) await this.registrations.get(record.live.page);
       return;
     }
     const page = await this.pageForTarget(targetId);
@@ -819,6 +1082,8 @@ export class SurfaceLedger {
   async adoptTarget(targetId: string): Promise<boolean> {
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
     if (this.recordForTarget(targetId)) {
+      const record = this.recordForTarget(targetId)!;
+      record.origin = "agent";
       await this.settleTarget(targetId);
       return this.recordForTarget(targetId) !== undefined;
     }
@@ -832,17 +1097,19 @@ export class SurfaceLedger {
 
   /** The full address of the document a page has committed, before any display bound. */
   committedUrl(surfaceId: BrowserSurfaceId): string | null {
-    return this.records.get(surfaceId)?.committedUrl ?? null;
+    return (
+      this.records.get(surfaceId)?.live?.committedUrl ?? this.records.get(surfaceId)?.url ?? null
+    );
   }
 
   binding(surfaceId: BrowserSurfaceId): SurfaceBinding | null {
-    const record = this.records.get(surfaceId);
+    const record = this.liveRecord(surfaceId);
     if (!record) return null;
     return {
-      cdp: record.cdp,
-      page: record.page,
+      cdp: record.live.cdp,
+      page: record.live.page,
       surface: this.toSurface(record),
-      targetId: record.targetId,
+      targetId: record.live.targetId,
     };
   }
 
@@ -850,9 +1117,9 @@ export class SurfaceLedger {
   appliedGeometry(
     surfaceId: BrowserSurfaceId,
   ): { geometry: PageGeometry; geometryRevision: number } | null {
-    const record = this.records.get(surfaceId);
-    if (!record?.appliedGeometry) return null;
-    return { geometry: record.appliedGeometry, geometryRevision: record.geometryRevision };
+    const record = this.liveRecord(surfaceId);
+    if (!record?.live?.appliedGeometry) return null;
+    return { geometry: record.live.appliedGeometry, geometryRevision: record.geometryRevision };
   }
 
   async activate(surfaceId: BrowserSurfaceId): Promise<void> {
@@ -877,16 +1144,20 @@ export class SurfaceLedger {
       readonly surfaceId?: BrowserSurfaceId;
     } = {},
   ): Promise<BrowserSurface> {
+    return this.creationLock.run(() => this.openSurfaceOnce(options));
+  }
+
+  private async openSurfaceOnce(options: {
+    readonly signal?: AbortSignal;
+    readonly viewport?: Viewport;
+    readonly activate?: boolean;
+    readonly surfaceId?: BrowserSurfaceId;
+  }): Promise<BrowserSurface> {
     options.signal?.throwIfAborted();
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
     if (options.surfaceId && this.records.has(options.surfaceId))
-      return this.toSurface(this.records.get(options.surfaceId)!);
+      return this.toSurface(this.liveRecord(options.surfaceId)!);
     if (options.viewport) assertViewport(options.viewport);
-    if (this.atCapacity(options.surfaceId)) {
-      throw new BrowserRuntimeError("conflict", "This browser session holds all the tabs it can.", {
-        reason: browserSessionTabsFullReason,
-      });
-    }
     // Discovery waits until the creator has assigned the requested identity.
     await withTimeout(Promise.resolve(this.creatingPage), 18_000, {
       ...(options.signal ? { signal: options.signal } : {}),
@@ -932,19 +1203,21 @@ export class SurfaceLedger {
       created();
     }
     const id = this.pageIds.get(page);
-    const record = id ? this.records.get(id) : undefined;
+    const record = id ? this.liveRecord(id) : undefined;
     if (!record) {
       await page.close().catch(() => undefined);
       throw new BrowserRuntimeError("conflict", "The browser could not open a new tab.");
     }
+    record.origin = "person";
+    this.touch(record.id, true);
     return this.toSurface(record);
   }
 
   recordPageScale(surfaceId: BrowserSurfaceId, scale: number): number {
-    const record = this.records.get(surfaceId);
+    const record = this.liveRecord(surfaceId);
     if (!record) return 0;
-    if (record.pageScale !== scale) {
-      record.pageScale = scale;
+    if (record.live.pageScale !== scale) {
+      record.live.pageScale = scale;
       record.geometryRevision++;
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
     }
@@ -967,13 +1240,14 @@ export class SurfaceLedger {
   async closeSurface(surfaceId: BrowserSurfaceId): Promise<void> {
     const record = this.records.get(surfaceId);
     if (!record) throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
-    await record.page.close();
+    record.lease.close();
+    await record.live?.page.close();
     await this.remove(record);
   }
 
   async refresh(surfaceId: BrowserSurfaceId): Promise<void> {
-    const record = this.records.get(surfaceId);
-    if (!record || record.page.isClosed()) return;
+    const record = this.liveRecord(surfaceId);
+    if (!record || record.live.page.isClosed() || record.live.restoring) return;
     const url = surfaceAddress(record);
     if (url !== record.url) {
       record.url = url;
@@ -983,30 +1257,32 @@ export class SurfaceLedger {
         type: "changed",
       });
     }
-    record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
-    record.titleReader?.sample();
+    record.live.faviconReader?.refresh(record.documentId, normalizeUrl(record.live.committedUrl));
+    record.live.titleReader?.sample();
     await this.refreshNavigation(record);
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const record of this.records.values()) record.lease.close();
     this.emit({ type: "closed" });
     this.context.offPage(this.onPage);
     const registrations = [...this.registrations.values()];
     const removals = [...this.removals.values()];
-    let records: SurfaceRecord[] = [];
+    let records: TabRecord[] = [];
     await this.viewportMutex.run(async () => {
       records = [...this.records.values()];
       this.records.clear();
       this.pageIds.clear();
+      this.surfaceIdsByTarget.clear();
       this.adoptedTargetIds.clear();
       this.activeId = null;
     });
     await Promise.allSettled([
       ...registrations,
       ...removals,
-      ...records.map((record) => this.disposeRecord(record)),
+      ...records.filter(isLive).map((record) => this.disposeRecord(record)),
     ]);
     this.listeners.clear();
     this.agentCommandListeners.clear();
@@ -1014,24 +1290,19 @@ export class SurfaceLedger {
 
   async closeOwnedPages(): Promise<void> {
     this.tearingDown = true;
-    await Promise.allSettled([...this.records.values()].map((record) => record.page.close()));
-  }
-
-  forgetDormantSurface(surfaceId: BrowserSurfaceId): void {
-    this.dormantSurfaceIds.delete(surfaceId);
-  }
-
-  private atCapacity(surfaceId?: BrowserSurfaceId): boolean {
-    if (surfaceId && this.dormantSurfaceIds.has(surfaceId)) return false;
-    return (
-      new Set([...this.pageIds.keys(), ...this.registrations.keys()]).size +
-        this.dormantSurfaceIds.size >=
-      this.maxSurfaces
+    await Promise.allSettled(
+      [...this.records.values()].filter(isLive).map((record) => record.live.page.close()),
     );
   }
 
+  private liveRecord(id: BrowserSurfaceId): SurfaceRecord | undefined {
+    const record = this.records.get(id);
+    return record && isLive(record) ? record : undefined;
+  }
+
   private recordForTarget(targetId: string): SurfaceRecord | undefined {
-    return [...this.records.values()].find((record) => record.targetId === targetId);
+    const id = this.surfaceIdsByTarget.get(targetId);
+    return id ? this.liveRecord(id) : undefined;
   }
 
   /**
@@ -1095,10 +1366,6 @@ export class SurfaceLedger {
       if (makeActive) await this.activate(id);
       return;
     }
-    if (this.atCapacity(surfaceId)) {
-      await page.close().catch(() => undefined);
-      return;
-    }
     const registration = this.registerOnce(page, makeActive, viewport, surfaceId).finally(() => {
       this.registrations.delete(page);
     });
@@ -1111,6 +1378,7 @@ export class SurfaceLedger {
     makeActive: boolean,
     requestedViewport: Viewport | undefined,
     surfaceId: BrowserSurfaceId | undefined,
+    waking?: TabRecord,
   ): Promise<void> {
     if (this.closed || page.isClosed() || this.pageIds.has(page)) return;
     if (this.inventorySealed) {
@@ -1120,6 +1388,7 @@ export class SurfaceLedger {
     const id = surfaceId ?? BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
     let cdp: CdpSession | null = null;
     let registered: SurfaceRecord | undefined;
+    let wakeCleanup = false;
     try {
       const acquiredCdp = await page.cdp();
       cdp = acquiredCdp;
@@ -1139,10 +1408,12 @@ export class SurfaceLedger {
           await acquiredCdp.detach().catch(() => undefined);
           return;
         }
+        if (waking && (this.records.get(id) !== waking || waking.lease.state === "closing"))
+          throw new BrowserRuntimeError("not_found", "The browser tab closed.");
         this.claimTarget?.(targetId);
         const size = requestedViewport ?? this.startingSize(opener);
         const openerId = opener ? this.pageIds.get(opener) : undefined;
-        const openerRecord = openerId ? this.records.get(openerId) : undefined;
+        const openerRecord = openerId ? this.liveRecord(openerId) : undefined;
         const answersPerson =
           openerRecord?.userActivity?.kind === "click" &&
           openerRecord.userActivitySequence > openerRecord.agentSequence;
@@ -1150,157 +1421,198 @@ export class SurfaceLedger {
           makeActive ||
           (answersPerson && Date.now() < this.legacyPersonUntil && openerId === this.activeId);
         const follower = page.openedInBackground ? null : this.takeViewerInput(openerRecord);
-        const record: SurfaceRecord = {
-          commitSequence: 0,
-          pendingNavigations: new Map(),
-          recentCommits: new Map(),
-          navigation: null,
-          navigationRevision: 0,
-          navigationFailed: false,
-          navigationAttempt: 0,
-          loaderId: null,
-          titleReader: null,
-          documentId: randomUUID(),
-          geometryRevision: 0,
-          pageScale: 1,
-          order: this.nextOrder++,
-          openerId: opener ? (this.pageIds.get(opener) ?? null) : null,
-          onFrameNavigated: (parameters) => {
-            if (
-              parameters &&
-              typeof parameters === "object" &&
-              "frame" in parameters &&
-              parameters.frame &&
-              typeof parameters.frame === "object" &&
-              !("parentId" in parameters.frame) &&
-              "url" in parameters.frame &&
-              typeof parameters.frame.url === "string"
-            ) {
-              const fragment =
-                "urlFragment" in parameters.frame &&
-                typeof parameters.frame.urlFragment === "string" &&
-                parameters.frame.urlFragment.startsWith("#")
-                  ? parameters.frame.urlFragment
-                  : "";
-              record.committedUrl = parameters.frame.url + fragment;
-              record.unreachableUrl =
-                "unreachableUrl" in parameters.frame &&
-                typeof parameters.frame.unreachableUrl === "string"
-                  ? attemptedAddress(parameters.frame.unreachableUrl)
-                  : null;
-              record.url = surfaceAddress(record);
-            }
-            if (!parameters || typeof parameters !== "object" || !("frame" in parameters)) return;
-            const frame = parameters.frame;
-            if (!frame || typeof frame !== "object" || "parentId" in frame) return;
-            void this.refreshNavigation(record).catch(() => undefined);
-            record.pageScale = 1;
-            record.documentId = randomUUID();
-            record.loaderId =
-              "loaderId" in frame && typeof frame.loaderId === "string" ? frame.loaderId : null;
-            // A new document has no title until its own document names one.
-            record.title = "";
-            record.favicon = null;
-            // Reload, history and an agent's own navigation all commit without navigate().
-            record.navigationFailed =
-              record.unreachableUrl !== null || record.committedUrl.startsWith("chrome-error://");
-            record.faviconReader?.refresh(record.documentId, normalizeUrl(record.committedUrl));
-            record.geometryRevision++;
-            if (record.announced)
-              this.emit({
-                change: "updated",
-                surface: this.toSurface(record),
-                type: "changed",
-              });
-            if (record.loaderId) this.navigationCommitted(record, record.loaderId);
-            record.titleReader?.sample();
+        const previousTargetId = waking?.lastTargetId;
+        const record: SurfaceRecord = Object.assign(
+          waking ?? {
+            documentId: randomUUID(),
+            geometryRevision: 0,
+            order: this.nextOrder++,
+            openerId: opener ? (this.pageIds.get(opener) ?? null) : null,
+            agentMetrics: null,
+            agentSequence: 0,
+            announced: false,
+            favicon: null,
+            id,
+            ordinary: { height: size.height, width: size.width },
+            pageResizeSequence: 0,
+            sizeLock: new AsyncMutex(),
+            title: "",
+            url: page.url(),
+            userActivitySequence: 0,
+            viewerInput: null,
+            inputTimeline: [],
+            inputTimelineFloor: 0,
+            popupInputSequence: 0,
+            lease: new TabLease(() => this.policyChanged()),
+            lastTargetId: targetId,
+            origin:
+              openerRecord?.origin ??
+              (this.adoptedTargetIds.has(targetId) ? "agent" : this.creationOrigin),
+            personUsed: false,
+            agentActed: false,
+            typed: false,
+            usedAt: Date.now(),
+            unrestorable: false,
+            restore: null,
           },
-          onFrameStartedLoading: (parameters) => this.loadingChanged(record, parameters, true),
-          onFrameStoppedLoading: (parameters) => this.loadingChanged(record, parameters, false),
-          loading: false,
-          agentMetrics: null,
-          agentSequence: 0,
-          announced: false,
-          applied: null,
-          appliedGeometry: null,
-          stopObservingHumanInput: undefined,
-          unbindGeometry: undefined,
-          cdp: acquiredCdp,
-          dialog: null,
-          favicon: null,
-          faviconReader: null,
-          scriptTargets: null,
-          id,
-          onClose: () => {
-            void this.remove(record).catch(() => undefined);
+          {
+            documentId: randomUUID(),
+            geometryRevision: (waking?.geometryRevision ?? -1) + 1,
+            lastTargetId: targetId,
+            live: {
+              commitSequence: 0,
+              pendingNavigations: new Map(),
+              recentCommits: new Map(),
+              navigation: null,
+              navigationRevision: 0,
+              navigationFailed: false,
+              navigationAttempt: 0,
+              loaderId: null,
+              titleReader: null,
+              pageScale: 1,
+              onFrameNavigated: (parameters: unknown) => {
+                if (
+                  parameters &&
+                  typeof parameters === "object" &&
+                  "frame" in parameters &&
+                  parameters.frame &&
+                  typeof parameters.frame === "object" &&
+                  !("parentId" in parameters.frame) &&
+                  "url" in parameters.frame &&
+                  typeof parameters.frame.url === "string"
+                ) {
+                  const fragment =
+                    "urlFragment" in parameters.frame &&
+                    typeof parameters.frame.urlFragment === "string" &&
+                    parameters.frame.urlFragment.startsWith("#")
+                      ? parameters.frame.urlFragment
+                      : "";
+                  if (
+                    record.live.restoring &&
+                    parameters.frame.url === "about:blank" &&
+                    record.url !== "about:blank"
+                  )
+                    return;
+                  record.live.restoring = false;
+                  record.typed = false;
+                  record.agentActed = false;
+                  record.unrestorable = false;
+                  record.live.committedUrl = parameters.frame.url + fragment;
+                  record.live.unreachableUrl =
+                    "unreachableUrl" in parameters.frame &&
+                    typeof parameters.frame.unreachableUrl === "string"
+                      ? attemptedAddress(parameters.frame.unreachableUrl)
+                      : null;
+                  record.url = surfaceAddress(record);
+                }
+                if (!parameters || typeof parameters !== "object" || !("frame" in parameters))
+                  return;
+                const frame = parameters.frame;
+                if (!frame || typeof frame !== "object" || "parentId" in frame) return;
+                void this.refreshNavigation(record).catch(() => undefined);
+                record.live.pageScale = 1;
+                record.documentId = randomUUID();
+                record.live.loaderId =
+                  "loaderId" in frame && typeof frame.loaderId === "string" ? frame.loaderId : null;
+                // A new document has no title until its own document names one.
+                record.title = "";
+                record.favicon = null;
+                // Reload, history and an agent's own navigation all commit without navigate().
+                record.live.navigationFailed =
+                  record.live.unreachableUrl !== null ||
+                  record.live.committedUrl.startsWith("chrome-error://");
+                record.live.faviconReader?.refresh(
+                  record.documentId,
+                  normalizeUrl(record.live.committedUrl),
+                );
+                record.geometryRevision++;
+                if (record.announced)
+                  this.emit({
+                    change: "updated",
+                    surface: this.toSurface(record),
+                    type: "changed",
+                  });
+                if (record.live.loaderId) this.navigationCommitted(record, record.live.loaderId);
+                record.live.titleReader?.sample();
+              },
+              onFrameStartedLoading: (parameters: unknown) =>
+                this.loadingChanged(record, parameters, true),
+              onFrameStoppedLoading: (parameters: unknown) =>
+                this.loadingChanged(record, parameters, false),
+              loading: false,
+              applied: null,
+              appliedGeometry: null,
+              stopObservingHumanInput: undefined,
+              unbindGeometry: undefined,
+              cdp: acquiredCdp,
+              dialog: null,
+              faviconReader: null,
+              scriptTargets: null,
+              onClose: () => {
+                if (wakeCleanup || record.live?.page !== page) return;
+                void this.remove(record).catch(() => undefined);
+              },
+              onDialogClosed: (parameters: unknown) => {
+                this.emit({
+                  type: "dialog-event",
+                  targetId: record.live.targetId,
+                  method: "Page.javascriptDialogClosed",
+                  parameters:
+                    parameters !== null && typeof parameters === "object"
+                      ? (parameters as CdpParameters)
+                      : {},
+                });
+                void this.dialogClosed(record).catch(() => undefined);
+                record.live.titleReader?.sample();
+              },
+              onDialogOpening: (parameters: unknown) => {
+                this.dialogOpened(record, parameters);
+                if (!record.live.dialog) return;
+                if (!record.live.applied)
+                  this.keepForDialog(record, record.ordinary, true, undefined);
+                announce();
+                sawDialog();
+              },
+              onMetadataChanged: () => {
+                if (record.announced) void this.refresh(record.id).catch(() => undefined);
+              },
+              page,
+              sizeWaiting: null,
+              targetId,
+              committedUrl: page.url(),
+              unreachableUrl: null,
+              onSameDocumentNavigation: (parameters: unknown) => {
+                if (
+                  !parameters ||
+                  typeof parameters !== "object" ||
+                  !("frameId" in parameters) ||
+                  parameters.frameId !== targetId ||
+                  !("url" in parameters) ||
+                  typeof parameters.url !== "string"
+                )
+                  return;
+                void this.refreshNavigation(record).catch(() => undefined);
+                record.live.committedUrl = parameters.url;
+                record.live.unreachableUrl = null;
+                record.url = record.live.committedUrl;
+                if (record.announced)
+                  this.emit({
+                    type: "changed",
+                    change: "updated",
+                    surface: this.toSurface(record),
+                  });
+                if ("navigationType" in parameters && parameters.navigationType === "fragment")
+                  this.navigationCommitted(record, null);
+                record.live.titleReader?.sample();
+              },
+              restoring: waking !== undefined,
+            },
           },
-          onDialogClosed: (parameters) => {
-            this.emit({
-              type: "dialog-event",
-              targetId: record.targetId,
-              method: "Page.javascriptDialogClosed",
-              parameters:
-                parameters !== null && typeof parameters === "object"
-                  ? (parameters as CdpParameters)
-                  : {},
-            });
-            void this.dialogClosed(record).catch(() => undefined);
-            record.titleReader?.sample();
-          },
-          onDialogOpening: (parameters) => {
-            this.dialogOpened(record, parameters);
-            if (!record.dialog) return;
-            if (!record.applied) this.keepForDialog(record, record.ordinary, true, undefined);
-            announce();
-            sawDialog();
-          },
-          onMetadataChanged: () => {
-            if (record.announced) void this.refresh(record.id).catch(() => undefined);
-          },
-          ordinary: { height: size.height, width: size.width },
-          page,
-          pageResizeSequence: 0,
-          sizeLock: new AsyncMutex(),
-          sizeWaiting: null,
-          targetId,
-          title: "",
-          url: normalizeUrl(page.url()),
-          committedUrl: page.url(),
-          unreachableUrl: null,
-          onSameDocumentNavigation: (parameters) => {
-            if (
-              !parameters ||
-              typeof parameters !== "object" ||
-              !("frameId" in parameters) ||
-              parameters.frameId !== targetId ||
-              !("url" in parameters) ||
-              typeof parameters.url !== "string"
-            )
-              return;
-            void this.refreshNavigation(record).catch(() => undefined);
-            record.committedUrl = parameters.url;
-            record.unreachableUrl = null;
-            record.url = normalizeUrl(record.committedUrl);
-            if (record.announced)
-              this.emit({
-                type: "changed",
-                change: "updated",
-                surface: this.toSurface(record),
-              });
-            if ("navigationType" in parameters && parameters.navigationType === "fragment")
-              this.navigationCommitted(record, null);
-            record.titleReader?.sample();
-          },
-          userActivitySequence: 0,
-          viewerInput: null,
-          inputTimeline: [],
-          inputTimelineFloor: 0,
-          popupInputSequence: 0,
-        };
+        );
         announce = () => {
-          if (record.announced || this.closed || this.records.get(id) !== record) return;
+          if (waking || record.announced || this.closed || this.records.get(id) !== record) return;
           record.announced = true;
-          record.scriptTargets?.start();
+          record.live.scriptTargets?.start();
           if (forward || !this.activeId) this.activeId = id;
           this.emit({
             change: "created",
@@ -1312,36 +1624,45 @@ export class SurfaceLedger {
           void this.refresh(id).catch(() => undefined);
         };
         registered = record;
-        record.unbindGeometry = page.bindGeometry?.(
+        record.live.unbindGeometry = page.bindGeometry?.(
           (operation) =>
-            record.sizeLock.run(async () => {
-              if (this.closed || this.records.get(id) !== record || page.isClosed()) return;
-              await operation();
-            }),
+            this.use(id, () =>
+              record.sizeLock.run(async () => {
+                if (this.closed || this.records.get(id) !== record || page.isClosed()) return;
+                await operation();
+              }),
+            ),
           async () => this.beforeResize?.(id),
         );
         this.records.set(id, record);
-        record.faviconReader = new PageFavicon(acquiredCdp, targetId, (favicon) => {
-          if (this.records.get(id) !== record || record.favicon === favicon) return;
+        if (previousTargetId) this.surfaceIdsByTarget.delete(previousTargetId);
+        this.surfaceIdsByTarget.set(targetId, id);
+        record.live.faviconReader = new PageFavicon(acquiredCdp, targetId, (favicon) => {
+          if (
+            this.records.get(id) !== record ||
+            record.live.restoring ||
+            record.favicon === favicon
+          )
+            return;
           record.favicon = favicon;
           if (record.announced)
             this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
         });
-        record.scriptTargets = new PageScriptTargets(acquiredCdp);
-        record.titleReader = new PageTitleReader(
+        record.live.scriptTargets = new PageScriptTargets(acquiredCdp);
+        record.live.titleReader = new PageTitleReader(
           acquiredCdp,
           targetId,
           () =>
-            this.records.get(id) === record && !page.isClosed()
+            this.records.get(id) === record && !page.isClosed() && !record.live.restoring
               ? {
-                  committedUrl: record.committedUrl,
+                  committedUrl: record.live.committedUrl,
                   documentId: record.documentId,
-                  loaderId: record.loaderId,
+                  loaderId: record.live.loaderId,
                 }
               : null,
           (documentId, loaderId) => {
-            if (record.documentId === documentId && record.loaderId === null)
-              record.loaderId = loaderId;
+            if (record.documentId === documentId && record.live.loaderId === null)
+              record.live.loaderId = loaderId;
           },
           (documentId, title) => {
             const next = normalizeTitle(title);
@@ -1352,19 +1673,18 @@ export class SurfaceLedger {
               this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
           },
         );
-        this.dormantSurfaceIds.delete(id);
         this.pageIds.set(page, id);
-        record.stopObservingHumanInput = page.observeHumanInput?.((observation) => {
+        record.live.stopObservingHumanInput = page.observeHumanInput?.((observation) => {
           this.recordHumanActivity(id, observation);
         });
-        page.onClose(record.onClose);
-        page.onMetadataChanged(record.onMetadataChanged);
-        acquiredCdp.on("Page.frameNavigated", record.onFrameNavigated);
-        acquiredCdp.on("Page.navigatedWithinDocument", record.onSameDocumentNavigation);
-        acquiredCdp.on("Page.frameStartedLoading", record.onFrameStartedLoading);
-        acquiredCdp.on("Page.frameStoppedLoading", record.onFrameStoppedLoading);
-        acquiredCdp.on("Page.javascriptDialogClosed", record.onDialogClosed);
-        acquiredCdp.on("Page.javascriptDialogOpening", record.onDialogOpening);
+        page.onClose(record.live.onClose);
+        page.onMetadataChanged(record.live.onMetadataChanged);
+        acquiredCdp.on("Page.frameNavigated", record.live.onFrameNavigated);
+        acquiredCdp.on("Page.navigatedWithinDocument", record.live.onSameDocumentNavigation);
+        acquiredCdp.on("Page.frameStartedLoading", record.live.onFrameStartedLoading);
+        acquiredCdp.on("Page.frameStoppedLoading", record.live.onFrameStoppedLoading);
+        acquiredCdp.on("Page.javascriptDialogClosed", record.live.onDialogClosed);
+        acquiredCdp.on("Page.javascriptDialogOpening", record.live.onDialogOpening);
       });
       const record = registered;
       if (!record) return;
@@ -1373,14 +1693,19 @@ export class SurfaceLedger {
       // The record and listeners exist first, so that dialog can be answered.
       const initialized = record.sizeLock.run(async () => {
         await acquiredCdp.send("Page.enable");
+        if (record.live?.page !== page || page.isClosed()) return;
         await this.initializeDocument(record);
         await this.refreshNavigation(record);
         if (this.closed || this.records.get(id) !== record || page.isClosed()) return;
-        if (record.dialog) {
+        if (record.live.dialog) {
           this.keepForDialog(record, record.ordinary, true, undefined);
           return;
         }
-        const write = await this.applyMetrics(record, ordinaryMetrics(record.ordinary), undefined);
+        const write = await this.applyMetrics(
+          record,
+          this.metricsFor(record, record.agentMetrics),
+          undefined,
+        );
         // A first-script dialog can announce the page before initialization
         // finishes. Publish its eventual geometry before a stream uses it.
         if (write.changed && record.announced) this.emit({ surfaceId: record.id, type: "resized" });
@@ -1388,13 +1713,28 @@ export class SurfaceLedger {
       // A dialog makes the page reachable immediately; initialization keeps
       // its per-page lock until Chromium answers, without holding other pages.
       void initialized
-        .catch(() => (record.announced ? page.close() : undefined))
+        .catch(() => {
+          if (record.live?.page !== page) return;
+          wakeCleanup = waking !== undefined;
+          return record.announced ? page.close() : undefined;
+        })
         .catch(() => undefined);
       await Promise.race([initialized, dialogOpening]);
       announce();
     } catch (error) {
+      wakeCleanup = waking !== undefined;
       const cleanup = await Promise.allSettled([
-        ...(registered ? [this.remove(registered)] : cdp ? [cdp.detach()] : []),
+        ...(registered
+          ? [
+              waking
+                ? registered.live?.page === page
+                  ? this.disposeRecord(registered)
+                  : Promise.resolve()
+                : this.remove(registered),
+            ]
+          : cdp
+            ? [cdp.detach()]
+            : []),
         page.close(),
       ]);
       const cleanupFailures = cleanup.flatMap((result) =>
@@ -1416,9 +1756,11 @@ export class SurfaceLedger {
    */
   private startingSize(opener: BrowserPage | null): PageSize {
     const openerId = opener ? this.pageIds.get(opener) : undefined;
-    const openerRecord = openerId ? this.records.get(openerId) : undefined;
+    const openerRecord = openerId ? this.liveRecord(openerId) : undefined;
     if (!openerRecord) return { ...this.followedSize };
-    return openerRecord.applied ? metricsSize(openerRecord.applied) : { ...openerRecord.ordinary };
+    return openerRecord.live.applied
+      ? metricsSize(openerRecord.live.applied)
+      : { ...openerRecord.ordinary };
   }
 
   /**
@@ -1434,7 +1776,9 @@ export class SurfaceLedger {
     fit: boolean,
     beforeResize: BeforePageResize | undefined,
   ): Promise<PageSizeWrite> {
-    const found = this.records.get(surfaceId);
+    const found = this.liveRecord(surfaceId);
+    if (!found && this.records.has(surfaceId))
+      return this.use(surfaceId, async () => ({ changed: false }));
     if (!found) {
       return Promise.reject(
         new BrowserRuntimeError("not_found", "The browser surface does not exist."),
@@ -1443,27 +1787,29 @@ export class SurfaceLedger {
     // Under a dialog the page answers no write, and one Chromium already holds
     // keeps this page's lock until the dialog closes; the person's size waits
     // here instead, so nothing the person does next waits behind it.
-    if (found.dialog) {
+    if (found.live.dialog) {
       this.keepForDialog(found, requested, fit, beforeResize);
       return Promise.resolve({ changed: false });
     }
-    return found.sizeLock.run(async () => {
-      if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
-      const record = this.records.get(surfaceId);
-      if (record !== found || record.page.isClosed()) {
-        throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
-      }
-      if (record.dialog) {
-        this.keepForDialog(record, requested, fit, beforeResize);
-        return { changed: false };
-      }
-      const size = typeof requested === "function" ? requested() : requested;
-      if (!size) return { changed: false };
-      assertPageSize(size);
-      if (!fit) this.followedSize = { height: size.height, width: size.width };
-      record.ordinary = { height: size.height, width: size.width };
-      return this.applyPersonSize(record, beforeResize, fit && this.removeAgentSize(record));
-    });
+    return this.use(found.id, () =>
+      found.sizeLock.run(async () => {
+        if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
+        const record = this.liveRecord(surfaceId);
+        if (record !== found || record.live.page.isClosed()) {
+          throw new BrowserRuntimeError("not_found", "The browser surface does not exist.");
+        }
+        if (record.live.dialog) {
+          this.keepForDialog(record, requested, fit, beforeResize);
+          return { changed: false };
+        }
+        const size = typeof requested === "function" ? requested() : requested;
+        if (!size) return { changed: false };
+        assertPageSize(size);
+        if (!fit) this.followedSize = { height: size.height, width: size.width };
+        record.ordinary = { height: size.height, width: size.width };
+        return this.applyPersonSize(record, beforeResize, fit && this.removeAgentSize(record));
+      }),
+    );
   }
 
   /** Records the person's size for a page under a dialog; it lands when the dialog closes. */
@@ -1474,19 +1820,19 @@ export class SurfaceLedger {
     beforeResize: BeforePageResize | undefined,
   ): void {
     if (typeof size === "function") {
-      record.sizeWaiting = {
+      record.live.sizeWaiting = {
         beforeResize,
-        fit: record.sizeWaiting?.fit === true,
-        hasPersonSize: record.sizeWaiting?.hasPersonSize === true,
+        fit: record.live.sizeWaiting?.fit === true,
+        hasPersonSize: record.live.sizeWaiting?.hasPersonSize === true,
         followSize: size,
       };
       return;
     }
     if (!fit) this.followedSize = { height: size.height, width: size.width };
     record.ordinary = { height: size.height, width: size.width };
-    record.sizeWaiting = {
+    record.live.sizeWaiting = {
       beforeResize,
-      fit: fit || record.sizeWaiting?.fit === true,
+      fit: fit || record.live.sizeWaiting?.fit === true,
       hasPersonSize: true,
     };
   }
@@ -1516,10 +1862,10 @@ export class SurfaceLedger {
     // An agent's size that would follow a larger view past the frame bound
     // stays where it is until the agent changes it or the person fits.
     if (!metricsFit(next)) return { changed: false };
-    const before = record.applied ? metricsSize(record.applied) : null;
+    const before = record.live.applied ? metricsSize(record.live.applied) : null;
     const write = await this.applyMetrics(record, next, beforeResize);
     if (this.records.get(record.id) !== record) return write;
-    const after = record.applied ? metricsSize(record.applied) : null;
+    const after = record.live.applied ? metricsSize(record.live.applied) : null;
     if (
       after &&
       before &&
@@ -1539,29 +1885,29 @@ export class SurfaceLedger {
   private dialogOpened(record: SurfaceRecord, parameters: unknown): void {
     const dialog = parseDialog(parameters);
     if (!dialog) return;
-    record.dialog = { ...dialog, answering: false, id: randomUUID() };
-    record.faviconReader?.dialog(true);
+    record.live.dialog = { ...dialog, answering: false, id: randomUUID() };
+    record.live.faviconReader?.dialog(true);
     this.emit({
       type: "dialog-event",
-      targetId: record.targetId,
+      targetId: record.live.targetId,
       method: "Page.javascriptDialogOpening",
-      parameters: { ...(parameters as CdpParameters), dialogId: record.dialog.id },
+      parameters: { ...(parameters as CdpParameters), dialogId: record.live.dialog.id },
     });
     this.emit({ surfaceId: record.id, type: "dialog" });
   }
 
   /** A page's dialog closed: the person's size that waited for it reaches the page. */
   private async dialogClosed(record: SurfaceRecord): Promise<void> {
-    const initializing = record.applied === null;
-    record.dialog = null;
-    record.faviconReader?.dialog(false);
+    const initializing = record.live.applied === null;
+    record.live.dialog = null;
+    record.live.faviconReader?.dialog(false);
     if (!initializing) this.emit({ surfaceId: record.id, type: "dialog" });
-    if (!record.sizeWaiting) return;
+    if (!record.live.sizeWaiting) return;
     await record.sizeLock.run(async () => {
-      if (this.closed || this.records.get(record.id) !== record || record.dialog) return;
-      const waiting = record.sizeWaiting;
+      if (this.closed || this.records.get(record.id) !== record || record.live.dialog) return;
+      const waiting = record.live.sizeWaiting;
       if (!waiting) return;
-      record.sizeWaiting = null;
+      record.live.sizeWaiting = null;
       if (waiting.followSize) {
         const size = waiting.followSize();
         if (size) {
@@ -1595,26 +1941,26 @@ export class SurfaceLedger {
       person: { ...record.ordinary },
       agent: agent ? resolveAgentSize(record.ordinary, agent) : null,
     };
-    const same = record.applied && sameMetrics(record.applied, next);
+    const same = record.live.applied && sameMetrics(record.live.applied, next);
     if (
       same &&
-      (!record.page.applyGeometry ||
-        canonicalJson(record.appliedGeometry) === canonicalJson(geometry))
+      (!record.live.page.applyGeometry ||
+        canonicalJson(record.live.appliedGeometry) === canonicalJson(geometry))
     )
       return { changed: false };
     if (!same) await beforeResize?.();
     try {
-      if (record.page.applyGeometry) await record.page.applyGeometry(geometry);
-      else await record.cdp.send("Emulation.setDeviceMetricsOverride", next);
+      if (record.live.page.applyGeometry) await record.live.page.applyGeometry(geometry);
+      else await record.live.cdp.send("Emulation.setDeviceMetricsOverride", next);
     } catch (error) {
-      if (!record.page.isClosed()) throw error;
+      if (!record.live.page.isClosed()) throw error;
       throw new BrowserRuntimeError("not_found", "The browser surface does not exist.", {
         cause: error,
       });
     }
     if (this.records.get(record.id) === record) {
-      record.applied = next;
-      record.appliedGeometry = geometry;
+      record.live.applied = next;
+      record.live.appliedGeometry = geometry;
       if (!same) record.geometryRevision++;
       this.emit({
         type: "geometry",
@@ -1627,12 +1973,12 @@ export class SurfaceLedger {
   }
 
   private metricsFor(record: SurfaceRecord, agent: CdpParameters | null): CdpParameters {
-    return record.page.applyGeometry && agent
+    return record.live.page.applyGeometry && agent
       ? resolveAgentSize(record.ordinary, agent)
       : effectiveMetrics(record.ordinary, agent);
   }
 
-  private async remove(record: SurfaceRecord): Promise<void> {
+  private async remove(record: TabRecord): Promise<void> {
     const existing = this.removals.get(record.id);
     if (existing) return existing;
     const removal = this.removeOnce(record).finally(() => {
@@ -1642,14 +1988,17 @@ export class SurfaceLedger {
     return removal;
   }
 
-  private async removeOnce(record: SurfaceRecord): Promise<void> {
+  private async removeOnce(record: TabRecord): Promise<void> {
     await this.viewportMutex.run(async () => {
       if (!this.records.delete(record.id)) return;
-      this.adoptedTargetIds.delete(record.targetId);
-      this.pageIds.delete(record.page);
+      this.surfaceIdsByTarget.delete(record.lastTargetId);
+      record.lease.close();
+      this.adoptedTargetIds.delete(record.lastTargetId);
+      this.releaseTarget?.(record.lastTargetId);
+      if (record.live) this.pageIds.delete(record.live.page);
       const wasActive = this.activeId === record.id;
       if (wasActive) this.activeId = null;
-      await this.disposeRecord(record);
+      if (isLive(record)) await this.disposeRecord(record);
       if (record.announced && !this.tearingDown) {
         const closedSurface = { ...this.toSurface(record), active: false };
         this.emit({
@@ -1668,21 +2017,22 @@ export class SurfaceLedger {
   }
 
   private async disposeRecord(record: SurfaceRecord): Promise<void> {
-    record.pendingNavigations.clear();
-    record.recentCommits.clear();
-    record.titleReader?.close();
-    record.stopObservingHumanInput?.();
-    record.unbindGeometry?.();
-    record.page.offClose(record.onClose);
-    record.page.offMetadataChanged(record.onMetadataChanged);
-    record.cdp.off("Page.frameNavigated", record.onFrameNavigated);
-    record.cdp.off("Page.navigatedWithinDocument", record.onSameDocumentNavigation);
-    record.cdp.off("Page.frameStartedLoading", record.onFrameStartedLoading);
-    record.cdp.off("Page.frameStoppedLoading", record.onFrameStoppedLoading);
-    record.cdp.off("Page.javascriptDialogOpening", record.onDialogOpening);
-    record.cdp.off("Page.javascriptDialogClosed", record.onDialogClosed);
-    await Promise.all([record.faviconReader?.close(), record.scriptTargets?.close()]);
-    await record.cdp.detach().catch(() => undefined);
+    const live = record.live;
+    live.pendingNavigations.clear();
+    live.recentCommits.clear();
+    live.titleReader?.close();
+    live.stopObservingHumanInput?.();
+    live.unbindGeometry?.();
+    live.page.offClose(live.onClose);
+    live.page.offMetadataChanged(live.onMetadataChanged);
+    live.cdp.off("Page.frameNavigated", live.onFrameNavigated);
+    live.cdp.off("Page.navigatedWithinDocument", live.onSameDocumentNavigation);
+    live.cdp.off("Page.frameStartedLoading", live.onFrameStartedLoading);
+    live.cdp.off("Page.frameStoppedLoading", live.onFrameStoppedLoading);
+    live.cdp.off("Page.javascriptDialogOpening", live.onDialogOpening);
+    live.cdp.off("Page.javascriptDialogClosed", live.onDialogClosed);
+    await Promise.all([live.faviconReader?.close(), live.scriptTargets?.close()]);
+    await live.cdp.detach().catch(() => undefined);
   }
 
   /**
@@ -1694,27 +2044,32 @@ export class SurfaceLedger {
       !parameters ||
       typeof parameters !== "object" ||
       !("frameId" in parameters) ||
-      parameters.frameId !== record.targetId ||
-      record.loading === loading
+      parameters.frameId !== record.live.targetId ||
+      record.live.loading === loading
     )
       return;
-    record.loading = loading;
-    if (!loading) void this.refreshNavigation(record).catch(() => undefined);
+    record.live.loading = loading;
+    if (!loading) {
+      this.touch(record.id);
+      void this.refreshNavigation(record).catch(() => undefined);
+    }
     if (record.announced && this.records.get(record.id) === record)
       this.emit({ change: "updated", surface: this.toSurface(record), type: "changed" });
   }
 
   private async initializeDocument(record: SurfaceRecord): Promise<void> {
+    const live = record.live;
     const documentId = record.documentId;
-    const committedUrl = record.committedUrl;
+    const committedUrl = live.committedUrl;
     // Page.enable does not replay a commit that raced renderer initialization.
-    const snapshot = await record.cdp.send("Page.getFrameTree");
+    const snapshot = await live.cdp.send("Page.getFrameTree");
     if (
       this.closed ||
       this.records.get(record.id) !== record ||
-      record.page.isClosed() ||
+      record.live !== live ||
+      live.page.isClosed() ||
       record.documentId !== documentId ||
-      record.committedUrl !== committedUrl
+      live.committedUrl !== committedUrl
     )
       return;
     const frame = z
@@ -1731,7 +2086,7 @@ export class SurfaceLedger {
         }),
       })
       .parse(snapshot).frameTree.frame;
-    if (frame.id !== record.targetId || frame.parentId)
+    if (frame.id !== live.targetId || frame.parentId)
       throw new BrowserRuntimeError(
         "conflict",
         "Initial browser document does not belong to the registered root target.",
@@ -1739,27 +2094,30 @@ export class SurfaceLedger {
     delete frame.parentId;
     const url = frame.url + (frame.urlFragment?.startsWith("#") ? frame.urlFragment : "");
     if (
-      url !== record.committedUrl ||
-      (record.loaderId !== null && frame.loaderId !== record.loaderId) ||
-      attemptedAddress(frame.unreachableUrl ?? "") !== record.unreachableUrl
+      (live.restoring && url !== "about:blank") ||
+      url !== live.committedUrl ||
+      (live.loaderId !== null && frame.loaderId !== live.loaderId) ||
+      attemptedAddress(frame.unreachableUrl ?? "") !== live.unreachableUrl
     )
-      record.onFrameNavigated({ frame });
-    else record.loaderId ??= frame.loaderId;
+      live.onFrameNavigated({ frame });
+    else live.loaderId ??= frame.loaderId;
   }
 
   private async refreshNavigation(record: SurfaceRecord): Promise<void> {
+    const live = record.live;
     if (this.navigationVersion !== 1) return;
-    const revision = ++record.navigationRevision;
+    const revision = ++live.navigationRevision;
     const history = z
       .object({
         currentIndex: z.number().int().nonnegative(),
         entries: z.array(z.object({ id: z.number().int() })),
       })
-      .parse(await record.cdp.send("Page.getNavigationHistory"));
+      .parse(await live.cdp.send("Page.getNavigationHistory"));
     if (
       this.closed ||
       this.records.get(record.id) !== record ||
-      revision !== record.navigationRevision
+      record.live !== live ||
+      revision !== live.navigationRevision
     )
       return;
     const navigation = {
@@ -1767,22 +2125,23 @@ export class SurfaceLedger {
       canGoForward: history.currentIndex + 1 < history.entries.length,
     };
     if (
-      record.navigation?.canGoBack === navigation.canGoBack &&
-      record.navigation?.canGoForward === navigation.canGoForward
+      record.live?.navigation?.canGoBack === navigation.canGoBack &&
+      record.live?.navigation?.canGoForward === navigation.canGoForward
     )
       return;
-    record.navigation = navigation;
+    live.navigation = navigation;
     if (record.announced)
       this.emit({ type: "changed", change: "updated", surface: this.toSurface(record) });
   }
 
-  private toSurface(record: SurfaceRecord): BrowserSurface {
+  private toSurface(record: TabRecord): BrowserSurface {
     return {
+      state: surfaceState(record),
       active: record.id === this.activeId,
-      ...record.navigation,
+      ...record.live?.navigation,
       ...(record.favicon === null ? {} : { favicon: record.favicon }),
-      ...(record.loading ? { loading: true } : {}),
-      ...(record.navigationFailed ? { navigationFailed: true } : {}),
+      ...(record.live?.loading ? { loading: true } : {}),
+      ...(record.live?.navigationFailed ? { navigationFailed: true } : {}),
       id: record.id,
       sizedByAgent: record.agentMetrics !== null,
       documentId: record.documentId,
@@ -1790,7 +2149,7 @@ export class SurfaceLedger {
       order: record.order,
       openerId: record.openerId && this.records.has(record.openerId) ? record.openerId : null,
       title: record.title,
-      url: record.url,
+      url: normalizeUrl(record.url),
     };
   }
 
@@ -1799,6 +2158,10 @@ export class SurfaceLedger {
   }
 
   private emit(event: SurfaceLedgerEvent): void {
+    if (event.type === "changed" && (event.change === "created" || event.change === "closed"))
+      this.inventoryVersion++;
+
+    this.policyChanged();
     for (const listener of this.listeners) {
       try {
         listener(event);
@@ -1927,10 +2290,18 @@ function attemptedAddress(address: string): string | null {
   }
 }
 
-function surfaceAddress(record: Pick<SurfaceRecord, "committedUrl" | "unreachableUrl">): string {
-  return normalizeUrl(record.unreachableUrl ?? record.committedUrl);
+function surfaceAddress(record: Pick<SurfaceRecord, "live">): string {
+  return record.live.unreachableUrl ?? record.live.committedUrl;
 }
 
 function normalizeUrl(value: string): string {
   return value.slice(0, browserWorkspaceTabUrlMaxLength);
+}
+
+function isLive(record: TabRecord): record is SurfaceRecord {
+  return record.live !== null;
+}
+
+function surfaceState(record: TabRecord): "live" | "suspended" {
+  return record.live && record.lease.state !== "resuming" ? "live" : "suspended";
 }

@@ -4,20 +4,13 @@ import {
   type BrowserTabArrangement,
   type BrowserTabOrderTab,
 } from "@opensteer/core";
-import type { BrowserTabLayout, WorkspaceTabLineage } from "@opensteer/protocol";
+import type { BrowserTabLayout } from "@opensteer/protocol";
+import type { BrowserTabStore } from "./browser-tab-store.js";
 
 export function browserTabOrderTabs(
-  lineages: readonly WorkspaceTabLineage[] | undefined,
-): BrowserTabOrderTab[] {
-  return (lineages ?? []).flatMap((lineage) =>
-    (lineage.tabs ?? []).map((tab) => ({
-      id: tab.id,
-      openerId: tab.openerId,
-      createdAt: tab.createdAt ?? lineage.createdAt,
-      lineageCreatedAt: lineage.createdAt,
-      order: tab.order,
-    })),
-  );
+  store: BrowserTabStore | undefined,
+): readonly BrowserTabOrderTab[] {
+  return store?.structure().map((tab) => ({ ...tab, id: tab.tabId })) ?? [];
 }
 
 export function browserTabArrangement(

@@ -11,7 +11,7 @@ export function runnerAuxiliaryWelcome(
   return RunnerAuxiliaryWelcomeSchema.parse({
     ...stream.fence,
     ...fields,
-    ...(module === "browser" ? { browserWireVersion: 1 } : {}),
+    ...(module === "browser" ? { browserWireVersion: 2 } : {}),
     ...(module === "integrations" && stream.identity.modules.integrations?.loginText === 1
       ? { loginText: 1 }
       : {}),

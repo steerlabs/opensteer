@@ -578,7 +578,9 @@ test("phone browser Kotlin selects Android; the files its tests share keep their
   ])
     assert.equal(decide([file], graph).lanes.android, true, file);
   for (const file of [
-    "packages/browser-core/test-vectors/attach-ticket.json",
+    "packages/browser-core/test-vectors/attach-tickets.v1.json",
+    "packages/browser-core/test-vectors/frames.v1.json",
+    "packages/browser-core/test-vectors/fences.v1.json",
     "apps/mobile/modules/phone-browser/index.ts",
     "apps/mobile/modules/phone-browser/types.ts",
   ]) {

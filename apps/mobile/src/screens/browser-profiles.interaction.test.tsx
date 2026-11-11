@@ -1,3 +1,4 @@
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import type { ReactNode } from "react";
@@ -190,38 +191,40 @@ function text(): string {
 }
 
 function host(manage = true, empty = false) {
-  const snapshot = {
-    connection: "connected",
-    network: "online",
-    session: "authenticated",
-    user: { id: "user-a" },
-    browserProfileManageAvailable: manage,
-    browserProfiles: empty
-      ? []
-      : [
-          { id: "bpr_work", name: "Work", revision: 1 },
-          { id: "bpr_personal", name: "Personal", revision: 1 },
-        ],
-    browserProfileDeletions: [] as {
-      profileId: string;
-      computerId: string;
-      state: "pending-computer" | "pending-restart";
-    }[],
-    browserProfileGrants: [
-      { id: "grant-research", profileId: "bpr_work", workspaceId: "wsp_research" },
-    ],
-    workspaces: [
-      { id: "wsp_research", name: "Research", kind: "project" },
-      { id: "wsp_buyer", name: "Buyer", kind: "project" },
-    ],
-    browserTabGroups: [],
-    workspaceTabs: [],
-    workspaceTabRestoreVersion: 1,
-    activatingWorkspaceTabs: [],
-    browserSessions: [],
-    browserPlacements: [],
-    machines: [{ id: "computer-delete", name: "Studio Mac" }],
-  };
+  const snapshot = seedBrowserSnapshot(
+    {
+      connection: "connected",
+      network: "online",
+      session: "authenticated",
+      user: { id: "user-a" },
+      browserProfileManageAvailable: manage,
+      browserProfiles: empty
+        ? []
+        : [
+            { id: "bpr_work", name: "Work", revision: 1 },
+            { id: "bpr_personal", name: "Personal", revision: 1 },
+          ],
+      browserProfileDeletions: [] as {
+        profileId: string;
+        computerId: string;
+        state: "pending-computer" | "pending-restart";
+      }[],
+      browserProfileGrants: [
+        { id: "grant-research", profileId: "bpr_work", workspaceId: "wsp_research" },
+      ],
+      workspaces: [
+        { id: "wsp_research", name: "Research", kind: "project" },
+        { id: "wsp_buyer", name: "Buyer", kind: "project" },
+      ],
+      browserTabGroups: [],
+      workspaceTabRestoreVersion: 1,
+      activatingWorkspaceTabs: [],
+      browserSessions: [],
+      browserPlacements: [],
+      machines: [{ id: "computer-delete", name: "Studio Mac" }],
+    } as unknown as import("@opensteer/client/host").HostSnapshot,
+    [],
+  );
   const dispatch = vi.fn(async (command: { type: string }) => ({ type: command.type }));
   state.hostClient = { dispatch, getSnapshot: () => snapshot };
   return { dispatch, snapshot };

@@ -66,9 +66,11 @@ describe("readBrowserRuntimeConfig", () => {
       OPENSTEER_BROWSER_PROFILE_ROOT: "/var/lib/opensteer/browser-profiles",
       OPENSTEER_BROWSER_RUNTIME_ID: "runtime_main",
       OPENSTEER_CHROMIUM_EXECUTABLE: "/usr/bin/chromium",
+      OPENSTEER_BROWSER_MEMORY_BUDGET_MB: "512",
     });
     expect(config.publicKeys.size).toBe(0);
     expect(config.bridgeToken).toBe("local-browser-bridge-token-with-entropy");
+    expect(config.memoryBudgetBytes).toBe(512 * 1024 ** 2);
   });
 
   it.each([
@@ -77,8 +79,7 @@ describe("readBrowserRuntimeConfig", () => {
     ["invalid public keys", { OPENSTEER_BROWSER_ATTACH_PUBLIC_KEYS: "[]" }],
     ["invalid port", { OPENSTEER_BROWSER_PORT: "70000" }],
     ["invalid boolean", { OPENSTEER_BROWSER_HEADLESS: "yes" }],
-    ["invalid profile capacity", { OPENSTEER_BROWSER_MAX_PROFILE_HOSTS: "0" }],
-    ["invalid session capacity", { OPENSTEER_BROWSER_MAX_SESSIONS_PER_PROFILE: "129" }],
+    ["invalid memory budget", { OPENSTEER_BROWSER_MEMORY_BUDGET_MB: "0" }],
   ])("rejects %s", (_label, override) => {
     expect(() =>
       readBrowserRuntimeConfig({

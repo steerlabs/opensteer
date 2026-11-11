@@ -1,3 +1,4 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -49,21 +50,23 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
       profiles: [],
       profileGrants: [],
       sessions: [
-        {
-          access: "read-write",
-          createdAt: new Date().toISOString(),
-          id: sessionId,
-          origin: "workspace",
-          placement: { kind: "runner", runnerId: ids.runnerId },
-          profileId: null,
-          runtimeId: "idle-smoke",
-          state: "ready",
-          updatedAt: new Date().toISOString(),
-          workspaceId: ids.workspaceId,
-          tabCatalog: {
+        seedBrowserSession(
+          {
+            access: "read-write",
+            createdAt: new Date().toISOString(),
+            id: sessionId,
+            origin: "workspace",
+            placement: { kind: "runner", runnerId: ids.runnerId },
+            profileId: null,
+            runtimeId: "idle-smoke",
+            state: "ready",
+            updatedAt: new Date().toISOString(),
+            workspaceId: ids.workspaceId,
+          },
+          {
             generation: 1,
             revision: 1,
-            tabs: [
+            rows: [
               {
                 id: surfaceId,
                 title: "Idle smoke",
@@ -76,7 +79,7 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
               },
             ],
           },
-        },
+        ),
       ],
     },
   });

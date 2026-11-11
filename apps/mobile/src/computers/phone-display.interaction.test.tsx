@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { encodeDisplayViewerFrame } from "@opensteer/protocol";
-import { RunPlaceStore } from "@opensteer/client/host";
+import { BrowserTabStore, RunPlaceStore } from "@opensteer/client/host";
 import { createId, PlaceEnteredEventViewSchema } from "@opensteer/core";
 import { FoldedPage } from "../thread/folded-page.js";
 import type { HostClient, HostSnapshot, WebSocketClient } from "@opensteer/client/host";
@@ -298,6 +298,7 @@ async function setup(
       }),
     );
   let snapshot = {
+    browserTabs: new BrowserTabStore(),
     connection: "connected",
     session: "authenticated",
     user: { id: "person" },
@@ -347,6 +348,7 @@ async function setup(
     listeners.forEach((listener) => listener());
   };
   const client = {
+    browserTabs: snapshot.browserTabs,
     getSnapshot: () => snapshot,
     runPlace: runPlaces.get,
     subscribeRunPlace: runPlaces.subscribe,

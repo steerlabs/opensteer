@@ -1,8 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import {
-  browserSessionTabsFullReason,
-  browserWorkspaceTabUrlMaxLength,
-} from "@opensteer/protocol/browser";
+import { browserWorkspaceTabUrlMaxLength } from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import {
   FakeContext,
@@ -34,6 +31,332 @@ const scriptTargetSetup = [
 ];
 
 describe("SurfaceLedger", () => {
+  it.each(["reject", "timeout"])(
+    "retains a %s close and suspends a late close without retiring the tab",
+    async (failure) => {
+      vi.useFakeTimers();
+      const page = new FakePage({ url: "https://close.test/" });
+      page.captureRestore = async () => ({ saved: true });
+      const release = vi.fn();
+      const ledger = new SurfaceLedger(new FakeContext([page]), { releaseTarget: release });
+      await ledger.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const record = [...ledger.policyRecords()][0]!;
+      const live = record.live!;
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((event) => events.push(event));
+      const closing = Promise.withResolvers<void>();
+      const close = vi.spyOn(page, "close").mockImplementation(() => {
+        return closing.promise;
+      });
+      let lateClose: (() => void) | undefined;
+      vi.spyOn(page, "onClose").mockImplementation((listener) => {
+        lateClose = listener;
+      });
+      try {
+        let outcome: boolean | undefined;
+        void ledger
+          .sleep(record.id, () => null)
+          .then((value) => {
+            outcome = value;
+          });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(close).toHaveBeenCalledOnce();
+        expect(record.live).toBe(live);
+        expect(record.lease.state).toBe("sleeping");
+        expect(release).not.toHaveBeenCalled();
+        expect(ledger.stateOf(record.id)).toBe("live");
+        if (failure === "reject") {
+          closing.reject(new Error("Close refused"));
+          await vi.advanceTimersByTimeAsync(0);
+        } else await vi.advanceTimersByTimeAsync(2_000);
+        expect(outcome).toBe(false);
+        expect(record.live).toBe(live);
+        expect(record.lease.state).toBe("live");
+        expect(record.restore).toMatchObject({ engine: null, bytes: 0 });
+        expect(release).not.toHaveBeenCalled();
+        page.navigate("https://after-close.test/", "Still live");
+        await vi.advanceTimersByTimeAsync(0);
+        lateClose!();
+        expect(ledger.stateOf(record.id)).toBe("suspended");
+        expect(release).toHaveBeenCalledExactlyOnceWith(live.targetId);
+        const next = await ledger.wake(record.id);
+        expect(next.surface.url).toBe("https://after-close.test/");
+        lateClose!();
+        expect(ledger.binding(record.id)?.page).toBe(next.page);
+        expect(
+          events.filter((event) => event.type === "changed" && event.change === "closed"),
+        ).toEqual([]);
+      } finally {
+        closing.resolve();
+        close.mockRestore();
+        await ledger.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+  it("rechecks engine protections after capture and allows a noopener sibling", async () => {
+    const page = new FakePage({ url: "https://parent.test/" });
+    const popup = new FakePage({ url: "https://popup.test/", opener: page });
+    const ledger = new SurfaceLedger(new FakeContext([page, popup]));
+    await ledger.start();
+    const record = [...ledger.policyRecords()].find((record) => record.live?.page === page)!;
+    try {
+      expect(await ledger.sleep(record.id, () => null)).toBe(false);
+      popup.hasOpenerAccess = () => false;
+      page.captureRestore = async () => {
+        page.keepAwake = () => "download";
+        return {};
+      };
+      expect(await ledger.sleep(record.id, () => null)).toBe(false);
+      expect(record.live).not.toBeNull();
+      page.captureRestore = async () => ({});
+      page.keepAwake = () => null;
+      let openerReads = 0;
+      page.hasOpenerAccess = () => {
+        if (++openerReads === 2) page.keepAwake = () => "upload";
+        return false;
+      };
+      expect(await ledger.sleep(record.id, () => null)).toBe(false);
+      expect(record.live).not.toBeNull();
+      page.hasOpenerAccess = () => false;
+      page.keepAwake = () => null;
+      expect(await ledger.sleep(record.id, () => null)).toBe(true);
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+  it("sleeps a lease without closing its record and wakes once with the same identity", async () => {
+    const page = new FakePage({ url: "https://sleep.test/", title: "Keep me" });
+    const context = new FakeContext([page]);
+    const ledger = new SurfaceLedger(context);
+    const events: SurfaceLedgerEvent[] = [];
+    ledger.subscribe((event) => events.push(event));
+    await ledger.start();
+    await flushMicrotasks();
+    const before = ledger.snapshot()[0]!;
+    const oldTargetId = await page.targetId();
+    const revision = ledger.inventoryRevision;
+    const metrics = { width: 800, height: 600, deviceScaleFactor: 1, mobile: false };
+    await ledger.agentMetrics(await page.targetId(), metrics);
+    try {
+      expect(await ledger.sleep(before.id, () => null)).toBe(true);
+      expect(ledger.binding(before.id)).toBeNull();
+      expect(ledger.surfaceIdForTarget(oldTargetId)).toBe(before.id);
+      expect(ledger.stateOf(before.id)).toBe("suspended");
+      expect(ledger.snapshot()[0]).toMatchObject({
+        id: before.id,
+        title: "Keep me",
+        url: before.url,
+        state: "suspended",
+      });
+      expect(ledger.inventoryRevision).toBe(revision);
+      expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toEqual([]);
+      const create = vi.spyOn(context, "createPage");
+      const [first, second] = await Promise.all([ledger.wake(before.id), ledger.wake(before.id)]);
+      expect(first).toEqual(second);
+      expect(ledger.surfaceIdForTarget(oldTargetId)).toBeUndefined();
+      expect(ledger.surfaceIdForTarget(first.targetId)).toBe(before.id);
+      expect(await ledger.resolveTarget(first.targetId)).toBe(true);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(ledger.snapshot()[0]).toMatchObject({
+        id: before.id,
+        order: before.order,
+        openerId: before.openerId,
+        sizedByAgent: true,
+        state: "live",
+      });
+      expect(ledger.snapshot()[0]!.documentId).not.toBe(before.documentId);
+      expect(ledger.viewportOf(before.id)).toEqual({ width: 800, height: 600 });
+      expect(ledger.inventoryRevision).toBe(revision);
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
+
+  it.each(["demand", "document", "dialog", "close"])(
+    "aborts capture when %s arrives",
+    async (kind) => {
+      const page = new FakePage({ url: "https://capture.test/" });
+      const captured = Promise.withResolvers<unknown | null>();
+      const started = Promise.withResolvers<void>();
+      Object.assign(page, {
+        captureRestore: () => {
+          started.resolve();
+          return captured.promise;
+        },
+      });
+      const ledger = new SurfaceLedger(new FakeContext([page]));
+      await ledger.start();
+      const id = ledger.snapshot()[0]!.id;
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((e) => events.push(e));
+      let using: Promise<void> | undefined;
+      try {
+        const sleeping = ledger.sleep(id, (r) => (r.live?.dialog ? "dialog" : null));
+        await withTimeout(started.promise, 1000, {
+          timeoutError: () => new Error("Capture never started"),
+        });
+        if (kind === "demand")
+          using = ledger.use(id, async () => {
+            expect(page.isClosed()).toBe(false);
+          });
+        if (kind === "document") page.navigate("https://new.test/", "New");
+        if (kind === "dialog")
+          page.cdpSession.emit("Page.javascriptDialogOpening", { type: "alert", message: "Hold" });
+        if (kind === "close") await ledger.closeSurface(id);
+        captured.resolve({});
+        expect(await sleeping).toBe(false);
+        await using;
+        expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toHaveLength(
+          kind === "close" ? 1 : 0,
+        );
+        if (kind !== "close") expect(ledger.binding(id)?.page).toBe(page);
+      } finally {
+        captured.resolve(null);
+        await ledger.close();
+      }
+    },
+  );
+  it.each(["suspended", "resuming"])(
+    "closes a %s record once without leaking a page",
+    async (state) => {
+      const page = new FakePage({ url: "https://close.test/" });
+      const context = new FakeContext([page]);
+      const ledger = new SurfaceLedger(context);
+      await ledger.start();
+      const id = ledger.snapshot()[0]!.id;
+      await ledger.sleep(id, () => null);
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((e) => events.push(e));
+      const creating = Promise.withResolvers<FakePage>();
+      const started = Promise.withResolvers<void>();
+      const create = vi.spyOn(context, "createPage").mockImplementation(() => {
+        started.resolve();
+        return creating.promise;
+      });
+      let waking: Promise<unknown> | undefined;
+      try {
+        if (state === "resuming") {
+          waking = ledger.wake(id);
+          void waking.catch(() => undefined);
+          await withTimeout(started.promise, 1000, {
+            timeoutError: () => new Error("Wake never created a page"),
+          });
+        }
+        await ledger.closeSurface(id);
+        const next = new FakePage();
+        creating.resolve(next);
+        if (waking) {
+          await expect(waking).rejects.toMatchObject({ code: "not_found" });
+          expect(next.isClosed()).toBe(true);
+        }
+        expect(create).toHaveBeenCalledTimes(state === "resuming" ? 1 : 0);
+        expect(ledger.snapshot()).toEqual([]);
+        expect(events.filter((e) => e.type === "changed" && e.change === "closed")).toHaveLength(1);
+      } finally {
+        creating.resolve(new FakePage());
+        await ledger.close();
+      }
+    },
+  );
+  it.each(["createPage", "Page.enable", "Page.getFrameTree", "Emulation.setDeviceMetricsOverride"])(
+    "keeps a failed %s wake suspended and permits a new address wake",
+    async (failure) => {
+      const page = new FakePage({ url: "https://retry.test/" });
+      const context = new FakeContext([page]);
+      const ledger = new SurfaceLedger(context);
+      await ledger.start();
+      const id = ledger.snapshot()[0]!.id;
+      await ledger.sleep(id, () => null);
+      const events: SurfaceLedgerEvent[] = [];
+      ledger.subscribe((event) => events.push(event));
+      const failedPage = new FakePage();
+      let lateClose: (() => void) | undefined;
+      const onClose = failedPage.onClose.bind(failedPage);
+      vi.spyOn(failedPage, "onClose").mockImplementation((listener) => {
+        lateClose = listener;
+        onClose(listener);
+      });
+      const create = vi.spyOn(context, "createPage").mockImplementationOnce(async () => {
+        if (failure === "createPage") throw new Error("wake refused");
+        failedPage.cdpSession.responses.set(failure, () => {
+          throw new Error("wake refused");
+        });
+        context.addPage(failedPage);
+        return failedPage;
+      });
+      try {
+        await expect(ledger.wake(id)).rejects.toMatchObject({
+          code: "conflict",
+          retryable: true,
+          cause: { message: "wake refused" },
+        });
+        expect(ledger.stateOf(id)).toBe("suspended");
+        expect(ledger.snapshot()).toMatchObject([
+          { id, state: "suspended", url: "https://retry.test/" },
+        ]);
+        expect(
+          events.filter((event) => event.type === "changed" && event.change === "closed"),
+        ).toEqual([]);
+        if (failure !== "createPage") expect(failedPage.isClosed()).toBe(true);
+        const resumed = await ledger.wake(id);
+        expect(resumed.surface.id).toBe(id);
+        expect(create).toHaveBeenCalledTimes(2);
+        expect((resumed.page as FakePage).cdpSession.sent).toContainEqual({
+          method: "Page.navigate",
+          parameters: { url: "https://retry.test/" },
+        });
+        lateClose?.();
+        await flushMicrotasks();
+        expect(ledger.binding(id)?.page).toBe(resumed.page);
+        expect(ledger.surfaceIdForTarget(await failedPage.targetId())).toBeUndefined();
+        expect(ledger.surfaceIdForTarget(resumed.targetId)).toBe(id);
+        await ledger.closeSurface(id);
+        expect(ledger.surfaceIdForTarget(resumed.targetId)).toBeUndefined();
+        expect(
+          events.filter((event) => event.type === "changed" && event.change === "closed"),
+        ).toHaveLength(1);
+      } finally {
+        await ledger.closeOwnedPages();
+        await ledger.close();
+      }
+    },
+  );
+  it("keeps title, address, opener and size through a delayed first wake commit", async () => {
+    const page = new FakePage({ url: "https://keep.test/", title: "Saved title" });
+    const ledger = new SurfaceLedger(new FakeContext([page]));
+    await ledger.start();
+    await flushMicrotasks();
+    const before = ledger.snapshot()[0]!;
+    try {
+      await ledger.sleep(before.id, () => null);
+      const duringWake: string[] = [];
+      ledger.subscribe((event) => {
+        if (event.type === "geometry") duringWake.push(ledger.toRecord(before.id)!.state);
+      });
+      const binding = await ledger.wake(before.id);
+      expect(duringWake).toEqual(["suspended"]);
+      expect(binding.surface).toMatchObject({
+        title: before.title,
+        url: before.url,
+        order: before.order,
+        openerId: before.openerId,
+      });
+      expect(binding.surface.documentId).not.toBe(before.documentId);
+      (binding.page as FakePage).navigate("https://redirect.test/", "New title");
+      await flushMicrotasks();
+      expect(ledger.snapshot()[0]).toMatchObject({
+        url: "https://redirect.test/",
+        title: "New title",
+      });
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
+  });
   it("initializes a popup from its committed document when enable misses the first commit", async () => {
     const page = new FakePage({ url: "about:blank" });
     const deliver = page.cdpSession.emit.bind(page.cdpSession);
@@ -375,14 +698,16 @@ describe("SurfaceLedger", () => {
         },
       });
       expect(ledger.snapshot()[0]).toMatchObject({ url: "https://offline.test/page?q=1#part" });
-      expect(ledger.durableSnapshot()[0]).toMatchObject({
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({
         url: "https://offline.test/page?q=1#part",
       });
       expect(ledger.committedUrl(id)).toBe("chrome-error://chromewebdata/");
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", loaderId: "next", url: "https://online.test/" },
       });
-      expect(ledger.durableSnapshot()[0]).toMatchObject({ url: "https://online.test/" });
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({
+        url: "https://online.test/",
+      });
     } finally {
       await ledger.close();
     }
@@ -401,7 +726,9 @@ describe("SurfaceLedger", () => {
           unreachableUrl: `https://offline.test/${"a".repeat(browserWorkspaceTabUrlMaxLength)}`,
         },
       });
-      expect(ledger.durableSnapshot()[0]).toMatchObject({ url: "opensteer:unavailable-url" });
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({
+        url: "opensteer:unavailable-url",
+      });
     } finally {
       await ledger.close();
     }
@@ -442,16 +769,20 @@ describe("SurfaceLedger", () => {
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", url: "https://example.test/", urlFragment: "#/document/42" },
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("https://example.test/#/document/42");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(
+        "https://example.test/#/document/42",
+      );
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "child", parentId: "main", url: "https://child.test/", urlFragment: "#child" },
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("https://example.test/#/document/42");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(
+        "https://example.test/#/document/42",
+      );
       for (const urlFragment of [undefined, 42, "invalid"]) {
         page.cdpSession.emit("Page.frameNavigated", {
           frame: { id: "main", url: "https://example.test/next", urlFragment },
         });
-        expect(ledger.durableSnapshot()[0]?.url).toBe("https://example.test/next");
+        expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe("https://example.test/next");
       }
     } finally {
       await ledger.close();
@@ -464,19 +795,19 @@ describe("SurfaceLedger", () => {
     try {
       const url = `https://example.test/${"x".repeat(9000)}`;
       page.cdpSession.emit("Page.frameNavigated", { frame: { id: "main", url } });
-      expect(ledger.durableSnapshot()[0]?.url).toBe(url);
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(url);
       const limitUrl = "https://example.test/".padEnd(16384, "x");
       page.cdpSession.emit("Page.frameNavigated", { frame: { id: "main", url: limitUrl } });
-      expect(ledger.durableSnapshot()[0]?.url).toBe(limitUrl);
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe(limitUrl);
       page.cdpSession.emit("Page.frameNavigated", {
         frame: { id: "main", url: limitUrl, urlFragment: "#over" },
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("opensteer:unavailable-url");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe("opensteer:unavailable-url");
       page.cdpSession.emit("Page.navigatedWithinDocument", {
         frameId: "main",
         url: `${limitUrl}x`,
       });
-      expect(ledger.durableSnapshot()[0]?.url).toBe("opensteer:unavailable-url");
+      expect(ledger.toRecord(ledger.snapshot()[0]!.id)?.url).toBe("opensteer:unavailable-url");
     } finally {
       await ledger.close();
     }
@@ -524,23 +855,24 @@ describe("SurfaceLedger", () => {
     await ledger.close();
   });
 
-  it("bounds the number of browser surfaces", async () => {
-    const first = new FakePage();
-    const context = new FakeContext([first]);
-    const ledger = new SurfaceLedger(context, { maxSurfaces: 1 });
+  it("keeps tab 65 and popup 129 open and listed", async () => {
+    const root = new FakePage();
+    const context = new FakeContext([root]);
+    const ledger = new SurfaceLedger(context);
     await ledger.start();
-    const excess = new FakePage({ opener: first });
-
-    context.addPage(excess);
-    await flushMicrotasks();
-    expect(ledger.snapshot()).toHaveLength(1);
-    expect(excess.closeCount).toBe(1);
-    await expect(ledger.openSurface()).rejects.toMatchObject({
-      code: "conflict",
-      reason: browserSessionTabsFullReason,
-    });
-    await ledger.close();
-    expect(() => new SurfaceLedger(context, { maxSurfaces: 65 })).toThrow(/1 through 64/);
+    try {
+      for (let index = 1; index < 128; index++) await ledger.openSurface();
+      expect(ledger.snapshot()).toHaveLength(128);
+      const popup = new FakePage({ opener: root, title: "Popup 129" });
+      context.addPage(popup);
+      await vi.waitFor(() => expect(ledger.snapshot()).toHaveLength(129));
+      expect(ledger.snapshot().at(-1)).toMatchObject({ title: "Popup 129" });
+      expect(popup.closeCount).toBe(0);
+      expect(ledger.snapshot().every((surface) => surface.state === "live")).toBe(true);
+    } finally {
+      await ledger.closeOwnedPages();
+      await ledger.close();
+    }
   });
 
   it("adopts only openerless targets created through the scoped session router", async () => {

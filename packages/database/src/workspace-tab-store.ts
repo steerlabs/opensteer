@@ -4,17 +4,22 @@ import {
   BrowserSurfaceIdSchema,
   BrowserTabGroupIdSchema,
   browserPageSite,
-  browserSessionTabLimit,
   browserTabGroupMaxTabs,
   browserTabOpenReplayWindowMs,
   projectBrowserSessionOpener,
   type BrowserSessionId,
-  type BrowserWorkspaceTabDescriptor,
-  type WorkspaceTabLineage,
+  type BrowserTabRecord,
+  type BrowserGroupRow,
+  type HostedBrowserSession,
 } from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { createHash, randomUUID } from "node:crypto";
-import { authorizedPlaceThreadIds, getBrowserSessionForOwner } from "./browser-session-store.js";
+import {
+  authorizedPlaceThreadIds,
+  getBrowserSessionForOwner,
+  listBrowserSessionThreads,
+  listAttachedRunIdsForBrowserSessions,
+} from "./browser-session-store.js";
 import { lockBrowserTabGroupMembersForTabs } from "./browser-tab-group-locks.js";
 import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
 import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
@@ -25,11 +30,77 @@ import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
 type Database = Kysely<DatabaseSchema>;
 type TabRow = Selectable<DatabaseSchema["workspaceTabs"]>;
 
+export type BrowserGroupFacts = Omit<
+  BrowserGroupRow,
+  "inventoryRevision" | "navigation" | "acting" | "page"
+>;
+export interface WorkspaceTabLineage {
+  id: BrowserSessionId;
+  revision: number;
+  createdAt: string;
+  unavailableReason?: string;
+  session: HostedBrowserSession;
+  tabs?: Array<{
+    kind: "browser";
+    id: BrowserTabRecord["id"];
+    sessionId: BrowserSessionId;
+    title: string;
+    site: string;
+    iconRef?: string | null;
+    order: number;
+    openerId: BrowserTabRecord["openerId"];
+    state: "suspended" | "restoring" | "live";
+    createdAt?: string;
+  }>;
+}
+
+export type WorkspaceTabStreamRow = NonNullable<WorkspaceTabLineage["tabs"]>[number] & {
+  groupId: BrowserSessionId;
+};
+export interface WorkspaceTabChanges {
+  groupId: BrowserSessionId;
+  changed: boolean;
+  rows: WorkspaceTabStreamRow[];
+  closedIds: string[];
+}
+function streamTab(
+  row: Pick<
+    TabRow,
+    | "id"
+    | "groupId"
+    | "sessionId"
+    | "title"
+    | "url"
+    | "iconRef"
+    | "order"
+    | "openerId"
+    | "state"
+    | "createdAt"
+  >,
+): WorkspaceTabStreamRow {
+  return {
+    kind: "browser",
+    id: BrowserSurfaceIdSchema.parse(row.id),
+    groupId: row.groupId,
+    sessionId: row.sessionId,
+    title: row.title,
+    site: browserPageSite(row.url).slice(0, 2048),
+    iconRef: row.iconRef,
+    order: row.order,
+    openerId: row.openerId ? BrowserSurfaceIdSchema.parse(row.openerId) : null,
+    state: row.state,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 export function workspaceTabIconRef(groupId: BrowserSessionId, favicon: string): string {
   return createHash("sha256").update(groupId).update("\0").update(favicon).digest("base64url");
 }
 
-export type WorkspaceTabDescriptor = BrowserWorkspaceTabDescriptor & {
+export type WorkspaceTabDescriptor = Pick<
+  BrowserTabRecord,
+  "id" | "title" | "url" | "order" | "openerId"
+> & {
   readonly favicon?: string | null;
 };
 
@@ -110,7 +181,6 @@ export class WorkspaceTabStore {
     const groups = await query
       .orderBy("lineages.createdAt", "desc")
       .orderBy("lineages.id", "desc")
-      .limit(100)
       .execute(databaseOperationOptions());
     if (!groups.length) return [];
     const rows = await database
@@ -184,22 +254,111 @@ export class WorkspaceTabStore {
   list(ownerId: UserId): Promise<WorkspaceTabLineage[]> {
     return this.#read(ownerId);
   }
-  async read(
+  read(ownerId: UserId, groupIds: readonly BrowserSessionId[]): Promise<BrowserGroupFacts[]>;
+  read(
     ownerId: UserId,
     groupId: BrowserSessionId,
     database?: Database,
-  ): Promise<WorkspaceTabLineage | null> {
-    return (await this.#read(ownerId, groupId, database))[0] ?? null;
+  ): Promise<WorkspaceTabLineage | null>;
+  async read(
+    ownerId: UserId,
+    groupIds: BrowserSessionId | readonly BrowserSessionId[],
+    database?: Database,
+  ): Promise<WorkspaceTabLineage | null | BrowserGroupFacts[]> {
+    if (typeof groupIds === "string")
+      return (await this.#read(ownerId, groupIds, database))[0] ?? null;
+    if (!groupIds.length) return [];
+    return this.database
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .execute(async (tx) => {
+        const groups = await visibleWorkspaceTabLineages(tx, ownerId)
+          .where("lineages.id", "in", groupIds)
+          .select((eb) =>
+            eb
+              .selectFrom("workspaceTabs")
+              .select((eb) => eb.fn.countAll<string>().as("count"))
+              .whereRef("workspaceTabs.groupId", "=", "lineages.id")
+              .where("closedAt", "is", null)
+              .as("tabCount"),
+          )
+          .execute(databaseOperationOptions());
+        const sessionIds = groups.map((group) => group.id);
+        const [threads, runs, visible] = await Promise.all([
+          listBrowserSessionThreads(tx, { ownerId, sessionIds }),
+          listAttachedRunIdsForBrowserSessions(tx, sessionIds),
+          authorizedPlaceThreadIds(
+            tx,
+            ownerId,
+            groups.flatMap((group) =>
+              group.opener && "threadId" in group.opener ? [group.opener.threadId] : [],
+            ),
+          ),
+        ]);
+        const visibleThreadIds = new Set(visible);
+        return groups.map((group) => ({
+          id: group.tabGroupId,
+          createdAt: group.lineageCreatedAt.toISOString(),
+          unavailableReason: group.retiredAt ? "This browser computer was retired." : null,
+          tabCount: Number(group.tabCount),
+          sessionId: group.id,
+          workspaceId: group.workspaceId,
+          state: group.state,
+          origin: group.origin,
+          access: "read-write" as const,
+          placement: { kind: "runner" as const, runnerId: group.runnerId },
+          profileId: group.profileId,
+          runtimeId: group.runtimeId,
+          opener: projectBrowserSessionOpener(group.opener, { userId: ownerId, visibleThreadIds }),
+          sessionCreatedAt: group.createdAt.toISOString(),
+          updatedAt: group.updatedAt.toISOString(),
+          attachedRunIds: [...(runs.get(group.id) ?? [])],
+          threadIds: [...(threads.get(group.id) ?? [])],
+        }));
+      });
   }
-  /** The open tabs a session holds, with a page or asleep. */
-  async tabIds(sessionId: BrowserSessionId): Promise<string[]> {
-    const rows = await this.database
-      .selectFrom("workspaceTabs")
-      .select("id")
-      .where("sessionId", "=", sessionId)
-      .where("closedAt", "is", null)
+  async groupIds(ownerId: UserId): Promise<BrowserSessionId[]> {
+    const rows = await visibleWorkspaceTabLineages(this.database, ownerId)
+      .clearSelect()
+      .select("lineages.id")
+      .where((eb) =>
+        eb.or([
+          eb("browserSessions.state", "in", ["starting", "ready", "closing"]),
+          eb.exists(
+            eb
+              .selectFrom("workspaceTabs")
+              .select("id")
+              .whereRef("workspaceTabs.groupId", "=", "lineages.id")
+              .where("closedAt", "is", null),
+          ),
+        ]),
+      )
+      .orderBy("browserSessions.updatedAt", "desc")
+      .orderBy("lineages.id", "desc")
       .execute(databaseOperationOptions());
     return rows.map((row) => row.id);
+  }
+  async openTabs(groupIds: readonly BrowserSessionId[]): Promise<WorkspaceTabStreamRow[]> {
+    if (!groupIds.length) return [];
+    const rows = await this.database
+      .selectFrom("workspaceTabs")
+      .select([
+        "id",
+        "groupId",
+        "sessionId",
+        "title",
+        "url",
+        "iconRef",
+        "order",
+        "openerId",
+        "state",
+        "createdAt",
+      ])
+      .where("groupId", "in", groupIds)
+      .where("closedAt", "is", null)
+      .orderBy("order")
+      .execute(databaseOperationOptions());
+    return rows.map(streamTab);
   }
   async get(ownerId: UserId, id: string) {
     const row = await this.database
@@ -236,20 +395,21 @@ export class WorkspaceTabStore {
       return operation(tx);
     });
   }
-  async #lockLineage(tx: Transaction<DatabaseSchema>, groupId: BrowserSessionId) {
+  async #lockLineage(
+    tx: Transaction<DatabaseSchema>,
+    groupId: BrowserSessionId,
+    tabIds?: readonly string[],
+  ) {
     await tx
       .selectFrom("browserSessions")
       .select("id")
       .where("id", "=", groupId)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow(databaseOperationOptions());
-    await tx
-      .selectFrom("workspaceTabs")
-      .select("id")
-      .where("groupId", "=", groupId)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
+    if (tabIds?.length === 0) return;
+    let rows = tx.selectFrom("workspaceTabs").select("id").where("groupId", "=", groupId);
+    if (tabIds) rows = rows.where("id", "in", tabIds);
+    await rows.orderBy("id").forNoKeyUpdate().execute(databaseOperationOptions());
   }
   async #lockLayout(tx: Transaction<DatabaseSchema>, ownerId: UserId) {
     await tx
@@ -271,11 +431,11 @@ export class WorkspaceTabStore {
       .where("id", "=", groupId)
       .execute(databaseOperationOptions());
   }
-  async record(
+  async recordChanges(
     sessionId: BrowserSessionId,
     descriptors: readonly WorkspaceTabDescriptor[],
     closed: readonly string[],
-  ): Promise<boolean> {
+  ): Promise<WorkspaceTabChanges> {
     for (const descriptor of descriptors)
       if (descriptor.favicon !== undefined && descriptor.favicon !== null)
         BrowserFaviconSchema.parse(descriptor.favicon);
@@ -284,9 +444,24 @@ export class WorkspaceTabStore {
       .selectAll()
       .where("id", "=", sessionId)
       .executeTakeFirst(databaseOperationOptions());
+    const changes: WorkspaceTabChanges = {
+      groupId: session?.tabGroupId ?? sessionId,
+      changed: false,
+      rows: [],
+      closedIds: [],
+    };
     if (!session || session.origin === "trigger" || session.opener?.kind === "automation")
-      return false;
-    return this.#turn(session.tabGroupId, async (tx) => {
+      return changes;
+    return withDatabaseTransaction(this.database, async (tx) => {
+      await this.#lockLineage(tx, session.tabGroupId, [
+        ...new Set([...descriptors.map((row) => row.id), ...closed]),
+      ]);
+      const changes: WorkspaceTabChanges = {
+        groupId: session.tabGroupId,
+        changed: false,
+        rows: [],
+        closedIds: [],
+      };
       const latest = await tx
         .selectFrom("browserSessions")
         .select("id")
@@ -294,13 +469,28 @@ export class WorkspaceTabStore {
         .orderBy("createdAt", "desc")
         .orderBy("id", "desc")
         .executeTakeFirstOrThrow(databaseOperationOptions());
-      if (latest.id !== sessionId) return false;
-      const previous = await tx
-        .selectFrom("workspaceTabs")
-        .selectAll()
-        .where("groupId", "=", session.tabGroupId)
-        .execute(databaseOperationOptions());
-      let changed = false;
+      if (latest.id !== sessionId) return changes;
+      const previous = descriptors.length
+        ? await tx
+            .selectFrom("workspaceTabs")
+            .selectAll()
+            .where(
+              "id",
+              "in",
+              descriptors.map((row) => row.id),
+            )
+            .execute(databaseOperationOptions())
+        : [];
+      let nextOrder: number | undefined;
+      if (descriptors.some((row) => !previous.some((held) => held.id === row.id))) {
+        const bounds = await tx
+          .selectFrom("workspaceTabs")
+          .select((eb) => eb.fn.max("order").as("maxOrder"))
+          .where("groupId", "=", session.tabGroupId)
+          .executeTakeFirstOrThrow(databaseOperationOptions());
+        nextOrder = (bounds.maxOrder ?? -1) + 1;
+      }
+      const written: TabRow[] = [];
       if (closed.length) {
         const closedAt = new Date();
         const result = await tx
@@ -309,15 +499,20 @@ export class WorkspaceTabStore {
           .where("sessionId", "=", sessionId)
           .where("id", "in", closed)
           .where("closedAt", "is", null)
-          .executeTakeFirst(databaseOperationOptions());
-        changed = result.numUpdatedRows > 0n;
+          .returning("id")
+          .execute(databaseOperationOptions());
+        changes.closedIds = result.map((row) => row.id);
         for (const row of previous)
           if (row.sessionId === sessionId && closed.includes(row.id) && !row.closedAt)
             row.closedAt = closedAt;
       }
       for (const descriptor of descriptors) {
         const held = previous.find((row) => row.id === descriptor.id);
-        if (held?.closedAt || (held && held.sessionId !== sessionId)) continue;
+        if (
+          held?.closedAt ||
+          (held && (held.sessionId !== sessionId || held.groupId !== session.tabGroupId))
+        )
+          continue;
         // The old producer may have outlived its closed marker's retention.
         if (!held && (session.state === "closed" || session.state === "failed")) continue;
         const initializing =
@@ -332,7 +527,7 @@ export class WorkspaceTabStore {
           url: initializing ? held.url : descriptor.url,
           favicon,
           iconRef: favicon ? workspaceTabIconRef(session.tabGroupId, favicon) : null,
-          order: held?.order ?? Math.max(-1, ...previous.map((row) => row.order)) + 1,
+          order: held?.order ?? nextOrder!,
           openerId: held?.openerId ?? descriptor.openerId,
           state: initializing ? ("restoring" as const) : ("live" as const),
         };
@@ -344,19 +539,16 @@ export class WorkspaceTabStore {
             held.iconRef === values.iconRef
           )
             continue;
-          await tx
+          const updated = await tx
             .updateTable("workspaceTabs")
             .set(values)
             .where("id", "=", held.id)
             .where("sessionId", "=", sessionId)
             .where("closedAt", "is", null)
-            .execute(databaseOperationOptions());
+            .returningAll()
+            .executeTakeFirst(databaseOperationOptions());
+          if (updated) written.push(updated);
         } else {
-          if (previous.filter((row) => !row.closedAt).length >= browserSessionTabLimit)
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Browser tab limit reached.",
-            });
           const inserted = {
             ...values,
             id: descriptor.id,
@@ -365,11 +557,15 @@ export class WorkspaceTabStore {
             closedAt: null,
             createdAt: new Date(),
           };
-          await tx
+          const row = await tx
             .insertInto("workspaceTabs")
             .values(inserted)
             .onConflict((c) => c.column("id").doNothing())
-            .execute(databaseOperationOptions());
+            .returningAll()
+            .executeTakeFirst(databaseOperationOptions());
+          if (!row) continue;
+          written.push(row);
+          nextOrder!++;
           previous.push({
             ...inserted,
             closedBy: null,
@@ -378,12 +574,14 @@ export class WorkspaceTabStore {
             reopenedAt: null,
           });
         }
-        changed = true;
       }
-      if (changed) await this.#bump(tx, session.tabGroupId);
-      return changed;
+      changes.rows = written.map(streamTab);
+      changes.changed = written.length > 0 || changes.closedIds.length > 0;
+      if (changes.changed) await this.#bump(tx, session.tabGroupId);
+      return changes;
     });
   }
+
   async bind(groupId: BrowserSessionId, sessionId: BrowserSessionId, id: string) {
     return this.#turn(groupId, async (tx) => {
       await tx
@@ -509,14 +707,6 @@ export class WorkspaceTabStore {
         const session = await this.session(ownerId, source.groupId, tx);
         if (!session)
           throw new OpensteerError({ code: "not_found", message: "Browser tabs not found." });
-        const open = await tx
-          .selectFrom("workspaceTabs")
-          .select("id")
-          .where("groupId", "=", source.groupId)
-          .where("closedAt", "is", null)
-          .execute(databaseOperationOptions());
-        if (open.length >= browserSessionTabLimit)
-          throw new OpensteerError({ code: "conflict", message: "Browser tab limit reached." });
         const groups = new BrowserTabGroupStore(tx);
         const { arrangement } = await groups.orderedTabs(ownerId, tx);
         if (arrangement.order.length >= browserTabOrderMaxTabs)

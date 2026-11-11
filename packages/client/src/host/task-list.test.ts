@@ -1,3 +1,5 @@
+import { browserStoreFixture } from "../test-support/browser-snapshot.js";
+import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
 import { mergeTaskEntries } from "./task-entries.js";
 import { describe, expect, it } from "vitest";
 import {
@@ -308,26 +310,30 @@ describe("taskList", () => {
           url: "https://www.united.com/en/us/awards",
         },
       ],
-      tabCatalog: {
-        generation: 1,
-        revision: 1,
-        tabs: [
+      browserTabs: browserStoreFixture(
+        [{ id: "brs_1", sessionId: "brs_1", createdAt: hoursAgo(1) } as BrowserGroupRow],
+        [
           {
-            id: "other",
-            title: "Other page",
-            site: "https://example.com",
-            order: 0,
-            occupants: [],
-          },
-          {
-            id: "awards",
-            title: "Award search",
-            site: "https://www.united.com/en/us/awards",
-            order: 1,
-            occupants: [{ acting: true, lastActiveAt: hoursAgo(0) }],
+            groupId: "brs_1",
+            rows: [
+              {
+                id: "other",
+                title: "Other page",
+                site: "https://example.com",
+                order: 0,
+                occupants: [],
+              },
+              {
+                id: "awards",
+                title: "Award search",
+                site: "https://www.united.com/en/us/awards",
+                order: 1,
+                occupants: [{ acting: true, lastActiveAt: hoursAgo(0) }],
+              },
+            ].map((tab) => ({ ...tab, sessionId: "brs_1" })) as BrowserTabRow[],
           },
         ],
-      },
+      ),
       threadIds: [threadId(1), threadId(2)],
     } as unknown as BrowserSessionSummary;
     const list = taskList(

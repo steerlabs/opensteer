@@ -55,11 +55,10 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
   });
   await launcher.prepare();
   const runtimeOptions: BrowserRuntimeOptions = {
+    memoryBudgetBytes: config.memoryBudgetBytes,
     localProfiles: { root: config.profileRoot },
     acknowledgeProfileReady: nativeProfileReadyClient(config.profileReadyTrustedHttpOrigin),
     launcher,
-    maxProfileHosts: config.maxProfileHosts,
-    maxSessionsPerProfile: config.maxSessionsPerProfile,
     onOpenTiming: (timing) =>
       process.stdout.write(
         `${JSON.stringify({ event: "browser.session.open.timing", ...timing })}\n`,
@@ -212,6 +211,7 @@ async function startBrowserRelay(options: {
           navigationVersion: 1,
           navigationAttributionVersion: 1,
           workspaceTabRestoreVersion: 1,
+          surfaceState: 1,
           popupFollowVersion: 1,
           captureRegion: 1,
           rasterDemand: 1,

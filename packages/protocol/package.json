@@ -21,7 +21,9 @@
     "./passkeys": "./src/passkeys.ts",
     "./dictation-helper": "./src/dictation-helper.ts",
     "./voice": "./src/voice.ts",
-    "./runner-auxiliary": "./src/runner-auxiliary.ts"
+    "./runner-auxiliary": "./src/runner-auxiliary.ts",
+    "./keyed-stream": "./src/keyed-stream.ts",
+    "./browser-tabs": "./src/browser-tabs.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

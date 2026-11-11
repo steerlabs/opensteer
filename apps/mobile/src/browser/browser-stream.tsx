@@ -1,7 +1,7 @@
 import { getBrowserLastPicture, rememberBrowserLastPicture } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol/browser";
 import { createBrowserTouchGesture } from "@opensteer/shared/browserTouch";
-import { useBrowserPresentationWait } from "@opensteer/client/react";
+import { useBrowserPresentationWait, useBrowserTabAwake } from "@opensteer/client/react";
 import type {
   BrowserCommand,
   BrowserFrameStore,
@@ -55,6 +55,7 @@ export interface BrowserStreamProps {
   readonly hostClient: Pick<
     HostClient,
     | "browserPresentationDeadline"
+    | "browserTabs"
     | "markBrowserPagePresented"
     | "acceptBrowserWatchFrame"
     | "browserFrames"
@@ -208,6 +209,8 @@ function BrowserStreamView({
         : "disconnected";
   const feedError = feed.status === "unavailable" ? feed.error : null;
 
+  // A Watch of a sleeping tab shows its last picture: watching it would wake it.
+  const awake = useBrowserTabAwake(hostClient, session.id, tabId);
   useEffect(
     () =>
       active
@@ -217,13 +220,15 @@ function BrowserStreamView({
               rasterDemand: true,
               frameWindow: native,
             })
-          : hostClient.retainBrowserWatch(session.id, tabId, {
-              captureRegion: true,
-              rasterDemand: true,
-              frameWindow: native,
-            })
+          : awake
+            ? hostClient.retainBrowserWatch(session.id, tabId, {
+                captureRegion: true,
+                rasterDemand: true,
+                frameWindow: native,
+              })
+            : undefined
         : undefined,
-    [active, attempt, hostClient, interactive, native, session.id, tabId],
+    [active, attempt, awake, hostClient, interactive, native, session.id, tabId],
   );
 
   const finish = useCallback(

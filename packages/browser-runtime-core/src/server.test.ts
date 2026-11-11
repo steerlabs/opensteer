@@ -1,5 +1,6 @@
+import { committedBrowserTabs } from "./test-support/fakes.js";
 import {
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   BrowserSessionIdSchema,
   type BrowserAttachPublicKey,
 } from "@opensteer/protocol";
@@ -172,7 +173,7 @@ describe("BrowserRuntimeServer", () => {
             socket.once("error", reject);
             socket.on("message", (raw, binary) => {
               if (binary) return;
-              const message = BrowserServerMessageSchema.parse(JSON.parse(String(raw)));
+              const message = BrowserRuntimeServerMessageSchema.parse(JSON.parse(String(raw)));
               if (message.type === "browser.snapshot" || message.type === "browser.error")
                 resolve(message);
             });
@@ -309,7 +310,7 @@ describe("BrowserRuntimeServer agent page sizes", () => {
       if (isBinary) return;
       const frame = JSON.parse(String(data)) as Record<string, unknown>;
       frames.push(frame);
-      const parsed = BrowserServerMessageSchema.safeParse(frame);
+      const parsed = BrowserRuntimeServerMessageSchema.safeParse(frame);
       if (!parsed.success) refused.push({ frame, issues: parsed.error.issues });
     });
     const command = async (
@@ -336,10 +337,9 @@ describe("BrowserRuntimeServer agent page sizes", () => {
       return answer;
     };
     const sizedByAgent = () =>
-      frames
-        .filter((frame) => frame.type === "browser.surfaces.changed")
-        .map((frame) => (frame.surfaces as { sizedByAgent?: boolean }[])[0]?.sizedByAgent)
-        .at(-1);
+      committedBrowserTabs(frames.map((frame) => BrowserRuntimeServerMessageSchema.parse(frame)))
+        .rows.values()
+        .next().value?.sizedByAgent;
     const shownWidth = () => {
       if (page instanceof GeometryPage) {
         const geometry = page.geometries.at(-1);

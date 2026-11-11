@@ -4,7 +4,7 @@ import {
   FakeTicketVerifier,
   validClaims,
 } from "@opensteer/browser-runtime-core/test-support";
-import type { BrowserServerMessage } from "@opensteer/protocol";
+import type { BrowserRuntimeServerMessage } from "@opensteer/protocol";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
@@ -242,7 +242,7 @@ interface CdpClient {
 /** Speaks to a runtime attachment exactly as the Host's broker does. */
 function cdpClient(sink: FakeSink, handle: (frame: string) => Promise<void>): CdpClient {
   const signal = browserTestSignal();
-  const answered = new Map<string, (message: BrowserServerMessage) => void>();
+  const answered = new Map<string, (message: BrowserRuntimeServerMessage) => void>();
   const eventWaiters: Array<{
     readonly method: string;
     readonly resolve: (parameters: unknown) => void;

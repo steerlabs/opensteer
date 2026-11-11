@@ -21,7 +21,7 @@ describe("mock basic browser input", () => {
       const session = client
         .getSnapshot()
         .browserSessions.find((session) => session.profileId?.endsWith("0003"))!;
-      const tab = session.tabs[0]!;
+      const tab = client.browserTabs.sessionTabs(session.id)[0]!;
       const release = client.retainBrowserViewer(session.id, tab.id);
       const target = client.browserFrames.editing!.target(session.id, tab.id);
       expect(client.browserViewerState(session.id, tab.id).input).toBe("basic");

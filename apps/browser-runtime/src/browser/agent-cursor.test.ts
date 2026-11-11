@@ -51,7 +51,7 @@ import {
 import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
 import type {
   BrowserRuntimeActivity,
-  BrowserServerMessage,
+  BrowserRuntimeServerMessage,
   BrowserSurfaceId,
 } from "@opensteer/protocol";
 import { expect, it } from "vitest";
@@ -236,7 +236,7 @@ it("reports each agent's cursor where a person's pointer would be", async () => 
   await ledger.start();
   cleanup.push(() => ledger.close());
   const sink = new FakeSink();
-  const ledgerRevisionAtSend = new Map<BrowserServerMessage, number | null>();
+  const ledgerRevisionAtSend = new Map<BrowserRuntimeServerMessage, number | null>();
   sink.sendServerImplementation = async (message) => {
     if (message.type === "browser.activity")
       ledgerRevisionAtSend.set(

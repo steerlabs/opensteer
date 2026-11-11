@@ -1,3 +1,7 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
+import { BrowserTabStore } from "./browser-tab-store.js";
+import { BrowserSnapshotDerivation, workspaceTabLineage } from "./browser-snapshot.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
@@ -15,7 +19,6 @@ import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js";
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
-import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { BrowserPreferences } from "./browser-preferences.js";
 import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
 import { browserTabOrderTabs } from "./browser-tab-order.js";
@@ -74,37 +77,29 @@ import {
 } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
-  BrowserServerMessageSchema,
   BrowserSessionIdSchema,
   DisplaySourceSchema,
   HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
   WorkspaceSnapshotSchema,
   browserUsageRunBatchSize,
-  browserViewerCloseCodes,
-  decodeBrowserFrameEnvelope,
   hostApi,
   realtimeEnvelopeTypes,
   threadPageMaxItems,
   workspaceFilePreviewMaxBytes,
   workspaceSnapshotMaxThreads,
-  type BrowserPresence,
-  type BrowserServerMessage,
   type BrowserSessionUsageProjection,
-  type BrowserTabCatalog,
   type DurableWindow,
   type HostApiClient,
   type HostApiCommand,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   type HostToClientMessage,
-  type HostedBrowserSession,
   type MachineAccessPolicy,
   type MachineSummary,
   type RealtimeFrameDiagnostic,
   type RpcResult,
   type WorkspaceSnapshot,
-  type WorkspaceTabLineage,
   type WorkspaceView,
 } from "@opensteer/protocol";
 import { z } from "zod";
@@ -112,11 +107,10 @@ import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserFrameView,
   BrowserPlacementSummary,
   BrowserSessionSummary,
-  BrowserSessionUseSummary,
   BrowserStartIdentity,
+  BrowserInventory,
   BrowserTabOpenInput,
   BrowserTabOpenOptions,
   CreateThreadInput,
@@ -133,6 +127,7 @@ import type {
   WorkspaceFilePreview,
   WorkspaceSummary,
   WorkspaceTabActivationOptions,
+  WorkspaceTabLineage,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
@@ -154,8 +149,8 @@ import {
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
 import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
-import { newerBrowserTabCatalog, placeList } from "./places.js";
-import { keepBrowserLastPictures } from "./browser-last-picture.js";
+import { placeByKey } from "./places.js";
+import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
 import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
@@ -173,7 +168,6 @@ import {
 } from "./transcript.js";
 import {
   describeRealtimeFrameFailure,
-  healthySocketMs,
   maxInboundFrameCharacters,
   realtimeEnvelopeType,
   realtimeFrameLoss,
@@ -252,7 +246,6 @@ const defaultReconnectMaxDelayMs = 12_000;
 const realtimeReplayAttempts = 3;
 /** Each try can cost a whole snapshot over cellular, so a frame that keeps failing waits longest. */
 const unreadableFrameMaxDelayMs = 5 * 60_000;
-const maxBrowserFrameBytes = 8 * 1_024 * 1_024;
 const workspacePrefetchDebounceMs = 150;
 /** Notification ids remembered after delivery, enough to cover every socket's copy. */
 const rememberedNotificationIds = 256;
@@ -408,27 +401,6 @@ interface LiveReread {
   timer: Timer | null;
 }
 
-interface BrowserChannelState {
-  basicInputOnly?: boolean;
-  /**
-   * The Watch frame this socket delivered and has not yet acknowledged. The
-   * Host sends the next only after it, so it is returned exactly once: when
-   * the view has shown the picture, or when the picture is dropped unshown.
-   */
-  awaitingAck: string | null;
-  reconnectAttempt: number;
-  reconnectTimer: Timer | null;
-  retainers: number;
-  sessionId: string;
-  socket: WebSocketClient | null;
-  synchronized: boolean;
-  /** Frames this viewer could not read since a socket last stayed up. */
-  unreadableFrames: number;
-}
-
-type BrowserChannel = BrowserChannelState &
-  ({ mode: "control" } | { mode: "watch"; captureRegionRetainers: number });
-
 /** The connection owner keeps discovery evidence within its attachment fence. */
 export type HostCapabilityReader = (options?: {
   readonly revalidate: boolean;
@@ -495,12 +467,6 @@ export class HttpHostClient {
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
-  readonly #browserChannels = new Map<string, BrowserChannel>();
-  readonly #browserWatchChannels = new Map<string, BrowserChannel>();
-  readonly #browserFrameListeners = new Map<string, Set<() => void>>();
-  readonly #browserFrameValues = new Map<string, BrowserFrameView>();
-  readonly #browserWatchFrameListeners = new Map<string, Set<() => void>>();
-  readonly #browserWatchFrameValues = new Map<string, BrowserFrameView>();
   readonly #channels = new Map<string, WorkspaceChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
@@ -518,38 +484,39 @@ export class HttpHostClient {
    */
   readonly #browserUsageRead = new Map<string, Set<string>>();
   readonly #browserUsageReads = new Map<string, { again: "full" | "missing" | null }>();
-  /**
-   * What each conversation's usage reads answered, by conversation. A use of
-   * a browser the catalog does not list yet waits here until it does.
-   */
-  readonly #browserUses = new Map<
-    string,
-    readonly { readonly sessionId: string; readonly use: BrowserSessionUseSummary }[]
-  >();
+  readonly #browserUses = new Map<string, readonly BrowserSessionUsageProjection[]>();
   /**
    * The shape a conversation's Runs were last collected from: a streamed reply
    * changes none of it, so it is not walked again for each word.
    */
   readonly #browserUsageRunSources = new Map<string, readonly unknown[]>();
   /**
-   * When each browser or Mac session last had its presence patched, against a
+   * When each Mac session last had its presence patched, against a
    * counter a bootstrap notes before it reads: a bootstrap answer older than a
    * patch keeps the patch rather than putting the older page back.
    */
   readonly #presenceMarks = new Map<string, number>();
-  /** The latest presence patch of each browser, kept for one the catalog does not list yet. */
-  readonly #browserPresence = new Map<string, BrowserPresence>();
   #presenceCounter = 0;
-  #browserStateCounter = 0;
-  readonly #browserStateMarks = new Map<string, number>();
-  #workspaceTabsCounter = 0;
-  readonly #workspaceTabsMarks = new Map<string, number>();
-  // Released presenters still need the authority of their session during catalog gaps.
-  readonly #browserTargetAuthorities = new Map<
-    string,
-    Pick<BrowserSessionSummary, "workspaceId" | "profileId">
-  >();
-  readonly #tabCatalogs = new Map<string, BrowserTabCatalog>();
+  #browserCarrier: WorkspaceChannel | null = null;
+  #browserContinuation: string | undefined;
+  readonly #browserWaiters = new Set<() => void>();
+  readonly #browserTabs = new BrowserTabStore(
+    (groupId) => this.#resyncBrowser(groupId),
+    (sessionId, tabId) =>
+      this.#targetedControl.surface(sessionId, tabId) ??
+      this.#targetedWatch.surface(sessionId, tabId),
+  );
+  readonly browserTabs = this.#browserTabs;
+  #browserStructure: ReturnType<BrowserTabStore["structure"]> = [];
+  #browserTargetRevision = -1;
+  #browserTabIds = new Map<string, readonly string[]>();
+  browserViewerSurface(sessionId: string, surfaceId: string) {
+    return (
+      this.#targetedControl.surface(sessionId, surfaceId) ??
+      this.#targetedWatch.surface(sessionId, surfaceId)
+    );
+  }
+  readonly #browserSnapshot = new BrowserSnapshotDerivation();
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
   readonly #targetedControl = new BrowserWatchStore(
@@ -570,21 +537,16 @@ export class HttpHostClient {
           message.basicInput,
         );
       else this.#browserEditing.receive(sessionId, message, surfaceId);
-      if (message.type === "browser.snapshot" || message.type === "browser.surfaces.changed")
-        this.#patchBrowserSession(sessionId, {
-          tabs: browserTabs(message.surfaces),
-          ...(message.type === "browser.snapshot" ? { state: message.state } : {}),
-        });
-      if (message.type === "browser.status")
-        this.#patchBrowserSession(sessionId, { state: message.state });
+      if (message.type === "browser.surface") this.#update(this.#snapshot);
       if (message.type === "browser.snapshot" || message.type === "browser.dialog.changed")
         this.#patchBrowserSession(sessionId, { dialog: message.dialog });
     },
     (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    (sessionId, surfaceId) => {
+    (sessionId, surfaceId, hadSurface) => {
       this.#browserEditing.disconnect(sessionId, surfaceId);
       this.browserPasskeys.disconnect(sessionId, surfaceId);
+      if (hadSurface) this.#update(this.#snapshot);
     },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
@@ -592,13 +554,14 @@ export class HttpHostClient {
   readonly #targetedWatch = new BrowserWatchStore(
     (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "watch"),
     "watch",
-    (sessionId, message) => {
-      if (message.type === "browser.snapshot" || message.type === "browser.status")
-        this.#patchBrowserSession(sessionId, { state: message.state });
+    (_sessionId, message) => {
+      if (message.type === "browser.surface") this.#update(this.#snapshot);
     },
     (attempt, unreadableFrames) => this.#retryDelay(attempt, unreadableFrames),
     () => this.#capabilities?.includes("browser-capture-region-v1") === true,
-    undefined,
+    (_sessionId, _surfaceId, hadSurface) => {
+      if (hadSurface) this.#update(this.#snapshot);
+    },
     () => this.#capabilities?.includes("browser-frame-window-v1") === true,
     () => this.#capabilities?.includes("browser-raster-demand-v1") === true,
   );
@@ -607,13 +570,17 @@ export class HttpHostClient {
     surfaceId: string,
     mode: "control" | "watch",
   ): WebSocketClient {
-    const session = this.#snapshot.browserSessions.find((session) => session.id === sessionId);
+    const groupId = this.#browserTabs.groupForSession(sessionId);
+    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      session?.state !== "ready" ||
-      this.#forbiddenWorkspaces.has(session.workspaceId) ||
-      !session.tabCatalog?.tabs.some((tab) => tab.id === surfaceId)
+      group?.state !== "ready" ||
+      this.#forbiddenWorkspaces.has(group.workspaceId) ||
+      tab?.availability !== "ready" ||
+      tab.state !== "live" ||
+      tab.documentId === null
     )
       throw new Error("The browser target is unavailable.");
     const url = new URL(
@@ -691,28 +658,6 @@ export class HttpHostClient {
   async readBrowserContextCandidate(sessionId: string, tabId: string) {
     return unwrapRpcResult(await this.rpc["browser.contextCandidate.get"]({ sessionId, tabId }));
   }
-  #acceptCatalog(
-    sessionId: string,
-    incoming: BrowserTabCatalog | undefined,
-  ): BrowserTabCatalog | undefined {
-    const session = this.#snapshot.browserSessions.find((session) => session.id === sessionId);
-    if (session?.state === "closed" || session?.state === "failed") {
-      if (incoming) {
-        this.#tabCatalogs.set(sessionId, incoming);
-        return incoming;
-      }
-    }
-    const catalog = newerBrowserTabCatalog(
-      newerBrowserTabCatalog(session?.tabCatalog, this.#tabCatalogs.get(sessionId)),
-      incoming,
-    );
-    if (catalog) {
-      if (!this.#tabCatalogs.has(sessionId) && this.#tabCatalogs.size >= 100)
-        this.#tabCatalogs.delete(this.#tabCatalogs.keys().next().value!);
-      this.#tabCatalogs.set(sessionId, catalog);
-    }
-    return catalog;
-  }
   readonly #pendingBrowserTabs = new PendingBrowserTabs({
     admitted: () => viewerScopeOf(this.#snapshot) !== null,
     open: (target, options) => this.#openBrowserTab(target, options),
@@ -720,8 +665,7 @@ export class HttpHostClient {
       this.closeBrowserTab(
         result.sessionId,
         result.tabId,
-        this.#snapshot.browserSessions.find((session) => session.id === result.sessionId)
-          ?.tabCatalog ?? result.catalog,
+        this.browserTabs.inventory(result.sessionId) ?? { generation: 0, revision: 0 },
       ),
     changed: (pendingBrowserTabs) => this.#update({ ...this.#snapshot, pendingBrowserTabs }),
   });
@@ -764,76 +708,22 @@ export class HttpHostClient {
         message: "The signed-in account changed while the browser was opening.",
       });
     if (result.type !== "browser.tab.open") throw new Error("Unexpected browser command result.");
-    const existing = this.#snapshot.browserSessions.find(
-      (session) => session.id === result.sessionId,
-    );
-    if (existing?.state === "closed" || existing?.state === "failed") return result;
-    this.#update({
-      ...this.#snapshot,
-      browserSessions: existing
-        ? this.#snapshot.browserSessions.map((session) =>
-            session.id === result.sessionId
-              ? toBrowserSessionSummary(result.session, existing, null, existing.uses ?? [])
-              : session,
-          )
-        : [
-            ...this.#snapshot.browserSessions,
-            toBrowserSessionSummary(result.session, undefined, null, []),
-          ],
-    });
-    const catalog = this.#acceptCatalog(result.sessionId, result.catalog);
-    if (catalog) this.#patchBrowserSession(result.sessionId, { tabCatalog: catalog });
+    if (this.#snapshot.session === "authenticated")
+      await this.#waitBrowser(() => {
+        const groupId = result.groupId ?? this.#browserTabs.groupForSession(result.sessionId);
+        return groupId && this.#browserTabs.tab(groupId, result.tabId);
+      }, options.signal);
     return result;
   }
-  readonly #retainedWorkspaceTabLineages = new Map<string, WorkspaceTabLineage>();
-  readonly #workspaceTabReads = new Map<string, Promise<WorkspaceTabLineage | null>>();
-  readWorkspaceTabs(sessionId: string): Promise<WorkspaceTabLineage | null> {
-    const held = this.#workspaceTabReads.get(sessionId);
-    if (held) return held;
-    const viewer = this.#viewer.generation;
-    const read = (async () => {
-      let group: WorkspaceTabLineage;
-      try {
-        group = unwrapRpcResult(await this.rpc["workspace.tabs.get"]({ groupId: sessionId }));
-      } catch (error) {
-        if (viewer !== this.#viewer.generation) return null;
-        if (
-          !(error instanceof HostClientRequestError) ||
-          !["not_found", "forbidden"].includes(error.code)
-        )
-          throw error;
-        for (const [id, cached] of this.#retainedWorkspaceTabLineages)
-          if (id === sessionId || cached.session.id === sessionId)
-            this.#retainedWorkspaceTabLineages.delete(id);
-        this.#update({
-          ...this.#snapshot,
-          workspaceTabs: this.#snapshot.workspaceTabs?.filter(
-            (group) => group.id !== sessionId && group.session.id !== sessionId,
-          ),
-        });
-        return null;
-      }
-      if (this.#disposed || viewer !== this.#viewer.generation) return null;
-      const previous = this.#snapshot.workspaceTabs?.find((held) => held.id === group.id);
-      if (previous && previous.revision > group.revision) group = previous;
-      this.#retainedWorkspaceTabLineages.set(group.id, group);
-      this.#update({
-        ...this.#snapshot,
-        workspaceTabs: [
-          ...(this.#snapshot.workspaceTabs ?? []).filter((held) => held.id !== group.id),
-          group,
-        ],
-      });
-      return group;
-    })();
-    this.#workspaceTabReads.set(sessionId, read);
-    void read
-      .finally(() => {
-        if (this.#workspaceTabReads.get(sessionId) === read)
-          this.#workspaceTabReads.delete(sessionId);
-      })
-      .catch(() => undefined);
-    return read;
+  async readWorkspaceTabs(sessionId: string): Promise<WorkspaceTabLineage | null> {
+    await this.#waitBrowser(() => {
+      const groupId =
+        this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
+      return groupId ? this.#browserTabs.tabs(groupId).whole : this.#browserTabs.groups().whole;
+    });
+    const groupId =
+      this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
+    return groupId ? workspaceTabLineage(this.#browserTabs, groupId) : null;
   }
 
   readonly #workspaceTabActivations: WorkspaceTabActivations;
@@ -841,31 +731,6 @@ export class HttpHostClient {
     return this.#workspaceTabActivations.activate(tabId, options);
   }
 
-  #applyWorkspaceTabActivation(
-    result: NonNullable<
-      Awaited<ReturnType<NonNullable<OwnerViewHostClient["activateWorkspaceTab"]>>>
-    >,
-  ) {
-    const existing = this.#snapshot.browserSessions.find(
-      (session) => session.id === result.session.id,
-    );
-    this.#update({
-      ...this.#snapshot,
-      workspaceTabs: this.#snapshot.workspaceTabs?.some((group) => group.id === result.group.id)
-        ? this.#snapshot.workspaceTabs.map((group) =>
-            group.id === result.group.id && result.group.revision >= group.revision
-              ? result.group
-              : group,
-          )
-        : [...(this.#snapshot.workspaceTabs ?? []), result.group],
-      browserSessions: [
-        ...this.#snapshot.browserSessions.filter((session) => session.id !== result.session.id),
-        toBrowserSessionSummary(result.session, existing, null, existing?.uses ?? []),
-      ],
-    });
-    const catalog = this.#acceptCatalog(result.session.id, result.catalog);
-    if (catalog) this.#patchBrowserSession(result.session.id, { tabCatalog: catalog });
-  }
   async reopenWorkspaceTab() {
     if (!this.#snapshot.workspaceTabReopenAvailable)
       throw new Error("This Host cannot reopen closed tabs.");
@@ -879,15 +744,8 @@ export class HttpHostClient {
     if (viewer !== this.#viewer.generation)
       throw new Error("The signed-in account changed while reopening the tab.");
     if (result.type !== "workspace.tab.reopen") throw new Error("Unexpected tab reopen result.");
-    const held = this.#snapshot.workspaceTabs?.find((group) => group.id === result.group.id);
-    this.#update({
-      ...this.#snapshot,
-      workspaceTabs: [
-        ...(this.#snapshot.workspaceTabs ?? []).filter((group) => group.id !== result.group.id),
-        held && held.revision > result.group.revision ? held : result.group,
-      ],
-      browserTabGroups: this.#tabGroups.receive(result.layout),
-    });
+    this.#update({ ...this.#snapshot, browserTabGroups: this.#tabGroups.receive(result.layout) });
+    await this.#waitBrowser(() => this.#browserTabs.tab(result.groupId!, result.tabId));
     return result;
   }
   readonly #tabGroups: BrowserTabGroupClient;
@@ -911,29 +769,14 @@ export class HttpHostClient {
     if (viewer !== this.#viewer.generation)
       throw new Error("The signed-in account changed while closing tabs.");
     if (result.type !== "workspace.tabs.close") throw new Error("Unexpected tabs close result.");
-    const closed = new Set<string>(result.closed);
-    // Batch results name closed tabs; the Host notice supplies their lineage revisions.
-    this.#update({
-      ...this.#snapshot,
-      workspaceTabs: this.#snapshot.workspaceTabs?.map((lineage) =>
-        lineage.tabs?.some((tab) => closed.has(tab.id))
-          ? { ...lineage, tabs: lineage.tabs.filter((tab) => !closed.has(tab.id)) }
-          : lineage,
-      ),
-    });
     this.#tabGroups.removeClosed(result.closed);
     return result;
   };
-  async closeBrowserTab(
-    sessionId: string,
-    surfaceId: string,
-    expected: Pick<BrowserTabCatalog, "generation" | "revision" | "inventoryRevision">,
-  ) {
+  async closeBrowserTab(sessionId: string, surfaceId: string, expected: BrowserInventory) {
     const viewer = this.#viewer.generation;
-    if (
-      this.#snapshot.workspaceTabRestoreVersion === 1 &&
-      this.#snapshot.workspaceTabs?.some((group) => group.tabs?.some((tab) => tab.id === surfaceId))
-    ) {
+    const groupId = this.#browserTabs.groupForSession(sessionId);
+    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
+    if (tab?.documentId === null) {
       const result = unwrapRpcResult(
         await this.rpc["commands.dispatch"]({
           type: "workspace.tab.close",
@@ -944,37 +787,20 @@ export class HttpHostClient {
       if (viewer !== this.#viewer.generation)
         throw new Error("The signed-in account changed while closing the tab.");
       if (result.type !== "workspace.tab.close") throw new Error("Unexpected tab close result.");
-      this.#update({
-        ...this.#snapshot,
-        workspaceTabs: this.#snapshot.workspaceTabs?.map((group) =>
-          group.id === result.group.id && result.group.revision >= group.revision
-            ? result.group
-            : group,
-        ),
-      });
       return {
         type: "browser.tab.close" as const,
         sessionId: BrowserSessionIdSchema.parse(sessionId),
         outcome: "tab-closed" as const,
-        catalog: { generation: 0, revision: 0, tabs: [] },
       };
     }
-    const current = this.#snapshot.browserSessions.find(
-      (session) => session.id === sessionId,
-    )?.tabCatalog;
-    const inventoryRevision =
-      expected.inventoryRevision ??
-      (current?.generation === expected.generation && current.revision === expected.revision
-        ? (current.inventoryRevision ?? expected.revision)
-        : expected.revision);
+    const inventoryRevision = expected.inventoryRevision ?? expected.revision;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
         type: "browser.tab.close",
         sessionId,
         surfaceId,
-        expectedGeneration: expected.generation,
-        expectedRevision: inventoryRevision,
-        idempotencyKey: `close-tab:${sessionId}:${surfaceId}:${expected.generation}:${inventoryRevision}`,
+        inventoryRevision,
+        idempotencyKey: `close-tab:${sessionId}:${surfaceId}:${inventoryRevision}`,
       }),
     );
     if (viewer !== this.#viewer.generation)
@@ -984,11 +810,6 @@ export class HttpHostClient {
         message: "The signed-in account changed while closing the tab.",
       });
     if (result.type !== "browser.tab.close") throw new Error("Unexpected browser command result.");
-    const catalog = this.#acceptCatalog(sessionId, result.catalog);
-    this.#patchBrowserSession(sessionId, {
-      ...(catalog ? { tabCatalog: catalog } : {}),
-      ...(result.outcome === "session-closed" ? { state: "closed" as const } : {}),
-    });
     return result;
   }
   async readBrowserTabIcon(sessionId: string, iconRef: string): Promise<string | null> {
@@ -1177,6 +998,7 @@ export class HttpHostClient {
         });
       },
     });
+    this.#browserTabs.subscribe(() => this.#update(this.#snapshot));
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.rpc = createHttpHostApiClient({
@@ -1207,13 +1029,19 @@ export class HttpHostClient {
           throw new Error("Unexpected tab activation result.");
         return result;
       },
-      apply: (result) => this.#applyWorkspaceTabActivation(result),
+      resolved: (result) => {
+        const groupId =
+          result.groupId ??
+          this.#browserTabs.groupForSession(result.sessionId ?? result.session.id);
+        const row = groupId ? this.#browserTabs.tab(groupId, result.tabId) : undefined;
+        return row?.documentId !== null && row?.state === "live";
+      },
     });
     this.#tabGroups = new BrowserTabGroupClient(
       this.rpc,
       (browserTabGroups) => this.#update({ ...this.#snapshot, browserTabGroups }),
       () => this.#viewer.generation,
-      () => browserTabOrderTabs(this.#snapshot.workspaceTabs),
+      () => browserTabOrderTabs(this.browserTabs),
     );
     this.#random = options.random ?? Math.random;
     this.#livenessIdleMs = Math.max(1, options.realtimeLiveness?.idleMs ?? realtimeIdleProbeMs);
@@ -1322,57 +1150,26 @@ export class HttpHostClient {
     editing: this.#browserEditing,
     cursor: this.#browserCursor,
     scope: this.#browserPresentationScope,
-    claim: (sessionId, surfaceId, token) => {
-      if (surfaceId) this.#targetedControl.claim(sessionId, surfaceId, token);
-    },
-    accept: (sessionId, surfaceId, token) => {
-      if (surfaceId) this.#targetedControl.accept(sessionId, surfaceId, token);
-      else {
-        const channel = this.#browserChannels.get(sessionId);
-        if (channel?.awaitingAck === token) this.#returnWatchCredit(channel);
-      }
-    },
-    get: (sessionId, surfaceId) =>
-      surfaceId
-        ? this.#targetedControl.get(sessionId, surfaceId).frame
-        : (this.#browserFrameValues.get(sessionId) ?? null),
+    claim: (sessionId, surfaceId, token) =>
+      this.#targetedControl.claim(sessionId, surfaceId, token),
+    accept: (sessionId, surfaceId, token) =>
+      this.#targetedControl.accept(sessionId, surfaceId, token),
+    get: (sessionId, surfaceId) => this.#targetedControl.get(sessionId, surfaceId).frame,
     rasterDemand: (sessionId, surfaceId) =>
       this.#targetedControl.rasterDemand(sessionId, surfaceId),
-    subscribe: (sessionId, listener, surfaceId) => {
-      if (surfaceId) return this.#targetedControl.subscribe(sessionId, surfaceId, listener);
-      if (this.#disposed) return () => undefined;
-      const listeners = this.#browserFrameListeners.get(sessionId) ?? new Set<() => void>();
-      listeners.add(listener);
-      this.#browserFrameListeners.set(sessionId, listeners);
-      return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) this.#browserFrameListeners.delete(sessionId);
-      };
-    },
+    subscribe: (sessionId, listener, surfaceId) =>
+      this.#targetedControl.subscribe(sessionId, surfaceId, listener),
   };
   readonly browserWatchFrames: BrowserFrameStore = {
     invalidationKey: this.#targetedWatch.invalidationKey,
     scope: this.#browserPresentationScope,
-    claim: (sessionId, surfaceId, token) => {
-      if (surfaceId) this.#targetedWatch.claim(sessionId, surfaceId, token);
-    },
+    claim: (sessionId, surfaceId, token) => this.#targetedWatch.claim(sessionId, surfaceId, token),
     accept: (sessionId, surfaceId, token) =>
       this.acceptBrowserWatchFrame(sessionId, token, surfaceId),
-    get: (sessionId, surfaceId) =>
-      surfaceId
-        ? this.#targetedWatch.get(sessionId, surfaceId).frame
-        : (this.#browserWatchFrameValues.get(sessionId) ?? null),
+    get: (sessionId, surfaceId) => this.#targetedWatch.get(sessionId, surfaceId).frame,
     rasterDemand: (sessionId, surfaceId) => this.#targetedWatch.rasterDemand(sessionId, surfaceId),
-    subscribe: (sessionId, listener, surfaceId) => {
-      if (surfaceId) return this.#targetedWatch.subscribe(sessionId, surfaceId, listener);
-      const listeners = this.#browserWatchFrameListeners.get(sessionId) ?? new Set<() => void>();
-      listeners.add(listener);
-      this.#browserWatchFrameListeners.set(sessionId, listeners);
-      return () => {
-        listeners.delete(listener);
-        if (listeners.size === 0) this.#browserWatchFrameListeners.delete(sessionId);
-      };
-    },
+    subscribe: (sessionId, listener, surfaceId) =>
+      this.#targetedWatch.subscribe(sessionId, surfaceId, listener),
   };
 
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -1436,30 +1233,9 @@ export class HttpHostClient {
           assignments: mergeAssignments(this.#snapshot.assignments, [result.assignment]),
         });
         break;
-      case "browser.session.start": {
-        // Viewer state (tabs, dialog, socket health) lives only on the client,
-        // so a restarted session has to inherit it rather than reset it.
-        // The Host answers with the conversation it was opened from already
-        // using it.
-        const session = toBrowserSessionSummary(
-          result.session,
-          this.#snapshot.browserSessions.find((item) => item.id === result.session.id),
-          null,
-          this.#browserUsesBySession().get(result.session.id) ?? [],
-        );
-        const workspaceId = commandIs(parsedCommand, result.type)
-          ? parsedCommand.workspaceId
-          : session.workspaceId;
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, {
-            session,
-            type: result.type,
-            workspaceId,
-          }),
-        );
-        this.#ensureBrowserChannel(session.id);
+      case "browser.session.start":
+        await this.#waitBrowser(() => this.#browserTabs.groupForSession(result.session.id));
         break;
-      }
       case "browser.profile.create":
         this.#update(
           applyOptimisticCommandPatch(this.#snapshot, {
@@ -1501,20 +1277,6 @@ export class HttpHostClient {
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               grantId: parsedCommand.grantId,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "browser.session.close":
-        if (commandIs(parsedCommand, result.type)) {
-          // Nothing will arrive on the viewer socket again; drop it and its
-          // retained frame before the session is marked closed.
-          this.#closeBrowserChannel(parsedCommand.sessionId);
-          this.#closeBrowserChannel(parsedCommand.sessionId, "watch");
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              sessionId: parsedCommand.sessionId,
               type: result.type,
             }),
           );
@@ -2287,8 +2049,6 @@ export class HttpHostClient {
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      // With no browser in the catalog there is nothing a conversation can show.
-      this.#snapshot.browserSessions.length === 0 ||
       !ThreadIdSchema.safeParse(threadId).success ||
       !this.#showsThread(threadId)
     )
@@ -2408,8 +2168,6 @@ export class HttpHostClient {
   /**
    * Replaces what a read answered for: a whole read replaces every use of the
    * Thread; a read of some Runs replaces the Thread's own uses and those Runs'.
-   * A use of a browser the catalog does not list yet is kept, and appears on
-   * that browser once a catalog read brings it.
    */
   #replaceBrowserUsage(
     threadId: string,
@@ -2420,34 +2178,15 @@ export class HttpHostClient {
     const replaced = scope.runIds === null ? null : new Set(scope.runIds);
     this.#browserUses.set(threadId, [
       ...(this.#browserUses.get(threadId) ?? []).filter(
-        ({ use }) => replaced !== null && use.runId !== null && !replaced.has(use.runId),
+        (use) => replaced !== null && use.runId !== null && !replaced.has(use.runId),
       ),
-      ...uses.map(({ sessionId, ...use }) => ({ sessionId, use })),
+      ...uses,
     ]);
-    const bySession = this.#browserUsesBySession();
     this.#update({
       ...this.#snapshot,
       browserUsage: { ...this.#snapshot.browserUsage, [threadId]: { loading: false, error } },
-      browserSessions: this.#snapshot.browserSessions.map((session) => {
-        const sessionUses = bySession.get(session.id) ?? [];
-        return sameElements(session.uses ?? [], sessionUses)
-          ? session
-          : { ...session, uses: sessionUses };
-      }),
+      browserUses: [...this.#browserUses.values()].flat(),
     });
-  }
-
-  /** Every use this client has read, by browser, each the object its read answered. */
-  #browserUsesBySession(): ReadonlyMap<string, readonly BrowserSessionUseSummary[]> {
-    const bySession = new Map<string, BrowserSessionUseSummary[]>();
-    for (const uses of this.#browserUses.values()) {
-      for (const { sessionId, use } of uses) {
-        const sessionUses = bySession.get(sessionId) ?? [];
-        sessionUses.push(use);
-        bySession.set(sessionId, sessionUses);
-      }
-    }
-    return bySession;
   }
 
   /**
@@ -2471,34 +2210,6 @@ export class HttpHostClient {
       this.#browserUsageRunSources.set(threadId, sources);
       this.#ensureBrowserUsage(threadId, "missing");
     }
-  }
-
-  /**
-   * What a person sees about some browsers changed; patched in place, nothing
-   * reread. The Host sends a browser's presence only when it changes, so a
-   * patch for a browser the catalog does not list yet is kept for when it
-   * does, and a catalog read that began before the patch does not undo it.
-   */
-  #applyBrowserPresence(presences: readonly BrowserPresence[]): void {
-    const byId = new Map(presences.map((presence) => [presence.sessionId as string, presence]));
-    for (const [sessionId, presence] of byId) {
-      this.#presenceMarks.set(sessionId, ++this.#presenceCounter);
-      this.#browserPresence.set(sessionId, presence);
-    }
-    let changed = false;
-    const browserSessions = this.#snapshot.browserSessions.map((session) => {
-      const presence = byId.get(session.id);
-      if (!presence) return session;
-      if (
-        (session.acting ?? false) === presence.acting &&
-        (session.page?.title ?? null) === (presence.page?.title ?? null) &&
-        (session.page?.url ?? null) === (presence.page?.url ?? null)
-      )
-        return session;
-      changed = true;
-      return { ...session, acting: presence.acting, page: presence.page };
-    });
-    if (changed) this.#update({ ...this.#snapshot, browserSessions });
   }
 
   /** Which apps an agent is acting in on the reader's Macs; patched in place. */
@@ -3117,6 +2828,7 @@ export class HttpHostClient {
     if (!this.#snapshot.browserAvailable) {
       throw new Error("This Host does not have a connected Browser Runtime.");
     }
+    this.#ensureWorkspaceChannel(workspaceId);
     const result = await this.dispatch({
       idempotencyKey: mutationIdempotencyKey("browser"),
       input: {
@@ -3153,7 +2865,7 @@ export class HttpHostClient {
 
   readonly retainBrowserViewer = (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly picture?: boolean;
       readonly captureRegion?: boolean;
@@ -3163,108 +2875,22 @@ export class HttpHostClient {
   ): (() => void) => {
     if (options?.picture === false && !this.#capabilities?.includes("browser-target-control-v1"))
       throw new Error("This Host does not advertise browser-target-control-v1.");
-    if (options?.picture === false && !surfaceId)
-      throw new Error("A control-only browser viewer must name a target.");
-    return surfaceId
-      ? this.#targetedControl.retain(sessionId, surfaceId, options)
-      : this.#retainBrowser(sessionId, "control", options);
+    return this.#targetedControl.retain(sessionId, surfaceId, options);
   };
 
   readonly retainBrowserWatch = (
     sessionId: string,
-    surfaceId?: string,
+    surfaceId: string,
     options?: {
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
     },
-  ): (() => void) =>
-    surfaceId
-      ? this.#targetedWatch.retain(sessionId, surfaceId, options)
-      : this.#retainBrowser(sessionId, "watch", options);
+  ): (() => void) => this.#targetedWatch.retain(sessionId, surfaceId, options);
 
-  #retainBrowser(
-    sessionId: string,
-    mode: "control" | "watch",
-    options?: { readonly captureRegion?: boolean; readonly frameWindow?: boolean },
-  ): () => void {
-    if (this.#disposed) return () => undefined;
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (!session || session.state === "closed" || session.state === "failed") {
-      return () => undefined;
-    }
-    const channels = mode === "watch" ? this.#browserWatchChannels : this.#browserChannels;
-    const channel: BrowserChannel =
-      channels.get(sessionId) ??
-      ({
-        awaitingAck: null,
-        ...(mode === "watch" ? { mode, captureRegionRetainers: 0 } : { mode }),
-        reconnectAttempt: 0,
-        reconnectTimer: null,
-        retainers: 0,
-        sessionId,
-        socket: null,
-        synchronized: false,
-        unreadableFrames: 0,
-      } satisfies BrowserChannel);
-    const captureRegion = options?.captureRegion === true;
-    const previouslyOptedIn =
-      channel.mode === "watch" && channel.captureRegionRetainers === channel.retainers;
-    channel.retainers += 1;
-    if (channel.mode === "watch") {
-      if (captureRegion) channel.captureRegionRetainers += 1;
-      if (previouslyOptedIn !== (channel.captureRegionRetainers === channel.retainers))
-        this.#subscribeBrowserWatch(channel);
-    }
-    channels.set(sessionId, channel);
-    this.#ensureBrowserChannel(sessionId, mode);
-
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const previouslyOptedIn =
-        channel.mode === "watch" && channel.captureRegionRetainers === channel.retainers;
-      channel.retainers = Math.max(0, channel.retainers - 1);
-      if (channel.mode === "watch") {
-        if (captureRegion) channel.captureRegionRetainers -= 1;
-        if (previouslyOptedIn !== (channel.captureRegionRetainers === channel.retainers))
-          this.#subscribeBrowserWatch(channel);
-      }
-      // A channel that was dropped and replaced belongs to newer retainers.
-      if (channel.retainers > 0 || channels.get(sessionId) !== channel) return;
-      this.#closeBrowserChannel(sessionId, mode);
-      this.#patchBrowserViewerState(sessionId, mode, {
-        viewerError: null,
-        viewerState: "disconnected",
-      });
-    };
-  }
-
-  /**
-   * The view has finished with this Control or Watch picture. A token that is not the
-   * one outstanding — already returned, or from a socket since replaced — is
-   * late and changes nothing.
-   */
-  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId?: string): void {
-    if (surfaceId) {
-      this.#targetedWatch.accept(sessionId, surfaceId, token);
-      this.#targetedControl.accept(sessionId, surfaceId, token);
-      return;
-    }
-    for (const channel of [
-      this.#browserWatchChannels.get(sessionId),
-      this.#browserChannels.get(sessionId),
-    ])
-      if (channel?.awaitingAck === token) this.#returnWatchCredit(channel);
-  }
-
-  #returnWatchCredit(channel: BrowserChannel): void {
-    const token = channel.awaitingAck;
-    channel.awaitingAck = null;
-    if (token && channel.socket?.readyState === 1) {
-      channel.socket.send(JSON.stringify({ type: "stream.ack", token }));
-    }
+  acceptBrowserWatchFrame(sessionId: string, token: string, surfaceId: string): void {
+    this.#targetedWatch.accept(sessionId, surfaceId, token);
+    this.#targetedControl.accept(sessionId, surfaceId, token);
   }
 
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void {
@@ -3297,32 +2923,8 @@ export class HttpHostClient {
       this.#targetedControl.send(sessionId, command.surfaceId, command);
       return;
     }
-    const channel = this.#browserChannels.get(sessionId);
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (
-      !channel?.socket ||
-      channel.socket.readyState !== 1 ||
-      !channel.synchronized ||
-      session?.state !== "ready"
-    ) {
-      if (browserCommandNeedsNoView(command)) return;
-      throw new Error("The browser view is not synchronized.");
-    }
-    if (channel.basicInputOnly && !browserBasicInputAllows(command)) return;
-    channel.socket.send(JSON.stringify(command));
-  }
-
-  #subscribeBrowserWatch(channel: BrowserChannel): void {
-    if (channel.mode !== "watch" || !channel.synchronized || !channel.retainers) return;
-    channel.socket?.send(
-      JSON.stringify({
-        type: "stream.subscribe",
-        ...(channel.captureRegionRetainers === channel.retainers &&
-        this.#capabilities?.includes("browser-capture-region-v1")
-          ? { captureRegion: true }
-          : {}),
-      }),
-    );
+    if (browserCommandNeedsNoView(command)) return;
+    throw new Error("The browser view is not synchronized.");
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
@@ -3779,13 +3381,14 @@ export class HttpHostClient {
     this.#workspaceTabActivations.dispose();
     this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
     this.#disposed = true;
+    for (const check of this.#browserWaiters) check();
     this.#computerViews.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
-    this.#browserPresence.clear();
-    this.#tabCatalogs.clear();
+    this.#browserTabs.clear();
+    this.#browserContinuation = undefined;
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
@@ -3812,10 +3415,6 @@ export class HttpHostClient {
     this.#readAutomations.clear();
     this.#deniedAssignments.clear();
     this.#observedThreads.clear();
-    for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
-    for (const sessionId of this.#browserWatchChannels.keys())
-      this.#closeBrowserChannel(sessionId, "watch");
-    this.#clearBrowserFrames();
     this.#forgetLiveRereads();
     this.#listeners.clear();
     this.#personShowListeners.clear();
@@ -3825,8 +3424,6 @@ export class HttpHostClient {
     this.#targetedWatch.dispose();
     this.#targetedControl.dispose();
     this.#browserEditing.dispose();
-    this.#browserFrameListeners.clear();
-    this.#browserWatchFrameListeners.clear();
   }
 
   async #bootstrap(
@@ -4210,8 +3807,6 @@ export class HttpHostClient {
     if (changed) {
       this.#targetedControl.capabilitiesChanged();
       this.#targetedWatch.capabilitiesChanged();
-      for (const channel of this.#browserWatchChannels.values())
-        this.#subscribeBrowserWatch(channel);
     }
   }
 
@@ -4219,8 +3814,6 @@ export class HttpHostClient {
     const generation = this.#viewerGeneration;
     const appTabMark = this.#appTabGeneration;
     const presenceMark = this.#presenceCounter;
-    const browserStateMark = this.#browserStateCounter;
-    const workspaceTabsMark = this.#workspaceTabsCounter;
     const ownerViewRevision = this.#ownerViews.revision;
     // The interval's own read is no new attempt, so an outage reads one way.
     if (
@@ -4241,10 +3834,6 @@ export class HttpHostClient {
       this.#stopRefresh();
       for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
       this.#channels.clear();
-      for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
-      for (const sessionId of this.#browserWatchChannels.keys())
-        this.#closeBrowserChannel(sessionId, "watch");
-      this.#clearBrowserFrames();
       const identityConfig = unwrapRpcResult(await this.rpc["auth.config"]({}));
       if (
         this.#disposed ||
@@ -4367,99 +3956,12 @@ export class HttpHostClient {
     // be outside the current catalog page but explicitly opened from a delegation.
     const patchedSince = (sessionId: string) =>
       (this.#presenceMarks.get(sessionId) ?? 0) > presenceMark;
-    const usesBySession = this.#browserUsesBySession();
-    const browserSessions = payload.browser.sessions.map((readSession) => {
-      const existing = this.#snapshot.browserSessions.find(
-        (session) => session.id === readSession.id,
-      );
-      const evidence = this.#browserStateMarks.get(readSession.id);
-      // Socket state is ordered. A read begun before that fact, or an unchanged
-      // Host record, cannot supersede it; a later Host lifecycle change can.
-      // Even a superseded read advances the lower bound on the Host record's age.
-      const keepState =
-        existing &&
-        ((evidence &&
-          (evidence > browserStateMark ||
-            (existing.updatedAt !== undefined && readSession.updatedAt <= existing.updatedAt))) ||
-          (existing.updatedAt !== undefined && readSession.updatedAt < existing.updatedAt));
-      const session = keepState
-        ? {
-            ...readSession,
-            state: existing.state,
-            updatedAt:
-              existing.updatedAt && existing.updatedAt > readSession.updatedAt
-                ? existing.updatedAt
-                : readSession.updatedAt,
-          }
-        : readSession;
-      const terminal = session.state === "closed" || session.state === "failed";
-      if (terminal) this.#tabCatalogs.delete(session.id);
-      const catalog = terminal
-        ? {
-            generation: session.tabCatalog?.generation ?? 0,
-            revision: session.tabCatalog?.revision ?? 0,
-            tabs: [],
-          }
-        : this.#acceptCatalog(session.id, session.tabCatalog);
-      return toBrowserSessionSummary(
-        { ...session, ...(catalog ? { tabCatalog: catalog } : {}) },
-        this.#snapshot.browserSessions.find((existing) => existing.id === session.id),
-        patchedSince(session.id) ? (this.#browserPresence.get(session.id) ?? null) : null,
-        usesBySession.get(session.id) ?? [],
-      );
-    });
-    const retainedBrowserSessionIds = new Set(browserSessions.map((session) => session.id));
-    for (const sessionId of this.#browserChannels.keys()) {
-      const retained = browserSessions.find((session) => session.id === sessionId);
-      if (!retained || retained.state === "closed" || retained.state === "failed") {
-        this.#closeBrowserChannel(sessionId);
-      }
-    }
-    for (const sessionId of this.#browserWatchChannels.keys()) {
-      const retained = browserSessions.find((session) => session.id === sessionId);
-      if (!retained || retained.state === "closed" || retained.state === "failed") {
-        this.#closeBrowserChannel(sessionId, "watch");
-      }
-    }
-    for (const sessionId of this.#browserFrameValues.keys()) {
-      if (!retainedBrowserSessionIds.has(sessionId)) this.#setBrowserFrame(sessionId, null);
-    }
-    for (const sessionId of this.#browserWatchFrameValues.keys()) {
-      if (!retainedBrowserSessionIds.has(sessionId))
-        this.#setBrowserFrame(sessionId, null, "watch");
-    }
-    const retainedCatalogIds = [...this.#retainedWorkspaceTabLineages.keys()].filter(
-      (id) => !payload.browser.workspaceTabs?.some((group) => group.id === id),
-    );
-    let workspaceTabs: HostSnapshot["workspaceTabs"];
-    if (payload.browser.workspaceTabRestoreVersion === 1) {
-      const held = new Map(this.#snapshot.workspaceTabs?.map((group) => [group.id, group]));
-      const groups = new Map(
-        payload.browser.workspaceTabs?.map((group) => {
-          const previous = held.get(group.id);
-          return [group.id, previous && previous.revision > group.revision ? previous : group];
-        }),
-      );
-      for (const group of this.#retainedWorkspaceTabLineages.values())
-        if (!groups.has(group.id)) groups.set(group.id, held.get(group.id) ?? group);
-      for (const group of held.values()) {
-        // Keep in-flight patches and closed revisions that reject delayed notices.
-        if (
-          !groups.has(group.id) &&
-          ((this.#workspaceTabsMarks.get(group.id) ?? 0) > workspaceTabsMark ||
-            group.tabs?.length === 0)
-        )
-          groups.set(group.id, group);
-      }
-      workspaceTabs = [...groups.values()];
-    }
     const bootstrapData: Partial<HostSnapshot> = {
       browserProfileGrants: payload.browser.profileGrants.map((grant) => ({ ...grant })),
       browserTabGroups: this.#tabGroups.receive(
         payload.browser.tabGroupsVersion === 1 ? payload.browser.tabGroups : undefined,
       ),
       workspaceTabRestoreVersion: payload.browser.workspaceTabRestoreVersion,
-      workspaceTabs,
       browserAvailable: payload.browser.available,
       browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
       browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
@@ -4472,7 +3974,6 @@ export class HttpHostClient {
           ? this.#overlayAppTabs(payload.appTabs ?? [])
           : (this.#snapshot.appTabs ?? []),
       ),
-      browserSessions,
       connection: workspaces.length ? this.#snapshot.connection : "connected",
       deploymentShape: payload.deploymentShape,
       deploymentPolicy: hostDeploymentPolicy(payload),
@@ -4528,10 +4029,9 @@ export class HttpHostClient {
     for (const [sessionId, mark] of this.#presenceMarks) {
       if (mark > presenceMark) continue;
       this.#presenceMarks.delete(sessionId);
-      this.#browserPresence.delete(sessionId);
     }
-    for (const [id, mark] of this.#workspaceTabsMarks)
-      if (mark <= workspaceTabsMark) this.#workspaceTabsMarks.delete(id);
+    if (this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs }))
+      this.#browserContinuation = payload.browser.continuation;
     const initialWorkspace = homeWorkspace ?? workspaces[0];
     if (initialWorkspace) this.#ensureWorkspaceChannel(initialWorkspace.id);
     // Retry retained workspaces too: the open thread need not be in Main.
@@ -4547,51 +4047,6 @@ export class HttpHostClient {
     if (this.#activeThreadId) this.#ensureBrowserUsage(this.#activeThreadId, "missing");
     for (const threadId of this.#observedThreads.keys())
       this.#ensureBrowserUsage(threadId, "missing");
-
-    // Catalog omission is explicit: recover every gap, after primary startup,
-    // even if one sibling read fails. Realtime may deliver newer revisions first.
-    const recoveryGeneration = this.#viewerGeneration;
-    const current = () =>
-      this.#viewerStillCurrent(recoveryGeneration, payload.user.id) &&
-      this.#snapshot.deploymentId === payload.deploymentId;
-    const catalogReads: (() => Promise<void>)[] = retainedCatalogIds.map((id) => async () => {
-      await this.readWorkspaceTabs(id);
-    });
-    for (const group of payload.browser.workspaceTabs ?? []) {
-      if (group.tabs) continue;
-      catalogReads.push(async () => {
-        const recovered = unwrapRpcResult(
-          await this.rpc["workspace.tabs.get"]({ groupId: group.id }),
-        );
-        if (!current()) return;
-        this.#update({
-          ...this.#snapshot,
-          workspaceTabs: this.#snapshot.workspaceTabs?.map((held) =>
-            held.id === recovered.id && recovered.revision >= held.revision ? recovered : held,
-          ),
-        });
-      });
-    }
-    for (const session of payload.browser.sessions) {
-      if (session.tabCatalog) continue;
-      catalogReads.push(async () => {
-        const result = unwrapRpcResult(
-          await this.rpc["browser.tabs.get"]({ sessionId: session.id }),
-        );
-        if (!current()) return;
-        const catalog = this.#acceptCatalog(session.id, result);
-        if (catalog) this.#patchBrowserSession(session.id, { tabCatalog: catalog });
-      });
-    }
-    const failures: unknown[] = [];
-    for (let offset = 0; offset < catalogReads.length; offset += 3) {
-      if (!current()) return;
-      const results = await Promise.allSettled(
-        catalogReads.slice(offset, offset + 3).map((read) => read()),
-      );
-      for (const result of results) if (result.status === "rejected") failures.push(result.reason);
-    }
-    if (failures.length) throw failures[0];
   }
 
   #startRefresh(): void {
@@ -4638,14 +4093,6 @@ export class HttpHostClient {
         channel.reconnectTimer = null;
       }
     }
-    for (const channel of this.#browserChannels.values()) {
-      if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-      channel.reconnectTimer = null;
-    }
-    for (const channel of this.#browserWatchChannels.values()) {
-      if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-      channel.reconnectTimer = null;
-    }
   }
 
   /**
@@ -4674,23 +4121,6 @@ export class HttpHostClient {
         continue;
       }
       this.#replaceChannel(channel);
-    }
-    for (const channel of [
-      ...this.#browserChannels.values(),
-      ...this.#browserWatchChannels.values(),
-    ]) {
-      // A resumed Watch must get a new snapshot and frame credit. A socket the
-      // platform kept open while hidden can otherwise leave an old picture
-      // looking current without any new screencast frame to replace it.
-      if (channel.mode === "watch") {
-        this.#replaceBrowserChannel(channel);
-        continue;
-      }
-      // The browser viewer protocol carries no client-initiated liveness probe,
-      // so a retained socket is trusted for the same window and replaced after
-      // it. Its snapshot is the whole of its state, so replacing costs one.
-      if (trusted && channel.socket?.readyState === 1) continue;
-      this.#replaceBrowserChannel(channel);
     }
     this.#recomputeConnection();
     this.#startRefresh();
@@ -4729,8 +4159,6 @@ export class HttpHostClient {
     this.#targetedControl.reconnect();
     this.#targetedWatch.reconnect();
     for (const channel of this.#channels.values()) this.#replaceChannel(channel);
-    for (const channel of this.#browserChannels.values()) this.#replaceBrowserChannel(channel);
-    for (const channel of this.#browserWatchChannels.values()) this.#replaceBrowserChannel(channel);
     this.#recomputeConnection();
     for (const listener of this.#lifecycleListeners) listener("network");
   }
@@ -4869,18 +4297,60 @@ export class HttpHostClient {
     this.#connect(channel);
   }
 
-  #replaceBrowserChannel(channel: BrowserChannel): void {
-    if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-    channel.reconnectTimer = null;
-    const socket = channel.socket;
-    channel.socket = null;
-    channel.synchronized = false;
-    socket?.close(1000, "Client closed");
-    this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-    if (channel.retainers === 0 || this.#reconnectSuspended()) return;
-    if (this.#snapshot.session !== "authenticated") return;
-    channel.reconnectAttempt = 0;
-    this.#connectBrowser(channel);
+  async #waitBrowser(read: () => unknown, signal?: AbortSignal): Promise<void> {
+    if (read()) return;
+    const viewer = this.#viewer.generation;
+    let release = () => {};
+    let check = () => {};
+    const ready = new Promise<void>((resolve, reject) => {
+      check = () => {
+        if (this.#disposed || viewer !== this.#viewer.generation)
+          reject(new Error("The browser viewer changed."));
+        else if (read()) resolve();
+      };
+      release = this.#browserTabs.subscribe(check);
+      this.#browserWaiters.add(check);
+      check();
+    });
+    try {
+      await withTimeout(ready, browserOpeningTimeoutMs, {
+        ...(signal ? { signal } : {}),
+        timeoutError: () => new Error("The browser tab did not arrive."),
+      });
+    } finally {
+      release();
+      this.#browserWaiters.delete(check);
+    }
+  }
+
+  #resyncBrowser(groupId?: string, continuation?: string): void {
+    const carrier = this.#browserCarrier;
+    if (!carrier?.socket || carrier.socket.readyState !== 1) return;
+    try {
+      carrier.socket.send(
+        JSON.stringify({
+          type: "client.browser.resync",
+          ...(groupId ? { groupId } : {}),
+          ...(continuation ? { continuation } : {}),
+        }),
+      );
+    } catch {
+      this.#closeChannel(carrier, true, 1000, "Browser resync unsendable");
+    }
+  }
+  #electBrowserCarrier(): void {
+    if (this.#browserCarrier || this.#disposed || this.#snapshot.session !== "authenticated")
+      return;
+    this.#browserCarrier =
+      [...this.#channels.values()].find((channel) => channel.socket?.readyState === 1) ?? null;
+    this.#resyncBrowser(undefined, this.#browserContinuation);
+    this.#browserContinuation = undefined;
+  }
+  #releaseBrowserCarrier(channel: WorkspaceChannel): void {
+    if (channel !== this.#browserCarrier) return;
+    this.#browserCarrier = null;
+    this.#browserTabs.disconnected();
+    this.#electBrowserCarrier();
   }
 
   #ensureWorkspaceChannel(workspaceId: string): void {
@@ -4986,6 +4456,7 @@ export class HttpHostClient {
             workspaceId: channel.workspaceId,
           }),
         );
+        this.#electBrowserCarrier();
       } catch {
         this.#closeChannel(channel, true, 1000, "Subscription unsendable");
         this.#recomputeConnection();
@@ -5018,6 +4489,7 @@ export class HttpHostClient {
       if (channel.socket !== socket) return;
       channel.socket = null;
       channel.synchronized = false;
+      this.#releaseBrowserCarrier(channel);
       this.#nodeDetails.disconnected(channel.workspaceId);
       this.#scheduleReconnect(channel);
       this.#recomputeConnection();
@@ -5185,6 +4657,12 @@ export class HttpHostClient {
       return;
     }
     switch (loss) {
+      case "browser-stream":
+        if (channel === this.#browserCarrier) {
+          this.#browserTabs.disconnected();
+          this.#resyncBrowser();
+        }
+        return;
       case "none":
         return;
       case "place-activity":
@@ -5348,53 +4826,18 @@ export class HttpHostClient {
       this.browserHistory.changed(message.profileId);
       return;
     }
-    if (message.type === "host.browser-sessions-changed" && message.group?.tabs) {
-      const group = message.group;
-      const held = this.#snapshot.workspaceTabs?.find((previous) => previous.id === group.id);
-      if (held && held.revision >= group.revision) return;
-      this.#workspaceTabsMarks.set(group.id, ++this.#workspaceTabsCounter);
-      this.#update({
-        ...this.#snapshot,
-        workspaceTabs: held
-          ? this.#snapshot.workspaceTabs?.map((previous) =>
-              previous.id === group.id ? group : previous,
-            )
-          : [...(this.#snapshot.workspaceTabs ?? []), group],
-      });
-      // The Host's layout lists only open tabs, so one this lineage closed leaves its group too.
-      const open = new Set(group.tabs?.map((tab) => tab.id));
-      const closed = held?.tabs?.flatMap((tab) => (open.has(tab.id) ? [] : [tab.id])) ?? [];
-      if (closed.length) this.#tabGroups.removeClosed(closed);
-      return;
-    }
     if (
-      message.type === "host.browser-sessions-changed" ||
-      message.type === "host.app-tabs-changed"
+      message.type === "host.app-tabs-changed" ||
+      message.type === "host.browser-sessions-changed"
     ) {
-      // Viewer-wide notices without a complete lineage still require bootstrap.
       this.#reread(message.type);
       return;
     }
     if (message.type === "host.thread-place-changed") {
       return;
     }
-    if (message.type === "host.browser-tabs-changed") {
-      const next = this.#acceptCatalog(message.sessionId, message.catalog);
-      const held = this.#snapshot.browserSessions.find(
-        (session) => session.id === message.sessionId,
-      );
-      if (next && next !== held?.tabCatalog)
-        this.#patchBrowserSession(message.sessionId, { tabCatalog: next });
-      return;
-    }
     if (message.type === "host.place-activity" || message.type === "host.place-activity-cleared") {
       this.#placeActivity.apply(message);
-      return;
-    }
-    if (message.type === "host.browser-presence") {
-      // Addressed to this person on every socket they hold, whichever
-      // Workspace it follows: the browser catalog is theirs, not a Workspace's.
-      this.#applyBrowserPresence(message.sessions);
       return;
     }
     if (message.type === "host.browser-usage-changed") {
@@ -5434,6 +4877,12 @@ export class HttpHostClient {
       // Refresh it here so correctness never depends on mounting Computers.
       this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
       this.#reread(message.type);
+      return;
+    }
+    if (message.type === "host.browser-groups" || message.type === "host.browser-tabs") {
+      if (channel !== this.#browserCarrier) return;
+      if (message.type === "host.browser-groups") this.#browserTabs.applyGroups(message.stream);
+      else this.#browserTabs.applyTabs(message.groupId, message.stream);
       return;
     }
     channel.cursor = maxSequence(channel.cursor, message.sequence);
@@ -5884,6 +5333,7 @@ export class HttpHostClient {
     const socket = channel.socket;
     channel.socket = null;
     channel.synchronized = false;
+    this.#releaseBrowserCarrier(channel);
     this.#nodeDetails.disconnected(channel.workspaceId);
     if (reconnect) this.#scheduleReconnect(channel);
     try {
@@ -5979,254 +5429,7 @@ export class HttpHostClient {
       : { ...snapshot, connectionInterrupted: interrupted };
   }
 
-  #ensureBrowserChannel(sessionId: string, mode: "control" | "watch" = "control"): void {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (!session || session.state === "closed" || session.state === "failed") return;
-    const existing = (mode === "watch" ? this.#browserWatchChannels : this.#browserChannels).get(
-      sessionId,
-    );
-    if (!existing || existing.retainers === 0 || existing.socket || existing.reconnectTimer) return;
-    this.#connectBrowser(existing);
-  }
-
-  #connectBrowser(channel: BrowserChannel): void {
-    if (this.#disposed || channel.socket) return;
-    // Same fence as the Workspace channel: the retainer is kept, so returning
-    // to the foreground or to a network opens the viewer socket.
-    if (this.#reconnectSuspended()) return;
-    const socket = this.#webSocketFactory(
-      this.#webSocketUrl(
-        `/v1/browser-sessions/${encodeURIComponent(channel.sessionId)}/connect?editing=2${channel.mode === "watch" ? "&mode=watch" : "&basicInput=1"}`,
-      ),
-    );
-    socket.binaryType = "arraybuffer";
-    channel.socket = socket;
-    channel.awaitingAck = null;
-    channel.reconnectTimer = null;
-    channel.synchronized = false;
-    this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-      viewerError: null,
-      viewerState: "connecting",
-    });
-    let gaveUp = false;
-    const openedAt = Date.now();
-    socket.addEventListener("message", (event) => {
-      if (channel.socket !== socket || socket.readyState >= 2) return;
-      try {
-        this.#handleBrowserFrame(channel, event.data);
-        if (Date.now() - openedAt >= healthySocketMs) channel.unreadableFrames = 0;
-      } catch {
-        gaveUp = true;
-        channel.unreadableFrames += 1;
-        this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-        socket.close(4002, "Invalid browser protocol frame");
-      }
-    });
-    socket.addEventListener("close", (event) => {
-      if (channel.socket !== socket) return;
-      channel.socket = null;
-      channel.synchronized = false;
-      if (channel.mode === "control") this.#browserEditing.disconnect(channel.sessionId);
-      this.#setBrowserFrame(channel.sessionId, null, channel.mode);
-      const session = this.#snapshot.browserSessions.find((item) => item.id === channel.sessionId);
-      if (!session || session.state === "closed" || session.state === "failed") {
-        (channel.mode === "watch" ? this.#browserWatchChannels : this.#browserChannels).delete(
-          channel.sessionId,
-        );
-        return;
-      }
-      // The Host's own 4002 refuses what this client sent, and stays a refusal.
-      if (
-        (event.code === browserViewerCloseCodes.protocolViolation && !gaveUp) ||
-        event.code === browserViewerCloseCodes.accessEnded
-      ) {
-        this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-          viewerError:
-            (channel.mode === "watch" ? session.watchViewerError : session.viewerError) ||
-            event.reason ||
-            "The browser viewer protocol failed.",
-          viewerState: "disconnected",
-        });
-        return;
-      }
-      // A snapshot is the whole of a viewer's state, so a new socket repairs
-      // anything lost; retrying one that keeps failing should say so.
-      const unreadable = channel.unreadableFrames > realtimeReplayAttempts;
-      this.#patchBrowserViewerState(channel.sessionId, channel.mode, {
-        viewerError: unreadable ? "The browser viewer protocol failed." : null,
-        viewerState: unreadable ? "disconnected" : "connecting",
-      });
-      this.#scheduleBrowserReconnect(channel);
-    });
-  }
-
-  #handleBrowserFrame(channel: BrowserChannel, frame: unknown): void {
-    if (typeof frame === "string") {
-      if (frame.length > maxInboundFrameCharacters) {
-        throw new Error("Browser protocol frame is too large.");
-      }
-      this.#projectBrowserMessage(channel, BrowserServerMessageSchema.parse(JSON.parse(frame)));
-      return;
-    }
-    if (!(frame instanceof ArrayBuffer)) {
-      throw new Error("Browser binary frame was not delivered as an ArrayBuffer.");
-    }
-    if (!channel.synchronized) {
-      throw new Error("Browser viewer frame arrived before its snapshot.");
-    }
-    const decoded = decodeBrowserFrameEnvelope(new Uint8Array(frame), maxBrowserFrameBytes);
-    const data = new Uint8Array(decoded.data.byteLength);
-    data.set(decoded.data);
-    if (decoded.header.watchToken || channel.mode === "watch") {
-      if (!decoded.header.watchToken) {
-        throw new Error("Browser Watch frame omitted its acknowledgement token.");
-      }
-      channel.awaitingAck = decoded.header.watchToken;
-    }
-    this.#setBrowserFrame(
-      channel.sessionId,
-      { data: data.buffer, header: decoded.header },
-      channel.mode,
-    );
-  }
-
-  #projectBrowserMessage(channel: BrowserChannel, message: BrowserServerMessage): void {
-    const sessionId = channel.sessionId;
-    const session = this.#snapshot.browserSessions.find((item) => item.id === sessionId);
-    if (!session) return;
-    if (message.type === "browser.snapshot") {
-      if (channel.synchronized) throw new Error("Browser viewer received a duplicate snapshot.");
-      if (message.sessionId !== sessionId) throw new Error("Browser session ID mismatch.");
-      assertBrowserDialogSurface(message.dialog, message.surfaces);
-      channel.synchronized = true;
-      channel.basicInputOnly = message.editingVersion === undefined && message.basicInput === 1;
-      if (channel.mode === "control")
-        this.#browserEditing.negotiate(
-          sessionId,
-          message.editingVersion,
-          undefined,
-          message.clipboard,
-          message.basicInput,
-        );
-      channel.reconnectAttempt = 0;
-      this.#patchBrowserSession(sessionId, {
-        access: message.access,
-        dialog: message.dialog,
-        error: null,
-        state: message.state,
-        tabs: browserTabs(message.surfaces),
-      });
-      this.#patchBrowserViewerState(sessionId, channel.mode, {
-        viewerError: null,
-        viewerState: "synchronized",
-      });
-      this.#subscribeBrowserWatch(channel);
-      return;
-    }
-    if (!channel.synchronized) throw new Error("Browser viewer event arrived before its snapshot.");
-    if (message.type === "browser.status") {
-      this.#patchBrowserSession(sessionId, { state: message.state });
-      this.#setBrowserFrame(sessionId, null, channel.mode);
-      return;
-    }
-    if (message.type === "browser.error") {
-      if (
-        message.error.reason === "unsupported-operation" ||
-        message.error.reason === "target-suspended"
-      ) {
-        if (channel.mode === "control") this.#browserEditing.receive(sessionId, message);
-        return;
-      }
-      this.#patchBrowserSession(sessionId, { error: message.error.message });
-      return;
-    }
-    if (message.type === "browser.dialog.changed") {
-      assertBrowserDialogSurface(message.dialog, session.tabs);
-      this.#patchBrowserSession(sessionId, { dialog: message.dialog });
-      return;
-    }
-    if (channel.mode === "control") {
-      this.#browserEditing.receive(sessionId, message);
-      this.#browserCursor.receive(sessionId, message);
-    }
-    if (message.type === "browser.surfaces.changed") {
-      assertBrowserDialogSurface(session.dialog, message.surfaces);
-      // A new title or address is the same picture; another tab coming
-      // forward is not, and its picture follows.
-      const active = message.surfaces.find((surface) => surface.active)?.id ?? null;
-      const shown = (
-        channel.mode === "watch" ? this.#browserWatchFrameValues : this.#browserFrameValues
-      ).get(sessionId);
-      if (shown && shown.header.surfaceId !== active) {
-        this.#setBrowserFrame(sessionId, null, channel.mode);
-      }
-      this.#patchBrowserSession(sessionId, { tabs: browserTabs(message.surfaces) });
-    }
-  }
-
-  #scheduleBrowserReconnect(channel: BrowserChannel): void {
-    if (this.#disposed || channel.retainers === 0 || channel.reconnectTimer) return;
-    if (this.#reconnectSuspended()) return;
-    const delay = this.#retryDelay(channel.reconnectAttempt++, channel.unreadableFrames);
-    channel.reconnectTimer = globalThis.setTimeout(() => {
-      channel.reconnectTimer = null;
-      this.#connectBrowser(channel);
-    }, delay);
-  }
-
-  #closeBrowserChannel(sessionId: string, mode: "control" | "watch" = "control"): void {
-    if (mode === "control") this.#browserEditing.disconnect(sessionId);
-    const channels = mode === "watch" ? this.#browserWatchChannels : this.#browserChannels;
-    const channel = channels.get(sessionId);
-    if (channel) {
-      if (channel.reconnectTimer) globalThis.clearTimeout(channel.reconnectTimer);
-      channel.reconnectTimer = null;
-      const socket = channel.socket;
-      this.#returnWatchCredit(channel);
-      channel.socket = null;
-      channel.synchronized = false;
-      socket?.close(1000, "Client closed");
-      channels.delete(sessionId);
-    }
-    this.#setBrowserFrame(sessionId, null, mode);
-  }
-
-  #setBrowserFrame(
-    sessionId: string,
-    frame: BrowserFrameView | null,
-    mode: "control" | "watch" = "control",
-  ): void {
-    if (this.#disposed && frame) return;
-    const values = mode === "watch" ? this.#browserWatchFrameValues : this.#browserFrameValues;
-    const listeners =
-      mode === "watch" ? this.#browserWatchFrameListeners : this.#browserFrameListeners;
-    // A picture dropped before the view showed it still returns its credit.
-    const dropped = values.get(sessionId)?.header.watchToken;
-    const channel = (mode === "watch" ? this.#browserWatchChannels : this.#browserChannels).get(
-      sessionId,
-    );
-    if (channel && dropped && channel.awaitingAck === dropped) this.#returnWatchCredit(channel);
-    if (frame) {
-      values.set(sessionId, frame);
-    } else if (!values.delete(sessionId)) {
-      return;
-    }
-    for (const listener of listeners.get(sessionId) ?? []) listener();
-  }
-
-  #clearBrowserFrames(): void {
-    for (const sessionId of this.#browserFrameValues.keys()) {
-      this.#setBrowserFrame(sessionId, null);
-    }
-    for (const sessionId of this.#browserWatchFrameValues.keys()) {
-      this.#setBrowserFrame(sessionId, null, "watch");
-    }
-  }
-
   #patchBrowserSession(sessionId: string, patch: Partial<BrowserSessionSummary>): void {
-    if (patch.state !== undefined)
-      this.#browserStateMarks.set(sessionId, ++this.#browserStateCounter);
     const browserSessions = this.#snapshot.browserSessions.map((session) =>
       session.id === sessionId ? { ...session, ...patch } : session,
     );
@@ -6235,19 +5438,6 @@ export class HttpHostClient {
     ) {
       this.#update({ ...this.#snapshot, browserSessions });
     }
-  }
-
-  #patchBrowserViewerState(
-    sessionId: string,
-    mode: "control" | "watch",
-    patch: Pick<BrowserSessionSummary, "viewerError" | "viewerState">,
-  ): void {
-    this.#patchBrowserSession(
-      sessionId,
-      mode === "watch"
-        ? { watchViewerError: patch.viewerError, watchViewerState: patch.viewerState }
-        : patch,
-    );
   }
 
   async #loadEarlierTranscript(
@@ -6402,20 +5592,19 @@ export class HttpHostClient {
   }
 
   #expireSession(): void {
+    this.#browserCarrier = null;
     this.#nodeDetails.clear();
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.#savedViewReadiness = emptySavedViewReadiness();
     this.#viewerGeneration += 1;
     this.#appTabPending.clear();
-    this.#retainedWorkspaceTabLineages.clear();
-    this.#workspaceTabReads.clear();
     this.#browserUsageRead.clear();
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#browserUses.clear();
-    this.#browserPresence.clear();
-    this.#tabCatalogs.clear();
+    this.#browserTabs.clear();
+    this.#browserContinuation = undefined;
     this.#placeActivity.clear();
     this.#runPlaces.clear();
     this.#targetedWatch.clear();
@@ -6451,10 +5640,6 @@ export class HttpHostClient {
     this.#stopRefresh();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
-    for (const sessionId of this.#browserChannels.keys()) this.#closeBrowserChannel(sessionId);
-    for (const sessionId of this.#browserWatchChannels.keys())
-      this.#closeBrowserChannel(sessionId, "watch");
-    this.#clearBrowserFrames();
     this.#update({
       ...emptySnapshot(),
       connection: "connected",
@@ -6483,14 +5668,15 @@ export class HttpHostClient {
     }
   }
 
-  #browserTargetAuthorized(snapshot: HostSnapshot, sessionId: string): boolean {
-    const authority = this.#browserTargetAuthorities.get(sessionId);
-    if (!authority) return true;
-    if (this.#forbiddenWorkspaces.has(authority.workspaceId)) return false;
-    // People view sessions on profiles they own; grants only decide which Workspaces' agents may use them.
+  #browserTargetAuthorized(sessionId: string, surfaceId: string): boolean {
+    const groupId = this.#browserTabs.groupForSession(sessionId);
+    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
     return (
-      authority.profileId === null ||
-      snapshot.browserProfiles.some((profile) => profile.id === authority.profileId)
+      !!group &&
+      group.state !== "closed" &&
+      group.state !== "failed" &&
+      !this.#forbiddenWorkspaces.has(group.workspaceId) &&
+      (!this.#browserTabs.tabs(group.id).whole || !!this.#browserTabs.tab(group.id, surfaceId))
     );
   }
 
@@ -6506,8 +5692,8 @@ export class HttpHostClient {
     this.#browserUsageReads.clear();
     this.#browserUsageRunSources.clear();
     this.#forbiddenWorkspaces.add(workspaceId);
-    const authorized = (sessionId: string) =>
-      this.#browserTargetAuthorized(this.#snapshot, sessionId);
+    const authorized = (sessionId: string, surfaceId: string) =>
+      this.#browserTargetAuthorized(sessionId, surfaceId);
     this.#targetedControl.reconcile(undefined, authorized);
     this.#targetedWatch.reconcile(undefined, authorized);
     this.#notificationPreferences.delete(workspaceId);
@@ -6518,12 +5704,6 @@ export class HttpHostClient {
       this.#historicalThreads.delete(threadId);
       this.#hydratedThreads.delete(threadId);
       this.#browserUses.delete(threadId);
-    }
-    for (const session of this.#snapshot.browserSessions) {
-      if (session.workspaceId === workspaceId) {
-        this.#closeBrowserChannel(session.id);
-        this.#closeBrowserChannel(session.id, "watch");
-      }
     }
     if (this.#activeWorkspaceId === workspaceId) this.#activeWorkspaceId = null;
     this.#update(this.#snapshot);
@@ -6632,16 +5812,37 @@ export class HttpHostClient {
     ) {
       this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
     }
-    const workspaceTabsChanged = snapshot.workspaceTabs !== this.#snapshot.workspaceTabs;
+    if (snapshot.session === "authenticated")
+      snapshot = {
+        ...snapshot,
+        ...this.#browserSnapshot.derive(snapshot, this.#browserTabs),
+      };
+    const structure = this.#browserTabs.structure();
+    const browserStructureChanged = structure !== this.#browserStructure;
+    const browserTargetsChanged = this.#browserTargetRevision !== this.#browserTabs.targetRevision;
+    const closedBrowserTabs: string[] = [];
+    if (browserStructureChanged) {
+      const tabIds = new Map<string, readonly string[]>();
+      for (const groupId of this.#browserTabs.groups().ids) {
+        const list = this.#browserTabs.tabs(groupId);
+        const previous = this.#browserTabIds.get(groupId);
+        tabIds.set(groupId, list.ids);
+        if (list.whole && previous && previous !== list.ids) {
+          const open = new Set(list.ids);
+          for (const id of previous) if (!open.has(id)) closedBrowserTabs.push(id);
+        }
+      }
+      this.#browserTabIds = tabIds;
+    }
+    this.#browserStructure = structure;
+    this.#browserTargetRevision = this.#browserTabs.targetRevision;
     const scope = viewerScopeOf(snapshot);
     if (this.#viewer.change(scope)) {
+      for (const check of this.#browserWaiters) check();
       this.#nodeDetails.clear();
       this.#runPlaces.clear();
       this.#targetedWatch.clear();
       this.#targetedControl.clear();
-      this.#browserStateMarks.clear();
-      this.#workspaceTabsMarks.clear();
-      this.#browserTargetAuthorities.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
       this.#workspaceTabActivations.clear(false);
@@ -6677,33 +5878,34 @@ export class HttpHostClient {
         snapshot.browserSessions !== this.#snapshot.browserSessions ||
         snapshot.machines !== this.#snapshot.machines ||
         snapshot.connection !== this.#snapshot.connection ||
-        snapshot.workspaceTabs !== this.#snapshot.workspaceTabs ||
+        browserTargetsChanged ||
+        snapshot.appTabs !== this.#snapshot.appTabs ||
+        snapshot.browserPlacements !== this.#snapshot.browserPlacements ||
         snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
         snapshot.workspaces !== this.#snapshot.workspaces
       ) {
-        const places = placeList(snapshot);
-        keepBrowserLastPictures(this.browserWatchFrames, places);
-        keepBrowserLastPictures(this.browserFrames, places);
-        if (snapshot.connection === "connected")
-          this.#placeActivity.reconcile(
-            new Set(places.filter((place) => place.availability === "ready").map(({ key }) => key)),
+        const authorized = (sessionId: string, surfaceId: string) =>
+          this.#browserTargetAuthorized(sessionId, surfaceId);
+        const allowed = (sessionId: string, surfaceId: string) => {
+          const groupId = this.#browserTabs.groupForSession(sessionId);
+          const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+          const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
+          return (
+            group?.state === "ready" &&
+            tab?.availability === "ready" &&
+            tab.state === "live" &&
+            tab.documentId !== null
           );
-        for (const session of [
-          ...snapshot.browserSessions,
-          ...(snapshot.workspaceTabs ?? []).map((group) => group.session),
-        ])
-          this.#browserTargetAuthorities.set(session.id, {
-            workspaceId: session.workspaceId,
-            profileId: session.profileId,
-          });
-        const authorized = (sessionId: string) =>
-          this.#browserTargetAuthorized(snapshot, sessionId);
-        const allowed = (sessionId: string, surfaceId: string) =>
-          places.some(
-            (place) =>
-              place.key === `browser:${sessionId}:${surfaceId}` && place.availability === "ready",
-          );
+        };
         reconcileBrowserTargets = () => {
+          const document = (sessionId: string, tabId: string) =>
+            placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;
+          reconcileBrowserLastPictures(this.browserWatchFrames, document);
+          reconcileBrowserLastPictures(this.browserFrames, document);
+          if (this.#snapshot.connection === "connected")
+            this.#placeActivity.reconcile(
+              (key) => placeByKey(this.#snapshot, key)?.availability === "ready",
+            );
           this.#targetedWatch.reconcile(allowed, authorized);
           this.#targetedControl.reconcile(allowed, authorized);
         };
@@ -6747,6 +5949,7 @@ export class HttpHostClient {
       }
       snapshot = {
         ...snapshot,
+        browserUses: snapshot.browserUses.filter((use) => !deniedThreads.has(use.threadId)),
         browserSessions: snapshot.browserSessions.filter(
           ({ workspaceId }) => !this.#forbiddenWorkspaces.has(workspaceId),
         ),
@@ -6857,7 +6060,8 @@ export class HttpHostClient {
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
-    if (workspaceTabsChanged)
+    if (closedBrowserTabs.length) this.#tabGroups.removeClosed(closedBrowserTabs);
+    if (browserStructureChanged)
       this.#snapshot = { ...this.#snapshot, browserTabGroups: this.#tabGroups.project() };
     this.#runPlaces.flush();
     reconcileBrowserTargets?.();
@@ -7289,6 +6493,7 @@ function emptySnapshot(): HostSnapshot {
     browserPlacements: [],
     browserProfiles: [],
     browserSessions: [],
+    browserUses: [],
     connection: "connecting",
     connectionInterrupted: false,
     network: "unknown",
@@ -7402,66 +6607,6 @@ function harnessSummary(record: z.infer<typeof HarnessRecordSchema>): HarnessSum
   };
 }
 
-/**
- * `keepPresence` keeps the acting state and page a presence patch gave
- * `existing` after the read that produced `session` began.
- */
-function toBrowserSessionSummary(
-  session: HostedBrowserSession,
-  existing: BrowserSessionSummary | undefined,
-  /** A presence patch newer than the answer this session came from. */
-  heldPresence: BrowserPresence | null,
-  /** Which pages each Run used is read per conversation, never carried by the catalog. */
-  uses: readonly BrowserSessionUseSummary[],
-): BrowserSessionSummary {
-  const terminal = session.state === "closed" || session.state === "failed";
-  const presence =
-    heldPresence && !terminal
-      ? { acting: heldPresence.acting, page: heldPresence.page }
-      : { acting: session.acting ?? false, page: session.page ?? null };
-  return {
-    access: session.access,
-    navigationVersion: session.navigationVersion,
-    workspaceTabRestoreVersion: session.workspaceTabRestoreVersion,
-    ...presence,
-    ...((
-      terminal
-        ? session.tabCatalog
-        : newerBrowserTabCatalog(existing?.tabCatalog, session.tabCatalog)
-    )
-      ? {
-          tabCatalog: terminal
-            ? { ...session.tabCatalog!, tabs: [] }
-            : newerBrowserTabCatalog(existing?.tabCatalog, session.tabCatalog)!,
-        }
-      : {}),
-    attachedRunIds: [...(session.attachedRunIds ?? [])],
-    createdAt: session.createdAt,
-    updatedAt: session.updatedAt,
-    threadIds: [...(session.threadIds ?? existing?.threadIds ?? [])],
-    uses: sameElements(existing?.uses ?? [], uses) ? (existing?.uses ?? []) : uses,
-    dialog: terminal ? null : (existing?.dialog ?? null),
-    error: existing?.error ?? null,
-    id: session.id,
-    origin: session.origin,
-    ...(session.opener ? { opener: session.opener } : {}),
-    placement: session.placement,
-    profileId: session.profileId,
-    runtimeId: session.runtimeId,
-    state: session.state,
-    tabs: existing?.tabs ?? [],
-    viewerError: terminal ? null : (existing?.viewerError ?? null),
-    viewerState: terminal ? "disconnected" : (existing?.viewerState ?? "disconnected"),
-    watchViewerError: terminal ? null : (existing?.watchViewerError ?? null),
-    watchViewerState: terminal ? "disconnected" : (existing?.watchViewerState ?? "disconnected"),
-    workspaceId: session.workspaceId,
-  };
-}
-
-function sameElements<Item>(left: readonly Item[], right: readonly Item[]): boolean {
-  return left.length === right.length && left.every((item, index) => item === right[index]);
-}
-
 /** One use of a browser within a conversation, by session, Run and page. */
 function browserUseKey(
   sessionId: string,
@@ -7499,30 +6644,6 @@ function withNewerComputerPresence(
       }),
     },
   };
-}
-
-function browserTabs(
-  surfaces: Extract<BrowserServerMessage, { type: "browser.snapshot" }>["surfaces"],
-): BrowserSessionSummary["tabs"] {
-  return surfaces.map(({ active, documentId, favicon, id, loading, sizedByAgent, title, url }) => ({
-    documentId,
-    active,
-    favicon,
-    id,
-    loading,
-    sizedByAgent,
-    title,
-    url,
-  }));
-}
-
-function assertBrowserDialogSurface(
-  dialog: BrowserSessionSummary["dialog"],
-  surfaces: readonly { readonly id: string }[],
-): void {
-  if (dialog && !surfaces.some((surface) => surface.id === dialog.surfaceId)) {
-    throw new Error("Browser dialog references an unknown surface.");
-  }
 }
 
 function toWorkspaceSummary(

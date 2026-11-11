@@ -1,3 +1,4 @@
+import { browserInventory } from "./browser-sessions.test-support.js";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -214,10 +215,10 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   const broadNotices = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
   const browser = await browserProcess();
   let journeyAssertionsComplete = false;
-  let warmTimings: BrowserOpenTiming[] = [];
+  let reopenTimings: BrowserOpenTiming[] = [];
   let coldTimings: BrowserOpenTiming[] = [];
   let coldNativeTimings: NativeProfileOpenTiming[] = [];
-  let warmWallMs: number | undefined;
+  let reopenWallMs: number | undefined;
   let coldWallMs: number | undefined;
   addCleanup(
     "native profile timing receipts",
@@ -227,12 +228,12 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
         JSON.stringify(
           {
             journeyAssertionsComplete,
-            warm: warmTimings,
+            reopen: reopenTimings,
             cold: coldTimings,
             timings: browser.timings,
             nativeTimings: browser.nativeTimings,
             coldNativeTimings,
-            warmWallMs,
+            reopenWallMs,
             coldWallMs,
           },
           null,
@@ -277,14 +278,12 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     return reply.data;
   };
   const close = async (opened: BrowserTabOpenResult) => {
-    const catalog = await stack.api["browser.tabs.get"]({ sessionId: opened.sessionId });
-    if (!catalog.ok) throw new Error(catalog.error.message);
+    const catalog = await browserInventory(stack, opened.sessionId);
     const reply = await stack.api["commands.dispatch"]({
       type: "browser.tab.close",
       sessionId: opened.sessionId,
       surfaceId: opened.tabId,
-      expectedGeneration: catalog.data.generation,
-      expectedRevision: catalog.data.inventoryRevision ?? catalog.data.revision,
+      inventoryRevision: catalog.inventoryRevision,
       idempotencyKey: randomUUID(),
     });
     expect(reply.ok, `Last tab failed to close: ${JSON.stringify(reply)}`).toBe(true);
@@ -351,17 +350,22 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   await close(converted);
   await vi.waitFor(
     async () =>
-      expect((await browser.health()).sessionCount, "Closed profile still holds a session").toBe(0),
+      expect(
+        await browser.health(),
+        "Closed profile still holds a session or process",
+      ).toMatchObject({ sessionCount: 0, profileHostCount: 0 }),
     { timeout: 5000 },
   );
-  const warmStart = browser.timings.length;
-  const warmWallStart = performance.now();
-  const warm = await open(profile.id, "/read?id=warm");
-  warmWallMs = performance.now() - warmWallStart;
-  expect(await site.observed("warm")).toEqual(expected);
-  expect(browser.timings.some((timing) => timing.acquisition === "warm")).toBe(true);
-  warmTimings = browser.timings.slice(warmStart);
-  await close(warm);
+  const reopenStart = browser.timings.length;
+  const reopenWallStart = performance.now();
+  const reopened = await open(profile.id, "/read?id=reopen");
+  reopenWallMs = performance.now() - reopenWallStart;
+  expect(await site.observed("reopen")).toEqual(expected);
+  expect(browser.timings.slice(reopenStart).some((timing) => timing.acquisition === "cold")).toBe(
+    true,
+  );
+  reopenTimings = browser.timings.slice(reopenStart);
+  await close(reopened);
   const visitsBeforeRestart = site.visits();
   await browser.close();
   await browser.start();
@@ -376,11 +380,8 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     ...visitsBeforeRestart,
     cold: 1,
   });
-  const tabs = await stack.api["browser.tabs.get"]({ sessionId: cold.sessionId });
-  expect(tabs).toMatchObject({
-    ok: true,
-    data: { tabs: [expect.objectContaining({ id: cold.tabId })] },
-  });
+  const tabs = await browserInventory(stack, cold.sessionId);
+  expect(tabs.tabs).toEqual([expect.objectContaining({ id: cold.tabId })]);
   expect(browser.timings.some((timing) => timing.acquisition === "cold")).toBe(true);
   coldTimings = browser.timings.slice(coldStart);
   coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);
@@ -456,7 +457,7 @@ it("advertises exact prepared storage through the standalone browser-only Runner
   const bridge = new LocalBrowserRuntimeBridge(browser);
   const capabilities = await bridge.capabilities();
   expect(capabilities).toEqual({
-    wireVersion: 1,
+    wireVersion: 2,
     localProfileStorage: { storageInstanceId: expect.any(String), engine: "chromium" },
   });
   await vi.waitFor(

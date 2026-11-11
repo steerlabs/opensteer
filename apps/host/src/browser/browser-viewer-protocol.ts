@@ -29,6 +29,7 @@ export function browserViewerMessage(
 ): BrowserServerMessage {
   if (message.type === "browser.snapshot") {
     const {
+      surfaces: _surfaces,
       basicInput: _basicInput,
       surfaceState: _surfaceState,
       navigationAttributionVersion: _navigationAttributionVersion,
@@ -43,12 +44,14 @@ export function browserViewerMessage(
       editing === 2
         ? {
             ...baseline,
+            surfaces: [],
+            dialog: null,
             editingVersion: message.editingVersion,
             ...(message.clipboard === undefined ? {} : { clipboard: message.clipboard }),
           }
         : editing === 1
-          ? { ...baseline, editingVersion: 1 }
-          : baseline;
+          ? { ...baseline, surfaces: [], dialog: null, editingVersion: 1 }
+          : { ...baseline, surfaces: [], dialog: null };
     if (negotiation.basicInput && message.type === "browser.snapshot")
       message = { ...message, basicInput: 1 };
     if (negotiation.surfaceState && message.type === "browser.snapshot")
@@ -59,13 +62,5 @@ export function browserViewerMessage(
     if (personFill === 1 || personFill === 2)
       message = { ...message, personFillVersion: personFill };
   }
-  if (message.type !== "browser.snapshot" && message.type !== "browser.surfaces.changed")
-    return message;
-  return {
-    ...message,
-    surfaces: message.surfaces.map(
-      ({ canGoBack: _canGoBack, canGoForward: _canGoForward, state, ...surface }) =>
-        negotiation.surfaceState && state !== undefined ? { ...surface, state } : surface,
-    ),
-  };
+  return message;
 }

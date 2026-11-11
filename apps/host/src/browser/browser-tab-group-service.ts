@@ -243,7 +243,14 @@ export class BrowserTabGroupService {
         title: row.title.slice(0, 256),
         ...(query ? { matchedFields: matches.get(row.id) } : {}),
         site: browserPageSite(row.url).slice(0, 2048),
-        state: row.state === "live" ? "open" : row.state === "restoring" ? "opening" : "asleep",
+        state:
+          row.state === "live"
+            ? this.#browser.tabStateOf(row.latestSessionId, tabId) === "suspended"
+              ? "asleep"
+              : "open"
+            : row.state === "restoring"
+              ? "opening"
+              : "asleep",
         sessionId: row.state === "live" ? row.latestSessionId : null,
         profileId: session.profileId,
         groupId: membership.get(tabId) ?? null,

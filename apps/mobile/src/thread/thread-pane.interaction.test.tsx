@@ -1,4 +1,6 @@
+import { seedBrowserSession } from "@opensteer/client/test-support";
 import { aiSharingTestPermission } from "../../test-support/ai-sharing.js";
+import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 
 import { idleVoiceSnapshot, type VoiceSnapshot } from "@opensteer/client/voice";
@@ -1092,7 +1094,7 @@ const connectingWatch = { error: null, frame: null, status: "connecting" } as co
 
 /** A Host whose snapshot the test moves, recording what the phone asks of it. */
 function fakeHost(initial: HostSnapshot) {
-  let snapshot = initial;
+  let snapshot = seedBrowserSnapshot(initial);
   // What the Host answers the next "Load earlier" with: the transcript with that page merged in.
   let earlierPage: HostSnapshot | null = null;
   const listeners = new Set<() => void>();
@@ -1106,7 +1108,7 @@ function fakeHost(initial: HostSnapshot) {
   const loadTranscriptAround = vi.fn(async (_threadId: string, _messageId: string) => undefined);
   const loadEarlierTranscript = vi.fn(async (_threadId: string) => {
     if (earlierPage === null) return;
-    snapshot = earlierPage;
+    snapshot = seedBrowserSnapshot(earlierPage);
     earlierPage = null;
     for (const listener of listeners) listener();
   });
@@ -1134,6 +1136,9 @@ function fakeHost(initial: HostSnapshot) {
     subscribeBrowserWatch: () => () => undefined,
     subscribeLatestPlace: () => () => undefined,
     dispatch,
+    get browserTabs() {
+      return snapshot.browserTabs!;
+    },
     getSnapshot: () => snapshot,
     load: vi.fn(async () => undefined),
     loadEarlierTranscript,
@@ -1170,7 +1175,7 @@ function fakeHost(initial: HostSnapshot) {
     loadEarlierTranscript,
     loadTranscriptAround,
     move(next: HostSnapshot) {
-      snapshot = next;
+      snapshot = seedBrowserSnapshot(next);
       act(() => {
         for (const listener of listeners) listener();
       });
@@ -1319,7 +1324,8 @@ describe("a conversation with a page", () => {
     BrowserPageContentPartSchema.parse({
       type: "browser-page",
       sessionId: base.browserSessions[0]!.id,
-      tabId: base.browserSessions[0]!.tabs[0]!.id,
+      tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
+        [])[0]!.id,
       title: "Research page",
       url: "https://example.com",
     });
@@ -2332,34 +2338,38 @@ describe("surfaces belonging to one reply", () => {
         run: null,
         threadId,
       }),
-      browserSessions: [
+      browserUses: [
         {
-          access: "read-write",
-          attachedRunIds: [],
-          dialog: null,
-          error: null,
-          id: "reply-browser",
-          origin: "agent",
-          placement: { kind: "runner", runnerId: createId("runner") },
-          profileId: null,
-          runtimeId: "reply-runtime",
-          state: "closed",
-          tabs: [],
-          uses: [
-            {
-              threadId,
-              runId,
-              tabId: "reply-page",
-              firstUsedAt: at,
-              lastUsedAt: at,
-              pageTitle: "Shared page",
-              pageSite: "https://example.com",
-            },
-          ],
-          viewerError: null,
-          viewerState: "disconnected",
-          workspaceId,
+          sessionId: "reply-browser",
+          threadId,
+          runId,
+          tabId: "reply-page",
+          firstUsedAt: at,
+          lastUsedAt: at,
+          pageTitle: "Shared page",
+          pageSite: "https://example.com",
         },
+      ],
+      browserSessions: [
+        seedBrowserSession(
+          {
+            access: "read-write",
+            attachedRunIds: [],
+            dialog: null,
+            error: null,
+            id: "reply-browser",
+            origin: "agent",
+            placement: { kind: "runner", runnerId: createId("runner") },
+            profileId: null,
+            runtimeId: "reply-runtime",
+            state: "closed",
+            viewerError: null,
+            viewerState: "disconnected",
+            workspaceId,
+          },
+          undefined,
+          [],
+        ),
       ],
     };
     const host = fakeHost(initial);
@@ -4223,7 +4233,8 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
   const page = BrowserPageContentPartSchema.parse({
     type: "browser-page",
     sessionId: base.browserSessions[0]!.id,
-    tabId: base.browserSessions[0]!.tabs[0]!.id,
+    tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
+      [])[0]!.id,
     title: "Research page",
     url: "https://example.com",
   });
@@ -4318,7 +4329,8 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
   const included = BrowserPageContentPartSchema.parse({
     type: "browser-page",
     sessionId: base.browserSessions[0]!.id,
-    tabId: base.browserSessions[0]!.tabs[0]!.id,
+    tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
+      [])[0]!.id,
     title: "Research page",
     url: "https://example.com",
   });
@@ -4359,7 +4371,8 @@ describe("a new task Ask started", () => {
     BrowserPageContentPartSchema.parse({
       type: "browser-page",
       sessionId: base.browserSessions[0]!.id,
-      tabId: base.browserSessions[0]!.tabs[0]!.id,
+      tabId: (base.browserSessions[0]!.browserTabs?.sessionTabs(base.browserSessions[0]!.id) ??
+        [])[0]!.id,
       title: "Research page",
       url: "https://example.com",
     });
@@ -4578,7 +4591,7 @@ describe("the Run's page above the conversation", () => {
       expect(image).not.toBeNull();
       await act(() => image.dispatchEvent(new Event("load")));
       for (const patch of [
-        { browserSessions: [], workspaceTabs: [] },
+        seedBrowserSnapshot({ browserSessions: [] } as unknown as HostSnapshot, []),
         { connection: "connecting" as const },
         {
           ...snapshotFor({
@@ -4600,7 +4613,10 @@ describe("the Run's page above the conversation", () => {
       host.move({
         ...host.client.getSnapshot(),
         browserSessions: [
-          { id: replacementSession, state: "ready", tabCatalog: { tabs: [{ id: surfaceId }] } },
+          seedBrowserSession(
+            { id: replacementSession, state: "ready" },
+            { rows: [{ id: surfaceId }] },
+          ),
         ] as unknown as HostSnapshot["browserSessions"],
       });
       expect(host.runPlaces.get(runId)!.data.place).toMatchObject({ sessionId });

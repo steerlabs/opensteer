@@ -183,7 +183,11 @@ try {
         .filter((run) => run.status === "running" || run.status === "waiting")
         .map(({ id, status, threadId }) => ({ id, status, threadId })),
       tabs: snapshot.browserSessions.flatMap((session) =>
-        session.tabs.map((tab) => ({ id: tab.id, sessionId: session.id, title: tab.title })),
+        (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
+          id: tab.id,
+          sessionId: session.id,
+          title: tab.title,
+        })),
       ),
       marks: Object.fromEntries(
         snapshot.threads.map((thread) => [thread.id, { icon: thread.icon, color: thread.color }]),

@@ -1,9 +1,9 @@
 import {
   BrowserAttachPublicKeysSchema,
-  BrowserServerMessageSchema,
+  BrowserRuntimeServerMessageSchema,
   LocalProfileBindingSchema,
   type BrowserAttachPublicKey,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
 } from "@opensteer/protocol";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -312,8 +312,8 @@ class WebSocketBrowserSink implements BrowserControllerSink {
     this.maxBufferedBytes = maxBufferedBytes;
   }
 
-  sendServer(message: BrowserServerMessage): Promise<void> {
-    const validated = BrowserServerMessageSchema.parse(message);
+  sendServer(message: BrowserRuntimeServerMessage): Promise<void> {
+    const validated = BrowserRuntimeServerMessageSchema.parse(message);
     return this.send(JSON.stringify(validated), false);
   }
 

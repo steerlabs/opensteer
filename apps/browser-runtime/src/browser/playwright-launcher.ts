@@ -34,6 +34,7 @@ import {
   type Dialog,
   type Frame,
   type Page,
+  type Request,
   type BrowserContext as PlaywrightBrowserContext,
   type BrowserServer as PlaywrightBrowserServer,
   type CDPSession as PlaywrightCdpSession,
@@ -174,6 +175,7 @@ export async function probePasskeySecurityState(
 }
 
 export class PlaywrightChromiumLauncher implements BrowserLauncher {
+  readonly hostCost = "process" as const;
   private preparation: Promise<void> | undefined;
   private readonly nativeBrowsers = new Map<string, Promise<LaunchedBrowser>>();
   private readonly nativeCloseFailures = new Set<string>();
@@ -351,7 +353,8 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       context.on("page", (page) => {
         page.on("close", () => openDialogs.delete(page));
       });
-      if (context.pages().length === 0) await context.newPage();
+      const anchor = await context.newPage();
+      if (context.pages().every((page) => page === anchor)) await context.newPage();
       const browserCdp = await browser.newBrowserCDPSession();
       const contexts = await browserCdp.send("Target.getBrowserContexts");
       if (
@@ -371,6 +374,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         openDialogs,
         authenticator,
         providerConfig,
+        anchor,
       );
       if (this.headless) launched.clipboard = await ChromiumClipboard.create(browser);
       // Sessions' agents hear of the pages they own as Chromium announces
@@ -844,6 +848,7 @@ class PlaywrightContextHandle implements BrowserContext {
     if (!handle) {
       handle = new PlaywrightPageHandle(this, this.context, page, this.openDialogs);
       this.pagesByPlaywrightPage.set(page, handle);
+      page.once("close", () => this.pagesByPlaywrightPage.delete(page));
     }
     return handle;
   }
@@ -858,6 +863,9 @@ class PlaywrightContextHandle implements BrowserContext {
 }
 
 class PlaywrightPageHandle implements BrowserPage {
+  private requestMethod = "GET";
+  private documentMethod = "GET";
+  private readonly uploads = new Set<Request>();
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
@@ -885,6 +893,97 @@ class PlaywrightPageHandle implements BrowserPage {
     this.contextHandle = contextHandle;
     this.context = context;
     this.page = page;
+    page.on("request", (request) => {
+      if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+        this.requestMethod = request.method();
+    });
+    page.on("requestfinished", (request) => this.uploads.delete(request));
+    page.on("requestfailed", (request) => this.uploads.delete(request));
+    page.once("close", () => this.uploads.clear());
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) this.documentMethod = this.requestMethod;
+    });
+  }
+
+  async keepAwake(): Promise<"upload" | "post" | "media" | null> {
+    if (this.uploads.size) return "upload";
+    if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
+    for (const frame of this.page.frames()) {
+      if (
+        await frame.evaluate<boolean>(`(() => {
+        const roots = [document];
+        for (const root of roots) {
+          if ([...root.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
+          for (const node of root.querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
+        }
+        return false;
+      })()`)
+      )
+        return "media";
+      let session: PlaywrightCdpSession;
+      try {
+        session = await this.context.newCDPSession(frame);
+      } catch (error) {
+        // Same-process frames share their local root's Web Audio graph.
+        if (error instanceof Error && error.message.includes("part of the parent frame's session"))
+          continue;
+        throw error;
+      }
+      const players = new Map<string, boolean>();
+      const contexts = new Set<string>();
+      session.on("Media.playerCreated", ({ player }) => players.set(player.playerId, true));
+      session.on("Media.playerPropertiesChanged", ({ playerId }) => {
+        if (!players.has(playerId)) players.set(playerId, true);
+      });
+      session.on("Media.playerEventsAdded", ({ playerId, events }) => {
+        for (const event of events) {
+          let value: unknown;
+          try {
+            value = JSON.parse(event.value);
+          } catch {
+            players.set(playerId, true);
+            continue;
+          }
+          if (!isRecord(value)) continue;
+          if (value.event === "kPlay") players.set(playerId, true);
+          else if (
+            ["kPause", "kEnded", "kSuspended", "kWebMediaPlayerDestroyed"].includes(
+              String(value.event),
+            )
+          )
+            players.set(playerId, false);
+        }
+      });
+      const contextChanged = ({
+        context,
+      }: {
+        context: { contextId: string; contextType: string; contextState: string };
+      }) => {
+        if (context.contextType === "realtime" && context.contextState === "running")
+          contexts.add(context.contextId);
+        else contexts.delete(context.contextId);
+      };
+      session.on("WebAudio.contextCreated", contextChanged);
+      session.on("WebAudio.contextChanged", contextChanged);
+      session.on("WebAudio.contextWillBeDestroyed", ({ contextId }) => contexts.delete(contextId));
+      try {
+        // Enabling replays existing native players and Web Audio contexts.
+        await session.send("Media.enable");
+        await session.send("WebAudio.enable");
+        if ([...players.values()].some(Boolean) || contexts.size) return "media";
+      } finally {
+        await session.detach();
+      }
+    }
+    return this.uploads.size ? "upload" : null;
+  }
+
+  async hasOpenerAccess(): Promise<boolean> {
+    const info = z
+      .object({ targetInfo: z.object({ canAccessOpener: z.boolean().optional() }) })
+      .parse(await (await this.cdp()).send("Target.getTargetInfo"));
+    return info.targetInfo.canAccessOpener === true;
   }
 
   async captureViewport({

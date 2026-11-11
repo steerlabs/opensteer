@@ -1,4 +1,5 @@
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
+import type { BrowserClientStreamMessage } from "./browser/browser-client-streams.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
@@ -1456,20 +1457,6 @@ export async function createHostServer(
       rpcSuccess(
         await dependencies.browser.readContextCandidate(requireRpcSession(context).user.id, input),
       ),
-    "workspace.tabs.get": async (input, context) =>
-      rpcSuccess(
-        await dependencies.browser.readWorkspaceTabs(
-          requireRpcSession(context).user.id,
-          input.groupId,
-        ),
-      ),
-    "browser.tabs.get": async (input, context) =>
-      rpcSuccess(
-        await dependencies.browser.readTabCatalog(
-          requireRpcSession(context).user.id,
-          input.sessionId,
-        ),
-      ),
     "browser.history.get": async (input, context) =>
       rpcSuccess(
         await dependencies.browser.readHistory(requireRpcSession(context).user.id, input.profileId),
@@ -1678,8 +1665,6 @@ export async function createHostServer(
     | "thread.assignments.list"
     | "browser.searchSuggestions.get"
     | "browser.contextCandidate.get"
-    | "browser.tabs.get"
-    | "workspace.tabs.get"
     | "browser.tabIcon.get"
     | "browser.history.get"
     | "browser.history.icons.get"
@@ -2922,6 +2907,7 @@ export async function createHostServer(
         socket,
         dependencies.realtime,
         dependencies.workspaces,
+        dependencies.browser,
         session,
         request.log,
       );
@@ -3879,15 +3865,16 @@ function attachRealtimeSocket(
   socket: WebSocket,
   realtime: RealtimeHub,
   workspaces: WorkspaceService,
+  browser: BrowserService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
 ): void {
   const openedAt = Date.now();
   installWebSocketLiveness(socket);
   const peer = jsonPeer<HostToClientMessage>(socket, `client-peer:${randomUUID()}`);
-  const sink: RealtimeSink = {
+  const sink = {
     ...peer,
-    send: async (message: HostToClientMessage) => {
+    send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
       const projected = HostToClientMessageSchema.safeParse(
         message.type === "host.snapshot"
           ? {
@@ -3956,12 +3943,14 @@ function attachRealtimeSocket(
       }
       await peer.send(projected.data);
     },
-  };
+  } satisfies RealtimeSink;
   const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
     maxBytes: 4 * maxWebSocketFrameBytes,
     maxItems: 64,
   });
   let unsubscribe: (() => void) | undefined;
+  let browserStream: Awaited<ReturnType<BrowserService["clientStreams"]["attach"]>> | undefined;
+  let realtimeClosed = false;
   let workspaceId: WorkspaceId | null = null;
   // Machine notifications are addressed to the connection, not to a Workspace:
   // the people entitled to them are usually nowhere near the Workspace whose
@@ -3988,6 +3977,8 @@ function attachRealtimeSocket(
     }
   });
   const close = () => {
+    realtimeClosed = true;
+    browserStream?.close();
     cancelExpiration();
     inbox.close();
     unregister();
@@ -4026,6 +4017,22 @@ function attachRealtimeSocket(
         continue;
       }
       if (message.type === "client.ack") continue;
+      if (message.type === "client.browser.resync") {
+        if (browserStream) browserStream.resync(message.groupId);
+        else if (!message.groupId) {
+          const attached = await browser.clientStreams.attach(
+            session.user.id,
+            {
+              send: (message) => sink.send(message),
+              bufferedAmount: () => socket.bufferedAmount,
+            },
+            message.continuation,
+          );
+          if (realtimeClosed) attached.close();
+          else browserStream = attached;
+        }
+        continue;
+      }
       if (message.type === "client.watch-node") {
         if (!unsubscribe || workspaceId !== message.workspaceId)
           throw badMessage("Subscribe before watching a subagent");

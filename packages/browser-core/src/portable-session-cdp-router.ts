@@ -56,8 +56,6 @@ export interface SessionCdpRouterLimits {
   readonly maxCommandBytes: number;
   readonly maxEventBytes: number;
   readonly maxResultBytes: number;
-  readonly maxSessions: number;
-  readonly maxTargetsPerSession: number;
 }
 
 export class SessionCdpRouterError extends Error {
@@ -90,6 +88,8 @@ interface AttachedChannel {
 interface SessionState {
   readonly resolveTarget: (targetId: string) => Promise<boolean>;
   readonly channels: Map<string, AttachedChannel>;
+  /** Released channels retain identity for the caller's tab lifecycle check, never page access. */
+  readonly retiredTargets: Map<string, string>;
   discoverTargets: boolean;
   ledgerDialogEvents: boolean;
   readonly eventListeners: Set<(event: CdpEvent) => void>;
@@ -104,8 +104,6 @@ const defaultLimits: SessionCdpRouterLimits = {
   maxCommandBytes: 432 * 1_024,
   maxEventBytes: 432 * 1_024,
   maxResultBytes: 432 * 1_024,
-  maxSessions: 64,
-  maxTargetsPerSession: 128,
 };
 
 const allowedBrowserMethods = new Set(["Browser.getVersion"]);
@@ -197,15 +195,13 @@ export class SessionCdpRouter {
     if (this.#sessions.has(sessionId)) {
       throw new SessionCdpRouterError("conflict", "Browser Session is already registered.");
     }
-    if (this.#sessions.size >= this.#limits.maxSessions) {
-      throw new SessionCdpRouterError("conflict", "Profile Host session capacity is exhausted.");
-    }
     if (this.#ownerByTargetId.has(rootTargetId)) {
       throw new SessionCdpRouterError("conflict", "Root target already belongs to a session.");
     }
     const state: SessionState = {
       resolveTarget,
       channels: new Map(),
+      retiredTargets: new Map(),
       discoverTargets: true,
       ledgerDialogEvents: false,
       eventListeners: new Set(),
@@ -248,6 +244,10 @@ export class SessionCdpRouter {
    * person opened, reachable by that session's agents, and its popups with it.
    * Claiming a page the session already owns changes nothing.
    */
+  releaseTarget(sessionId: string, targetId: string): void {
+    if (this.#ownerByTargetId.get(targetId) === sessionId) this.#releaseTarget(targetId);
+  }
+
   claimTarget(sessionId: string, targetId: string): void {
     this.#assertOpen();
     assertIdentifier(targetId, "CDP target ID");
@@ -281,7 +281,12 @@ export class SessionCdpRouter {
 
   /** The page an agent's attached CDP session drives, or null when it is not attached here. */
   attachedTargetId(sessionId: string, cdpSessionId: string): string | null {
-    return this.#sessions.get(sessionId)?.channels.get(cdpSessionId)?.physicalTargetId ?? null;
+    const state = this.#sessions.get(sessionId);
+    return (
+      state?.channels.get(cdpSessionId)?.physicalTargetId ??
+      state?.retiredTargets.get(cdpSessionId) ??
+      null
+    );
   }
 
   /** Retains the actual Input handler for cleanup after an admitted agent press. */
@@ -322,9 +327,9 @@ export class SessionCdpRouter {
    */
   admitCreateTarget(sessionId: string, command: CdpCommand): void {
     this.#assertOpen();
-    const state = this.#requireSession(sessionId);
+    this.#requireSession(sessionId);
     validateCommand(command, this.#limits.maxCommandBytes);
-    this.#admitCreateTarget(state, command.parameters ?? {});
+    assertSafeNavigationUrl(command.parameters?.url, true);
   }
 
   onEvent(sessionId: string, listener: (event: CdpEvent) => void): () => void {
@@ -380,7 +385,7 @@ export class SessionCdpRouter {
         return this.#backend.send(command.method, { ...parameters, targetId });
       }
       case "Target.createTarget": {
-        this.#admitCreateTarget(state, parameters);
+        assertSafeNavigationUrl(parameters.url, true);
         const response = asRecord(await this.#backend.send(command.method, parameters));
         const targetId = readString(response, "targetId");
         if (!targetId) {
@@ -401,6 +406,7 @@ export class SessionCdpRouter {
         const virtualSessionId = requiredString(parameters, "sessionId");
         const attached = state.channels.get(virtualSessionId);
         if (!attached) {
+          if (state.retiredTargets.delete(virtualSessionId)) return {};
           throw new SessionCdpRouterError("not_found", "CDP session is not attached here.");
         }
         this.#endChannel(state, attached);
@@ -637,7 +643,7 @@ export class SessionCdpRouter {
         readString(targetInfo, "openerId") ?? readString(targetInfo, "parentId");
       const ownerId = parentTargetId ? this.#ownerByTargetId.get(parentTargetId) : undefined;
       const owner = ownerId ? this.#sessions.get(ownerId) : undefined;
-      if (owner && owner.ownedTargetIds.size < this.#limits.maxTargetsPerSession) {
+      if (owner) {
         this.#claimTarget(owner, targetId);
       }
     }
@@ -668,7 +674,6 @@ export class SessionCdpRouter {
     if (existingOwner && existingOwner !== state.sessionId) {
       throw new SessionCdpRouterError("conflict", "CDP target belongs to another session.");
     }
-    this.#assertTargetCapacity(state);
     state.ownedTargetIds.add(targetId);
     this.#ownerByTargetId.set(targetId, state.sessionId);
     const announced = this.#unclaimedPages.get(targetId);
@@ -687,7 +692,10 @@ export class SessionCdpRouter {
     state?.ownedTargetIds.delete(targetId);
     if (!state) return;
     for (const attached of state.channels.values()) {
-      if (attached.physicalTargetId === targetId) this.#endChannel(state, attached);
+      if (attached.physicalTargetId === targetId) {
+        state.retiredTargets.set(attached.virtualSessionId, targetId);
+        this.#endChannel(state, attached);
+      }
     }
   }
 
@@ -736,17 +744,6 @@ export class SessionCdpRouter {
   #assertOwnedTarget(state: SessionState, targetId: string): void {
     if (this.#ownerByTargetId.get(targetId) !== state.sessionId) {
       throw new SessionCdpRouterError("forbidden", "CDP target is outside this Browser Session.");
-    }
-  }
-
-  #admitCreateTarget(state: SessionState, parameters: CdpParameters): void {
-    this.#assertTargetCapacity(state);
-    assertSafeNavigationUrl(parameters.url, true);
-  }
-
-  #assertTargetCapacity(state: SessionState): void {
-    if (state.ownedTargetIds.size >= this.#limits.maxTargetsPerSession) {
-      throw new SessionCdpRouterError("conflict", "Browser Session target capacity is exhausted.");
     }
   }
 

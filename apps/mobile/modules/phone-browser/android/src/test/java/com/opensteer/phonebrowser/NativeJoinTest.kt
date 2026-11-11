@@ -111,7 +111,7 @@ class NativeJoinTest {
     }
     fun admit(customClaims: JsonObject? = null, deadline: String = "2026-11-09T12:00:01.000Z") {
       val (pem, token) = customClaims?.let(::signed) ?: (tickets.getValue("publicKeyPem") to tickets.getValue("cases").jsonArray.first().jsonObject.getValue("token"))
-      writer.online(socket, JsonObject(fences.obj("welcome") + mapOf("streamLeaseExpiresAt" to JsonPrimitive(deadline), "browserWireVersion" to JsonPrimitive(1), "browserAttachPublicKeys" to JsonArray(listOf(
+      writer.online(socket, JsonObject(fences.obj("welcome") + mapOf("streamLeaseExpiresAt" to JsonPrimitive(deadline), "browserWireVersion" to JsonPrimitive(2), "browserAttachPublicKeys" to JsonArray(listOf(
         Wire.fields("keyId" to JsonPrimitive("fixture"), "publicKeyPem" to pem))))))
       writer.receive(relay("capability.grant", Wire.fields("requestId" to JsonPrimitive("grant"), "lease" to JsonObject(capability + ("expiresAt" to JsonPrimitive(deadline))))))
       writer.send(gate.epoch, relay("capability.accepted", Wire.fields("requestId" to JsonPrimitive("grant"), "capability" to capability)))

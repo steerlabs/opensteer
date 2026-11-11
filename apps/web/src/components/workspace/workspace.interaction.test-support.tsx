@@ -247,12 +247,8 @@ function placeParams(search: string): string {
 function isMockPage(item: PlaceItem, source: MockHostClient = client): boolean {
   if (item.destination.kind !== "browser") return false;
   const { sessionId, tabId } = item.destination;
-  return (
-    source
-      .getSnapshot()
-      .browserSessions.find((session) => session.id === sessionId)
-      ?.tabCatalog?.tabs.some((tab) => tab.id === tabId) === true
-  );
+  const row = tabId ? source.browserTabs.sessionTab(sessionId, tabId) : undefined;
+  return typeof row?.documentId === "string";
 }
 
 function pageTab(source: MockHostClient = client) {

@@ -34,7 +34,7 @@ class BrowserTransport(
     fun online(value: WebSocket, welcome: JsonObject) = synchronized(admission) {
         val fence = admission.adopt(welcome)
         tickets.setKeys(welcome["browserAttachPublicKeys"] as? JsonArray ?: throw Refused("invalid-wire"))
-        Wire.requireThat(runCatching { welcome.number("browserWireVersion") }.getOrNull() == 1L, "needs-update")
+        Wire.requireThat(runCatching { welcome.number("browserWireVersion") }.getOrNull() == 2L, "needs-update")
         socket = value
         emit(Wire.fields("type" to JsonPrimitive("connection"), "state" to JsonPrimitive("online"),
             "fence" to fence.fields, "leaseDeadline" to JsonPrimitive(admission.deadline)))

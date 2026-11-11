@@ -27,7 +27,7 @@ import {
 import { FakeSink, validClaims } from "@opensteer/browser-runtime-core/test-support";
 import {
   type BrowserAttachTicketClaims,
-  type BrowserServerMessage,
+  type BrowserRuntimeServerMessage,
   type BrowserSurfaceId,
 } from "@opensteer/protocol";
 
@@ -980,7 +980,7 @@ function evaluationValue(value: unknown): unknown {
 }
 
 /** The dialog the person sees now, as the latest `browser.dialog.changed` named it. */
-function shownDialog(messages: readonly BrowserServerMessage[]) {
+function shownDialog(messages: readonly BrowserRuntimeServerMessage[]) {
   const latest = messages.findLast((message) => message.type === "browser.dialog.changed");
   if (latest?.type !== "browser.dialog.changed" || !latest.dialog) {
     throw new Error("No browser dialog is shown.");
