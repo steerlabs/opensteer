@@ -1,6 +1,15 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
+import { hostDeploymentPolicy, isTeamPlace } from "@opensteer/client/host";
+import {
+  lazy,
+  Suspense,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { Link, Navigate, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
 import {
   deploymentStatusLabel,
   type DeploymentStatusInfo,
@@ -131,6 +140,7 @@ export function SettingsShell() {
       </p>
     );
   const rail = settingsRail(view.kind);
+  const team = isTeamPlace(shell.snapshot);
   const place = settingsPlace({
     facts: view.facts,
     homeIcon: home ? computerIcon(computerGlyph(home)) : null,
@@ -194,25 +204,32 @@ export function SettingsShell() {
         </div>
         <h2 className="settings-navigation__title">Settings</h2>
         <nav className="settings-navigation__links" aria-label="Settings sections">
-          {(["general", "account", "devices", "messaging", "external-agents"] as const).map(
-            (id) => (
+          {(["general", "account", "devices", "messaging", "external-agents"] as const)
+            .filter((id) => !team || !absentOnTeamPlace.has(id))
+            .map((id) => (
               <SettingsNavigationLink key={id} item={settingsItem(id, view.kind)} />
-            ),
-          )}
+            ))}
           <div
             aria-labelledby="settings-navigation-agents"
             className="settings-navigation__group"
             role="group"
           >
             <span className="settings-navigation__caption" id="settings-navigation-agents">
-              For your agents
+              {team ? "For the team's projects" : "For your agents"}
             </span>
-            {rail.agents.map((item) => (
-              <SettingsNavigationLink item={item} key={item.id} />
-            ))}
+            {rail.agents
+              .filter((item) => !team || !absentOnTeamPlace.has(item.id))
+              .map((item) => (
+                <SettingsNavigationLink item={item} key={item.id} />
+              ))}
           </div>
           <TeamSettingsNavigation />
         </nav>
+        {team ? (
+          <p className="settings-navigation__elsewhere">
+            Your own Chat, memory, sign-ins, apps and computers are in your own Opensteer.
+          </p>
+        ) : null}
         <div className="settings-navigation__account">
           <NavLink
             to="/settings/general"
@@ -265,6 +282,22 @@ function SettingsNavigationLink({ item }: { readonly item: SettingsRailItem }) {
   );
 }
 
+/**
+ * Settings a team place doesn't have: no messaging, personal plugins, sign-ins
+ * or computers. They are not drawn, and an address to one returns to Settings.
+ */
+const absentOnTeamPlace: ReadonlySet<string> = new Set([
+  "devices",
+  "messaging",
+  "plugins",
+  "sign-ins",
+  "chrome",
+  "browser-profiles",
+  "passwords",
+  "apps",
+  "computers",
+]);
+
 export function SettingsSectionRoute({
   section,
 }: {
@@ -275,7 +308,10 @@ export function SettingsSectionRoute({
     settingsView: view,
     openMobileNavigation,
     hostClient,
+    snapshot,
   } = useOutletContext<SettingsContext>();
+  if (isTeamPlace(snapshot) && absentOnTeamPlace.has(section))
+    return <Navigate replace to="/settings/general" />;
   let content;
   switch (section) {
     case "ai":
@@ -390,4 +426,10 @@ export function settingsStatus(input: {
   if (input.connection === "connected") return { reason: null, status: "ready" };
   if (input.connection === "connecting") return { reason: null, status: "starting" };
   return { reason: "This connection could not be reached.", status: "offline" };
+}
+
+/** A Settings page a team place doesn't have returns to Settings instead of rendering. */
+export function PersonalOnlySettings({ children }: { readonly children: ReactNode }) {
+  const { snapshot } = useShell();
+  return isTeamPlace(snapshot) ? <Navigate replace to="/settings/general" /> : children;
 }

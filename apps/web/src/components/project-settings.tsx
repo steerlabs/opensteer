@@ -148,14 +148,23 @@ function ProjectSettings({ workspace }: { readonly workspace: WorkspaceSummary }
             workspace={workspace}
           />
         )}
-        <AccessSection workspace={workspace} />
-        <PluginsSection
-          administrator={administrator}
-          canChange={connected && (owner || administrator)}
-          hostClient={hostClient}
-          workspace={workspace}
-        />
-        <SpecialistsSection connected={connected} hostClient={hostClient} workspace={workspace} />
+        {/* A team Project has no personal accounts, plugins or specialists to show. */}
+        {teamProject ? null : (
+          <>
+            <AccessSection workspace={workspace} />
+            <PluginsSection
+              administrator={administrator}
+              canChange={connected && (owner || administrator)}
+              hostClient={hostClient}
+              workspace={workspace}
+            />
+            <SpecialistsSection
+              connected={connected}
+              hostClient={hostClient}
+              workspace={workspace}
+            />
+          </>
+        )}
 
         {workspace.status === "ready" ? (
           <section aria-labelledby="project-notifications" className="section">

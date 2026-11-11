@@ -44,6 +44,7 @@ import {
   type TaskRow,
 } from "@opensteer/client/host";
 import { CHAT_THREAD_TITLE } from "@opensteer/core";
+import { isTeamPlace } from "@opensteer/client/host";
 import {
   VoiceContext,
   useHostSelector,
@@ -536,7 +537,9 @@ export function Sidebar({
           ...(more > 0 ? [`more:${folder.workspace.id}`] : []),
         ]),
       ];
-  const hasTasksSection = doneView !== null || rowKeys.length > 0;
+  // A team place has no Chat, Voice, Main tasks or tabs: its Projects are the list.
+  const team = isTeamPlace(snapshot);
+  const hasTasksSection = team || doneView !== null || rowKeys.length > 0;
   const taskRow = (row: TaskRow, nested = false) => (
     <TaskRowItem
       hostClient={hostClient}
@@ -697,24 +700,28 @@ export function Sidebar({
         shownPlaceKey={shownPlaceKey}
         sources={searchSources}
       >
-        <ChatRow
-          ask={homeThreadId ? (directory.attentionByThread.get(homeThreadId) ?? null) : null}
-          onNavigate={onCloseMobile}
-          open={openRowThreadId !== null && openRowThreadId === homeThreadId}
-          row={list.chat}
-          unsent={drafts.chat}
-          workspace={workspace}
-        />
-        <VoiceRow
-          asked={
-            snapshot.voiceThreadId !== null &&
-            requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0
-          }
-          onNavigate={onCloseMobile}
-          open={openThreadId !== null && openThreadId === snapshot.voiceThreadId}
-          threadId={snapshot.voiceThreadId}
-          workspace={workspace}
-        />
+        {team ? null : (
+          <ChatRow
+            ask={homeThreadId ? (directory.attentionByThread.get(homeThreadId) ?? null) : null}
+            onNavigate={onCloseMobile}
+            open={openRowThreadId !== null && openRowThreadId === homeThreadId}
+            row={list.chat}
+            unsent={drafts.chat}
+            workspace={workspace}
+          />
+        )}
+        {team ? null : (
+          <VoiceRow
+            asked={
+              snapshot.voiceThreadId !== null &&
+              requestsWaitingOn(snapshot.waitingRequests, snapshot.voiceThreadId).length > 0
+            }
+            onNavigate={onCloseMobile}
+            open={openThreadId !== null && openThreadId === snapshot.voiceThreadId}
+            threadId={snapshot.voiceThreadId}
+            workspace={workspace}
+          />
+        )}
         {/* No tasks yet, no heading: ⌘N and Chat are the ways to start
                   one, and the heading arrives with the first. */}
         {!hasTasksSection ? null : (
@@ -755,7 +762,7 @@ export function Sidebar({
             ) : (
               <div className="side-head">
                 <h2 className="side-head__title" id="sidebar-tasks">
-                  Tasks
+                  {team ? "Projects" : "Tasks"}
                 </h2>
                 {needsYou.length > 0 ? (
                   <button
@@ -771,15 +778,32 @@ export function Sidebar({
                     <span aria-hidden>{needsYou.length}</span>
                   </button>
                 ) : null}
-                <button
-                  aria-label="New task"
-                  className="icon-btn icon-btn--small side-head__action"
-                  onClick={newTask}
-                  title="New task · ⌘N"
-                  type="button"
-                >
-                  <Icon name="plus" />
-                </button>
+                {team ? (
+                  onNewProject ? (
+                    <button
+                      aria-label="New project"
+                      className="icon-btn icon-btn--small side-head__action"
+                      onClick={() => {
+                        onCloseMobile();
+                        onNewProject();
+                      }}
+                      title="New project"
+                      type="button"
+                    >
+                      <Icon name="plus" />
+                    </button>
+                  ) : null
+                ) : (
+                  <button
+                    aria-label="New task"
+                    className="icon-btn icon-btn--small side-head__action"
+                    onClick={newTask}
+                    title="New task · ⌘N"
+                    type="button"
+                  >
+                    <Icon name="plus" />
+                  </button>
+                )}
               </div>
             )}
             <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
@@ -857,7 +881,7 @@ export function Sidebar({
                             />,
                           ]
                         : []),
-                      ...(folders.length > 0
+                      ...(folders.length > 0 && !team
                         ? [
                             <li
                               className="side-subhead"
@@ -940,146 +964,155 @@ export function Sidebar({
             </SideList>
           </section>
         )}
-        {hasTasksSection ? <SideSplit onCommit={commitTasksShare} share={tasksShare} /> : null}
-        <section
-          aria-labelledby="sidebar-tabs"
-          className="side-section side-section--tabs"
-          ref={tabsSection}
-          style={{ ...sectionFloor(heldTabs?.rows ?? places.length), maxHeight: heldTabs?.height }}
-        >
-          <div className="side-head">
-            <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
-              Tabs
-            </h2>
-            <TabFilter onChange={filterTabs} places={places} value={filter} />
-            {places.length > 0 ? (
-              <button
-                aria-label="New tab"
-                className="icon-btn icon-btn--small side-head__action"
-                onClick={newTab}
-                title={desktopWindowChrome ? "New tab · ⌘T" : "New tab"}
-                type="button"
-              >
-                <Icon name="plus" />
-              </button>
-            ) : null}
-          </div>
-          <SideList labelledBy="sidebar-tabs" listRef={tabsList}>
-            <RowMotion
-              lifted={sort.lift !== null}
-              list={tabsList}
-              ref={motion}
-              signature={motionSignature}
-            >
-              {tabFilterActive(filter) &&
-              !filteredPlaces.some((place) => tabMatchesFilter(place, filter)) ? (
-                <li className="sidebar__empty" data-motion-key="filter-empty" role="status">
-                  {tabFilterEmptyWords(filter)}
-                </li>
+        {hasTasksSection && !team ? (
+          <SideSplit onCommit={commitTasksShare} share={tasksShare} />
+        ) : null}
+        {team ? null : (
+          <section
+            aria-labelledby="sidebar-tabs"
+            className="side-section side-section--tabs"
+            ref={tabsSection}
+            style={{
+              ...sectionFloor(heldTabs?.rows ?? places.length),
+              maxHeight: heldTabs?.height,
+            }}
+          >
+            <div className="side-head">
+              <h2 className="side-head__title" id="sidebar-tabs" tabIndex={-1}>
+                Tabs
+              </h2>
+              <TabFilter onChange={filterTabs} places={places} value={filter} />
+              {places.length > 0 ? (
+                <button
+                  aria-label="New tab"
+                  className="icon-btn icon-btn--small side-head__action"
+                  onClick={newTab}
+                  title={desktopWindowChrome ? "New tab · ⌘T" : "New tab"}
+                  type="button"
+                >
+                  <Icon name="plus" />
+                </button>
               ) : null}
-              <PendingBrowserTabRows
-                hostClient={hostClient}
-                onOpen={onCloseMobile}
-                rows={tabSections.unplaced}
-              />
-              {tabSections.sections.flatMap((section) => {
-                const shut = folded.has(section.key);
-                const listed = sectionPlaces(section);
-                return [
-                  ...(tabSections.headed
-                    ? [
-                        <TabSectionHead
-                          active={listed.some((place) => place.key === shownPlaceKey)}
-                          directory={directory}
-                          folded={shut}
-                          key={`device:${section.key}`}
-                          onOpenMark={openMark}
-                          onToggle={toggleSection}
-                          places={listed}
-                          section={section}
-                        />,
-                      ]
-                    : []),
-                  ...(shut
-                    ? []
-                    : [
-                        ...section.web.flatMap((row) => {
-                          if (row.kind === "place")
-                            return [tabRow(row.place, tabIndices.get(row.place.key)!)];
-                          const key = groupRowKey(row.group.id, section.key, split);
-                          // A group on the move folds its tabs under its header until it lands.
-                          const moving = key === sort.lift?.key;
-                          return [
-                            <TabGroupHeader
-                              active={row.places.some((place) => place.key === shownPlaceKey)}
-                              directory={directory}
-                              editing={editingGroup === key}
-                              group={moving ? { ...row.group, collapsed: true } : row.group}
-                              groupPlaces={groupMembers.get(row.group.id) ?? row.places}
-                              hostClient={hostClient}
-                              key={key}
-                              onEdit={editGroup}
-                              onOpenMark={openMark}
-                              places={row.places}
-                              rowKey={key}
-                              sort={sort.handle}
-                            />,
-                            ...(row.group.collapsed || moving
-                              ? []
-                              : row.places.map((place) =>
-                                  tabRow(place, tabIndices.get(place.key)!, row.group.color),
-                                )),
-                          ];
-                        }),
-                        <PendingBrowserTabRows
-                          hostClient={hostClient}
-                          key={`pending:${section.key}`}
-                          onOpen={onCloseMobile}
-                          rows={section.pending}
-                        />,
-                        ...section.native.map((place) => tabRow(place, tabIndices.get(place.key)!)),
-                      ]),
-                ];
-              })}
-              {startPageOpen ? (
-                <li className="side-tab side-tab--start is-active" data-motion-key="start">
-                  <button
-                    aria-current="true"
-                    className="side-tab__main"
-                    onClick={() => {
-                      onCloseMobile();
-                      newTab();
-                    }}
-                    type="button"
-                  >
-                    <span aria-hidden className="place-mark place-mark--glyph">
+            </div>
+            <SideList labelledBy="sidebar-tabs" listRef={tabsList}>
+              <RowMotion
+                lifted={sort.lift !== null}
+                list={tabsList}
+                ref={motion}
+                signature={motionSignature}
+              >
+                {tabFilterActive(filter) &&
+                !filteredPlaces.some((place) => tabMatchesFilter(place, filter)) ? (
+                  <li className="sidebar__empty" data-motion-key="filter-empty" role="status">
+                    {tabFilterEmptyWords(filter)}
+                  </li>
+                ) : null}
+                <PendingBrowserTabRows
+                  hostClient={hostClient}
+                  onOpen={onCloseMobile}
+                  rows={tabSections.unplaced}
+                />
+                {tabSections.sections.flatMap((section) => {
+                  const shut = folded.has(section.key);
+                  const listed = sectionPlaces(section);
+                  return [
+                    ...(tabSections.headed
+                      ? [
+                          <TabSectionHead
+                            active={listed.some((place) => place.key === shownPlaceKey)}
+                            directory={directory}
+                            folded={shut}
+                            key={`device:${section.key}`}
+                            onOpenMark={openMark}
+                            onToggle={toggleSection}
+                            places={listed}
+                            section={section}
+                          />,
+                        ]
+                      : []),
+                    ...(shut
+                      ? []
+                      : [
+                          ...section.web.flatMap((row) => {
+                            if (row.kind === "place")
+                              return [tabRow(row.place, tabIndices.get(row.place.key)!)];
+                            const key = groupRowKey(row.group.id, section.key, split);
+                            // A group on the move folds its tabs under its header until it lands.
+                            const moving = key === sort.lift?.key;
+                            return [
+                              <TabGroupHeader
+                                active={row.places.some((place) => place.key === shownPlaceKey)}
+                                directory={directory}
+                                editing={editingGroup === key}
+                                group={moving ? { ...row.group, collapsed: true } : row.group}
+                                groupPlaces={groupMembers.get(row.group.id) ?? row.places}
+                                hostClient={hostClient}
+                                key={key}
+                                onEdit={editGroup}
+                                onOpenMark={openMark}
+                                places={row.places}
+                                rowKey={key}
+                                sort={sort.handle}
+                              />,
+                              ...(row.group.collapsed || moving
+                                ? []
+                                : row.places.map((place) =>
+                                    tabRow(place, tabIndices.get(place.key)!, row.group.color),
+                                  )),
+                            ];
+                          }),
+                          <PendingBrowserTabRows
+                            hostClient={hostClient}
+                            key={`pending:${section.key}`}
+                            onOpen={onCloseMobile}
+                            rows={section.pending}
+                          />,
+                          ...section.native.map((place) =>
+                            tabRow(place, tabIndices.get(place.key)!),
+                          ),
+                        ]),
+                  ];
+                })}
+                {startPageOpen ? (
+                  <li className="side-tab side-tab--start is-active" data-motion-key="start">
+                    <button
+                      aria-current="true"
+                      className="side-tab__main"
+                      onClick={() => {
+                        onCloseMobile();
+                        newTab();
+                      }}
+                      type="button"
+                    >
+                      <span aria-hidden className="place-mark place-mark--glyph">
+                        <Icon name="plus" />
+                      </span>
+                      <span className="side-tab__title">New tab</span>
+                    </button>
+                    <button
+                      aria-label="Close New tab"
+                      className="side-row-action side-tab__close"
+                      onClick={() => workspace.startPage.leave()}
+                      title="Close"
+                      type="button"
+                    >
+                      <Icon name="close" />
+                    </button>
+                  </li>
+                ) : (
+                  <li className="side-new" data-motion-key="new">
+                    <button className="side-new__main" onClick={newTab} type="button">
                       <Icon name="plus" />
-                    </span>
-                    <span className="side-tab__title">New tab</span>
-                  </button>
-                  <button
-                    aria-label="Close New tab"
-                    className="side-row-action side-tab__close"
-                    onClick={() => workspace.startPage.leave()}
-                    title="Close"
-                    type="button"
-                  >
-                    <Icon name="close" />
-                  </button>
-                </li>
-              ) : (
-                <li className="side-new" data-motion-key="new">
-                  <button className="side-new__main" onClick={newTab} type="button">
-                    <Icon name="plus" />
-                    <span>New tab</span>
-                  </button>
-                </li>
-              )}
-            </RowMotion>
-          </SideList>
-          <p aria-live="polite" className="visually-hidden" ref={announcer} />
-          <RowTip root={sidebarRef} />
-        </section>
+                      <span>New tab</span>
+                    </button>
+                  </li>
+                )}
+              </RowMotion>
+            </SideList>
+            <p aria-live="polite" className="visually-hidden" ref={announcer} />
+            <RowTip root={sidebarRef} />
+          </section>
+        )}
       </SidebarSearch>
 
       <SidebarFooter

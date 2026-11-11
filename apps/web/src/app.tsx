@@ -10,7 +10,8 @@ import {
 import { ErrorNotice, OnboardingCard } from "./components/onboarding-card.js";
 import { BrandMark } from "./components/brand.js";
 import { AppShell } from "./components/app-shell.js";
-import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "./components/home-view.js";
+import { WorkspaceHomeRoute } from "./components/home-view.js";
+import { PlaceHomeRoute, PlaceNewTaskRoute } from "./components/team/team-home.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ProjectsPage } from "./components/projects-page.js";
 import { ProjectSettingsRoute } from "./components/project-settings.js";
@@ -25,6 +26,7 @@ import {
   SettingsShell,
   SettingsSectionRoute,
   SettingsNotFound,
+  PersonalOnlySettings,
 } from "./components/settings/settings-shell.js";
 import { SettingsRedirect } from "./components/settings/settings-redirect.js";
 import { settingsRedirects } from "@opensteer/client/settings";
@@ -550,8 +552,8 @@ export function App({
               />
             }
           >
-            <Route index element={<HomeRoute />} />
-            <Route path="new" element={<NewTaskRoute />} />
+            <Route index element={<PlaceHomeRoute />} />
+            <Route path="new" element={<PlaceNewTaskRoute />} />
             <Route path="threads/:threadId" element={<ThreadRoute />} />
             <Route path="threads/:threadId/subagents/:nodeId" element={<SubagentRoute />} />
             <Route path="live" element={<LiveRedirect />} />
@@ -598,8 +600,22 @@ export function App({
               <Route path="team/groups" element={<TeamSettingsRoute page="groups" />} />
               <Route path="team/groups/:groupId" element={<TeamSettingsRoute page="group" />} />
               <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
-              <Route path="devices/computers" element={<ComputersPage />} />
-              <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />
+              <Route
+                path="devices/computers"
+                element={
+                  <PersonalOnlySettings>
+                    <ComputersPage />
+                  </PersonalOnlySettings>
+                }
+              />
+              <Route
+                path="devices/computers/:computerId"
+                element={
+                  <PersonalOnlySettings>
+                    <ComputerDetailPage />
+                  </PersonalOnlySettings>
+                }
+              />
               <Route path="sign-ins/chrome/*" element={<SettingsSectionRoute section="chrome" />} />
               <Route
                 path="sign-ins/browsers/*"
