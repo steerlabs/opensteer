@@ -1140,11 +1140,6 @@ export class BrowserService {
         broker.surfaceState === 1 &&
         broker.surfaceStateOf(tabId) === "suspended"
       ) {
-        if (agent && !(await this.agentMayAccessSession(agent, previous)))
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "This tab is not a saved tab you can reach.",
-          });
         await broker.requestCdp({
           type: "cdp.command",
           requestId: randomUUID(),

@@ -70,6 +70,7 @@ integration("agent-to-agent messaging round trip", () => {
       agentMayAccessSession: BrowserService.prototype.agentMayAccessSession,
       listGrantedProfiles: async () => [],
       tabOccupants: () => [],
+      tabStateOf: () => undefined,
     } as unknown as BrowserService,
     publish: vi.fn(),
   });

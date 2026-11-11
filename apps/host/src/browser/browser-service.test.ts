@@ -8052,3 +8052,66 @@ it("publishes a passkey offer as a pin until the ceremony is cancelled", async (
   await vi.waitFor(() => expect(last()).toMatchObject({ viewed: ["page-1"], pinned: [] }));
   viewer.close();
 });
+
+it("agent restore resumes its exact suspended tab in the existing session", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user"),
+    workspaceId = createId("workspace");
+  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const tabId = BrowserSurfaceIdSchema.parse("page-1");
+  let sessionId: BrowserSessionId;
+  const workspaceTabs = {
+    get: async () => ({ id: tabId, groupId: sessionId, url: "about:blank", favicon: null }),
+    session: async () => repository.session(sessionId),
+    read: async (_owner: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
+      Array.isArray(id) ? [] : { id: sessionId, latestSessionId: sessionId, tabs: [] },
+    recordChanges: async (id: BrowserSessionId) => ({
+      groupId: id,
+      changed: false,
+      rows: [],
+      closedIds: [],
+    }),
+    groupIds: async () => [],
+    openTabs: async () => [],
+    lineageForSession: async (id: BrowserSessionId) => id,
+    suspend: async () => undefined,
+  } as unknown as WorkspaceTabStore;
+  const service = freshService({
+    keys,
+    runtime,
+    repository,
+    surfaceState: true,
+    workspaceTabRestoreVersion: true,
+    workspaceTabs,
+  });
+  sessionId = (await service.start({ ownerId, workspaceId, fresh: true })).session.id;
+  runtime.publishTabs({
+    surfaces: [{ id: tabId, state: "suspended", active: true, title: "Sleeping" }],
+  });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("suspended"));
+  const before = runtime.receivedCommands().length;
+  const restored = service.restoreAgentWorkspaceTab(
+    { ownerId, workspaceId, agentBindingId: "restoring-run" },
+    tabId,
+  );
+  await vi.waitFor(() =>
+    expect(
+      runtime
+        .receivedCommands()
+        .slice(before)
+        .find((m) => m.type === "cdp.command"),
+    ).toBeDefined(),
+  );
+  const command = runtime
+    .receivedCommands()
+    .slice(before)
+    .find((m) => m.type === "cdp.command")!;
+  expect(command.command).toEqual({
+    method: "Opensteer.resumeTab",
+    parameters: { surfaceId: tabId },
+  });
+  runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
+  expect(await restored).toEqual({ tabId, sessionId });
+  expect(await repository.countBrowserSessionAttachments(sessionId)).toBe(1);
+});

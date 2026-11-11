@@ -385,7 +385,7 @@ export function createActionsHarness(client, initialTargetId) {
       claimed.delete(surfaceId);
       dialogs.delete(surfaceId);
       process.stderr.write(
-        `[opensteer] Tab ${surfaceId} was asleep and has reloaded. Observe it again before acting; old page handles are invalid.\n`,
+        `[opensteer] Tab ${surfaceId} was asleep and has resumed. Observe it again before acting; it may have reloaded, so discard old page handles.\n`,
       );
     }
     bindings.set(surfaceId, result.binding);

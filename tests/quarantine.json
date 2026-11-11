@@ -614,5 +614,56 @@
     "evidence": [
       "Reproduced locally while diagnosing A15-deadline-soak-1: expected /element was not found/, received a 300 ms timeout waiting for CDP Runtime.getProperties. Same cause and acceptance as A15-deadline-soak-1."
     ]
+  },
+  {
+    "file": "apps/host/src/browser/browser-presence.integration.test.ts",
+    "name": [
+      "Browser presence and conversation usage",
+      "attaches browser streams only on the requesting socket and measures the additive prefixes and deltas"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-11T04:35:18Z",
+    "deadline": "2026-11-17T04:35:18Z",
+    "sha": "2a241e95c43e2f37ab83e81093334df0a59b7902",
+    "evidence": [
+      "Stage 3b check:changed timed out at 30 seconds, then contaminated the other seven cases. One focused untraced run failed containment with Host shutdown stalled at browser; a diagnostic run completed run-place drain, session operations, catalog flush, broker stop and shutdown. The Stage 3a handoff already records timing sensitivity in this legacy/additive stream case. No causal fix or passing broad gate is claimed. Logs: /private/tmp/stage3b-check-changed.log, /private/tmp/stage3b-presence-isolated.log, /private/tmp/stage3b-presence-trace.log. Diagnostic source changes were restored.",
+      "Acceptance: identify the pending shutdown work and prove its completion with untraced focused and selected integration runs under enforcing containment, retaining the existing assertions and deadlines. Coordinate with the Stage 2b replacement of legacy stream expectations; this entry never skips execution."
+    ]
+  },
+  {
+    "file": "tests/browser-tab-groups.integration.test.ts",
+    "name": [
+      "agent organization and durable ownership",
+      "reads profile and Guest identity for open, asleep and opening tabs without waking them"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-11T04:39:03Z",
+    "deadline": "2026-11-17T04:39:03Z",
+    "sha": "2a241e95c43e2f37ab83e81093334df0a59b7902",
+    "evidence": [
+      "Stage 3b selected integration run completed this case's assertions but cleanup reported Browser resources could not be closed, with browser.host.cleanup.failed at engine-close. Log: /private/tmp/stage3b-check-changed.log. No assertion or deadline was changed.",
+      "Acceptance: identify and settle the engine-close work on the Host restart path, then pass the unchanged focused case and selected integration run without cleanup failures. Keep running this test; the record does not exempt it."
+    ]
+  },
+  {
+    "file": "apps/host/src/browser/browser-actions.integration.test.ts",
+    "name": [
+      "session-scoped browser agent backends",
+      "activates a sleeping surface in place, projects its state with notices, and preserves agent resume"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-11T04:46:16Z",
+    "deadline": "2026-11-17T04:46:16Z",
+    "sha": "2a241e95c43e2f37ab83e81093334df0a59b7902",
+    "evidence": [
+      "Stage 3b focused seven-case file passed before the broad check. Broad verification exposed a new duplicate agent-restore proof exceeding its one-second command deadline; that proof was moved to the cheaper Host-service regression with the same exact-resume assertions, not given a larger deadline. A later untraced focused integration run with that duplicate removed still reached the existing case's 30-second deadline, followed by Runtime disconnected during teardown. Logs: /private/tmp/stage3b-integration-final.log, /private/tmp/stage3b-check-changed.log, /private/tmp/stage3b-postcheck-integration.log. The last focused run included uncommitted fixture/test corrections after this SHA.",
+      "Acceptance: identify the pending phase in the unchanged integration flow, then pass it under the existing deadline and enforcing containment, together with the full selected integration file. Keep the cheap Host restore regression and PostgreSQL asleep/session identity assertion. No passing broad gate is claimed; this record does not skip execution."
+    ]
   }
 ]
