@@ -17,7 +17,7 @@ export function sameBrowserTab(
   return a !== null && b !== null && a.sessionId === b.sessionId && a.tabId === b.tabId;
 }
 
-type TabSession = Pick<BrowserSessionSummary, "id" | "tabCatalog">;
+type TabSession = Pick<BrowserSessionSummary, "id" | "browserTabs">;
 
 /** Occupancy is Host-authorized; this only ranks the supplied catalog. */
 export function browserThreadAgentTab(
@@ -25,7 +25,7 @@ export function browserThreadAgentTab(
   threadId: string,
 ): BrowserThreadTab | null {
   const candidates = sessions.flatMap((session) =>
-    (session.tabCatalog?.tabs ?? []).flatMap((tab) =>
+    (session.browserTabs?.sessionTabs(session.id) ?? []).flatMap((tab) =>
       tab.occupants
         .filter((occupant) => occupant.threadId === threadId)
         .map((occupant) => ({
@@ -73,7 +73,7 @@ export function browserThreadTabs(
     if (entry.place.kind === "browser" && entry.place.sessionId === session.id)
       members.add(entry.place.surfaceId);
   }
-  const tabs = [...(session.tabCatalog?.tabs ?? [])].sort(
+  const tabs = [...(session.browserTabs?.sessionTabs(session.id) ?? [])].sort(
     (a, b) => a.order - b.order || a.id.localeCompare(b.id),
   );
   for (const tab of tabs) {

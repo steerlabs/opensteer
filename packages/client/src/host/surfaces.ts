@@ -112,6 +112,7 @@ export function ownerViewDestination(view: ComputerView): WorkspaceSurfaceDestin
 const conversationSurfaceKeys = [
   "assignments",
   "browserSessions",
+  "browserTabs",
   "browserUses",
   "browserProfiles",
   "connection",
@@ -151,7 +152,7 @@ const openBrowserStates = new Set<BrowserSessionSummary["state"]>(["starting", "
 export function browserActingTabId(session: BrowserSessionSummary): string | null {
   if (session.state !== "ready") return null;
   let latest: { readonly at: string; readonly tabId: string } | null = null;
-  for (const tab of session.tabCatalog?.tabs ?? []) {
+  for (const tab of session.browserTabs?.sessionTabs(session.id) ?? []) {
     for (const occupant of tab.occupants) {
       if (occupant.acting && (latest === null || occupant.lastActiveAt > latest.at))
         latest = { at: occupant.lastActiveAt, tabId: tab.id };
@@ -246,19 +247,15 @@ function browserItems(
   session: BrowserSessionSummary,
   profiles: HostSnapshot["browserProfiles"],
 ): BrowserSurfaceItem[] {
-  const tabs = session.tabCatalog
-    ? [...session.tabCatalog.tabs].sort(
-        (left, right) => left.order - right.order || left.id.localeCompare(right.id),
-      )
-    : session.tabs.map((tab) => ({ ...tab, site: tab.url, openerId: null }));
+  const store = session.browserTabs;
+  const tabs = (store?.sessionStructure(session.id) ?? []).map((key) =>
+    store!.tab(key.groupId, key.tabId)!,
+  );
   const identity = browserIdentity(session.profileId, profiles);
   const actingTabId = browserActingTabId(session);
   const items: BrowserSurfaceItem[] = [];
-  const inserted = new Set<string>();
-  const append = (tab: (typeof tabs)[number]) => {
-    if (inserted.has(tab.id)) return;
-    inserted.add(tab.id);
-    const live = session.tabs.find((candidate) => candidate.id === tab.id);
+  for (const tab of tabs) {
+    const live = session.browserTabs?.surface(session.id, tab.id);
     items.push({
       acting: actingTabId === tab.id,
       favicon: live?.favicon ?? null,
@@ -271,11 +268,7 @@ function browserItems(
       site: hostName(tab.site),
       title: browserTabTitle({ title: tab.title, url: tab.site }),
     });
-    for (const child of tabs) if (child.openerId === tab.id) append(child);
-  };
-  for (const tab of tabs)
-    if (!tab.openerId || !tabs.some((parent) => parent.id === tab.openerId)) append(tab);
-  for (const tab of tabs) append(tab);
+  }
   return items;
 }
 
@@ -419,19 +412,17 @@ function pageState(
   threadId: string | null,
 ): { readonly acting: boolean; readonly ended: boolean; readonly favicon: string | null } {
   const open = openBrowserStates.has(session.state);
-  const catalog = open ? session.tabCatalog : undefined;
-  const tab = catalog?.tabs.find((candidate) => candidate.id === tabId);
+  const store = session.browserTabs;
+  const tab = open ? store?.sessionTab(session.id, tabId) : undefined;
   // A live browser's catalog lists every tab it has, so one missing from it was closed.
-  const ended = !open || (catalog != null && !tab);
+  const ended = !open || (store?.sessionList(session.id).whole === true && !tab);
   return {
     acting:
       session.state === "ready" &&
       session.attachedRunIds.includes(runId) &&
       tab?.occupants.some((occupant) => occupant.threadId === threadId && occupant.acting) === true,
     ended,
-    favicon: ended
-      ? null
-      : (session.tabs.find((candidate) => candidate.id === tabId)?.favicon ?? null),
+    favicon: ended ? null : (store?.surface(session.id, tabId)?.favicon ?? null),
   };
 }
 
@@ -447,10 +438,12 @@ function usedPages(
     if (use.runId === null || !runs.has(use.runId) || !use.tabId) continue;
     const { sessionId, tabId } = use;
     const session = byId.get(sessionId);
-    const catalog =
-      session && openBrowserStates.has(session.state) ? session.tabCatalog : undefined;
+    const store = session?.browserTabs;
     const key = `${sessionId}:${tabId}`;
-    const tab = catalog?.tabs.find((candidate) => candidate.id === tabId);
+    const tab =
+      session && openBrowserStates.has(session.state)
+        ? store?.sessionTab(sessionId, tabId)
+        : undefined;
     const { acting, ended, favicon } = session
       ? pageState(session, tabId, use.runId, use.threadId)
       : { acting: false, ended: true, favicon: null };
@@ -490,15 +483,19 @@ export function messagePages(
   return pages.map((page) => {
     const session = sessions.find((candidate) => candidate.id === page.sessionId);
     const ended = !session || !openBrowserStates.has(session.state);
-    const tab = ended ? undefined : session?.tabs.find((candidate) => candidate.id === page.tabId);
+    const tab = ended ? undefined : session?.browserTabs?.surface(session.id, page.tabId);
+    const row = ended ? undefined : session?.browserTabs?.sessionTab(session.id, page.tabId);
     return {
       acting: false,
       destination: { kind: "browser", sessionId: page.sessionId, tabId: page.tabId },
       ended,
       favicon: tab?.favicon ?? null,
       key: `${page.sessionId}:${page.tabId}`,
-      site: hostName(tab?.url ?? page.url),
-      title: (tab ? browserTabTitle(tab) : page.title.trim()) || hostName(page.url) || "Page",
+      site: hostName(tab?.url ?? row?.site ?? page.url),
+      title:
+        (tab ? browserTabTitle(tab) : row?.title.trim() || page.title.trim()) ||
+        hostName(page.url) ||
+        "Page",
     };
   });
 }

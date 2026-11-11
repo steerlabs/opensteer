@@ -2,7 +2,7 @@ import type { MachineSummary } from "@opensteer/protocol";
 import { computerGlyph, orderDevices, type ComputerGlyph } from "../computers/computers.js";
 import type { BrowserTabStrip, BrowserTabStripRow } from "./browser-tab-strip.js";
 import type { BrowserProfileSummary, PendingBrowserTab } from "./client.js";
-import type { PlaceItem } from "./places.js";
+import type { PlaceItem, PlaceDescriptor } from "./places.js";
 
 /** The device a section of the tab list is headed by. */
 export interface TabSectionDevice {
@@ -18,45 +18,45 @@ export interface TabSectionDevice {
  * members that run there. Opensteer Apps run on no device: theirs is the one
  * section with no device, and it comes last.
  */
-export interface TabSection {
+export interface TabSection<Place extends PlaceDescriptor = PlaceItem> {
   readonly key: string;
   readonly device: TabSectionDevice | null;
-  readonly web: readonly BrowserTabStripRow[];
+  readonly web: readonly BrowserTabStripRow<Place>[];
   readonly pending: readonly PendingBrowserTab[];
-  readonly native: readonly PlaceItem[];
+  readonly native: readonly Place[];
 }
 
-export interface TabSections {
+export interface TabSections<Place extends PlaceDescriptor = PlaceItem> {
   /**
    * Whether sections wear headings: as soon as anything runs on a device other
    * than the reader's. A reader that cannot say where it is is at none of them.
    */
   readonly headed: boolean;
-  readonly sections: readonly TabSection[];
+  readonly sections: readonly TabSection<Place>[];
   /** Openings whose device only the Host will decide; they stand above every section. */
   readonly unplaced: readonly PendingBrowserTab[];
   /** Every place in the order the sections show them. */
-  readonly ordered: readonly PlaceItem[];
+  readonly ordered: readonly Place[];
 }
 
 export const opensteerAppsSectionKey = "opensteer-apps";
 
 /** The tab list as sections by device, in `orderDevices` order. */
-export function browserTabSections(input: {
-  readonly strip: Pick<BrowserTabStrip, "web" | "native">;
+export function browserTabSections<Place extends PlaceDescriptor>(input: {
+  readonly strip: Pick<BrowserTabStrip<Place>, "web" | "native">;
   readonly machines: readonly MachineSummary[];
   readonly hereId: string | null;
   readonly pending?: readonly PendingBrowserTab[] | undefined;
   readonly profiles?: readonly BrowserProfileSummary[] | undefined;
-}): TabSections {
+}): TabSections<Place> {
   const { strip, machines, hereId } = input;
   const devices = new Map<
     string,
     {
       device: TabSectionDevice;
-      web: BrowserTabStripRow[];
+      web: BrowserTabStripRow<Place>[];
       pending: PendingBrowserTab[];
-      native: PlaceItem[];
+      native: Place[];
     }
   >();
   const sectionOf = (id: string, name: string) => {
@@ -87,7 +87,7 @@ export function browserTabSections(input: {
       }
       continue;
     }
-    const split = new Map<string, PlaceItem[]>();
+    const split = new Map<string, Place[]>();
     for (const place of row.places) {
       if (!place.device) continue;
       if (place.browser) sessionDevices.set(place.browser.sessionId, place.device);
@@ -100,7 +100,7 @@ export function browserTabSections(input: {
         split.size === 1 ? row : { kind: "group", group: row.group, places },
       );
   }
-  const apps: PlaceItem[] = [];
+  const apps: Place[] = [];
   for (const place of strip.native) {
     if (place.device) sectionOf(place.device.machineId, place.device.name).native.push(place);
     else apps.push(place);
@@ -111,7 +111,7 @@ export function browserTabSections(input: {
     if (id === null) unplaced.push(pending);
     else sectionOf(id, "Computer unavailable").pending.push(pending);
   }
-  const sections: TabSection[] = orderDevices(
+  const sections: TabSection<Place>[] = orderDevices(
     [...devices.values()].map((section) => ({ ...section, ...section.device })),
     hereId,
   ).map(({ device, web, pending, native }) => ({ key: device.id, device, web, pending, native }));

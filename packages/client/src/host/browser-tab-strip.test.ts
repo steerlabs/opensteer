@@ -1,4 +1,4 @@
-import type { WorkspaceTabLineage } from "@opensteer/client/host";
+import { browserStoreFixture, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
 /* Failure modes: interleaved members move unrelated tabs; layout order overrides tab order;
  * unknown members inflate visible membership or create empty headers; native places get grouped; collapsed members remain
  * keyboard targets; unchanged rows lose identity when a different group is edited. */
@@ -81,27 +81,18 @@ describe("saved tab order projection", () => {
       const ids = ["a", "b", "c", "d"].map((id) =>
         BrowserSurfaceIdSchema.parse(`surface_race_${id}`),
       );
-      const lineage = {
-        id: session.id,
-        revision: 1,
-        createdAt: "2026-10-25T00:00:00.000Z",
-        session: {
-          ...session,
-          createdAt: "2026-10-25T00:00:00.000Z",
-          updatedAt: "2026-10-25T00:00:00.000Z",
-        },
-        tabs: ids.map((id, order) => ({
-          kind: "browser" as const,
-          id,
-          sessionId: session.id,
-          title: id,
-          site: "",
-          order,
-          openerId: order === 2 ? ids[1]! : order === 3 ? ids[2]! : null,
-          state: "suspended" as const,
-          createdAt: `2026-10-25T00:00:0${order}.000Z`,
-        })),
-      } as unknown as WorkspaceTabLineage;
+      const group = client.browserTabs.group(client.browserTabs.groupForSession(session.id)!)!;
+      const rows = ids.map((id, order) => ({
+        ...client.browserTabs.sessionTabs(session.id)[0]!,
+        id,
+        order,
+        title: id,
+        site: "",
+        state: "suspended" as const,
+        openerId: order === 2 ? ids[1]! : order === 3 ? ids[2]! : null,
+        createdAt: `2026-10-25T00:00:0${order}.000Z`,
+      }));
+      const store = browserStoreFixture([group], [{ groupId: group.id, rows: rows.slice(0, 3) }]);
       const layout: BrowserTabLayout = {
         revision: 1,
         order: [],
@@ -117,9 +108,7 @@ describe("saved tab order projection", () => {
       };
       const source = {
         ...snapshot,
-        workspaceTabRestoreVersion: 1 as const,
-        workspaceTabs: [{ ...lineage, tabs: lineage.tabs!.slice(0, 3) }],
-        browserSessions: [],
+        browserTabs: store,
       };
       const first = browserTabStrip(placeList({ ...source, browserTabGroups: layout }), layout);
       expect(
@@ -127,7 +116,8 @@ describe("saved tab order projection", () => {
           .map((p) => (p.destination.kind === "browser" ? p.destination.tabId : null))
           .filter(Boolean),
       ).toEqual([ids[0], ids[2], ids[1]]);
-      const places = placeList({ ...source, workspaceTabs: [lineage], browserTabGroups: layout });
+      replaceBrowserTabs(store, group.id, rows);
+      const places = placeList({ ...source, browserTabGroups: layout });
       const earlyRead = browserTabStrip(places, layout);
       expect(
         earlyRead.ordered
@@ -136,10 +126,7 @@ describe("saved tab order projection", () => {
       ).toEqual([ids[0], ids[2], ids[3], ids[1]]);
       expect(browserTabStrip(places, layout)).toBe(earlyRead);
       const newer = { ...layout, revision: 2 };
-      const refreshed = browserTabStrip(
-        placeList({ ...source, workspaceTabs: [lineage], browserTabGroups: newer }),
-        newer,
-      );
+      const refreshed = browserTabStrip(placeList({ ...source, browserTabGroups: newer }), newer);
       expect(refreshed.ordered.map((p) => p.key)).toEqual(earlyRead.ordered.map((p) => p.key));
       expect(browserTabStrip(places, newer).web[0]).toBe(earlyRead.web[0]);
     } finally {
@@ -147,33 +134,18 @@ describe("saved tab order projection", () => {
     }
   });
 
-  it("puts live-only tabs after durable tabs and leaves older Hosts in today's derived order", () => {
+  it("keeps the canonical store order when no saved layout order is available", () => {
     const client = new MockHostClient({ latencyMs: 0 });
     try {
-      const snapshot = client.getSnapshot();
-      const saved = snapshot.workspaceTabs![0]!;
-      // One saved lineage; every other browser is live only, as on a runtime that saves no tabs.
-      const source = {
-        ...snapshot,
-        workspaceTabRestoreVersion: 1 as const,
-        workspaceTabs: [saved],
-        browserSessions: snapshot.browserSessions.map((session) =>
-          session.id === saved.session.id
-            ? session
-            : { ...session, workspaceTabRestoreVersion: undefined },
-        ),
-      };
-      const ordered = placeList({
-        ...source,
-        browserTabGroups: { revision: 1, groups: [], order: [] },
-      }).filter((p) => p.kind === "browser");
-      const durable = ordered.filter((p) => p.workspaceTab);
-      expect(durable.length).toBeGreaterThan(0);
-      expect(ordered.length).toBeGreaterThan(durable.length);
-      expect(ordered.slice(0, durable.length)).toEqual(durable);
+      const source = client.getSnapshot();
       const older = placeList({ ...source, browserTabGroups: { revision: 1, groups: [] } });
       expect(older).toEqual(placeList({ ...source, browserTabGroups: undefined }));
       expect(browserTabStrip(older, { revision: 1, groups: [] }).ordered).toEqual(older);
+      expect(
+        older
+          .filter((place) => place.kind === "browser")
+          .map((place) => place.destination.kind === "browser" && place.destination.tabId),
+      ).toEqual(client.browserTabs.structure().map((tab) => tab.tabId));
     } finally {
       client.dispose();
     }

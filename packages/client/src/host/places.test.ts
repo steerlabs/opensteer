@@ -1,15 +1,117 @@
 import { AppTabSchema } from "@opensteer/protocol";
-import { defaultTaskSymbol } from "@opensteer/core";
+import { defaultTaskSymbol, BrowserSurfaceIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { placeIdentityKey } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { placeList, placeDestinationEnded, samePlaceListSource } from "./places.js";
 import { taskMark, threadMark } from "./task-marks.js";
 import { assignmentMark } from "./assignment-presentation.js";
+import { startPageIndex, startPageResults } from "./start-page-model.js";
+import { PlaceProjection } from "./places.js";
 
 const now = () => new Date("2026-10-19T12:00:00.000Z");
 
 describe("place catalog", () => {
+  it("projects keyed rows without rebuilding structure or unchanged places", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const source = client.getSnapshot();
+      const store = client.browserTabs;
+      const projection = new PlaceProjection(store);
+      const structure = projection.structure(source);
+      const first = store.structure().find((key) => store.sessionTabs(key.sessionId).length > 1);
+      const second = store
+        .structure()
+        .find((key) => key.groupId === first?.groupId && key.tabId !== first.tabId);
+      if (!first || !second) throw new Error("Missing seeded tabs");
+      const key = `browser:${first.sessionId}:${first.tabId}`;
+      const siblingKey = `browser:${second.sessionId}:${second.tabId}`;
+      const before = projection.place(source, key);
+      const sibling = projection.place(source, siblingKey);
+      const replace = (rows: ReturnType<typeof store.sessionTabs>) => {
+        store.applyTabs(first.groupId, { op: "begin", generation: "places" });
+        store.applyTabs(first.groupId, { op: "rows", rows: [...rows] });
+        store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+      };
+      const rows = store.sessionTabs(first.sessionId);
+      replace(
+        rows.map((row) =>
+          row.id === first.tabId ? { ...row, title: "Needle in keyed store", loading: true } : row,
+        ),
+      );
+      expect(projection.structure(source)).toBe(structure);
+      expect(projection.place(source, siblingKey)).toBe(sibling);
+      expect(projection.place(source, key)).not.toBe(before);
+      expect(projection.place(source, key)).toMatchObject({
+        title: "Needle in keyed store",
+        loading: true,
+      });
+      expect(placeList(source).find((place) => place.key === key)?.title).toBe(
+        "Needle in keyed store",
+      );
+      expect(
+        startPageResults(startPageIndex({ snapshot: source }), {
+          query: "Needle in keyed store",
+          choice: { kind: "guest" },
+        }).some((result) => result.kind === "tab" && result.title === "Needle in keyed store"),
+      ).toBe(true);
+      const committed = projection.structure(source);
+      store.applyTabs(first.groupId, { op: "begin", generation: "interrupted" });
+      store.applyTabs(first.groupId, { op: "rows", rows: [] });
+      expect(projection.structure(source)).toBe(committed);
+      store.disconnected();
+      expect(projection.structure(source)).toBe(committed);
+      expect(projection.place(source, siblingKey)).toBe(sibling);
+      const added = {
+        ...rows[0]!,
+        id: BrowserSurfaceIdSchema.parse("mock-added"),
+        openerId: null,
+        order: -1,
+      };
+      replace([added, ...store.sessionTabs(first.sessionId)]);
+      expect(
+        projection.structure(source).findIndex((place) => place.key.endsWith(":mock-added")),
+      ).toBeLessThan(projection.structure(source).findIndex((place) => place.key === key));
+      const inserted = projection.structure(source);
+      replace(
+        store
+          .sessionTabs(first.sessionId)
+          .map((row) => (row.id === first.tabId ? { ...row, order: -2 } : row)),
+      );
+      expect(projection.structure(source)).not.toBe(inserted);
+      expect(projection.structure(source).findIndex((place) => place.key === key)).toBeLessThan(
+        projection.structure(source).findIndex((place) => place.key.endsWith(":mock-added")),
+      );
+      replace(store.sessionTabs(first.sessionId).filter((row) => row.id !== first.tabId));
+      expect(projection.place(source, key)).toBeUndefined();
+      expect(projection.structure(source).some((place) => place.key === key)).toBe(false);
+    } finally {
+      client.dispose();
+    }
+  });
+  it("searches the current store even when the compatibility snapshot has not changed", () => {
+    const client = new MockHostClient({ latencyMs: 0, now });
+    try {
+      const source = client.getSnapshot();
+      const store = client.browserTabs;
+      const first = store.structure()[0]!;
+      const rows = store
+        .sessionTabs(first.sessionId)
+        .map((tab) => (tab.id === first.tabId ? { ...tab, title: "Keyed search needle" } : tab));
+      store.applyTabs(first.groupId, { op: "begin", generation: "search" });
+      store.applyTabs(first.groupId, { op: "rows", rows });
+      store.applyTabs(first.groupId, { op: "end", revision: 0, count: rows.length, meta: {} });
+      const results = startPageResults(startPageIndex({ snapshot: source }), {
+        query: "Keyed search needle",
+        choice: { kind: "guest" },
+      });
+      expect(
+        results.some((result) => result.kind === "tab" && result.title === "Keyed search needle"),
+      ).toBe(true);
+    } finally {
+      client.dispose();
+    }
+  });
   it("lists Opensteer apps independently of machines and detects closed tabs", async () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
@@ -199,30 +301,19 @@ describe("place catalog", () => {
       client.dispose();
     }
   });
-  it("suppresses the live projection only for a participating durable session", () => {
+  it("removes only the group whose complete stream ends", () => {
     const client = new MockHostClient({ latencyMs: 0, now });
     try {
-      const snapshot = {
-        ...client.getSnapshot(),
-        browserSessions: client.getSnapshot().browserSessions.map((session) => ({
-          ...session,
-          workspaceTabRestoreVersion: undefined as 1 | undefined,
-        })),
-      };
-      const participating = snapshot.browserSessions[0]!;
-      const source = {
-        ...snapshot,
-        workspaceTabRestoreVersion: 1 as const,
-        workspaceTabs: [],
-        browserSessions: snapshot.browserSessions.map((session) =>
-          session === participating
-            ? { ...session, workspaceTabRestoreVersion: 1 as const }
-            : session,
-        ),
-      };
-      const places = placeList(source).filter((place) => place.kind === "browser");
-      expect(places.some((place) => place.browser?.sessionId === participating.id)).toBe(false);
-      expect(places.length).toBeGreaterThan(0);
+      const snapshot = client.getSnapshot();
+      const first = client.browserTabs.structure()[0]!;
+      const before = placeList(snapshot);
+      client.browserTabs.applyTabs(first.groupId, { op: "begin", generation: "removed" });
+      client.browserTabs.applyTabs(first.groupId, { op: "end", revision: 0, count: 0, meta: {} });
+      const places = placeList(snapshot);
+      expect(places.some((place) => place.browser?.sessionId === first.sessionId)).toBe(false);
+      expect(places).toEqual(
+        before.filter((place) => place.browser?.sessionId !== first.sessionId),
+      );
     } finally {
       client.dispose();
     }

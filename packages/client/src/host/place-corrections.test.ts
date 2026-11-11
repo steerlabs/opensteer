@@ -9,7 +9,7 @@ describe("round two place contracts", () => {
     const client = new MockHostClient({ latencyMs: 0 });
     try {
       const session = client.getSnapshot().browserSessions[0]!;
-      const tab = session.tabCatalog!.tabs[0]!;
+      const tab = client.browserTabs.sessionTabs(session.id)[0]!;
       const candidate = await client.readBrowserContextCandidate(session.id, tab.id);
       expect(BrowserContextCandidateSchema.safeParse(candidate).success).toBe(true);
       expect(candidate.tabId).toBe(tab.id);
@@ -18,11 +18,15 @@ describe("round two place contracts", () => {
       await expect(
         client.closeBrowserTab(session.id, tab.id, { generation: 0, revision: 0 }),
       ).rejects.toMatchObject({ reason: "stale-tab-inventory" });
-      const result = await client.closeBrowserTab(session.id, tab.id, session.tabCatalog!);
+      const result = await client.closeBrowserTab(
+        session.id,
+        tab.id,
+        client.browserTabs.inventory(session.id)!,
+      );
       expect(result.outcome).toBe("tab-closed");
-      expect(
-        client.getSnapshot().browserSessions[0]?.tabCatalog?.tabs.some(({ id }) => id === tab.id),
-      ).toBe(false);
+      expect(client.browserTabs.sessionTabs(session.id).some(({ id }) => id === tab.id)).toBe(
+        false,
+      );
     } finally {
       client.dispose();
     }
@@ -48,7 +52,11 @@ describe("round two place contracts", () => {
       const session = client
         .getSnapshot()
         .browserSessions.find(({ id }) => id === identity.sessionId)!;
-      await client.closeBrowserTab(session.id, identity.surfaceId, session.tabCatalog!);
+      await client.closeBrowserTab(
+        session.id,
+        identity.surfaceId,
+        client.browserTabs.inventory(session.id)!,
+      );
       expect(client.runPlace(runId)).toBe(latest);
       expect(changed).not.toHaveBeenCalled();
     } finally {

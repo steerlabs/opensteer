@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 
 import { act, StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -145,15 +146,21 @@ vi.mock("@opensteer/client/react", async () => {
       state.popupFollow = { tab, follow };
     },
     useHostSelector: (_client: unknown, selector: (snapshot: HostSnapshot) => unknown) =>
-      selector(state.snapshot!),
-    useHostSnapshot: () => ({ snapshot: state.snapshot, loadError: null, reload: state.refresh }),
+      selector(withBrowserTabStore(state.snapshot!)),
+    useHostSnapshot: () => ({
+      snapshot: state.snapshot && withBrowserTabStore(state.snapshot),
+      loadError: null,
+      reload: state.refresh,
+    }),
     usePlaceList: () => {
       if (state.snapshot === null) throw new Error("Missing snapshot fixture");
-      return placeList(state.snapshot);
+      return placeList(withBrowserTabStore(state.snapshot));
     },
     // No Run place in these fixtures: the agent's tab is the one its Thread occupies.
     useThreadAgentTab: (_client: unknown, threadId: string | null) =>
-      threadId === null ? null : browserThreadAgentTab(state.snapshot!.browserSessions, threadId),
+      threadId === null
+        ? null
+        : browserThreadAgentTab(withBrowserTabStore(state.snapshot!).browserSessions, threadId),
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
@@ -652,7 +659,7 @@ function session(
 }
 
 function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
-  return {
+  return withBrowserTabStore({
     assignments: {},
     browserPlacements: [],
     browserProfiles: [],
@@ -682,7 +689,7 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     waitingRequests: [],
     workspaces: [source, child, unrelated],
     workspaceTasks: {},
-  } as unknown as HostSnapshot;
+  } as unknown as HostSnapshot);
 }
 
 const liveFeed = { status: "live", error: null, frame: null } as const;
@@ -690,7 +697,7 @@ function setup(
   params: Partial<SurfacesRoute> = {},
   options: { strict?: boolean; snapshot?: HostSnapshot } = {},
 ) {
-  state.hostClient.getSnapshot ??= () => state.snapshot;
+  state.hostClient.getSnapshot ??= () => state.snapshot && withBrowserTabStore(state.snapshot);
   state.drafts ??= createThreadDraftStore({
     filePath: "/private/drafts.json",
     now: () => new Date("2026-10-13T00:00:00.000Z"),
@@ -713,8 +720,12 @@ function setup(
       ...params,
     } as SurfacesRoute,
   };
-  const render = () =>
-    act(() =>
+  const render = () => {
+    Object.defineProperty(state.hostClient, "browserTabs", {
+      configurable: true,
+      get: () => withBrowserTabStore(state.snapshot!).browserTabs!,
+    });
+    return act(() =>
       root.render(
         options.strict ? (
           <StrictMode>
@@ -725,6 +736,7 @@ function setup(
         ),
       ),
     );
+  };
   render();
   return { container, render, route };
 }

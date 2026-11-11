@@ -1,3 +1,7 @@
+import type {
+  MockBrowserSource as HostSnapshot,
+  MockBrowserSession as BrowserSessionSummary,
+} from "./mock-browser-source.js";
 import { BrowserSessionIdSchema } from "@opensteer/core";
 import type { WorkspaceTabLineage } from "../host/client.js";
 import { mockBrowserRows } from "./mock-browser-stream.js";
@@ -219,7 +223,6 @@ import type {
   BrowserCommand,
   BrowserFrameStore,
   BrowserProfileGrantSummary,
-  BrowserSessionSummary,
   BrowserTabOpenInput,
   BrowserTabOpenOptions,
   CreateHarnessInstanceInput,
@@ -228,7 +231,8 @@ import type {
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
-  HostSnapshot,
+  HostSnapshot as PublicHostSnapshot,
+  BrowserSessionSummary as PublicBrowserSessionSummary,
   MachineAccessHistoryPage,
   MachineAccessUpdateOutcome,
   MessageEntry,
@@ -256,7 +260,7 @@ import {
   type WebSocketClient,
 } from "../host/host-session-client.js";
 import type { ClientLifecycle } from "../host/lifecycle.js";
-import { placeList } from "../host/places.js";
+import { mockPlaceList as placeList } from "./mock-browser-source.js";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import { threadStopTarget } from "../host/thread-activity.js";
 import {
@@ -3405,7 +3409,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
             groups: [...next.groups.filter((held) => held.id !== groupId), group],
           },
           groupBrowserTabs(
-            browserTabArrangement(layout, browserTabOrderTabs(client.getSnapshot().workspaceTabs)),
+            browserTabArrangement(layout, browserTabOrderTabs(client.browserTabs)),
             command.tabIds,
             groupId,
           ),
@@ -3421,10 +3425,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
             revision: client.tabGroups.revision + 1,
           },
           ungroupBrowserTabs(
-            browserTabArrangement(
-              client.tabGroups,
-              browserTabOrderTabs(client.getSnapshot().workspaceTabs),
-            ),
+            browserTabArrangement(client.tabGroups, browserTabOrderTabs(client.browserTabs)),
             command.tabIds,
           ),
         ),
@@ -3432,10 +3433,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ type: command.type, layout: client.tabGroups });
     case "workspace.tabs.move": {
       const result = moveBrowserTabs(
-        browserTabArrangement(
-          client.tabGroups,
-          browserTabOrderTabs(client.getSnapshot().workspaceTabs),
-        ),
+        browserTabArrangement(client.tabGroups, browserTabOrderTabs(client.browserTabs)),
         command,
       );
       if (!result.ok)
@@ -3486,13 +3484,13 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
           place?.destination.kind === "browser" ? place.destination.sessionId : null;
         const catalog = client
           .getSnapshot()
-          .browserSessions.find((session) => session.id === sessionId)?.tabCatalog;
+          .browserSessions.find((session) => session.id === sessionId)?.catalog;
         try {
           if (!catalog && place?.workspaceTab && place.workspaceTab.state !== "live") {
             const snapshot = client.getSnapshot();
             client.updatePlaces({
               ...snapshot,
-              workspaceTabs: snapshot.workspaceTabs?.map((lineage) =>
+              browserGroups: snapshot.browserGroups?.map((lineage) =>
                 lineage.tabs?.some((tab) => tab.id === tabId)
                   ? {
                       ...lineage,
@@ -3946,7 +3944,7 @@ export class MockHostClient implements HostClient {
         });
         const group = this.#state
           .getSnapshot()
-          .workspaceTabs!.find((value) => value.session.id === dormant.session.id)!;
+          .browserGroups!.find((value) => value.session.id === dormant.session.id)!;
         return {
           type: "workspace.tab.activate",
           groupId: group.id,
@@ -3967,7 +3965,11 @@ export class MockHostClient implements HostClient {
     });
     this.#ownerViews = new MockComputerViews(
       this.#state.getSnapshot,
-      (snapshot) => this.#state.updatePlaces(snapshot),
+      (snapshot) =>
+        this.#state.updatePlaces({
+          ...snapshot,
+          browserSessions: this.#state.getSnapshot().browserSessions,
+        }),
       () => this.#state.computerConnections(),
       options.now ?? (() => new Date()),
     );
@@ -4024,7 +4026,7 @@ export class MockHostClient implements HostClient {
       (browserTabGroups) =>
         this.#state.updatePlaces({ ...this.#state.getSnapshot(), browserTabGroups }),
       () => this.#viewer.generation,
-      () => browserTabOrderTabs(this.#state.getSnapshot().workspaceTabs),
+      () => browserTabOrderTabs(this.browserTabs),
     );
     this.#tabGroups.receive(this.#state.getSnapshot().browserTabGroups);
     this.#state.projectTabGroups = () => this.#tabGroups.receive(this.#state.tabGroups);
@@ -4094,7 +4096,7 @@ export class MockHostClient implements HostClient {
   get browserTabs() {
     return this.#state.browserTabs;
   }
-  readonly getSnapshot = (): HostSnapshot => {
+  readonly getSnapshot = (): PublicHostSnapshot => {
     this.#ownerViews.expire();
     return this.#state.publishedSnapshot();
   };
@@ -4145,19 +4147,19 @@ export class MockHostClient implements HostClient {
     this.#places.script();
     const snapshot = this.#state.getSnapshot();
     const session = snapshot.browserSessions.find(
-      (value) => value.profileId && value.tabCatalog?.tabs.length,
+      (value) => value.profileId && value.catalog?.tabs.length,
     );
-    if (!session?.tabCatalog) throw new Error("No mock browser to suspend.");
-    const tab = session.tabCatalog.tabs[0]!;
+    if (!session?.catalog) throw new Error("No mock browser to suspend.");
+    const tab = session.catalog.tabs[0]!;
     this.#dormantBrowser = {
       session: {
         ...session,
-        tabs: session.tabs.map((value) =>
+        surfaces: session.surfaces.map((value) =>
           value.id === tab.id ? { ...value, loading: true } : value,
         ),
-        tabCatalog: {
-          ...session.tabCatalog,
-          tabs: session.tabCatalog.tabs.map((value) =>
+        catalog: {
+          ...session.catalog,
+          tabs: session.catalog.tabs.map((value) =>
             value.id === tab.id ? { ...value, loading: true } : value,
           ),
         },
@@ -4178,7 +4180,7 @@ export class MockHostClient implements HostClient {
             }
           : placement,
       ),
-      workspaceTabs: snapshot.workspaceTabs?.map((group) =>
+      browserGroups: snapshot.browserGroups?.map((group) =>
         group.session.id === session.id
           ? {
               ...group,
@@ -4198,12 +4200,12 @@ export class MockHostClient implements HostClient {
       ...snapshot,
       browserSessions: snapshot.browserSessions.map((session) => ({
         ...session,
-        tabs: session.tabs.map((tab) => (tab.id === tabId ? { ...tab, loading } : tab)),
-        ...(session.tabCatalog
+        surfaces: session.surfaces.map((tab) => (tab.id === tabId ? { ...tab, loading } : tab)),
+        ...(session.catalog
           ? {
-              tabCatalog: {
-                ...session.tabCatalog,
-                tabs: session.tabCatalog.tabs.map((tab) =>
+              catalog: {
+                ...session.catalog,
+                tabs: session.catalog.tabs.map((tab) =>
                   tab.id === tabId ? { ...tab, loading } : tab,
                 ),
               },
@@ -4250,7 +4252,7 @@ export class MockHostClient implements HostClient {
             }
           : placement,
       ),
-      workspaceTabs: snapshot.workspaceTabs?.map((group) =>
+      browserGroups: snapshot.browserGroups?.map((group) =>
         group.session.id === dormant.session.id
           ? {
               ...group,
@@ -4380,7 +4382,7 @@ export class MockHostClient implements HostClient {
         result.sessionId,
         result.tabId,
         this.#state.getSnapshot().browserSessions.find((session) => session.id === result.sessionId)
-          ?.tabCatalog ?? { generation: 0, revision: 0, inventoryRevision: 0 },
+          ?.catalog ?? { generation: 0, revision: 0, inventoryRevision: 0 },
       ),
     changed: (pendingBrowserTabs) =>
       this.#state.updatePlaces({ ...this.#state.getSnapshot(), pendingBrowserTabs }),
@@ -4440,7 +4442,7 @@ export class MockHostClient implements HostClient {
     sessionId: string,
     surfaceId: string,
     expected: Pick<
-      NonNullable<BrowserSessionSummary["tabCatalog"]>,
+      NonNullable<BrowserSessionSummary["catalog"]>,
       "generation" | "revision" | "inventoryRevision"
     >,
   ) =>
@@ -5041,12 +5043,12 @@ export class MockHostClient implements HostClient {
           : {
               ...session,
               navigationVersion: navigation.navigationVersion,
-              ...(session.tabCatalog
+              ...(session.catalog
                 ? {
-                    tabCatalog: {
-                      ...session.tabCatalog,
-                      revision: session.tabCatalog.revision + 1,
-                      tabs: session.tabCatalog.tabs.map((tab) =>
+                    catalog: {
+                      ...session.catalog,
+                      revision: session.catalog.revision + 1,
+                      tabs: session.catalog.tabs.map((tab) =>
                         tab.id !== tabId
                           ? tab
                           : {
@@ -5088,7 +5090,7 @@ export class MockHostClient implements HostClient {
           this.#state
             .getSnapshot()
             .browserSessions.find((session) => session.id === sessionId)
-            ?.tabs.find((tab) => tab.id === command.surfaceId)?.documentId ?? "mock-document",
+            ?.surfaces.find((tab) => tab.id === command.surfaceId)?.documentId ?? "mock-document",
         geometryRevision: command.geometryRevision ?? 0,
         captureRevision: command.captureRevision ?? 0,
         cursor: "default" as const,
@@ -5113,7 +5115,7 @@ export class MockHostClient implements HostClient {
     placement?: import("../host/client.js").BrowserPlacementSummary,
     threadId?: string,
     viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
-  ): Promise<BrowserSessionSummary> {
+  ): Promise<PublicBrowserSessionSummary> {
     const result = await this.dispatch({
       idempotencyKey: `mock-browser:${crypto.randomUUID()}`,
       input: {
@@ -5130,9 +5132,7 @@ export class MockHostClient implements HostClient {
       workspaceId,
     });
     if (result.type !== "browser.session.start") throw new Error("Browser command mismatch.");
-    const session = this.#state
-      .getSnapshot()
-      .browserSessions.find(({ id }) => id === result.session.id);
+    const session = this.getSnapshot().browserSessions.find(({ id }) => id === result.session.id);
     if (!session) throw new Error("The mock Browser Session was not projected.");
     return session;
   }
@@ -6262,10 +6262,13 @@ class MockHostState {
   /** The sessions this client can see, until it revokes them. */
   private sessions: AuthSessionSummary[];
   private snapshot: HostSnapshot;
-  #published: HostSnapshot | null = null;
-  readonly browserTabs = new BrowserTabStore();
+  #published: PublicHostSnapshot | null = null;
+  readonly browserTabs = new BrowserTabStore(
+    () => {},
+    (sessionId, tabId) => this.places?.viewerSurface(sessionId, tabId),
+  );
   #browserStream = new MockBrowserStream(this.browserTabs);
-  publishedSnapshot(): HostSnapshot {
+  publishedSnapshot(): PublicHostSnapshot {
     if (!this.#published) this.publishBrowser();
     return this.#published!;
   }
@@ -10011,7 +10014,7 @@ class MockHostState {
       throw new Error("The selected browser profile is unavailable.");
     const id = `bsn_00000000-0000-4000-8000-${String(900 + this.snapshot.browserSessions.length).padStart(12, "0")}`;
     const tab = {
-      ...template.tabCatalog!.tabs[0]!,
+      ...template.catalog!.tabs[0]!,
       id: BrowserSurfaceIdSchema.parse(`${id}-tab-0`),
       documentId: `${id}-document-0`,
       title: "New tab",
@@ -10031,8 +10034,9 @@ class MockHostState {
       threadIds: threadId ? [threadId] : [],
       attachedRunIds: [],
       acting: false,
-      tabCatalog: { generation: 1, revision: 1, tabs: [tab] },
-      tabs: [{ active: true, id: tab.id, title: tab.title, url: "about:blank" }],
+      catalog: { generation: 1, revision: 1, tabs: [tab] },
+      tabs: [],
+      surfaces: [{ active: true, id: tab.id, title: tab.title, url: "about:blank" }],
       page: { title: "New tab", url: "about:blank" },
     };
     this.update({ ...this.snapshot, browserSessions: [...this.snapshot.browserSessions, session] });
@@ -10049,11 +10053,11 @@ class MockHostState {
               state: "closed",
               attachedRunIds: [],
               acting: false,
-              ...(session.tabCatalog
+              ...(session.catalog
                 ? {
-                    tabCatalog: {
-                      ...session.tabCatalog,
-                      revision: session.tabCatalog.revision + 1,
+                    catalog: {
+                      ...session.catalog,
+                      revision: session.catalog.revision + 1,
                       tabs: [],
                     },
                   }
@@ -12418,11 +12422,11 @@ class MockHostState {
     const tabsChanged = snapshot.browserSessions !== this.snapshot.browserSessions;
     if (tabsChanged) {
       const at = this.now().toISOString();
-      const workspaceTabs: WorkspaceTabLineage[] = snapshot.browserSessions.map((session) => {
-        const held = this.snapshot.workspaceTabs?.find((lineage) => lineage.id === session.id);
+      const browserGroups: WorkspaceTabLineage[] = snapshot.browserSessions.map((session) => {
+        const held = this.snapshot.browserGroups?.find((lineage) => lineage.id === session.id);
         return {
           id: BrowserSessionIdSchema.parse(session.id),
-          revision: session.tabCatalog?.revision ?? 0,
+          revision: session.catalog?.revision ?? 0,
           createdAt: held?.createdAt ?? session.createdAt ?? at,
           session: HostedBrowserSessionSchema.parse({
             ...session,
@@ -12433,9 +12437,9 @@ class MockHostState {
             ...(held?.tabs ?? []).filter(
               (tab) =>
                 tab.state === "suspended" &&
-                !session.tabCatalog?.tabs.some((live) => live.id === tab.id),
+                !session.catalog?.tabs.some((live) => live.id === tab.id),
             ),
-            ...(session.tabCatalog?.tabs ?? []).map((tab) => ({
+            ...(session.catalog?.tabs ?? []).map((tab) => ({
               kind: "browser" as const,
               id: tab.id,
               sessionId: BrowserSessionIdSchema.parse(session.id),
@@ -12452,17 +12456,17 @@ class MockHostState {
           ],
         } satisfies WorkspaceTabLineage;
       });
-      workspaceTabs.push(
-        ...(snapshot.workspaceTabs ?? []).filter(
+      browserGroups.push(
+        ...(snapshot.browserGroups ?? []).filter(
           (group) =>
             !snapshot.browserSessions.some((session) => session.id === group.session.id) &&
             group.tabs?.some((tab) => tab.state !== "live"),
         ),
       );
       const known = new Set(
-        workspaceTabs.flatMap((lineage) => (lineage.tabs ?? []).map((tab) => tab.id)),
+        browserGroups.flatMap((lineage) => (lineage.tabs ?? []).map((tab) => tab.id)),
       );
-      const removed = (this.snapshot.workspaceTabs ?? []).flatMap((lineage) =>
+      const removed = (this.snapshot.browserGroups ?? []).flatMap((lineage) =>
         (lineage.tabs ?? []).filter((tab) => !known.has(tab.id)).map((tab) => tab.id),
       );
       if (removed.length)
@@ -12472,13 +12476,14 @@ class MockHostState {
         };
       snapshot = {
         ...snapshot,
-        workspaceTabs,
+        browserGroups,
         workspaceTabRestoreVersion: 1,
         ...(removed.length ? { browserTabGroups: this.tabGroups } : {}),
       };
     }
     this.snapshot = {
       ...snapshot,
+      browserTabs: this.browserTabs,
       revision: snapshot.revision + 1,
       deploymentPolicy:
         snapshot.deploymentShape === this.snapshot.deploymentShape

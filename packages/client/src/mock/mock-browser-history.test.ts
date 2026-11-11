@@ -41,8 +41,7 @@ it("records committed opens once, navigation typed intent, and retained favicons
   ]);
   const iconRef = history.icons[0]!.iconRef;
   expect(iconRef).toMatch(/^[a-f\d]{64}$/u);
-  const latest = client.getSnapshot().browserSessions.find((value) => value.id === session.id)!;
-  await client.closeBrowserTab(session.id, opened.tabId, latest.tabCatalog!);
+  await client.closeBrowserTab(session.id, opened.tabId, client.browserTabs.inventory(session.id)!);
   const icons = unwrapRpcResult(
     await client.rpc["browser.history.icons.get"]({ profileId, iconRefs: [iconRef] }),
   );

@@ -1,4 +1,8 @@
-import type { BrowserGroupRow, BrowserTabRow } from "@opensteer/protocol/browser-tabs";
+import type {
+  BrowserGroupRow,
+  BrowserTabRow,
+  BrowserViewerSurface,
+} from "@opensteer/protocol/browser-tabs";
 import {
   KeyedStreamReceiver,
   equal,
@@ -22,6 +26,7 @@ export type BrowserTabList = {
   readonly whole: boolean;
 };
 type Meta = Record<string, never>;
+const noKeys: readonly BrowserTabKey[] = [];
 const noRows: readonly BrowserTabRow[] = [];
 const empty: BrowserTabList = { ids: [], syncing: true, whole: false };
 class Rows<Row extends { id: string }> {
@@ -129,6 +134,7 @@ export class BrowserTabStore {
   readonly #listeners = new Set<Listener>();
   readonly #structureListeners = new Set<Listener>();
   #structure: readonly BrowserTabKey[] | undefined;
+  #groupKeys = new Map<string, readonly BrowserTabKey[]>();
   #keys = new Map<string, BrowserTabKey>();
   readonly #sessionRows = new Map<string, { revision: number; rows: readonly BrowserTabRow[] }>();
   readonly #tabGroups = new Map<string, Set<string>>();
@@ -167,8 +173,14 @@ export class BrowserTabStore {
     },
   );
   readonly resync: (groupId?: string) => void;
-  constructor(resync: (groupId?: string) => void = () => {}) {
+  readonly surface: (sessionId: string, tabId: string) => BrowserViewerSurface | undefined;
+  constructor(
+    resync: (groupId?: string) => void = () => {},
+    surface: (sessionId: string, tabId: string) => BrowserViewerSurface | undefined = () =>
+      undefined,
+  ) {
     this.resync = resync;
+    this.surface = surface;
   }
   revision = 0;
   #changed(structural = false) {
@@ -246,7 +258,9 @@ export class BrowserTabStore {
     if (this.#structure) return this.#structure;
     const keys = new Map<string, BrowserTabKey>();
     const result: BrowserTabKey[] = [];
+    const groupKeys = new Map<string, readonly BrowserTabKey[]>();
     for (const groupId of this.groups().ids) {
+      const start = result.length;
       const group = this.group(groupId)!;
       const ids = this.tabs(groupId).ids;
       const children = new Map<string, string[]>();
@@ -292,10 +306,24 @@ export class BrowserTabStore {
         }),
       );
       append(ids);
+      const next = result.slice(start);
+      const previous = this.#groupKeys.get(groupId);
+      groupKeys.set(
+        groupId,
+        previous?.length === next.length && next.every((key, i) => key === previous[i])
+          ? previous
+          : next,
+      );
     }
+    this.#groupKeys = groupKeys;
     this.#keys = keys;
     this.#structure = result;
     return result;
+  };
+  sessionStructure = (sessionId: string): readonly BrowserTabKey[] => {
+    this.structure();
+    const groupId = this.groupForSession(sessionId);
+    return (groupId ? this.#groupKeys.get(groupId) : undefined) ?? noKeys;
   };
   groupForTab = (tabId: string) => {
     const groups = this.#tabGroups.get(tabId);

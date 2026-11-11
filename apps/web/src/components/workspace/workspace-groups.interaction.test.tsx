@@ -1,4 +1,5 @@
 import type { WorkspaceTabLineage } from "@opensteer/client/host";
+import { withBrowserTabStore } from "@opensteer/client/test-support";
 // @vitest-environment happy-dom
 import { readFileSync } from "node:fs";
 import { act } from "react";
@@ -76,8 +77,9 @@ describe("personal browser tab groups", () => {
               }) as unknown as WorkspaceTabLineage,
           ),
         };
-        projections.set(snapshot, saved);
-        return saved;
+        const keyed = withBrowserTabStore(saved);
+        projections.set(snapshot, keyed);
+        return keyed;
       });
       return "/";
     });
@@ -386,26 +388,28 @@ describe("personal browser tab groups", () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
       const live = placeList(snapshot).find((place) => place.kind === "browser")!;
-      vi.spyOn(source, "getSnapshot").mockReturnValue({
-        ...snapshot,
-        workspaceTabs: [],
-        browserSessions: snapshot.browserSessions.map((session) => ({
-          ...session,
-          workspaceTabRestoreVersion: undefined,
-        })),
-        browserTabGroups: {
-          revision: 1,
-          groups: [
-            {
-              id: createId("browserTabGroup"),
-              title: "Live only",
-              color: "blue",
-              collapsed: false,
-              tabIds: groupIds(live).map((id) => BrowserSurfaceIdSchema.parse(id)),
-            },
-          ],
-        },
-      });
+      vi.spyOn(source, "getSnapshot").mockReturnValue(
+        withBrowserTabStore({
+          ...snapshot,
+          workspaceTabs: [],
+          browserSessions: snapshot.browserSessions.map((session) => ({
+            ...session,
+            workspaceTabRestoreVersion: undefined,
+          })),
+          browserTabGroups: {
+            revision: 1,
+            groups: [
+              {
+                id: createId("browserTabGroup"),
+                title: "Live only",
+                color: "blue",
+                collapsed: false,
+                tabIds: groupIds(live).map((id) => BrowserSurfaceIdSchema.parse(id)),
+              },
+            ],
+          },
+        }),
+      );
       return "/";
     });
     const live = placeList(client.getSnapshot()).find((place) => place.kind === "browser")!;

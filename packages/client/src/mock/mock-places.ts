@@ -1,3 +1,7 @@
+import type {
+  MockBrowserSource as HostSnapshot,
+  MockBrowserSession as BrowserSessionSummary,
+} from "./mock-browser-source.js";
 import type { BrowserTabCatalog, WorkspaceTabLineage } from "../host/client.js";
 import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
@@ -36,15 +40,10 @@ import {
 } from "@opensteer/protocol";
 import { browserTabArrangement, browserTabOrderTabs } from "../host/browser-tab-order.js";
 import type { BrowserWatchState } from "../host/browser-watch.js";
-import type {
-  BrowserCommand,
-  BrowserFrameView,
-  BrowserSessionSummary,
-  HostSnapshot,
-} from "../host/client.js";
+import type { BrowserCommand, BrowserFrameView } from "../host/client.js";
 import { HostClientRequestError } from "../host/client.js";
 import { PlaceActivityStore } from "../host/place-activity.js";
-import { placeList } from "../host/places.js";
+import { mockPlaceList as placeList } from "./mock-browser-source.js";
 import { mockBrowserPageImage } from "./mock-browser-frames.js";
 import { MockBrowserInput } from "./mock-browser-input.js";
 import { MockSignInPage } from "./mock-sign-in-page.js";
@@ -216,8 +215,9 @@ export function seedMockPlaces(
             : null,
       runtimeId: "mock-targeted-runtime",
       state: "ready",
-      tabCatalog: catalog,
-      tabs: catalog.tabs.map((tab, index) => ({
+      catalog: catalog,
+      tabs: [],
+      surfaces: catalog.tabs.map((tab, index) => ({
         active: index === 0,
         id: tab.id,
         title: tab.title,
@@ -711,14 +711,14 @@ export class MockPlaceWorld {
     let changed = false;
     const browserSessions = snapshot.browserSessions.map((session) => {
       if (
-        !session.tabCatalog ||
-        !session.tabCatalog.tabs.some((tab) =>
+        !session.catalog ||
+        !session.catalog.tabs.some((tab) =>
           tab.occupants.some((occupant) => !liveThreads.has(occupant.threadId)),
         )
       )
         return session;
       changed = true;
-      const tabs = session.tabCatalog.tabs.map((tab) => ({
+      const tabs = session.catalog.tabs.map((tab) => ({
         ...tab,
         occupants: tab.occupants.filter((occupant) => liveThreads.has(occupant.threadId)),
       }));
@@ -726,7 +726,7 @@ export class MockPlaceWorld {
       return {
         ...session,
         attachedRunIds: session.attachedRunIds.filter((id) => activeRunIds.has(id)),
-        tabCatalog: { ...session.tabCatalog, revision: session.tabCatalog.revision + 1, tabs },
+        catalog: { ...session.catalog, revision: session.catalog.revision + 1, tabs },
       };
     });
     const machines = snapshot.machines.map((machine) => {
@@ -822,9 +822,9 @@ export class MockPlaceWorld {
     const { sessionId, tabId } = place.destination;
     const at = this.#now().toISOString();
     const browserSessions = snapshot.browserSessions.map((session) => {
-      if (!session.tabCatalog) return session;
+      if (!session.catalog) return session;
       let changed = false;
-      const tabs = session.tabCatalog.tabs.map((tab) => {
+      const tabs = session.catalog.tabs.map((tab) => {
         const target = session.id === sessionId && tab.id === tabId;
         const present = tab.occupants.some((occupant) => occupant.threadId === threadId);
         if (!target && !present) return tab;
@@ -854,13 +854,13 @@ export class MockPlaceWorld {
         ...(session.id === sessionId
           ? { threadIds: [...new Set([...(session.threadIds ?? []), threadId])] }
           : {}),
-        tabCatalog: { ...session.tabCatalog, revision: session.tabCatalog.revision + 1, tabs },
+        catalog: { ...session.catalog, revision: session.catalog.revision + 1, tabs },
       };
     });
     this.#update({ ...snapshot, browserSessions });
     const tab = snapshot.browserSessions
       .find((session) => session.id === sessionId)
-      ?.tabs.find((candidate) => candidate.id === tabId);
+      ?.surfaces.find((candidate) => candidate.id === tabId);
     this.#entered(run.id, threadId, {
       place: {
         kind: "browser",
@@ -897,7 +897,7 @@ export class MockPlaceWorld {
   viewerSurface(sessionId: string, surfaceId: string): BrowserViewerSurface | undefined {
     if (!this.#watches.has(this.#key(sessionId, surfaceId))) return undefined;
     const session = this.#snapshot().browserSessions.find((s) => s.id === sessionId);
-    const tab = session?.tabs.find((t) => t.id === surfaceId);
+    const tab = session?.surfaces.find((t) => t.id === surfaceId);
     if (!tab || session?.state !== "ready") return undefined;
     return {
       id: tab.id,
@@ -933,7 +933,7 @@ export class MockPlaceWorld {
     return (
       this.#snapshot()
         .browserSessions.find((session) => session.id === sessionId)
-        ?.tabs.find((tab) => tab.active)?.id ?? null
+        ?.surfaces.find((tab) => tab.active)?.id ?? null
     );
   }
   command(sessionId: string, command: BrowserCommand): void {
@@ -944,11 +944,11 @@ export class MockPlaceWorld {
       this.#signInPage.command(
         sessionId,
         command,
-        session?.tabs.find((tab) => tab.id === surfaceId)?.title,
+        session?.surfaces.find((tab) => tab.id === surfaceId)?.title,
       )
     )
       return;
-    if (!session?.tabCatalog || session.state !== "ready") {
+    if (!session?.catalog || session.state !== "ready") {
       // As the Host client: a view's cleanup after its browser has gone needs no error.
       if (
         command.type === "stream.unsubscribe" ||
@@ -969,13 +969,13 @@ export class MockPlaceWorld {
       void this.close(
         sessionId,
         command.surfaceId,
-        session.tabCatalog.inventoryRevision ?? session.tabCatalog.revision,
+        session.catalog.inventoryRevision ?? session.catalog.revision,
         false,
       );
       return;
     }
-    let tabs = session.tabCatalog.tabs;
-    let surfaces = session.tabs;
+    let tabs = session.catalog.tabs;
+    let surfaces = session.surfaces;
     if (command.type === "surface.open") {
       void this.open(
         sessionId,
@@ -1035,10 +1035,10 @@ export class MockPlaceWorld {
               // has loaded far enough for the browser to fetch one.
               ...(loading
                 ? {
-                    documentId: `${tab.id}-document-${session.tabCatalog!.revision + 1}`,
+                    documentId: `${tab.id}-document-${session.catalog!.revision + 1}`,
                     iconRef: null,
                   }
-                : { iconRef: tab.iconRef ?? `${tab.id}-icon-${session.tabCatalog!.revision + 1}` }),
+                : { iconRef: tab.iconRef ?? `${tab.id}-icon-${session.catalog!.revision + 1}` }),
               loading,
             }
           : tab;
@@ -1050,10 +1050,10 @@ export class MockPlaceWorld {
         value.id === sessionId
           ? {
               ...value,
-              tabs: surfaces,
-              tabCatalog: {
-                ...session.tabCatalog!,
-                revision: session.tabCatalog!.revision + 1,
+              surfaces,
+              catalog: {
+                ...session.catalog!,
+                revision: session.catalog!.revision + 1,
                 tabs,
               },
             }
@@ -1095,7 +1095,7 @@ export class MockPlaceWorld {
   }
   async candidate(sessionId: string, tabId: string) {
     const session = this.#snapshot().browserSessions.find((session) => session.id === sessionId);
-    const tab = session?.tabCatalog?.tabs.find((tab) => tab.id === tabId);
+    const tab = session?.catalog?.tabs.find((tab) => tab.id === tabId);
     if (!tab || !tab.documentId || session?.state !== "ready")
       throw new HostClientRequestError({
         code: "not_found",
@@ -1107,7 +1107,7 @@ export class MockPlaceWorld {
       tabId,
       documentId: tab.documentId,
       title: tab.title,
-      url: session.tabs.find((surface) => surface.id === tabId)?.url ?? tab.site,
+      url: session.surfaces.find((surface) => surface.id === tabId)?.url ?? tab.site,
       ...previousReleaseEligibility(this.#now()),
     });
   }
@@ -1243,7 +1243,8 @@ export class MockPlaceWorld {
       dialog: null,
       error: null,
       tabs: [],
-      tabCatalog: { generation: 1, revision: 0, tabs: [] },
+      surfaces: [],
+      catalog: { generation: 1, revision: 0, tabs: [] },
       viewerError: null,
       viewerState: "disconnected",
     };
@@ -1290,7 +1291,7 @@ export class MockPlaceWorld {
         reason: "browser-session-closed",
         message: "The browser session has ended. Open a new browser.",
       });
-    if (!session.tabCatalog || session.state !== "ready")
+    if (!session.catalog || session.state !== "ready")
       throw new HostClientRequestError({
         code: "conflict",
         status: 409,
@@ -1305,14 +1306,14 @@ export class MockPlaceWorld {
           message: "Only HTTP and HTTPS URLs without credentials are allowed.",
         });
     }
-    const id = BrowserSurfaceIdSchema.parse(`${sessionId}-tab-${session.tabCatalog.revision + 1}`);
+    const id = BrowserSurfaceIdSchema.parse(`${sessionId}-tab-${session.catalog.revision + 1}`);
     const url = command.url ? new URL(command.url).href : "about:blank";
     const tab = {
       id,
       title: command.url ?? "New tab",
       site: command.url ? new URL(command.url).origin : "about:blank",
       loading: command.url !== undefined,
-      order: Math.max(-1, ...session.tabCatalog.tabs.map((tab) => tab.order)) + 1,
+      order: Math.max(-1, ...session.catalog.tabs.map((tab) => tab.order)) + 1,
       openerId: null,
       occupants: [],
       iconRef: null,
@@ -1320,10 +1321,10 @@ export class MockPlaceWorld {
       availability: "ready" as const,
     };
     const catalog = {
-      ...session.tabCatalog,
-      revision: session.tabCatalog.revision + 1,
-      inventoryRevision: (session.tabCatalog.inventoryRevision ?? 0) + 1,
-      tabs: [...session.tabCatalog.tabs, tab],
+      ...session.catalog,
+      revision: session.catalog.revision + 1,
+      inventoryRevision: (session.catalog.inventoryRevision ?? 0) + 1,
+      tabs: [...session.catalog.tabs, tab],
     };
     const updated = {
       ...snapshot,
@@ -1331,9 +1332,9 @@ export class MockPlaceWorld {
         value.id === sessionId
           ? {
               ...value,
-              tabCatalog: catalog,
-              tabs: [
-                ...value.tabs.map((surface) =>
+              catalog: catalog,
+              surfaces: [
+                ...value.surfaces.map((surface) =>
                   activate ? { ...surface, active: false } : surface,
                 ),
                 { id, active: activate, title: tab.title, url, loading: tab.loading },
@@ -1377,7 +1378,7 @@ export class MockPlaceWorld {
     );
     if (!source) throw new Error("No recently closed tab to reopen.");
     const lineage =
-      snapshot.workspaceTabs?.find((group) => group.id === source.lineage.id) ?? source.lineage;
+      snapshot.browserGroups?.find((group) => group.id === source.lineage.id) ?? source.lineage;
     if ((lineage.tabs?.length ?? 0) >= 64) throw new Error("Browser tab limit reached.");
     const id = BrowserSurfaceIdSchema.parse(`surface_${crypto.randomUUID()}`);
     const tab = {
@@ -1393,7 +1394,7 @@ export class MockPlaceWorld {
     };
     const arrangement = browserTabArrangement(
       snapshot.browserTabGroups ?? { revision: 0, groups: [] },
-      browserTabOrderTabs(snapshot.workspaceTabs),
+      browserTabOrderTabs(snapshot.browserTabs),
     );
     const order = [...arrangement.order];
     const target = snapshot.browserTabGroups?.groups.find((group) => group.id === source.groupId);
@@ -1424,8 +1425,8 @@ export class MockPlaceWorld {
     this.#closedTabs.splice(this.#closedTabs.indexOf(source), 1);
     this.#update({
       ...snapshot,
-      workspaceTabs: [
-        ...(snapshot.workspaceTabs ?? []).filter((held) => held.id !== group.id),
+      browserGroups: [
+        ...(snapshot.browserGroups ?? []).filter((held) => held.id !== group.id),
         group,
       ],
       browserTabGroups: layout,
@@ -1442,19 +1443,19 @@ export class MockPlaceWorld {
   }
   activateWorkspaceTab(tabId: string) {
     const snapshot = this.#snapshot();
-    const lineage = snapshot.workspaceTabs?.find((group) =>
+    const lineage = snapshot.browserGroups?.find((group) =>
       group.tabs?.some((tab) => tab.id === tabId),
     );
     const tab = lineage?.tabs?.find((tab) => tab.id === tabId);
     const session = snapshot.browserSessions.find((session) => session.id === lineage?.session.id);
-    if (!lineage || !tab || !session?.tabCatalog) throw new Error("Browser tab not found.");
+    if (!lineage || !tab || !session?.catalog) throw new Error("Browser tab not found.");
     const url = this.#restoreUrls.get(tabId) ?? tab.site;
     const catalog = {
-      ...session.tabCatalog,
-      revision: session.tabCatalog.revision + 1,
+      ...session.catalog,
+      revision: session.catalog.revision + 1,
       tabs: [
-        ...session.tabCatalog.tabs.filter((held) => held.id !== tabId),
-        session.tabCatalog.tabs.find((held) => held.id === tabId) ?? {
+        ...session.catalog.tabs.filter((held) => held.id !== tabId),
+        session.catalog.tabs.find((held) => held.id === tabId) ?? {
           id: tab.id,
           title: tab.title,
           site: tab.site,
@@ -1470,11 +1471,11 @@ export class MockPlaceWorld {
     const updated = {
       ...session,
       state: "ready" as const,
-      tabCatalog: catalog,
-      tabs: [
-        ...session.tabs.filter((held) => held.id !== tabId),
+      catalog: catalog,
+      surfaces: [
+        ...session.surfaces.filter((held) => held.id !== tabId),
         {
-          ...(session.tabs.find((held) => held.id === tabId) ?? {
+          ...(session.surfaces.find((held) => held.id === tabId) ?? {
             id: tab.id,
             title: tab.title,
             url,
@@ -1501,7 +1502,7 @@ export class MockPlaceWorld {
   async close(sessionId: string, surfaceId: string, inventoryRevision: number, person = true) {
     const snapshot = this.#snapshot();
     const session = snapshot.browserSessions.find((session) => session.id === sessionId);
-    const catalog = session?.tabCatalog;
+    const catalog = session?.catalog;
     if (!catalog || inventoryRevision !== (catalog.inventoryRevision ?? catalog.revision))
       throw new HostClientRequestError({
         code: "conflict",
@@ -1515,12 +1516,12 @@ export class MockPlaceWorld {
         status: 404,
         message: "The tab is no longer open.",
       });
-    const lineage = snapshot.workspaceTabs?.find((group) => group.session.id === sessionId);
+    const lineage = snapshot.browserGroups?.find((group) => group.session.id === sessionId);
     const tab = lineage?.tabs?.find((tab) => tab.id === surfaceId);
     if (person && lineage && tab) {
       const arrangement = browserTabArrangement(
         snapshot.browserTabGroups ?? { revision: 0, groups: [] },
-        browserTabOrderTabs(snapshot.workspaceTabs),
+        browserTabOrderTabs(snapshot.browserTabs),
       );
       const at = arrangement.order.indexOf(surfaceId);
       this.#closedTabs.push({
@@ -1528,7 +1529,7 @@ export class MockPlaceWorld {
         at: this.#now().getTime(),
         lineage,
         tab,
-        url: session?.tabs.find((tab) => tab.id === surfaceId)?.url ?? tab.site,
+        url: session?.surfaces.find((tab) => tab.id === surfaceId)?.url ?? tab.site,
         preceding: at > 0 ? arrangement.order[at - 1]! : null,
         groupId: arrangement.groupOf.get(surfaceId) ?? null,
       });
@@ -1549,8 +1550,8 @@ export class MockPlaceWorld {
         value.id === sessionId
           ? {
               ...value,
-              tabCatalog: next,
-              tabs: value.tabs.filter((tab) => tab.id !== surfaceId),
+              catalog: next,
+              surfaces: value.surfaces.filter((tab) => tab.id !== surfaceId),
               state: ended ? ("closed" as const) : value.state,
               attachedRunIds: ended ? [] : value.attachedRunIds,
             }
@@ -1626,7 +1627,7 @@ export class MockPlaceWorld {
   }
   #recordVisit(session: BrowserSessionSummary, surfaceId: string, typed: boolean): void {
     const profileId = session.profileId;
-    const tab = session.tabs.find((tab) => tab.id === surfaceId);
+    const tab = session.surfaces.find((tab) => tab.id === surfaceId);
     if (!profileId || !tab || !BrowserHistoryUrlSchema.safeParse(tab.url).success) return;
     try {
       const value = this.history(profileId);
@@ -1657,7 +1658,7 @@ export class MockPlaceWorld {
     for (const session of snapshot.browserSessions) {
       if (!session.profileId || !this.#history.has(session.profileId)) continue;
       const value = this.#history.get(session.profileId)!;
-      for (const tab of session.tabCatalog?.tabs ?? []) {
+      for (const tab of session.catalog?.tabs ?? []) {
         if (!tab.iconRef || !value.entries.some((entry) => new URL(entry.url).origin === tab.site))
           continue;
         if (value.icons.some((icon) => icon.origin === tab.site && icon.iconRef === historyIconRef))
@@ -1674,7 +1675,7 @@ export class MockPlaceWorld {
     BrowserTabIconInputSchema.parse({ sessionId, iconRef });
     const tab = this.#snapshot()
       .browserSessions.find((session) => session.id === sessionId)
-      ?.tabCatalog?.tabs.find((tab) => tab.iconRef === iconRef);
+      ?.catalog?.tabs.find((tab) => tab.iconRef === iconRef);
     return BrowserTabIconResultSchema.parse({ favicon: tab ? iconData : null }).favicon;
   }
   #notify(key: string): void {
@@ -1688,8 +1689,8 @@ export class MockPlaceWorld {
       const [sessionId, surfaceId] = JSON.parse(key) as [string, string];
       const session = snapshot.browserSessions.find((session) => session.id === sessionId);
       const tab =
-        session?.state === "ready" && session.tabCatalog?.tabs.some((tab) => tab.id === surfaceId)
-          ? session.tabs.find((tab) => tab.id === surfaceId)
+        session?.state === "ready" && session.catalog?.tabs.some((tab) => tab.id === surfaceId)
+          ? session.surfaces.find((tab) => tab.id === surfaceId)
           : undefined;
       if (!tab || snapshot.connection !== "connected" || snapshot.session !== "authenticated") {
         const frame = snapshot.session === "authenticated" ? watch.state.frame : null;
@@ -1743,9 +1744,9 @@ export class MockPlaceWorld {
     if (tick !== this.#catalogTick) {
       this.#catalogTick = tick;
       const browserSessions = snapshot.browserSessions.map((session) => {
-        if (session.id !== sessionId(0) || session.state !== "ready" || !session.tabCatalog)
+        if (session.id !== sessionId(0) || session.state !== "ready" || !session.catalog)
           return session;
-        const tabs = session.tabCatalog.tabs.filter((tab) => tab.id !== "mock-changing-tab");
+        const tabs = session.catalog.tabs.filter((tab) => tab.id !== "mock-changing-tab");
         if (tick % 2 === 1)
           tabs.push({
             ...tabs[0]!,
@@ -1757,15 +1758,15 @@ export class MockPlaceWorld {
           });
         return {
           ...session,
-          tabCatalog: {
-            ...session.tabCatalog,
-            revision: session.tabCatalog.revision + 1,
-            inventoryRevision: (session.tabCatalog.inventoryRevision ?? 0) + 1,
+          catalog: {
+            ...session.catalog,
+            revision: session.catalog.revision + 1,
+            inventoryRevision: (session.catalog.inventoryRevision ?? 0) + 1,
             tabs,
           },
-          tabs: tabs.map(
+          surfaces: tabs.map(
             (tab, index) =>
-              session.tabs.find((surface) => surface.id === tab.id) ?? {
+              session.surfaces.find((surface) => surface.id === tab.id) ?? {
                 active: index === 0,
                 id: tab.id,
                 title: tab.title,
@@ -1787,7 +1788,7 @@ export class MockPlaceWorld {
     const uses = [...current.browserUses];
     for (const session of current.browserSessions) {
       if (session.state !== "ready") continue;
-      for (const tab of session.tabCatalog?.tabs ?? [])
+      for (const tab of session.catalog?.tabs ?? [])
         for (const occupant of tab.occupants) {
           const runId = occupant.acting ? liveRuns.get(occupant.threadId) : undefined;
           if (
