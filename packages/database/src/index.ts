@@ -99,3 +99,12 @@ export type {
   ProjectRequestProposalPort,
   ProjectProposalAcceptance,
 } from "./project-event-store.js";
+
+export {
+  finalizeProjectRunTransaction,
+  finishTerminalProjectRunTransaction,
+  reserveProjectWorkStop,
+  ProjectWorkStopStore,
+  type ProjectRequestStopPort,
+  type ProjectRunFinalization,
+} from "./run-finalization.js";
