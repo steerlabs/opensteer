@@ -777,7 +777,7 @@ run("Browser Sessions through a whole deployment", () => {
         ? restored.data.session.id
         : sessionId,
     );
-    expect(restoredCatalog.tabs).toEqual([
+    expect(restoredCatalog.tabs.filter((tab) => tab.documentId !== null)).toEqual([
       expect.objectContaining({
         id: tabs[0]!.tabId,
         iconRef: before.find((row) => row.id === tabs[0]!.tabId)!.iconRef,

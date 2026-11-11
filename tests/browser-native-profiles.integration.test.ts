@@ -376,10 +376,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     cold: 1,
   });
   const tabs = await browserInventory(stack, cold.sessionId);
-  expect(tabs).toMatchObject({
-    ok: true,
-    data: { tabs: [expect.objectContaining({ id: cold.tabId })] },
-  });
+  expect(tabs.tabs).toEqual([expect.objectContaining({ id: cold.tabId })]);
   expect(browser.timings.some((timing) => timing.acquisition === "cold")).toBe(true);
   coldTimings = browser.timings.slice(coldStart);
   coldNativeTimings = browser.nativeTimings.slice(coldNativeStart);

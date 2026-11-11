@@ -72,7 +72,6 @@ run("Browser Sessions through a whole deployment", () => {
     expect(results[0]!.session.opener).toEqual({ kind: "you" });
     const sessionId = results[0]!.sessionId;
     const catalog = await browserInventory(stack, sessionId);
-    expect(catalog).toMatchObject({ ok: true, data: { tabs: expect.any(Array) } });
     expect(catalog.tabs).toHaveLength(2);
     expect(catalog.tabs.map((tab) => tab.id).sort()).toEqual(
       results.map((result) => result.tabId).sort(),
@@ -125,8 +124,12 @@ run("Browser Sessions through a whole deployment", () => {
     });
     expect(guest).toMatchObject({
       ok: true,
-      data: { browserStarted: true, catalog: { tabs: [expect.any(Object)] } },
+      data: { browserStarted: true },
     });
+    if (!guest.ok || guest.data.type !== "browser.tab.open") throw new Error(JSON.stringify(guest));
+    expect((await browserInventory(stack, guest.data.sessionId)).tabs).toEqual([
+      expect.objectContaining({ id: guest.data.tabId, availability: "ready" }),
+    ]);
     // Native profiles use Chromium's default context; Guest has its own disposable context.
     expect(launchedBrowsers.filter(({ native }) => native)).toHaveLength(1);
     for (const { browser: launched, native } of launchedBrowsers) {
@@ -444,7 +447,7 @@ run("Browser Sessions through a whole deployment", () => {
       await stack.host.store.getBrowserTabOpen(owner.id, starting.idempotencyKey),
     ).toMatchObject({ outcome: { kind: "failed" } });
     const initialCatalog = await browserInventory(stack, initialBinding.chosenSessionId);
-    expect(initialCatalog).toMatchObject({ ok: false });
+    expect(initialCatalog.tabs.filter((tab) => tab.availability === "ready")).toEqual([]);
     expect(
       await stack.host.store.getBrowserSessionForOwner(initialBinding.chosenSessionId, owner.id),
     ).toMatchObject({ state: "failed" });

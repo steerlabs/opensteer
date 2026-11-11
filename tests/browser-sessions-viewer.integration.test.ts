@@ -387,7 +387,7 @@ run("Browser Sessions through a whole deployment", () => {
     );
     addCleanup("brittle viewer", async () => brittle.close());
     await brittle.handle(
-      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: targets[0]! })),
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: targets[8]! })),
       false,
     );
     failOutcome = true;
@@ -403,8 +403,6 @@ run("Browser Sessions through a whole deployment", () => {
         client.browserWatchState(sessionId, targets[8]!).error !== null,
       25_000,
     );
-    expect(writerFailures).toBe(1);
-    expect(failedReaderClosed).toBe(true);
     const saturated = targets.map((id) => ({
       id,
       ...client.browserWatchState(sessionId, id),
@@ -422,6 +420,8 @@ run("Browser Sessions through a whole deployment", () => {
     expect(
       targets.slice(1).every((id) => client.browserWatchState(sessionId, id).status === "live"),
     ).toBe(true);
+    expect(writerFailures).toBe(1);
+    expect(failedReaderClosed).toBe(true);
     const recovered = targets.slice(1).map((id) => ({
       id,
       status: client.browserWatchState(sessionId, id).status,

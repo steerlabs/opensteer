@@ -33,6 +33,7 @@ import {
   IntegrationPlatformStore,
   IntegrationStore,
   OpensteerStore,
+  WorkspaceTabStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
@@ -2025,6 +2026,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const keys = generateKeyPairSync("ed25519");
     const browser = new BrowserService({
       repository: world.store,
+      workspaceTabs: new WorkspaceTabStore(world.database),
       signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
       hostOrigin: new URL("https://test-host.invalid"),
       onSessionsChanged: () => undefined,

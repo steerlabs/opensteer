@@ -6602,15 +6602,7 @@ class HostedBrowserBroker {
         if (!admitted.has(target)) this.#frameIds.delete(target);
       for (const consumer of this.#consumers.values())
         if (consumer.subscription === "frames" && consumer.surfaceId)
-          void consumer
-            .sendText(
-              JSON.stringify({
-                type: "browser.stream.state",
-                surfaceId: consumer.surfaceId,
-                state: admitted.has(consumer.surfaceId) ? "admitted" : "capacity",
-              }),
-            )
-            .catch(() => undefined);
+          consumer.sendStreamState(admitted.has(consumer.surfaceId) ? "admitted" : "capacity");
     });
     this.#streamReconcileTail = operation.catch(() => undefined);
     return operation;
@@ -6838,6 +6830,7 @@ const browserFrameRateEstimateMs = 10_000;
  */
 export class BrowserConsumerOutlet {
   #surfaceLast: string | null = null;
+  #streamState: "admitted" | "capacity" | null = null;
   #surfacePending: string | null = null;
   #surfaceSending = false;
   frameWindow = false;
@@ -6948,6 +6941,20 @@ export class BrowserConsumerOutlet {
       this.#end(1011, "Browser consumer write failed");
       throw error;
     }
+  }
+
+  sendStreamState(state: "admitted" | "capacity"): void {
+    if (
+      this.#closed ||
+      this.subscription !== "frames" ||
+      !this.surfaceId ||
+      this.#streamState === state
+    )
+      return;
+    this.#streamState = state;
+    void this.sendText(
+      JSON.stringify({ type: "browser.stream.state", surfaceId: this.surfaceId, state }),
+    ).catch(() => undefined);
   }
 
   sendSurface(surfaceId: string, surface: BrowserViewerSurface | null): void {
@@ -7133,6 +7140,7 @@ export class BrowserConsumerOutlet {
   /** Subscribing again starts over: no credit owed, no picture waiting. */
   resetSubscription(): void {
     this.#surfaceLast = null;
+    this.#streamState = null;
     this.#surfacePending = null;
     for (const receipt of this.#outstanding.values()) clearTimeout(receipt.timer);
     this.#outstanding.clear();

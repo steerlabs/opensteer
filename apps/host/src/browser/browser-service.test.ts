@@ -2636,7 +2636,6 @@ describe("BrowserService", () => {
         JSON.stringify({
           type: "stream.subscribe",
           surfaceId: "page-1",
-          frames: false,
         }),
       ),
       false,
