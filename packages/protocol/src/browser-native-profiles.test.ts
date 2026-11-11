@@ -26,6 +26,7 @@ const claims = {
   wireVersion: 2,
   access: "read-write",
   audience: "opensteer-browser-runtime",
+  creationOrigin: "person",
   expiresAt: "2026-10-31T12:01:00.000Z",
   identity: { kind: "fresh" },
   issuedAt: "2026-10-31T12:00:00.000Z",
@@ -76,6 +77,8 @@ it("requires the current signed wire contract and safe initial navigation", () =
     initialNavigation,
   });
   for (const value of [
+    { ...claims, creationOrigin: undefined },
+    { ...claims, creationOrigin: "workspace" },
     { ...claims, wireVersion: undefined },
     { ...claims, wireVersion: 1 },
     { ...claims, initialNavigation: { ...initialNavigation, url: "file:///private" } },

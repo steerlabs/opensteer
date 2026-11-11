@@ -103,6 +103,7 @@ async function setup(
     BrowserAttachTicketClaimsSchema.parse({
       access: "read-write",
       audience: "opensteer-browser-runtime",
+      creationOrigin: "person",
       wireVersion: 2,
       issuedAt: new Date(clock.now()).toISOString(),
       expiresAt: new Date(clock.now() + 30_000).toISOString(),

@@ -56,11 +56,12 @@ public enum PhoneBrowserTickets {
   }
 
   private static func validateClaims(_ claims: [String: Any]) throws {
-    let required = ["access", "audience", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject"]
+    let required = ["creationOrigin", "access", "audience", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject"]
     let optional = ["passkeys", "navigationVersion", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "workspaceTabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "dormantSurfaceIds", "viewport"]
     guard Set(required).isSubset(of: Set(claims.keys)), Set(claims.keys).isSubset(of: Set(required + optional)),
       ["read", "read-write"].contains(claims["access"] as? String ?? ""),
       claims["audience"] as? String == "opensteer-browser-runtime" else { throw PhoneBrowserFailure.forbidden }
+    guard ["agent", "person"].contains(try WireField.string(claims, "creationOrigin")) else { throw PhoneBrowserFailure.forbidden }
     _ = try WireField.int(claims, "wireVersion", range: 2...2)
     _ = try WireField.int(claims, "remainingBudgetMs", range: 1...20_000)
     _ = try WireField.date(claims, "operationExpiresAt")

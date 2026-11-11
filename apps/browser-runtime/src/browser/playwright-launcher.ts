@@ -34,6 +34,7 @@ import {
   type Dialog,
   type Frame,
   type Page,
+  type Request,
   type BrowserContext as PlaywrightBrowserContext,
   type BrowserServer as PlaywrightBrowserServer,
   type CDPSession as PlaywrightCdpSession,
@@ -864,6 +865,7 @@ class PlaywrightContextHandle implements BrowserContext {
 class PlaywrightPageHandle implements BrowserPage {
   private requestMethod = "GET";
   private documentMethod = "GET";
+  private readonly uploads = new Set<Request>();
   private captureSession: Promise<PlaywrightCdpSession> | undefined;
   private captureWorld: number | undefined;
   private cdpPromise: Promise<CdpSession> | null = null;
@@ -892,15 +894,20 @@ class PlaywrightPageHandle implements BrowserPage {
     this.context = context;
     this.page = page;
     page.on("request", (request) => {
+      if (!["GET", "HEAD"].includes(request.method())) this.uploads.add(request);
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
         this.requestMethod = request.method();
     });
+    page.on("requestfinished", (request) => this.uploads.delete(request));
+    page.on("requestfailed", (request) => this.uploads.delete(request));
+    page.once("close", () => this.uploads.clear());
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) this.documentMethod = this.requestMethod;
     });
   }
 
-  async keepAwake(): Promise<"post" | "media" | null> {
+  async keepAwake(): Promise<"upload" | "post" | "media" | null> {
+    if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     const cdp = await this.cdp();
     const { frameTree } = z
@@ -920,7 +927,7 @@ class PlaywrightPageHandle implements BrowserPage {
           "[...document.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)",
       }),
     );
-    return result.result.value ? "media" : null;
+    return this.uploads.size ? "upload" : result.result.value ? "media" : null;
   }
 
   async hasOpenerAccess(): Promise<boolean> {

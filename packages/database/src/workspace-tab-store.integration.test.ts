@@ -359,6 +359,12 @@ integration.sequential("durable workspace tabs", () => {
     const { fixture, tabs, database } = storeFixture;
     const f = await fixture();
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
+    const extra = Array.from({ length: 100 }, () => ({
+      ...f.first,
+      id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
+    }));
+    await tabs.recordChanges(f.groupId, extra, []);
+    await tabs.recordChanges(f.groupId, [], [extra[0]!.id]);
     const statements: Array<{ sql: string; rows: number; writes: bigint }> = [];
     const queries = new Map<object, string>();
     const measured = new WorkspaceTabStore(
@@ -387,6 +393,15 @@ integration.sequential("durable workspace tabs", () => {
     expect(written.rows).toHaveLength(1);
     expect(
       statements
+        .filter(
+          (statement) =>
+            statement.sql.includes('from "workspace_tabs"') &&
+            statement.sql.includes("for no key update"),
+        )
+        .map((statement) => statement.rows),
+    ).toEqual([1]);
+    expect(
+      statements
         .filter((statement) => statement.sql.startsWith('select * from "workspace_tabs"'))
         .map((statement) => statement.rows),
     ).toEqual([1]);
@@ -396,10 +411,11 @@ integration.sequential("durable workspace tabs", () => {
         .map((statement) => statement.writes),
     ).toEqual([1n]);
     const group = await tabs.read(f.ownerId, f.groupId);
-    expect(group?.tabs?.map((tab) => [tab.id, tab.title])).toEqual([
+    expect(group?.tabs?.slice(0, 2).map((tab) => [tab.id, tab.title])).toEqual([
       [f.first.id, "Changed"],
       [f.second.id, f.second.title],
     ]);
+    expect(group?.tabs).toHaveLength(101);
   });
   it("fences old producers and rejects resurrection after a close during activation", async ({
     storeFixture,

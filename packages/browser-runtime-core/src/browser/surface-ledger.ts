@@ -76,6 +76,7 @@ interface SurfaceLedgerOptions {
   initialViewport?: Viewport;
   rootPages?: readonly BrowserPage[];
   initialSurfaceId?: BrowserSurfaceId;
+  creationOrigin?: "agent" | "person";
 }
 
 export interface PageSize {
@@ -306,6 +307,7 @@ export class SurfaceLedger {
   private tearingDown = false;
   private creatingPage: Promise<void> | null = null;
   private readonly creationLock = new AsyncMutex();
+  private readonly creationOrigin: "agent" | "person";
   private readonly initialSurfaceId: BrowserSurfaceId | undefined;
   private readonly context: BrowserContext;
   /** The size the person's view last followed on any page here; new pages start at it. */
@@ -337,6 +339,7 @@ export class SurfaceLedger {
     this.context = context;
     this.navigationVersion = options.navigationVersion;
     this.initialSurfaceId = options.initialSurfaceId;
+    this.creationOrigin = options.creationOrigin ?? "person";
     this.claimTarget = options.claimTarget;
     this.releaseTarget = options.releaseTarget;
     this.beforeResize = options.beforeResize;
@@ -410,6 +413,10 @@ export class SurfaceLedger {
     if (person) record.personUsed = true;
     this.policyChanged();
   }
+  markPersonUsed(id: BrowserSurfaceId): void {
+    const record = this.records.get(id);
+    if (record && !record.personUsed) this.touch(id, true);
+  }
   recordAgentInput(id: BrowserSurfaceId, typed = false): void {
     const record = this.records.get(id);
     if (!record) return;
@@ -478,19 +485,14 @@ export class SurfaceLedger {
     });
   }
   private async readEngineProtection(record: TabRecord): Promise<boolean> {
-    if (
-      !record.live ||
-      (await record.live.page.keepAwake?.()) ||
-      (await record.live.page.hasOpenerAccess?.())
-    )
-      return true;
+    if (!record.live || (await record.live.page.hasOpenerAccess?.())) return true;
     for (const other of this.records.values()) {
       if (!other.live || !other.openerId || !this.records.get(other.openerId)?.live) continue;
       if (other.id !== record.id && other.openerId !== record.id) continue;
       if (other.live.page.hasOpenerAccess ? await other.live.page.hasOpenerAccess() : true)
         return true;
     }
-    return false;
+    return Boolean(await record.live.page.keepAwake?.());
   }
   async wake(id: BrowserSurfaceId): Promise<SurfaceBinding> {
     const record = this.records.get(id);
@@ -1007,7 +1009,6 @@ export class SurfaceLedger {
     if (this.recordForTarget(targetId)) {
       const record = this.recordForTarget(targetId)!;
       record.origin = "agent";
-      record.personUsed = false;
       await this.settleTarget(targetId);
       return this.recordForTarget(targetId) !== undefined;
     }
@@ -1132,6 +1133,8 @@ export class SurfaceLedger {
       await page.close().catch(() => undefined);
       throw new BrowserRuntimeError("conflict", "The browser could not open a new tab.");
     }
+    record.origin = "person";
+    this.touch(record.id, true);
     return this.toSurface(record);
   }
 
@@ -1364,10 +1367,9 @@ export class SurfaceLedger {
             lease: new TabLease(() => this.policyChanged()),
             lastTargetId: targetId,
             origin:
-              openerRecord?.origin ?? (this.adoptedTargetIds.has(targetId) ? "agent" : "person"),
-            personUsed: openerRecord
-              ? openerRecord.origin === "person"
-              : !this.adoptedTargetIds.has(targetId),
+              openerRecord?.origin ??
+              (this.adoptedTargetIds.has(targetId) ? "agent" : this.creationOrigin),
+            personUsed: false,
             agentActed: false,
             typed: false,
             usedAt: Date.now(),

@@ -125,6 +125,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   readonly hostCost = "partition";
   readonly #wakeSeeds: WakeSeeds;
   readonly #methods = new Map<number, string>();
+  readonly #uploads = new Map<number, number>();
   readonly #authenticator: PasskeyAuthenticator | undefined;
   readonly #clipboard: EngineClipboard | undefined;
   readonly #downloads: ElectronBrowserLauncherOptions["downloads"];
@@ -178,6 +179,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
   close(): void {
     this.#wakeSeeds.close();
     this.#methods.clear();
+    this.#uploads.clear();
     this.#views.close();
   }
 
@@ -316,6 +318,10 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
+      onUploadRequest: (id, requestId) => {
+        if (this.#methods.has(id)) this.#uploads.set(requestId, id);
+      },
+      onRequestFinished: (requestId) => this.#uploads.delete(requestId),
       provider,
       downloads: this.#downloads,
       pagePolicyPreloadPath: this.#pagePolicyPreloadPath,
@@ -326,9 +332,14 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
 
   #protection(contents: WebContents) {
     this.#methods.set(contents.id, "GET");
-    contents.once("destroyed", () => this.#methods.delete(contents.id));
+    contents.once("destroyed", () => {
+      this.#methods.delete(contents.id);
+      for (const [requestId, id] of this.#uploads)
+        if (id === contents.id) this.#uploads.delete(requestId);
+    });
     return {
       method: () => this.#methods.get(contents.id) ?? "GET",
+      uploading: () => [...this.#uploads.values()].includes(contents.id),
       downloading: () => this.#downloads.active?.(contents.id) === true,
     };
   }
@@ -634,7 +645,11 @@ class ElectronLaunchedBrowser implements LaunchedBrowser {
 
 interface ElectronBrowserContextOptions {
   readonly wakeSeeds: WakeSeeds;
-  readonly protection: (contents: WebContents) => { method(): string; downloading(): boolean };
+  readonly protection: (contents: WebContents) => {
+    method(): string;
+    uploading(): boolean;
+    downloading(): boolean;
+  };
   readonly authenticator?: PasskeyAuthenticator;
   readonly createView: (
     options: ElectronBrowserViewOptions,
@@ -945,7 +960,7 @@ class ElectronBrowserContext implements BrowserContext {
 }
 
 class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
-  readonly #protection: { method(): string; downloading(): boolean };
+  readonly #protection: { method(): string; uploading(): boolean; downloading(): boolean };
   #documentMethod = "GET";
   #mediaPlaying = false;
   #restore: Promise<void> | undefined;
@@ -1040,6 +1055,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     timing?: PageOpenTiming,
     protection: ElectronBrowserContextOptions["protection"] = () => ({
       method: () => "GET",
+      uploading: () => false,
       downloading: () => false,
     }),
   ) {
@@ -1564,6 +1580,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
   }
 
   keepAwake(): import("@opensteer/browser-runtime-core").KeepAwakeReason | null {
+    if (this.#protection.uploading()) return "upload";
     if (!["GET", "HEAD"].includes(this.#documentMethod)) return "post";
     if (this.#protection.downloading()) return "download";
     if (this.#webContents.isCurrentlyAudible() || this.#mediaPlaying) return "media";

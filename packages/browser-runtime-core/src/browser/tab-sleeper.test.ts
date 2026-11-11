@@ -32,14 +32,19 @@ describe("TabSleeper", () => {
     try {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(f.record.live).not.toBeNull();
-      f.sleeper.setSessionState("session", { runs: 1, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 1, personUsed: [], viewed: [], pinned: [] });
       await vi.advanceTimersByTimeAsync(120_000);
       expect(f.record.live).not.toBeNull();
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [f.record.id] });
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [f.record.id],
+      });
       await vi.advanceTimersByTimeAsync(60_000);
       expect(f.record.live).not.toBeNull();
       expect(f.record.personUsed).toBe(false);
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
       await vi.advanceTimersByTimeAsync(1);
       expect(f.record.live).toBeNull();
       expect(vi.getTimerCount()).toBe(0);
@@ -50,11 +55,17 @@ describe("TabSleeper", () => {
   it("starts a fresh release delay when unknown Host facts become known", async () => {
     const f = await fixture();
     try {
-      f.sleeper.setSessionState("session", { runs: 1, viewed: [], pinned: [] });
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [], keepAwake: true });
+      f.sleeper.setSessionState("session", { runs: 1, personUsed: [], viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", {
+        runs: 0,
+        personUsed: [],
+        viewed: [],
+        pinned: [],
+        keepAwake: true,
+      });
       await vi.advanceTimersByTimeAsync(120_000);
       expect(f.record.live).not.toBeNull();
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
       await vi.advanceTimersByTimeAsync(59_999);
       expect(f.record.live).not.toBeNull();
       await vi.advanceTimersByTimeAsync(1);
@@ -86,6 +97,7 @@ describe("TabSleeper", () => {
       await vi.advanceTimersByTimeAsync(70_000);
       let state = {
         runs: 0,
+        personUsed: [],
         viewed: [] as (typeof f.record.id)[],
         pinned: [] as (typeof f.record.id)[],
         keepAwake: false,
@@ -148,7 +160,7 @@ describe("TabSleeper", () => {
         record.origin = "agent";
         record.personUsed = false;
       }
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
       await vi.advanceTimersByTimeAsync(60_000);
       expect(f.ledger.snapshot().every((tab) => tab.state === "suspended")).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
@@ -165,7 +177,7 @@ describe("TabSleeper", () => {
         order: i,
       }));
       vi.spyOn(f.ledger, "policyRecords").mockImplementation(() => records);
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
       expect(vi.getTimerCount()).toBe(1);
       f.sleeper.poke();
       expect(vi.getTimerCount()).toBe(1);
@@ -191,7 +203,7 @@ describe("TabSleeper", () => {
         }
         const records = [...f.ledger.policyRecords()];
         const oldRead = records[1]!;
-        f.sleeper.setSessionState("session", { runs, viewed: [], pinned: [] });
+        f.sleeper.setSessionState("session", { runs, personUsed: [], viewed: [], pinned: [] });
         await vi.advanceTimersByTimeAsync(oldRead.usedAt + 119_999 - Date.now());
         expect(oldRead.live).not.toBeNull();
         await vi.advanceTimersByTimeAsync(1);
@@ -235,12 +247,18 @@ describe("TabSleeper", () => {
         order.push(id);
         return readSleep(id, blocked);
       });
-      f.sleeper.setSessionState("reader", { runs: 1, viewed: [], pinned: [] });
-      f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+      f.sleeper.setSessionState("reader", { runs: 1, personUsed: [], viewed: [], pinned: [] });
+      f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
       await vi.advanceTimersByTimeAsync(0);
       expect(order).toEqual([f.record.id, read.id, records[1]!.id]);
       expect(records.filter((record) => record.live)).toHaveLength(3);
-      f.sleeper.setSessionState("session", { runs: 1, viewed: [], pinned: [], keepAwake: true });
+      f.sleeper.setSessionState("session", {
+        runs: 1,
+        personUsed: [],
+        viewed: [],
+        pinned: [],
+        keepAwake: true,
+      });
       await f.ledger.openSurface();
       await f.ledger.openSurface();
       await vi.advanceTimersByTimeAsync(20_000);
@@ -278,15 +296,20 @@ describe("TabSleeper", () => {
         retireHost,
       });
       try {
-        f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+        f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
         await vi.advanceTimersByTimeAsync(60_000);
         expect(f.record.live).toBeNull();
         expect(retireHost).not.toHaveBeenCalled();
         available = 0;
-        f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [f.record.id] });
+        f.sleeper.setSessionState("session", {
+          runs: 0,
+          personUsed: [],
+          viewed: [],
+          pinned: [f.record.id],
+        });
         await vi.advanceTimersByTimeAsync(0);
         expect(retireHost).not.toHaveBeenCalled();
-        f.sleeper.setSessionState("session", { runs: 0, viewed: [], pinned: [] });
+        f.sleeper.setSessionState("session", { runs: 0, personUsed: [], viewed: [], pinned: [] });
         await vi.advanceTimersByTimeAsync(0);
         expect(retireHost).toHaveBeenCalledTimes(hostCost === "process" ? 1 : 0);
       } finally {

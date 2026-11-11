@@ -748,6 +748,7 @@ export class BrowserRuntime implements NativePresentationSource {
           stage = "session-initialize";
           const sessionRouter = host.router;
           ledger = new SurfaceLedger(host.browser.context, {
+            creationOrigin: claims.creationOrigin,
             navigationVersion: claims.navigationVersion,
             beforeResize: async (surfaceId) => controller?.prepareResize(surfaceId),
             // Every page the session holds, a tab the person opened included, is

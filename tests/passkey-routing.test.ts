@@ -163,6 +163,7 @@ it.each([true, false])(
         keyId: "example",
         privateKey: keys.privateKey,
       }).issue({
+        creationOrigin: "person",
         access: "read-write",
         runtimeId: "example",
         sessionId,

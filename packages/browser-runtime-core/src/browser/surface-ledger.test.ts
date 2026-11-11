@@ -48,6 +48,15 @@ describe("SurfaceLedger", () => {
       expect(record.live).not.toBeNull();
       page.captureRestore = async () => ({});
       page.keepAwake = () => null;
+      let openerReads = 0;
+      page.hasOpenerAccess = () => {
+        if (++openerReads === 2) page.keepAwake = () => "upload";
+        return false;
+      };
+      expect(await ledger.sleep(record.id, () => null)).toBe(false);
+      expect(record.live).not.toBeNull();
+      page.hasOpenerAccess = () => false;
+      page.keepAwake = () => null;
       expect(await ledger.sleep(record.id, () => null)).toBe(true);
     } finally {
       await ledger.closeOwnedPages();

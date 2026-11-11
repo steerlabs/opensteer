@@ -999,6 +999,9 @@ describe("BrowserService", () => {
           },
         ],
       });
+      expect(runtime.lastClaims()?.creationOrigin).toBe(
+        path === "agent-start" ? "agent" : "person",
+      );
       const navigate = await runtime.nextCommand();
       expect(navigate).toMatchObject({ type: "cdp.command", command: { method: "Page.navigate" } });
       if (path === "agent-start") expect(navigate).not.toHaveProperty("navigationId");
@@ -7860,7 +7863,13 @@ it("sends authoritative sleep state after commit and keeps two viewers and Watch
   const sessionId = opened.session.id;
   const lastState = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
   await vi.waitFor(() =>
-    expect(lastState()).toEqual({ type: "session.state", runs: 1, viewed: [], pinned: [] }),
+    expect(lastState()).toEqual({
+      type: "session.state",
+      runs: 1,
+      personUsed: [],
+      viewed: [],
+      pinned: [],
+    }),
   );
   const harness = await service.attachCdpForAgent(
     { ownerId, workspaceId, agentBindingId: "sleep-run", sessionId },
@@ -7888,24 +7897,36 @@ it("sends authoritative sleep state after commit and keeps two viewers and Watch
   const two = await attach("two", "control");
   const watch = await attach("watch", "watch");
   await vi.waitFor(() =>
-    expect(lastState()).toMatchObject({ runs: 1, viewed: ["page-1"], pinned: ["page-1"] }),
+    expect(lastState()).toMatchObject({
+      runs: 1,
+      personUsed: [],
+      viewed: ["page-1"],
+      pinned: ["page-1"],
+    }),
   );
   await service.detachAgentSessionsForBinding("sleep-run");
   await vi.waitFor(() =>
-    expect(lastState()).toMatchObject({ runs: 0, viewed: ["page-1"], pinned: ["page-1"] }),
+    expect(lastState()).toMatchObject({
+      runs: 0,
+      personUsed: [],
+      viewed: ["page-1"],
+      pinned: ["page-1"],
+    }),
   );
   one.close();
   await two.handle(
     Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1", frames: false })),
     false,
   );
-  await vi.waitFor(() => expect(lastState()).toMatchObject({ viewed: ["page-1"] }));
+  await vi.waitFor(() => expect(lastState()).toMatchObject({ personUsed: [], viewed: ["page-1"] }));
   await two.handle(Buffer.from(JSON.stringify({ type: "stream.unsubscribe" })), false);
   await vi.waitFor(() =>
-    expect(lastState()).toMatchObject({ runs: 0, viewed: [], pinned: ["page-1"] }),
+    expect(lastState()).toMatchObject({ runs: 0, personUsed: [], viewed: [], pinned: ["page-1"] }),
   );
   watch.close();
-  await vi.waitFor(() => expect(lastState()).toMatchObject({ runs: 0, viewed: [], pinned: [] }));
+  await vi.waitFor(() =>
+    expect(lastState()).toMatchObject({ runs: 0, personUsed: [], viewed: [], pinned: [] }),
+  );
   two.close();
 });
 
@@ -8103,7 +8124,13 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
   count.mockRestore();
   service.setRequestPins("unknown", []);
   await vi.waitFor(() =>
-    expect(last()).toEqual({ type: "session.state", runs: 0, viewed: [], pinned: [] }),
+    expect(last()).toEqual({
+      type: "session.state",
+      runs: 0,
+      personUsed: [],
+      viewed: [],
+      pinned: [],
+    }),
   );
   cdp.close();
 });
@@ -8189,9 +8216,13 @@ it("publishes a passkey offer as a pin until the ceremony is cancelled", async (
     deadline: Date.now() + 10_000,
   });
   const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
-  await vi.waitFor(() => expect(last()).toMatchObject({ viewed: ["page-1"], pinned: ["page-1"] }));
+  await vi.waitFor(() =>
+    expect(last()).toMatchObject({ personUsed: [], viewed: ["page-1"], pinned: ["page-1"] }),
+  );
   runtime.sendServer({ type: "passkey.cancel", ceremonyId });
-  await vi.waitFor(() => expect(last()).toMatchObject({ viewed: ["page-1"], pinned: [] }));
+  await vi.waitFor(() =>
+    expect(last()).toMatchObject({ personUsed: [], viewed: ["page-1"], pinned: [] }),
+  );
   viewer.close();
 });
 
@@ -8256,4 +8287,15 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
   runtime.sendServer({ type: "cdp.result", requestId: command.requestId, result: {} });
   expect(await restored).toEqual({ tabId, sessionId });
   expect(await repository.countBrowserSessionAttachments(sessionId)).toBe(1);
+  const lastState = () =>
+    runtime.receivedCommands().findLast((message) => message.type === "session.state");
+  expect(lastState()).toMatchObject({ personUsed: [] });
+  runtime.publishTabs({ surfaces: [{ id: tabId, state: "live", active: true, title: "Awake" }] });
+  await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("live"));
+  await service.activateWorkspaceTab(ownerId, tabId);
+  await vi.waitFor(() => expect(lastState()).toMatchObject({ personUsed: [tabId] }), {
+    timeout: 1000,
+  });
+  runtime.publishTabs({ surfaces: [] });
+  await vi.waitFor(() => expect(lastState()).toMatchObject({ personUsed: [] }), { timeout: 1000 });
 });

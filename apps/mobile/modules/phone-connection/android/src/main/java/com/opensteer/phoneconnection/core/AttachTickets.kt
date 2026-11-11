@@ -90,8 +90,9 @@ class AttachTickets(val runtimeId: String, private val ledger: ReplayLedger, pri
             val signer = Ed25519Signer().apply { init(false, key); update(bytes, 0, bytes.size) }
             Wire.requireThat(signer.verifySignature(signature), "invalid-ticket")
             val claims = Wire.parse(Wire.decode(Wire.decode64(parts[1])), 16384)
-            claims.only("access", "audience", "passkeys", "navigationVersion", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "workspaceTabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "dormantSurfaceIds", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject", "viewport")
+            claims.only("creationOrigin", "access", "audience", "passkeys", "navigationVersion", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "workspaceTabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "dormantSurfaceIds", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject", "viewport")
             Wire.requireThat(claims.text("audience") == "opensteer-browser-runtime" && claims.number("wireVersion") == 2L)
+            Wire.requireThat(claims.text("creationOrigin") in setOf("agent", "person"))
             Wire.requireThat(claims.text("access") in setOf("read", "read-write"))
             claims.text("nonce", 16); claims.text("subject"); claims.text("sessionId")
             claims.number("remainingBudgetMs", 1, 20_000); claims.time("operationExpiresAt")

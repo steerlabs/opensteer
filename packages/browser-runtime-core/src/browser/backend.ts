@@ -53,7 +53,7 @@ export interface PageCapturePort {
   subscribe(listener: () => void): () => void;
 }
 
-export type KeepAwakeReason = "post" | "download" | "media" | "fullscreen" | "capturing";
+export type KeepAwakeReason = "upload" | "post" | "download" | "media" | "fullscreen" | "capturing";
 
 /** Engine operations never own native focus; active-surface selection belongs to the ledger. */
 export interface BrowserPage {
