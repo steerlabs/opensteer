@@ -471,8 +471,7 @@ export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
   name: MockSubagentScene,
   now: Date,
 ): { snapshot: Snapshot; events: readonly AgentEvent[]; threadId: string } {
-  const base =
-    snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId) ?? snapshot.threads[0];
+  const base = snapshot.threads.find((thread) => thread.purpose === "voice") ?? snapshot.threads[0];
   if (!base || !snapshot.user) throw new Error("Subagent scenes need a mock conversation.");
   const user = snapshot.user;
   const threadId = createId("thread");
@@ -490,7 +489,7 @@ export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
         eventId: createId("event"),
         runId,
         threadId,
-        workspaceId: base.workspaceId,
+
         sequence: SequenceSchema.parse(String(++sequence)),
       }),
     );
@@ -576,8 +575,7 @@ export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
           originatingRunId: runId,
           originatingOccurrenceId: null,
           originatingThreadId: threadId,
-          originatingWorkspaceId: base.workspaceId,
-          targetWorkspaceId: base.workspaceId,
+
           requestedBy: user.id,
           requiredActor: "requester",
           resolvedAt: null,
@@ -702,8 +700,6 @@ export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
           kind: "agent",
           runId,
           threadId,
-          workspaceId: base.workspaceId,
-          workspaceName: "Main",
         } as MessageEntry["author"],
         body: turn.reply!,
         createdAt: ago(start - (turn.worked ?? 60)),
@@ -732,7 +728,7 @@ export function seedMockSubagentScene<Snapshot extends HostSnapshot>(
     ...base,
     id: threadId,
     title: "Fix checkout on mobile",
-    role: "work" as const,
+    purpose: "task" as const,
     parentThreadId: null,
     status: running ? ("running" as const) : ("idle" as const),
     pendingRequests: requests.length,

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { ModelSelectionSchema } from "@opensteer/core";
+import { ModelSelectionSchema, createId } from "@opensteer/core";
 
 import { filterThreads, formatRelativeTime } from "./thread-list-model.js";
-import type { ThreadSummary, WorkspaceSummary } from "./client.js";
+import type { ThreadSummary } from "./client.js";
 
 const codexModelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
@@ -16,51 +16,17 @@ const claudeModelSelection = ModelSelectionSchema.parse({
   providerId: "anthropic",
 });
 
-const workspaces: WorkspaceSummary[] = [
-  {
-    description: "Product files",
-    homeThreadId: null,
-    voiceThreadId: null,
-    fileCount: 12,
-    harnessLabel: "Codex",
-    icon: null,
-    id: "workspace_product",
-    kind: "project" as const,
-    machineName: "Main runner",
-    name: "Product launch",
-    runnerLabel: "Main runner",
-    status: "ready",
-    storageIssue: null,
-    color: "purple",
-    updatedAt: "2026-08-09T12:00:00.000Z",
-  },
-  {
-    description: "Finance files",
-    homeThreadId: null,
-    voiceThreadId: null,
-    fileCount: 4,
-    harnessLabel: "Claude Code",
-    icon: null,
-    id: "workspace_finance",
-    kind: "project" as const,
-    machineName: "Local Mac",
-    name: "Finance operations",
-    runnerLabel: "Local Mac",
-    status: "ready",
-    storageIssue: null,
-    color: "lime",
-    updatedAt: "2026-08-08T12:00:00.000Z",
-  },
-];
-
 const threads: ThreadSummary[] = [
   {
+    folder: { computerId: createId("runner"), path: "/Users/person/Opensteer" },
+    teamOrigin: null,
+    purpose: "task",
     doneAt: null,
     doneReason: null,
     icon: null,
     color: null,
     accessMode: "full-access",
-    role: "work",
+
     continuationIdentity: null,
     providerSessionId: null,
     askedAt: "2026-08-09T09:00:00.000Z",
@@ -80,15 +46,17 @@ const threads: ThreadSummary[] = [
     title: "Draft homepage copy",
     unread: false,
     updatedAt: "2026-08-09T09:00:00.000Z",
-    workspaceId: "workspace_product",
   },
   {
+    folder: { computerId: createId("runner"), path: "/Users/person/Opensteer" },
+    teamOrigin: null,
+    purpose: "task",
     doneAt: null,
     doneReason: null,
     icon: null,
     color: null,
     accessMode: "full-access",
-    role: "work",
+
     continuationIdentity: null,
     providerSessionId: null,
     askedAt: "2026-08-09T10:00:00.000Z",
@@ -108,15 +76,17 @@ const threads: ThreadSummary[] = [
     title: "Reconcile expenses",
     unread: true,
     updatedAt: "2026-08-09T10:00:00.000Z",
-    workspaceId: "workspace_finance",
   },
   {
+    folder: { computerId: createId("runner"), path: "/Users/person/Opensteer" },
+    teamOrigin: null,
+    purpose: "task",
     doneAt: null,
     doneReason: null,
     icon: null,
     color: null,
     accessMode: "full-access",
-    role: "work",
+
     continuationIdentity: null,
     providerSessionId: null,
     askedAt: "2026-08-09T11:00:00.000Z",
@@ -136,14 +106,13 @@ const threads: ThreadSummary[] = [
     title: "Prepare launch brief",
     unread: false,
     updatedAt: "2026-08-09T11:00:00.000Z",
-    workspaceId: "workspace_product",
   },
 ];
 
 describe("thread search", () => {
   it.each([
-    ["launch", ["thread_older", "thread_newer"]],
-    [" FINANCE ", ["thread_finance"]],
+    ["launch", ["thread_newer"]],
+    [" expenses ", ["thread_finance"]],
     ["claude", ["thread_finance"]],
     ["local mac", ["thread_finance"]],
     ["missing", []],
@@ -154,9 +123,9 @@ describe("thread search", () => {
     "searches title, its question, workspace, harness, and runner for %j",
     (query, expectedIds) => {
       const attention = [{ threadId: "thread_finance", title: "Upload the March receipts" }];
-      expect(
-        filterThreads(threads, workspaces, query, attention).map((thread) => thread.id),
-      ).toEqual(expectedIds);
+      expect(filterThreads(threads, query, attention).map((thread) => thread.id)).toEqual(
+        expectedIds,
+      );
     },
   );
 });

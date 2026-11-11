@@ -141,9 +141,6 @@ function transcriptActivity(snapshot: HostSnapshot): HostSnapshot {
       index === 0 ? { ...thread, updatedAt: timestamp } : thread,
     ),
     transcripts: { ...snapshot.transcripts, __stream_activity__: [] },
-    workspaces: snapshot.workspaces.map((workspace, index) =>
-      index === 0 ? { ...workspace, updatedAt: timestamp } : workspace,
-    ),
   };
 }
 

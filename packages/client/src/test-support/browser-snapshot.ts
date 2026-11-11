@@ -3,14 +3,14 @@ import type {
   BrowserSessionSummary,
   BrowserInventory,
   BrowserTabSummary,
-  WorkspaceTabLineage,
+  PersonalTabLineage,
 } from "../host/client.js";
 import type { HostedBrowserBootstrap } from "@opensteer/protocol";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import {
   BrowserSnapshotDerivation,
   groupSession,
-  workspaceTabLineage,
+  personalTabLineage,
 } from "../host/browser-snapshot.js";
 import {
   type BrowserGroupRow,
@@ -60,7 +60,6 @@ type RowSeed = {
         threadId: string;
         holding: boolean;
         acting: boolean;
-        home: boolean;
         lastActiveAt: string;
       }[]
     | undefined;
@@ -122,7 +121,6 @@ export function seedBrowserSession<T extends SessionSeed>(
     access: source.access,
     origin: source.origin,
     state: source.state,
-    workspaceId: source.workspaceId,
     placement: source.placement,
     profileId: source.profileId ?? null,
     runtimeId: source.runtimeId,
@@ -164,7 +162,7 @@ const sessionBindings = new WeakMap<
 const bindings = new WeakMap<HostSnapshot["browserSessions"], HostSnapshot["browserTabs"]>();
 export function seedBrowserSnapshot(
   source: HostSnapshot,
-  lineages?: readonly WorkspaceTabLineage[],
+  lineages?: readonly PersonalTabLineage[],
 ): HostSnapshot {
   if (!lineages) {
     const held = snapshots.get(source);
@@ -180,7 +178,7 @@ export function seedBrowserSnapshot(
     for (const session of source.browserSessions) {
       if (
         lineages &&
-        session.workspaceTabRestoreVersion === 1 &&
+        session.tabRestoreVersion === 1 &&
         !lineages.some((group) => group.session.id === session.id)
       )
         continue;
@@ -206,7 +204,7 @@ export function seedBrowserSnapshot(
             sessionCreatedAt: lineage.session.createdAt,
           } as BrowserGroupRow),
           ...session,
-          workspaceTabRestoreVersion: 1,
+          tabRestoreVersion: 1,
         },
         {
           rows: lineage.tabs ?? [],
@@ -262,5 +260,5 @@ export function seedBrowserSnapshot(
 
 export function browserLineages(source: Pick<HostSnapshot, "browserTabs">) {
   const store = source.browserTabs;
-  return store?.groups().ids.map((id) => workspaceTabLineage(store, id)!) ?? [];
+  return store?.groups().ids.map((id) => personalTabLineage(store, id)!) ?? [];
 }

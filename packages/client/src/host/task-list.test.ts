@@ -22,12 +22,11 @@ import {
   heldThread,
   listedRowThreadId,
   sameTaskRow,
-  taskCanBeDone,
   taskList,
   taskRowLabel,
   taskTime,
   threadRequester,
-  workspaceTaskList,
+  folderTaskList,
 } from "./task-list.js";
 import { liveWork } from "./surfaces.js";
 
@@ -55,7 +54,7 @@ function entry(
     lastReply: lines.lastReply ?? null,
     thread: {
       ...template,
-      role: "work",
+
       askedAt: hoursAgo(created),
       createdAt: hoursAgo(created),
       id: threadId(index),
@@ -92,10 +91,10 @@ function snapshot(
     activeTasks: [],
     assignments: {},
     browserSessions: [...(options.browserSessions ?? [])],
-    homeThreadId: options.chat === undefined ? null : threadId(options.chat),
+
     voiceThreadId: null,
     machines: [],
-    tasks: { entries, window: base.workspaceWindow },
+    tasks: { entries, window: base.tasks!.window },
     threads: [],
     threadReadStates: Object.fromEntries(
       entries.map(({ thread }) => [
@@ -109,26 +108,22 @@ function snapshot(
       ]),
     ),
     waitingRequests: options.waiting ?? [],
-    workspaceTasks: {},
   };
 }
 
 const titles = (rows: readonly { readonly title: string }[]) => rows.map((row) => row.title);
 
 describe("taskList", () => {
-  it.each([mainDoneTasks, template.workspaceId])(
-    "finds a task loaded only in the Done list %s for actions",
-    (key) => {
-      const completed = entry(1, "Done only", "idle", 4, 3);
-      const source = {
-        ...snapshot([]),
-        doneTasks: {
-          [key]: { entries: [completed], window: base.workspaceWindow },
-        },
-      };
-      expect(heldThread(source, completed.thread.id)).toEqual(completed.thread);
-    },
-  );
+  it.each([mainDoneTasks])("finds a task loaded only in the Done list %s for actions", (key) => {
+    const completed = entry(1, "Done only", "idle", 4, 3);
+    const source = {
+      ...snapshot([]),
+      doneTasks: {
+        [key]: { entries: [completed], window: base.tasks!.window },
+      },
+    };
+    expect(heldThread(source, completed.thread.id)).toEqual(completed.thread);
+  });
   it.each([false, true])(
     "rolls an unlisted worker's question to its nearest listed ancestor (Chat: %s)",
     (chat) => {
@@ -163,7 +158,7 @@ describe("taskList", () => {
         },
       );
       const list = taskList(source);
-      const row = chat ? list.chat : [...list.working, ...list.ready][0];
+      const row = [...list.working, ...list.ready][0];
       expect(row).toMatchObject({
         threadId: ancestor.thread.id,
         tone: "needs-you",
@@ -275,25 +270,6 @@ describe("taskList", () => {
     expect(titles(marked.done)).toEqual(["Shared Done"]);
   });
 
-  it("keeps Chat apart from every group, and counts as running only what works now", () => {
-    const list = taskList(
-      snapshot(
-        [
-          entry(1, "Chat", "running", 400, 0),
-          entry(2, "Running", "running", 1, 0),
-          entry(3, "Waiting", "waiting", 2, 0),
-        ],
-        { chat: 1 },
-      ),
-    );
-    expect(list.chat?.title).toBe("Chat");
-    expect(list.chat?.canBeDone).toBe(false);
-    expect(list.working[0]?.canBeDone).toBe(true);
-    expect(list.chat?.line).toBe("Replying");
-    expect(titles(list.working)).toEqual(["Running", "Waiting"]);
-    expect(list.running).toBe(1);
-  });
-
   it("names the site a working task is on, and no place for a task that is not working", () => {
     const session = {
       acting: true,
@@ -354,11 +330,12 @@ describe("taskList", () => {
     const source = {
       ...snapshot([stale]),
       activeTasks: [fresh],
-      workspaceTasks: { [thread.workspaceId]: { entries: [stale], window: base.workspaceWindow } },
     };
     expect(titles(taskList(source).working)).toEqual(["Fresher"]);
-    expect(workspaceTaskList(source, thread.workspaceId).running).toBe(1);
-    expect(workspaceTaskList(source, "another-workspace").working).toEqual([]);
+    expect(folderTaskList(source, thread.folder).running).toBe(1);
+    expect(folderTaskList(source, { ...thread.folder, path: "/another-folder" }).working).toEqual(
+      [],
+    );
     expect(liveWork(source).map((group) => group.title)).toEqual(["Fresher"]);
     const completed = {
       ...fresh,
@@ -404,7 +381,9 @@ describe("taskRowLabel", () => {
         { chat: 1, unread: [4], waiting: [asking(2, "Approve sending the reply")] },
       ),
     );
-    expect(taskRowLabel(list.chat!, { chat: true })).toBe("Chat: The best one is the down blend.");
+    expect(taskRowLabel(list.ready.find(({ title }) => title === "Chat")!)).toContain(
+      "The best one is the down blend.",
+    );
     expect(list.working.map((row) => taskRowLabel(row))).toEqual([
       "Reply to Ana, needs you: Approve sending the reply",
       "Landlord: Waiting",
@@ -413,6 +392,7 @@ describe("taskRowLabel", () => {
     expect(list.ready.map((row) => taskRowLabel(row))).toEqual([
       "Amazon orders, finished: Both arrive Thursday.",
       "Name this sign-in, unread, couldn’t finish: Couldn’t open the page",
+      "Chat, finished: The best one is the down blend.",
     ]);
   });
 });
@@ -429,24 +409,6 @@ describe("sameTaskRow", () => {
 
 // Failure modes: an old Host must expose no shared Done action or Done shelf,
 // even if a cached task carries a newer Host's doneAt.
-describe("shared Done capability", () => {
-  it("hides shared Done controls and ignores cached Done without the capability", () => {
-    const row = entry(90, "Cached Done", "idle", 2, 1);
-    const snapshot = Object.assign({}, base, {
-      sharedTaskDoneAvailable: false,
-      tasks: {
-        ...base.tasks!,
-        entries: [{ ...row, thread: { ...row.thread, doneAt: hoursAgo(1) } }],
-      },
-      activeTasks: [],
-      threads: [],
-    });
-    expect(taskCanBeDone(snapshot, row.thread)).toBe(false);
-    const list = taskList(snapshot);
-    expect(list.done).toHaveLength(0);
-    expect(list.ready.find(({ threadId }) => threadId === row.thread.id)?.canBeDone).toBe(false);
-  });
-});
 
 // Failure modes: an open helper, which has no row, leaves the sidebar with
 // nothing marked as where the reader is; a chain through a Thread this client
@@ -464,11 +426,10 @@ describe("listedRowThreadId", () => {
   const held = (threads: readonly HostSnapshot["threads"][number][]): HostSnapshot => ({
     ...base,
     activeTasks: [],
-    homeThreadId: chat,
+
     voiceThreadId: null,
     tasks: { ...base.tasks!, entries: [] },
     threads: [...threads],
-    workspaceTasks: {},
   });
 
   it("stands a helper's nearest listed ancestor, or Chat, in for it", () => {
@@ -480,7 +441,9 @@ describe("listedRowThreadId", () => {
     expect(listedRowThreadId(snapshot, task)).toBe(task);
     expect(listedRowThreadId(snapshot, helper)).toBe(task);
     expect(listedRowThreadId(snapshot, inner)).toBe(task);
-    expect(listedRowThreadId(held([thread(helper, chat, false)]), helper)).toBe(chat);
+    expect(
+      listedRowThreadId(held([thread(chat, null, true), thread(helper, chat, false)]), helper),
+    ).toBe(chat);
     expect(listedRowThreadId(snapshot, chat)).toBe(chat);
   });
 
@@ -510,11 +473,10 @@ describe("threadRequester", () => {
     ...base,
     activeTasks: [],
     assignments,
-    homeThreadId: chat,
+
     voiceThreadId: null,
     tasks: { ...base.tasks!, entries: [] },
     threads: [...threads],
-    workspaceTasks: {},
   });
   const thread = (id: string, title: string, parentThreadId: string | null) => ({
     ...template,
@@ -526,10 +488,14 @@ describe("threadRequester", () => {
 
   it("leads back to where it lives, by the name the reader knows, as the sidebar does", () => {
     const tasks = [
+      thread(chat, "Trip planning", null),
       { ...thread(task, "Plan Tokyo trip", chat), listed: true },
       { ...thread(helper, "Check fares", task), listed: false },
     ];
-    expect(threadRequester(snapshot(tasks), task)).toEqual({ threadId: chat, title: "Chat" });
+    expect(threadRequester(snapshot(tasks), task)).toEqual({
+      threadId: chat,
+      title: "Trip planning",
+    });
     // An automation anchored on Chat hands the helper its current task; it still lives under the trip.
     const retasked = snapshot(tasks, {
       [assignment.id]: {
@@ -582,17 +548,6 @@ it("moves only for a person's ask, ties by descending id, and merges freshest co
   ]);
 });
 
-it("shows a managed unassigned worker's Request on Chat without loading its hidden Thread", () => {
-  const chat = entry(1, "Chat", "idle", 2, 1);
-  const waiting = asking(2, "Allow memory access");
-  waiting.presentation = {
-    threadId: ThreadIdSchema.parse(chat.thread.id),
-    workerThread: { id: ThreadIdSchema.parse(threadId(2)), title: "Memory light pass" },
-  };
-  const list = taskList(snapshot([chat], { chat: 1, waiting: [waiting] }));
-  expect(list.chat).toMatchObject({ tone: "needs-you", line: "Allow memory access" });
-});
-
 describe("doneTaskList", () => {
   it("reads newest Done first, and an unread Done task only a Done list holds waits in Ready", () => {
     const done = (index: number, title: string, asked: number, doneHours: number): TaskEntry => {
@@ -612,8 +567,8 @@ describe("doneTaskList", () => {
     const state: HostSnapshot = {
       ...held,
       quietTasksAvailable: true,
-      tasks: { entries: [], window: base.workspaceWindow },
-      doneTasks: { [mainDoneTasks]: { entries, window: base.workspaceWindow } },
+      tasks: { entries: [], window: base.tasks!.window },
+      doneTasks: { [mainDoneTasks]: { entries, window: base.tasks!.window } },
     };
     expect(titles(doneTaskList(state)!.rows)).toEqual([
       "Asked long ago, Done just now",

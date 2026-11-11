@@ -1,3 +1,6 @@
+import { NeedsYouPageSchema } from "./needs-you.js";
+import { AppTabsSchema } from "./bootstrap.js";
+import { HostedBrowserBootstrapSchema } from "./browser.js";
 import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
 import { BrowserGroupStreamSchema, BrowserClientTabStreamSchema } from "./browser-tabs.js";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
@@ -132,6 +135,13 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
 
 export const DeploymentSnapshotSchema = z
   .object({
+    tasks: z.object({
+      recent: z.lazy(() => TaskPageSchema),
+      active: z.lazy(() => TaskPageSchema),
+      done: z.lazy(() => TaskPageSchema),
+    }),
+    needsYou: z.lazy(() => NeedsYouPageSchema),
+    resources: z.object({ appTabs: AppTabsSchema, browser: HostedBrowserBootstrapSchema }),
     readStates: z.array(ThreadReadStateSchema).max(deploymentSnapshotMaxThreads),
     messages: z.array(MessageViewSchema).max(deploymentSnapshotMaxMessages),
     messageWindows: z.array(ThreadMessageWindowSchema).max(deploymentSnapshotMaxThreads),
@@ -263,7 +273,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.events"),
     throughSequence: SequenceSchema,
-    events: z.array(AgentEventViewSchema).min(1).max(2_000),
+    events: z.array(AgentEventViewSchema).max(2_000),
   }),
   /**
    * A Run's streams before they complete. It follows every durable event

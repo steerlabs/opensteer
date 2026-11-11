@@ -1,8 +1,13 @@
+import { MockPersonalHost } from "../mock/mock-personal-host.js";
+interface PersonalFixture {
+  readonly id: import("@opensteer/core").DeploymentId;
+  readonly name: string;
+}
 import { PlaceActivityStore } from "./place-activity.js";
 import * as lastPictures from "./browser-last-picture.js";
 import { browserLineages } from "../test-support/browser-snapshot.js";
 import { seedBrowserSession } from "../test-support/browser-snapshot.js";
-import type { WorkspaceTabLineage } from "./client.js";
+import type { PersonalTabLineage } from "./client.js";
 import { KeyedStreamPublisher, keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserGroupRowSchema,
@@ -15,16 +20,15 @@ import {
   type BrowserBootstrapFixture as HostedBrowserBootstrap,
 } from "../test-support/browser-fixtures.js";
 import { schedulesClient } from "./schedules.js";
-import { EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema } from "@opensteer/core";
+
 import {
   BrowserTabGroupIdSchema,
   ModelSelectionSchema,
   SequenceSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
+  DeploymentIdSchema,
   createId,
-  defaultTaskSymbol,
   emptyExecutionPreferences,
   type AgentEventView as AgentEvent,
   type Message,
@@ -40,11 +44,9 @@ import {
   ComputerViewSchema,
   HostToClientMessageSchema,
   createBrowserSessionId,
-  hostApi,
   placeIdentityKey,
   type HostToClientMessage,
   type RealtimeFrameDiagnostic,
-  type WorkspaceView,
 } from "@opensteer/protocol";
 import {
   BootstrapReadDiagnostics,
@@ -60,7 +62,7 @@ import {
   samePlaceListSource,
 } from "./places.js";
 import { sameStableHostSnapshot } from "./host-snapshot-selectors.js";
-import { assignmentMark } from "./assignment-presentation.js";
+
 import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { HostClientRequestError, type ThreadSummary } from "./client.js";
@@ -86,12 +88,8 @@ import type {
 import { placeList } from "./places.js";
 import { visibleTranscript } from "./transcript.js";
 import { conversationRows, groupTranscriptEntries } from "./agent-activity-model.js";
-import { projectSavedHome, type SavedViewReadiness } from "./saved-host-view.js";
-import { liveWork, sameLiveWorkSource } from "./surfaces.js";
-import { sameTaskListSource, taskList, workspaceTaskList } from "./task-list.js";
-import { threadMark } from "./task-marks.js";
+
 import { threadActivity, threadStopTarget } from "./thread-activity.js";
-import { filterThreads } from "./thread-list-model.js";
 
 const now = "2026-08-09T20:00:00.000Z";
 const ownerId = createId("user");
@@ -100,18 +98,18 @@ const environmentId = createId("environment");
 const harnessInstanceId = createId("harnessInstance");
 
 it("opts control viewers into basic input and exposes only the returned negotiation", async () => {
-  const workspace = makeWorkspace();
+  const workspace = makeDeployment();
   const sessionId = createBrowserSessionId();
   const surfaceId = BrowserSurfaceIdSchema.parse("phone-page");
   const session = seedBrowserSession(
     {
       id: sessionId,
       access: "read-write" as const,
-      origin: "workspace" as const,
+      origin: "person" as const,
       state: "ready" as const,
       createdAt: now,
       updatedAt: now,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
       profileId: null,
       runtimeId: "runtime",
       placement: { kind: "runner" as const, runnerId },
@@ -144,7 +142,7 @@ it("opts control viewers into basic input and exposes only the returned negotiat
           available: true,
           placements: [],
           profiles: [],
-          profileGrants: [],
+
           sessions: [session],
         }),
       ),
@@ -191,11 +189,11 @@ it("opts control viewers into basic input and exposes only the returned negotiat
 });
 
 it.each([64, 500])(
-  "measures %s tabs through the real Host publisher and three client sockets",
+  "measures %s tabs through the real Host publisher and one Deployment socket",
   async (count) => {
-    const workspaces = [makeWorkspace(), makeWorkspace(), makeWorkspace()];
+    const workspaces = [makeDeployment(), makeDeployment(), makeDeployment()];
     const counts = count === 64 ? [64] : [64, 62, 62, 62, 62, 62, 62, 64];
-    const groups = counts.map((tabCount, index) => {
+    const groups = counts.map((tabCount, _index) => {
       const id = createBrowserSessionId();
       return BrowserGroupRowSchema.parse({
         id,
@@ -203,9 +201,9 @@ it.each([64, 500])(
         createdAt: now,
         sessionCreatedAt: now,
         updatedAt: now,
-        workspaceId: workspaces[index % 3]!.id,
+
         state: "ready",
-        origin: "workspace",
+        origin: "person",
         access: "read-write",
         placement: { kind: "runner", runnerId },
         profileId: null,
@@ -297,7 +295,7 @@ it.each([64, 500])(
       available: true,
       placements: [],
       profiles: [],
-      profileGrants: [],
+
       ...prefix,
     });
     const sockets: FakeSocket[] = [];
@@ -306,8 +304,10 @@ it.each([64, 500])(
     const fetch = vi.fn(async () => json(body));
     const client = createHttpHostClient({
       fetch,
-      prefetchHome: false,
+
       refreshIntervalMs: 0,
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 10,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         const messages: HostToClientMessage[] = [];
@@ -354,11 +354,10 @@ it.each([64, 500])(
       ).length;
     try {
       await client.load();
-      for (const workspace of workspaces) client.activateWorkspace(workspace.id);
       for (const socket of sockets) socket.open();
       await vi.waitFor(() => expect(ended(0)).toBe(groups.length));
-      expect(sockets).toHaveLength(3);
-      expect(incoming.slice(1)).toEqual([[], []]);
+      expect(sockets).toHaveLength(1);
+      expect(incoming.slice(1)).toEqual([]);
       expect(
         client
           .getSnapshot()
@@ -413,25 +412,28 @@ it.each([64, 500])(
         type: "host.browser-tabs",
         stream: { op: "change", update: [{ id: changed.id, title: `Changed at ${count}` }] },
       });
-      expect(incoming.slice(1)).toEqual([[], []]);
+      expect(incoming.slice(1)).toEqual([]);
       const beforeHandover = total();
       const readsBeforeHandover = fetch.mock.calls.length;
+      vi.useFakeTimers();
       sockets[0]!.serverClose();
+      await vi.advanceTimersByTimeAsync(10);
+      sockets[1]!.open();
       await vi.waitFor(() => expect(ended(1)).toBe(groups.length));
       const handoverBytes = total() - beforeHandover;
       expect(
         sockets
-          .slice(0, 3)
+          .slice(0, 2)
           .map(
             (socket) =>
               socket.sent.filter((data) => JSON.parse(data).type === "client.browser.resync")
                 .length,
           ),
-      ).toEqual([1, 1, 0]);
+      ).toEqual([1, 1]);
       expect(fetch).toHaveBeenCalledTimes(readsBeforeHandover);
       expect(JSON.stringify(incoming)).not.toContain("never-on-client");
       expect(body.browser).not.toHaveProperty("sessions");
-      expect(body.browser).not.toHaveProperty("workspaceTabs");
+      expect(body.browser).not.toHaveProperty("personalTabs");
       expect(errors).toEqual([]);
       await writeRealtimeEvidence(
         {
@@ -455,18 +457,51 @@ it.each([64, 500])(
 );
 
 describe("browser carrier and derivation", () => {
+  it("derives changed rows while sharing every other row and group", async () => {
+    const f = await fixture();
+    try {
+      const group = replace(f, f.sockets[0]!, "tabs");
+      const before = f.client.getSnapshot();
+      const first = before.browserSessions.find((session) => session.id === group.groupId)!;
+      const other = before.browserSessions.find((session) => session.id !== group.groupId)!;
+      const firstRows = f.client.browserTabs.sessionTabs(first.id);
+      const otherGroup = f.client.browserTabs.group(other.id);
+      const otherRows = f.client.browserTabs.sessionTabs(other.id);
+      f.sockets[0]!.receiveRaw({
+        type: "host.browser-tabs",
+        groupId: group.groupId,
+        stream: {
+          op: "change",
+          generation: "tabs",
+          base: 0,
+          revision: 1,
+          update: [{ id: group.rows[0]!.id, title: "Changed" }],
+        },
+      });
+      const after = f.client.getSnapshot();
+      expect(f.client.browserTabs.sessionTab(first.id, group.rows[0]!.id)?.title).toBe("Changed");
+      expect(f.client.browserTabs.sessionTabs(first.id)[0]).not.toBe(firstRows[0]);
+      expect(f.client.browserTabs.sessionTabs(first.id)[1]).toBe(firstRows[1]);
+      expect(after.browserSessions.find((session) => session.id === other.id)).toBe(other);
+      expect(f.client.browserTabs.group(other.id)).toBe(otherGroup);
+      expect(f.client.browserTabs.sessionTabs(other.id)).toBe(otherRows);
+    } finally {
+      f.client.dispose();
+    }
+  });
+
   async function fixture(prefix = false) {
-    const workspaces = [makeWorkspace(), makeWorkspace(), makeWorkspace()];
+    const workspaces = [makeDeployment(), makeDeployment(), makeDeployment()];
     const sessions = workspaces.slice(0, 2).map((workspace, index) =>
       seedBrowserSession(
         {
           id: createBrowserSessionId(),
           access: "read-write" as const,
-          origin: "workspace" as const,
+          origin: "person" as const,
           state: "ready" as const,
           createdAt: now,
           updatedAt: now,
-          workspaceId: workspace.id,
+          deploymentId: workspace.id,
           profileId: null,
           runtimeId: "runtime",
           placement: { kind: "runner" as const, runnerId },
@@ -493,7 +528,7 @@ describe("browser carrier and derivation", () => {
       available: true,
       placements: [],
       profiles: [],
-      profileGrants: [],
+
       sessions,
     });
     if (prefix) body.browser.tabs![0]!.complete = false;
@@ -510,8 +545,10 @@ describe("browser carrier and derivation", () => {
     });
     const client = createHttpHostClient({
       fetch,
-      prefetchHome: false,
+
       refreshIntervalMs: 0,
+      reconnectBaseDelayMs: 10,
+      reconnectMaxDelayMs: 10,
       webSocketFactory: () => {
         const socket = new FakeSocket();
         sockets.push(socket);
@@ -519,7 +556,6 @@ describe("browser carrier and derivation", () => {
       },
     });
     await client.load();
-    for (const workspace of workspaces) client.activateWorkspace(workspace.id);
     for (const socket of sockets) socket.open();
     return { client, sockets, fetch, body, sessions };
   }
@@ -548,7 +584,7 @@ describe("browser carrier and derivation", () => {
         const retain =
           mode === "control" ? f.client.retainBrowserViewer : f.client.retainBrowserWatch;
         let release = retain(sessionId, own!.id);
-        const socket = f.sockets[3]!;
+        const socket = f.sockets[1]!;
         expect(socket, "known prefix target must open a viewer").toBeDefined();
         socket.open();
         socket.receiveRaw({
@@ -596,7 +632,7 @@ describe("browser carrier and derivation", () => {
         socket.receiveRaw({ type: "browser.surface", surfaceId: own!.id, surface });
         expect(f.client.browserViewerSurface(sessionId, own!.id)?.url).toBeUndefined();
         release = retain(sessionId, own!.id);
-        const next = f.sockets[4]!;
+        const next = f.sockets[2]!;
         next.open();
         next.receiveRaw({
           type: "browser.snapshot",
@@ -628,7 +664,7 @@ describe("browser carrier and derivation", () => {
         const sessionId = f.sessions[0]!.id;
         const [own, sibling] = f.body.browser.tabs![0]!.rows;
         const release = f.client.retainBrowserViewer(sessionId, own!.id);
-        const socket = f.sockets[3]!;
+        const socket = f.sockets[1]!;
         socket.open();
         socket.receiveRaw({
           type: "browser.snapshot",
@@ -666,71 +702,6 @@ describe("browser carrier and derivation", () => {
     },
   );
 
-  it("elects one of three Workspace sockets, hands over once, and drops old carrier frames", async () => {
-    const f = await fixture();
-    try {
-      expect(f.sockets).toHaveLength(3);
-      expect(f.sockets.map(resyncs)).toEqual([[{ type: "client.browser.resync" }], [], []]);
-      const [old, next, sibling] = f.sockets as [FakeSocket, FakeSocket, FakeSocket];
-      const before = f.client.getSnapshot();
-      sibling.receiveRaw({
-        type: "host.browser-groups",
-        stream: { op: "begin", generation: "wrong" },
-      });
-      sibling.receiveRaw({
-        type: "host.browser-groups",
-        stream: { op: "end", revision: 0, count: 0, meta: {} },
-      });
-      expect(f.client.getSnapshot()).toBe(before);
-      old.serverClose();
-      expect(resyncs(next)).toEqual([{ type: "client.browser.resync" }]);
-      const held = f.client.getSnapshot();
-      replace(f, old, "old");
-      expect(f.client.getSnapshot()).toBe(held);
-      replace(f, next, "new");
-      expect(
-        f.client
-          .getSnapshot()
-          .browserSessions[0]!.browserTabs?.sessionTabs(
-            f.client.getSnapshot().browserSessions[0]!.id,
-          ) ?? [],
-      ).toHaveLength(2);
-    } finally {
-      f.client.dispose();
-    }
-  });
-  it("derives changed rows while sharing every other row and group", async () => {
-    const f = await fixture();
-    try {
-      const group = replace(f, f.sockets[0]!, "tabs");
-      const before = f.client.getSnapshot();
-      const first = before.browserSessions.find((session) => session.id === group.groupId)!;
-      const other = before.browserSessions.find((session) => session.id !== group.groupId)!;
-      const firstRows = f.client.browserTabs.sessionTabs(first.id);
-      const otherGroup = f.client.browserTabs.group(other.id);
-      const otherRows = f.client.browserTabs.sessionTabs(other.id);
-      f.sockets[0]!.receiveRaw({
-        type: "host.browser-tabs",
-        groupId: group.groupId,
-        stream: {
-          op: "change",
-          generation: "tabs",
-          base: 0,
-          revision: 1,
-          update: [{ id: group.rows[0]!.id, title: "Changed" }],
-        },
-      });
-      const after = f.client.getSnapshot();
-      expect(f.client.browserTabs.sessionTab(first.id, group.rows[0]!.id)?.title).toBe("Changed");
-      expect(f.client.browserTabs.sessionTabs(first.id)[0]).not.toBe(firstRows[0]);
-      expect(f.client.browserTabs.sessionTabs(first.id)[1]).toBe(firstRows[1]);
-      expect(after.browserSessions.find((session) => session.id === other.id)).toBe(other);
-      expect(f.client.browserTabs.group(other.id)).toBe(otherGroup);
-      expect(f.client.browserTabs.sessionTabs(other.id)).toBe(otherRows);
-    } finally {
-      f.client.dispose();
-    }
-  });
   it("keeps an interrupted snapshot and fences revocation before its late end", async () => {
     const f = await fixture();
     try {
@@ -747,7 +718,10 @@ describe("browser carrier and derivation", () => {
         groupId: group.groupId,
         stream: { op: "rows", rows: [{ ...group.rows[0]!, title: "Uncommitted" }] },
       });
+      vi.useFakeTimers();
       carrier.serverClose();
+      await vi.advanceTimersByTimeAsync(10);
+      f.sockets[1]!.open();
       const next = f.sockets[1]!;
       expect(f.client.browserTabs.sessionTabs(group.groupId)).toBe(held);
       next.receiveRaw({
@@ -814,7 +788,7 @@ describe("browser carrier and derivation", () => {
             (group) => group.whole === false && group.tabs?.length === 1,
           ),
         ).toBe(true);
-        const reading = client.readWorkspaceTabs(f.sessions[0]!.id);
+        const reading = client.readPersonalTabs(f.sessions[0]!.id);
         let settled = false;
         void reading
           .then(() => {
@@ -831,7 +805,7 @@ describe("browser carrier and derivation", () => {
           }),
         ).toBe(false);
         expect(resyncs(socket)).toHaveLength(1);
-        expect(f.sockets.map(resyncs)).toEqual([[{ type: "client.browser.resync" }], [], []]);
+        expect(f.sockets.map(resyncs)).toEqual([[{ type: "client.browser.resync" }]]);
         publishBrowser(socket, { sessions: f.sessions });
         expect((await reading)?.tabs).toHaveLength(2);
         expect(
@@ -902,8 +876,6 @@ describe("browser carrier and derivation", () => {
         { type: "client.browser.resync", groupId: group.groupId },
       ]);
       expect(f.client.getSnapshot().browserSessions).toBe(before);
-      f.sockets[1]!.receiveRaw({ type: "host.browser-tabs", stream: {} });
-      expect(resyncs(f.sockets[0]!)).toHaveLength(2);
       f.sockets[0]!.receiveRaw({ type: "host.browser-tabs", stream: {} });
       expect(resyncs(f.sockets[0]!).at(-1)).toEqual({ type: "client.browser.resync" });
       expect(resyncs(f.sockets[0]!)).toHaveLength(3);
@@ -973,6 +945,15 @@ function rpcContractFetch(
     const name = url.pathname.slice(prefix.length);
     // Nothing waits on this notional Host's reader: the read follows every
     // bootstrap, and no case here is about it.
+    if (name === "needsYou.get")
+      return json({
+        ok: true,
+        data: {
+          count: 0,
+          entries: [],
+          window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        },
+      });
     if (name === "requests.list") {
       return json({
         data: {
@@ -1006,7 +987,7 @@ function rpcContractFetch(
       return json({ data: { timeZone: payload.timeZone, type: payload.type }, ok: true });
     }
     const response = await fetch(input, init);
-    if (name === "workspace.files.preview" && response.ok) return response;
+    if (name === "folder.files.preview" && response.ok) return response;
     const responseBody: unknown = response.status === 204 ? {} : await response.json();
     if (!response.ok) {
       const error = objectValue(responseBody, "error");
@@ -1033,9 +1014,7 @@ function rpcContractFetch(
               ...body,
               readState: body.readState ?? defaultReadState(requiredString(payload, "threadId")),
             }
-          : name === "workspace.catalog.list"
-            ? { ...body, notificationPreferences: preferencesForWorkspaces(body.workspaces) }
-            : responseBody;
+          : responseBody;
     if (name === "commands.dispatch" && payload.type === "browser.session.close") {
       const socket = realtime[0]!;
       const current = startedSessions.get(socket);
@@ -1078,6 +1057,13 @@ function rpcContractFetch(
           ),
         ],
       });
+    }
+    if (name === "bootstrap.get") {
+      const id = stringValue(data, "deploymentId");
+      if (id)
+        bootstrapFixtures.set(id, {
+          browser: objectValue(data, "browser") as BrowserWireBootstrap,
+        });
     }
     return json({ data, ok: true }, response.status);
   };
@@ -1126,332 +1112,8 @@ function defaultReadState(threadId: string) {
   };
 }
 
-function preferencesForWorkspaces(value: unknown) {
-  return Array.isArray(value)
-    ? value.map((workspace) => ({
-        muted: false,
-        revision: SequenceSchema.parse("0"),
-        workspaceId: WorkspaceIdSchema.parse(requiredString(asObject(workspace), "id")),
-      }))
-    : [];
-}
-
-describe("saved-view readiness", () => {
-  it.each([
-    {
-      ownership: "members" as const,
-      personalRemoteAccess: false,
-      nativeWebLinks: false,
-      localOwnerClaim: false,
-      deploymentOwnsMainComputer: false,
-      nativePasswords: false,
-      deploymentComputerAccess: false,
-      sharing: true,
-      serviceManagement: true,
-      runnerEnrollmentMode: "unrestricted",
-      projectConsent: "per-project",
-      localRunnerDefaultModules: ["agents", "browser", "shell"],
-    },
-    { ownership: "future-model", localRunnerDefaultModules: ["future-module"] },
-  ])("retains the Host policy projection without deriving it from shape: %j", async (policy) => {
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      fetch: async () => json({ ...bootstrap([]), deploymentPolicy: policy }),
-    });
-    await client.load();
-    expect(client.getSnapshot().deploymentShape?.kind).toBe("personal");
-    expect(client.getSnapshot().deploymentPolicy).toEqual(
-      policy?.ownership === "future-model"
-        ? { ownership: undefined, localRunnerDefaultModules: [] }
-        : policy,
-    );
-    client.dispose();
-  });
-
-  it.each(["personal", "server"] as const)(
-    "adapts a previous-release %s bootstrap",
-    async (kind) => {
-      const client = createHttpHostClient({
-        refreshIntervalMs: 0,
-        fetch: async () =>
-          json({
-            ...bootstrap([]),
-            deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
-          }),
-      });
-      await client.load();
-      expect(client.getSnapshot().deploymentPolicy).toMatchObject({
-        ownership: kind === "personal" ? "single-user" : "members",
-        localRunnerDefaultModules:
-          kind === "personal"
-            ? ["browser", "integrations", "messaging", "shell"]
-            : ["agents", "browser", "shell"],
-      });
-      client.dispose();
-    },
-  );
-
-  it("keeps understood policy facts and modules when a Host adds a module", async () => {
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      fetch: async () =>
-        json({
-          ...bootstrap([]),
-          deploymentPolicy: {
-            ownership: "members",
-            personalRemoteAccess: false,
-            nativeWebLinks: false,
-            localOwnerClaim: false,
-            deploymentOwnsMainComputer: false,
-            nativePasswords: false,
-            deploymentComputerAccess: false,
-            sharing: true,
-            serviceManagement: true,
-            runnerEnrollmentMode: "unrestricted",
-            projectConsent: "per-project",
-            localRunnerDefaultModules: ["agents", "future-module", "shell"],
-          },
-        }),
-    });
-    await client.load();
-    expect(client.getSnapshot().deploymentPolicy).toMatchObject({
-      ownership: "members",
-      personalRemoteAccess: false,
-      nativeWebLinks: false,
-      localOwnerClaim: false,
-      deploymentOwnsMainComputer: false,
-      nativePasswords: false,
-      deploymentComputerAccess: false,
-      sharing: true,
-      serviceManagement: true,
-      runnerEnrollmentMode: "unrestricted",
-      projectConsent: "per-project",
-      localRunnerDefaultModules: ["agents", "shell"],
-    });
-    client.dispose();
-  });
-
-  it.each(["personal", "server"] as const)(
-    "does not derive facts from an unreadable %s Host projection",
-    async (kind) => {
-      for (const projection of ["future-policy-format", null, []]) {
-        const client = createHttpHostClient({
-          refreshIntervalMs: 0,
-          fetch: async () =>
-            json({
-              ...bootstrap([]),
-              deploymentShape: { kind, defaultWorkspaceBacking: "local-directory" },
-              deploymentPolicy: projection,
-            }),
-        });
-        try {
-          await client.load();
-          expect(client.getSnapshot().deploymentPolicy, JSON.stringify(projection)).toEqual({});
-        } finally {
-          client.dispose();
-        }
-      }
-    },
-  );
-
-  it.each([
-    {
-      policy: {
-        ownership: "future-owner",
-        localRunnerDefaultModules: ["shell"],
-        nativePasswords: true,
-      },
-      expected: { localRunnerDefaultModules: ["shell"], nativePasswords: true },
-    },
-    {
-      policy: { ownership: "members", localRunnerDefaultModules: "future-module-list" },
-      expected: { ownership: "members" },
-    },
-  ])("keeps other understood facts when one fact is unknown: %j", async ({ policy, expected }) => {
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      fetch: async () => json({ ...bootstrap([]), deploymentPolicy: policy }),
-    });
-    await client.load();
-    expect(client.getSnapshot().deploymentPolicy).toMatchObject(expected);
-    client.dispose();
-  });
-
-  it("distinguishes unknown Main, explicitly absent Home, and accepted latest/around windows", async () => {
-    const main = makeWorkspace();
-    const thread = makeThread(main.id);
-    main.homeThreadId = thread.id;
-    const client = createHttpHostClient({
-      prefetchHome: true,
-      refreshIntervalMs: 0,
-      fetch: async (input) =>
-        new URL(String(input)).pathname.endsWith("thread.events.list")
-          ? json({
-              thread,
-              threadId: thread.id,
-              events: [],
-              window: {
-                threadId: thread.id,
-                byteCount: 2,
-                hasMore: false,
-                itemCount: 0,
-                nextBefore: null,
-                totalItems: 0,
-              },
-            })
-          : json(bootstrap([main])),
-    });
-    expect(client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-    await client.load();
-    await vi.waitFor(() =>
-      expect(client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
-    );
-    expect(client.getSnapshot().savedViewReadiness?.home).toMatchObject({
-      status: "window",
-      threadId: thread.id,
-      latest: true,
-    });
-    await client.loadTranscriptAround(thread.id, createId("message"));
-    expect(client.getSnapshot().savedViewReadiness?.home).toMatchObject({
-      status: "window",
-      latest: false,
-    });
-    client.dispose();
-    for (const [workspaces, status] of [
-      [[], "unknown"],
-      [[makeWorkspace()], "absent"],
-    ] as const) {
-      const host = createHttpHostClient({
-        refreshIntervalMs: 0,
-        fetch: async () => json(bootstrap([...workspaces])),
-      });
-      await host.load();
-      expect(host.getSnapshot().savedViewReadiness?.home.status).toBe(status);
-      host.dispose();
-    }
-  });
-});
-
-describe("HttpHostClient Workspace files", () => {
-  it("lists one directory on demand and decodes a bounded UTF-8 preview", async () => {
-    const workspaceId = createId("workspace");
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      if (url.pathname === "/v1/rpc/workspace.files.list") {
-        expect(init?.method).toBe("POST");
-        expect(url.search).toBe("");
-        const payload = rpcPayload(url, init);
-        expect(payload.parentKey).toBe("");
-        expect(payload.cursor).toBeUndefined();
-        if (payload.knownRevision) {
-          expect(payload.knownRevision).toBe("directory_revision_1");
-          expect(payload.retainedCursor).toBe("retained_cursor_token_1");
-        }
-        return json({
-          cursor: null,
-          entries: [
-            {
-              executable: false,
-              hidden: false,
-              key: "UkVBRE1FLm1k",
-              kind: "file",
-              mode: 0o644,
-              modifiedAt: null,
-              name: "README.md",
-              sizeBytes: 5,
-            },
-          ],
-          parentKey: "",
-          revision: "directory_revision_1",
-        });
-      }
-      expect(url.pathname).toBe("/v1/rpc/workspace.files.preview");
-      expect(init?.method).toBe("POST");
-      expect(url.search).toBe("");
-      expect(rpcPayload(url, init).fileKey).toBe("UkVBRE1FLm1k");
-      return new Response("hello", {
-        headers: {
-          "content-type": "text/plain; charset=utf-8",
-          etag: '"file-etag"',
-          "last-modified": "Wed, 12 Aug 2026 12:00:00 GMT",
-          "x-opensteer-file-size": "5",
-          "x-opensteer-file-truncated": "false",
-        },
-      });
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      baseUrl: "https://opensteer.example/app/",
-      fetch,
-      refreshIntervalMs: 0,
-    });
-
-    await expect(client.listWorkspaceFiles(workspaceId, { parentKey: "" })).resolves.toMatchObject({
-      entries: [{ name: "README.md" }],
-    });
-    await expect(
-      client.listWorkspaceFiles(workspaceId, {
-        knownRevision: "directory_revision_1",
-        parentKey: "",
-        retainedCursor: "retained_cursor_token_1",
-      }),
-    ).resolves.toMatchObject({ revision: "directory_revision_1" });
-    await expect(client.previewWorkspaceFile(workspaceId, "UkVBRE1FLm1k")).resolves.toEqual({
-      content: "hello",
-      metadata: {
-        contentType: "text/plain; charset=utf-8",
-        etag: '"file-etag"',
-        modifiedAt: "2026-08-12T12:00:00.000Z",
-        sizeBytes: 5,
-        truncated: false,
-      },
-    });
-    expect(client.workspaceFileDownloadUrl(workspaceId, "UkVBRE1FLm1k")).toBe(
-      `https://opensteer.example/v1/workspaces/${workspaceId}/files/download?file=UkVBRE1FLm1k`,
-    );
-    client.dispose();
-  });
-
-  it("does not decode arbitrary binary bytes into the preview", async () => {
-    const fetch = vi.fn(
-      async () =>
-        new Response(new Uint8Array([0xff, 0xfe, 0xfd]), {
-          headers: {
-            "content-type": "application/octet-stream",
-            etag: '"binary-etag"',
-            "x-opensteer-file-size": "3",
-            "x-opensteer-file-truncated": "false",
-          },
-        }),
-    ) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
-
-    await expect(
-      client.previewWorkspaceFile(createId("workspace"), "YmluYXJ5"),
-    ).resolves.toMatchObject({ content: null });
-    client.dispose();
-  });
-
-  it("rejects a preview whose declared body exceeds the client limit", async () => {
-    const fetch = vi.fn(
-      async () =>
-        new Response("small", {
-          headers: {
-            "content-length": String(512 * 1_024 + 1),
-            "content-type": "text/plain",
-          },
-        }),
-    ) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({ fetch, refreshIntervalMs: 0 });
-
-    await expect(
-      client.previewWorkspaceFile(createId("workspace"), "UkVBRE1FLm1k"),
-    ).rejects.toThrow(/larger than this app accepts/);
-    client.dispose();
-  });
-});
-
 describe("HttpHostClient authentication and onboarding", () => {
-  it("projects, clears, and tolerates an absent authenticated session surface", async () => {
+  it("projects and clears the authenticated session surface", async () => {
     const sessionId = createId("authSession");
     const remoteBootstrap = {
       ...bootstrap([]),
@@ -1478,14 +1140,6 @@ describe("HttpHostClient authentication and onboarding", () => {
       sessionSurface: null,
     });
     remote.dispose();
-
-    const legacy = createHttpHostClient({
-      fetch: async () => json(bootstrap([])),
-      refreshIntervalMs: 0,
-    });
-    await legacy.load();
-    expect(legacy.getSnapshot().sessionSurface).toBeNull();
-    legacy.dispose();
   });
 
   it("spends a password-recovery capability without retaining it or the new password", async () => {
@@ -1559,7 +1213,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       });
       if (url.pathname === "/v1/rpc/auth.config") {
         return json({
-          deployment: { kind: "self-hosted" as const, name: null },
+          deployment: { kind: "personal" as const, name: null },
           emailDeliveryAvailable: false,
           localPasswordEnabled: true,
           machineOwner: false,
@@ -1599,10 +1253,9 @@ describe("HttpHostClient authentication and onboarding", () => {
     await client.refresh();
 
     expect(client.getSnapshot()).toMatchObject({
-      connection: "connected",
+      connection: "connecting",
       ownerName: "Alex",
       session: "authenticated",
-      workspaces: [],
     });
     // Claiming is a single call, so there is no window in which the account
     // exists while the Host is still unclaimed.
@@ -1627,7 +1280,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       paths.push(url.pathname);
       if (url.pathname === "/v1/rpc/auth.config") {
         return json({
-          deployment: { kind: "self-hosted" as const, name: null },
+          deployment: { kind: "personal" as const, name: null },
           emailDeliveryAvailable: false,
           exposure: "networked",
           localPasswordEnabled: false,
@@ -1654,7 +1307,7 @@ describe("HttpHostClient authentication and onboarding", () => {
     await client.reauthenticate();
 
     expect(client.getSnapshot()).toMatchObject({
-      connection: "connected",
+      connection: "connecting",
       session: "authenticated",
     });
     expect(paths).toEqual([
@@ -1666,7 +1319,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   });
 
   it("resolves a selected group outside the prefix from the carrier and keeps it through stale bootstrap", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const seed = new MockHostClient({ latencyMs: 0 });
     const group = browserLineages(seed.getSnapshot())!.find((group) => group.tabs?.length)!;
     seed.dispose();
@@ -1680,12 +1333,12 @@ describe("HttpHostClient authentication and onboarding", () => {
     try {
       await client.load();
       socket.open();
-      expect(await client.readWorkspaceTabs(group.session.id)).toBeNull();
+      expect(await client.readPersonalTabs(group.session.id)).toBeNull();
       publishBrowser(socket, { lineages: [group] });
-      const received = await client.readWorkspaceTabs(group.session.id);
+      const received = await client.readPersonalTabs(group.session.id);
       expect(received?.tabs?.map((tab) => tab.id)).toEqual(group.tabs!.map((tab) => tab.id));
       await client.refresh();
-      expect(await client.readWorkspaceTabs(group.session.id)).toBe(received);
+      expect(await client.readPersonalTabs(group.session.id)).toBe(received);
     } finally {
       client.dispose();
     }
@@ -1693,12 +1346,12 @@ describe("HttpHostClient authentication and onboarding", () => {
   // Failure mode: a pending move materializes the old tab set, so a lineage read
   // inserts its new tab beside the moved opener instead of replaying the move.
   it("replays a pending move with tabs learned before the layout acknowledgement", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sessionId = createBrowserSessionId();
     const [a, b, c, d] = ["a", "b", "c", "d"].map((id) =>
       BrowserSurfaceIdSchema.parse(`surface_pending_${id}`),
     );
-    const lineage: WorkspaceTabLineage = {
+    const lineage: PersonalTabLineage = {
       id: sessionId,
       revision: 1,
       createdAt: now,
@@ -1707,12 +1360,11 @@ describe("HttpHostClient authentication and onboarding", () => {
         access: "read-write",
         createdAt: now,
         updatedAt: now,
-        origin: "workspace",
+        origin: "person",
         placement: { kind: "runner", runnerId },
         profileId: null,
         runtimeId: "test",
         state: "failed",
-        workspaceId: workspace.id,
       },
       tabs: [a!, b!, c!].map((id, order) => ({
         kind: "browser",
@@ -1728,16 +1380,16 @@ describe("HttpHostClient authentication and onboarding", () => {
     };
     const browser: HostedBrowserBootstrap = {
       available: true,
-      workspaceTabRestoreVersion: 1,
+      tabRestoreVersion: 1,
       lineages: [lineage],
       tabGroupsVersion: 1,
       tabGroups: { revision: 1, groups: [], order: [] },
       profiles: [],
       placements: [],
-      profileGrants: [],
+
       sessions: [],
     };
-    const newer: WorkspaceTabLineage = {
+    const newer: PersonalTabLineage = {
       ...lineage,
       revision: 2,
       tabs: [
@@ -1787,7 +1439,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       expect(
         browserTabStrip(placeList(snapshot), snapshot.browserTabGroups)
           .ordered.filter((p) => p.kind === "browser")
-          .map((p) => p.workspaceTab!.id),
+          .map((p) => p.personalTab!.id),
       ).toEqual([c, a, b, d]);
     } finally {
       acknowledge(
@@ -1803,7 +1455,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   // Failure modes: a delayed command restores a closed member at the refresh's revision;
   // rejecting equal-revision refreshes instead leaves visibility changes stale.
   it("keeps an equal-revision refresh when an older command acknowledgement arrives later", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const a = BrowserSurfaceIdSchema.parse("surface_delayed-a");
     const b = BrowserSurfaceIdSchema.parse("surface_delayed-b");
     const group = {
@@ -1817,7 +1469,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       available: true,
       profiles: [],
       placements: [],
-      profileGrants: [],
+
       sessions: [],
       tabGroupsVersion: 1,
       tabGroups: { revision: 1, groups: [group] },
@@ -1860,10 +1512,10 @@ describe("HttpHostClient authentication and onboarding", () => {
   // Failure modes: a batch close invents a live catalog revision, changes unrelated
   // lineages, or requests a redundant bootstrap instead of using the Host notice.
   it("batch close updates only durable membership and leaves catalog reconciliation to Host notices", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sessionId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("surface_batch-close");
-    const lineage: WorkspaceTabLineage = {
+    const lineage: PersonalTabLineage = {
       id: sessionId,
       revision: 1,
       createdAt: now,
@@ -1872,12 +1524,11 @@ describe("HttpHostClient authentication and onboarding", () => {
         access: "read-write",
         createdAt: now,
         updatedAt: now,
-        origin: "workspace",
+        origin: "person",
         placement: { kind: "runner", runnerId },
         profileId: null,
         runtimeId: "test",
         state: "failed",
-        workspaceId: workspace.id,
       },
       tabs: [
         {
@@ -1894,11 +1545,11 @@ describe("HttpHostClient authentication and onboarding", () => {
     };
     const browser: HostedBrowserBootstrap = {
       available: true,
-      workspaceTabRestoreVersion: 1,
+      tabRestoreVersion: 1,
       lineages: [lineage],
       profiles: [],
       placements: [],
-      profileGrants: [],
+
       sessions: [],
     };
     const calls: string[] = [];
@@ -1919,7 +1570,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       const before = client.getSnapshot();
       const groupsBefore = client.browserTabs.groups();
       const rowsBefore = client.browserTabs.sessionTabs(lineage.session.id);
-      expect(await client.closeWorkspaceTabs([tabId])).toMatchObject({
+      expect(await client.closePersonalTabs([tabId])).toMatchObject({
         closed: [tabId],
         failed: [],
       });
@@ -1934,92 +1585,9 @@ describe("HttpHostClient authentication and onboarding", () => {
       client.dispose();
     }
   });
-  it("creates the first durable Workspace and immediately opens its realtime channel", async () => {
-    const workspace = makeWorkspace("Client work");
-    const sockets: FakeSocket[] = [];
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([]));
-      expect(path).toBe("/v1/rpc/commands.dispatch");
-      expect(JSON.parse(String(init?.body))).toEqual({
-        idempotencyKey: "workspace:test",
-        name: "Client work",
-        type: "workspace.create",
-      });
-      return json({ workspace }, 201);
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    await client.load();
-    const created = await client.dispatch({
-      idempotencyKey: "workspace:test",
-      name: "Client work",
-      type: "workspace.create",
-    });
-
-    expect(created).toMatchObject({ workspace: { name: "Client work", status: "ready" } });
-    expect(client.getSnapshot().workspaces).toHaveLength(1);
-    expect(sockets).toHaveLength(1);
-    sockets[0]?.open();
-    expect(parseSent(sockets[0]!, 0)).toMatchObject({
-      afterSequence: "0",
-      // The realtime stream negotiates the same epoch the rpc header states.
-      apiVersion: hostApiVersion,
-      type: "client.subscribe",
-      workspaceId: workspace.id,
-    });
-    client.dispose();
-  });
-
-  it("retries storage through the Host and projects the returned Workspace state", async () => {
-    const unavailable = {
-      ...makeWorkspace("Client work"),
-      status: "unavailable" as const,
-      storageIssue: {
-        code: "manager-unavailable" as const,
-        message: "Storage is offline.",
-        occurredAt: now,
-        retryable: true,
-      },
-    };
-    const ready = { ...unavailable, status: "ready" as const, storageIssue: null };
-    const fetch = vi.fn(async (input: string | URL | Request) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([unavailable]));
-      expect(path).toBe("/v1/rpc/commands.dispatch");
-      return json({ workspace: ready });
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-
-    await client.load();
-    const result = await client.dispatch({
-      idempotencyKey: "workspace-storage:test",
-      type: "workspace.storage.retry",
-      workspaceId: unavailable.id,
-    });
-
-    expect(result).toMatchObject({ workspace: { status: "ready", storageIssue: null } });
-    expect(client.getSnapshot().workspaces[0]).toMatchObject({
-      status: "ready",
-      storageIssue: null,
-    });
-    client.dispose();
-  });
 
   it("sends the execution tuple it was given and remembers it once the Host accepts", async () => {
-    const workspace = makeWorkspace("Placement work");
+    const workspace = makeDeployment("Placement work");
     const localEnvironmentId = createId("environment");
     const localRunnerId = createId("runner");
     const codexHarnessId = createId("harnessInstance");
@@ -2027,10 +1595,11 @@ describe("HttpHostClient authentication and onboarding", () => {
       ...bootstrap([workspace]),
       environments: [
         {
+          can: { executeTasks: true },
           capabilities: ["filesystem"],
           connected: true,
           harnessAuthenticationAllowed: true,
-          workspaceBackings: ["local-directory"],
+
           harnessCatalogs: [
             {
               continuationIdentity: {
@@ -2076,10 +1645,11 @@ describe("HttpHostClient authentication and onboarding", () => {
           status: "connected" as const,
         },
         {
+          can: { executeTasks: true },
           capabilities: ["filesystem"],
           connected: true,
           harnessAuthenticationAllowed: true,
-          workspaceBackings: ["local-directory"],
+
           harnessCatalogs: [codexCatalog(harnessInstanceId)],
           harnessDrivers: [
             {
@@ -2178,7 +1748,6 @@ describe("HttpHostClient authentication and onboarding", () => {
       environmentId: localEnvironmentId,
       harnessInstanceId: codexHarnessId,
       modelSelection,
-      workspaceId: workspace.id,
     });
 
     expect(bodies).toEqual([
@@ -2207,17 +1776,20 @@ describe("HttpHostClient authentication and onboarding", () => {
     });
 
     bodies.length = 0;
-    await client.createHome({
+    await client.createThread({
       accessMode: "full-access",
       environmentId: localEnvironmentId,
       harnessInstanceId: codexHarnessId,
       modelSelection,
-      workspaceId: workspace.id,
     });
     expect(bodies).toEqual([
-      expect.objectContaining({ home: true, type: "thread.create" }),
-      expect.not.objectContaining({
-        selection: expect.anything(),
+      expect.objectContaining({ type: "thread.create" }),
+      expect.objectContaining({
+        selection: {
+          environmentId: localEnvironmentId,
+          harnessInstanceId: codexHarnessId,
+          modelSelection,
+        },
       }),
     ]);
     expect(bodies[1]).toMatchObject({
@@ -2228,7 +1800,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   });
 
   it("rejects a bootstrap response without the required work location status", async () => {
-    const workspace = makeWorkspace("Strict contract");
+    const workspace = makeDeployment("Strict contract");
     const attached = bootstrap([workspace]);
     const invalid = {
       ...attached,
@@ -2245,7 +1817,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   });
 
   it("takes the Host's word on who may sign in a work location, over the instance role", async () => {
-    const workspace = makeWorkspace("Bound cloud");
+    const workspace = makeDeployment("Bound cloud");
     const attached = bootstrap([workspace]);
     const payload = {
       ...attached,
@@ -2255,7 +1827,7 @@ describe("HttpHostClient authentication and onboarding", () => {
         {
           ...attached.environments[0],
           harnessAuthenticationAllowed: true,
-          workspaceBackings: ["local-directory"],
+
           id: createId("environment"),
           kind: "managed" as const,
           name: "Their managed Runner",
@@ -2264,13 +1836,13 @@ describe("HttpHostClient authentication and onboarding", () => {
         {
           ...attached.environments[0],
           harnessAuthenticationAllowed: false,
-          workspaceBackings: ["local-directory"],
+
           id: createId("environment"),
           kind: "managed" as const,
           name: "Another managed Runner",
         },
       ],
-      user: { ...attached.user, instanceRole: "user" as const },
+      user: { ...attached.user },
     };
     const client = createHttpHostClient({
       fetch: async () => json(payload),
@@ -2293,7 +1865,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   });
 
   it("rejects a bootstrap response without an explicit sign-in permission", async () => {
-    const workspace = makeWorkspace("Strict permission");
+    const workspace = makeDeployment("Strict permission");
     const attached = bootstrap([workspace]);
     const invalid = {
       ...attached,
@@ -2312,7 +1884,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   });
 
   it("remembers the account and model a Thread was moved onto", async () => {
-    const workspace = makeWorkspace("Switch account");
+    const workspace = makeDeployment("Switch account");
     const thread = makeThread(workspace.id);
     const otherHarnessId = createId("harnessInstance");
     const sockets: FakeSocket[] = [];
@@ -2347,7 +1919,7 @@ describe("HttpHostClient authentication and onboarding", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
     const updated = await client.updateThreadExecution(thread.id, {
@@ -2370,75 +1942,8 @@ describe("HttpHostClient authentication and onboarding", () => {
     client.dispose();
   });
 
-  it("keeps Chat model changes out of the task execution history", async () => {
-    const workspace = makeWorkspace("Chat history isolation");
-    const home = makeThread(workspace.id);
-    const task = makeThread(workspace.id);
-    workspace.homeThreadId = home.id;
-    const otherHarnessId = createId("harnessInstance");
-    const bodies: Array<Record<string, unknown>> = [];
-    const sockets: FakeSocket[] = [];
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
-        threadId?: string;
-        selection?: ExecutionSelection;
-      };
-      bodies.push(body);
-      if (body.type === "execution.preferences.remember") {
-        return json({
-          preferences: { accessMode: "auto", history: body.selection ? [body.selection] : [] },
-        });
-      }
-      return json({
-        thread: {
-          ...(body.threadId === home.id ? home : task),
-          harnessInstanceId: otherHarnessId,
-        },
-      });
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    await client.load();
-    sockets[0]!.open();
-    sockets[0]!.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [home, task] },
-      type: "host.snapshot",
-    });
-    await client.updateThreadExecution(home.id, {
-      harnessInstanceId: otherHarnessId,
-      modelSelection: home.modelSelection,
-    });
-    expect(bodies.map(({ type }) => type)).toEqual(["thread.execution.update"]);
-    expect(client.getSnapshot().executionPreferences.history).toEqual([]);
-
-    await client.updateThreadExecution(task.id, {
-      harnessInstanceId: otherHarnessId,
-      modelSelection: task.modelSelection,
-    });
-    expect(bodies.map(({ type }) => type)).toEqual([
-      "thread.execution.update",
-      "thread.execution.update",
-      "execution.preferences.remember",
-    ]);
-    expect(client.getSnapshot().executionPreferences.history[0]).toMatchObject({
-      environmentId: task.environmentId,
-      harnessInstanceId: otherHarnessId,
-    });
-    client.dispose();
-  });
-
   it("keeps a Thread mutation that succeeded when remembering it fails", async () => {
-    const workspace = makeWorkspace("Quiet remember");
+    const workspace = makeDeployment("Quiet remember");
     const thread = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -2464,7 +1969,7 @@ describe("HttpHostClient authentication and onboarding", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
 
@@ -2476,7 +1981,7 @@ describe("HttpHostClient authentication and onboarding", () => {
   });
 
   it("reads a bootstrap without remembered choices as nothing remembered", async () => {
-    const workspace = makeWorkspace("Older Host");
+    const workspace = makeDeployment("Older Host");
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
       refreshIntervalMs: 0,
@@ -2506,7 +2011,7 @@ describe("HttpHostClient harness authentication", () => {
 
 describe("HttpHostClient durable realtime", () => {
   it("routes viewer-wide history notices to the history cache", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const socket = new FakeSocket();
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -2516,7 +2021,7 @@ describe("HttpHostClient durable realtime", () => {
     try {
       await client.load();
       socket.open();
-      socket.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+      socket.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
       const changed = vi.spyOn(client.browserHistory, "changed");
       const profileId = createId("browserProfile");
       socket.receive({ type: "host.browser-history-changed", profileId });
@@ -2527,7 +2032,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("refreshes only retained schedule anchors for worker control events without loading flashes", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const unrelated = makeThread(workspace.id);
     let worker = { ...makeThread(workspace.id), listed: false };
     const mock = new MockHostClient({ latencyMs: 0 });
@@ -2576,11 +2081,11 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [unrelated] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [unrelated] },
       });
       socket.receive({
         type: "host.synchronized",
-        workspaceId: workspace.id,
+
         sequence: sequence("0"),
       });
       expect(reads).toEqual({ list: 0, worker: 0, other: 0 });
@@ -2610,10 +2115,12 @@ describe("HttpHostClient durable realtime", () => {
           inputQueuePaused: thread.inputQueuePaused,
           pendingRequests: 0,
         });
-      socket.receive({
-        type: "host.events",
-        events: [state({ ...unrelated, status: "running" }, "1")],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [state({ ...unrelated, status: "running" }, "1")],
+        }),
+      );
       expect(reads).toEqual({ list: 1, worker: 1, other: 1 });
       for (const [index, patch] of [
         { doneAt: "2026-11-03T10:00:00Z" },
@@ -2629,16 +2136,18 @@ describe("HttpHostClient durable realtime", () => {
       ].entries()) {
         worker = { ...worker, ...patch };
         const at = String(index + 2);
-        socket.receive({
-          type: "host.events",
-          events: [
-            "modelSelection" in patch
-              ? agentEvent(workspace.id, worker.id, null, at, "thread.execution-updated", {
-                  thread: worker,
-                })
-              : state(worker, at),
-          ],
-        });
+        socket.receive(
+          eventsFrame({
+            type: "host.events",
+            events: [
+              "modelSelection" in patch
+                ? agentEvent(workspace.id, worker.id, null, at, "thread.execution-updated", {
+                    thread: worker,
+                  })
+                : state(worker, at),
+            ],
+          }),
+        );
         await vi.waitFor(
           () => {
             expect(reads).toEqual({ list: index + 2, worker: index + 2, other: 1 });
@@ -2648,11 +2157,11 @@ describe("HttpHostClient durable realtime", () => {
         );
       }
       expect(states).not.toContain("loading");
-      socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+      socket.receive({ type: "host.triggers-changed" });
       await vi.waitFor(() => expect(reads).toEqual({ list: 7, worker: 7, other: 2 }), {
         timeout: 1000,
       });
-      socket.receive({ type: "host.events", events: [state(worker, "7")] });
+      socket.receive(eventsFrame({ type: "host.events", events: [state(worker, "7")] }));
       expect(reads).toEqual({ list: 7, worker: 7, other: 2 });
       expect(client.getSnapshot().threads.some(({ id }) => id === worker.id)).toBe(false);
       await vi.waitFor(() => expect(otherDetail.getSnapshot().status).toBe("ready"), {
@@ -2663,7 +2172,7 @@ describe("HttpHostClient durable realtime", () => {
       sockets[1]!.open();
       sockets[1]!.receive({
         type: "host.synchronized",
-        workspaceId: workspace.id,
+
         sequence: sequence("7"),
       });
       await vi.waitFor(() => expect(reads).toEqual({ list: 8, worker: 8, other: 3 }), {
@@ -2677,7 +2186,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("invalidates Trigger reads when a program-only occurrence changes", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -2693,9 +2202,9 @@ describe("HttpHostClient durable realtime", () => {
 
     await client.load();
     sockets[0]!.open();
-    sockets[0]!.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+    sockets[0]!.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
     const before = client.getSnapshot().triggerRevision;
-    sockets[0]!.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+    sockets[0]!.receive({ type: "host.triggers-changed" });
 
     expect(client.getSnapshot().triggerRevision).toBe(before + 1);
     expect(listener).toHaveBeenCalled();
@@ -2714,7 +2223,7 @@ describe("HttpHostClient durable realtime", () => {
         thread: hidden,
       }),
     ];
-    sockets[0]!.receive({ type: "host.events", events });
+    sockets[0]!.receive(eventsFrame({ type: "host.events", events }));
     expect(client.getSnapshot().triggerRevision).toBe(before + 1);
     expect(client.getSnapshot().threads.some(({ id }) => id === hidden.id)).toBe(false);
     client.dispose();
@@ -2723,11 +2232,16 @@ describe("HttpHostClient durable realtime", () => {
   it.each([true, false])(
     "holds every open child however long the history, without paging settled history (family %s)",
     async (family) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const mock = new MockHostClient({ latencyMs: 0 });
-      const seed = Object.values(mock.getSnapshot().assignments).find((a) => a.status === "open")!;
-      const older = { ...seed, parentThreadId: thread.id };
+      const seed = Object.values(mock.getSnapshot().assignments)[0]!;
+      const older = {
+        ...seed,
+        status: "open" as const,
+        finishedAt: null,
+        parentThreadId: thread.id,
+      };
       const recent = Array.from({ length: 100 }, () => ({
         ...older,
         id: createId("delegation"),
@@ -2759,7 +2273,7 @@ describe("HttpHostClient durable realtime", () => {
               },
             });
           }
-          return json({ ...bootstrap([workspace]), threads: [thread] });
+          return json({ ...bootstrap([workspace]) });
         },
       });
       await client.load();
@@ -2782,7 +2296,7 @@ describe("HttpHostClient durable realtime", () => {
   it.each([true, false])(
     "loads task automations only with capability (%s), coalescing notices and preserving unchanged arrays",
     async (enabled) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const socket = new FakeSocket();
       const mock = new MockHostClient({ latencyMs: 0 });
@@ -2811,11 +2325,11 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       });
       client.observeThread(thread.id);
       if (!enabled) {
-        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed" });
         await client.refresh();
         expect(reads).toBe(0);
       } else {
@@ -2825,9 +2339,9 @@ describe("HttpHostClient durable realtime", () => {
         );
         const held = client.getSnapshot().threadAutomations[thread.id];
         hold = Promise.withResolvers<Response>();
-        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
-        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
-        socket.receive({ type: "host.triggers-changed", workspaceId: workspace.id });
+        socket.receive({ type: "host.triggers-changed" });
+        socket.receive({ type: "host.triggers-changed" });
+        socket.receive({ type: "host.triggers-changed" });
         expect(reads).toBe(2);
         const answer = hold;
         hold = undefined;
@@ -2836,7 +2350,7 @@ describe("HttpHostClient durable realtime", () => {
         expect(client.getSnapshot().threadAutomations[thread.id]).toBe(held);
         socket.receive({
           type: "host.snapshot",
-          snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+          snapshot: { ...deploymentSnapshot(workspace, "1"), threads: [thread] },
         });
         await vi.waitFor(() => expect(reads).toBe(4), { timeout: 1000 });
       }
@@ -2846,7 +2360,7 @@ describe("HttpHostClient durable realtime", () => {
   );
 
   it("reads a conversation's automations afresh when it is opened again, after a failure, and after a replayed reconnect", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const a = makeThread(workspace.id);
     const b = makeThread(workspace.id);
     const mock = new MockHostClient({ latencyMs: 0 });
@@ -2894,12 +2408,11 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]!.open();
     sockets[0]!.receive({
       type: "host.snapshot",
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [a, b] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [a, b] },
     });
     sockets[0]!.receive({
       sequence: sequence("0"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
     const held = () => client.getSnapshot().threadAutomations[a.id]?.[0]?.name;
     const holds = async (name: string) =>
@@ -2958,7 +2471,6 @@ describe("HttpHostClient durable realtime", () => {
     sockets[1]!.receive({
       sequence: sequence("0"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
     await vi.waitFor(() => expect(held()).not.toBe(before), { timeout: 1000 });
     client.dispose();
@@ -2966,7 +2478,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("loads browser history without live sessions and preserves other scopes across bootstrap", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sessionId = createBrowserSessionId();
     const a = createId("thread");
     const b = createId("thread");
@@ -2991,7 +2503,6 @@ describe("HttpHostClient durable realtime", () => {
       }
       return json(
         bootstrap([workspace], {
-          profileGrants: [],
           available: true,
           placements: [],
           profiles: [],
@@ -3071,9 +2582,9 @@ describe("HttpHostClient durable realtime", () => {
 
   describe("browser catalog churn", () => {
     async function fixture(withGroup = true) {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const sessionId = createBrowserSessionId();
-      const group: WorkspaceTabLineage = {
+      const group: PersonalTabLineage = {
         id: sessionId,
         revision: 1,
         createdAt: now,
@@ -3083,13 +2594,13 @@ describe("HttpHostClient durable realtime", () => {
             createdAt: now,
             updatedAt: now,
             id: sessionId,
-            origin: "workspace",
+            origin: "person",
             placement: { kind: "runner", runnerId },
             profileId: null,
             runtimeId: "runtime-1",
             state: "ready",
-            workspaceId: workspace.id,
-            workspaceTabRestoreVersion: 1,
+            deploymentId: workspace.id,
+            tabRestoreVersion: 1,
           },
           { generation: 1, revision: 1, rows: [] },
         ),
@@ -3108,12 +2619,12 @@ describe("HttpHostClient durable realtime", () => {
       };
       const body = bootstrap([workspace], {
         available: true,
-        workspaceTabRestoreVersion: 1,
+        tabRestoreVersion: 1,
         lineages: withGroup ? [group] : [],
         sessions: [group.session],
         placements: [],
         profiles: [],
-        profileGrants: [],
+
         tabGroupsVersion: 1,
         tabGroups: { revision: 1, groups: [], order: [] },
       });
@@ -3125,14 +2636,14 @@ describe("HttpHostClient durable realtime", () => {
       const client = createHttpHostClient({
         fetch,
         refreshIntervalMs: 0,
-        prefetchHome: false,
+
         webSocketFactory: () => socket,
       });
       await client.load();
       socket.open();
       socket.receive({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [makeThread(workspace.id)] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [makeThread(workspace.id)] },
       });
       return { body, client, fetch, group, socket, workspace };
     }
@@ -3233,7 +2744,7 @@ describe("HttpHostClient durable realtime", () => {
         expect(samePlaceListSource(before, after)).toBe(true);
         for (const key of [
           "threads",
-          "workspaces",
+
           "browserSessions",
           "browserTabs",
           "environments",
@@ -3263,7 +2774,7 @@ describe("HttpHostClient durable realtime", () => {
   ] as const)(
     "refreshes thread-visible bootstrap state on %s without a mounted Computers page",
     async (noticeType) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const sockets: FakeSocket[] = [];
       // The agent's browser is only on the second read: the announcement is what
       // brings it forward, not the poll.
@@ -3271,7 +2782,6 @@ describe("HttpHostClient durable realtime", () => {
       const fetch = vi.fn(async () =>
         json(
           bootstrap([workspace], {
-            profileGrants: [],
             available: true,
             placements: [],
             profiles: opened
@@ -3293,14 +2803,12 @@ describe("HttpHostClient durable realtime", () => {
 
       await client.load();
       sockets[0]!.open();
-      sockets[0]!.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+      sockets[0]!.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
       expect(client.getSnapshot().browserSessions).toEqual([]);
 
       opened = true;
       sockets[0]!.receive({
         type: noticeType,
-        workspaceId:
-          noticeType === "host.browser-sessions-changed" ? createId("workspace") : workspace.id,
       });
       await vi.waitUntil(() => client.getSnapshot().browserProfiles.length === 1);
 
@@ -3351,7 +2859,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("answers a notice that lands mid-read with exactly one more read", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     // Every read waits until the test releases it, so a notice can arrive
     // while one is still in flight. The Host's truth advances per read:
@@ -3367,7 +2875,6 @@ describe("HttpHostClient durable realtime", () => {
             resolve(
               json(
                 bootstrap([workspace], {
-                  profileGrants: [],
                   available: true,
                   placements: [],
                   profiles:
@@ -3402,15 +2909,15 @@ describe("HttpHostClient durable realtime", () => {
     releases.shift()!();
     await loaded;
     sockets[0]!.open();
-    sockets[0]!.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+    sockets[0]!.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
 
     const triggers = vi.spyOn(bootstrapReadDiagnostics, "trigger");
     const starts = vi.spyOn(bootstrapReadDiagnostics, "start");
     // Starting: one read begins. Ready lands twice while it is still out.
-    sockets[0]!.receive({ type: "host.browser-sessions-changed", workspaceId: workspace.id });
+    sockets[0]!.receive({ type: "host.browser-sessions-changed" });
     await vi.waitUntil(() => releases.length === 1);
-    sockets[0]!.receive({ type: "host.browser-sessions-changed", workspaceId: workspace.id });
-    sockets[0]!.receive({ type: "host.browser-sessions-changed", workspaceId: workspace.id });
+    sockets[0]!.receive({ type: "host.browser-sessions-changed" });
+    sockets[0]!.receive({ type: "host.browser-sessions-changed" });
     expect(reads).toBe(2);
 
     releases.shift()!();
@@ -3438,7 +2945,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("leaves a notice for the foreground while the app is hidden", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sessionId = createBrowserSessionId();
     const now = new Date().toISOString();
     const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
@@ -3449,7 +2956,6 @@ describe("HttpHostClient durable realtime", () => {
         reads += 1;
         return json(
           bootstrap([workspace], {
-            profileGrants: [],
             available: true,
             placements: [],
             profiles: [],
@@ -3466,7 +2972,6 @@ describe("HttpHostClient durable realtime", () => {
                       runtimeId: "runtime-1",
                       state: "ready" as const,
                       updatedAt: now,
-                      workspaceId: workspace.id,
                     },
                   ]
                 : [],
@@ -3484,11 +2989,11 @@ describe("HttpHostClient durable realtime", () => {
 
     await client.load();
     sockets[0]!.open();
-    sockets[0]!.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
+    sockets[0]!.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
     expect(reads).toBe(1);
 
     platform.enterBackground();
-    sockets[0]!.receive({ type: "host.browser-sessions-changed", workspaceId: workspace.id });
+    sockets[0]!.receive({ type: "host.browser-sessions-changed" });
     await new Promise((resolve) => setTimeout(resolve, 20));
     // Nobody is looking, so nothing is fetched for them.
     expect(reads).toBe(1);
@@ -3501,150 +3006,8 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("hydrates the explicit Main home when a project Workspace is more recent", async () => {
-    const main = makeWorkspace("Opensteer");
-    const project = {
-      ...makeWorkspace("Gmail Briefing"),
-      kind: "project" as const,
-      updatedAt: "2026-08-09T20:01:00.000Z",
-    };
-    const mainThread = makeThread(main.id);
-    const sockets: FakeSocket[] = [];
-    const payload = bootstrap([project]);
-    const client = createHttpHostClient({
-      fetch: async () =>
-        json({
-          ...payload,
-          homeWorkspace: main,
-          workspaceWindow: { ...payload.workspaceWindow, hasMore: true, totalItems: 2 },
-        }),
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    await client.load();
-
-    expect(client.getSnapshot().homeWorkspaceId).toBe(main.id);
-    expect(client.getSnapshot().workspaces.map(({ id }) => id)).toEqual([main.id, project.id]);
-    // The supplemental Home entry does not exhaust the authoritative catalog cursor.
-    expect(client.getSnapshot().workspaceWindow.hasMore).toBe(true);
-    expect(sockets).toHaveLength(1);
-    sockets[0]!.open();
-    expect(parseSent(sockets[0]!, 0)).toMatchObject({
-      type: "client.subscribe",
-      workspaceId: main.id,
-    });
-
-    sockets[0]!.receive({
-      snapshot: {
-        ...workspaceSnapshot(main, "1"),
-        threads: [mainThread],
-        threadWindow: {
-          byteCount: new TextEncoder().encode(JSON.stringify([mainThread])).byteLength,
-          hasMore: false,
-          itemCount: 1,
-          nextBefore: null,
-          totalItems: 1,
-        },
-      },
-      type: "host.snapshot",
-    });
-    expect(client.getSnapshot().threads.map(({ id }) => id)).toEqual([mainThread.id]);
-    client.dispose();
-  });
-
-  it("paginates the Workspace catalog without opening a socket for every loaded Workspace", async () => {
-    const recent = [makeWorkspace("Recent A"), makeWorkspace("Recent B")];
-    const older = makeWorkspace("Older");
-    const sockets: FakeSocket[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      if (url.pathname === "/v1/rpc/workspace.catalog.list") {
-        expect(rpcPayload(url, undefined).before).toBe("workspace_cursor");
-        return json({
-          window: {
-            byteCount: new TextEncoder().encode(JSON.stringify([older])).byteLength,
-            hasMore: false,
-            itemCount: 1,
-            nextBefore: null,
-            totalItems: 3,
-          },
-          workspaces: [older],
-        });
-      }
-      return json({
-        ...bootstrap(recent),
-        workspaceWindow: {
-          byteCount: new TextEncoder().encode(JSON.stringify(recent)).byteLength,
-          hasMore: true,
-          itemCount: 2,
-          nextBefore: "workspace_cursor",
-          totalItems: 3,
-        },
-      });
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-
-    await client.load();
-    expect(sockets).toHaveLength(1);
-    await client.loadEarlierWorkspaces();
-    expect(client.getSnapshot().workspaces.map(({ id }) => id)).toEqual([
-      ...recent.map(({ id }) => id),
-      older.id,
-    ]);
-    expect(sockets).toHaveLength(1);
-    client.activateWorkspace(older.id);
-    expect(sockets).toHaveLength(2);
-    client.dispose();
-  });
-
-  it("debounces active Workspace prefetch and shows restore progress", async () => {
-    vi.useFakeTimers();
-    const workspace = {
-      ...makeWorkspace("Archived workspace"),
-      restoreProgressPermille: 437,
-      status: "provisioning" as const,
-    };
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      if (url.pathname === "/v1/rpc/workspace.prefetch") {
-        return new Response(null, { status: 204 });
-      }
-      return json(bootstrap([workspace]));
-    });
-    const client = createHttpHostClient({
-      fetch: fetchMock as unknown as typeof globalThis.fetch,
-      refreshIntervalMs: 0,
-    });
-
-    await client.load();
-    expect(client.getSnapshot().workspaces[0]?.description).toBe("Waking… (43%)");
-    client.activateWorkspace(workspace.id);
-    client.activateWorkspace(workspace.id);
-    await vi.advanceTimersByTimeAsync(150);
-
-    expect(
-      fetchMock.mock.calls.filter(
-        ([input]) => new URL(String(input)).pathname === "/v1/rpc/workspace.prefetch",
-      ),
-    ).toHaveLength(1);
-    client.dispose();
-  });
-
   it("restores a pending Request from a zero-cursor snapshot", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = {
       ...makeThread(workspace.id),
       pendingRequests: 1,
@@ -3659,7 +3022,7 @@ describe("HttpHostClient durable realtime", () => {
       },
       runId,
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -3675,7 +3038,7 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]!.open();
     sockets[0]!.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "2"),
+        ...deploymentSnapshot(workspace, "2"),
         pendingRequests: [pending],
         pendingRequestWindow: {
           byteCount: new TextEncoder().encode(JSON.stringify([pending])).byteLength,
@@ -3703,19 +3066,19 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("follows the pending-only Request cursor until every pending item is reachable", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), pendingRequests: 2 };
     const first = pendingRequest({
       presentation: { kind: "external", subject: { id: "one", kind: "test" }, title: "One" },
       runId: createId("run"),
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const second = pendingRequest({
       presentation: { kind: "external", subject: { id: "two", kind: "test" }, title: "Two" },
       runId: createId("run"),
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const requestPages: Readonly<Record<string, unknown>>[] = [];
     const sockets: FakeSocket[] = [];
@@ -3767,7 +3130,7 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]!.open();
     sockets[0]!.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "2"),
+        ...deploymentSnapshot(workspace, "2"),
         threads: [thread],
         threadWindow: {
           byteCount: 128,
@@ -3795,7 +3158,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("removes a provider-cancelled Request when the canonical cancellation event arrives", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = {
       ...makeThread(workspace.id),
       pendingRequests: 1,
@@ -3811,7 +3174,7 @@ describe("HttpHostClient durable realtime", () => {
       },
       runId,
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -3829,7 +3192,7 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "0"),
+        ...deploymentSnapshot(workspace, "0"),
         pendingRequests: [pending],
         pendingRequestWindow: {
           byteCount: new TextEncoder().encode(JSON.stringify([pending])).byteLength,
@@ -3850,20 +3213,22 @@ describe("HttpHostClient durable realtime", () => {
       type: "host.snapshot",
     });
 
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "request.cancelled", {
-          requestId: pending.id,
-          reason: "source-closed",
-        }),
-        agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
-          status: "running",
-          inputQueuePaused: false,
-          pendingRequests: 0,
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "request.cancelled", {
+            requestId: pending.id,
+            reason: "source-closed",
+          }),
+          agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
+            status: "running",
+            inputQueuePaused: false,
+            pendingRequests: 0,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(client.getSnapshot().requests[thread.id]).toEqual([]);
     expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(0);
     expect(client.getSnapshot().transcripts[thread.id]).toEqual([
@@ -3879,7 +3244,7 @@ describe("HttpHostClient durable realtime", () => {
   it.each([true, false])(
     "loads an older durable message window through its continuation cursor (turn pages %s)",
     async (turnPages) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const recent = makeMessage(thread.id, "assistant", "Recent");
       const internalResult: Message = {
@@ -3934,7 +3299,7 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         snapshot: {
-          ...workspaceSnapshot(workspace, "2"),
+          ...deploymentSnapshot(workspace, "2"),
           messages: [recent, internalResult],
           messageWindows: [
             {
@@ -3973,7 +3338,7 @@ describe("HttpHostClient durable realtime", () => {
   describe("earlier visible history", () => {
     async function setupHistory(
       options: {
-        role?: "conversation" | "work";
+        purpose?: "voice" | "task";
         turnPages?: boolean;
         steps?: boolean;
         emptyFirst?: boolean;
@@ -3990,8 +3355,8 @@ describe("HttpHostClient durable realtime", () => {
         shown?: "active" | "observed";
       } = {},
     ) {
-      const workspace = makeWorkspace();
-      const thread = { ...makeThread(workspace.id), role: options.role ?? "conversation" };
+      const workspace = makeDeployment();
+      const thread = { ...makeThread(workspace.id), purpose: options.purpose ?? "voice" };
       const recent = {
         ...makeMessage(thread.id, options.folded || options.cut ? "assistant" : "input", "Recent"),
         runId: options.folded || options.cut ? createId("run") : null,
@@ -4180,7 +3545,7 @@ describe("HttpHostClient durable realtime", () => {
       socket.receive({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(workspace, "6"),
+          ...deploymentSnapshot(workspace, "6"),
           threads: [thread],
           messages: [recent],
           messageWindows: [
@@ -4213,15 +3578,17 @@ describe("HttpHostClient durable realtime", () => {
         secondAnswer,
         receiveHuman: () => {
           const live = { ...makeMessage(thread.id, "input", "Live"), sequence: sequence("7") };
-          socket.receive({
-            type: "host.events",
-            events: [
-              agentEvent(workspace.id, thread.id, null, "7", "message.created", {
-                input: makeThreadInput(live),
-                message: live,
-              }),
-            ],
-          });
+          socket.receive(
+            eventsFrame({
+              type: "host.events",
+              events: [
+                agentEvent(workspace.id, thread.id, null, "7", "message.created", {
+                  input: makeThreadInput(live),
+                  message: live,
+                }),
+              ],
+            }),
+          );
         },
         changeViewer: async () => {
           viewerId = createId("user");
@@ -4231,7 +3598,7 @@ describe("HttpHostClient durable realtime", () => {
           socket.receive({
             type: "host.snapshot",
             snapshot: {
-              ...workspaceSnapshot(workspace, "7"),
+              ...deploymentSnapshot(workspace, "7"),
               threads: [thread],
               messages: [recent],
               messageWindows: [
@@ -4247,44 +3614,9 @@ describe("HttpHostClient durable realtime", () => {
             },
           }),
         removeThread: () =>
-          socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "7") }),
+          socket.receive({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "7") }),
       };
     }
-
-    it.each([
-      [true, false],
-      [false, false],
-      [true, true],
-      [false, true],
-    ])(
-      "reads past an invisible Chat page in one call (turn pages %s, only steps %s)",
-      async (turnPages, steps) => {
-        const { client, requests, thread } = await setupHistory({ turnPages, steps });
-        try {
-          await client.loadEarlierTranscript(thread.id);
-          expect(requests.map((request) => request.before)).toEqual(["recent", "silent"]);
-          const rows = conversationRows(
-            groupTranscriptEntries(
-              visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null, {
-                conversation: true,
-              }),
-            ),
-            { live: false, atComputer: () => false },
-          );
-          expect(
-            rows.map(({ group }) =>
-              group.kind === "turn"
-                ? group.turn.reply?.body
-                : group.kind === "message"
-                  ? group.entry.body
-                  : null,
-            ),
-          ).toEqual(["Earlier question", "Earlier reply", "Recent"]);
-        } finally {
-          client.dispose();
-        }
-      },
-    );
 
     it.each([
       [100, 256, 20],
@@ -4353,7 +3685,7 @@ describe("HttpHostClient durable realtime", () => {
     it.each([true, false])(
       "reads past a byte-cut page folded into the first drawn work turn (turn pages %s)",
       async (turnPages) => {
-        const f = await setupHistory({ role: "work", folded: true, turnPages });
+        const f = await setupHistory({ purpose: "task", folded: true, turnPages });
         try {
           await f.client.loadEarlierTranscript(f.thread.id);
           expect(f.requests.map(({ before }) => before)).toEqual(["recent", "silent"]);
@@ -4428,7 +3760,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it("reads past older steps that only rename a split Run's first trace", async () => {
-      const { client, requests, thread } = await setupHistory({ cut: true, role: "work" });
+      const { client, requests, thread } = await setupHistory({ cut: true, purpose: "task" });
       try {
         await client.loadEarlierTranscript(thread.id);
         expect(requests).toHaveLength(2);
@@ -4468,7 +3800,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it("stops at the first added work trace", async () => {
-      const { client, requests, thread } = await setupHistory({ role: "work", steps: true });
+      const { client, requests, thread } = await setupHistory({ purpose: "task", steps: true });
       try {
         await client.loadEarlierTranscript(thread.id);
         expect(requests).toHaveLength(1);
@@ -4545,7 +3877,7 @@ describe("HttpHostClient durable realtime", () => {
 
   describe("opening a Thread", () => {
     async function openThread(
-      role: "conversation" | "work",
+      purpose: "voice" | "task",
       capabilities: readonly "history-turns-v1"[],
       options: {
         hold?: boolean;
@@ -4557,9 +3889,9 @@ describe("HttpHostClient durable realtime", () => {
         asOf?: string;
       } = {},
     ) {
-      const workspace = makeWorkspace();
-      const thread = { ...makeThread(workspace.id), role };
-      workspace.homeThreadId = thread.id;
+      const workspace = makeDeployment();
+      const thread = { ...makeThread(workspace.id), purpose };
+
       const question = makeMessage(thread.id, "input", "Earlier question");
       const reply = {
         ...makeMessage(thread.id, "assistant", "Earlier reply"),
@@ -4699,7 +4031,7 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       });
       client.activateThread(thread.id);
       return {
@@ -4719,7 +4051,7 @@ describe("HttpHostClient durable realtime", () => {
     }
 
     it("requests whole turns and draws ten rows in one read", async () => {
-      const f = await openThread("conversation", ["history-turns-v1"], {
+      const f = await openThread("voice", ["history-turns-v1"], {
         conversation: true,
       });
       try {
@@ -4733,7 +4065,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it("installs a first page that draws less than a screen", async () => {
-      const f = await openThread("conversation", ["history-turns-v1"], {
+      const f = await openThread("voice", ["history-turns-v1"], {
         conversation: true,
         conversationRows: 3,
       });
@@ -4753,15 +4085,24 @@ describe("HttpHostClient durable realtime", () => {
       try {
         for (const sequence of ["7", "8", "9"]) {
           const message = makeMessage(f.thread.id, "input", `Buffered ${sequence}`);
-          f.socket.receive({
-            type: "host.events",
-            events: [
-              agentEvent(f.workspace.id, f.thread.id, message.runId, sequence, "message.created", {
-                input: makeThreadInput(message),
-                message,
-              }),
-            ],
-          });
+          f.socket.receive(
+            eventsFrame({
+              type: "host.events",
+              events: [
+                agentEvent(
+                  f.workspace.id,
+                  f.thread.id,
+                  message.runId,
+                  sequence,
+                  "message.created",
+                  {
+                    input: makeThreadInput(message),
+                    message,
+                  },
+                ),
+              ],
+            }),
+          );
         }
         await finishOpening(f);
         expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Buffered 9"]);
@@ -4771,23 +4112,8 @@ describe("HttpHostClient durable realtime", () => {
       }
     });
 
-    it.each([[["history-turns-v1"] as const], [[] as const]])(
-      "opens Chat past silent automatic turns to what was said (%j)",
-      async (capabilities) => {
-        const f = await openThread("conversation", capabilities, { silentTurns: 10 });
-        try {
-          await finishOpening(f);
-          expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
-          expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply"]);
-        } finally {
-          f.olderAnswer.resolve();
-          f.client.dispose();
-        }
-      },
-    );
-
     it("reads back past the tail of a long turn until the opening draws", async () => {
-      const f = await openThread("conversation", ["history-turns-v1"], { tail: true });
+      const f = await openThread("voice", ["history-turns-v1"], { tail: true });
       try {
         await finishOpening(f);
         expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4"]);
@@ -4799,7 +4125,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     it("reads one page of a task whose newest Run draws its work", async () => {
-      const { client, requests, thread } = await openThread("work", ["history-turns-v1"]);
+      const { client, requests, thread } = await openThread("task", ["history-turns-v1"]);
       try {
         await vi.waitFor(
           () => expect(client.getSnapshot().threadLookups[thread.id]).toBeUndefined(),
@@ -4816,7 +4142,7 @@ describe("HttpHostClient durable realtime", () => {
     });
 
     async function heldOpening(options: Parameters<typeof openThread>[2] = {}) {
-      const f = await openThread("conversation", ["history-turns-v1"], { ...options, hold: true });
+      const f = await openThread("voice", ["history-turns-v1"], { ...options, hold: true });
       try {
         await withTimeout(f.olderAsked.promise, 1000, {
           timeoutError: () => new Error("Opening never requested the older page."),
@@ -4866,8 +4192,10 @@ describe("HttpHostClient durable realtime", () => {
           input: makeThreadInput(live),
           message: live,
         });
-        f.socket.receive({ type: "host.events", events: [...f.pages.newest!.events, event] });
-        f.socket.receive({ type: "host.events", events: [event] });
+        f.socket.receive(
+          eventsFrame({ type: "host.events", events: [...f.pages.newest!.events, event] }),
+        );
+        f.socket.receive(eventsFrame({ type: "host.events", events: [event] }));
         await finishOpening(f);
         expect(openingRows(f)).toEqual(["Earlier question", "Earlier reply", "Live question"]);
         expect(
@@ -4895,7 +4223,7 @@ describe("HttpHostClient durable realtime", () => {
         };
         f.socket.receive({
           type: "host.snapshot",
-          snapshot: { ...workspaceSnapshot(f.workspace, "6"), threads: [f.thread] },
+          snapshot: { ...deploymentSnapshot(f.workspace, "6"), threads: [f.thread] },
         });
         await finishOpening(f);
         expect(f.requests.map(({ before }) => before)).toEqual([undefined, "4", undefined]);
@@ -4937,7 +4265,7 @@ describe("HttpHostClient durable realtime", () => {
    * event while the status stays the same, so a stale one would stick.
    */
   it("keeps a status the Host published while the Thread's history was loading", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const runId = createId("run");
     let answerHistory!: () => void;
@@ -4988,37 +4316,41 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "1"), threads: [thread] },
       type: "host.snapshot",
     });
     client.activateThread(thread.id);
     await askedForHistory;
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "2", "run.completed", {
-          replyMessageId: null,
-          status: "completed",
-        }),
-        agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "idle",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "2", "run.completed", {
+            replyMessageId: null,
+            status: "completed",
+          }),
+          agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "idle",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     answerHistory();
     await vi.waitFor(() => expect(client.getSnapshot().transcriptWindows[thread.id]).toBeDefined());
     expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)?.status).toBe("idle");
 
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "4", "thread.input-queue-updated", {
-          paused: true,
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "4", "thread.input-queue-updated", {
+            paused: true,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)?.status).toBe("idle");
     client.dispose();
   });
@@ -5029,7 +4361,7 @@ describe("HttpHostClient durable realtime", () => {
    * status or queue pause the Host has published since.
    */
   it("keeps a later Host status when a Thread command's answer arrives late", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     let answer!: () => void;
     const answered = new Promise<void>((resolve) => {
@@ -5065,21 +4397,23 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "1"), threads: [thread] },
       type: "host.snapshot",
     });
     const updating = client.updateThreadAccess(thread.id, "full-access");
     await commandSent;
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "idle",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "idle",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     answer();
     await updating;
 
@@ -5093,7 +4427,7 @@ describe("HttpHostClient durable realtime", () => {
   it.each([true, false])(
     "rebuilds the transcript from durable event history when a Thread is activated (turn pages %s)",
     async (turnPages) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const runId = createId("run");
       const userMessage = makeMessage(thread.id, "input", "Do the work");
@@ -5165,7 +4499,7 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         snapshot: {
-          ...workspaceSnapshot(workspace, "9"),
+          ...deploymentSnapshot(workspace, "9"),
           threads: [thread],
           threadWindow: {
             byteCount: 256,
@@ -5224,7 +4558,7 @@ describe("HttpHostClient durable realtime", () => {
   );
 
   it("surfaces a failed deep-link lookup and retries it on the next activation", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     let eventReads = 0;
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -5266,7 +4600,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("keeps a historical page pinned after a failed latest read and includes live events on retry", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const historical = agentEvent(workspace.id, thread.id, runId, "1", "assistant.message", {
@@ -5320,12 +4654,12 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
     await client.loadTranscriptAround(thread.id, historical.data.messageId);
     await expect(client.loadLatestTranscript(thread.id)).rejects.toThrow();
-    socket.receive({ events: [live], type: "host.events" });
+    socket.receive(eventsFrame({ events: [live], type: "host.events" }));
     expect(
       client
         .getSnapshot()
@@ -5333,7 +4667,7 @@ describe("HttpHostClient durable realtime", () => {
     ).toEqual(["Historical answer"]);
 
     const restored = client.loadLatestTranscript(thread.id);
-    socket.receive({ events: [duringRetry], type: "host.events" });
+    socket.receive(eventsFrame({ events: [duringRetry], type: "host.events" }));
     finishLatest?.(json(page([historical, live])));
     await restored;
     expect(
@@ -5345,7 +4679,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("keeps a definitive missing deep-link lookup distinct from a transient failure", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const missingThreadId = createId("thread");
     const fetch = vi.fn(async (input: RequestInfo | URL) => {
       const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
@@ -5368,7 +4702,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("keeps an unchanged Thread's identity when another Thread's work arrives", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const open = makeThread(workspace.id);
     const busy = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
@@ -5387,7 +4721,7 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         snapshot: {
-          ...workspaceSnapshot(workspace, "0"),
+          ...deploymentSnapshot(workspace, "0"),
           readStates: [
             {
               asOfSequence: sequence("0"),
@@ -5403,14 +4737,16 @@ describe("HttpHostClient durable realtime", () => {
       const revision = client.getSnapshot().revision;
       const before = client.getSnapshot().threads.find(({ id }) => id === open.id);
       expect(before?.unread).toBe(false);
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, busy.id, createId("run"), "1", "run.started", {
-            status: "running",
-          }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, busy.id, createId("run"), "1", "run.started", {
+              status: "running",
+            }),
+          ],
+          type: "host.events",
+        }),
+      );
       await vi.waitFor(() => expect(client.getSnapshot().revision).toBeGreaterThan(revision));
       // Screens compare Thread records by identity; a copy redraws the open conversation.
       expect(client.getSnapshot().threads.find(({ id }) => id === open.id)).toBe(before);
@@ -5420,7 +4756,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("applies a reread stream only after the durable events it follows", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const sockets: FakeSocket[] = [];
@@ -5440,7 +4776,7 @@ describe("HttpHostClient durable realtime", () => {
                   items: [{ length: 4, op: "replace", stream: "assistant", text: "Beta" }],
                   runId,
                   threadId: thread.id,
-                  workspaceId: workspace.id,
+                  deploymentId: workspace.id,
                 },
               },
             ],
@@ -5461,15 +4797,17 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+        ],
+        type: "host.events",
+      }),
+    );
     const live = (at: number, text: string) =>
       socket.receive({
         afterSequence: sequence("1"),
@@ -5477,10 +4815,8 @@ describe("HttpHostClient durable realtime", () => {
           items: [{ at, op: "append", stream: "assistant", text }],
           runId,
           threadId: thread.id,
-          workspaceId: workspace.id,
         },
         type: "host.live",
-        workspaceId: workspace.id,
       });
     live(0, "Alpha ");
     // A frame went missing, so the client rereads the Thread's streams.
@@ -5489,16 +4825,18 @@ describe("HttpHostClient durable realtime", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     const messageId = createId("message");
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "2", "assistant.message", {
-          content: [{ text: "Alpha done.", type: "text" }],
-          messageId,
-        }),
-        agentEvent(workspace.id, thread.id, runId, "3", "run.status", { status: "running" }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "2", "assistant.message", {
+            content: [{ text: "Alpha done.", type: "text" }],
+            messageId,
+          }),
+          agentEvent(workspace.id, thread.id, runId, "3", "run.status", { status: "running" }),
+        ],
+        type: "host.events",
+      }),
+    );
     const entries = client.getSnapshot().transcripts[thread.id] ?? [];
     expect(entries).toContainEqual(expect.objectContaining({ body: "Alpha done.", id: messageId }));
     expect(entries).toContainEqual(
@@ -5508,7 +4846,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("ignores a stream reread that answers after the subscription started over", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const sockets: FakeSocket[] = [];
@@ -5532,7 +4870,7 @@ describe("HttpHostClient durable realtime", () => {
                   items: [{ length: 6, op: "replace", stream: "assistant", text: "Alpha " }],
                   runId,
                   threadId: thread.id,
-                  workspaceId: workspace.id,
+                  deploymentId: workspace.id,
                 },
               },
             ],
@@ -5554,25 +4892,25 @@ describe("HttpHostClient durable realtime", () => {
     const first = sockets[0]!;
     first.open();
     first.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
-    first.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-      ],
-      type: "host.events",
-    });
+    first.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+        ],
+        type: "host.events",
+      }),
+    );
     first.receive({
       afterSequence: sequence("1"),
       progress: {
         items: [{ at: 50, op: "append", stream: "assistant", text: "gap" }],
         runId,
         threadId: thread.id,
-        workspaceId: workspace.id,
       },
       type: "host.live",
-      workspaceId: workspace.id,
     });
     await vi.waitFor(() => expect(liveReads).toBe(1));
 
@@ -5582,19 +4920,20 @@ describe("HttpHostClient durable realtime", () => {
     const second = sockets[1]!;
     second.open();
     const messageId = createId("message");
-    second.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "2", "assistant.message", {
-          content: [{ text: "Alpha done.", type: "text" }],
-          messageId,
-        }),
-      ],
-      type: "host.events",
-    });
+    second.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "2", "assistant.message", {
+            content: [{ text: "Alpha done.", type: "text" }],
+            messageId,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     second.receive({
       sequence: sequence("2"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
     answerRead();
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -5605,7 +4944,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("ignores a stream reread that answers between a resubscription's snapshot and its end", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const sockets: FakeSocket[] = [];
@@ -5628,7 +4967,7 @@ describe("HttpHostClient durable realtime", () => {
                   items: [{ length: 6, op: "replace", stream: "assistant", text: "Alpha " }],
                   runId,
                   threadId: thread.id,
-                  workspaceId: workspace.id,
+                  deploymentId: workspace.id,
                 },
               },
             ],
@@ -5650,25 +4989,25 @@ describe("HttpHostClient durable realtime", () => {
     const first = sockets[0]!;
     first.open();
     first.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
-    first.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-      ],
-      type: "host.events",
-    });
+    first.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+        ],
+        type: "host.events",
+      }),
+    );
     first.receive({
       afterSequence: sequence("1"),
       progress: {
         items: [{ at: 50, op: "append", stream: "assistant", text: "gap" }],
         runId,
         threadId: thread.id,
-        workspaceId: workspace.id,
       },
       type: "host.live",
-      workspaceId: workspace.id,
     });
     await vi.waitFor(() => expect(liveReads).toBe(1));
 
@@ -5679,7 +5018,7 @@ describe("HttpHostClient durable realtime", () => {
     const second = sockets[1]!;
     second.open();
     second.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "2"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "2"), threads: [thread] },
       type: "host.snapshot",
     });
     answerRead();
@@ -5687,7 +5026,6 @@ describe("HttpHostClient durable realtime", () => {
     second.receive({
       sequence: sequence("2"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     const entries = client.getSnapshot().transcripts[thread.id] ?? [];
@@ -5696,7 +5034,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("does not redraw a stream the history it reads has already completed", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const messageId = createId("message");
@@ -5746,25 +5084,25 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       type: "host.snapshot",
     });
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+        ],
+        type: "host.events",
+      }),
+    );
     socket.receive({
       afterSequence: sequence("1"),
       progress: {
         items: [{ at: 0, op: "append", stream: "assistant", text: "Alpha " }],
         runId,
         threadId: thread.id,
-        workspaceId: workspace.id,
       },
       type: "host.live",
-      workspaceId: workspace.id,
     });
     client.activateThread(thread.id);
     await vi.waitFor(() =>
@@ -5778,7 +5116,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("replaces a streaming assistant draft in place when the final message arrives", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const messageId = createId("message");
@@ -5798,18 +5136,20 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "0"),
+        ...deploymentSnapshot(workspace, "0"),
         threads: [thread],
       },
       type: "host.snapshot",
     });
 
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+        ],
+        type: "host.events",
+      }),
+    );
     socket.receive({
       afterSequence: SequenceSchema.parse("1"),
       progress: {
@@ -5819,10 +5159,8 @@ describe("HttpHostClient durable realtime", () => {
         ],
         runId,
         threadId: thread.id,
-        workspaceId: workspace.id,
       },
       type: "host.live",
-      workspaceId: workspace.id,
     });
     expect(client.getSnapshot().transcripts[thread.id]).toContainEqual(
       expect.objectContaining({
@@ -5834,20 +5172,22 @@ describe("HttpHostClient durable realtime", () => {
       }),
     );
 
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "2", "tool.started", {
-          arguments: { command: "ls" },
-          callId: "shell-1",
-          tool: { name: "shell", namespace: "codex" },
-        }),
-        agentEvent(workspace.id, thread.id, runId, "3", "assistant.message", {
-          content: [{ text: "Working on it. Done.", type: "text" }],
-          messageId,
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "2", "tool.started", {
+            arguments: { command: "ls" },
+            callId: "shell-1",
+            tool: { name: "shell", namespace: "codex" },
+          }),
+          agentEvent(workspace.id, thread.id, runId, "3", "assistant.message", {
+            content: [{ text: "Working on it. Done.", type: "text" }],
+            messageId,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
 
     const entries = client.getSnapshot().transcripts[thread.id] ?? [];
     // The final message keeps the draft's slot, before the later tool entry.
@@ -5867,7 +5207,7 @@ describe("HttpHostClient durable realtime", () => {
 
   it("reconnects with its last durable cursor and caps exponential backoff", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -5889,13 +5229,12 @@ describe("HttpHostClient durable realtime", () => {
     const first = sockets[0]!;
     first.open();
     first.receive({
-      snapshot: workspaceSnapshot(workspace, "4"),
+      snapshot: deploymentSnapshot(workspace, "4"),
       type: "host.snapshot",
     });
     first.receive({
       sequence: sequence("4"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
     expect(client.getSnapshot().connection).toBe("connected");
 
@@ -5914,14 +5253,13 @@ describe("HttpHostClient durable realtime", () => {
     sockets[1]?.open();
 
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
-      afterSequence: "4",
+      cursor: { deploymentId: workspace.id, afterSequence: "4", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     sockets[1]!.receive({
       sequence: sequence("4"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
     expect(invalidated).toHaveBeenCalledTimes(3);
     detachRemoteAccess();
@@ -5934,7 +5272,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("projects cross-client mutations and normalized run activity without duplicate messages", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const userMessage = makeMessage(thread.id, "input", "Do the work");
     const runId = userMessage.runId!;
@@ -5953,74 +5291,77 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: workspaceSnapshot(workspace, "0"),
+      snapshot: deploymentSnapshot(workspace, "0"),
       type: "host.snapshot",
     });
     socket.receive({
       sequence: sequence("0"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
-        agentEvent(workspace.id, thread.id, runId, "2", "message.created", {
-          input: makeThreadInput(userMessage),
-          message: userMessage,
-        }),
-        agentEvent(workspace.id, thread.id, runId, "3", "run.queued", {
-          run: {
-            createdAt: now,
-            id: runId,
-            status: "queued",
-            threadId: thread.id,
-            runOrdinal: 0,
-          },
-        }),
-        agentEvent(workspace.id, thread.id, runId, "4", "run.started", {
-          status: "running",
-        }),
-        agentEvent(workspace.id, thread.id, runId, "5", "tool.started", {
-          arguments: { path: "docs/plan.md" },
-          callId: "read-1",
-          tool: { name: "workspace.read_file", namespace: "test" },
-        }),
-        agentEvent(workspace.id, thread.id, runId, "6", "tool.completed", {
-          callId: "read-1",
-          isError: false,
-          output: { text: "# Plan" },
-        }),
-        agentEvent(workspace.id, thread.id, runId, "7", "assistant.message", {
-          content: [{ text: "Finished.", type: "text" }],
-          messageId: createId("message"),
-        }),
-        agentEvent(workspace.id, thread.id, runId, "8", "run.completed", {
-          replyMessageId: null,
-          status: "completed",
-        }),
-        agentEvent(workspace.id, thread.id, null, "9", "thread.input-queue-updated", {
-          paused: true,
-        }),
-        agentEvent(workspace.id, thread.id, null, "10", "thread.input-queue-updated", {
-          paused: false,
-        }),
-        agentEvent(workspace.id, thread.id, null, "11", "thread.access-mode-updated", {
-          accessMode: "auto",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
+          agentEvent(workspace.id, thread.id, runId, "2", "message.created", {
+            input: makeThreadInput(userMessage),
+            message: userMessage,
+          }),
+          agentEvent(workspace.id, thread.id, runId, "3", "run.queued", {
+            run: {
+              createdAt: now,
+              id: runId,
+              status: "queued",
+              threadId: thread.id,
+              runOrdinal: 0,
+            },
+          }),
+          agentEvent(workspace.id, thread.id, runId, "4", "run.started", {
+            status: "running",
+          }),
+          agentEvent(workspace.id, thread.id, runId, "5", "tool.started", {
+            arguments: { path: "docs/plan.md" },
+            callId: "read-1",
+            tool: { name: "workspace.read_file", namespace: "test" },
+          }),
+          agentEvent(workspace.id, thread.id, runId, "6", "tool.completed", {
+            callId: "read-1",
+            isError: false,
+            output: { text: "# Plan" },
+          }),
+          agentEvent(workspace.id, thread.id, runId, "7", "assistant.message", {
+            content: [{ text: "Finished.", type: "text" }],
+            messageId: createId("message"),
+          }),
+          agentEvent(workspace.id, thread.id, runId, "8", "run.completed", {
+            replyMessageId: null,
+            status: "completed",
+          }),
+          agentEvent(workspace.id, thread.id, null, "9", "thread.input-queue-updated", {
+            paused: true,
+          }),
+          agentEvent(workspace.id, thread.id, null, "10", "thread.input-queue-updated", {
+            paused: false,
+          }),
+          agentEvent(workspace.id, thread.id, null, "11", "thread.access-mode-updated", {
+            accessMode: "auto",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     // Replayed duplicate sequence and message ID must be ignored.
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "2", "message.created", {
-          input: makeThreadInput(userMessage),
-          message: userMessage,
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "2", "message.created", {
+            input: makeThreadInput(userMessage),
+            message: userMessage,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
 
     const snapshot = client.getSnapshot();
     expect(snapshot.threads).toHaveLength(1);
@@ -6055,7 +5396,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("keeps a Thread running when one Run completes with a queued successor", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const firstRunId = createId("run");
     const secondRunId = createId("run");
@@ -6074,41 +5415,43 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "0"),
+        ...deploymentSnapshot(workspace, "0"),
         threads: [thread],
       },
       type: "host.snapshot",
     });
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, firstRunId, "1", "run.queued", {
-          run: {
-            createdAt: now,
-            id: firstRunId,
-            status: "queued",
-            threadId: thread.id,
-            runOrdinal: 0,
-          },
-        }),
-        agentEvent(workspace.id, thread.id, firstRunId, "2", "run.started", {
-          status: "running",
-        }),
-        agentEvent(workspace.id, thread.id, secondRunId, "3", "run.queued", {
-          run: {
-            createdAt: now,
-            id: secondRunId,
-            status: "queued",
-            threadId: thread.id,
-            runOrdinal: 1,
-          },
-        }),
-        agentEvent(workspace.id, thread.id, firstRunId, "4", "run.completed", {
-          replyMessageId: null,
-          status: "completed",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, firstRunId, "1", "run.queued", {
+            run: {
+              createdAt: now,
+              id: firstRunId,
+              status: "queued",
+              threadId: thread.id,
+              runOrdinal: 0,
+            },
+          }),
+          agentEvent(workspace.id, thread.id, firstRunId, "2", "run.started", {
+            status: "running",
+          }),
+          agentEvent(workspace.id, thread.id, secondRunId, "3", "run.queued", {
+            run: {
+              createdAt: now,
+              id: secondRunId,
+              status: "queued",
+              threadId: thread.id,
+              runOrdinal: 1,
+            },
+          }),
+          agentEvent(workspace.id, thread.id, firstRunId, "4", "run.completed", {
+            replyMessageId: null,
+            status: "completed",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
 
     expect(client.getSnapshot().threads[0]?.status).toBe("running");
     expect(client.getSnapshot().runQueue).toEqual([
@@ -6118,7 +5461,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("projects an accepted pending message without inventing a Run", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const pendingMessage = { ...makeMessage(thread.id, "input", "Queue this"), runId: null };
     const sockets: FakeSocket[] = [];
@@ -6153,7 +5496,7 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "0"),
+        ...deploymentSnapshot(workspace, "0"),
         threads: [thread],
       },
       type: "host.snapshot",
@@ -6179,7 +5522,7 @@ describe("HttpHostClient durable realtime", () => {
    * can keep those projections consistent across later batches.
    */
   it("retains a pending live Request's Host status when the Runner reports running", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "waiting" as const };
     const runId = createId("run");
     const request = pendingRequest({
@@ -6192,7 +5535,7 @@ describe("HttpHostClient durable realtime", () => {
       },
       runId,
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const socket = new FakeSocket();
     const client = createHttpHostClient({
@@ -6204,15 +5547,17 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       type: "host.snapshot",
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
     });
-    socket.receive({
-      type: "host.events",
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "request.opened", { request }),
-        agentEvent(workspace.id, thread.id, runId, "2", "run.status", { status: "running" }),
-      ],
-    });
+    socket.receive(
+      eventsFrame({
+        type: "host.events",
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "request.opened", { request }),
+          agentEvent(workspace.id, thread.id, runId, "2", "run.status", { status: "running" }),
+        ],
+      }),
+    );
     expect(client.getSnapshot().threads[0]?.status).toBe("waiting");
     client.dispose();
   });
@@ -6220,7 +5565,7 @@ describe("HttpHostClient durable realtime", () => {
   it.each(["events", "snapshot"] as const)(
     "keeps Host status authoritative after %s hydration with incomplete Run facts",
     async (source) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const runId = createId("run");
       const socket = new FakeSocket();
@@ -6233,36 +5578,40 @@ describe("HttpHostClient durable realtime", () => {
       socket.open();
       socket.receive({
         snapshot: {
-          ...workspaceSnapshot(workspace, "0"),
+          ...deploymentSnapshot(workspace, "0"),
           threads: [{ ...thread, status: source === "snapshot" ? "running" : "idle" }],
         },
         type: "host.snapshot",
       });
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "1", "run.status", { status: "running" }),
-          ...(source === "events"
-            ? [
-                agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
-                  inputQueuePaused: false,
-                  pendingRequests: 0,
-                  status: "running",
-                }),
-              ]
-            : []),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "1", "run.status", { status: "running" }),
+            ...(source === "events"
+              ? [
+                  agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
+                    inputQueuePaused: false,
+                    pendingRequests: 0,
+                    status: "running",
+                  }),
+                ]
+              : []),
+          ],
+        }),
+      );
       expect(client.getSnapshot().threads[0]?.status).toBe("running");
       expect(client.getSnapshot().runQueue).toEqual([]);
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, null, "3", "thread.input-queue-updated", {
-            paused: true,
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, null, "3", "thread.input-queue-updated", {
+              paused: true,
+            }),
+          ],
+        }),
+      );
       // The Host remains running, so this batch contains no status change.
       expect(client.getSnapshot().threads[0]?.status).toBe("running");
       const request = pendingRequest({
@@ -6275,49 +5624,55 @@ describe("HttpHostClient durable realtime", () => {
         },
         runId,
         threadId: thread.id,
-        workspaceId: workspace.id,
+        deploymentId: workspace.id,
       });
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "4", "request.opened", { request }),
-          agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-            inputQueuePaused: false,
-            pendingRequests: 0,
-            status: "waiting",
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "4", "request.opened", { request }),
+            agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+              inputQueuePaused: false,
+              pendingRequests: 0,
+              status: "waiting",
+            }),
+          ],
+        }),
+      );
       expect(client.getSnapshot().threads[0]?.status).toBe("waiting");
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "6", "run.status", { status: "running" }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "6", "run.status", { status: "running" }),
+          ],
+        }),
+      );
       // A pending live Request keeps the Host waiting even when the Runner says running.
       expect(client.getSnapshot().threads[0]?.status).toBe("waiting");
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "7", "request.cancelled", {
-            requestId: request.id,
-            reason: "source-closed",
-          }),
-          agentEvent(workspace.id, thread.id, null, "8", "thread.state-changed", {
-            inputQueuePaused: false,
-            pendingRequests: 0,
-            status: "running",
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "7", "request.cancelled", {
+              requestId: request.id,
+              reason: "source-closed",
+            }),
+            agentEvent(workspace.id, thread.id, null, "8", "thread.state-changed", {
+              inputQueuePaused: false,
+              pendingRequests: 0,
+              status: "running",
+            }),
+          ],
+        }),
+      );
       expect(client.getSnapshot().threads[0]?.status).toBe("running");
       client.dispose();
     },
   );
 
   it("applies Host status across paused work, resume, and archived Threads", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const archived = { ...makeThread(workspace.id), status: "archived" as const };
     const failing = createId("run");
@@ -6337,7 +5692,7 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread, archived] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread, archived] },
       type: "host.snapshot",
     });
     const queued = (
@@ -6352,63 +5707,69 @@ describe("HttpHostClient durable realtime", () => {
     const status = (threadId: string) =>
       client.getSnapshot().threads.find(({ id }) => id === threadId)?.status;
 
-    socket.receive({
-      events: [
-        queued(failing, thread.id, 0, "1"),
-        agentEvent(workspace.id, thread.id, failing, "2", "run.started", { status: "running" }),
-        queued(successor, thread.id, 1, "3"),
-        agentEvent(workspace.id, thread.id, null, "4", "thread.input-queue-updated", {
-          paused: true,
-        }),
-        agentEvent(workspace.id, thread.id, failing, "5", "run.failed", {
-          code: "engine_failed",
-          message: "The engine stopped",
-          retryable: false,
-          status: "failed",
-        }),
-        agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "idle",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          queued(failing, thread.id, 0, "1"),
+          agentEvent(workspace.id, thread.id, failing, "2", "run.started", { status: "running" }),
+          queued(successor, thread.id, 1, "3"),
+          agentEvent(workspace.id, thread.id, null, "4", "thread.input-queue-updated", {
+            paused: true,
+          }),
+          agentEvent(workspace.id, thread.id, failing, "5", "run.failed", {
+            code: "engine_failed",
+            message: "The engine stopped",
+            retryable: false,
+            status: "failed",
+          }),
+          agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "idle",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(status(thread.id)).toBe("idle");
 
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "7", "thread.input-queue-updated", {
-          paused: false,
-        }),
-        agentEvent(workspace.id, thread.id, null, "8", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "running",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "7", "thread.input-queue-updated", {
+            paused: false,
+          }),
+          agentEvent(workspace.id, thread.id, null, "8", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "running",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(status(thread.id)).toBe("running");
 
-    socket.receive({
-      events: [
-        queued(archivedRun, archived.id, 0, "9"),
-        agentEvent(workspace.id, archived.id, archivedRun, "10", "run.failed", {
-          code: "engine_failed",
-          message: "The engine stopped",
-          retryable: false,
-          status: "failed",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          queued(archivedRun, archived.id, 0, "9"),
+          agentEvent(workspace.id, archived.id, archivedRun, "10", "run.failed", {
+            code: "engine_failed",
+            message: "The engine stopped",
+            retryable: false,
+            status: "failed",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(status(archived.id)).toBe("archived");
     client.dispose();
   });
 
   it("queues a follow-up through HTTP and interrupts only the executing Run", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const currentRunId = createId("run");
     const queuedRunId = createId("run");
@@ -6429,6 +5790,7 @@ describe("HttpHostClient durable realtime", () => {
             input: makeThreadInput({ ...queuedMessage, runId: queuedRunId }),
             message: { ...queuedMessage, runId: queuedRunId },
             run: {
+              teamRequestId: null,
               accessMode: thread.accessMode,
               activationInputId: queuedMessage.id,
               assignmentId: null,
@@ -6470,7 +5832,7 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "1"),
+        ...deploymentSnapshot(workspace, "1"),
         runQueue: [
           {
             createdAt: now,
@@ -6502,7 +5864,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("does not let a slower queued HTTP acknowledgement overwrite realtime starting state", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const message = makeMessage(thread.id, "input", "Start this next");
@@ -6531,7 +5893,7 @@ describe("HttpHostClient durable realtime", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(workspace, "0"),
+        ...deploymentSnapshot(workspace, "0"),
         threads: [thread],
       },
       type: "host.snapshot",
@@ -6544,34 +5906,37 @@ describe("HttpHostClient durable realtime", () => {
       type: "thread.sendMessage",
     });
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "1", "run.queued", {
-          run: {
-            createdAt: now,
-            id: runId,
-            status: "queued",
-            threadId: thread.id,
-            runOrdinal: 0,
-          },
-        }),
-        agentEvent(workspace.id, thread.id, runId, "2", "run.status", {
-          status: "starting",
-        }),
-        agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "running",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "1", "run.queued", {
+            run: {
+              createdAt: now,
+              id: runId,
+              status: "queued",
+              threadId: thread.id,
+              runOrdinal: 0,
+            },
+          }),
+          agentEvent(workspace.id, thread.id, runId, "2", "run.status", {
+            status: "starting",
+          }),
+          agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "running",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     resolveMessage(
       json(
         {
           input: makeThreadInput({ ...message, runId }),
           message: { ...message, runId },
           run: {
+            teamRequestId: null,
             accessMode: thread.accessMode,
             activationInputId: message.id,
             assignmentId: null,
@@ -6607,7 +5972,7 @@ describe("HttpHostClient durable realtime", () => {
   });
 
   it("projects parent Threads and sends all Request responses through one Host route", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const parentThread = makeThread(workspace.id);
     const thread = { ...makeThread(workspace.id), parentThreadId: parentThread.id };
     const runId = createId("run");
@@ -6624,7 +5989,7 @@ describe("HttpHostClient durable realtime", () => {
       },
       runId,
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const sockets: FakeSocket[] = [];
     const requests: unknown[] = [];
@@ -6648,23 +6013,25 @@ describe("HttpHostClient durable realtime", () => {
     const socket = sockets[0]!;
     socket.open();
     socket.receive({
-      snapshot: workspaceSnapshot(workspace, "0"),
+      snapshot: deploymentSnapshot(workspace, "0"),
       type: "host.snapshot",
     });
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
-        agentEvent(workspace.id, thread.id, runId, "2", "request.opened", {
-          request: approval,
-        }),
-        agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "waiting",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
+          agentEvent(workspace.id, thread.id, runId, "2", "request.opened", {
+            request: approval,
+          }),
+          agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "waiting",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
 
     expect(client.getSnapshot().threads[0]?.parentThreadId).toBe(parentThread.id);
     expect(client.getSnapshot().requests[thread.id]).toEqual([
@@ -6692,25 +6059,27 @@ describe("HttpHostClient durable realtime", () => {
       },
       runId,
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "4", "request.resolved", {
-          request: {
-            ...approval,
-            resolvedAt: now,
-            resolvedBy: ownerId,
-            response: { kind: "choice", optionId: "reject" },
-            status: "declined",
-          },
-        }),
-        agentEvent(workspace.id, thread.id, runId, "5", "request.opened", {
-          request: secret,
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "4", "request.resolved", {
+            request: {
+              ...approval,
+              resolvedAt: now,
+              resolvedBy: ownerId,
+              response: { kind: "choice", optionId: "reject" },
+              status: "declined",
+            },
+          }),
+          agentEvent(workspace.id, thread.id, runId, "5", "request.opened", {
+            request: secret,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await client.dispatch({
       idempotencyKey: `request-${secret.id}:test`,
       requestId: secret.id,
@@ -6739,7 +6108,7 @@ describe("HttpHostClient durable realtime", () => {
 
   it("resets an expired cursor and requests a fresh snapshot", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -6758,11 +6127,10 @@ describe("HttpHostClient durable realtime", () => {
     sockets[0]?.receive({
       reason: "cursor-expired",
       type: "host.resync-required",
-      workspaceId: workspace.id,
     });
     await vi.advanceTimersByTimeAsync(4);
     sockets[1]?.open();
-    expect(parseSent(sockets[1]!, 0)).toMatchObject({ afterSequence: "0" });
+    expect(parseSent(sockets[1]!, 0)).toMatchObject({ cursor: { afterSequence: "0" } });
     client.dispose();
   });
 });
@@ -6807,7 +6175,7 @@ describe("HttpHostClient input queue", () => {
     host.items = [queueItem(host.queued, true), queueItem(later, true)];
     async function afterEvent(agent: AgentEvent): Promise<void> {
       const before = host.reads();
-      host.socket.receive({ events: [agent], type: "host.events" });
+      host.socket.receive(eventsFrame({ events: [agent], type: "host.events" }));
       await vi.waitFor(() => expect(host.reads()).toBe(before + 1));
     }
 
@@ -6832,14 +6200,16 @@ describe("HttpHostClient input queue", () => {
     );
     host.paused = true;
     const before = host.reads();
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, null, "4", "thread.input-queue-updated", {
-          paused: true,
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, null, "4", "thread.input-queue-updated", {
+            paused: true,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     // The pause is the event's own fact and lands before the read confirms it.
     expect(host.client.getSnapshot().inputQueues[host.thread.id]?.paused).toBe(true);
     await vi.waitFor(() => expect(host.reads()).toBe(before + 1));
@@ -6882,27 +6252,31 @@ describe("HttpHostClient input queue", () => {
 
     // Not every event is about the queue, and a burst is one read.
     const settled = host.reads();
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, null, "10", "thread.access-mode-updated", {
-          accessMode: "auto",
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, null, "10", "thread.access-mode-updated", {
+            accessMode: "auto",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await Promise.resolve();
     expect(host.reads()).toBe(settled);
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, host.runId, "11", "run.started", {
-          status: "running",
-        }),
-        agentEvent(host.workspace.id, host.thread.id, null, "12", "thread.input-queue-updated", {
-          paused: false,
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, host.runId, "11", "run.started", {
+            status: "running",
+          }),
+          agentEvent(host.workspace.id, host.thread.id, null, "12", "thread.input-queue-updated", {
+            paused: false,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await vi.waitFor(() => expect(host.reads()).toBe(settled + 1));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(host.reads()).toBe(settled + 1);
@@ -6924,36 +6298,42 @@ describe("HttpHostClient input queue", () => {
 
     host.items = [queueItem(later, true)];
     host.holdReads();
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, host.runId, "1", "thread-input.updated", {
-          input: { ...pendingInput(host.queued), runId: host.runId, state: "claimed" },
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, host.runId, "1", "thread-input.updated", {
+            input: { ...pendingInput(host.queued), runId: host.runId, state: "claimed" },
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     // The tray stops offering a claimed message before the read confirms it.
     expect(queuedIds()).toEqual([later.id]);
     await vi.waitFor(() => expect(host.reads()).toBe(3));
 
     // Events that land while a read is in flight do not join it: the read may
     // predate them, so they earn exactly one more read once it settles.
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, host.runId, "2", "run.started", {
-          status: "running",
-        }),
-      ],
-      type: "host.events",
-    });
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, null, "3", "thread.input-queue-updated", {
-          paused: false,
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, host.runId, "2", "run.started", {
+            status: "running",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, null, "3", "thread.input-queue-updated", {
+            paused: false,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await Promise.resolve();
     expect(host.reads()).toBe(3);
     host.releaseReads();
@@ -7018,6 +6398,7 @@ describe("HttpHostClient input queue", () => {
           input: makeThreadInput(started),
           message: started,
           run: {
+            teamRequestId: null,
             accessMode: host.thread.accessMode,
             activationInputId: started.id,
             assignmentId: null,
@@ -7130,15 +6511,17 @@ describe("HttpHostClient input queue", () => {
     // The read that follows is held back: what the tray offers in between is
     // the projection's alone.
     host.holdReads();
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, host.runId, "1", "run.completed", {
-          replyMessageId: null,
-          status: "completed",
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, host.runId, "1", "run.completed", {
+            replyMessageId: null,
+            status: "completed",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(host.client.getSnapshot().inputQueues[host.thread.id]?.steerRunId).toBeNull();
     host.steerRunId = null;
     host.releaseReads();
@@ -7158,14 +6541,16 @@ describe("HttpHostClient input queue", () => {
     host.client.activateThread(createId("thread"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const before = host.reads();
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, null, "1", "thread.input-queue-updated", {
-          paused: true,
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, null, "1", "thread.input-queue-updated", {
+            paused: true,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(host.client.getSnapshot().inputQueues[host.thread.id]).toBeUndefined();
     expect(host.reads()).toBe(before);
@@ -7191,15 +6576,17 @@ describe("HttpHostClient input queue", () => {
       host.client.getSnapshot().inputQueues[host.thread.id]?.items.map((item) => item.message.id);
 
     // The message reached the conversation through the stream, as every send does.
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, null, "1", "message.created", {
-          input: pendingInput(host.queued),
-          message: host.queued,
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, null, "1", "message.created", {
+            input: pendingInput(host.queued),
+            message: host.queued,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     expect(transcript()).toContainEqual(expect.objectContaining({ id: host.queued.id }));
     await vi.waitFor(() => expect(host.reads()).toBe(2));
     await host.client.loadThreadInputQueue(host.thread.id);
@@ -7239,14 +6626,16 @@ describe("HttpHostClient input queue", () => {
     );
 
     // The stream's confirmation changes nothing.
-    host.socket.receive({
-      events: [
-        agentEvent(host.workspace.id, host.thread.id, null, "2", "thread-input.updated", {
-          input: { ...pendingInput(host.queued), cancelReason: "withdrawn", state: "cancelled" },
-        }),
-      ],
-      type: "host.events",
-    });
+    host.socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(host.workspace.id, host.thread.id, null, "2", "thread-input.updated", {
+            input: { ...pendingInput(host.queued), cancelReason: "withdrawn", state: "cancelled" },
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await vi.waitFor(() => expect(host.reads()).toBe(4));
     expect(withdrawn()).toEqual([expect.objectContaining({ kind: "withdrawn" })]);
     expect(queuedIds()).toEqual([]);
@@ -7260,7 +6649,7 @@ describe("HttpHostClient input queue", () => {
  * moves the Host's truth and watches the client follow.
  */
 async function queueHost() {
-  const workspace = makeWorkspace();
+  const workspace = makeDeployment();
   const thread = makeThread(workspace.id);
   const runId = createId("run");
   const queued = { ...makeMessage(thread.id, "input", "Then rename the branch"), runId: null };
@@ -7342,7 +6731,7 @@ async function queueHost() {
   socket.open();
   socket.receive({
     snapshot: {
-      ...workspaceSnapshot(workspace, "0"),
+      ...deploymentSnapshot(workspace, "0"),
       runQueue: [
         { createdAt: now, id: runId, runOrdinal: 0, status: "running", threadId: thread.id },
       ],
@@ -7401,479 +6790,27 @@ function queueItem(message: Message, canSteer: boolean) {
   return { canCancel: true, canMove: true, canSteer, input: pendingInput(message), message };
 }
 
-describe("HttpHostClient Home prefetch", () => {
-  function homeStartup() {
-    const workspace = makeWorkspace();
-    const home: Thread = { ...makeThread(workspace.id), role: "conversation" };
-    workspace.homeThreadId = home.id;
-    const history: ReturnType<typeof Promise.withResolvers<Response>>[] = [];
-    const operations: string[] = [];
-    const commands: string[] = [];
-    const sockets: FakeSocket[] = [];
-    let refuse = false;
-    const page = (title = "Home", asOfSequence = "7") => ({
-      threadId: home.id,
-      thread: { ...home, title },
-      events: [],
-      readState: {
-        ...defaultReadState(home.id),
-        asOfSequence,
-        readSequence: "2",
-        unreadSequence: "7",
-      },
-      window: {
-        threadId: home.id,
-        byteCount: 0,
-        itemCount: 0,
-        totalItems: 0,
-        hasMore: false,
-        nextBefore: null,
-      },
-    });
-    const client = createHttpHostClient({
-      prefetchHome: true,
-      refreshIntervalMs: 0,
-      browserUsageReads: "observed",
-      timeZoneReports: "observed",
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-      fetch: async (input, init) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        const name = url.pathname.slice("/v1/rpc/".length);
-        operations.push(name);
-        if (name === "thread.events.list") {
-          const read = Promise.withResolvers<Response>();
-          history.push(read);
-          return read.promise;
-        }
-        if (name === "auth.config" && refuse)
-          return json(
-            { error: { code: "unauthorized", message: "Sign in", retryable: false } },
-            401,
-          );
-        if (name === "commands.dispatch") {
-          const command = rpcPayload(url, init);
-          commands.push(requiredString(command, "type"));
-          if (command.type === "viewer.timeZone.update")
-            return json({ timeZone: command.timeZone });
-        }
-        return json(bootstrap([workspace]));
-      },
-    });
-    return {
-      client,
-      commands,
-      history,
-      home,
-      operations,
-      page,
-      sockets,
-      workspace,
-      refuse: () => {
-        refuse = true;
-      },
-      close: () => {
-        client.dispose();
-        for (const read of history) read.resolve(json(page()));
-      },
-    };
-  }
-
-  it("does not read Home's history before it opens when the client does not prefetch", async () => {
-    const workspace = makeWorkspace();
-    const home: Thread = { ...makeThread(workspace.id), role: "conversation" };
-    workspace.homeThreadId = home.id;
-    const operations: string[] = [];
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-      fetch: async (input) => {
-        const url = new URL(input instanceof Request ? input.url : String(input));
-        operations.push(url.pathname.slice("/v1/rpc/".length));
-        return json(bootstrap([workspace]));
-      },
-    });
-    try {
-      await client.load();
-      // An unopened Home stays outside the Workspace's Thread page on clients
-      // that do not open on Chat, so its Thread list never depends on timing.
-      expect(operations).not.toContain("thread.events.list");
-      expect(client.getSnapshot().threads.map(({ id }) => id)).not.toContain(home.id);
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it.each(["pending", "ready"] as const)(
-    "starts Home history before activation, joins the %s prefetch and never marks reading",
-    async (state) => {
-      const run = homeStartup();
-      try {
-        await run.client.load();
-        expect(run.history).toHaveLength(1);
-        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-        const accepted: string[] = [];
-        run.client.subscribe(() => {
-          const snapshot = run.client.getSnapshot();
-          if (snapshot.savedViewReadiness?.home.status !== "window") return;
-          expect(snapshot.threadReadStates[run.home.id]?.asOfSequence).toBe("7");
-          expect(snapshot.transcriptWindows[run.home.id]).toEqual(run.page().window);
-          accepted.push(snapshot.savedViewReadiness.home.threadId);
-        });
-        expect(run.operations).not.toContain("thread.browserUsage.get");
-        expect(run.operations).not.toContain("thread.assignments.list");
-        expect(run.commands).not.toContain("thread.read.mark");
-        if (state === "ready") {
-          run.history[0]!.resolve(json(run.page()));
-          await vi.waitFor(() =>
-            expect(run.client.getSnapshot().threadReadStates[run.home.id]?.readSequence).toBe("2"),
-          );
-        }
-        run.client.activateThread(run.home.id);
-        expect(run.history).toHaveLength(1);
-        run.history[0]!.resolve(json(run.page()));
-        await vi.waitFor(() =>
-          expect(
-            run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.unread,
-          ).toBe(true),
-        );
-        run.client.activateThread(run.home.id);
-        expect(run.history).toHaveLength(1);
-        expect(run.client.getSnapshot().threadReadStates[run.home.id]?.readSequence).toBe("2");
-        expect(run.client.getSnapshot().savedViewReadiness?.home).toEqual({
-          status: "window",
-          threadId: run.home.id,
-          workspaceId: run.workspace.id,
-          latest: true,
-        });
-        expect(accepted).toContain(run.home.id);
-        expect(run.commands).not.toContain("thread.read.mark");
-      } finally {
-        run.close();
-      }
-    },
-  );
-
-  it.each([
-    ["pending", "5"],
-    ["pending", "7"],
-    ["ready", "5"],
-    ["ready", "7"],
-  ] as const)(
-    "keeps the %s Home read when its coverage includes snapshot %s",
-    async (state, sequence) => {
-      const run = homeStartup();
-      try {
-        await run.client.load();
-        run.client.activateThread(run.home.id);
-        if (state === "ready") {
-          run.history[0]!.resolve(json(run.page()));
-          await vi.waitFor(() =>
-            expect(run.client.getSnapshot().threadReadStates[run.home.id]?.asOfSequence).toBe("7"),
-          );
-        }
-        const socket = run.sockets[0]!;
-        socket.open();
-        socket.receive({
-          snapshot: { ...workspaceSnapshot(run.workspace, sequence), threads: [run.home] },
-          type: "host.snapshot",
-        });
-        run.history[0]!.resolve(json(run.page()));
-        await vi.waitFor(() => {
-          expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined();
-          expect(run.history).toHaveLength(1);
-        });
-        run.client.activateThread(run.home.id);
-        expect(run.history).toHaveLength(1);
-      } finally {
-        run.close();
-      }
-    },
-  );
-
-  it("reads Home again when a Workspace snapshot overtakes its prefetch", async () => {
-    const run = homeStartup();
-    try {
-      await run.client.load();
-      expect(run.history).toHaveLength(1);
-      const socket = run.sockets[0]!;
-      socket.open();
-      socket.receive({
-        snapshot: { ...workspaceSnapshot(run.workspace, "8"), threads: [run.home] },
-        type: "host.snapshot",
-      });
-      run.history[0]!.resolve(json(run.page("Read before the snapshot")));
-      await vi.waitFor(() => expect(run.history).toHaveLength(2));
-      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-      run.history[1]!.resolve(json(run.page("Read after the snapshot", "9")));
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.title).toBe(
-          "Read after the snapshot",
-        ),
-      );
-      expect(run.client.getSnapshot().savedViewReadiness?.home).toMatchObject({
-        status: "window",
-        threadId: run.home.id,
-        latest: true,
-      });
-      run.client.activateThread(run.home.id);
-      expect(run.history).toHaveLength(2);
-      expect(run.commands).not.toContain("thread.read.mark");
-    } finally {
-      run.close();
-    }
-  });
-
-  it.each([true, false])(
-    "withdraws Home readiness before an unshown snapshot replaces its transcript (omitted=%s)",
-    async (messagesOmitted) => {
-      const run = homeStartup();
-      const publications: { home: SavedViewReadiness["home"]; text: string | undefined }[] = [];
-      try {
-        await run.client.load();
-        const message = makeMessage(run.home.id, "input", "Keep this useful tail");
-        const acceptedPage = {
-          ...run.page(),
-          events: [
-            agentEvent(run.workspace.id, run.home.id, message.runId, "7", "message.created", {
-              input: makeThreadInput(message),
-              message,
-            }),
-          ],
-        };
-        run.history[0]!.resolve(json(acceptedPage));
-        await vi.waitFor(() =>
-          expect(projectSavedHome(run.client.getSnapshot())?.messages).toEqual([
-            { voice: "mine", text: "Keep this useful tail" },
-          ]),
-        );
-        run.client.subscribe(() => {
-          const snapshot = run.client.getSnapshot();
-          publications.push({
-            home: snapshot.savedViewReadiness!.home,
-            text: projectSavedHome(snapshot)
-              ?.messages.map(({ text }) => text)
-              .join(""),
-          });
-        });
-        const socket = run.sockets[0]!;
-        socket.open();
-        publications.length = 0;
-        socket.receive({
-          snapshot: {
-            // Newer than the accepted page (7), so that history no longer covers it.
-            ...workspaceSnapshot(run.workspace, "8"),
-            threads: [run.home],
-            ...(messagesOmitted ? { messagesOmitted: true } : {}),
-          },
-          type: "host.snapshot",
-        });
-        expect(publications.length).toBeGreaterThan(0);
-        expect(
-          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
-        ).toBe(true);
-        expect(run.client.getSnapshot().transcripts[run.home.id]).toEqual(
-          messagesOmitted ? undefined : [],
-        );
-        run.client.activateThread(run.home.id);
-        await vi.waitFor(() => expect(run.history).toHaveLength(2));
-        expect(
-          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
-        ).toBe(true);
-        run.history[1]!.resolve(
-          json({ error: { code: "internal", message: "Lost history", retryable: true } }, 500),
-        );
-        await vi.waitFor(() =>
-          expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
-        );
-        expect(
-          publications.every(({ home, text }) => home.status === "unknown" && text === undefined),
-        ).toBe(true);
-        // A successful replacement, including an explicitly empty one, certifies a new window.
-        run.client.activateThread(run.home.id);
-        await vi.waitFor(() => expect(run.history).toHaveLength(3));
-        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-        run.history[2]!.resolve(json(run.page()));
-        await vi.waitFor(() =>
-          expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
-        );
-        expect(projectSavedHome(run.client.getSnapshot())?.messages).toEqual([]);
-      } finally {
-        run.close();
-      }
-    },
-  );
-
-  it("never publishes a historical Home window as an accepted latest tail", async () => {
-    const run = homeStartup();
-    try {
-      await run.client.load();
-      run.history[0]!.resolve(json(run.page()));
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window"),
-      );
-      const historicalReadiness: boolean[] = [];
-      run.client.subscribe(() => {
-        const snapshot = run.client.getSnapshot();
-        const home = snapshot.savedViewReadiness?.home;
-        if (snapshot.transcriptWindows[run.home.id]?.byteCount === 1 && home?.status === "window")
-          historicalReadiness.push(home.latest);
-      });
-      const reading = run.client.loadTranscriptAround(run.home.id, createId("message"));
-      await vi.waitFor(() => expect(run.history).toHaveLength(2));
-      run.history[1]!.resolve(
-        json({ ...run.page(), window: { ...run.page().window, byteCount: 1 } }),
-      );
-      await reading;
-      expect(historicalReadiness.length).toBeGreaterThan(0);
-      expect(historicalReadiness).not.toContain(true);
-    } finally {
-      run.close();
-    }
-  });
-
-  it("accepts only the current Home when bootstrap replaces an in-flight prefetch", async () => {
-    const run = homeStartup();
-    try {
-      await run.client.load();
-      const replacement = { ...makeThread(run.workspace.id), role: "conversation" as const };
-      run.workspace.homeThreadId = replacement.id;
-      await run.client.refresh();
-      expect(run.history).toHaveLength(2);
-      expect(run.client.getSnapshot().homeThreadId).toBe(replacement.id);
-      run.history[0]!.resolve(json(run.page("Previous Home")));
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined(),
-      );
-      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-      run.history[1]!.resolve(
-        json({
-          ...run.page(),
-          thread: replacement,
-          threadId: replacement.id,
-          readState: { ...run.page().readState, threadId: replacement.id },
-          window: { ...run.page().window, threadId: replacement.id },
-        }),
-      );
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().savedViewReadiness?.home).toEqual({
-          status: "window",
-          threadId: replacement.id,
-          workspaceId: run.workspace.id,
-          latest: true,
-        }),
-      );
-    } finally {
-      run.close();
-    }
-  });
-
-  it("retains a covered Home prefetch when its snapshot arrives before activation", async () => {
-    const run = homeStartup();
-    try {
-      await run.client.load();
-      run.history[0]!.resolve(json(run.page()));
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().threadReadStates[run.home.id]?.asOfSequence).toBe("7"),
-      );
-      const socket = run.sockets[0]!;
-      socket.open();
-      socket.receive({
-        snapshot: { ...workspaceSnapshot(run.workspace, "7"), threads: [run.home] },
-        type: "host.snapshot",
-      });
-      // Covered history stays, and so does the readiness it certified.
-      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("window");
-      run.client.activateThread(run.home.id);
-      expect(run.history).toHaveLength(1);
-      expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined();
-    } finally {
-      run.close();
-    }
-  });
-
-  it("retries a failed prefetch through the hydration owner on activation", async () => {
-    const run = homeStartup();
-    try {
-      await run.client.load();
-      expect(run.history).toHaveLength(1);
-      run.history[0]!.resolve(
-        json({ error: { code: "internal", message: "Lost history", retryable: true } }, 500),
-      );
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBe("failed"),
-      );
-      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-      run.client.activateThread(run.home.id);
-      expect(run.history).toHaveLength(2);
-      run.history[1]!.resolve(json(run.page()));
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().threadLookups[run.home.id]).toBeUndefined(),
-      );
-      expect(run.commands).not.toContain("thread.read.mark");
-    } finally {
-      run.close();
-    }
-  });
-
-  it("starts fresh hydration after sign-out and fences the previous viewer's pending history", async () => {
-    const run = homeStartup();
-    try {
-      await run.client.load();
-      expect(run.history).toHaveLength(1);
-      run.refuse();
-      await run.client.rpc["auth.config"]({});
-      expect(run.client.getSnapshot().homeThreadId).toBeNull();
-      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-      await run.client.reauthenticate();
-      expect(run.history).toHaveLength(2);
-      expect(run.client.getSnapshot().savedViewReadiness?.home.status).toBe("unknown");
-      run.history[0]!.resolve(json(run.page("Old viewer")));
-      run.history[1]!.resolve(json(run.page("Current viewer")));
-      await vi.waitFor(() =>
-        expect(run.client.getSnapshot().threads.find(({ id }) => id === run.home.id)?.title).toBe(
-          "Current viewer",
-        ),
-      );
-      expect(run.commands).not.toContain("thread.read.mark");
-    } finally {
-      run.close();
-    }
-  });
-});
-
 describe("HttpHostClient hosted browser", () => {
   it.each(["profile", "workspace"] as const)(
     "revokes %s pixels from the catalog before authorization close, even after transport release",
     async (reason) => {
-      const workspace = makeWorkspace(),
+      const workspace = makeDeployment(),
         sessionId = createBrowserSessionId(),
         profileId = createId("browserProfile");
       const browser: HostedBrowserBootstrap = {
         available: true,
         placements: [],
         profiles: [{ homeRunnerId: null, id: profileId, name: "Profile" }],
-        profileGrants: [
-          {
-            id: createId("browserProfileGrant"),
-            profileId,
-            workspaceId: workspace.id,
-            access: "read-write",
-            createdAt: now,
-          },
-        ],
+
         sessions: [
           seedBrowserSession(
             {
               id: sessionId,
-              workspaceId: workspace.id,
+              deploymentId: workspace.id,
               profileId,
               placement: { kind: "runner", runnerId },
               runtimeId: "runtime",
-              origin: "workspace",
+              origin: "person",
               state: "ready",
               access: "read-write",
               createdAt: now,
@@ -7903,7 +6840,7 @@ describe("HttpHostClient hosted browser", () => {
       const sockets: { url: string; socket: FakeSocket }[] = [];
       const client = createHttpHostClient({
         refreshIntervalMs: 0,
-        prefetchHome: false,
+
         fetch: async () => json(boot),
         webSocketFactory: (url) => {
           const socket = new FakeSocket();
@@ -7951,7 +6888,7 @@ describe("HttpHostClient hosted browser", () => {
             error: {
               code: "forbidden",
               message: "Access ended",
-              reason: "workspace-forbidden",
+              reason: "deployment-forbidden",
               retryable: false,
             },
           });
@@ -7967,111 +6904,16 @@ describe("HttpHostClient hosted browser", () => {
       }
     },
   );
-  it("shows the owner's named profile without any Workspace grant, and keeps it when grants change", async () => {
-    const workspace = makeWorkspace(),
-      sessionId = createBrowserSessionId(),
-      profileId = createId("browserProfile");
-    const grant = {
-      id: createId("browserProfileGrant"),
-      profileId,
-      workspaceId: workspace.id,
-      access: "read-write" as const,
-      createdAt: now,
-    };
-    const browser: HostedBrowserBootstrap = {
-      available: true,
-      placements: [],
-      profiles: [{ homeRunnerId: null, id: profileId, name: "Brex" }],
-      // Main reaches the owner's profiles without grant rows; viewing never needs one.
-      profileGrants: [],
-      sessions: [
-        seedBrowserSession(
-          {
-            id: sessionId,
-            workspaceId: workspace.id,
-            profileId,
-            placement: { kind: "runner", runnerId },
-            runtimeId: "runtime",
-            origin: "agent",
-            state: "ready",
-            access: "read-write",
-            createdAt: now,
-            updatedAt: now,
-          },
-          {
-            generation: 1,
-            revision: 1,
-            rows: [
-              {
-                id: BrowserSurfaceIdSchema.parse("page-1"),
-                title: "Brex",
-                site: "https://dashboard.brex.com",
-                iconRef: null,
-                order: 0,
-                openerId: null,
-                availability: "ready",
-                occupants: [],
-                documentId: null,
-              },
-            ],
-          },
-        ),
-      ],
-    };
-    const boot = bootstrap([workspace], browser);
-    const sockets: { url: string; socket: FakeSocket }[] = [];
-    const client = createHttpHostClient({
-      refreshIntervalMs: 0,
-      prefetchHome: false,
-      fetch: async () => json(boot),
-      webSocketFactory: (url) => {
-        const socket = new FakeSocket();
-        sockets.push({ url, socket });
-        return socket;
-      },
-    });
-    try {
-      await client.load();
-      const notify = vi.fn();
-      const unsubscribe = client.browserWatchFrames.subscribe(sessionId, notify, "page-1");
-      const release = client.retainBrowserWatch(sessionId, "page-1");
-      const viewer = sockets.find(({ url }) => url.includes("/browser-sessions/"));
-      expect(viewer, "no viewer socket opened for the owner's named profile").toBeDefined();
-      viewer!.socket.open();
-      viewer!.socket.receiveRaw({
-        type: "browser.snapshot",
-        sessionId,
-        state: "ready",
-        access: "read-write",
-        targetedStreamingVersion: 1,
-        dialog: null,
-        surfaces: [
-          { id: "page-1", active: true, title: "Brex", url: "https://dashboard.brex.com" },
-        ],
-      });
-      viewer!.socket.receiveBinary(browserFrame(1));
-      const before = client.browserWatchFrames.invalidationKey!(sessionId, "page-1");
-      browser.profileGrants = [grant];
-      await client.refresh();
-      browser.profileGrants = [];
-      await client.refresh();
-      expect(client.browserWatchFrames.invalidationKey!(sessionId, "page-1")).toBe(before);
-      expect(client.browserWatchFrames.get(sessionId, "page-1")).not.toBeNull();
-      release();
-      unsubscribe();
-    } finally {
-      client.dispose();
-    }
-  });
+
   it("reconciles retained Watch targets when the carrier learns a tab", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sessionId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("surface_http-outage");
     const browser: HostedBrowserBootstrap = {
       available: true,
       placements: [],
       profiles: [],
-      profileGrants: [],
+
       sessions: [],
     };
     const connections: string[] = [];
@@ -8094,11 +6936,11 @@ describe("HttpHostClient hosted browser", () => {
           {
             id: sessionId,
             access: "read-write",
-            origin: "workspace",
+            origin: "person",
             state: "ready",
             createdAt: now,
             updatedAt: now,
-            workspaceId: workspace.id,
+            deploymentId: workspace.id,
             profileId: null,
             runtimeId: "runtime-1",
             placement: { kind: "runner", runnerId },
@@ -8133,12 +6975,11 @@ describe("HttpHostClient hosted browser", () => {
   });
 
   it("keeps hot Runtime frames outside the global snapshot and sends explicit commands", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const profileId = createId("browserProfile");
     const sessionId = createBrowserSessionId();
     const sockets: Array<{ socket: FakeSocket; url: string }> = [];
     const browser: HostedBrowserBootstrap = {
-      profileGrants: [],
       available: true,
       placements: [
         {
@@ -8163,13 +7004,13 @@ describe("HttpHostClient hosted browser", () => {
               access: "read-write",
               createdAt: now,
               id: sessionId,
-              origin: "workspace",
+              origin: "person",
               placement: { kind: "runner", runnerId: runnerId },
               profileId,
               runtimeId: "runtime-1",
               state: "ready",
               updatedAt: now,
-              workspaceId: workspace.id,
+              deploymentId: workspace.id,
             },
             wasExisting: false,
           },
@@ -8323,7 +7164,7 @@ describe("HttpHostClient hosted browser", () => {
   });
 
   it("closes viewer transport when the durable Host session becomes terminal", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const profileId = createId("browserProfile");
     const sessionId = createBrowserSessionId();
     const sockets: Array<{ socket: FakeSocket; url: string }> = [];
@@ -8344,7 +7185,7 @@ describe("HttpHostClient hosted browser", () => {
                 runtimeId: "runtime-1",
               },
             ],
-            profileGrants: [],
+
             profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
             sessions: [
               seedBrowserSession(
@@ -8352,13 +7193,13 @@ describe("HttpHostClient hosted browser", () => {
                   access: "read-write",
                   createdAt: now,
                   id: sessionId,
-                  origin: "workspace",
+                  origin: "person",
                   placement: { kind: "runner", runnerId: runnerId },
                   profileId,
                   runtimeId: "runtime-1",
                   state: bootstrapReads === 1 ? "ready" : "failed",
                   updatedAt: bootstrapReads === 1 ? now : "2026-08-09T20:00:01.000Z",
-                  workspaceId: workspace.id,
+                  deploymentId: workspace.id,
                 },
                 {
                   generation: 1,
@@ -8442,84 +7283,6 @@ describe("HttpHostClient hosted browser", () => {
 });
 
 describe("HttpHostClient browser profiles", () => {
-  it.each([true, false])("opens a fresh session with workspace cached: %s", async (cached) => {
-    const workspace = makeWorkspace();
-    const sessionId = createBrowserSessionId();
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path === "/v1/rpc/bootstrap.get") {
-        return json(
-          bootstrap(cached ? [workspace] : [], {
-            profileGrants: [],
-            available: true,
-            placements: [
-              {
-                available: true,
-                environmentIds: [],
-                kind: "runner",
-                label: "Main Host",
-                runnerId: runnerId,
-                runtimeId: "runtime-1",
-              },
-            ],
-            profiles: [],
-            sessions: [],
-          }),
-        );
-      }
-      if (path === "/v1/rpc/commands.dispatch" && init?.method === "POST") {
-        expect(JSON.parse(String(init.body))).toMatchObject({
-          input: { fresh: true, placement: { kind: "runner", runnerId: runnerId } },
-          type: "browser.session.start",
-          workspaceId: workspace.id,
-        });
-        return json(
-          {
-            session: {
-              access: "read-write",
-              createdAt: now,
-              id: sessionId,
-              origin: "workspace",
-              placement: { kind: "runner", runnerId: runnerId },
-              profileId: null,
-              runtimeId: "runtime-1",
-              state: "ready",
-              updatedAt: now,
-              workspaceId: workspace.id,
-            },
-            wasExisting: false,
-          },
-          201,
-        );
-      }
-      throw new Error(`Unexpected request ${path}`);
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-    await client.load();
-
-    const session = await client.startBrowser(
-      workspace.id,
-      { kind: "fresh" },
-      {
-        available: true,
-        environmentIds: [],
-        kind: "runner",
-        label: "Main Host",
-        runnerId: runnerId,
-        runtimeId: "runtime-1",
-      },
-    );
-    expect(session.profileId).toBeNull();
-    expect(client.getSnapshot().browserSessions).toEqual([
-      expect.objectContaining({ id: sessionId, profileId: null }),
-    ]);
-    client.dispose();
-  });
-
   it("keeps pending erasure from delete receipts and bootstrap until completion, including older Hosts", async () => {
     const profileId = createId("browserProfile");
     const computerId = createId("runner");
@@ -8528,7 +7291,7 @@ describe("HttpHostClient browser profiles", () => {
       available: false,
       placements: [],
       profiles: [{ homeRunnerId: null, id: profileId, name: "Work" }],
-      profileGrants: [],
+
       sessions: [],
     };
     const client = createHttpHostClient({
@@ -8536,7 +7299,7 @@ describe("HttpHostClient browser profiles", () => {
       webSocketFactory: () => new FakeSocket(),
       fetch: async (input) => {
         const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([makeWorkspace()], browser));
+        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([makeDeployment()], browser));
         if (path === "/v1/rpc/commands.dispatch")
           return json({ type: "browser.profile.delete", deletion });
         throw new Error(`Unexpected request ${path}`);
@@ -8574,7 +7337,7 @@ describe("HttpHostClient browser profiles", () => {
 describe("HttpHostClient attachment discovery", () => {
   it("uses cached evidence on periodic refresh and reverifies after a Host restart", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     const capabilities = vi.fn(async () => ["thread-titles-v1"] as const);
     const client = createHttpHostClient({
@@ -8605,7 +7368,7 @@ describe("HttpHostClient attachment discovery", () => {
 
   it("reverifies discovery on refresh while a periodic bootstrap is still running", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const capabilities = vi.fn(async () => [] as const);
     let held: ReturnType<typeof Promise.withResolvers<Response>> | null = null;
     let bootstraps = 0;
@@ -8644,6 +7407,7 @@ describe("HttpHostClient attachment discovery", () => {
       let refuse = false;
       const client = createHttpHostClient({
         capabilities,
+        taskReads: "observed",
         fetch: async () =>
           refuse
             ? json(
@@ -8664,7 +7428,7 @@ describe("HttpHostClient attachment discovery", () => {
       try {
         await client.load();
         refuse = true;
-        await client.rpc["workspace.catalog.list"]({ limit: 10 });
+        await client.rpc["tasks.list"]({ limit: 10 });
         await vi.waitFor(() => expect(capabilities).toHaveBeenCalledWith({ revalidate: true }));
       } finally {
         client.dispose();
@@ -8698,8 +7462,8 @@ describe("HttpHostClient voice capability", () => {
 });
 
 describe("HttpHostClient title capability", () => {
-  it("refreshes capability evidence, strips generation for older Hosts and refuses unavailable or invalid renames", async () => {
-    const workspace = makeWorkspace();
+  it("refreshes capability evidence and refuses unavailable or invalid renames", async () => {
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     let available = false;
     const commands: Readonly<Record<string, unknown>>[] = [];
@@ -8732,13 +7496,14 @@ describe("HttpHostClient title capability", () => {
         environmentId,
         harnessInstanceId,
         modelSelection: thread.modelSelection,
-        workspaceId: workspace.id,
+        deploymentId: workspace.id,
         title: "Seed",
         generateTitle: true as const,
       };
       await client.createThread(creation);
-      expect(commands.find((command) => command.type === "thread.create")).not.toHaveProperty(
+      expect(commands.find((command) => command.type === "thread.create")).toHaveProperty(
         "generateTitle",
+        true,
       );
       available = true;
       await client.refresh();
@@ -8773,7 +7538,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
     readonly response: unknown;
     readonly responseStatus?: number;
     readonly thread: Thread;
-    readonly workspace: WorkspaceView;
+    readonly workspace: PersonalFixture;
   }) {
     const asked = Promise.withResolvers<void>();
     const answer = Promise.withResolvers<void>();
@@ -8803,7 +7568,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
     socket.open();
     socket.receive({
       snapshot: {
-        ...workspaceSnapshot(options.workspace, "0"),
+        ...deploymentSnapshot(options.workspace, "0"),
         threads: options.loaded === false ? [] : [options.thread],
         threadWindow: {
           byteCount: 2,
@@ -8835,7 +7600,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
     };
   }
 
-  function stateEvents(workspace: WorkspaceView, thread: Thread): AgentEvent[] {
+  function stateEvents(workspace: PersonalFixture, thread: Thread): AgentEvent[] {
     const request = pendingRequest({
       presentation: {
         detail: "Continue the work",
@@ -8846,7 +7611,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
       },
       runId: createId("run"),
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     return [
       agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
@@ -8872,7 +7637,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each(["history", "command", "history page"] as const)(
     "keeps a newer title across delayed %s and legacy state events",
     async (source) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const path =
         source === "command" ? "/v1/rpc/commands.dispatch" : "/v1/rpc/thread.events.list";
@@ -8895,22 +7660,24 @@ describe("HttpHostClient Thread state reconciliation", () => {
                 })
               : client.loadEarlierTranscript(thread.id);
         await asked;
-        socket.receive({
-          type: "host.events",
-          events: [
-            agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-              status: "idle",
-              inputQueuePaused: false,
-              pendingRequests: 0,
-              title: "Current title",
-            }),
-            agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
-              status: "idle",
-              inputQueuePaused: false,
-              pendingRequests: 0,
-            }),
-          ],
-        });
+        socket.receive(
+          eventsFrame({
+            type: "host.events",
+            events: [
+              agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+                status: "idle",
+                inputQueuePaused: false,
+                pendingRequests: 0,
+                title: "Current title",
+              }),
+              agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
+                status: "idle",
+                inputQueuePaused: false,
+                pendingRequests: 0,
+              }),
+            ],
+          }),
+        );
         expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)?.title).toBe(
           "Current title",
         );
@@ -8928,7 +7695,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each(["history", "older response", "failure"] as const)(
     "keeps a newer icon across delayed %s, legacy events and stale snapshots",
     async (source) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = {
         ...makeThread(workspace.id),
         icon: "hotel" as const,
@@ -8968,23 +7735,25 @@ describe("HttpHostClient Thread state reconciliation", () => {
           });
         }
         await asked;
-        socket.receive({
-          type: "host.events",
-          events: [
-            agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-              status: "idle",
-              inputQueuePaused: false,
-              pendingRequests: 0,
-              title: thread.title,
-              icon: "gift",
-            }),
-            agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
-              status: "idle",
-              inputQueuePaused: false,
-              pendingRequests: 0,
-            }),
-          ],
-        });
+        socket.receive(
+          eventsFrame({
+            type: "host.events",
+            events: [
+              agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+                status: "idle",
+                inputQueuePaused: false,
+                pendingRequests: 0,
+                title: thread.title,
+                icon: "gift",
+              }),
+              agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
+                status: "idle",
+                inputQueuePaused: false,
+                pendingRequests: 0,
+              }),
+            ],
+          }),
+        );
         answer();
         const error = await settled;
         if (source === "failure") expect(error).toMatchObject({ message: "Icon refused" });
@@ -8992,7 +7761,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
         expect(client.getSnapshot().threads[0]).toMatchObject({ icon: "gift", color: "blue" });
         socket.receive({
           type: "host.snapshot",
-          snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+          snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
         });
         expect(client.getSnapshot().threads[0]?.icon).toBe("gift");
       } finally {
@@ -9003,7 +7772,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("rolls back an icon failure without a newer event and refuses mark commands on an old Host", async () => {
-    const workspace = { ...makeWorkspace(), kind: "project" as const, color: "green" as const };
+    const workspace = { ...makeDeployment(), kind: "project" as const, color: "green" as const };
     const thread = { ...makeThread(workspace.id), icon: "hotel" as const };
     const { answer, asked, client } = await delayedRead({
       path: "/v1/rpc/commands.dispatch",
@@ -9046,230 +7815,13 @@ describe("HttpHostClient Thread state reconciliation", () => {
           idempotencyKey: "old-icon",
         }),
       ).rejects.toThrow("does not support");
-      await expect(
-        old.dispatch({
-          type: "workspace.color.set",
-          workspaceId: workspace.id,
-          color: "blue",
-          idempotencyKey: "old-color",
-        }),
-      ).rejects.toThrow("does not support");
     } finally {
       old.dispose();
     }
   });
 
-  it.each(["success", "failure"] as const)(
-    "optimistically changes project colour and settles %s",
-    async (outcome) => {
-      const workspace = {
-        ...makeWorkspace(),
-        kind: "project" as const,
-        color: "green" as const,
-      };
-      const { answer, asked, client } = await delayedRead({
-        path: "/v1/rpc/commands.dispatch",
-        thread: makeThread(workspace.id),
-        workspace,
-        response:
-          outcome === "success"
-            ? { workspace: { ...workspace, color: "purple" } }
-            : { error: { code: "bad_request", message: "Colour refused", retryable: false } },
-        ...(outcome === "failure" ? { responseStatus: 400 } : {}),
-      });
-      try {
-        const setting = client.dispatch({
-          type: "workspace.color.set",
-          workspaceId: workspace.id,
-          color: "purple",
-          idempotencyKey: "color",
-        });
-        const settled = setting.then(
-          () => null,
-          (error: unknown) => error,
-        );
-        expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-          "purple",
-        );
-        await asked;
-        answer();
-        const error = await settled;
-        if (outcome === "failure") expect(error).toMatchObject({ message: "Colour refused" });
-        expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-          outcome === "success" ? "purple" : "green",
-        );
-      } finally {
-        answer();
-        client.dispose();
-      }
-    },
-  );
-
-  async function pendingMarks() {
-    const workspace = { ...makeWorkspace(), kind: "project" as const, color: "green" as const };
-    const thread = { ...makeThread(workspace.id), icon: "hotel" as const };
-    const socket = new FakeSocket();
-    const responses: ReturnType<typeof Promise.withResolvers<Response>>[] = [];
-    const client = createHttpHostClient({
-      capabilities: ["task-marks-v1"],
-      refreshIntervalMs: 0,
-      webSocketFactory: () => socket,
-      fetch: async (input) => {
-        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        if (path === "/v1/rpc/commands.dispatch") {
-          const response = Promise.withResolvers<Response>();
-          responses.push(response);
-          return response.promise;
-        }
-        return json(bootstrap([workspace]));
-      },
-    });
-    await client.load();
-    socket.open();
-    socket.receive({
-      type: "host.snapshot",
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
-    });
-    const refuse = (index: number) =>
-      responses[index]!.resolve(
-        json({ error: { code: "bad_request", message: "Mark refused", retryable: false } }, 400),
-      );
-    return { client, refuse, responses, socket, thread, workspace };
-  }
-
-  it.each(["colour", "icon"] as const)(
-    "settles overlapping refused %s edits without retaining an optimistic value",
-    async (field) => {
-      const { client, refuse, responses, thread, workspace } = await pendingMarks();
-      try {
-        const edit = (second: boolean) =>
-          client
-            .dispatch(
-              field === "colour"
-                ? {
-                    type: "workspace.color.set",
-                    workspaceId: workspace.id,
-                    color: second ? "purple" : "teal",
-                    idempotencyKey: String(second),
-                  }
-                : {
-                    type: "thread.icon.set",
-                    threadId: thread.id,
-                    icon: second ? "gift" : "plane",
-                    idempotencyKey: String(second),
-                  },
-            )
-            .catch((error: unknown) => error);
-        const visible = () =>
-          field === "colour"
-            ? client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color
-            : client.getSnapshot().threads.find(({ id }) => id === thread.id)?.icon;
-        const first = edit(false);
-        const second = edit(true);
-        await vi.waitFor(() => expect(responses).toHaveLength(2));
-        expect(visible()).toBe(field === "colour" ? "purple" : "gift");
-        refuse(0);
-        expect(await first).toMatchObject({ message: "Mark refused" });
-        expect(visible()).toBe(field === "colour" ? "purple" : "gift");
-        refuse(1);
-        expect(await second).toMatchObject({ message: "Mark refused" });
-        expect(visible()).toBe(field === "colour" ? "green" : "hotel");
-      } finally {
-        responses.forEach((_, index) => refuse(index));
-        client.dispose();
-      }
-    },
-  );
-
-  it.each(["activity", "refresh"] as const)(
-    "keeps pending marks through %s and restores authoritative marks on refusal",
-    async (source) => {
-      const { client, refuse, responses, socket, thread, workspace } = await pendingMarks();
-      try {
-        const colour = client.dispatch({
-          type: "workspace.color.set",
-          workspaceId: workspace.id,
-          color: "teal",
-          idempotencyKey: "pending-colour",
-        });
-        const icon = client.dispatch({
-          type: "thread.icon.set",
-          threadId: thread.id,
-          icon: "plane",
-          idempotencyKey: "pending-icon",
-        });
-        const settled = Promise.allSettled([colour, icon]);
-        await vi.waitFor(() => expect(responses).toHaveLength(2));
-        if (source === "refresh") await client.refresh();
-        else {
-          const event = agentEvent(workspace.id, thread.id, null, "1", "thread.state-changed", {
-            status: "running",
-            inputQueuePaused: false,
-            pendingRequests: 0,
-          });
-          socket.receive({
-            type: "host.events",
-            events: [{ ...event, createdAt: "2026-08-10T00:00:00.000Z" }],
-          });
-        }
-        expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-          "teal",
-        );
-        expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)?.icon).toBe("plane");
-        refuse(0);
-        refuse(1);
-        expect((await settled).map(({ status }) => status)).toEqual(["rejected", "rejected"]);
-        expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-          "green",
-        );
-        expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)?.icon).toBe("hotel");
-      } finally {
-        responses.forEach((_, index) => refuse(index));
-        client.dispose();
-      }
-    },
-  );
-
-  it.each(["response", "failure"] as const)(
-    "keeps a newer authoritative colour after an older %s and snapshot",
-    async (outcome) => {
-      const { client, refuse, responses, socket, workspace } = await pendingMarks();
-      try {
-        const pending = client.dispatch({
-          type: "workspace.color.set",
-          workspaceId: workspace.id,
-          color: "teal",
-          idempotencyKey: "older-colour",
-        });
-        const settled = pending.catch((error: unknown) => error);
-        await vi.waitFor(() => expect(responses).toHaveLength(1));
-        socket.receive({
-          type: "host.snapshot",
-          snapshot: workspaceSnapshot(
-            { ...workspace, color: "magenta", updatedAt: "2026-08-10T00:00:00.000Z" },
-            "5",
-          ),
-        });
-        if (outcome === "failure") refuse(0);
-        else responses[0]!.resolve(json({ workspace: { ...workspace, color: "teal" } }));
-        const result = await settled;
-        if (outcome === "failure") expect(result).toMatchObject({ message: "Mark refused" });
-        expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-          "magenta",
-        );
-        socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "0") });
-        expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-          "magenta",
-        );
-      } finally {
-        responses.forEach((_, index) => refuse(index));
-        client.dispose();
-      }
-    },
-  );
-
   it("remembers a hydrated title when a legacy state event arrived before the Thread was loaded", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const { answer, asked, client, socket } = await delayedRead({
       loaded: false,
@@ -9281,22 +7833,24 @@ describe("HttpHostClient Thread state reconciliation", () => {
     try {
       const reading = client.loadLatestTranscript(thread.id);
       await asked;
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
-            status: "idle",
-            inputQueuePaused: false,
-            pendingRequests: 0,
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
+              status: "idle",
+              inputQueuePaused: false,
+              pendingRequests: 0,
+            }),
+          ],
+        }),
+      );
       answer();
       await reading;
       expect(client.getSnapshot().threads[0]?.title).toBe("Known title");
       socket.receive({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
       });
       expect(client.getSnapshot().threads[0]?.title).toBe("Known title");
     } finally {
@@ -9307,7 +7861,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each([false, true])(
     "rolls an optimistic rename back to the latest authoritative title (new event: %s)",
     async (newer) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const { answer, asked, client, socket } = await delayedRead({
         path: "/v1/rpc/commands.dispatch",
@@ -9322,17 +7876,19 @@ describe("HttpHostClient Thread state reconciliation", () => {
         expect(client.getSnapshot().threads[0]?.title).toBe("Optimistic name");
         await asked;
         if (newer)
-          socket.receive({
-            type: "host.events",
-            events: [
-              agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-                status: "idle",
-                inputQueuePaused: false,
-                pendingRequests: 0,
-                title: "New authoritative name",
-              }),
-            ],
-          });
+          socket.receive(
+            eventsFrame({
+              type: "host.events",
+              events: [
+                agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+                  status: "idle",
+                  inputQueuePaused: false,
+                  pendingRequests: 0,
+                  title: "New authoritative name",
+                }),
+              ],
+            }),
+          );
         answer();
         await refused;
         expect(client.getSnapshot().threads[0]?.title).toBe(
@@ -9345,7 +7901,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("does not restore a cancelled pending Request from delayed Thread history", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), pendingRequests: 1 };
     const { answer, asked, client, socket } = await delayedRead({
       path: "/v1/rpc/thread.events.list",
@@ -9356,20 +7912,22 @@ describe("HttpHostClient Thread state reconciliation", () => {
     try {
       const reading = client.loadLatestTranscript(thread.id);
       await asked;
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, null, "1", "request.cancelled", {
-            reason: "source-closed",
-            requestId: createId("request"),
-          }),
-          agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
-            status: "idle",
-            inputQueuePaused: false,
-            pendingRequests: 0,
-          }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, null, "1", "request.cancelled", {
+              reason: "source-closed",
+              requestId: createId("request"),
+            }),
+            agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
+              status: "idle",
+              inputQueuePaused: false,
+              pendingRequests: 0,
+            }),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(0);
       answer();
       await reading;
@@ -9382,7 +7940,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each(["thread.access.update", "thread.execution.update", "thread.inputQueue.resume"] as const)(
     "does not restore a cancelled pending Request from a delayed %s answer",
     async (type) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = { ...makeThread(workspace.id), pendingRequests: 1 };
       const { answer, asked, client, socket } = await delayedRead({
         path: "/v1/rpc/commands.dispatch",
@@ -9400,21 +7958,23 @@ describe("HttpHostClient Thread state reconciliation", () => {
               : { ...common, type },
         );
         await asked;
-        socket.receive({
-          events: [
-            agentEvent(workspace.id, thread.id, null, "1", "request.cancelled", {
-              reason: "source-closed",
-              requestId: createId("request"),
-            }),
-            agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
-              status: "idle",
-              inputQueuePaused: false,
-              pendingRequests: 0,
-              title: "Current title",
-            }),
-          ],
-          type: "host.events",
-        });
+        socket.receive(
+          eventsFrame({
+            events: [
+              agentEvent(workspace.id, thread.id, null, "1", "request.cancelled", {
+                reason: "source-closed",
+                requestId: createId("request"),
+              }),
+              agentEvent(workspace.id, thread.id, null, "2", "thread.state-changed", {
+                status: "idle",
+                inputQueuePaused: false,
+                pendingRequests: 0,
+                title: "Current title",
+              }),
+            ],
+            type: "host.events",
+          }),
+        );
         expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(0);
         answer();
         await updating;
@@ -9431,7 +7991,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each([true, false])(
     "keeps realtime Thread state and transcript across a late create answer (created event: %s)",
     async (createdEvent) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const message = makeMessage(thread.id, "assistant", "Already here");
       const { answer, asked, client, socket } = await delayedRead({
@@ -9450,23 +8010,24 @@ describe("HttpHostClient Thread state reconciliation", () => {
           modelSelection: thread.modelSelection,
           title: thread.title,
           type: "thread.create",
-          workspaceId: workspace.id,
         });
         await asked;
         client.activateThread(thread.id);
-        socket.receive({
-          events: [
-            ...(createdEvent
-              ? [agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread })]
-              : []),
-            ...stateEvents(workspace, thread),
-            agentEvent(workspace.id, thread.id, message.runId, "6", "message.created", {
-              input: null,
-              message,
-            }),
-          ],
-          type: "host.events",
-        });
+        socket.receive(
+          eventsFrame({
+            events: [
+              ...(createdEvent
+                ? [agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread })]
+                : []),
+              ...stateEvents(workspace, thread),
+              agentEvent(workspace.id, thread.id, message.runId, "6", "message.created", {
+                input: null,
+                message,
+              }),
+            ],
+            type: "host.events",
+          }),
+        );
         const transcript = client.getSnapshot().transcripts[thread.id];
         expect(transcript).toEqual(
           expect.arrayContaining([expect.objectContaining({ body: "Already here" })]),
@@ -9492,7 +8053,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each(["1", "4"])(
     "reconciles history at its read-state cut %s even when the last history event is older",
     async (asOfSequence) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
       const pageThread = {
         ...thread,
@@ -9509,7 +8070,9 @@ describe("HttpHostClient Thread state reconciliation", () => {
         workspace,
       });
       try {
-        socket.receive({ events: stateEvents(workspace, thread), type: "host.events" });
+        socket.receive(
+          eventsFrame({ events: stateEvents(workspace, thread), type: "host.events" }),
+        );
         const reading = client.loadLatestTranscript(thread.id);
         await asked;
         answer();
@@ -9526,7 +8089,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("applies absolute state once while Request events leave the count unchanged", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const opened = stateEvents(workspace, thread).find((event) => event.type === "request.opened")!;
     if (opened.type !== "request.opened") throw new Error("Expected a Request event");
@@ -9555,19 +8118,21 @@ describe("HttpHostClient Thread state reconciliation", () => {
         }),
         opened,
       ];
-      socket.receive({ events, type: "host.events" });
-      socket.receive({ events, type: "host.events" });
+      socket.receive(eventsFrame({ events, type: "host.events" }));
+      socket.receive(eventsFrame({ events, type: "host.events" }));
       expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(0);
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-            status: "waiting",
-            inputQueuePaused: false,
-            pendingRequests: 1,
-          }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+              status: "waiting",
+              inputQueuePaused: false,
+              pendingRequests: 1,
+            }),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
       answer();
       await reading;
@@ -9581,7 +8146,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
     "preserves loaded state after the unloaded state map evicts older Threads",
     { timeout: 30_000 },
     async () => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = { ...makeThread(workspace.id), pendingRequests: 2 };
       const loadedChange = "2026-08-09T20:01:00.000Z";
       const lastChange = "2026-08-09T20:02:00.000Z";
@@ -9592,35 +8157,39 @@ describe("HttpHostClient Thread state reconciliation", () => {
         workspace,
       });
       try {
-        socket.receive({
-          events: stateEvents(workspace, thread).map((event) =>
-            event.sequence === "5" ? { ...event, createdAt: loadedChange } : event,
-          ),
-          type: "host.events",
-        });
+        socket.receive(
+          eventsFrame({
+            events: stateEvents(workspace, thread).map((event) =>
+              event.sequence === "5" ? { ...event, createdAt: loadedChange } : event,
+            ),
+            type: "host.events",
+          }),
+        );
         const transcripts = client.getSnapshot().transcripts;
         expect(Object.keys(transcripts)).toEqual([thread.id]);
         for (let sequence = 6; sequence < 4103; sequence += 1) {
-          socket.receive({
-            events: [
-              {
-                ...agentEvent(
-                  workspace.id,
-                  createId("thread"),
-                  null,
-                  String(sequence),
-                  "thread.state-changed",
-                  {
-                    status: "running",
-                    inputQueuePaused: false,
-                    pendingRequests: 0,
-                  },
-                ),
-                createdAt: sequence === 4102 ? lastChange : now,
-              },
-            ],
-            type: "host.events",
-          });
+          socket.receive(
+            eventsFrame({
+              events: [
+                {
+                  ...agentEvent(
+                    workspace.id,
+                    createId("thread"),
+                    null,
+                    String(sequence),
+                    "thread.state-changed",
+                    {
+                      status: "running",
+                      inputQueuePaused: false,
+                      pendingRequests: 0,
+                    },
+                  ),
+                  createdAt: sequence === 4102 ? lastChange : now,
+                },
+              ],
+              type: "host.events",
+            }),
+          );
         }
         // State is not transcript: an unloaded Thread's state change creates no
         // transcript, and copying the map for each one made this traffic quadratic.
@@ -9628,7 +8197,6 @@ describe("HttpHostClient Thread state reconciliation", () => {
         expect(Object.keys(evicted.transcripts)).toEqual([thread.id]);
         expect(evicted.transcripts).toBe(transcripts);
         expect(evicted.threads[0]?.updatedAt).toBe(loadedChange);
-        expect(evicted.workspaces[0]?.updatedAt).toBe(lastChange);
         expect(parseSent(socket, socket.sent.length - 1)).toMatchObject({
           sequence: "4102",
           type: "client.ack",
@@ -9649,7 +8217,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("keeps an HTTP history page ahead of websocket state", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const current = {
       ...thread,
@@ -9669,32 +8237,36 @@ describe("HttpHostClient Thread state reconciliation", () => {
       await asked;
       answer();
       await reading;
-      socket.receive({ events: stateEvents(workspace, thread), type: "host.events" });
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
-            inputQueuePaused: false,
-            pendingRequests: 0,
-            status: "running",
-          }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(eventsFrame({ events: stateEvents(workspace, thread), type: "host.events" }));
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, null, "6", "thread.state-changed", {
+              inputQueuePaused: false,
+              pendingRequests: 0,
+              status: "running",
+            }),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(client.getSnapshot().threads[0]).toMatchObject({
         inputQueuePaused: true,
         pendingRequests: 1,
         status: "waiting",
       });
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, null, "11", "thread.state-changed", {
-            inputQueuePaused: false,
-            pendingRequests: 0,
-            status: "running",
-          }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, null, "11", "thread.state-changed", {
+              inputQueuePaused: false,
+              pendingRequests: 0,
+              status: "running",
+            }),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(client.getSnapshot().threads[0]).toMatchObject({
         inputQueuePaused: false,
         pendingRequests: 0,
@@ -9706,7 +8278,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 
   it("keeps a reconnect snapshot newer than outstanding history", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const { answer, asked, client, reread, socket } = await delayedRead({
       freshHistory: historyPage(
@@ -9724,7 +8296,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
       socket.receive({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(workspace, "10"),
+          ...deploymentSnapshot(workspace, "10"),
           threads: [{ ...thread, status: "waiting", pendingRequests: 1, inputQueuePaused: true }],
         },
       });
@@ -9742,7 +8314,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 
   it("rereads outstanding history for an observed Thread omitted by a reconnect snapshot", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const current = {
       ...thread,
@@ -9766,7 +8338,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
     const stopObserving = client.observeThread(thread.id);
     try {
       await asked;
-      socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "10") });
+      socket.receive({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "10") });
       answer();
       await vi.waitFor(() => {
         expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)).toMatchObject({
@@ -9791,7 +8363,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 
   it("rereads retained state below the reconnect floor even when newer than history", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const current = {
       ...thread,
@@ -9808,12 +8380,12 @@ describe("HttpHostClient Thread state reconciliation", () => {
     });
     socket.receive({
       type: "host.snapshot",
-      snapshot: { ...workspaceSnapshot(workspace, "2"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "2"), threads: [thread] },
     });
     const stop = client.observeThread(thread.id);
     try {
       await asked;
-      socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "10") });
+      socket.receive({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "10") });
       answer();
       await vi.waitFor(() => expect(reread).toHaveBeenCalledOnce());
       expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)).toMatchObject({
@@ -9830,7 +8402,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   it.each(["history", "command"] as const)(
     "caps %s rereads while coverage keeps advancing",
     async (source) => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       const thread = { ...makeThread(workspace.id), status: "running" as const };
       const socket = new FakeSocket();
       let reads = 0;
@@ -9850,7 +8422,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
             if (reads > 5) throw new Error("uncapped Thread history reread");
             socket.receive({
               type: "host.snapshot",
-              snapshot: workspaceSnapshot(workspace, String(10 + reads)),
+              snapshot: deploymentSnapshot(workspace, String(10 + reads)),
             });
             return json(
               historyPage(
@@ -9869,7 +8441,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
       socket.receive({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(workspace, "10"),
+          ...deploymentSnapshot(workspace, "10"),
           threads: [],
           threadWindow: {
             byteCount: 2,
@@ -9881,18 +8453,24 @@ describe("HttpHostClient Thread state reconciliation", () => {
         },
       });
       try {
-        if (source === "history") await client.loadLatestTranscript(thread.id);
-        else
+        if (source === "history") {
+          await expect(client.loadLatestTranscript(thread.id)).rejects.toThrow(
+            "connection changed",
+          );
+          expect(reads).toBe(4);
+          expect(client.getSnapshot().threads.some(({ id }) => id === thread.id)).toBe(false);
+          return;
+        } else
           await client.dispatch({
             type: "thread.create",
-            workspaceId: workspace.id,
+
             environmentId,
             harnessInstanceId,
             modelSelection: thread.modelSelection,
             title: thread.title,
             idempotencyKey: "reread-cap",
           });
-        expect(reads).toBe(source === "history" ? 4 : 3);
+        expect(reads).toBe(3);
         expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)).toMatchObject({
           status: "waiting",
           pendingRequests: reads,
@@ -9905,7 +8483,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it("does not replay a Request already represented by an unloaded creation answer", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const { answer, asked, client, socket } = await delayedRead({
       loaded: false,
@@ -9927,10 +8505,9 @@ describe("HttpHostClient Thread state reconciliation", () => {
         harnessInstanceId,
         modelSelection: thread.modelSelection,
         title: thread.title,
-        workspaceId: workspace.id,
       });
       await asked;
-      socket.receive({ type: "host.events", events: stateEvents(workspace, thread) });
+      socket.receive(eventsFrame({ type: "host.events", events: stateEvents(workspace, thread) }));
       answer();
       await creating;
       expect(client.getSnapshot().threads[0]).toMatchObject({
@@ -9944,7 +8521,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 
   it("keeps the visible order and transcript after a late creation answer", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const { answer, asked, client, socket } = await delayedRead({
       loaded: false,
@@ -9962,25 +8539,26 @@ describe("HttpHostClient Thread state reconciliation", () => {
         harnessInstanceId,
         modelSelection: thread.modelSelection,
         title: thread.title,
-        workspaceId: workspace.id,
       });
       await asked;
       const other = { ...makeThread(workspace.id), updatedAt: "2090-01-01T00:00:00.000Z" };
       const latest = { ...thread, updatedAt: "2091-01-01T00:00:00.000Z" };
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, other.id, null, "1", "thread.created", { thread: other }),
-          agentEvent(workspace.id, thread.id, null, "2", "thread.created", { thread: latest }),
-          {
-            ...agentEvent(workspace.id, thread.id, null, "3", "message.created", {
-              input: null,
-              message: makeMessage(thread.id, "assistant", "Keep this"),
-            }),
-            createdAt: latest.updatedAt,
-          },
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, other.id, null, "1", "thread.created", { thread: other }),
+            agentEvent(workspace.id, thread.id, null, "2", "thread.created", { thread: latest }),
+            {
+              ...agentEvent(workspace.id, thread.id, null, "3", "message.created", {
+                input: null,
+                message: makeMessage(thread.id, "assistant", "Keep this"),
+              }),
+              createdAt: latest.updatedAt,
+            },
+          ],
+        }),
+      );
       const before = client.getSnapshot();
       const order = (threads: typeof before.threads) =>
         [...threads].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(({ id }) => id);
@@ -10000,603 +8578,10 @@ describe("HttpHostClient Thread state reconciliation", () => {
   });
 });
 
-describe("HttpHostClient command projection", () => {
-  it("answers a Request without leaving the Thread owing the Host another page", async () => {
-    const workspace = makeWorkspace();
-    const thread = makeThread(workspace.id);
-    const runId = createId("run");
-    const approval = pendingRequest({
-      presentation: {
-        detail: "Publish the release",
-        kind: "choice",
-        options: [{ hint: "confirm", id: "allow", label: "Publish" }],
-        risk: "high",
-        title: "Publish externally",
-      },
-      runId,
-      threadId: thread.id,
-      workspaceId: workspace.id,
-    });
-    const sockets: FakeSocket[] = [];
-    const paths: string[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      paths.push(path);
-      if (path === "/v1/rpc/thread.events.list") {
-        return json({
-          events: [],
-          threadId: thread.id,
-          window: {
-            byteCount: 2,
-            hasMore: false,
-            itemCount: 0,
-            nextBefore: null,
-            threadId: thread.id,
-            totalItems: 0,
-          },
-        });
-      }
-      if (path === "/v1/rpc/thread.requests.list") {
-        return json({
-          requests: [],
-          threadId: thread.id,
-          window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
-        });
-      }
-      if (path === "/v1/rpc/commands.dispatch") return json({}, 202);
-      return json(bootstrap([workspace]));
-    });
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    const socket = sockets[0]!;
-    socket.open();
-    socket.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
-        agentEvent(workspace.id, thread.id, runId, "2", "request.opened", { request: approval }),
-        agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
-          status: "waiting",
-          inputQueuePaused: false,
-          pendingRequests: 1,
-        }),
-      ],
-      type: "host.events",
-    });
-    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "4", "request.updated", {
-          request: {
-            ...approval,
-            presentation: { ...approval.presentation, title: "Continue setup" },
-          },
-        }),
-      ],
-      type: "host.events",
-    });
-    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
-    expect(client.getSnapshot().requests[thread.id]).toEqual([
-      expect.objectContaining({
-        id: approval.id,
-        presentation: expect.objectContaining({ title: "Continue setup" }),
-      }),
-    ]);
-
-    await client.dispatch({
-      idempotencyKey: `request-${approval.id}:test`,
-      requestId: approval.id,
-      response: { kind: "choice", optionId: "allow" },
-      type: "request.respond",
-    });
-
-    expect(client.getSnapshot().requests[thread.id]).toEqual([]);
-    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-          status: "running",
-          inputQueuePaused: false,
-          pendingRequests: 0,
-        }),
-      ],
-      type: "host.events",
-    });
-    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(0);
-
-    // Only the Host's absolute state settles the count used for Request paging.
-    paths.length = 0;
-    client.activateThread(thread.id);
-    await Promise.resolve();
-    expect(paths).not.toContain("/v1/rpc/thread.requests.list");
-    client.dispose();
-  });
-
-  it.each([
-    { eventFirst: false, optionId: "installed" },
-    { eventFirst: true, optionId: `server:${createIntegrationId("server")}` },
-  ])(
-    "keeps an integration access Request pending for intermediate choice $optionId",
-    async ({ eventFirst, optionId }) => {
-      const workspace = makeWorkspace();
-      const thread = makeThread(workspace.id);
-      const runId = createId("run");
-      const request = pendingIntegrationAccessRequest({
-        optionId,
-        runId,
-        threadId: thread.id,
-        workspaceId: workspace.id,
-      });
-      const updated = {
-        ...request,
-        payload: {
-          ...request.payload,
-          installationId: request.payload.installationId ?? createIntegrationId("installation"),
-          manifest: null,
-          requestedServerId: optionId.startsWith("server:")
-            ? optionId.slice("server:".length)
-            : createIntegrationId("server"),
-        },
-      } as typeof request;
-      const sockets: FakeSocket[] = [];
-      let releaseResponse!: () => void;
-      const responseGate = new Promise<void>((resolve) => {
-        releaseResponse = resolve;
-      });
-      const fetch = vi.fn(async (input: RequestInfo | URL) => {
-        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
-        if (path === "/v1/rpc/commands.dispatch") {
-          if (eventFirst) await responseGate;
-          return json({}, 202);
-        }
-        throw new Error(`Unexpected request ${path}`);
-      }) as unknown as typeof globalThis.fetch;
-      const client = createHttpHostClient({
-        fetch,
-        refreshIntervalMs: 0,
-        webSocketFactory: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      });
-      await client.load();
-      const socket = sockets[0]!;
-      socket.open();
-      socket.receive({ snapshot: workspaceSnapshot(workspace, "0"), type: "host.snapshot" });
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
-          agentEvent(workspace.id, thread.id, runId, "2", "request.opened", { request }),
-          agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
-            status: "waiting",
-            inputQueuePaused: false,
-            pendingRequests: 1,
-          }),
-        ],
-        type: "host.events",
-      });
-
-      const responding = client.dispatch({
-        idempotencyKey: `request-${request.id}:intermediate`,
-        requestId: request.id,
-        response: { kind: "choice", optionId },
-        type: "request.respond",
-      });
-      if (eventFirst) {
-        await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-        socket.receive({
-          events: [
-            agentEvent(workspace.id, thread.id, runId, "4", "request.updated", {
-              request: updated,
-            }),
-          ],
-          type: "host.events",
-        });
-        releaseResponse();
-      }
-      await responding;
-
-      expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
-      expect(client.getSnapshot().requests[thread.id]).toEqual([
-        expect.objectContaining({ id: request.id, status: "pending" }),
-      ]);
-      if (!eventFirst) {
-        socket.receive({
-          events: [
-            agentEvent(workspace.id, thread.id, runId, "4", "request.updated", {
-              request: updated,
-            }),
-          ],
-          type: "host.events",
-        });
-        await vi.waitFor(() => {
-          expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
-          expect(client.getSnapshot().requests[thread.id]).toEqual([
-            expect.objectContaining({
-              id: request.id,
-              payload: updated.payload,
-              status: "pending",
-            }),
-          ]);
-        });
-      }
-      expect(client.getSnapshot().transcripts[thread.id] ?? []).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ kind: "request" })]),
-      );
-      client.dispose();
-    },
-  );
-
-  it("reads a created AI engine back from the Host instead of waiting for the refresh tick", async () => {
-    const workspace = makeWorkspace();
-    const addedHarnessId = createId("harnessInstance");
-    const paths: string[] = [];
-    let created = false;
-    const fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      paths.push(path);
-      if (path === "/v1/rpc/commands.dispatch") {
-        created = true;
-        return json({
-          harness: {
-            config: {},
-            driverKind: "claude",
-            enabled: true,
-            environmentId,
-            id: addedHarnessId,
-            isDefault: false,
-            name: "Claude",
-            runtimeRevision: 1,
-            sourceId: "anthropic",
-            stateKind: "isolated",
-          },
-        });
-      }
-      const payload = bootstrap([workspace]);
-      return json(
-        created
-          ? {
-              ...payload,
-              harnesses: [
-                ...payload.harnesses,
-                {
-                  config: {},
-                  driverKind: "claude",
-                  enabled: true,
-                  environmentId,
-                  id: addedHarnessId,
-                  isDefault: false,
-                  name: "Claude",
-                  runtimeRevision: 1,
-                  sourceId: "anthropic",
-                  stateKind: "isolated" as const,
-                },
-              ],
-            }
-          : payload,
-      );
-    });
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-    await client.load();
-    expect(client.getSnapshot().harnesses).toHaveLength(1);
-
-    await client.dispatch({
-      driverKind: "claude",
-      environmentId,
-      idempotencyKey: "harness-create:test",
-      name: "Claude",
-      sourceId: "anthropic",
-      stateKind: "isolated",
-      type: "harness.create",
-    });
-
-    expect(client.getSnapshot().harnesses).toEqual([
-      expect.objectContaining({ id: harnessInstanceId }),
-      expect.objectContaining({ id: addedHarnessId, name: "Claude" }),
-    ]);
-    client.dispose();
-  });
-
-  it("refreshes after enable and delete mutations that can move a sibling default", async () => {
-    const workspace = makeWorkspace();
-    const secondId = createId("harnessInstance");
-    let phase: "initial" | "disabled" | "deleted" = "initial";
-    let bootstrapReads = 0;
-    const firstHarness = {
-      config: {},
-      driverKind: "codex",
-      enabled: true,
-      environmentId,
-      id: harnessInstanceId,
-      isDefault: true,
-      name: "Codex",
-      runtimeRevision: 1,
-      sourceId: "openai",
-      stateKind: "ambient" as const,
-    };
-    const secondHarness = {
-      config: {},
-      driverKind: "codex",
-      enabled: true,
-      environmentId,
-      id: secondId,
-      isDefault: false,
-      name: "Codex Work",
-      runtimeRevision: 1,
-      sourceId: "openai",
-      stateKind: "isolated" as const,
-    };
-    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      if (path === "/v1/rpc/commands.dispatch") {
-        const command = asObject(JSON.parse(String(init?.body)));
-        if (requiredString(command, "type") === "harness.enabled.set") {
-          phase = "disabled";
-          return json({ harness: { ...firstHarness, enabled: false, isDefault: false } });
-        }
-        phase = "deleted";
-        return json({}, 202);
-      }
-      bootstrapReads += 1;
-      const payload = bootstrap([workspace]);
-      return json({
-        ...payload,
-        harnesses:
-          phase === "initial"
-            ? [{ ...firstHarness, enabled: true, isDefault: true }, secondHarness]
-            : phase === "disabled"
-              ? [
-                  { ...firstHarness, enabled: false, isDefault: false },
-                  { ...secondHarness, isDefault: true },
-                ]
-              : [{ ...firstHarness, enabled: false, isDefault: false }],
-      });
-    });
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-    await client.load();
-
-    await client.dispatch({
-      enabled: false,
-      environmentId,
-      harnessInstanceId,
-      idempotencyKey: "harness-enabled:refresh",
-      type: "harness.enabled.set",
-    });
-    expect(
-      client.getSnapshot().harnesses.map(({ enabled, id, isDefault }) => ({
-        enabled,
-        id,
-        isDefault,
-      })),
-    ).toEqual([
-      { enabled: false, id: harnessInstanceId, isDefault: false },
-      { enabled: true, id: secondId, isDefault: true },
-    ]);
-
-    await client.dispatch({
-      environmentId,
-      harnessInstanceId: secondId,
-      idempotencyKey: "harness-delete:refresh",
-      type: "harness.delete",
-    });
-    expect(client.getSnapshot().harnesses).toEqual([
-      expect.objectContaining({ enabled: false, id: harnessInstanceId, isDefault: false }),
-    ]);
-    expect(bootstrapReads).toBe(3);
-    client.dispose();
-  });
-
-  it("projects a renamed AI engine without carrying its driver configuration into the snapshot", async () => {
-    const workspace = makeWorkspace();
-    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      if (path !== "/v1/rpc/commands.dispatch") return json(bootstrap([workspace]));
-      const command: unknown = JSON.parse(String(init?.body));
-      expect(requiredString(asObject(command), "type")).toBe("harness.rename");
-      return json({
-        harness: {
-          config: { apiKey: "do-not-retain" },
-          driverKind: "codex",
-          enabled: true,
-          environmentId,
-          id: harnessInstanceId,
-          isDefault: true,
-          name: "Codex Prime",
-          runtimeRevision: 2,
-          sourceId: "openai",
-          stateKind: "ambient",
-        },
-      });
-    });
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-    await client.load();
-
-    await client.dispatch({
-      environmentId,
-      harnessInstanceId,
-      idempotencyKey: "harness-rename:test",
-      name: "Codex Prime",
-      type: "harness.rename",
-    });
-
-    expect(client.getSnapshot().harnesses).toEqual([
-      {
-        driverKind: "codex",
-        enabled: true,
-        environmentId,
-        id: harnessInstanceId,
-        isDefault: true,
-        name: "Codex Prime",
-        runtimeRevision: 2,
-        sourceId: "openai",
-        stateKind: "ambient",
-      },
-    ]);
-    expect(JSON.stringify(client.getSnapshot())).not.toContain("do-not-retain");
-    client.dispose();
-  });
-
-  it("composes caller cancellation into the pending Host request", async () => {
-    const workspace = makeWorkspace();
-    const controller = new AbortController();
-    const signals: (AbortSignal | null | undefined)[] = [];
-    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      if (path !== "/v1/rpc/workspace.files.list") return json(bootstrap([workspace]));
-      signals.push(init?.signal);
-      init?.signal?.throwIfAborted();
-      return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-      });
-    });
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => new FakeSocket(),
-    });
-    await client.load();
-
-    const pending = client.listWorkspaceFiles(workspace.id, { parentKey: "" }, controller.signal);
-    await vi.waitFor(() => expect(signals).toHaveLength(1));
-    expect(signals[0]?.aborted).toBe(false);
-    const reason = new DOMException("Left the folder", "AbortError");
-    const cancelled = expect(pending).rejects.toBe(reason);
-    controller.abort(reason);
-    expect(signals[0]?.aborted).toBe(true);
-    expect(signals[0]?.reason).toBe(reason);
-    await cancelled;
-    await expect(
-      client.listWorkspaceFiles(workspace.id, { parentKey: "" }, controller.signal),
-    ).rejects.toBe(reason);
-    expect(signals).toHaveLength(1);
-    client.dispose();
-  });
-
-  it("releases the viewer transport and its frame when a Browser Session is closed", async () => {
-    const workspace = makeWorkspace();
-    const profileId = createId("browserProfile");
-    const sessionId = createBrowserSessionId();
-    const sockets: Array<{ socket: FakeSocket; url: string }> = [];
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path !== "/v1/rpc/commands.dispatch") {
-        return json(
-          bootstrap([workspace], {
-            profileGrants: [],
-            available: true,
-            placements: [
-              {
-                available: true,
-                environmentIds: [],
-                kind: "runner",
-                label: "Main Host",
-                runnerId: runnerId,
-                runtimeId: "runtime-1",
-              },
-            ],
-            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
-            sessions: [],
-          }),
-        );
-      }
-      const command = asObject(JSON.parse(String(init?.body)));
-      if (requiredString(command, "type") === "browser.session.close") return json({}, 202);
-      return json(
-        {
-          session: {
-            access: "read-write",
-            createdAt: now,
-            id: sessionId,
-            origin: "workspace",
-            placement: { kind: "runner", runnerId: runnerId },
-            profileId,
-            runtimeId: "runtime-1",
-            state: "ready",
-            updatedAt: now,
-            workspaceId: workspace.id,
-          },
-          wasExisting: false,
-        },
-        201,
-      );
-    });
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: (url) => {
-        const socket = new FakeSocket();
-        sockets.push({ socket, url });
-        return socket;
-      },
-    });
-    await client.load();
-    await client.startBrowser(workspace.id, { kind: "profile", profileId });
-    const release = client.retainBrowserViewer(sessionId, "page-1");
-    const viewer = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
-    expect(viewer).toBeDefined();
-    viewer?.open();
-    viewer?.receiveRaw({
-      access: "read-write",
-      dialog: null,
-      sessionId,
-      state: "ready",
-      surfaces: [{ active: true, id: "page-1", title: "Example", url: "https://example.com/" }],
-      targetedStreamingVersion: 1,
-      type: "browser.snapshot",
-    });
-    viewer?.receiveBinary(browserFrame(1));
-    expect(client.browserFrames.get(sessionId, "page-1")).not.toBeNull();
-
-    // Re-opening the same session must keep the viewer state only the client
-    // holds; the Host record says nothing about tabs or socket health.
-    await client.startBrowser(workspace.id, { kind: "profile", profileId });
-    expect(client.getSnapshot().browserSessions[0]).toMatchObject({
-      viewerState: "disconnected",
-    });
-    expect(client.browserTabs.sessionTabs(client.getSnapshot().browserSessions[0]!.id)).toEqual(
-      expect.arrayContaining([expect.objectContaining({ title: "Example" })]),
-    );
-
-    await client.dispatch({
-      idempotencyKey: "browser-close:test",
-      sessionId,
-      type: "browser.session.close",
-    });
-
-    expect(viewer?.closeEvents).toEqual([{ code: 1000, reason: "Target released" }]);
-    expect(client.browserFrames.get(sessionId, "page-1")).toBeNull();
-    expect(client.getSnapshot().browserSessions[0]?.state).toBe("closed");
-    release();
-    client.dispose();
-  });
-});
-
 describe("HttpHostClient lifecycle", () => {
   it("stops polling and stops burning reconnect backoff while backgrounded", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     let bootstrapCalls = 0;
@@ -10634,7 +8619,7 @@ describe("HttpHostClient lifecycle", () => {
 
   it("keeps reconnecting while hidden when it shows the person's notifications", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -10677,7 +8662,7 @@ describe("HttpHostClient lifecycle", () => {
 
   describe("what a person is told about the connection", () => {
     function connected(
-      workspaces = [makeWorkspace()],
+      workspaces = [makeDeployment()],
       options: {
         readonly fetch?: () => Promise<Response>;
         readonly refreshIntervalMs?: number;
@@ -10698,11 +8683,10 @@ describe("HttpHostClient lifecycle", () => {
       });
       const synchronize = (socket: FakeSocket, workspace = workspaces[0]!) => {
         socket.open();
-        socket.receive({ snapshot: workspaceSnapshot(workspace, "4"), type: "host.snapshot" });
+        socket.receive({ snapshot: deploymentSnapshot(workspace, "4"), type: "host.snapshot" });
         socket.receive({
           sequence: sequence("4"),
           type: "host.synchronized",
-          workspaceId: workspace.id,
         });
       };
       const label = () => describeHostConnection(client.getSnapshot()).label;
@@ -10846,26 +8830,8 @@ describe("HttpHostClient lifecycle", () => {
       host.client.dispose();
     });
 
-    it("lets a Workspace nobody is reading retry without touching the connection", async () => {
-      const main = makeWorkspace("Main");
-      const project = makeWorkspace("Project");
-      const host = connected([main, project]);
-      await host.client.load();
-      host.synchronize(host.sockets[0]!, main);
-      host.client.activateWorkspace(project.id);
-      host.synchronize(host.sockets[1]!, project);
-      host.client.activateWorkspace(main.id);
-
-      host.sockets[1]!.serverClose();
-      expect(host.client.getSnapshot().connection).toBe("connected");
-
-      host.client.activateWorkspace(project.id);
-      expect(host.client.getSnapshot().connection).toBe("connecting");
-      host.client.dispose();
-    });
-
     it("reads one way through an outage and tries again when asked", async () => {
-      const workspace = makeWorkspace();
+      const workspace = makeDeployment();
       let up = true;
       const host = connected([workspace], {
         fetch: async () => {
@@ -10908,7 +8874,7 @@ describe("HttpHostClient lifecycle", () => {
 
   it("keeps a briefly backgrounded socket that answers its correlated probe", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -10924,11 +8890,10 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const socket = sockets[0]!;
     socket.open();
-    socket.receive({ snapshot: workspaceSnapshot(workspace, "4"), type: "host.snapshot" });
+    socket.receive({ snapshot: deploymentSnapshot(workspace, "4"), type: "host.snapshot" });
     socket.receive({
       sequence: sequence("4"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     platform.enterBackground();
@@ -10948,7 +8913,7 @@ describe("HttpHostClient lifecycle", () => {
 
   it("replaces a socket that never answers its probe and resumes from its cursor", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -10964,8 +8929,8 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const dead = sockets[0]!;
     dead.open();
-    dead.receive({ snapshot: workspaceSnapshot(workspace, "7"), type: "host.snapshot" });
-    dead.receive({ sequence: sequence("7"), type: "host.synchronized", workspaceId: workspace.id });
+    dead.receive({ snapshot: deploymentSnapshot(workspace, "7"), type: "host.snapshot" });
+    dead.receive({ sequence: sequence("7"), type: "host.synchronized" });
 
     platform.enterBackground();
     await vi.advanceTimersByTimeAsync(5_000);
@@ -10977,16 +8942,16 @@ describe("HttpHostClient lifecycle", () => {
     expect(sockets).toHaveLength(2);
     sockets[1]?.open();
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
-      afterSequence: "7",
+      cursor: { deploymentId: workspace.id, afterSequence: "7", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     client.dispose();
   });
 
   it("keeps a probed channel whose subscription delivers before the answer does", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -11002,26 +8967,27 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const socket = sockets[0]!;
     socket.open();
-    socket.receive({ snapshot: workspaceSnapshot(workspace, "4"), type: "host.snapshot" });
+    socket.receive({ snapshot: deploymentSnapshot(workspace, "4"), type: "host.snapshot" });
     socket.receive({
       sequence: sequence("4"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     await vi.advanceTimersByTimeAsync(1_500);
     expect(sentPingNonce(socket)).toBeTruthy();
     // A slow route can hold the answer behind frames that prove the socket works.
-    socket.receive({
-      events: [
-        agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
-          inputQueuePaused: false,
-          pendingRequests: 0,
-          status: "running",
-        }),
-      ],
-      type: "host.events",
-    });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+            inputQueuePaused: false,
+            pendingRequests: 0,
+            status: "running",
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(sockets).toHaveLength(1);
@@ -11031,7 +8997,7 @@ describe("HttpHostClient lifecycle", () => {
 
   it("watches retained sockets again when a listener arrives while hidden", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -11048,11 +9014,10 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const socket = sockets[0]!;
     socket.open();
-    socket.receive({ snapshot: workspaceSnapshot(workspace, "4"), type: "host.snapshot" });
+    socket.receive({ snapshot: deploymentSnapshot(workspace, "4"), type: "host.snapshot" });
     socket.receive({
       sequence: sequence("4"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     // Hidden with nobody listening, nothing is judged and the socket is kept.
@@ -11071,7 +9036,7 @@ describe("HttpHostClient lifecycle", () => {
 
   it("replaces every socket without probing when the background outlived the trust window", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -11087,11 +9052,10 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const stale = sockets[0]!;
     stale.open();
-    stale.receive({ snapshot: workspaceSnapshot(workspace, "9"), type: "host.snapshot" });
+    stale.receive({ snapshot: deploymentSnapshot(workspace, "9"), type: "host.snapshot" });
     stale.receive({
       sequence: sequence("9"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     platform.enterBackground();
@@ -11103,16 +9067,16 @@ describe("HttpHostClient lifecycle", () => {
     expect(sockets).toHaveLength(2);
     sockets[1]?.open();
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
-      afterSequence: "9",
+      cursor: { deploymentId: workspace.id, afterSequence: "9", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     client.dispose();
   });
 
   it("replaces sockets on a network handover and waits out an offline interface", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -11130,11 +9094,10 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const first = sockets[0]!;
     first.open();
-    first.receive({ snapshot: workspaceSnapshot(workspace, "3"), type: "host.snapshot" });
+    first.receive({ snapshot: deploymentSnapshot(workspace, "3"), type: "host.snapshot" });
     first.receive({
       sequence: sequence("3"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     platform.changeNetwork("offline");
@@ -11150,15 +9113,15 @@ describe("HttpHostClient lifecycle", () => {
     expect(client.getSnapshot().connection).toBe("connecting");
     sockets[1]?.open();
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
-      afterSequence: "3",
+      cursor: { deploymentId: workspace.id, afterSequence: "3", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     client.dispose();
   });
 
   it("replaces sockets on a handover that never leaves the online state", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -11174,8 +9137,8 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const wifi = sockets[0]!;
     wifi.open();
-    wifi.receive({ snapshot: workspaceSnapshot(workspace, "5"), type: "host.snapshot" });
-    wifi.receive({ sequence: sequence("5"), type: "host.synchronized", workspaceId: workspace.id });
+    wifi.receive({ snapshot: deploymentSnapshot(workspace, "5"), type: "host.snapshot" });
+    wifi.receive({ sequence: sequence("5"), type: "host.synchronized" });
 
     // Wi-Fi to cellular reports "online" on both sides of the move, and the
     // interface it left never reports the socket dead.
@@ -11185,15 +9148,15 @@ describe("HttpHostClient lifecycle", () => {
     expect(sockets).toHaveLength(2);
     sockets[1]?.open();
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
-      afterSequence: "5",
+      cursor: { deploymentId: workspace.id, afterSequence: "5", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     client.dispose();
   });
 
   it("opens no socket for a bootstrap that lands after the app was hidden", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const sockets: FakeSocket[] = [];
     const gate: Array<() => void> = [];
@@ -11226,15 +9189,15 @@ describe("HttpHostClient lifecycle", () => {
     expect(sockets).toHaveLength(1);
     sockets[0]?.open();
     expect(parseSent(sockets[0]!, 0)).toMatchObject({
-      afterSequence: "0",
+      cursor: { deploymentId: workspace.id, afterSequence: "0", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     client.dispose();
   });
 
   it("opens no socket for a refresh that lands while the device is offline", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle({ network: "online", visibility: "foreground" });
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -11250,11 +9213,10 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const first = sockets[0]!;
     first.open();
-    first.receive({ snapshot: workspaceSnapshot(workspace, "2"), type: "host.snapshot" });
+    first.receive({ snapshot: deploymentSnapshot(workspace, "2"), type: "host.snapshot" });
     first.receive({
       sequence: sequence("2"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     platform.changeNetwork("offline");
@@ -11265,15 +9227,15 @@ describe("HttpHostClient lifecycle", () => {
     expect(sockets).toHaveLength(2);
     sockets[1]?.open();
     expect(parseSent(sockets[1]!, 0)).toMatchObject({
-      afterSequence: "2",
+      cursor: { deploymentId: workspace.id, afterSequence: "2", apiVersion: hostApiVersion },
+
       type: "client.subscribe",
-      workspaceId: workspace.id,
     });
     client.dispose();
   });
 
   it("releases its platform listeners when it is disposed", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const platform = fakeLifecycle();
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -11289,7 +9251,7 @@ describe("HttpHostClient lifecycle", () => {
 
   it("surfaces a Host channel error through the connection state", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -11306,11 +9268,10 @@ describe("HttpHostClient lifecycle", () => {
     await client.load();
     const retried = sockets[0]!;
     retried.open();
-    retried.receive({ snapshot: workspaceSnapshot(workspace, "1"), type: "host.snapshot" });
+    retried.receive({ snapshot: deploymentSnapshot(workspace, "1"), type: "host.snapshot" });
     retried.receive({
       sequence: sequence("1"),
       type: "host.synchronized",
-      workspaceId: workspace.id,
     });
 
     retried.receive({
@@ -11323,7 +9284,7 @@ describe("HttpHostClient lifecycle", () => {
 
     sockets[1]!.open();
     sockets[1]!.receive({
-      error: { code: "forbidden", message: "This Workspace is not yours.", retryable: false },
+      error: { code: "bad_message", message: "This Workspace is not yours.", retryable: false },
       type: "host.error",
     });
     expect(client.getSnapshot().connection).toBe("offline");
@@ -11331,58 +9292,10 @@ describe("HttpHostClient lifecycle", () => {
     expect(sockets).toHaveLength(2);
     client.dispose();
   });
-
-  it("retries a retained non-home workspace and waits for synchronization", async () => {
-    const home = makeWorkspace("Main");
-    const other = makeWorkspace("Research");
-    const sockets: FakeSocket[] = [];
-    const client = createHttpHostClient({
-      fetch: async () => json(bootstrap([home, other])),
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    client.activateWorkspace(other.id);
-    for (const [index, workspace] of [home, other].entries()) {
-      sockets[index]!.open();
-      sockets[index]!.receive({
-        snapshot: workspaceSnapshot(workspace, "1"),
-        type: "host.snapshot",
-      });
-      sockets[index]!.receive({
-        sequence: sequence("1"),
-        type: "host.synchronized",
-        workspaceId: workspace.id,
-      });
-    }
-    expect(client.getSnapshot().connection).toBe("connected");
-    sockets[1]!.receive({
-      type: "host.error",
-      error: { code: "internal", message: "Unavailable", retryable: false },
-    });
-    expect(client.getSnapshot().connection).toBe("offline");
-    await client.refresh({ retryConnection: true });
-    expect(sockets).toHaveLength(3);
-    sockets[2]!.open();
-    expect(parseSent(sockets[2]!, 0)).toMatchObject({ workspaceId: other.id });
-    sockets[2]!.receive({ snapshot: workspaceSnapshot(other, "2"), type: "host.snapshot" });
-    expect(client.getSnapshot().connection).toBe("connecting");
-    sockets[2]!.receive({
-      sequence: sequence("2"),
-      type: "host.synchronized",
-      workspaceId: other.id,
-    });
-    expect(client.getSnapshot().connection).toBe("connected");
-    client.dispose();
-  });
 });
 
 describe("HttpHostClient notifications", () => {
-  function replyNotification(workspaceId: string): NotificationView {
+  function replyNotification(_deploymentId: string): NotificationView {
     return {
       body: "Your flight moved to 8 pm.",
       id: createId("notification"),
@@ -11393,13 +9306,12 @@ describe("HttpHostClient notifications", () => {
       runId: createId("run"),
       threadId: createId("thread"),
       title: "Opensteer",
-      workspaceId: WorkspaceIdSchema.parse(workspaceId),
     };
   }
 
-  it("delivers a notification once whichever sockets carry it, and never to a later viewer", async () => {
-    const home = makeWorkspace("Main");
-    const other = makeWorkspace("Research");
+  it("delivers a notification once when the Deployment socket repeats it, and never to a later viewer", async () => {
+    const home = makeDeployment("Main");
+    const other = makeDeployment("Research");
     const sockets: FakeSocket[] = [];
     let signedIn = true;
     const client = createHttpHostClient({
@@ -11420,14 +9332,14 @@ describe("HttpHostClient notifications", () => {
       throw new Error("A listener's own fault.");
     });
     await client.load();
-    client.activateWorkspace(other.id);
-    expect(sockets).toHaveLength(2);
+
+    expect(sockets).toHaveLength(1);
     for (const socket of sockets) socket.open();
 
     const reply = replyNotification(home.id);
     const raised = vi.spyOn(globalThis, "queueMicrotask").mockImplementation(() => undefined);
-    for (const socket of sockets)
-      socket.receive({ notification: reply, type: "host.notification" });
+    for (let repeat = 0; repeat < 2; repeat += 1)
+      sockets[0]!.receive({ notification: reply, type: "host.notification" });
     const raisedCount = raised.mock.calls.length;
     raised.mockRestore();
     expect(delivered).toEqual([reply]);
@@ -11439,7 +9351,7 @@ describe("HttpHostClient notifications", () => {
 
     signedIn = false;
     await expect(client.refresh()).rejects.toThrow();
-    sockets[1]!.receive({
+    sockets[0]!.receive({
       notification: replyNotification(other.id),
       type: "host.notification",
     });
@@ -11448,7 +9360,7 @@ describe("HttpHostClient notifications", () => {
   });
 
   it("reports the viewer's time zone once per zone, again after a lost answer, never after a refusal", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     let zone: string | undefined = "America/New_York";
     const resolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
     vi.spyOn(Intl.DateTimeFormat.prototype, "resolvedOptions").mockImplementation(function (
@@ -11536,7 +9448,7 @@ describe("HttpHostClient Run activity and live streams", () => {
   }
 
   function liveFrame(
-    workspaceId: Thread["workspaceId"],
+    _deploymentId: string,
     threadId: Thread["id"],
     runId: NonNullable<AgentEvent["runId"]>,
     afterSequence: string,
@@ -11544,14 +9456,13 @@ describe("HttpHostClient Run activity and live streams", () => {
   ): HostToClientMessage {
     return {
       afterSequence: sequence(afterSequence),
-      progress: { items, runId, threadId, workspaceId },
+      progress: { items, runId, threadId },
       type: "host.live",
-      workspaceId,
     };
   }
 
   it("derives one activity and Stop target from Host state, the Run queue and a requested Stop", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const runId = createId("run");
     const interrupted: string[] = [];
@@ -11584,40 +9495,46 @@ describe("HttpHostClient Run activity and live streams", () => {
       client.activateThread(thread.id);
       socket.open();
       socket.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
         type: "host.snapshot",
       });
       expect(activityOf(client, thread.id)).toEqual({ activity: "idle", stop: null });
 
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "1", "run.queued", {
-            run: {
-              createdAt: now,
-              id: runId,
-              runOrdinal: 0,
-              status: "queued",
-              threadId: thread.id,
-            },
-          }),
-          state("2", "running"),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "1", "run.queued", {
+              run: {
+                createdAt: now,
+                id: runId,
+                runOrdinal: 0,
+                status: "queued",
+                threadId: thread.id,
+              },
+            }),
+            state("2", "running"),
+          ],
+          type: "host.events",
+        }),
+      );
       // A Run can wait minutes for its computer or AI account; Stop reaches it there.
       expect(activityOf(client, thread.id)).toEqual({ activity: "queued", stop: runId });
       // Behind a paused queue it is already held for the person.
-      socket.receive({ events: [state("3", "running", 0, true)], type: "host.events" });
+      socket.receive(
+        eventsFrame({ events: [state("3", "running", 0, true)], type: "host.events" }),
+      );
       expect(activityOf(client, thread.id)).toEqual({ activity: "queued", stop: null });
-      socket.receive({ events: [state("4", "running")], type: "host.events" });
+      socket.receive(eventsFrame({ events: [state("4", "running")], type: "host.events" }));
       expect(activityOf(client, thread.id)).toEqual({ activity: "queued", stop: runId });
 
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "5", "run.started", { status: "running" }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "5", "run.started", { status: "running" }),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(activityOf(client, thread.id)).toEqual({ activity: "working", stop: runId });
 
       const request = pendingRequest({
@@ -11630,38 +9547,44 @@ describe("HttpHostClient Run activity and live streams", () => {
         },
         runId,
         threadId: thread.id,
-        workspaceId: workspace.id,
+        deploymentId: workspace.id,
       });
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "6", "request.opened", { request }),
-          state("7", "waiting", 1),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "6", "request.opened", { request }),
+            state("7", "waiting", 1),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(activityOf(client, thread.id)).toEqual({ activity: "waiting_for_you", stop: runId });
 
       await client.stopRun(thread.id);
       expect(interrupted).toEqual([runId]);
       expect(activityOf(client, thread.id)).toEqual({ activity: "stopping", stop: runId });
       // The Runner may still report the turn while the interrupt reaches it.
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "8", "run.status", { status: "running" }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "8", "run.status", { status: "running" }),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(activityOf(client, thread.id)).toEqual({ activity: "stopping", stop: runId });
 
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "9", "run.interrupted", {
-            status: "interrupted",
-          }),
-          state("10", "idle"),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "9", "run.interrupted", {
+              status: "interrupted",
+            }),
+            state("10", "idle"),
+          ],
+          type: "host.events",
+        }),
+      );
       expect(activityOf(client, thread.id)).toEqual({ activity: "idle", stop: null });
     } finally {
       client.dispose();
@@ -11669,7 +9592,7 @@ describe("HttpHostClient Run activity and live streams", () => {
   });
 
   it("forgets what the previous viewer was streaming when the session ends", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const runId = createId("run");
     const collaborator = {
@@ -11708,7 +9631,7 @@ describe("HttpHostClient Run activity and live streams", () => {
       client.activateThread(thread.id);
       sockets[0]!.open();
       sockets[0]!.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "1"), threads: [thread] },
         type: "host.snapshot",
       });
       sockets[0]!.receive(
@@ -11731,7 +9654,7 @@ describe("HttpHostClient Run activity and live streams", () => {
       expect(second).not.toBe(sockets[0]);
       second.open();
       second.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "1"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "1"), threads: [thread] },
         type: "host.snapshot",
       });
       client.activateThread(thread.id);
@@ -11750,7 +9673,7 @@ describe("HttpHostClient Run activity and live streams", () => {
   });
 
   it("drops a drawn stream the resubscribed connection no longer carries", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const runId = createId("run");
     const answer = { length: 11, op: "replace", stream: "assistant", text: "Alpha beta." } as const;
@@ -11770,7 +9693,7 @@ describe("HttpHostClient Run activity and live streams", () => {
                   items: [answer],
                   runId,
                   threadId: thread.id,
-                  workspaceId: workspace.id,
+                  deploymentId: workspace.id,
                 },
               },
             ],
@@ -11794,15 +9717,17 @@ describe("HttpHostClient Run activity and live streams", () => {
       const first = sockets[0]!;
       first.open();
       first.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
         type: "host.snapshot",
       });
-      first.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-        ],
-        type: "host.events",
-      });
+      first.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+          ],
+          type: "host.events",
+        }),
+      );
       first.receive(
         liveFrame(workspace.id, thread.id, runId, "1", [
           { at: 0, blockId: "plan", op: "append", stream: "reasoning", text: "Weighing it" },
@@ -11822,7 +9747,6 @@ describe("HttpHostClient Run activity and live streams", () => {
       second.receive({
         sequence: sequence("1"),
         type: "host.synchronized",
-        workspaceId: workspace.id,
       });
       // Going live, the Host sends each stream it still has open, whole.
       second.receive(liveFrame(workspace.id, thread.id, runId, "1", [answer]));
@@ -11843,7 +9767,7 @@ describe("HttpHostClient Run activity and live streams", () => {
   });
 
   it("rereads again when a frame goes missing while a reread is in flight", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const runId = createId("run");
     const firstAnswer = Promise.withResolvers<void>();
@@ -11866,7 +9790,7 @@ describe("HttpHostClient Run activity and live streams", () => {
                   items: [{ length: text.length, op: "replace", stream: "assistant", text }],
                   runId,
                   threadId: thread.id,
-                  workspaceId: workspace.id,
+                  deploymentId: workspace.id,
                 },
               },
             ],
@@ -11893,15 +9817,17 @@ describe("HttpHostClient Run activity and live streams", () => {
       client.activateThread(thread.id);
       socket.open();
       socket.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
         type: "host.snapshot",
       });
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "1", "run.started", { status: "running" }),
+          ],
+          type: "host.events",
+        }),
+      );
       append(0, "Alpha ");
       append(17, "gamma ");
       await vi.waitFor(() => expect(liveReads).toBe(1));
@@ -11916,7 +9842,7 @@ describe("HttpHostClient Run activity and live streams", () => {
   });
 
   it("reads a Thread's Requests once per Host count while the count lags the list", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = { ...makeThread(workspace.id), status: "running" as const };
     const runId = createId("run");
     const request = pendingRequest({
@@ -11929,7 +9855,7 @@ describe("HttpHostClient Run activity and live streams", () => {
       },
       runId,
       threadId: thread.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     let requestReads = 0;
     const socket = new FakeSocket();
@@ -11957,37 +9883,41 @@ describe("HttpHostClient Run activity and live streams", () => {
       await client.load();
       socket.open();
       socket.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
         type: "host.snapshot",
       });
       client.activateThread(thread.id);
       // The Host counts a second Request its list does not return yet.
-      socket.receive({
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "1", "request.opened", { request }),
-          state("2", 2),
-        ],
-        type: "host.events",
-      });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "1", "request.opened", { request }),
+            state("2", 2),
+          ],
+          type: "host.events",
+        }),
+      );
       await vi.waitFor(() => expect(requestReads).toBe(1));
       for (let at = 3; at < 9; at += 1) {
         await settle();
-        socket.receive({
-          events: [
-            agentEvent(workspace.id, thread.id, runId, String(at), "tool.started", {
-              arguments: {},
-              callId: `call-${at}`,
-              tool: { name: "shell", namespace: "codex" },
-            }),
-          ],
-          type: "host.events",
-        });
+        socket.receive(
+          eventsFrame({
+            events: [
+              agentEvent(workspace.id, thread.id, runId, String(at), "tool.started", {
+                arguments: {},
+                callId: `call-${at}`,
+                tool: { name: "shell", namespace: "codex" },
+              }),
+            ],
+            type: "host.events",
+          }),
+        );
       }
       await settle();
       expect(requestReads).toBe(1);
 
       // A new count is a new question.
-      socket.receive({ events: [state("9", 3)], type: "host.events" });
+      socket.receive(eventsFrame({ events: [state("9", 3)], type: "host.events" }));
       await vi.waitFor(() => expect(requestReads).toBe(2));
     } finally {
       client.dispose();
@@ -11995,7 +9925,7 @@ describe("HttpHostClient Run activity and live streams", () => {
   });
 
   it("retains selection state live and after reload without adding conversation rows", async () => {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const switched = {
       ...thread,
@@ -12029,12 +9959,12 @@ describe("HttpHostClient Run activity and live streams", () => {
       client.activateThread(thread.id);
       socket.open();
       socket.receive({
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread] },
         type: "host.snapshot",
       });
       await client.loadLatestTranscript(thread.id);
 
-      socket.receive({ events: [event], type: "host.events" });
+      socket.receive(eventsFrame({ events: [event], type: "host.events" }));
       const live = markers();
       expect(live).toEqual([
         expect.objectContaining({
@@ -12062,913 +9992,6 @@ describe("HttpHostClient Run activity and live streams", () => {
   });
 });
 
-describe("HttpHostClient task list", () => {
-  type TaskWindow = { readonly hasMore: boolean; readonly nextBefore: string | null };
-
-  function readStateOf(
-    threadId: string,
-    positions: {
-      readonly placed?: { readonly done: boolean; readonly sequence: string };
-      readonly read?: string;
-      readonly revision?: string;
-      readonly unread?: string;
-    } = {},
-  ) {
-    return {
-      asOfSequence: SequenceSchema.parse("9"),
-      readSequence: positions.read === undefined ? null : SequenceSchema.parse(positions.read),
-      threadId: ThreadIdSchema.parse(threadId),
-      unreadSequence:
-        positions.unread === undefined ? null : SequenceSchema.parse(positions.unread),
-    };
-  }
-
-  it("publishes task readiness only after the accepted page's read states are installed", async () => {
-    const main = makeWorkspace(),
-      thread = makeThread(main.id),
-      host = taskHost([main]);
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      taskReads: "observed",
-      refreshIntervalMs: 0,
-    });
-    const observed: boolean[] = [];
-    const detach = client.subscribe(() => {
-      const snapshot = client.getSnapshot();
-      if (snapshot.savedViewReadiness?.tasksReady)
-        observed.push(
-          snapshot.threadReadStates[snapshot.tasks?.entries[0]?.thread.id ?? ""]?.readSequence ===
-            "9",
-        );
-    });
-    const loading = client.load();
-    await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-    expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(false);
-    host.reads[0]!.answer(
-      taskPage([thread], { hasMore: false, nextBefore: null }, [
-        readStateOf(thread.id, { read: "9" }),
-      ]),
-    );
-    await loading;
-    await vi.waitFor(() => expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(true));
-    expect(observed.length).toBeGreaterThan(0);
-    await client.refresh();
-    await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-    const after = { ...makeThread(main.id), title: "After" };
-    host.reads[1]!.answer(
-      taskPage([after], { hasMore: false, nextBefore: null }, [
-        readStateOf(after.id, { read: "9" }),
-      ]),
-    );
-    await vi.waitFor(() =>
-      expect(client.getSnapshot().tasks?.entries[0]?.thread.title).toBe("After"),
-    );
-    await vi.waitFor(() => expect(client.getSnapshot().savedViewReadiness?.tasksReady).toBe(true));
-    expect(observed.every(Boolean)).toBe(true);
-    detach();
-    client.dispose();
-  });
-
-  /** A page as `tasks.list` answers it, with a plain read state for each task. */
-  function taskPage(
-    threads: readonly Thread[],
-    window: TaskWindow,
-    readStates = threads.map((thread) => readStateOf(thread.id)),
-  ) {
-    return {
-      readStates,
-      tasks: threads.map((thread) => ({
-        failure: null,
-        lastReply: `Last said in ${thread.title}`,
-        thread,
-      })),
-      window: {
-        byteCount: 2,
-        itemCount: threads.length,
-        totalItems: threads.length,
-        ...window,
-      },
-    };
-  }
-
-  function task(workspaceId: Thread["workspaceId"], title: string, updatedAt: string): Thread {
-    return { ...makeThread(workspaceId), createdAt: updatedAt, title, updatedAt };
-  }
-
-  /** A Host whose task reads each wait for the case to answer them. */
-  function taskHost(workspaces: readonly WorkspaceView[]) {
-    const activeReads: { before: unknown; answer: (page: unknown) => void }[] = [];
-    let observeActive = false;
-    const reads: {
-      readonly before: unknown;
-      readonly answer: (page: unknown, status?: number) => void;
-      readonly workspaceId: unknown;
-    }[] = [];
-    const commands: Record<string, unknown>[] = [];
-    let viewer: "owner" | "signed-out" | "someone-else" = "owner";
-    const fetch: typeof globalThis.fetch = async (input, init) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      if (url.pathname === "/v1/rpc/auth.config") {
-        return json(bootstrap([...workspaces]).identityConfig);
-      }
-      if (viewer === "signed-out") return json({ error: unauthorizedError() }, 401);
-      if (url.pathname === "/v1/rpc/tasks.list") {
-        const payload = rpcPayload(url, init);
-        if (payload.active === true) {
-          if (!observeActive) return json(taskPage([], { hasMore: false, nextBefore: null }));
-          return new Promise((resolve) => {
-            activeReads.push({ before: payload.before, answer: (page) => resolve(json(page)) });
-          });
-        }
-        return new Promise((resolve) => {
-          reads.push({
-            answer: (page, status = 200) => resolve(json(page, status)),
-            before: payload.before,
-            workspaceId: payload.workspaceId,
-          });
-        });
-      }
-      if (url.pathname === "/v1/rpc/commands.dispatch") {
-        const payload = rpcPayload(url, init);
-        commands.push(payload);
-        return json({
-          thread: {
-            ...makeThread(workspaces[0]!.id),
-            id: requiredString(payload, "threadId"),
-            doneAt: payload.done === true ? "2026-10-27T17:40:00.000Z" : null,
-          },
-          asOfSequence: String(9 + commands.length),
-          wasDuplicate: false,
-        });
-      }
-      const answer = bootstrap([...workspaces]);
-      return json(
-        viewer === "owner"
-          ? answer
-          : { ...answer, user: { ...answer.user, id: createId("user"), displayName: "Sam" } },
-      );
-    };
-    return {
-      commands,
-      fetch,
-      reads,
-      activeReads,
-      observeActive: () => {
-        observeActive = true;
-      },
-      setViewer: (next: typeof viewer) => {
-        viewer = next;
-      },
-    };
-  }
-
-  function sockets() {
-    const opened: FakeSocket[] = [];
-    return {
-      factory: () => {
-        const socket = new FakeSocket();
-        opened.push(socket);
-        return socket;
-      },
-      opened,
-    };
-  }
-
-  function titles(client: HttpHostClient): (string | undefined)[] {
-    return client.getSnapshot().tasks?.entries.map(({ thread }) => thread.title) ?? [];
-  }
-
-  /** Lets every answer already given reach the snapshot. */
-  async function settled(): Promise<void> {
-    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  it("keeps all active pages alongside 100 newer idle tasks, refreshes them together and clears completed work", async () => {
-    const workspace = makeWorkspace();
-    const host = taskHost([workspace]);
-    host.observeActive();
-    const socket = sockets();
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: socket.factory,
-    });
-    const idle = Array.from({ length: 100 }, (_, index) =>
-      task(workspace.id, `Idle ${index}`, "2026-08-09T10:00:00.000Z"),
-    );
-    const running = {
-      ...task(workspace.id, "Older running", "2026-08-09T09:00:00.000Z"),
-      status: "running" as const,
-    };
-    const waiting = {
-      ...task(workspace.id, "Older waiting", "2026-08-09T08:00:00.000Z"),
-      status: "waiting" as const,
-    };
-    try {
-      await client.load();
-      await vi.waitFor(() => {
-        expect(host.reads).toHaveLength(1);
-        expect(host.activeReads).toHaveLength(1);
-      });
-      host.reads[0]!.answer(taskPage(idle, { hasMore: true, nextBefore: "history" }));
-      host.activeReads[0]!.answer(
-        taskPage([running], { hasMore: true, nextBefore: "active-next" }),
-      );
-      await vi.waitFor(() => expect(host.activeReads).toHaveLength(2));
-      expect(host.activeReads[1]!.before).toBe("active-next");
-      host.activeReads[1]!.answer(
-        taskPage([waiting], { hasMore: false, nextBefore: null }, [
-          readStateOf(waiting.id, { read: "3" }),
-        ]),
-      );
-      await vi.waitFor(() => expect(client.getSnapshot().activeTasks).toHaveLength(2));
-      const before = client.getSnapshot();
-      expect(before.tasks?.entries).toHaveLength(100);
-      expect(before.tasks?.window.hasMore).toBe(true);
-      expect(taskList(before).running).toBe(1);
-      expect(taskList(before).working.map((row) => row.threadId)).toEqual(
-        expect.arrayContaining([running.id, waiting.id]),
-      );
-      expect(workspaceTaskList(before, workspace.id).running).toBe(1);
-      expect(liveWork(before).map((group) => group.threadId)).toEqual([running.id, waiting.id]);
-      expect(before.threadReadStates[waiting.id]?.readSequence).toBe("3");
-      expect(sameTaskListSource(before, { ...before, activeTasks: [] })).toBe(false);
-      expect(sameLiveWorkSource(before, { ...before, activeTasks: [] })).toBe(false);
-      const first = socket.opened[0]!;
-      first.open();
-      first.receive({ type: "host.tasks-changed" });
-      await vi.waitFor(() => {
-        expect(host.reads).toHaveLength(2);
-        expect(host.activeReads).toHaveLength(3);
-      });
-      for (let n = 0; n < 3; n++) first.receive({ type: "host.tasks-changed" });
-      host.reads[1]!.answer(taskPage(idle, { hasMore: true, nextBefore: "history-fresh" }));
-      host.activeReads[2]!.answer(taskPage([], { hasMore: false, nextBefore: null }));
-      await vi.waitFor(() => {
-        expect(host.reads).toHaveLength(3);
-        expect(host.activeReads).toHaveLength(4);
-      });
-      host.reads[2]!.answer(taskPage(idle, { hasMore: true, nextBefore: "history-latest" }));
-      host.activeReads[3]!.answer(taskPage([], { hasMore: false, nextBefore: null }));
-      await vi.waitFor(() => expect(client.getSnapshot().activeTasks).toEqual([]));
-      expect(taskList(client.getSnapshot()).running).toBe(0);
-      expect(liveWork(client.getSnapshot())).toEqual([]);
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("reads the reader's tasks once signed in, and once more however many changes land during a read", async () => {
-    const workspace = makeWorkspace();
-    const flight = task(workspace.id, "Book the flight", "2026-08-09T10:00:00.000Z");
-    const host = taskHost([workspace]);
-    const socket = sockets();
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      reconnectBaseDelayMs: 1,
-      reconnectMaxDelayMs: 5,
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: socket.factory,
-    });
-    try {
-      expect(client.getSnapshot().tasks).toBeNull();
-      await client.load();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-      expect(host.reads[0]!.before).toBeUndefined();
-      expect(client.getSnapshot().tasks).toBeNull();
-
-      const first = socket.opened[0]!;
-      first.open();
-      first.receive({ snapshot: workspaceSnapshot(workspace, "1"), type: "host.snapshot" });
-      first.receive({
-        sequence: sequence("1"),
-        type: "host.synchronized",
-        workspaceId: workspace.id,
-      });
-      for (let notice = 0; notice < 3; notice += 1) first.receive({ type: "host.tasks-changed" });
-      await settled();
-      expect(host.reads).toHaveLength(1);
-
-      host.reads[0]!.answer(
-        taskPage([flight], { hasMore: false, nextBefore: null }, [
-          readStateOf(flight.id, { placed: { done: true, sequence: "3" }, read: "3", unread: "3" }),
-        ]),
-      );
-      await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-      expect(client.getSnapshot().tasks?.entries).toEqual([
-        expect.objectContaining({
-          failure: null,
-          lastReply: "Last said in Book the flight",
-          thread: expect.objectContaining({
-            createdAt: flight.createdAt,
-            id: flight.id,
-            title: "Book the flight",
-            workspaceId: workspace.id,
-          }),
-        }),
-      ]);
-      expect(client.getSnapshot().threadReadStates[flight.id]).toMatchObject({
-        readSequence: "3",
-      });
-
-      host.reads[1]!.answer(
-        taskPage(
-          [{ ...flight, title: "Book the return flight" }],
-          {
-            hasMore: false,
-            nextBefore: null,
-          },
-          [{ ...readStateOf(flight.id), asOfSequence: SequenceSchema.parse("10") }],
-        ),
-      );
-      await vi.waitFor(() => expect(titles(client)).toEqual(["Book the return flight"]));
-      await settled();
-      expect(host.reads).toHaveLength(2);
-
-      // A connection that starts over may have missed a notice.
-      first.close(1006, "lost");
-      await vi.waitFor(() => expect(socket.opened).toHaveLength(2));
-      const second = socket.opened[1]!;
-      second.open();
-      second.receive({ snapshot: workspaceSnapshot(workspace, "2"), type: "host.snapshot" });
-      second.receive({
-        sequence: sequence("2"),
-        type: "host.synchronized",
-        workspaceId: workspace.id,
-      });
-      await vi.waitFor(() => expect(host.reads).toHaveLength(3));
-      expect(host.reads[2]!.before).toBeUndefined();
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("rebuilds the loaded prefix with fresh cursors and read states after invalidation", async () => {
-    const workspace = makeWorkspace();
-    const host = taskHost([workspace]);
-    const socket = sockets();
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: socket.factory,
-    });
-    const one = task(workspace.id, "One", "2026-08-09T10:00:04.000Z");
-    const removed = task(workspace.id, "Removed", "2026-08-09T10:00:03.000Z");
-    const older = task(workspace.id, "Older", "2026-08-09T10:00:01.000Z");
-    const newer = task(workspace.id, "Newer", "2026-08-09T10:00:06.000Z");
-    const skipped = task(workspace.id, "Previously skipped", "2026-08-09T10:00:05.000Z");
-    try {
-      await client.load();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-      host.reads[0]!.answer(taskPage([one, removed], { hasMore: true, nextBefore: "old-cursor" }));
-      await vi.waitFor(() => expect(titles(client)).toEqual(["One", "Removed"]));
-      const earlier = client.loadEarlierTasks();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-      host.reads[1]!.answer(taskPage([older], { hasMore: false, nextBefore: null }));
-      await earlier;
-      const first = socket.opened[0]!;
-      first.open();
-      first.receive({ type: "host.tasks-changed" });
-      await vi.waitFor(() => expect(host.reads).toHaveLength(3));
-      host.reads[2]!.answer(
-        taskPage([newer, skipped], { hasMore: true, nextBefore: "fresh-cursor" }),
-      );
-      await vi.waitFor(() => expect(host.reads).toHaveLength(4));
-      expect(host.reads[3]!.before).toBe("fresh-cursor");
-      host.reads[3]!.answer(
-        taskPage([one, older], { hasMore: false, nextBefore: null }, [
-          readStateOf(one.id),
-          readStateOf(older.id, {
-            placed: { done: true, sequence: "7" },
-            revision: "1",
-            read: "7",
-          }),
-        ]),
-      );
-      await vi.waitFor(() =>
-        expect(titles(client)).toEqual(["Newer", "Previously skipped", "One", "Older"]),
-      );
-      expect(client.getSnapshot().tasks?.window.hasMore).toBe(false);
-      expect(client.getSnapshot().threadReadStates[older.id]?.readSequence).toBe("7");
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it.each(["success", "refused", "newer event", "success with newer event"] as const)(
-    "renames an unopened task across global and Workspace pages (%s)",
-    async (outcome) => {
-      const main = makeWorkspace("Main");
-      const research = { ...makeWorkspace("Research"), kind: "project" as const };
-      const venue = {
-        ...task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z"),
-        status: "running" as const,
-      };
-      const host = taskHost([main, research]);
-      const socket = sockets();
-      const answer = Promise.withResolvers<void>();
-      const commands: unknown[] = [];
-      const client = createHttpHostClient({
-        capabilities: ["thread-titles-v1"],
-        taskReads: "observed",
-        refreshIntervalMs: 0,
-        webSocketFactory: socket.factory,
-        fetch: async (input, init) => {
-          const url = new URL(input instanceof Request ? input.url : String(input));
-          if (url.pathname === "/v1/rpc/commands.dispatch") {
-            commands.push(rpcPayload(url, init));
-            await answer.promise;
-            return outcome.startsWith("success")
-              ? json({ thread: { ...venue, title: "New venue name" }, asOfSequence: "5" })
-              : json(
-                  { error: { code: "bad_request", message: "Rename refused", retryable: false } },
-                  400,
-                );
-          }
-          if (url.pathname === "/v1/rpc/tasks.list" && rpcPayload(url, init).active === true)
-            return json(
-              taskPage([venue], { hasMore: false, nextBefore: null }, [
-                { ...readStateOf(venue.id), asOfSequence: SequenceSchema.parse("0") },
-              ]),
-            );
-          if (url.pathname === "/v1/rpc/thread.events.list")
-            return json({
-              thread: venue,
-              threadId: venue.id,
-              events: [],
-              readState: { ...readStateOf(venue.id), asOfSequence: "0" },
-              window: {
-                byteCount: 2,
-                hasMore: false,
-                itemCount: 0,
-                nextBefore: null,
-                totalItems: 0,
-                threadId: venue.id,
-              },
-            });
-          return host.fetch(input, init);
-        },
-      });
-      const scopedTitles = () =>
-        client.getSnapshot().workspaceTasks[research.id]?.entries.map(({ thread }) => thread.title);
-      try {
-        await client.load();
-        await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-        host.reads[0]!.answer(
-          taskPage([venue], { hasMore: false, nextBefore: null }, [
-            { ...readStateOf(venue.id), asOfSequence: SequenceSchema.parse("0") },
-          ]),
-        );
-        await vi.waitFor(() => expect(titles(client)).toEqual([venue.title]));
-        const loading = client.loadWorkspaceTasks(research.id);
-        await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-        host.reads[1]!.answer(
-          taskPage([venue], { hasMore: false, nextBefore: null }, [
-            { ...readStateOf(venue.id), asOfSequence: SequenceSchema.parse("0") },
-          ]),
-        );
-        await loading;
-        expect(client.getSnapshot().threads).toEqual([]);
-        const renaming = client.renameThread(venue.id, "New venue name").then(
-          (thread) => ({ thread, error: null }),
-          (error: unknown) => ({ thread: null, error }),
-        );
-        expect(titles(client)).toEqual(["New venue name"]);
-        expect(scopedTitles()).toEqual(["New venue name"]);
-        expect(commands).toEqual([
-          expect.objectContaining({ type: "thread.rename", threadId: venue.id }),
-        ]);
-        expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.title)).toEqual([
-          "New venue name",
-        ]);
-        if (outcome.includes("newer event")) {
-          client.activateWorkspace(research.id);
-          const channel = socket.opened.at(-1)!;
-          channel.open();
-          channel.receive({
-            type: "host.snapshot",
-            snapshot: { ...workspaceSnapshot(research, "0"), threads: [] },
-          });
-          channel.receive({
-            type: "host.events",
-            events: [
-              agentEvent(research.id, venue.id, null, "6", "thread.state-changed", {
-                status: "waiting",
-                inputQueuePaused: true,
-                pendingRequests: 0,
-                title: "Newer authoritative title",
-              }),
-            ],
-          });
-          expect(titles(client)).toEqual(["New venue name"]);
-        }
-        answer.resolve();
-        const result = await renaming;
-        const expected = outcome.includes("newer event")
-          ? "Newer authoritative title"
-          : outcome === "success"
-            ? "New venue name"
-            : venue.title;
-        if (outcome.startsWith("success")) {
-          expect(result.thread?.title).toBe(expected);
-          expect(result.thread?.status).toBe(
-            outcome.includes("newer event") ? "waiting" : "running",
-          );
-        } else expect(result.error).toMatchObject({ message: "Rename refused" });
-        expect(titles(client)).toEqual([expected]);
-        expect(scopedTitles()).toEqual([expected]);
-        expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.title)).toEqual([
-          expected,
-        ]);
-        expect(client.getSnapshot().tasks?.entries[0]?.thread.status).toBe("running");
-        await client.loadLatestTranscript(venue.id);
-        expect(client.getSnapshot().threads.find(({ id }) => id === venue.id)?.title).toBe(
-          expected,
-        );
-      } finally {
-        answer.resolve();
-        client.dispose();
-      }
-    },
-  );
-
-  it.each(["success", "refused", "newer event", "success with newer event"] as const)(
-    "changes the icon of an unopened task across global and Workspace pages (%s)",
-    async (outcome) => {
-      const main = makeWorkspace("Main");
-      const research = { ...makeWorkspace("Research"), kind: "project" as const };
-      const venue = {
-        ...task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z"),
-        status: "running" as const,
-      };
-      const host = taskHost([main, research]);
-      const socket = sockets();
-      const answer = Promise.withResolvers<void>();
-      const commands: unknown[] = [];
-      const client = createHttpHostClient({
-        capabilities: ["thread-titles-v1", "task-marks-v1"],
-        taskReads: "observed",
-        refreshIntervalMs: 0,
-        webSocketFactory: socket.factory,
-        fetch: async (input, init) => {
-          const url = new URL(input instanceof Request ? input.url : String(input));
-          if (url.pathname === "/v1/rpc/commands.dispatch") {
-            commands.push(rpcPayload(url, init));
-            await answer.promise;
-            return outcome.startsWith("success")
-              ? json({ thread: { ...venue, icon: "plane" }, asOfSequence: "5" })
-              : json(
-                  { error: { code: "bad_request", message: "Rename refused", retryable: false } },
-                  400,
-                );
-          }
-          if (url.pathname === "/v1/rpc/tasks.list" && rpcPayload(url, init).active === true)
-            return json(
-              taskPage([venue], { hasMore: false, nextBefore: null }, [
-                { ...readStateOf(venue.id), asOfSequence: SequenceSchema.parse("0") },
-              ]),
-            );
-          if (url.pathname === "/v1/rpc/thread.events.list")
-            return json({
-              thread: venue,
-              threadId: venue.id,
-              events: [],
-              readState: { ...readStateOf(venue.id), asOfSequence: "0" },
-              window: {
-                byteCount: 2,
-                hasMore: false,
-                itemCount: 0,
-                nextBefore: null,
-                totalItems: 0,
-                threadId: venue.id,
-              },
-            });
-          return host.fetch(input, init);
-        },
-      });
-      const scopedIcons = () =>
-        client.getSnapshot().workspaceTasks[research.id]?.entries.map(({ thread }) => thread.icon);
-      try {
-        await client.load();
-        await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-        host.reads[0]!.answer(
-          taskPage([venue], { hasMore: false, nextBefore: null }, [
-            { ...readStateOf(venue.id), asOfSequence: SequenceSchema.parse("0") },
-          ]),
-        );
-        await vi.waitFor(() =>
-          expect(client.getSnapshot().tasks?.entries.map(({ thread }) => thread.icon)).toEqual([
-            venue.icon,
-          ]),
-        );
-        const loading = client.loadWorkspaceTasks(research.id);
-        await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-        host.reads[1]!.answer(
-          taskPage([venue], { hasMore: false, nextBefore: null }, [
-            { ...readStateOf(venue.id), asOfSequence: SequenceSchema.parse("0") },
-          ]),
-        );
-        await loading;
-        expect(client.getSnapshot().threads).toEqual([]);
-        const renaming = client
-          .dispatch({
-            type: "thread.icon.set",
-            threadId: venue.id,
-            icon: "plane",
-            idempotencyKey: "page-icon",
-          })
-          .then(
-            (thread) => ({ thread, error: null }),
-            (error: unknown) => ({ thread: null, error }),
-          );
-        expect(client.getSnapshot().tasks?.entries.map(({ thread }) => thread.icon)).toEqual([
-          "plane",
-        ]);
-        expect(scopedIcons()).toEqual(["plane"]);
-        expect(commands).toEqual([
-          expect.objectContaining({ type: "thread.icon.set", threadId: venue.id }),
-        ]);
-        expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.icon)).toEqual([
-          "plane",
-        ]);
-        if (outcome.includes("newer event")) {
-          client.activateWorkspace(research.id);
-          const channel = socket.opened.at(-1)!;
-          channel.open();
-          channel.receive({
-            type: "host.snapshot",
-            snapshot: { ...workspaceSnapshot(research, "0"), threads: [] },
-          });
-          channel.receive({
-            type: "host.events",
-            events: [
-              agentEvent(research.id, venue.id, null, "6", "thread.state-changed", {
-                status: "waiting",
-                inputQueuePaused: true,
-                pendingRequests: 0,
-                icon: "gift",
-              }),
-            ],
-          });
-          expect(client.getSnapshot().tasks?.entries.map(({ thread }) => thread.icon)).toEqual([
-            "plane",
-          ]);
-        }
-        answer.resolve();
-        const result = await renaming;
-        const expected = outcome.includes("newer event")
-          ? "gift"
-          : outcome === "success"
-            ? "plane"
-            : venue.icon;
-        if (outcome.startsWith("success")) {
-          expect(result.thread?.type).toBe("thread.icon.set");
-        } else expect(result.error).toMatchObject({ message: "Rename refused" });
-        expect(client.getSnapshot().tasks?.entries.map(({ thread }) => thread.icon)).toEqual([
-          expected,
-        ]);
-        expect(scopedIcons()).toEqual([expected]);
-        expect(client.getSnapshot().activeTasks.map(({ thread }) => thread.icon)).toEqual([
-          expected,
-        ]);
-        expect(client.getSnapshot().tasks?.entries[0]?.thread.status).toBe("running");
-        await client.loadLatestTranscript(venue.id);
-        expect(client.getSnapshot().threads.find(({ id }) => id === venue.id)?.icon).toBe(expected);
-      } finally {
-        answer.resolve();
-        client.dispose();
-      }
-    },
-  );
-
-  it("keeps the task list of each Workspace a screen asked for, rereading it with the rest", async () => {
-    const main = makeWorkspace("Main");
-    const research = { ...makeWorkspace("Research"), kind: "project" as const };
-    const host = taskHost([main, research]);
-    const socket = sockets();
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: socket.factory,
-    });
-    const venue = task(research.id, "Find a venue", "2026-08-09T10:00:03.000Z");
-    const caterer = task(research.id, "Find a caterer", "2026-08-09T10:00:02.000Z");
-    const budget = task(research.id, "Set the budget", "2026-08-09T10:00:01.000Z");
-    const scoped = () => host.reads.filter(({ workspaceId }) => workspaceId === research.id);
-    const scopedTitles = () =>
-      client.getSnapshot().workspaceTasks[research.id]?.entries.map(({ thread }) => thread.title);
-    try {
-      expect(client.getSnapshot().workspaceTasks).toEqual({});
-      await client.load();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-      expect(host.reads[0]!.workspaceId).toBeUndefined();
-      host.reads[0]!.answer(taskPage([venue], { hasMore: false, nextBefore: null }));
-      await vi.waitFor(() => expect(titles(client)).toEqual(["Find a venue"]));
-
-      // Asking twice while the first read is out asks once.
-      const loads = Promise.all([
-        client.loadWorkspaceTasks(research.id),
-        client.loadWorkspaceTasks(research.id),
-      ]);
-      await vi.waitFor(() => expect(scoped()).toHaveLength(1));
-      await settled();
-      expect(scoped()).toHaveLength(1);
-      expect(scoped()[0]!.before).toBeUndefined();
-      scoped()[0]!.answer(
-        taskPage([venue, caterer], { hasMore: true, nextBefore: "after-caterer" }),
-      );
-      await loads;
-      expect(scopedTitles()).toEqual(["Find a venue", "Find a caterer"]);
-      // The global list is its own.
-      expect(titles(client)).toEqual(["Find a venue"]);
-
-      const earlier = client.loadEarlierTasks(research.id);
-      await vi.waitFor(() => expect(scoped()).toHaveLength(2));
-      expect(scoped()[1]!.before).toBe("after-caterer");
-      scoped()[1]!.answer(taskPage([budget], { hasMore: false, nextBefore: null }));
-      await earlier;
-      expect(scopedTitles()).toEqual(["Find a venue", "Find a caterer", "Set the budget"]);
-
-      // A change rereads the first page of both lists, once each.
-      const first = socket.opened[0]!;
-      first.open();
-      first.receive({ type: "host.tasks-changed" });
-      first.receive({ type: "host.tasks-changed" });
-      await vi.waitFor(() => expect(host.reads).toHaveLength(5));
-      await settled();
-      expect(host.reads).toHaveLength(5);
-      const renamed = {
-        ...venue,
-        title: "Find a bigger venue",
-        updatedAt: "2026-08-09T10:00:04.000Z",
-      };
-      for (const read of host.reads.slice(3)) {
-        read.answer(
-          taskPage([renamed], { hasMore: false, nextBefore: null }, [
-            { ...readStateOf(renamed.id), asOfSequence: SequenceSchema.parse("10") },
-          ]),
-        );
-      }
-      await vi.waitFor(() => expect(scopedTitles()).toEqual(["Find a bigger venue"]));
-      await vi.waitFor(() => expect(titles(client)).toEqual(["Find a bigger venue"]));
-      // The two notices during the reads earned one more read of each list.
-      await vi.waitFor(() => expect(host.reads).toHaveLength(7));
-      for (const read of host.reads.slice(5)) {
-        read.answer(
-          taskPage([renamed], { hasMore: false, nextBefore: null }, [
-            { ...readStateOf(renamed.id), asOfSequence: SequenceSchema.parse("10") },
-          ]),
-        );
-      }
-      await settled();
-      expect(host.reads).toHaveLength(7);
-
-      // A viewer who leaves takes every list with them.
-      host.setViewer("signed-out");
-      await client.refresh();
-      expect(client.getSnapshot().workspaceTasks).toEqual({});
-      host.setViewer("someone-else");
-      await client.reauthenticate();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(8));
-      await settled();
-      expect(host.reads.slice(7).map(({ workspaceId }) => workspaceId)).toEqual([undefined]);
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("places a task in Done and back, showing the Host's answer at once", async () => {
-    const workspace = makeWorkspace();
-    const finished = task(workspace.id, "Finished", "2026-08-09T10:00:00.000Z");
-    const host = taskHost([workspace]);
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      capabilities: ["shared-task-done-v1"],
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: sockets().factory,
-    });
-    try {
-      await client.load();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-      host.reads[0]!.answer(
-        taskPage([finished], { hasMore: false, nextBefore: null }, [
-          readStateOf(finished.id, { read: "5", unread: "7" }),
-        ]),
-      );
-      await vi.waitFor(() => expect(titles(client)).toEqual(["Finished"]));
-
-      await client.setTaskDone(finished.id, true);
-      expect(host.commands).toEqual([
-        expect.objectContaining({
-          done: true,
-          threadId: finished.id,
-          type: "thread.shared-done.set",
-        }),
-      ]);
-      expect(client.getSnapshot().tasks?.entries[0]?.thread.doneAt).not.toBeNull();
-      expect(client.getSnapshot().threadReadStates[finished.id]?.readSequence).toBe("5");
-
-      await client.setTaskDone(finished.id, false);
-      expect(host.commands[1]).toMatchObject({ done: false, type: "thread.shared-done.set" });
-      expect(host.commands[1]!.idempotencyKey).not.toBe(host.commands[0]!.idempotencyKey);
-      expect(client.getSnapshot().tasks?.entries[0]?.thread.doneAt).toBeNull();
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("forgets the tasks of a viewer who left, including an answer still on its way", async () => {
-    const workspace = makeWorkspace();
-    const theirs = task(workspace.id, "Their task", "2026-08-09T10:00:00.000Z");
-    const host = taskHost([workspace]);
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: sockets().factory,
-    });
-    try {
-      await client.load();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-      host.reads[0]!.answer(taskPage([theirs], { hasMore: true, nextBefore: "more" }));
-      await vi.waitFor(() => expect(titles(client)).toEqual(["Their task"]));
-      const stale = client.loadEarlierTasks();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-
-      host.setViewer("signed-out");
-      await client.refresh();
-      expect(client.getSnapshot().session).toBe("authentication-required");
-      expect(client.getSnapshot().tasks).toBeNull();
-      host.reads[1]!.answer(taskPage([theirs], { hasMore: false, nextBefore: null }));
-      await stale;
-      expect(client.getSnapshot().tasks).toBeNull();
-      await client.loadEarlierTasks();
-      expect(host.reads).toHaveLength(2);
-
-      host.setViewer("someone-else");
-      await client.reauthenticate();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(3));
-      expect(host.reads[2]!.before).toBeUndefined();
-      expect(client.getSnapshot().tasks).toBeNull();
-      const mine = task(workspace.id, "My task", "2026-08-09T11:00:00.000Z");
-      host.reads[2]!.answer(taskPage([mine], { hasMore: false, nextBefore: null }));
-      await vi.waitFor(() => expect(titles(client)).toEqual(["My task"]));
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("drops the tasks of a Workspace the Host refuses this reader", async () => {
-    const home = makeWorkspace("Main");
-    const other = { ...makeWorkspace("Research"), kind: "project" as const };
-    const host = taskHost([home, other]);
-    const socket = sockets();
-    const client = createHttpHostClient({
-      fetch: host.fetch,
-      refreshIntervalMs: 0,
-      taskReads: "observed",
-      webSocketFactory: socket.factory,
-    });
-    const kept = task(home.id, "Kept", "2026-08-09T10:00:02.000Z");
-    const refused = task(other.id, "Refused", "2026-08-09T10:00:01.000Z");
-    try {
-      await client.load();
-      await vi.waitFor(() => expect(host.reads).toHaveLength(1));
-      host.reads[0]!.answer(
-        taskPage([kept, refused], { hasMore: false, nextBefore: null }, [
-          readStateOf(kept.id),
-          readStateOf(refused.id, { unread: "2" }),
-        ]),
-      );
-      await vi.waitFor(() => expect(titles(client)).toEqual(["Kept", "Refused"]));
-
-      const scopedLoad = client.loadWorkspaceTasks(other.id);
-      await vi.waitFor(() => expect(host.reads).toHaveLength(2));
-      host.reads[1]!.answer(taskPage([refused], { hasMore: false, nextBefore: null }));
-      await scopedLoad;
-      const refusedLoad = client.loadWorkspaceTasks(other.id);
-      const refusal = expect(refusedLoad).rejects.toMatchObject({ code: "not_found" });
-      await vi.waitFor(() => expect(host.reads).toHaveLength(3));
-      host.reads[2]!.answer(
-        { error: { code: "not_found", message: "Workspace not found", retryable: false } },
-        404,
-      );
-      await refusal;
-      expect(client.getSnapshot().workspaceTasks[other.id]).toBeUndefined();
-      expect(titles(client)).toEqual(["Kept"]);
-      expect(client.getSnapshot().threadReadStates[refused.id]).toBeUndefined();
-    } finally {
-      client.dispose();
-    }
-  });
-});
-
 describe("HttpHostClient owner views", () => {
   /** A real view and the machine that holds it, as the mock Host answers them. */
   async function ownerViewWorld() {
@@ -12989,7 +10012,7 @@ describe("HttpHostClient owner views", () => {
     machines: () => readonly unknown[],
     answer: (command: Readonly<Record<string, unknown>>) => Promise<Response>,
   ) {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const sockets: FakeSocket[] = [];
     const commands: Readonly<Record<string, unknown>>[] = [];
     const host = {
@@ -13054,7 +10077,6 @@ describe("HttpHostClient owner views", () => {
       socket.receive({
         sequence: sequence("1"),
         type: "host.synchronized",
-        workspaceId: workspace.id,
       });
       return socket;
     };
@@ -13724,7 +10746,7 @@ describe("HttpHostClient owner views", () => {
   it("finishes an open the Host granted although history was cleared meanwhile, and refuses one for a viewer who left", async () => {
     const { machine, view } = await ownerViewWorld();
     const sessionId = createBrowserSessionId();
-    const workspaceId = WorkspaceIdSchema.parse(createId("workspace"));
+    const deploymentId = DeploymentIdSchema.parse(createId("deployment"));
     let gate = deferred<void>();
     let signedIn = true;
     const host = ownerViewHost(
@@ -13759,13 +10781,13 @@ describe("HttpHostClient owner views", () => {
             access: "read-write",
             createdAt: now,
             id: sessionId,
-            origin: "workspace",
+            origin: "person",
             placement: { kind: "runner", runnerId },
             profileId: null,
             runtimeId: "runtime",
             state: "ready",
             updatedAt: now,
-            workspaceId,
+            deploymentId,
           },
         });
       },
@@ -13872,7 +10894,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   afterEach(({ task }) => {
     const observed = traces.slice(traceStart);
     expect(observed.length).toBeGreaterThan(0);
-    Object.assign(task.meta, { workspaceTabActivationTrace: observed });
+    Object.assign(task.meta, { personalTabActivationTrace: observed });
   });
 
   async function fixture(name: string, available = false) {
@@ -13887,11 +10909,11 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
         ),
     )!;
     const session = initial.browserSessions.find((value) => value.id === saved.session.id)!;
-    const workspace = makeWorkspace();
-    const group: WorkspaceTabLineage = {
+    const workspace = makeDeployment();
+    const group: PersonalTabLineage = {
       ...saved,
       session: seedBrowserSession(
-        { ...saved.session, workspaceId: workspace.id, state: "closed" },
+        { ...saved.session, deploymentId: workspace.id, state: "closed" },
         undefined,
       ),
       tabs: saved.tabs!.map((tab) => ({ ...tab, state: "suspended" })),
@@ -13899,10 +10921,10 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     const tabId = group.tabs![0]!.id;
     const browser: HostedBrowserBootstrap = {
       available: true,
-      workspaceTabRestoreVersion: 1,
+      tabRestoreVersion: 1,
       lineages: [group],
       profiles: initial.browserProfiles,
-      profileGrants: [],
+
       sessions: [],
       placements: initial.browserPlacements.map((placement) => ({ ...placement, available })),
     };
@@ -13926,7 +10948,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       fetch: async (input, init) => {
         const url = new URL(input instanceof Request ? input.url : input.toString());
         if (url.pathname.endsWith("/commands.dispatch")) {
-          expect(rpcPayload(url, init).type).toBe("workspace.tab.activate");
+          expect(rpcPayload(url, init).type).toBe("tab.activate");
           concurrent++;
           const viewer = client.getSnapshot().user!.id;
           const viewerConcurrent = (concurrentByViewer.get(viewer) ?? 0) + 1;
@@ -13945,10 +10967,10 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     const sync = () => {
       const socket = sockets.at(-1)!;
       socket.open();
-      socket.receive({ type: "host.snapshot", snapshot: workspaceSnapshot(workspace, "1") });
+      socket.receive({ type: "host.snapshot", snapshot: deploymentSnapshot(workspace, "1") });
       socket.receive({
         type: "host.synchronized",
-        workspaceId: workspace.id,
+
         sequence: sequence("1"),
       });
     };
@@ -13989,7 +11011,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
           ],
         });
       return json({
-        type: "workspace.tab.activate",
+        type: "tab.activate",
         tabId,
         catalog: title
           ? {
@@ -14030,7 +11052,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
         maximumConcurrent,
         concurrentByViewer: Object.fromEntries(concurrentByViewer),
         subscriptions,
-        pending: [...(client.getSnapshot().activatingWorkspaceTabs ?? [])],
+        pending: [...(client.getSnapshot().activatingPersonalTabs ?? [])],
       };
       traces.push(observed);
       expect(maximumConcurrent).toBeLessThanOrEqual(1);
@@ -14071,10 +11093,10 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("joins StrictMode double effects, switch-away/reselection and reconnect without concurrent dispatch", async () => {
     const f = await fixture("selection and Host reconnect");
     try {
-      const first = f.client.activateWorkspaceTab(f.tabId);
-      expect(f.client.activateWorkspaceTab(f.tabId)).toBe(first);
+      const first = f.client.activatePersonalTab(f.tabId);
+      expect(f.client.activatePersonalTab(f.tabId)).toBe(first);
       // Selection cleanup does not own the client operation; reselection joins it.
-      expect(f.client.activateWorkspaceTab(f.tabId)).toBe(first);
+      expect(f.client.activatePersonalTab(f.tabId)).toBe(first);
       expect(f.record("selected")).toMatchObject({
         dispatches: 0,
         subscriptions: 1,
@@ -14098,7 +11120,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("rechecks availability changed before a placement refusal arrives", async () => {
     const f = await fixture("readiness changes during request", true);
     try {
-      const result = f.client.activateWorkspaceTab(f.tabId);
+      const result = f.client.activatePersonalTab(f.tabId);
       await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       await f.ready(false);
       await f.ready(true);
@@ -14121,7 +11143,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("waits after placement refusal, ignores unrelated publications, and retries exactly once", async () => {
     const f = await fixture("serialized placement retry", true);
     try {
-      const result = f.client.activateWorkspaceTab(f.tabId);
+      const result = f.client.activatePersonalTab(f.tabId);
       await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       f.requests[0]!.reply(f.waiting());
       await vi.waitFor(() => expect(f.record("refused").concurrent).toBe(0));
@@ -14151,7 +11173,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("rejects real errors and permits an explicit retry", async () => {
     const f = await fixture("failure and explicit retry", true);
     try {
-      const pending = f.client.activateWorkspaceTab(f.tabId);
+      const pending = f.client.activatePersonalTab(f.tabId);
       const failed = expect(pending).rejects.toThrow("Activation failed");
       await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       f.requests[0]!.reply(
@@ -14159,7 +11181,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       );
       await failed;
       expect(f.record("failed")).toMatchObject({ subscriptions: 0, pending: [] });
-      const retry = f.client.activateWorkspaceTab(f.tabId);
+      const retry = f.client.activatePersonalTab(f.tabId);
       expect(retry).not.toBe(pending);
       await vi.waitFor(() => expect(f.requests).toHaveLength(2));
       f.requests[1]!.reply(f.success());
@@ -14178,7 +11200,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     "actively settles on disposal while %s",
     async (phase) => {
       const f = await fixture(`dispose ${phase}`, phase === "dispatching");
-      const pending = f.client.activateWorkspaceTab(f.tabId);
+      const pending = f.client.activatePersonalTab(f.tabId);
       if (phase === "dispatching") await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       f.cleanup();
       expect(await pending).toBeNull();
@@ -14187,7 +11209,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
       expect(
         f.client.getSnapshot().browserSessions.every((session) => session.state !== "ready"),
       ).toBe(true);
-      expect(await f.client.activateWorkspaceTab(f.tabId)).toBeNull();
+      expect(await f.client.activatePersonalTab(f.tabId)).toBeNull();
     },
   );
 
@@ -14196,7 +11218,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     async (dispatching) => {
       const f = await fixture(`close dispatching=${dispatching}`, dispatching);
       try {
-        const pending = f.client.activateWorkspaceTab(f.tabId);
+        const pending = f.client.activatePersonalTab(f.tabId);
         if (dispatching) await vi.waitFor(() => expect(f.requests).toHaveLength(1));
         f.body.browser.lineages = [{ ...f.group, revision: f.group.revision + 2, tabs: [] }];
         publishBrowser(f.sockets.at(-1)!, f.body.browser);
@@ -14221,14 +11243,14 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("settles on account switch and an old finalizer cannot clear a replacement", async () => {
     const f = await fixture("account switch and late reply", true);
     try {
-      const old = f.client.activateWorkspaceTab(f.tabId);
+      const old = f.client.activatePersonalTab(f.tabId);
       await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       f.body.user = { ...f.body.user, id: createId("user") };
       await f.client.refresh();
       f.sync();
       expect(await old).toBeNull();
       expect(f.record("account changed")).toMatchObject({ pending: [], subscriptions: 0 });
-      const replacement = f.client.activateWorkspaceTab(f.tabId);
+      const replacement = f.client.activatePersonalTab(f.tabId);
       await vi.waitFor(() => expect(f.requests).toHaveLength(2));
       f.requests[0]!.reply(f.success("Old account late reply"));
       await f.client.refresh();
@@ -14249,7 +11271,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
     async (kind) => {
       const f = await fixture(`unavailable ${kind}`);
       try {
-        const pending = f.client.activateWorkspaceTab(f.tabId);
+        const pending = f.client.activatePersonalTab(f.tabId);
         f.body.browser.lineages = [
           {
             ...f.group,
@@ -14279,7 +11301,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
         await f.client.refresh();
         expect(await pending).toBeNull();
         expect(
-          placeList(f.client.getSnapshot()).find((place) => place.workspaceTab?.id === f.tabId)
+          placeList(f.client.getSnapshot()).find((place) => place.personalTab?.id === f.tabId)
             ?.loading,
         ).toBe(false);
         expect(f.record("unavailable")).toMatchObject({
@@ -14296,7 +11318,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("applies a successful reply even when a bounded bootstrap omitted the lineage", async () => {
     const f = await fixture("reply after omitted lineage", true);
     try {
-      const pending = f.client.activateWorkspaceTab(f.tabId);
+      const pending = f.client.activatePersonalTab(f.tabId);
       await vi.waitFor(() => expect(f.requests).toHaveLength(1));
       f.body.browser.lineages = [];
       await f.client.refresh();
@@ -14320,7 +11342,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
   it("keeps waiting across an omitted lineage and a missing tabs array", async () => {
     const f = await fixture("bounded catalog");
     try {
-      const pending = f.client.activateWorkspaceTab(f.tabId);
+      const pending = f.client.activatePersonalTab(f.tabId);
       f.body.browser.lineages = [];
       await f.client.refresh();
       expect(f.record("lineage omitted")).toMatchObject({
@@ -14348,7 +11370,7 @@ describe("HttpHostClient saved-tab activation lifecycle", () => {
 
 describe("realtime review regressions", () => {
   async function fixture(options: Partial<TestHostClientOptions> = {}) {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
     const client = createHttpHostClient({
@@ -14394,11 +11416,11 @@ describe("realtime review regressions", () => {
       const future = { ...makeThread(f.workspace.id), status: "future-status" };
       f.sockets[0]!.receiveRaw({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(f.workspace, "10"), threads: [f.thread, future] },
+        snapshot: { ...deploymentSnapshot(f.workspace, "10"), threads: [f.thread, future] },
       });
       f.sockets[0]!.receiveRaw({
         type: "host.synchronized",
-        workspaceId: f.workspace.id,
+
         sequence: "10",
       });
       expect(f.client.getSnapshot().threads.map(({ id }) => id)).toContain(f.thread.id);
@@ -14407,7 +11429,7 @@ describe("realtime review regressions", () => {
       expect(f.sockets[0]!.closeEvents).toEqual([]);
       expect(f.sockets[0]!.sent.map((raw) => JSON.parse(raw))).toContainEqual({
         type: "client.ack",
-        workspaceId: f.workspace.id,
+
         sequence: "10",
       });
     } finally {
@@ -14422,12 +11444,12 @@ describe("realtime review regressions", () => {
     try {
       f.sockets[0]!.receiveRaw({
         type: "host.synchronized",
-        workspaceId: f.workspace.id,
+
         sequence: "10",
       });
       f.sockets[0]!.receiveRaw({
         type: "host.resync-required",
-        workspaceId: f.workspace.id,
+
         reason: "future-reason",
       });
       f.sockets[0]!.serverClose(1000, "normal");
@@ -14435,16 +11457,16 @@ describe("realtime review regressions", () => {
       expect(f.sockets).toHaveLength(2);
       f.sockets[1]!.open();
       expect(JSON.parse(f.sockets[1]!.sent[0]!)).toMatchObject({
+        cursor: { afterSequence: "0", apiVersion: hostApiVersion },
         type: "client.subscribe",
-        afterSequence: "0",
       });
       f.sockets[1]!.receiveRaw({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(f.workspace, "10"), threads: [f.thread] },
+        snapshot: { ...deploymentSnapshot(f.workspace, "10"), threads: [f.thread] },
       });
       f.sockets[1]!.receiveRaw({
         type: "host.synchronized",
-        workspaceId: f.workspace.id,
+
         sequence: "10",
       });
       await vi.advanceTimersByTimeAsync(50);
@@ -14464,7 +11486,7 @@ describe("realtime review regressions", () => {
       f.sockets[0]!.receiveRaw({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(f.workspace, "10"),
+          ...deploymentSnapshot(f.workspace, "10"),
           readStates: "invalid",
           threads: [f.thread],
         },
@@ -14479,35 +11501,6 @@ describe("realtime review regressions", () => {
         issuePaths: ["snapshot.readStates"],
       });
     } finally {
-      f.client.dispose();
-    }
-  });
-
-  it("F2 validates all Workspace identities before applying any event or advancing its cursor", async () => {
-    const f = await fixture();
-    try {
-      const created = agentEvent(f.workspace.id, f.thread.id, null, "1", "thread.created", {
-        thread: f.thread,
-      });
-      f.sockets[0]!.receiveRaw({
-        type: "host.events",
-        events: [created, { type: "future.event", workspaceId: makeWorkspace().id, sequence: "2" }],
-      });
-      expect(f.client.getSnapshot().threads.map(({ id }) => id)).not.toContain(f.thread.id);
-      expect(f.sockets[0]!.sent.map((raw) => JSON.parse(raw))).not.toContainEqual(
-        expect.objectContaining({ type: "client.ack" }),
-      );
-      await f.client.refresh({ retryConnection: true });
-      expect(f.sockets).toHaveLength(2);
-      f.sockets[1]!.open();
-      expect(JSON.parse(f.sockets[1]!.sent[0]!)).toMatchObject({
-        type: "client.subscribe",
-        afterSequence: "0",
-      });
-      f.sockets[1]!.receiveRaw({ type: "host.events", events: [created] });
-      expect(f.client.getSnapshot().threads.filter(({ id }) => id === f.thread.id)).toHaveLength(1);
-    } finally {
-      await evidence("f2-atomic-admission", f);
       f.client.dispose();
     }
   });
@@ -14527,22 +11520,24 @@ describe("realtime review regressions", () => {
           send(raw);
         });
         if (kind === "events")
-          first.receiveRaw({
-            type: "host.events",
-            events: [
-              agentEvent(f.workspace.id, f.thread.id, null, "1", "thread.created", {
-                thread: f.thread,
-              }),
-            ],
-          });
+          first.receiveRaw(
+            eventsFrame({
+              type: "host.events",
+              events: [
+                agentEvent(f.workspace.id, f.thread.id, null, "1", "thread.created", {
+                  thread: f.thread,
+                }),
+              ],
+            }),
+          );
         else {
           first.receiveRaw({
             type: "host.snapshot",
-            snapshot: { ...workspaceSnapshot(f.workspace, "1"), threads: [f.thread] },
+            snapshot: { ...deploymentSnapshot(f.workspace, "1"), threads: [f.thread] },
           });
           first.receiveRaw({
             type: "host.synchronized",
-            workspaceId: f.workspace.id,
+
             sequence: "1",
           });
         }
@@ -14556,12 +11551,12 @@ describe("realtime review regressions", () => {
         expect(f.sockets).toHaveLength(2);
         f.sockets[1]!.open();
         expect(JSON.parse(f.sockets[1]!.sent[0]!)).toMatchObject({
+          cursor: { afterSequence: "1", apiVersion: hostApiVersion },
           type: "client.subscribe",
-          afterSequence: "1",
         });
         f.sockets[1]!.receiveRaw({
           type: "host.synchronized",
-          workspaceId: f.workspace.id,
+
           sequence: "1",
         });
         expect(f.client.getSnapshot().connection).toBe("connected");
@@ -14579,7 +11574,7 @@ describe("realtime review regressions", () => {
     try {
       f.sockets[0]!.receiveRaw({
         type: "host.error",
-        error: { code: "forbidden", message: "Not on this channel.", retryable: false },
+        error: { code: "bad_message", message: "Not on this channel.", retryable: false },
       });
       expect(f.client.getSnapshot().connection).toBe("offline");
       await vi.advanceTimersByTimeAsync(30);
@@ -14599,7 +11594,7 @@ describe("realtime review regressions", () => {
       f.sockets[1]!.open();
       f.sockets[1]!.receiveRaw({
         type: "host.synchronized",
-        workspaceId: f.workspace.id,
+
         sequence: "0",
       });
       expect(f.client.getSnapshot().connection).toBe("connected");
@@ -14613,13 +11608,13 @@ describe("realtime review regressions", () => {
 describe("realtime protocol recovery journey", () => {
   it("reads additive kinds in a replay without reopening or losing the next durable event", async () => {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
     const trace: unknown[] = [];
     const frames = [
       { type: "host.future-notice", privateValue: "FRAME-CONTENT-SENTINEL" },
-      {
+      eventsFrame({
         type: "host.events",
         futureField: "FRAME-CONTENT-SENTINEL",
         events: [
@@ -14643,8 +11638,8 @@ describe("realtime protocol recovery journey", () => {
             status: "waiting",
           }),
         ],
-      },
-      { type: "host.synchronized", sequence: "4", workspaceId: workspace.id },
+      }),
+      { type: "host.synchronized", sequence: "4" },
     ];
     const client = createHttpHostClient({
       fetch: async () => json(bootstrap([workspace])),
@@ -14683,7 +11678,6 @@ describe("realtime protocol recovery journey", () => {
       expect(sockets[0]!.sent.map((frame) => JSON.parse(frame))).toContainEqual({
         type: "client.ack",
         sequence: "4",
-        workspaceId: workspace.id,
       });
       expect(JSON.stringify(diagnostics.mock.calls)).not.toContain("FRAME-CONTENT-SENTINEL");
       outcome = "passed";
@@ -14709,13 +11703,13 @@ describe("realtime protocol recovery journey", () => {
     reads = {},
     ...options
   }: Partial<TestHostClientOptions> & {
-    readonly hostBrowser?: (workspace: WorkspaceView) => HostedBrowserBootstrap;
+    readonly hostBrowser?: (workspace: PersonalFixture) => HostedBrowserBootstrap;
     readonly reads?: Readonly<
       Record<string, (input: Readonly<Record<string, unknown>>) => unknown>
     >;
   } = {}) {
     vi.useFakeTimers();
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const sockets: FakeSocket[] = [];
     let bootstrapReads = 0;
@@ -14743,12 +11737,11 @@ describe("realtime protocol recovery journey", () => {
     sockets[0]!.open();
     sockets[0]!.receiveRaw({
       type: "host.snapshot",
-      snapshot: { ...workspaceSnapshot(workspace, "10"), threads: [thread] },
+      snapshot: { ...deploymentSnapshot(workspace, "10"), threads: [thread] },
     });
     sockets[0]!.receiveRaw({
       type: "host.synchronized",
       sequence: "10",
-      workspaceId: workspace.id,
     });
     await vi.advanceTimersByTimeAsync(0);
     return {
@@ -14783,7 +11776,9 @@ describe("realtime protocol recovery journey", () => {
     expect(f.sockets).toHaveLength(opened + 1);
     const socket = f.sockets.at(-1)!;
     socket.open();
-    const { afterSequence } = JSON.parse(socket.sent[0]!) as { afterSequence: string };
+    const {
+      cursor: { afterSequence },
+    } = JSON.parse(socket.sent[0]!) as { cursor: { afterSequence: string } };
     return { afterSequence, socket };
   }
 
@@ -14794,24 +11789,25 @@ describe("realtime protocol recovery journey", () => {
       status,
     });
 
-  const unreadableEvents = (f: Synchronized, sequence: string) => ({
-    type: "host.events",
-    events: [
-      {
-        ...stateEvent(f, sequence, "running"),
-        data: {
-          inputQueuePaused: "os_secret_DO_NOT_LOG",
-          pendingRequests: -1,
-          status: "running",
-          "PRIVATE-FIELD-SENTINEL": "PRIVATE-VALUE-SENTINEL",
+  const unreadableEvents = (f: Synchronized, sequence: string) =>
+    eventsFrame({
+      type: "host.events",
+      events: [
+        {
+          ...stateEvent(f, sequence, "running"),
+          data: {
+            inputQueuePaused: "os_secret_DO_NOT_LOG",
+            pendingRequests: -1,
+            status: "running",
+            "PRIVATE-FIELD-SENTINEL": "PRIVATE-VALUE-SENTINEL",
+          },
         },
-      },
-    ],
-  });
+      ],
+    });
 
   const unreadableSnapshot = (f: Synchronized) => ({
     type: "host.snapshot",
-    snapshot: { ...workspaceSnapshot(f.workspace, "12"), readStates: "invalid" },
+    snapshot: { ...deploymentSnapshot(f.workspace, "12"), readStates: "invalid" },
   });
 
   /** Fails three times at one position, which leaves the fourth socket asking for a snapshot. */
@@ -14827,11 +11823,11 @@ describe("realtime protocol recovery journey", () => {
     socket.receiveRaw({
       type: "host.snapshot",
       snapshot: {
-        ...workspaceSnapshot(f.workspace, sequence),
+        ...deploymentSnapshot(f.workspace, sequence),
         threads: [{ ...f.thread, status: "running" }],
       },
     });
-    socket.receiveRaw({ type: "host.synchronized", sequence, workspaceId: f.workspace.id });
+    socket.receiveRaw({ type: "host.synchronized", sequence });
   }
 
   it("backs off from the same cursor on malformed replay without acknowledging it, and logs only envelope metadata and schema paths", async () => {
@@ -14909,11 +11905,12 @@ describe("realtime protocol recovery journey", () => {
     try {
       f.sockets[0]!.receiveRaw(unreadableEvents(f, "11"));
       const { socket } = await reconnectAfter(f, 10);
-      socket.receiveRaw({ type: "host.events", events: [stateEvent(f, "11", "running")] });
+      socket.receiveRaw(
+        eventsFrame({ type: "host.events", events: [stateEvent(f, "11", "running")] }),
+      );
       socket.receiveRaw({
         type: "host.synchronized",
         sequence: "11",
-        workspaceId: f.workspace.id,
       });
       expect(f.client.getSnapshot().connection).toBe("connected");
       expect(f.client.getSnapshot().threads.find(({ id }) => id === f.thread.id)?.status).toBe(
@@ -14996,29 +11993,12 @@ describe("realtime protocol recovery journey", () => {
     const f = await synchronizedClient();
     try {
       const reads = f.bootstrapReads();
-      f.sockets[0]!.receiveRaw({ type, workspaceId: f.workspace.id, ...fields });
+      f.sockets[0]!.receiveRaw({ type, deploymentId: f.workspace.id, ...fields });
       await vi.advanceTimersByTimeAsync(0);
       expect(f.bootstrapReads()).toBe(reads);
       expect(f.sockets[0]!.closeEvents).toEqual([]);
       expect(f.client.getSnapshot().connection).toBe("connected");
       expect(f.records()).toMatchObject([{ event: "host.realtime.frame-ignored" }]);
-    } finally {
-      f.client.dispose();
-    }
-  });
-
-  it("applies nothing addressed to another Workspace: a notice is dropped and a sync frame replayed", async () => {
-    const f = await synchronizedClient();
-    try {
-      const socket = f.sockets[0]!;
-      const elsewhere = makeWorkspace().id;
-      socket.receiveRaw({ type: "host.triggers-changed", workspaceId: elsewhere });
-      expect(socket.closeEvents).toEqual([]);
-      expect(f.records()).toMatchObject([{ event: "host.realtime.frame-ignored" }]);
-      socket.receiveRaw({ type: "host.synchronized", sequence: "99", workspaceId: elsewhere });
-      expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
-      expect((await reconnectAfter(f, 10)).afterSequence).toBe("10");
-      expect(f.acknowledged()).toEqual(["10"]);
     } finally {
       f.client.dispose();
     }
@@ -15040,14 +12020,13 @@ describe("realtime protocol recovery journey", () => {
       socket.receiveRaw({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(f.workspace, "11"),
+          ...deploymentSnapshot(f.workspace, "11"),
           threads: [sibling, unreadable, peerKeyed],
         },
       });
       socket.receiveRaw({
         type: "host.synchronized",
         sequence: "11",
-        workspaceId: f.workspace.id,
       });
       const shown = f.client.getSnapshot().threads.map(({ id }) => id);
       expect(shown).toContain(sibling.id);
@@ -15073,17 +12052,18 @@ describe("realtime protocol recovery journey", () => {
   it("replays a malformed update to a Thread it holds instead of acknowledging past it", async () => {
     const f = await synchronizedClient();
     try {
-      const update = (thread: unknown) => ({
-        type: "host.events",
-        events: [
-          {
-            ...agentEvent(f.workspace.id, f.thread.id, null, "11", "thread.execution-updated", {
-              thread: f.thread,
-            }),
-            data: { thread },
-          },
-        ],
-      });
+      const update = (thread: unknown) =>
+        eventsFrame({
+          type: "host.events",
+          events: [
+            {
+              ...agentEvent(f.workspace.id, f.thread.id, null, "11", "thread.execution-updated", {
+                thread: f.thread,
+              }),
+              data: { thread },
+            },
+          ],
+        });
       f.sockets[0]!.receiveRaw(update({ ...f.thread, inputQueuePaused: "invalid" }));
       expect(f.sockets[0]!.closeEvents).toEqual([
         { code: 4002, reason: "Invalid Host protocol frame" },
@@ -15113,20 +12093,22 @@ describe("realtime protocol recovery journey", () => {
       const socket = f.sockets[0]!;
       const sibling = makeThread(f.workspace.id);
       const future = { ...makeThread(f.workspace.id), status: "future-status" };
-      socket.receiveRaw({
-        type: "host.events",
-        events: [
-          {
-            ...agentEvent(f.workspace.id, future.id, null, "11", "thread.listed", {
-              thread: makeThread(f.workspace.id),
+      socket.receiveRaw(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            {
+              ...agentEvent(f.workspace.id, future.id, null, "11", "thread.listed", {
+                thread: makeThread(f.workspace.id),
+              }),
+              data: { thread: future },
+            },
+            agentEvent(f.workspace.id, sibling.id, null, "12", "thread.created", {
+              thread: sibling,
             }),
-            data: { thread: future },
-          },
-          agentEvent(f.workspace.id, sibling.id, null, "12", "thread.created", {
-            thread: sibling,
-          }),
-        ],
-      });
+          ],
+        }),
+      );
       const shown = f.client.getSnapshot().threads.map(({ id }) => id);
       expect(shown).toContain(sibling.id);
       expect(shown).not.toContain(future.id);
@@ -15213,24 +12195,24 @@ describe("realtime protocol recovery journey", () => {
 
   describe("repairing what a lost notice leaves stale", () => {
     const sessionId = createBrowserSessionId();
-    const session = (workspace: WorkspaceView, fields: Record<string, unknown> = {}) => ({
+    const session = (workspace: PersonalFixture, fields: Record<string, unknown> = {}) => ({
       access: "read-write" as const,
       createdAt: now,
       id: sessionId,
-      origin: "workspace" as const,
+      origin: "person" as const,
       placement: { kind: "runner" as const, runnerId },
       profileId: null,
       runtimeId: "runtime",
       state: "ready" as const,
       updatedAt: now,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
       ...fields,
     });
     const browserWith = (sessions: NonNullable<HostedBrowserBootstrap["sessions"]>) =>
       browserBootstrapWithRows({
         available: true,
         placements: [],
-        profileGrants: [],
+
         profiles: [],
         sessions,
       });
@@ -15358,7 +12340,7 @@ describe("realtime protocol recovery journey", () => {
         ],
         [
           "the Deployment changes",
-          (workspace: WorkspaceView) => ({
+          (workspace: PersonalFixture) => ({
             ...bootstrap([workspace]),
             deploymentId: "dep_00000000-0000-4000-8000-000000000002",
           }),
@@ -15416,7 +12398,6 @@ describe("realtime protocol recovery journey", () => {
         f.sockets[0]!.receiveRaw({
           type: "host.browser-usage-changed",
           threadIds: ["unreadable"],
-          workspaceId: f.workspace.id,
         });
         await vi.advanceTimersByTimeAsync(0);
         expect(f.client.getSnapshot().browserUses?.map((use) => use.threadId)).toEqual([
@@ -15433,14 +12414,14 @@ describe("realtime protocol recovery journey", () => {
         const socket = f.sockets[0]!;
         socket.receiveRaw({
           type: "host.read-states",
-          workspaceId: f.workspace.id,
+
           states: [
             { asOfSequence: "10", readSequence: "1", threadId: f.thread.id, unreadSequence: null },
           ],
         });
         socket.receiveRaw({
           type: "host.read-markers",
-          workspaceId: f.workspace.id,
+
           markers: [{ readSequence: "9", threadId: "unreadable" }],
         });
         expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
@@ -15448,13 +12429,12 @@ describe("realtime protocol recovery journey", () => {
         expect(next.afterSequence).toBe("10");
         next.socket.receiveRaw({
           type: "host.read-markers",
-          workspaceId: f.workspace.id,
+
           markers: [{ readSequence: "9", threadId: f.thread.id }],
         });
         next.socket.receiveRaw({
           type: "host.synchronized",
           sequence: "10",
-          workspaceId: f.workspace.id,
         });
         expect(f.client.getSnapshot().threadReadStates[f.thread.id]?.readSequence).toBe("9");
         expect(f.client.getSnapshot().connection).toBe("connected");
@@ -15467,10 +12447,12 @@ describe("realtime protocol recovery journey", () => {
       const f = await synchronizedClient();
       try {
         const socket = f.sockets[0]!;
-        socket.receiveRaw({ type: "host.events", events: [stateEvent(f, "11", "running")] });
+        socket.receiveRaw(
+          eventsFrame({ type: "host.events", events: [stateEvent(f, "11", "running")] }),
+        );
         socket.receiveRaw({
           type: "host.read-states",
-          workspaceId: f.workspace.id,
+
           states: [{ threadId: "unreadable" }],
         });
         expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
@@ -15480,7 +12462,7 @@ describe("realtime protocol recovery journey", () => {
         next.socket.receiveRaw({
           type: "host.snapshot",
           snapshot: {
-            ...workspaceSnapshot(f.workspace, "11"),
+            ...deploymentSnapshot(f.workspace, "11"),
             readStates: [
               {
                 asOfSequence: "11",
@@ -15495,7 +12477,6 @@ describe("realtime protocol recovery journey", () => {
         next.socket.receiveRaw({
           type: "host.synchronized",
           sequence: "11",
-          workspaceId: f.workspace.id,
         });
         expect(f.client.getSnapshot().threadReadStates[f.thread.id]?.unreadSequence).toBe("11");
         expect(f.client.getSnapshot().connection).toBe("connected");
@@ -15507,7 +12488,7 @@ describe("realtime protocol recovery journey", () => {
     it("still honours a resync it could not read, which the Host will not ask for twice", async () => {
       const f = await synchronizedClient();
       try {
-        f.sockets[0]!.receiveRaw({ type: "host.resync-required", reason: "slow-consumer" });
+        f.sockets[0]!.receiveRaw({ type: "host.resync-required" });
         expect(f.sockets[0]!.closeEvents).toEqual([
           { code: 4002, reason: "Invalid Host protocol frame" },
         ]);
@@ -15524,7 +12505,7 @@ describe("realtime protocol recovery journey", () => {
         { runnerId: "unreadable", session: {} },
       ],
       ["host.machine.access.session.ended", "machineRevision", { session: {} }],
-      ["host.triggers-changed", "triggerRevision", { workspaceId: "unreadable" }],
+      ["host.triggers-changed", "triggerRevision", { deploymentId: "unreadable" }],
     ] as const)("tells screens keyed on %s to read again", async (type, revision, fields) => {
       const f = await synchronizedClient();
       try {
@@ -15547,7 +12528,7 @@ describe("realtime protocol recovery journey", () => {
       expiresAt: 2_000,
       generation: 1,
       geometryRevision: 1,
-      home: false,
+
       order: seq,
       place,
       pointer: { x: 0.5, y: 0.5 },
@@ -15660,7 +12641,7 @@ function publishBrowser(socket: FakeSocket, input: Partial<HostedBrowserBootstra
   const { groups: _groups, tabs: _tabs, ...browser } = input;
   const prefix = browserBootstrapWithRows({
     available: true,
-    profileGrants: [],
+
     profiles: [],
     placements: [],
     sessions: [],
@@ -15688,24 +12669,31 @@ function publishBrowser(socket: FakeSocket, input: Partial<HostedBrowserBootstra
     send(group.rows, (stream) => ({ type: "host.browser-tabs", groupId: group.groupId, stream }));
 }
 
+const bootstrapFixtures = new Map<string, { browser: BrowserWireBootstrap }>();
 function bootstrap(
-  workspaces: WorkspaceView[],
+  workspaces: PersonalFixture[],
   browser: HostedBrowserBootstrap = {
-    profileGrants: [],
     available: false,
     placements: [],
     profiles: [],
     sessions: [],
   },
 ) {
-  return {
-    notificationPreferences: preferencesForWorkspaces(workspaces),
+  const result = {
     browser: browserBootstrapWithRows(browser),
-    deploymentId: "dep_00000000-0000-4000-8000-000000000001",
-    deploymentShape: {
-      defaultWorkspaceBacking: "local-directory" as const,
-      kind: "personal" as const,
+    deploymentId: workspaces[0]?.id ?? createId("deployment"),
+    personalSettings: {
+      ownerId,
+      agentHome: { computerId: runnerId, path: "/Users/person/Opensteer" },
+      voiceThreadId: null,
     },
+    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
+    sessionId: createId("authSession"),
+    appTabs: [],
+    latestPlaces: [],
+    executionPreferences: emptyExecutionPreferences,
+    quietTaskDays: 7,
+    sessionSurface: "canonical",
     environments: [
       {
         capabilities: ["filesystem", "container"],
@@ -15735,7 +12723,7 @@ function bootstrap(
         name: "Main runner",
         runnerId,
         status: "connected" as const,
-        workspaceBackings: ["local-directory"] as const,
+        can: { executeTasks: true },
       },
     ],
     harnesses: [
@@ -15753,9 +12741,8 @@ function bootstrap(
       },
     ],
     machines: [],
-    homeWorkspace: workspaces.find((workspace) => workspace.kind === "main") ?? null,
     identityConfig: {
-      deployment: { kind: "self-hosted" as const, name: null },
+      deployment: { kind: "personal" as const, name: null },
       emailDeliveryAvailable: false,
       localPasswordEnabled: true,
       machineOwner: false,
@@ -15768,16 +12755,9 @@ function bootstrap(
       signupPolicy: "invite-only",
     },
     user: authenticatedSession().user,
-    workspaceSharingAvailable: true,
-    workspaces,
-    workspaceWindow: {
-      byteCount: new TextEncoder().encode(JSON.stringify(workspaces)).byteLength,
-      hasMore: false,
-      itemCount: workspaces.length,
-      nextBefore: null,
-      totalItems: workspaces.length,
-    },
   };
+  bootstrapFixtures.set(result.deploymentId, result);
+  return result;
 }
 
 function codexCatalog(id: Thread["harnessInstanceId"]) {
@@ -15825,7 +12805,6 @@ function authenticatedSession() {
       emailVerified: false,
       id: ownerId,
       image: null,
-      instanceRole: "administrator" as const,
     },
   };
 }
@@ -15852,36 +12831,19 @@ function browserFrame(frameId: number): ArrayBuffer {
   return frame.buffer;
 }
 
-function makeWorkspace(name = "Opensteer"): WorkspaceView {
-  return {
-    homeThreadId: null,
-    voiceThreadId: null,
-    capacity: { kind: "host-filesystem" },
-    createdAt: now,
-    icon: null,
-    id: createId("workspace"),
-    kind: "main",
-    location: {
-      kind: "machine",
-      environmentId: StorageFixtureEnvironmentIdSchema.parse(
-        "env_00000000-0000-4000-8000-000000000001",
-      ),
-      name: null,
-    },
-    name,
-    status: "ready",
-    storageIssue: null,
-    updatedAt: now,
-  };
+function makeDeployment(name = "Opensteer"): PersonalFixture {
+  return { id: createId("deployment"), name };
 }
 
-function makeThread(workspaceId: Thread["workspaceId"]): Thread {
+function makeThread(_deploymentId: import("@opensteer/core").DeploymentId): Thread {
   const id = createId("thread");
   return {
     doneAt: null,
     doneReason: null,
     accessMode: "full-access",
-    inheritsMain: true,
+    folder: { computerId: runnerId, path: "/Users/person/Opensteer" },
+    purpose: "task",
+    teamOrigin: null,
     continuationIdentity: null,
     providerSessionId: null,
     createdAt: now,
@@ -15899,12 +12861,11 @@ function makeThread(workspaceId: Thread["workspaceId"]): Thread {
     }),
     parentThreadId: null,
     pendingRequests: 0,
-    role: "work",
+
     status: "idle",
     title: "Do the work",
     icon: null,
     updatedAt: now,
-    workspaceId,
   };
 }
 
@@ -15928,8 +12889,6 @@ function makeMessage(
             kind: "agent",
             runId,
             threadId,
-            workspaceId: createId("workspace"),
-            workspaceName: "Main",
           },
     content: [{ text, type: "text" }],
     createdAt: now,
@@ -15943,6 +12902,8 @@ function makeMessage(
 
 function makeThreadInput(message: Message) {
   return {
+    teamRequestId: null,
+    teamSource: null,
     assignmentId: null,
     cancelReason: null,
     causalChainId: createId("causalChain"),
@@ -15958,26 +12919,29 @@ function makeThreadInput(message: Message) {
   };
 }
 
-function workspaceSnapshot(workspace: WorkspaceView, sequence: string) {
+function deploymentSnapshot(deployment: PersonalFixture, sequence: string) {
+  const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
+  const page = { readStates: [], tasks: [], window };
   return {
-    notificationPreferences: preferencesForWorkspaces([workspace]),
+    deploymentId: deployment.id,
     readStates: [],
     messages: [],
     messageWindows: [],
     pendingRequests: [],
-    pendingRequestWindow: {
-      byteCount: 2,
-      hasMore: false,
-      itemCount: 0,
-      nextBefore: null,
-      totalItems: 0,
-    },
+    pendingRequestWindow: window,
     runQueue: [],
     sequence: SequenceSchema.parse(sequence),
     serializedBytes: 256,
     threads: [],
-    threadWindow: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
-    workspace,
+    threadWindow: window,
+    tasks: { recent: page, active: page, done: page },
+    needsYou: { count: 0, entries: [], window },
+    resources: {
+      appTabs: [],
+      browser:
+        bootstrapFixtures.get(deployment.id)?.browser ??
+        browserBootstrapWithRows({ available: false, placements: [], profiles: [], sessions: [] }),
+    },
   };
 }
 
@@ -15985,7 +12949,7 @@ function pendingRequest(input: {
   readonly presentation: OpensteerRequest["presentation"];
   readonly runId: OpensteerRequest["originatingRunId"];
   readonly threadId: OpensteerRequest["originatingThreadId"];
-  readonly workspaceId: OpensteerRequest["originatingWorkspaceId"];
+  readonly deploymentId: import("@opensteer/core").DeploymentId;
 }): Extract<OpensteerRequest, { status: "pending" }> {
   const id = createId("request");
   return {
@@ -15998,7 +12962,7 @@ function pendingRequest(input: {
     originatingOccurrenceId: null,
     originatingRunId: input.runId,
     originatingThreadId: input.threadId,
-    originatingWorkspaceId: input.workspaceId,
+
     payload: {
       kind: input.presentation.kind === "form" ? "harness.input" : "harness.approval",
     },
@@ -16009,7 +12973,6 @@ function pendingRequest(input: {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: input.workspaceId,
   };
 }
 
@@ -16017,7 +12980,7 @@ function pendingIntegrationAccessRequest(input: {
   readonly optionId: string;
   readonly runId: OpensteerRequest["originatingRunId"];
   readonly threadId: OpensteerRequest["originatingThreadId"];
-  readonly workspaceId: OpensteerRequest["originatingWorkspaceId"];
+  readonly deploymentId: import("@opensteer/core").DeploymentId;
 }): Extract<OpensteerRequest, { status: "pending" }> & {
   readonly kind: "integration.access";
   readonly payload: Extract<OpensteerRequest["payload"], { kind: "integration.access" }>;
@@ -16034,7 +12997,7 @@ function pendingIntegrationAccessRequest(input: {
     originatingOccurrenceId: null,
     originatingRunId: input.runId,
     originatingThreadId: input.threadId,
-    originatingWorkspaceId: input.workspaceId,
+
     payload: {
       access: "read-write",
       installationId,
@@ -16057,7 +13020,6 @@ function pendingIntegrationAccessRequest(input: {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: input.workspaceId,
   };
 }
 
@@ -16066,7 +13028,7 @@ function sequence(value: string) {
 }
 
 function agentEvent<Type extends AgentEvent["type"]>(
-  workspaceId: AgentEvent["workspaceId"],
+  _deploymentId: import("@opensteer/core").DeploymentId,
   threadId: AgentEvent["threadId"],
   runId: AgentEvent["runId"],
   sequence: string,
@@ -16082,7 +13044,6 @@ function agentEvent<Type extends AgentEvent["type"]>(
     sequence,
     threadId,
     type,
-    workspaceId,
   } as Extract<AgentEvent, { type: Type }>;
 }
 
@@ -16114,251 +13075,52 @@ function deferred<T>() {
 }
 
 describe("task marks through the production client and mock transport", () => {
-  it.each(["target", "type"] as const)(
-    "refuses same-key mark commands with a different %s",
-    async (changed) => {
-      const mock = new MockHostClient({ latencyMs: 0, places: "absent" });
-      const client = new HttpHostClient({
-        baseUrl: "http://127.0.0.1",
-        capabilities: ["task-marks-v1"],
-        refreshIntervalMs: 0,
-        webSocketFactory: () => new FakeSocket(),
-        fetch: async (input, init) => {
-          const url = new URL(input instanceof Request ? input.url : String(input));
-          const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-          const rpc = mock.rpc[name] as (payload: never) => Promise<unknown>;
-          return json(await rpc(rpcPayload(url, init) as never));
-        },
-      });
-      try {
-        await mock.load();
-        await client.load();
-        const source = mock.getSnapshot();
-        const [first, second] = source.threads.filter(({ role }) => role === "work");
-        const command = {
-          type: "thread.icon.set" as const,
-          threadId: first!.id,
-          icon: "plane" as const,
-          idempotencyKey: "shared-mark-key",
-        };
-        await client.dispatch(command);
-        await expect(
-          client.dispatch(
-            changed === "target"
-              ? { ...command, threadId: second!.id }
-              : {
-                  type: "workspace.color.set",
-                  workspaceId: source.workspaces.find(({ kind }) => kind === "project")!.id,
-                  color: "purple",
-                  idempotencyKey: command.idempotencyKey,
-                },
-          ),
-        ).rejects.toMatchObject({ code: "conflict" });
-        await client.dispatch({ ...command, icon: "gift", idempotencyKey: "newer-mark" });
-        const retried = await client.dispatch(command);
-        expect(retried).toMatchObject({
-          type: "thread.icon.set",
-          thread: { id: first!.id, icon: "gift" },
-        });
-      } finally {
-        client.dispose();
-        mock.dispose();
-      }
-    },
-  );
-
-  it.each(["marks", "future", "legacy"] as const)(
-    "keeps %s through bootstrap, pages, search, history, events and commands",
-    async (mode) => {
-      const mock = new MockHostClient({ latencyMs: 0, places: "absent" });
-      const sockets: FakeSocket[] = [];
-      const adapt = (value: unknown): unknown => {
-        if (Array.isArray(value)) return value.map(adapt);
-        if (value === null || typeof value !== "object") return value;
-        return Object.fromEntries(
-          Object.entries(value).flatMap(([key, item]) =>
-            mode === "legacy" &&
-            (key === "color" || (key === "icon" && stringValue(value, "id")?.startsWith("thr_")))
-              ? []
-              : [[key, key === "color" && mode === "future" ? "ultraviolet" : adapt(item)]],
-          ),
-        );
+  it("refuses a reused send key with a different task or command and retries current marks", async () => {
+    const mock = new MockHostClient({ latencyMs: 0, places: "absent" });
+    const transport = new MockPersonalHost(mock);
+    const client = new HttpHostClient({
+      baseUrl: "http://mock-host",
+      capabilities: ["task-marks-v1"],
+      fetch: transport.fetch,
+      webSocketFactory: transport.connect,
+      refreshIntervalMs: 0,
+    });
+    try {
+      await client.load();
+      await vi.waitFor(() => expect(client.getSnapshot().tasks).not.toBeNull());
+      const [first, second] = mock.getSnapshot().threads;
+      const command = {
+        type: "thread.icon.set" as const,
+        threadId: first!.id,
+        icon: "plane" as const,
+        idempotencyKey: "shared-mark-key",
       };
-      const client = new HttpHostClient({
-        baseUrl: "http://127.0.0.1",
-        capabilities: mode === "legacy" ? [] : ["task-marks-v1", "thread-titles-v1"],
-        refreshIntervalMs: 0,
-        webSocketFactory: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-        fetch: async (input, init) => {
-          const url = new URL(input instanceof Request ? input.url : String(input));
-          const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-          const rpc = mock.rpc[name] as (payload: never) => Promise<unknown>;
-          const payload = rpcPayload(url, init);
-          return json(
-            adapt(await rpc((name === "tasks.list" ? { ...payload, limit: 1 } : payload) as never)),
-          );
-        },
+      await client.dispatch(command);
+      await expect(client.dispatch({ ...command, threadId: second!.id })).rejects.toMatchObject({
+        code: "conflict",
       });
-      try {
-        await mock.load();
-        await client.load();
-        await vi.waitFor(() =>
-          expect(client.getSnapshot().tasks?.entries.length).toBeGreaterThan(0),
-        );
-        expect(client.getSnapshot().tasks?.window.hasMore).toBe(true);
-        while (client.getSnapshot().tasks?.window.hasMore) await client.loadEarlierTasks();
-        const source = mock.getSnapshot();
-        const task = source.threads.find(
-          (thread) => thread.id !== source.homeThreadId && thread.icon !== null,
-        )!;
-        const expected = {
-          icon: mode === "legacy" ? null : task.icon,
-          color: mode === "marks" ? task.color : null,
-        };
-        expect(client.getSnapshot().taskMarksAvailable).toBe(mode !== "legacy");
-        expect(client.getSnapshot().workspaces[0]?.color).toBe(
-          mode === "marks" ? source.workspaces[0]!.color : null,
-        );
-        expect(
-          client.getSnapshot().tasks?.entries.find(({ thread }) => thread.id === task.id)?.thread,
-        ).toMatchObject(expected);
-        await client.loadWorkspaceTasks(task.workspaceId);
-        while (client.getSnapshot().workspaceTasks[task.workspaceId]?.window.hasMore)
-          await client.loadEarlierTasks(task.workspaceId);
-        expect(
-          client
-            .getSnapshot()
-            .workspaceTasks[task.workspaceId]?.entries.find(({ thread }) => thread.id === task.id)
-            ?.thread,
-        ).toMatchObject(expected);
-        const search = filterThreads(
-          (client.getSnapshot().tasks?.entries ?? []).map(({ thread }) => thread),
-          client.getSnapshot().workspaces,
-          task.title,
-          [],
-        );
-        expect(search.find(({ id }) => id === task.id)).toMatchObject(expected);
-        const firstPage = unwrapMock(await mock.rpc["tasks.list"]({ limit: 1 }));
-        expect(firstPage.window.hasMore).toBe(true);
-        const nextPage = unwrapMock(
-          await mock.rpc["tasks.list"]({ limit: 1, before: firstPage.window.nextBefore! }),
-        );
-        expect(nextPage.tasks[0]?.thread.icon).toBeDefined();
-        expect(nextPage.tasks[0]?.thread.color).toBeDefined();
-        await client.loadLatestTranscript(task.id);
-        expect(client.getSnapshot().threads.find(({ id }) => id === task.id)).toMatchObject(
-          expected,
-        );
-        const socket = sockets[0]!;
-        socket.open();
-        const workspace = source.workspaces.find(({ id }) => id === task.workspaceId)!;
-        const wireWorkspace = unwrapMock(await mock.rpc["bootstrap.get"]({})).workspaces.find(
-          ({ id }) => id === workspace.id,
-        )!;
-        socket.receive({
-          type: "host.snapshot",
-          snapshot: adapt({
-            ...workspaceSnapshot(wireWorkspace, "0"),
-            threads: [
-              unwrapMock(await mock.rpc["thread.events.list"]({ threadId: task.id })).thread,
-            ],
-          }) as Extract<HostToClientMessage, { type: "host.snapshot" }>["snapshot"],
-        });
-        expect(client.getSnapshot().threads.find(({ id }) => id === task.id)).toMatchObject(
-          expected,
-        );
-        socket.receive({
-          type: "host.events",
-          events: [
-            adapt(
-              agentEvent(
-                WorkspaceIdSchema.parse(task.workspaceId),
-                ThreadIdSchema.parse(task.id),
-                null,
-                "1",
-                "thread.listed",
-                {
-                  thread: {
-                    ...unwrapMock(await mock.rpc["thread.events.list"]({ threadId: task.id }))
-                      .thread,
-                    listed: false,
-                  },
-                },
-              ),
-            ) as AgentEvent,
-          ],
-        });
-        expect(client.getSnapshot().threads.find(({ id }) => id === task.id)?.listed).toBe(false);
-        expect(threadMark(task.id, client.getSnapshot()).color).toBe(expected.color);
-        client.activateThread(source.homeThreadId!);
-        await vi.waitFor(() =>
-          expect(Object.values(client.getSnapshot().assignments).length).toBeGreaterThan(0),
-        );
-        const assignment = Object.values(client.getSnapshot().assignments)[0]!;
-        const sourceAssignment = source.assignments[assignment.id]!;
-        // The stored icon stays absent; only the drawn mark falls back to the default symbol.
-        expect(assignmentMark(assignment, { threads: [] })).toMatchObject({
-          icon: mode === "legacy" ? defaultTaskSymbol : sourceAssignment.workerThread.icon,
-          color: mode === "marks" ? sourceAssignment.workerThread.color : null,
-        });
-        if (mode !== "legacy") {
-          const result = await client.dispatch({
-            type: "thread.icon.set",
-            threadId: task.id,
-            icon: "gift",
-            idempotencyKey: `transport-${mode}`,
-          });
-          expect(result.type).toBe("thread.icon.set");
-          const project = source.workspaces.find(({ kind }) => kind === "project")!;
-          await client.dispatch({
-            type: "workspace.color.set",
-            workspaceId: project.id,
-            color: "purple",
-            idempotencyKey: `transport-color-${mode}`,
-          });
-          expect(client.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
-            mode === "future" ? null : "purple",
-          );
-          await client.dispatch({
-            type: "workspace.color.set",
-            workspaceId: project.id,
-            color: "green",
-            idempotencyKey: `transport-new-color-${mode}`,
-          });
-          await client.dispatch({
-            type: "workspace.color.set",
-            workspaceId: project.id,
-            color: "purple",
-            idempotencyKey: `transport-color-${mode}`,
-          });
-          expect(mock.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
-            "green",
-          );
-          expect(client.getSnapshot().workspaces.find(({ id }) => id === project.id)?.color).toBe(
-            mode === "future" ? null : "green",
-          );
-          expect(client.getSnapshot().threads.find(({ id }) => id === task.id)).toMatchObject({
-            icon: "gift",
-            color: expected.color,
-          });
-        }
-      } finally {
-        client.dispose();
-        mock.dispose();
-      }
-    },
-  );
-
-  function unwrapMock<T>(
-    result: { ok: true; data: T } | { ok: false; error: { message: string } },
-  ): T {
-    if (!result.ok) throw new Error(result.error.message);
-    return result.data;
-  }
+      await expect(
+        client.dispatch({
+          type: "thread.sendMessage",
+          threadId: first!.id,
+          content: [{ type: "text", text: "A different command" }],
+          idempotencyKey: command.idempotencyKey,
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await client.dispatch({ ...command, icon: "gift", idempotencyKey: "newer" });
+      expect(await client.dispatch(command)).toMatchObject({
+        type: "thread.icon.set",
+        thread: { id: first!.id, icon: "gift" },
+      });
+      expect(
+        client.getSnapshot().tasks?.entries.find(({ thread }) => thread.id === first!.id)?.thread
+          .icon,
+      ).toBe("gift");
+    } finally {
+      client.dispose();
+      transport.dispose();
+    }
+  });
 });
 
 describe("HttpHostClient overnight transcript residency", () => {
@@ -16395,7 +13157,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     omitSnapshotMessages = false,
     lifecycle?: ClientLifecycle,
   ) {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const thread = makeThread(workspace.id);
     const other = makeThread(workspace.id);
     const runId = createId("run");
@@ -16465,7 +13227,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     socket.open();
     socket.receive({
       type: "host.snapshot",
-      snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread, other] },
+      snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread, other] },
     });
     if (hydrate) {
       client.activateThread(thread.id);
@@ -16528,7 +13290,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     const message = {
       type: "host.show" as const,
       runId: createId("run"),
-      workspaceId: f.workspace.id,
+
       threadId: f.thread.id,
       target: { threadId: f.other.id },
     };
@@ -16564,7 +13326,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         f.socket.receive({
           type: "host.snapshot",
           snapshot: {
-            ...workspaceSnapshot(f.workspace, "5"),
+            ...deploymentSnapshot(f.workspace, "5"),
             threads: [f.thread, f.other],
             messages: [makeMessage(f.thread.id, "assistant", "Snapshot-only seed")],
             messageWindows: [{ ...emptyDurableWindow(), threadId: f.thread.id }],
@@ -16576,7 +13338,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         f.socket.receive({
           type: "host.snapshot",
           snapshot: {
-            ...workspaceSnapshot(f.workspace, "5"),
+            ...deploymentSnapshot(f.workspace, "5"),
             threads: [f.thread, f.other],
             messagesOmitted: true,
           },
@@ -16620,7 +13382,7 @@ describe("HttpHostClient overnight transcript residency", () => {
       f.socket.receive({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(f.workspace, "10"),
+          ...deploymentSnapshot(f.workspace, "10"),
           threads: [f.thread, f.other],
           messagesOmitted: true,
         },
@@ -16649,7 +13411,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         },
         runId,
         threadId: f.thread.id,
-        workspaceId: f.workspace.id,
+        deploymentId: f.workspace.id,
       });
       const assignment = {
         createdAt: now,
@@ -16674,7 +13436,6 @@ describe("HttpHostClient overnight transcript residency", () => {
           status: "waiting" as const,
           title: f.thread.title,
           icon: null,
-          workspaceId: f.workspace.id,
         },
       };
       const output = Array.from({ length: 100 }, (_, index) =>
@@ -16684,6 +13445,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         }),
       );
       const overnightFrame = {
+        throughSequence: sequence("112"),
         type: "host.events" as const,
         events: [
           agentEvent(f.workspace.id, f.thread.id, runId, "6", "run.queued", {
@@ -16712,10 +13474,9 @@ describe("HttpHostClient overnight transcript residency", () => {
       f.socket.receive(overnightFrame);
       f.socket.receive({
         type: "host.live",
-        workspaceId: f.workspace.id,
+
         afterSequence: sequence("112"),
         progress: {
-          workspaceId: f.workspace.id,
           threadId: f.thread.id,
           runId,
           items: [{ op: "append", at: 0, stream: "assistant", text: "Still writing overnight" }],
@@ -16749,7 +13510,7 @@ describe("HttpHostClient overnight transcript residency", () => {
           { blockId: "missed", text: "Work performed while elsewhere." },
         );
         f.histories.set(f.thread.id, page(f.thread, [...f.events, update], "6"));
-        f.socket.receive({ type: "host.events", events: [update] });
+        f.socket.receive(eventsFrame({ type: "host.events", events: [update] }));
         if (mode === "activate") {
           f.client.activateThread(f.thread.id);
           f.client.activateThread(f.thread.id);
@@ -16767,7 +13528,7 @@ describe("HttpHostClient overnight transcript residency", () => {
           blockId: "held",
           text: "The remaining reader still sees this.",
         });
-        f.socket.receive({ type: "host.events", events: [later] });
+        f.socket.receive(eventsFrame({ type: "host.events", events: [later] }));
         expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
           expect.objectContaining({ id: `reasoning:${f.runId}:held` }),
         );
@@ -16792,7 +13553,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         messageId: createId("message"),
       });
       f.histories.set(f.thread.id, page(f.thread, [update], "6"));
-      f.socket.receive({ type: "host.events", events: [update] });
+      f.socket.receive(eventsFrame({ type: "host.events", events: [update] }));
       f.client.activateThread(f.thread.id);
       await Promise.resolve();
       await Promise.resolve();
@@ -16822,7 +13583,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         f.socket.receive({
           type: "host.snapshot",
           snapshot: {
-            ...workspaceSnapshot(f.workspace, "10"),
+            ...deploymentSnapshot(f.workspace, "10"),
             threads: [f.thread, f.other],
             ...(omitted
               ? { messagesOmitted: true }
@@ -16871,7 +13632,7 @@ describe("HttpHostClient overnight transcript residency", () => {
           "reasoning.completed",
           { blockId: "during-read", text: "Arrived during the replacement read." },
         );
-        f.socket.receive({ type: "host.events", events: [arrived] });
+        f.socket.receive(eventsFrame({ type: "host.events", events: [arrived] }));
         retry.answer.resolve(json(page(f.thread, [...f.events, missed], "10")));
         await vi.waitFor(() =>
           expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
@@ -16905,7 +13666,7 @@ describe("HttpHostClient overnight transcript residency", () => {
       f.histories.set(f.thread.id, page(f.thread, [...f.events, missed], "10"));
       f.socket.receive({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(f.workspace, "10"), threads: [f.thread, f.other] },
+        snapshot: { ...deploymentSnapshot(f.workspace, "10"), threads: [f.thread, f.other] },
       });
       await vi.waitFor(() =>
         expect(f.client.getSnapshot().transcripts[f.thread.id]).toContainEqual(
@@ -16930,7 +13691,7 @@ describe("HttpHostClient overnight transcript residency", () => {
       for (const sequence of ["10", "8"]) {
         f.socket.receive({
           type: "host.snapshot",
-          snapshot: { ...workspaceSnapshot(f.workspace, sequence), threads: [f.thread, f.other] },
+          snapshot: { ...deploymentSnapshot(f.workspace, sequence), threads: [f.thread, f.other] },
         });
       }
       pending.answer.resolve(json(page(f.thread, f.events, "5")));
@@ -16961,29 +13722,35 @@ describe("HttpHostClient overnight transcript residency", () => {
       });
     try {
       const first = entered("7");
-      f.socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(f.workspace.id, f.thread.id, runId, "6", "run.started", { status: "running" }),
-          first,
-        ],
-      });
+      f.socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(f.workspace.id, f.thread.id, runId, "6", "run.started", {
+              status: "running",
+            }),
+            first,
+          ],
+        }),
+      );
       expect(f.client.runPlace(runId)).toEqual(first);
       await f.client.loadTranscriptAround(f.thread.id, f.replyId);
       const history = f.client.getSnapshot().transcripts[f.thread.id];
       const current = entered("8");
-      f.socket.receive({ type: "host.events", events: [current] });
+      f.socket.receive(eventsFrame({ type: "host.events", events: [current] }));
       expect(f.client.getSnapshot().transcripts[f.thread.id]).toBe(history);
       expect(f.client.runPlace(runId)).toEqual(current);
-      f.socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(f.workspace.id, f.thread.id, runId, "9", "run.completed", {
-            status: "completed",
-            replyMessageId: null,
-          }),
-        ],
-      });
+      f.socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(f.workspace.id, f.thread.id, runId, "9", "run.completed", {
+              status: "completed",
+              replyMessageId: null,
+            }),
+          ],
+        }),
+      );
       expect(f.client.runPlace(runId)).toBeNull();
     } finally {
       f.client.dispose();
@@ -17004,7 +13771,7 @@ describe("HttpHostClient overnight transcript residency", () => {
       f.socket.receive({
         type: "host.snapshot",
         snapshot: {
-          ...workspaceSnapshot(f.workspace, "10"),
+          ...deploymentSnapshot(f.workspace, "10"),
           threads: [f.thread, f.other],
         },
       });
@@ -17019,7 +13786,7 @@ describe("HttpHostClient overnight transcript residency", () => {
     }
   });
 
-  it.each(["viewer", "workspace"] as const)(
+  it.each(["viewer", "Deployment access"] as const)(
     "does not restore history whose %s was removed while the read was pending",
     async (removed) => {
       const f = await residentFixture();
@@ -17035,8 +13802,8 @@ describe("HttpHostClient overnight transcript residency", () => {
             type: "host.error",
             error: {
               code: "forbidden",
-              message: "Workspace access ended",
-              reason: "workspace-forbidden",
+              message: "Deployment access ended",
+              reason: "deployment-forbidden",
               retryable: false,
             },
           });
@@ -17057,7 +13824,7 @@ describe("HttpHostClient overnight transcript residency", () => {
 it.each([false, true])(
   "gates the passkey viewer opt-in on the Host capability (%s)",
   async (capable) => {
-    const workspace = makeWorkspace("Example");
+    const workspace = makeDeployment("Example");
     const sessionId = createBrowserSessionId();
     const runnerId = createId("runner");
     const tabId = BrowserSurfaceIdSchema.parse("tab");
@@ -17073,18 +13840,18 @@ it.each([false, true])(
           available: true,
         },
       ],
-      profileGrants: [],
+
       profiles: [],
       sessions: [
         seedBrowserSession(
           {
             id: sessionId,
             access: "read-write",
-            origin: "workspace",
+            origin: "person",
             state: "ready",
             createdAt: now,
             updatedAt: now,
-            workspaceId: workspace.id,
+            deploymentId: workspace.id,
             profileId: null,
             runtimeId: "runtime",
             placement: { kind: "runner", runnerId },
@@ -17343,13 +14110,13 @@ describe("attachment reads", () => {
 
 describe("a Run's current place", () => {
   it("keeps places through queued, starting, running and a restarted binding, fencing only terminal status", async () => {
-    const workspace = makeWorkspace(),
+    const workspace = makeDeployment(),
       thread = makeThread(workspace.id),
       runId = createId("run");
     const socket = new FakeSocket();
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
-      prefetchHome: false,
+
       capabilities: ["place-events-v1"],
       webSocketFactory: () => socket,
       fetch: async () => json(bootstrap([workspace])),
@@ -17359,18 +14126,20 @@ describe("a Run's current place", () => {
       socket.open();
       socket.receiveRaw({
         type: "host.snapshot",
-        snapshot: { ...workspaceSnapshot(workspace, "0"), threads: [thread], runPlaces: [] },
+        snapshot: { ...deploymentSnapshot(workspace, "0"), threads: [thread], runPlaces: [] },
       });
       let sequence = 0;
       const status = (value: "queued" | "starting" | "running" | "waiting" | "completed") =>
-        socket.receive({
-          type: "host.events",
-          events: [
-            agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.status", {
-              status: value,
-            }),
-          ],
-        });
+        socket.receive(
+          eventsFrame({
+            type: "host.events",
+            events: [
+              agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.status", {
+                status: value,
+              }),
+            ],
+          }),
+        );
       const enter = () => {
         const event = agentEvent(
           workspace.id,
@@ -17388,32 +14157,36 @@ describe("a Run's current place", () => {
             site: null,
           },
         );
-        socket.receive({ type: "host.events", events: [event] });
+        socket.receive(eventsFrame({ type: "host.events", events: [event] }));
         return event;
       };
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.queued", {
-            run: {
-              id: runId,
-              threadId: thread.id,
-              createdAt: now,
-              runOrdinal: 1,
-              status: "queued",
-            },
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.queued", {
+              run: {
+                id: runId,
+                threadId: thread.id,
+                createdAt: now,
+                runOrdinal: 1,
+                status: "queued",
+              },
+            }),
+          ],
+        }),
+      );
       status("starting");
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.started", {
-            status: "running",
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, String(++sequence), "run.started", {
+              status: "running",
+            }),
+          ],
+        }),
+      );
       const first = enter();
       expect(client.runPlace(runId)).toEqual(first);
       for (const value of ["waiting", "starting", "running"] as const) {
@@ -17430,7 +14203,7 @@ describe("a Run's current place", () => {
     }
   });
   it("seeds omitted transcripts, follows unopened live events, survives older snapshots, and drops terminal or changed-viewer entries", async () => {
-    const workspace = makeWorkspace(),
+    const workspace = makeDeployment(),
       thread = makeThread(workspace.id),
       runId = createId("run");
     const place = (sequence: string) =>
@@ -17449,7 +14222,7 @@ describe("a Run's current place", () => {
     const socket = new FakeSocket();
     const client = createHttpHostClient({
       refreshIntervalMs: 0,
-      prefetchHome: false,
+
       capabilities: ["place-events-v1", "snapshot-messages-omit-v1"],
       webSocketFactory: () => socket,
       fetch: async () => json(boot),
@@ -17458,7 +14231,7 @@ describe("a Run's current place", () => {
       await client.load();
       socket.open();
       const seed = {
-        ...workspaceSnapshot(workspace, "3"),
+        ...deploymentSnapshot(workspace, "3"),
         threads: [thread],
         messagesOmitted: true as const,
         runQueue: [
@@ -17475,7 +14248,7 @@ describe("a Run's current place", () => {
       socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
       expect(client.runPlace(runId)).toEqual(first);
       expect(client.getSnapshot().transcripts[thread.id]).toBeUndefined();
-      socket.receive({ type: "host.events", events: [second] });
+      socket.receive(eventsFrame({ type: "host.events", events: [second] }));
       expect(client.runPlace(runId)).toEqual(second);
       expect(client.getSnapshot().transcripts[thread.id]).toBeUndefined();
       socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
@@ -17487,20 +14260,22 @@ describe("a Run's current place", () => {
         snapshot: { ...unknownPlaces, sequence: "4" },
       });
       expect(client.runPlace(runId)).toEqual(second);
-      socket.receive({
-        type: "host.events",
-        events: [
-          agentEvent(workspace.id, thread.id, runId, "5", "run.completed", {
-            status: "completed",
-            replyMessageId: null,
-          }),
-        ],
-      });
+      socket.receive(
+        eventsFrame({
+          type: "host.events",
+          events: [
+            agentEvent(workspace.id, thread.id, runId, "5", "run.completed", {
+              status: "completed",
+              replyMessageId: null,
+            }),
+          ],
+        }),
+      );
       expect(client.runPlace(runId)).toBeNull();
       socket.receiveRaw({ type: "host.snapshot", snapshot: seed });
       expect(client.runPlace(runId)).toBeNull();
       const another = { ...second, runId: createId("run"), sequence: SequenceSchema.parse("6") };
-      socket.receive({ type: "host.events", events: [another] });
+      socket.receive(eventsFrame({ type: "host.events", events: [another] }));
       expect(client.runPlace(another.runId!)).toEqual(another);
       boot = { ...boot, user: { ...boot.user, id: createId("user") } };
       await client.refresh();
@@ -17514,12 +14289,12 @@ describe("a Run's current place", () => {
 describe("app tab bootstrap races", () => {
   const appId = "app_00000000-0000-4000-8000-000000000001";
   function fixture(initialOpen = false) {
-    const workspace = makeWorkspace();
+    const workspace = makeDeployment();
     const tab = {
       appId,
       title: "Budget",
       threadId: createId("thread"),
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
       latestVersion: 4,
       openedAt: now,
     };
@@ -17558,7 +14333,7 @@ describe("app tab bootstrap races", () => {
             : appId,
           title: tab.title,
           threadId: tab.threadId,
-          workspaceId: tab.workspaceId,
+          deploymentId: tab.deploymentId,
           runId: createId("run"),
           latestVersion: 4,
           createdAt: now,
@@ -17619,7 +14394,7 @@ describe("app tab bootstrap races", () => {
           id: appId,
           title: f.tab.title,
           threadId: f.tab.threadId,
-          workspaceId: f.tab.workspaceId,
+          deploymentId: f.tab.deploymentId,
           runId: createId("run"),
           latestVersion: 4,
           createdAt: now,
@@ -17695,7 +14470,7 @@ describe("app tab bootstrap races", () => {
           id: appId,
           title: f.tab.title,
           threadId: f.tab.threadId,
-          workspaceId: f.tab.workspaceId,
+          deploymentId: f.tab.deploymentId,
           runId: createId("run"),
           latestVersion: 4,
           createdAt: now,
@@ -17785,7 +14560,7 @@ it("uses a real app entry URL when supplied and resolves legacy paths for previo
   const client = createHttpHostClient();
   const app = {
     id: "app_11111111-1111-4111-8111-111111111111",
-    workspaceId: createId("workspace"),
+    deploymentId: createId("deployment"),
     threadId: createId("thread"),
     runId: createId("run"),
     title: "App",
@@ -17809,7 +14584,7 @@ it("uses a real app entry URL when supplied and resolves legacy paths for previo
 });
 
 it("hydrates older running helper cards and routes a watched node's work only to its detail", async () => {
-  const workspace = makeWorkspace();
+  const workspace = makeDeployment();
   const thread = makeThread(workspace.id);
   const runId = createId("run");
   const nodeId = createId("executionNode");
@@ -17868,7 +14643,7 @@ it("hydrates older running helper cards and routes a watched node's work only to
     socket.receive({
       type: "host.snapshot",
       snapshot: {
-        ...workspaceSnapshot(workspace, "10"),
+        ...deploymentSnapshot(workspace, "10"),
         threads: [thread],
         runQueue: [
           { id: runId, threadId: thread.id, runOrdinal: 1, status: "running", createdAt: now },
@@ -17877,7 +14652,7 @@ it("hydrates older running helper cards and routes a watched node's work only to
     });
     socket.receive({
       type: "host.synchronized",
-      workspaceId: workspace.id,
+
       sequence: sequence("10"),
     });
     await client.loadLatestTranscript(thread.id);
@@ -17888,33 +14663,33 @@ it("hydrates older running helper cards and routes a watched node's work only to
     expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual({
       type: "client.watch-node",
       nodeId,
-      workspaceId: workspace.id,
     });
     socket.receive({
       type: "host.node-watched",
       nodeId,
-      workspaceId: workspace.id,
+
       sequence: sequence("10"),
     });
     await vi.waitFor(() => expect(detail.getSnapshot().status).toBe("ready"));
     expect(nodeReads).toEqual([{ threadId: thread.id, nodeId, through: "10", limit: 100 }]);
-    socket.receive({
-      type: "host.events",
-      events: [
-        agentEvent(workspace.id, thread.id, runId, "11", "tool.started", {
-          nodeId,
-          callId: "child-read",
-          tool: { namespace: "functions", name: "read" },
-          arguments: {},
-        }),
-      ],
-    });
+    socket.receive(
+      eventsFrame({
+        type: "host.events",
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "11", "tool.started", {
+            nodeId,
+            callId: "child-read",
+            tool: { namespace: "functions", name: "read" },
+            arguments: {},
+          }),
+        ],
+      }),
+    );
     socket.receive({
       type: "host.live",
-      workspaceId: workspace.id,
+
       afterSequence: sequence("11"),
       progress: {
-        workspaceId: workspace.id,
         threadId: thread.id,
         runId,
         items: [
@@ -17938,13 +14713,12 @@ it("hydrates older running helper cards and routes a watched node's work only to
     expect(socket.sent.map((data) => JSON.parse(data))).toContainEqual({
       type: "client.watch-node",
       nodeId: null,
-      workspaceId: workspace.id,
     });
     const reopened = client.watchNode(thread.id, nodeId);
     socket.receive({
       type: "host.node-watched",
       nodeId,
-      workspaceId: workspace.id,
+
       sequence: sequence("11"),
     });
     await vi.waitFor(() => expect(reopened.getSnapshot().status).toBe("ready"));
@@ -17953,7 +14727,7 @@ it("hydrates older running helper cards and routes a watched node's work only to
       error: {
         code: "forbidden",
         message: "Access ended",
-        reason: "workspace-forbidden",
+        reason: "deployment-forbidden",
         retryable: false,
       },
     });
@@ -17965,3 +14739,727 @@ it("hydrates older running helper cards and routes a watched node's work only to
     client.dispose();
   }
 });
+
+it.each([true, false])("opens a fresh session with workspace cached: %s", async (cached) => {
+  const workspace = makeDeployment();
+  const sessionId = createBrowserSessionId();
+  const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+    if (path === "/v1/rpc/bootstrap.get") {
+      return json(
+        bootstrap(cached ? [workspace] : [], {
+          available: true,
+          placements: [
+            {
+              available: true,
+              environmentIds: [],
+              kind: "runner",
+              label: "Main Host",
+              runnerId: runnerId,
+              runtimeId: "runtime-1",
+            },
+          ],
+          profiles: [],
+          sessions: [],
+        }),
+      );
+    }
+    if (path === "/v1/rpc/commands.dispatch" && init?.method === "POST") {
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        input: { fresh: true, placement: { kind: "runner", runnerId: runnerId } },
+        type: "browser.session.start",
+      });
+      return json(
+        {
+          session: {
+            access: "read-write",
+            createdAt: now,
+            id: sessionId,
+            origin: "person",
+            placement: { kind: "runner", runnerId: runnerId },
+            profileId: null,
+            runtimeId: "runtime-1",
+            state: "ready",
+            updatedAt: now,
+          },
+          wasExisting: false,
+        },
+        201,
+      );
+    }
+    throw new Error(`Unexpected request ${path}`);
+  }) as unknown as typeof globalThis.fetch;
+  const client = createHttpHostClient({
+    fetch,
+    refreshIntervalMs: 0,
+    webSocketFactory: () => new FakeSocket(),
+  });
+  await client.load();
+
+  const session = await client.startBrowser(
+    workspace.id,
+    { kind: "fresh" },
+    {
+      available: true,
+      environmentIds: [],
+      kind: "runner",
+      label: "Main Host",
+      runnerId: runnerId,
+      runtimeId: "runtime-1",
+    },
+  );
+  expect(session.profileId).toBeNull();
+  expect(client.getSnapshot().browserSessions).toEqual([
+    expect.objectContaining({ id: sessionId, profileId: null }),
+  ]);
+  client.dispose();
+});
+
+describe("HttpHostClient command projection", () => {
+  it("answers a Request without leaving the Thread owing the Host another page", async () => {
+    const workspace = makeDeployment();
+    const thread = makeThread(workspace.id);
+    const runId = createId("run");
+    const approval = pendingRequest({
+      presentation: {
+        detail: "Publish the release",
+        kind: "choice",
+        options: [{ hint: "confirm", id: "allow", label: "Publish" }],
+        risk: "high",
+        title: "Publish externally",
+      },
+      runId,
+      threadId: thread.id,
+      deploymentId: workspace.id,
+    });
+    const sockets: FakeSocket[] = [];
+    const paths: string[] = [];
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      paths.push(path);
+      if (path === "/v1/rpc/thread.events.list") {
+        return json({
+          events: [],
+          threadId: thread.id,
+          window: {
+            byteCount: 2,
+            hasMore: false,
+            itemCount: 0,
+            nextBefore: null,
+            threadId: thread.id,
+            totalItems: 0,
+          },
+        });
+      }
+      if (path === "/v1/rpc/thread.requests.list") {
+        return json({
+          requests: [],
+          threadId: thread.id,
+          window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
+        });
+      }
+      if (path === "/v1/rpc/commands.dispatch") return json({}, 202);
+      return json(bootstrap([workspace]));
+    });
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    await client.load();
+    const socket = sockets[0]!;
+    socket.open();
+    socket.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
+          agentEvent(workspace.id, thread.id, runId, "2", "request.opened", { request: approval }),
+          agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
+            status: "waiting",
+            inputQueuePaused: false,
+            pendingRequests: 1,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
+    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, runId, "4", "request.updated", {
+            request: {
+              ...approval,
+              presentation: { ...approval.presentation, title: "Continue setup" },
+            },
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
+    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
+    expect(client.getSnapshot().requests[thread.id]).toEqual([
+      expect.objectContaining({
+        id: approval.id,
+        presentation: expect.objectContaining({ title: "Continue setup" }),
+      }),
+    ]);
+
+    await client.dispatch({
+      idempotencyKey: `request-${approval.id}:test`,
+      requestId: approval.id,
+      response: { kind: "choice", optionId: "allow" },
+      type: "request.respond",
+    });
+
+    expect(client.getSnapshot().requests[thread.id]).toEqual([]);
+    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
+    socket.receive(
+      eventsFrame({
+        events: [
+          agentEvent(workspace.id, thread.id, null, "5", "thread.state-changed", {
+            status: "running",
+            inputQueuePaused: false,
+            pendingRequests: 0,
+          }),
+        ],
+        type: "host.events",
+      }),
+    );
+    expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(0);
+
+    // Only the Host's absolute state settles the count used for Request paging.
+    paths.length = 0;
+    client.activateThread(thread.id);
+    await Promise.resolve();
+    expect(paths).not.toContain("/v1/rpc/thread.requests.list");
+    client.dispose();
+  });
+
+  it.each([
+    { eventFirst: false, optionId: "installed" },
+    { eventFirst: true, optionId: `server:${createIntegrationId("server")}` },
+  ])(
+    "keeps an integration access Request pending for intermediate choice $optionId",
+    async ({ eventFirst, optionId }) => {
+      const workspace = makeDeployment();
+      const thread = makeThread(workspace.id);
+      const runId = createId("run");
+      const request = pendingIntegrationAccessRequest({
+        optionId,
+        runId,
+        threadId: thread.id,
+        deploymentId: workspace.id,
+      });
+      const updated = {
+        ...request,
+        payload: {
+          ...request.payload,
+          installationId: request.payload.installationId ?? createIntegrationId("installation"),
+          manifest: null,
+          requestedServerId: optionId.startsWith("server:")
+            ? optionId.slice("server:".length)
+            : createIntegrationId("server"),
+        },
+      } as typeof request;
+      const sockets: FakeSocket[] = [];
+      let releaseResponse!: () => void;
+      const responseGate = new Promise<void>((resolve) => {
+        releaseResponse = resolve;
+      });
+      const fetch = vi.fn(async (input: RequestInfo | URL) => {
+        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
+        if (path === "/v1/rpc/commands.dispatch") {
+          if (eventFirst) await responseGate;
+          return json({}, 202);
+        }
+        throw new Error(`Unexpected request ${path}`);
+      }) as unknown as typeof globalThis.fetch;
+      const client = createHttpHostClient({
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({ snapshot: deploymentSnapshot(workspace, "0"), type: "host.snapshot" });
+      socket.receive(
+        eventsFrame({
+          events: [
+            agentEvent(workspace.id, thread.id, null, "1", "thread.created", { thread }),
+            agentEvent(workspace.id, thread.id, runId, "2", "request.opened", { request }),
+            agentEvent(workspace.id, thread.id, null, "3", "thread.state-changed", {
+              status: "waiting",
+              inputQueuePaused: false,
+              pendingRequests: 1,
+            }),
+          ],
+          type: "host.events",
+        }),
+      );
+
+      const responding = client.dispatch({
+        idempotencyKey: `request-${request.id}:intermediate`,
+        requestId: request.id,
+        response: { kind: "choice", optionId },
+        type: "request.respond",
+      });
+      if (eventFirst) {
+        await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+        socket.receive(
+          eventsFrame({
+            events: [
+              agentEvent(workspace.id, thread.id, runId, "4", "request.updated", {
+                request: updated,
+              }),
+            ],
+            type: "host.events",
+          }),
+        );
+        releaseResponse();
+      }
+      await responding;
+
+      expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
+      expect(client.getSnapshot().requests[thread.id]).toEqual([
+        expect.objectContaining({ id: request.id, status: "pending" }),
+      ]);
+      if (!eventFirst) {
+        socket.receive(
+          eventsFrame({
+            events: [
+              agentEvent(workspace.id, thread.id, runId, "4", "request.updated", {
+                request: updated,
+              }),
+            ],
+            type: "host.events",
+          }),
+        );
+        await vi.waitFor(() => {
+          expect(client.getSnapshot().threads[0]?.pendingRequests).toBe(1);
+          expect(client.getSnapshot().requests[thread.id]).toEqual([
+            expect.objectContaining({
+              id: request.id,
+              payload: updated.payload,
+              status: "pending",
+            }),
+          ]);
+        });
+      }
+      expect(client.getSnapshot().transcripts[thread.id] ?? []).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "request" })]),
+      );
+      client.dispose();
+    },
+  );
+
+  it("reads a created AI engine back from the Host instead of waiting for the refresh tick", async () => {
+    const workspace = makeDeployment();
+    const addedHarnessId = createId("harnessInstance");
+    const paths: string[] = [];
+    let created = false;
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      paths.push(path);
+      if (path === "/v1/rpc/commands.dispatch") {
+        created = true;
+        return json({
+          harness: {
+            config: {},
+            driverKind: "claude",
+            enabled: true,
+            environmentId,
+            id: addedHarnessId,
+            isDefault: false,
+            name: "Claude",
+            runtimeRevision: 1,
+            sourceId: "anthropic",
+            stateKind: "isolated",
+          },
+        });
+      }
+      const payload = bootstrap([workspace]);
+      return json(
+        created
+          ? {
+              ...payload,
+              harnesses: [
+                ...payload.harnesses,
+                {
+                  config: {},
+                  driverKind: "claude",
+                  enabled: true,
+                  environmentId,
+                  id: addedHarnessId,
+                  isDefault: false,
+                  name: "Claude",
+                  runtimeRevision: 1,
+                  sourceId: "anthropic",
+                  stateKind: "isolated" as const,
+                },
+              ],
+            }
+          : payload,
+      );
+    });
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+    });
+    await client.load();
+    expect(client.getSnapshot().harnesses).toHaveLength(1);
+
+    await client.dispatch({
+      driverKind: "claude",
+      environmentId,
+      idempotencyKey: "harness-create:test",
+      name: "Claude",
+      sourceId: "anthropic",
+      stateKind: "isolated",
+      type: "harness.create",
+    });
+
+    expect(client.getSnapshot().harnesses).toEqual([
+      expect.objectContaining({ id: harnessInstanceId }),
+      expect.objectContaining({ id: addedHarnessId, name: "Claude" }),
+    ]);
+    client.dispose();
+  });
+
+  it("refreshes after enable and delete mutations that can move a sibling default", async () => {
+    const workspace = makeDeployment();
+    const secondId = createId("harnessInstance");
+    let phase: "initial" | "disabled" | "deleted" = "initial";
+    let bootstrapReads = 0;
+    const firstHarness = {
+      config: {},
+      driverKind: "codex",
+      enabled: true,
+      environmentId,
+      id: harnessInstanceId,
+      isDefault: true,
+      name: "Codex",
+      runtimeRevision: 1,
+      sourceId: "openai",
+      stateKind: "ambient" as const,
+    };
+    const secondHarness = {
+      config: {},
+      driverKind: "codex",
+      enabled: true,
+      environmentId,
+      id: secondId,
+      isDefault: false,
+      name: "Codex Work",
+      runtimeRevision: 1,
+      sourceId: "openai",
+      stateKind: "isolated" as const,
+    };
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (path === "/v1/rpc/commands.dispatch") {
+        const command = asObject(JSON.parse(String(init?.body)));
+        if (requiredString(command, "type") === "harness.enabled.set") {
+          phase = "disabled";
+          return json({ harness: { ...firstHarness, enabled: false, isDefault: false } });
+        }
+        phase = "deleted";
+        return json({}, 202);
+      }
+      bootstrapReads += 1;
+      const payload = bootstrap([workspace]);
+      return json({
+        ...payload,
+        harnesses:
+          phase === "initial"
+            ? [{ ...firstHarness, enabled: true, isDefault: true }, secondHarness]
+            : phase === "disabled"
+              ? [
+                  { ...firstHarness, enabled: false, isDefault: false },
+                  { ...secondHarness, isDefault: true },
+                ]
+              : [{ ...firstHarness, enabled: false, isDefault: false }],
+      });
+    });
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+    });
+    await client.load();
+
+    await client.dispatch({
+      enabled: false,
+      environmentId,
+      harnessInstanceId,
+      idempotencyKey: "harness-enabled:refresh",
+      type: "harness.enabled.set",
+    });
+    expect(
+      client.getSnapshot().harnesses.map(({ enabled, id, isDefault }) => ({
+        enabled,
+        id,
+        isDefault,
+      })),
+    ).toEqual([
+      { enabled: false, id: harnessInstanceId, isDefault: false },
+      { enabled: true, id: secondId, isDefault: true },
+    ]);
+
+    await client.dispatch({
+      environmentId,
+      harnessInstanceId: secondId,
+      idempotencyKey: "harness-delete:refresh",
+      type: "harness.delete",
+    });
+    expect(client.getSnapshot().harnesses).toEqual([
+      expect.objectContaining({ enabled: false, id: harnessInstanceId, isDefault: false }),
+    ]);
+    expect(bootstrapReads).toBe(3);
+    client.dispose();
+  });
+
+  it("projects a renamed AI engine without carrying its driver configuration into the snapshot", async () => {
+    const workspace = makeDeployment();
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (path !== "/v1/rpc/commands.dispatch") return json(bootstrap([workspace]));
+      const command: unknown = JSON.parse(String(init?.body));
+      expect(requiredString(asObject(command), "type")).toBe("harness.rename");
+      return json({
+        harness: {
+          config: { apiKey: "do-not-retain" },
+          driverKind: "codex",
+          enabled: true,
+          environmentId,
+          id: harnessInstanceId,
+          isDefault: true,
+          name: "Codex Prime",
+          runtimeRevision: 2,
+          sourceId: "openai",
+          stateKind: "ambient",
+        },
+      });
+    });
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+    });
+    await client.load();
+
+    await client.dispatch({
+      environmentId,
+      harnessInstanceId,
+      idempotencyKey: "harness-rename:test",
+      name: "Codex Prime",
+      type: "harness.rename",
+    });
+
+    expect(client.getSnapshot().harnesses).toEqual([
+      {
+        driverKind: "codex",
+        enabled: true,
+        environmentId,
+        id: harnessInstanceId,
+        isDefault: true,
+        name: "Codex Prime",
+        runtimeRevision: 2,
+        sourceId: "openai",
+        stateKind: "ambient",
+      },
+    ]);
+    expect(JSON.stringify(client.getSnapshot())).not.toContain("do-not-retain");
+    client.dispose();
+  });
+
+  it("composes caller cancellation into the pending Host request", async () => {
+    const workspace = makeDeployment();
+    const controller = new AbortController();
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (path !== "/v1/rpc/folder.files.list") return json(bootstrap([workspace]));
+      signals.push(init?.signal);
+      init?.signal?.throwIfAborted();
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    });
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: () => new FakeSocket(),
+    });
+    await client.load();
+
+    const pending = client.listFolderFiles(
+      { computerId: runnerId, path: "/tmp/folder" },
+      { parentKey: "" },
+      controller.signal,
+    );
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(signals[0]?.aborted).toBe(false);
+    const reason = new DOMException("Left the folder", "AbortError");
+    const cancelled = expect(pending).rejects.toBe(reason);
+    controller.abort(reason);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[0]?.reason).toBe(reason);
+    await cancelled;
+    await expect(
+      client.listFolderFiles(
+        { computerId: runnerId, path: "/tmp/folder" },
+        { parentKey: "" },
+        controller.signal,
+      ),
+    ).rejects.toBe(reason);
+    expect(signals).toHaveLength(1);
+    client.dispose();
+  });
+
+  it("releases the viewer transport and its frame when a Browser Session is closed", async () => {
+    const workspace = makeDeployment();
+    const profileId = createId("browserProfile");
+    const sessionId = createBrowserSessionId();
+    const sockets: Array<{ socket: FakeSocket; url: string }> = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path !== "/v1/rpc/commands.dispatch") {
+        return json(
+          bootstrap([workspace], {
+            available: true,
+            placements: [
+              {
+                available: true,
+                environmentIds: [],
+                kind: "runner",
+                label: "Main Host",
+                runnerId: runnerId,
+                runtimeId: "runtime-1",
+              },
+            ],
+            profiles: [{ homeRunnerId: null, id: profileId, name: "Default browser" }],
+            sessions: [],
+          }),
+        );
+      }
+      const command = asObject(JSON.parse(String(init?.body)));
+      if (requiredString(command, "type") === "browser.session.close") return json({}, 202);
+      return json(
+        {
+          session: {
+            access: "read-write",
+            createdAt: now,
+            id: sessionId,
+            origin: "person",
+            placement: { kind: "runner", runnerId: runnerId },
+            profileId,
+            runtimeId: "runtime-1",
+            state: "ready",
+            updatedAt: now,
+            deploymentId: workspace.id,
+          },
+          wasExisting: false,
+        },
+        201,
+      );
+    });
+    const client = createHttpHostClient({
+      fetch,
+      refreshIntervalMs: 0,
+      webSocketFactory: (url) => {
+        const socket = new FakeSocket();
+        sockets.push({ socket, url });
+        return socket;
+      },
+    });
+    await client.load();
+    await client.startBrowser(workspace.id, { kind: "profile", profileId });
+    const release = client.retainBrowserViewer(sessionId, "page-1");
+    const viewer = sockets.find(({ url }) => url.includes("/browser-sessions/"))?.socket;
+    expect(viewer).toBeDefined();
+    viewer?.open();
+    viewer?.receiveRaw({
+      access: "read-write",
+      dialog: null,
+      sessionId,
+      state: "ready",
+      surfaces: [{ active: true, id: "page-1", title: "Example", url: "https://example.com/" }],
+      targetedStreamingVersion: 1,
+      type: "browser.snapshot",
+    });
+    viewer?.receiveBinary(browserFrame(1));
+    expect(client.browserFrames.get(sessionId, "page-1")).not.toBeNull();
+
+    // Re-opening the same session must keep the viewer state only the client
+    // holds; the Host record says nothing about tabs or socket health.
+    await client.startBrowser(workspace.id, { kind: "profile", profileId });
+    expect(client.getSnapshot().browserSessions[0]).toMatchObject({
+      viewerState: "disconnected",
+    });
+    expect(client.browserTabs.sessionTabs(client.getSnapshot().browserSessions[0]!.id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ title: "Example" })]),
+    );
+
+    await client.dispatch({
+      idempotencyKey: "browser-close:test",
+      sessionId,
+      type: "browser.session.close",
+    });
+
+    expect(viewer?.closeEvents).toEqual([{ code: 1000, reason: "Target released" }]);
+    expect(client.browserFrames.get(sessionId, "page-1")).toBeNull();
+    expect(client.getSnapshot().browserSessions[0]?.state).toBe("closed");
+    release();
+    client.dispose();
+  });
+});
+
+function eventsThrough(events: readonly unknown[]): import("@opensteer/core").Sequence {
+  let result = 0n;
+  for (const event of events) {
+    if (
+      event &&
+      typeof event === "object" &&
+      "sequence" in event &&
+      typeof event.sequence === "string" &&
+      /^\d+$/.test(event.sequence)
+    ) {
+      const value = BigInt(event.sequence);
+      if (value > result) result = value;
+    }
+  }
+  return SequenceSchema.parse(String(result));
+}
+
+function eventsFrame(
+  input: Omit<Extract<HostToClientMessage, { type: "host.events" }>, "throughSequence">,
+): Extract<HostToClientMessage, { type: "host.events" }>;
+function eventsFrame(input: {
+  type: "host.events";
+  events: readonly unknown[];
+  readonly [key: string]: unknown;
+}): {
+  type: "host.events";
+  events: readonly unknown[];
+  throughSequence: import("@opensteer/core").Sequence;
+};
+function eventsFrame(input: {
+  type: "host.events";
+  events: readonly unknown[];
+  readonly [key: string]: unknown;
+}) {
+  return { ...input, throughSequence: eventsThrough(input.events) };
+}

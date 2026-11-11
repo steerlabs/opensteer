@@ -2,7 +2,6 @@ import type { ThreadInputQueue } from "@opensteer/core";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type {
   BrowserProfileDeletionSummary,
-  BrowserProfileGrantSummary,
   BrowserProfileSummary,
   BrowserSessionSummary,
   HarnessSummary,
@@ -12,7 +11,6 @@ import type {
   TaskEntry,
   TaskListState,
   ThreadSummary,
-  WorkspaceSummary,
 } from "./client.js";
 import { isTerminalRunEntryStatus, upsertEntry } from "./transcript.js";
 
@@ -33,17 +31,11 @@ type OptimisticCommandPatch =
   | {
       readonly session: BrowserSessionSummary;
       readonly type: Extract<CommandType, "browser.session.start">;
-      readonly workspaceId: string;
     }
   | {
       readonly profile: BrowserProfileSummary;
       readonly type: Extract<CommandType, "browser.profile.create">;
     }
-  | {
-      readonly grant: BrowserProfileGrantSummary;
-      readonly type: Extract<CommandType, "browser.profile.grant">;
-    }
-  | { readonly grantId: string; readonly type: Extract<CommandType, "browser.profileGrant.revoke"> }
   | {
       readonly profile: BrowserProfileSummary;
       readonly type: Extract<CommandType, "browser.profile.rename">;
@@ -54,34 +46,6 @@ type OptimisticCommandPatch =
       readonly type: Extract<CommandType, "browser.profile.delete">;
     }
   | { readonly sessionId: string; readonly type: Extract<CommandType, "browser.session.close"> }
-  | {
-      readonly type: Extract<CommandType, "workspace.create">;
-      readonly workspace: WorkspaceSummary;
-    }
-  | {
-      readonly type: Extract<CommandType, "workspace.storage.retry">;
-      readonly workspace: WorkspaceSummary;
-    }
-  | {
-      readonly type: Extract<CommandType, "workspace.adoptRelocated">;
-      readonly workspace: WorkspaceSummary;
-    }
-  | {
-      readonly type: Extract<CommandType, "workspace.icon.set">;
-      readonly workspace: WorkspaceSummary;
-    }
-  | {
-      readonly type: Extract<CommandType, "workspace.color.set">;
-      readonly workspace: WorkspaceSummary;
-    }
-  | {
-      readonly type: Extract<CommandType, "workspace.delete">;
-      readonly workspace: WorkspaceSummary;
-    }
-  | {
-      readonly type: Extract<CommandType, "workspace.deletion.recover">;
-      readonly workspace: WorkspaceSummary;
-    }
   | { readonly thread: ThreadSummary; readonly type: Extract<CommandType, "thread.create"> }
   | {
       readonly acceptedRunCreatedAt: string | null;
@@ -105,21 +69,18 @@ type OptimisticCommandPatch =
       readonly withdrawnAt: string;
     }
   | {
-      readonly thread: ThreadSummary;
-      readonly type: Extract<
-        CommandType,
-        | "thread.execution.update"
-        | "thread.access.update"
-        | "thread.inputQueue.resume"
-        | "thread.shared-done.set"
-        | "thread.rename"
-        | "thread.icon.set"
-      >;
-    }
-  | {
       readonly runId: string;
       readonly threadId: string;
       readonly type: Extract<CommandType, "run.interrupt">;
+    }
+  | {
+      readonly thread: ThreadSummary;
+      readonly type:
+        | "thread.execution.update"
+        | "thread.access.update"
+        | "thread.inputQueue.resume"
+        | "thread.rename"
+        | "thread.icon.set";
     }
   | { readonly requestId: string; readonly type: Extract<CommandType, "request.respond"> };
 
@@ -132,17 +93,7 @@ type PatchMap = {
 
 export const optimisticCommandPatches = {
   "browser.profile.create": upsertBrowserProfile,
-  "browser.profile.grant": (snapshot, { grant }) => ({
-    ...snapshot,
-    browserProfileGrants: [
-      grant,
-      ...snapshot.browserProfileGrants.filter((existing) => existing.id !== grant.id),
-    ],
-  }),
-  "browser.profileGrant.revoke": (snapshot, { grantId }) => ({
-    ...snapshot,
-    browserProfileGrants: snapshot.browserProfileGrants.filter((grant) => grant.id !== grantId),
-  }),
+
   "browser.profile.rename": (snapshot, { profile }) => ({
     ...snapshot,
     browserProfiles: snapshot.browserProfiles.map((existing) =>
@@ -160,9 +111,6 @@ export const optimisticCommandPatches = {
           deletion,
         ]
       : snapshot.browserProfileDeletions?.filter((item) => item.profileId !== profileId),
-    browserProfileGrants: snapshot.browserProfileGrants.filter(
-      (grant) => grant.profileId !== profileId,
-    ),
   }),
   "browser.session.close": (snapshot, { sessionId }) => ({
     ...snapshot,
@@ -193,8 +141,7 @@ export const optimisticCommandPatches = {
       ),
     },
   }),
-  "thread.shared-done.set": (snapshot: HostSnapshot, patch: Parameters<typeof replaceThread>[1]) =>
-    snapshot.sharedTaskDoneAvailable ? replaceThread(snapshot, patch) : snapshot,
+
   "thread.rename": replaceThread,
   "thread.icon.set": replaceThread,
   "thread.access.update": replaceThread,
@@ -213,54 +160,6 @@ export const optimisticCommandPatches = {
   "thread.input.steer": dropQueuedInput,
   "thread.inputQueue.resume": replaceThread,
   "thread.sendMessage": patchSentMessage,
-  "workspace.create": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: [
-      workspace,
-      ...snapshot.workspaces.filter((candidate) => candidate.id !== workspace.id),
-    ],
-    workspaceWindow: {
-      ...snapshot.workspaceWindow,
-      itemCount: snapshot.workspaceWindow.itemCount + 1,
-      totalItems: snapshot.workspaceWindow.totalItems + 1,
-    },
-  }),
-  "workspace.adoptRelocated": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: snapshot.workspaces.map((candidate) =>
-      candidate.id === workspace.id ? workspace : candidate,
-    ),
-  }),
-  "workspace.storage.retry": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: snapshot.workspaces.map((candidate) =>
-      candidate.id === workspace.id ? workspace : candidate,
-    ),
-  }),
-  "workspace.color.set": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: snapshot.workspaces.map((candidate) =>
-      candidate.id === workspace.id ? workspace : candidate,
-    ),
-  }),
-  "workspace.icon.set": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: snapshot.workspaces.map((candidate) =>
-      candidate.id === workspace.id ? workspace : candidate,
-    ),
-  }),
-  "workspace.delete": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: snapshot.workspaces.map((candidate) =>
-      candidate.id === workspace.id ? workspace : candidate,
-    ),
-  }),
-  "workspace.deletion.recover": (snapshot, { workspace }) => ({
-    ...snapshot,
-    workspaces: snapshot.workspaces.map((candidate) =>
-      candidate.id === workspace.id ? workspace : candidate,
-    ),
-  }),
 } satisfies PatchMap;
 
 export function applyOptimisticCommandPatch(
@@ -270,10 +169,7 @@ export function applyOptimisticCommandPatch(
   switch (patch.type) {
     case "browser.profile.create":
       return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "browser.profile.grant":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "browser.profileGrant.revoke":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
+
     case "browser.profile.rename":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "browser.profile.delete":
@@ -295,7 +191,7 @@ export function applyOptimisticCommandPatch(
     case "run.interrupt":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.icon.set":
-    case "thread.shared-done.set":
+
     case "thread.rename":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.access.update":
@@ -311,20 +207,6 @@ export function applyOptimisticCommandPatch(
     case "thread.inputQueue.resume":
       return optimisticCommandPatches[patch.type](snapshot, patch);
     case "thread.sendMessage":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.create":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.adoptRelocated":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.storage.retry":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.color.set":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.icon.set":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.delete":
-      return optimisticCommandPatches[patch.type](snapshot, patch);
-    case "workspace.deletion.recover":
       return optimisticCommandPatches[patch.type](snapshot, patch);
   }
 }
@@ -490,9 +372,6 @@ export function withThreadNames(
     return updated === held.entries ? held : { ...held, entries: updated };
   };
   const threads = snapshot.threads.map(threadName);
-  const workspaceTasks = Object.fromEntries(
-    Object.entries(snapshot.workspaceTasks).map(([id, held]) => [id, taskList(held)]),
-  );
   const tasks = snapshot.tasks ? taskList(snapshot.tasks) : null;
   const activeTasks = entries(snapshot.activeTasks);
   const assignments = Object.fromEntries(
@@ -521,11 +400,6 @@ export function withThreadNames(
       : assignments,
     tasks,
     activeTasks,
-    workspaceTasks: Object.entries(workspaceTasks).every(
-      ([id, held]) => held === snapshot.workspaceTasks[id],
-    )
-      ? snapshot.workspaceTasks
-      : workspaceTasks,
   };
 }
 

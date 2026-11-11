@@ -831,7 +831,7 @@ function setupRequest(overrides: Partial<ComputerAppSetupRequest>): ComputerAppS
     runnerId: mac,
     threadId: null,
     threadTitle: null,
-    workspaceId: null,
+
     ...overrides,
   } as ComputerAppSetupRequest;
 }

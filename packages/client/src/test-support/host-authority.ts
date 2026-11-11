@@ -6,6 +6,7 @@ import {
   HostDiscoveryDocumentSchema,
   HostDiscoveryEnvelopeSchema,
   hostApiVersion,
+  teamApiVersion,
   hostDiscoverySigningBytes,
   type HostBootstrapMethod,
   type HostCapability,
@@ -100,7 +101,9 @@ export function testHostDescriptor(
   capabilities: readonly HostCapability[] = [],
 ): HostDescriptor {
   return HostDescriptorSchema.parse({
-    apiVersion: hostApiVersion,
+    kind: authority.document.deploymentShape.kind,
+    apiVersion:
+      authority.document.deploymentShape.kind === "team" ? teamApiVersion : hostApiVersion,
     authority,
     bootstrapMethods,
     capabilities,

@@ -2,7 +2,7 @@ import type {
   IntegrationPlatformDashboardView,
   IntegrationConnectionSummary,
 } from "@opensteer/integration-core";
-import { createId, RunnerIdSchema, type WorkspaceId } from "@opensteer/core";
+import { createId, RunnerIdSchema, type DeploymentId } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core/ids";
 import {
   DevicesOverviewViewSchema,
@@ -66,29 +66,22 @@ export class MockSettingsFixtures {
     ],
   });
   private readonly changed: () => void;
-  private readonly workspaces: () => {
-    workspaceId: WorkspaceId;
-    name: string;
-    kind: "main" | "project";
-  }[];
   private readonly serviceAccounts:
     ((definitionId: string) => readonly IntegrationConnectionSummary[]) | undefined;
   private readonly readDevices: (() => DevicesOverviewView) | undefined;
   constructor(
     changed: () => void,
-    workspaces: MockSettingsFixtures["workspaces"],
     readDevices?: () => DevicesOverviewView,
     serviceAccounts?: (definitionId: string) => readonly IntegrationConnectionSummary[],
   ) {
     this.readDevices = readDevices;
     this.serviceAccounts = serviceAccounts;
     this.changed = changed;
-    this.workspaces = workspaces;
   }
   get devices(): DevicesOverviewView {
     return this.readDevices?.() ?? this.fallbackDevices;
   }
-  private inventory(workspaceId: WorkspaceId): PluginDetailView[] {
+  private inventory(_deploymentId: DeploymentId): PluginDetailView[] {
     if (this.details) return this.details;
     const entries: {
       target: PluginTarget;
@@ -136,7 +129,7 @@ export class MockSettingsFixtures {
         issues: ["unknown-source-folder"],
       },
       {
-        target: { kind: "skill", workspaceId, fullName: "writing-style" },
+        target: { kind: "skill", fullName: "writing-style" },
         title: "Writing style",
         tag: "skills",
       },
@@ -158,7 +151,7 @@ export class MockSettingsFixtures {
           source: {
             kind:
               entry.target.kind === "skill"
-                ? "workspace"
+                ? "folder"
                 : entry.target.kind === "plugin" || entry.target.kind === "specialist"
                   ? "plugin"
                   : "built-in",
@@ -167,9 +160,7 @@ export class MockSettingsFixtures {
           tags: [entry.tag],
           placement: {
             enabled: entry.enabled ?? true,
-            mainIncluded: true,
-            projectCount: 0,
-            personalEverywhere: false,
+
             revision: 0,
           },
           accountCount: entry.accounts ?? 0,
@@ -181,7 +172,8 @@ export class MockSettingsFixtures {
           },
           permissions: {
             canEnable: true,
-            canPlace: entry.target.kind !== "skill",
+            canPlace: false,
+
             canRemove: true,
             canUpdate: false,
           },
@@ -194,13 +186,7 @@ export class MockSettingsFixtures {
           access: "read",
           runnerId: null,
         })),
-        places: this.workspaces().map((place) => ({
-          ...place,
-          selected: place.kind === "main",
-          canSelect: true,
-          accounts: [],
-        })),
-        personalEverywhere: null,
+
         devices:
           entry.tag === "devices"
             ? this.devices.devices
@@ -233,7 +219,7 @@ export class MockSettingsFixtures {
   }
   private packageIds = new Set<string>();
   syncPackages(
-    workspaceId: WorkspaceId,
+    deploymentId: DeploymentId,
     stored: readonly unknown[],
     deviceOf: (pluginId: string) => {
       readonly device: NonNullable<PluginDetailView["row"]["device"]>;
@@ -241,7 +227,7 @@ export class MockSettingsFixtures {
     } | null = () => null,
   ) {
     const packages = pluginSummaries(stored);
-    const current = this.inventory(workspaceId).filter(
+    const current = this.inventory(deploymentId).filter(
       (detail) =>
         detail.row.target.kind !== "plugin" ||
         !this.packageIds.has(detail.row.target.pluginId) ||
@@ -268,20 +254,18 @@ export class MockSettingsFixtures {
             title: plugin.name,
             description: plugin.description,
             source: {
-              kind: plugin.scope === "workspace" ? "workspace" : "plugin",
+              kind: plugin.scope === "folder" ? "folder" : "plugin",
               version: plugin.version,
             },
             tags: ["skills"],
             ...(declared ? { device: declared.device } : {}),
             placement: {
-              enabled: true,
-              mainIncluded: plugin.activeIn.includes(workspaceId),
-              projectCount: plugin.activeIn.filter((id) => id !== workspaceId).length,
-              personalEverywhere: false,
+              enabled: plugin.enabled,
+
               revision: 0,
             },
             accountCount: 0,
-            issues: sourceFolder || plugin.scope === "workspace" ? [] : ["unknown-source-folder"],
+            issues: sourceFolder || plugin.scope === "folder" ? [] : ["unknown-source-folder"],
             contents: {
               skills: plugin.skills,
               tools: plugin.servers,
@@ -289,7 +273,8 @@ export class MockSettingsFixtures {
             },
             permissions: {
               canEnable: true,
-              canPlace: true,
+              canPlace: false,
+
               canRemove: true,
               canUpdate: sourceFolder !== null,
             },
@@ -298,13 +283,7 @@ export class MockSettingsFixtures {
           installationIds: [],
           grants: [],
           registrations: [],
-          places: this.workspaces().map((place) => ({
-            ...place,
-            selected: plugin.activeIn.includes(place.workspaceId),
-            canSelect: plugin.scope !== "workspace" || place.workspaceId === plugin.workspaceId,
-            accounts: [],
-          })),
-          personalEverywhere: null,
+
           devices: [],
           permissions: [],
           contents: [],
@@ -317,8 +296,8 @@ export class MockSettingsFixtures {
     this.details = current;
   }
   private readonly serviceIds = new Set<string>();
-  syncServices(workspaceId: WorkspaceId, platform: IntegrationPlatformDashboardView) {
-    const current = this.inventory(workspaceId).filter(
+  syncServices(deploymentId: DeploymentId, platform: IntegrationPlatformDashboardView) {
+    const current = this.inventory(deploymentId).filter(
       (detail) =>
         (detail.row.target.kind !== "service" && detail.row.target.kind !== "device-app") ||
         !this.serviceIds.has(detail.row.target.definitionId) ||
@@ -360,18 +339,10 @@ export class MockSettingsFixtures {
         installation?.installation.status === "active" ? [] : ["invalid-installation"];
       detail.row.placement = {
         enabled: true,
-        mainIncluded: true,
-        projectCount: 0,
-        personalEverywhere: false,
+
         revision: 0,
       };
-      detail.places = this.workspaces().map((place) => ({
-        ...place,
-        selected: place.kind === "main",
-        canSelect: true,
-        accounts: [],
-      }));
-      detail.personalEverywhere = null;
+
       detail.row.accountCount = 0;
       detail.row.issues = item.definition.authMethods.length ? ["needs-sign-in"] : [];
       detail.accounts = [];
@@ -385,8 +356,8 @@ export class MockSettingsFixtures {
       current.push(PluginDetailViewSchema.parse(detail));
     }
   }
-  private syncAccounts(workspaceId: WorkspaceId) {
-    for (const detail of this.inventory(workspaceId)) {
+  private syncAccounts(deploymentId: DeploymentId) {
+    for (const detail of this.inventory(deploymentId)) {
       if (detail.row.target.kind !== "service" || !this.serviceAccounts) continue;
       detail.accounts = this.serviceAccounts(detail.row.target.definitionId).map((account) => ({
         connectionId: account.id,
@@ -399,15 +370,15 @@ export class MockSettingsFixtures {
       detail.row.accountCount = detail.accounts.length;
     }
   }
-  overview(workspaceId: WorkspaceId) {
-    this.syncAccounts(workspaceId);
+  overview(deploymentId: DeploymentId) {
+    this.syncAccounts(deploymentId);
     return PluginsOverviewViewSchema.parse({
-      rows: this.inventory(workspaceId).map(({ row }) => row),
+      rows: this.inventory(deploymentId).map(({ row }) => row),
     });
   }
-  detail(workspaceId: WorkspaceId, target: PluginTarget) {
-    this.syncAccounts(workspaceId);
-    const detail = this.inventory(workspaceId).find(
+  detail(deploymentId: DeploymentId, target: PluginTarget) {
+    this.syncAccounts(deploymentId);
+    const detail = this.inventory(deploymentId).find(
       ({ row }) => JSON.stringify(row.target) === JSON.stringify(target),
     );
     if (!detail)
@@ -419,13 +390,10 @@ export class MockSettingsFixtures {
     return structuredClone(detail);
   }
   mutate(
-    workspaceId: WorkspaceId,
-    command: Extract<
-      HostApiCommand,
-      { type: "settings.plugin.enabled.set" | "settings.plugin.placement.set" }
-    >,
+    deploymentId: DeploymentId,
+    command: Extract<HostApiCommand, { type: "settings.plugin.enabled.set" }>,
   ): HostApiCommandOutput {
-    const detail = this.inventory(workspaceId).find(
+    const detail = this.inventory(deploymentId).find(
       ({ row }) => JSON.stringify(row.target) === JSON.stringify(command.target),
     );
     if (!detail)
@@ -440,60 +408,10 @@ export class MockSettingsFixtures {
         status: 409,
         message: "Plugin changed. Reload before editing.",
       });
-    if (command.type === "settings.plugin.enabled.set")
-      detail.row.placement.enabled = command.enabled;
-    else {
-      if (command.personalEverywhere !== null && !command.mainIncluded)
-        throw new HostClientRequestError({
-          code: "bad_request",
-          status: 400,
-          message: "Everywhere includes Main.",
-        });
-      if (!detail.row.permissions.canPlace)
-        throw new HostClientRequestError({
-          code: "forbidden",
-          status: 403,
-          message: "A loose skill stays in its source Workspace.",
-        });
-      const accountIds = [
-        ...command.projects.flatMap(({ accounts }) => accounts),
-        ...(command.personalEverywhere?.accounts ?? []),
-      ];
-      if (
-        command.projects.some(
-          ({ workspaceId }) =>
-            !detail.places.some(
-              (place) => place.kind === "project" && place.workspaceId === workspaceId,
-            ),
-        ) ||
-        accountIds.some(
-          ({ connectionId }) =>
-            !detail.accounts.some((account) => account.connectionId === connectionId),
-        )
-      )
-        throw new HostClientRequestError({
-          code: "bad_request",
-          status: 400,
-          message: "Unknown Project or account.",
-        });
-      detail.row.placement.mainIncluded = command.mainIncluded;
-      for (const place of detail.places) {
-        const selection = command.projects.find(
-          ({ workspaceId }) => workspaceId === place.workspaceId,
-        );
-        place.selected =
-          place.kind === "main"
-            ? command.mainIncluded
-            : command.personalEverywhere !== null || selection !== undefined;
-        place.accounts = selection?.accounts ?? command.personalEverywhere?.accounts ?? [];
-      }
-      detail.row.placement.projectCount = detail.places.filter(
-        (place) => place.kind === "project" && place.selected,
-      ).length;
-      detail.personalEverywhere = command.personalEverywhere;
-      detail.row.placement.personalEverywhere = command.personalEverywhere !== null;
-    }
-    detail.row.placement.revision++;
+    detail.row.placement = {
+      enabled: command.enabled,
+      revision: detail.row.placement.revision + 1,
+    };
     for (const listener of this.listeners) listener({ type: "host.plugins-changed" });
     this.changed();
     return { type: command.type, placement: structuredClone(detail.row.placement) };

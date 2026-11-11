@@ -18,8 +18,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
   events: readonly AgentEvent[];
   assignment: AssignmentView;
 } {
-  const base =
-    snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId) ?? snapshot.threads[0];
+  const base = snapshot.threads.find((thread) => thread.purpose === "voice") ?? snapshot.threads[0];
   if (!base || !snapshot.user) throw new Error("Subagents need a mock conversation.");
   const threadId = createId("thread");
   const runId = createId("run");
@@ -29,7 +28,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     ...base,
     id: threadId,
     title: "Subagents everywhere",
-    role: "work" as const,
+    purpose: "task" as const,
     parentThreadId: null,
     status: "running" as const,
     pendingRequests: 1,
@@ -132,7 +131,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
   const worker = {
     ...thread,
     id: workerId,
-    role: "work" as const,
+    purpose: "task" as const,
     parentThreadId: threadId,
     title: "Review the release notes",
     pendingRequests: 0,
@@ -174,7 +173,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
       id: workerId,
       title: worker.title,
       environmentId: worker.environmentId,
-      workspaceId: worker.workspaceId,
+
       pendingRequests: 0,
       status: "idle",
       icon: null,
@@ -192,8 +191,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     originatingRunId: runId,
     originatingOccurrenceId: null,
     originatingThreadId: threadId,
-    originatingWorkspaceId: thread.workspaceId,
-    targetWorkspaceId: thread.workspaceId,
+
     requestedBy: snapshot.user.id,
     requiredActor: "requester",
     resolvedAt: null,
@@ -254,7 +252,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
         eventId: createId("event"),
         runId,
         threadId,
-        workspaceId: createId("workspace"),
+
         sequence: SequenceSchema.parse(String(++sequence)),
       }),
     );
@@ -309,10 +307,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     }
   return {
     assignment,
-    events: events.map((event) => ({
-      ...event,
-      workspaceId: thread.workspaceId as AgentEvent["workspaceId"],
-    })),
+    events,
     snapshot: {
       ...snapshot,
       threads: [...snapshot.threads, thread, worker],

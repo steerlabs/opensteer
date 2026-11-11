@@ -14,11 +14,11 @@ export const voiceTestId = "12345678-1234-4123-8123-123456789abc";
 export const voiceTestNow = Date.parse("2026-10-30T12:00:00.000Z");
 
 /** Mock domain commands stay real; tests can publish snapshots without starting its timed engines. */
-export function voiceHost(initialHome: "seeded" | "absent" = "seeded") {
+export function voiceHost(_initialHome: "seeded" | "absent" = "seeded") {
   const host = new MockHostClient({
     latencyMs: 0,
     places: "absent",
-    initialHome,
+
     now: () => new Date(voiceTestNow),
   });
   const original = host.getSnapshot;
@@ -52,8 +52,8 @@ export function voiceHost(initialHome: "seeded" | "absent" = "seeded") {
   };
 }
 
-export function voiceIdentity(workspaceId: string = createId("workspace")): VoiceCallIdentity {
-  return { threadId: createId("thread"), runId: createId("run"), workspaceId };
+export function voiceIdentity(_deploymentId: string = createId("deployment")): VoiceCallIdentity {
+  return { threadId: createId("thread"), runId: createId("run") };
 }
 
 export function semanticVoice() {

@@ -1,6 +1,6 @@
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { hostApiVersionHeader } from "@opensteer/protocol";
-import { createId } from "@opensteer/core";
+
 import { describe, expect, it, vi } from "vitest";
 import { classifyClientFailure } from "../connections/operation-error.js";
 import { HostClientRequestError } from "./client.js";
@@ -20,7 +20,7 @@ describe("rpc version negotiation", () => {
       onAuthenticationRequired: () => undefined,
     });
 
-    await client["workspace.prefetch"]({ workspaceId: createId("workspace") });
+    await client["auth.config"]({});
 
     expect(fetch).toHaveBeenCalledWith(
       expect.anything(),

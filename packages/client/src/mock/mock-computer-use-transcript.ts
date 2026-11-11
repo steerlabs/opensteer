@@ -2,17 +2,6 @@ import { RunnerIdSchema, type IntegrationCallSubject } from "@opensteer/core";
 import { formatComputerUseResultHead } from "@opensteer/protocol";
 import type { MessageEntry, ToolEntry, TranscriptEntry } from "../host/client.js";
 
-/**
- * One real Computer use turn, as the transcript records it: a Codex agent
- * asked to click the Opensteer workspace in Slack. It found the app, guessed
- * the act schema wrong, looked it up, was stopped once by a newer observation,
- * and then clicked through. Codex kept its reasoning to itself, so nothing
- * stands between the calls but the agent's opening note.
- *
- * The preview seeds a Thread with it, and the model and renderer tests read
- * the same entries, so what the tests assert is what the preview shows.
- */
-
 const runnerId = RunnerIdSchema.parse("rnr_35a353b8-9b64-4600-9eb1-e25db7c052a3");
 
 export const mockComputerUseSlack = {
@@ -95,11 +84,6 @@ function at(time: string): string {
   return `2026-08-06T23:${time}Z`;
 }
 
-/**
- * The turn's entries from the agent's opening note to its reply. `running`
- * stops the turn with its twelfth call in flight — the click that switches
- * workspaces — and the Run still going.
- */
 export function mockComputerUseTurn(options: {
   readonly agent: MessageEntry["author"];
   /** The Mac the turn used Slack on; the recorded one unless a preview names its own. */

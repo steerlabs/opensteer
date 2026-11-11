@@ -3,8 +3,8 @@ import type { HostClient } from "../host/client.js";
 import { schedulesClient } from "../host/schedules.js";
 
 /** Enable only while the screen is visible, including when navigation keeps it mounted. */
-export function useSchedules(client: HostClient, workspaceId?: string, enabled = true) {
-  const resource = schedulesClient(client, workspaceId).list;
+export function useSchedules(client: HostClient, deploymentId?: string, enabled = true) {
+  const resource = schedulesClient(client, deploymentId).list;
   const subscribe = useCallback(
     (listener: () => void) => (enabled ? resource.subscribe(listener) : () => undefined),
     [enabled, resource],

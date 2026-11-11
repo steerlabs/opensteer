@@ -25,7 +25,7 @@ export interface SurfaceModel {
 
 export function deriveSurface(
   requests: readonly Request[],
-  user: Pick<AuthenticatedUser, "id" | "instanceRole"> | null,
+  user: Pick<AuthenticatedUser, "id"> | null,
   /** The Request a person asked to see, when it is still waiting. */
   focusRequestId: string | null = null,
 ): SurfaceModel | null {
@@ -41,18 +41,10 @@ export function deriveSurface(
     pending[0];
   if (!request) return null;
 
-  const administratorMayInstall =
-    request.payload.kind === "integration.access" &&
-    request.payload.installationId === null &&
-    user?.instanceRole === "administrator";
   const denied =
-    request.requiredActor === "requester" &&
-    request.requestedBy !== user?.id &&
-    !administratorMayInstall
+    request.requiredActor === "requester" && request.requestedBy !== user?.id
       ? ("requester" as const)
-      : request.requiredActor === "administrator" && user?.instanceRole !== "administrator"
-        ? ("administrator" as const)
-        : null;
+      : null;
 
   const textRole: SurfaceTextRole =
     request.mode === "live" && !denied && request.presentation.kind === "form"

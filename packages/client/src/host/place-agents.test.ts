@@ -23,7 +23,7 @@ function occupant(threadId: string, patch: Partial<PlaceOccupant> = {}): PlaceOc
   return {
     acting: false,
     holding: true,
-    home: false,
+
     lastActiveAt: "2026-10-20T10:00:00.000Z",
     threadId: threadId as PlaceOccupant["threadId"],
     ...patch,
@@ -38,9 +38,9 @@ function source(patch: Partial<PlaceAgentSource> = {}): PlaceAgentSource {
     tasks: null,
     threads: [
       { id: "thread-hotels", title: "Compare hotels", icon: "bed", color: "purple" },
+      { id: "thread-notes", title: "Shopping list", icon: null, color: null },
       { id: "thread-trip", title: "Tokyo trip", icon: "plane", color: "sky" },
     ],
-    workspaceTasks: {},
     ...patch,
   } as unknown as PlaceAgentSource;
 }
@@ -50,10 +50,10 @@ function place(occupants: PlaceOccupant[], destination: PlaceItem["destination"]
 }
 
 describe("place agents", () => {
-  it("lists acting agents first, then the most recently active, with Chat wearing its own name", () => {
+  it("lists acting agents first, then the most recently active, using each task title", () => {
     const value = placeAgents(
       place([
-        occupant("thread-home", { home: true, lastActiveAt: "2026-10-20T10:05:00.000Z" }),
+        occupant("thread-notes", { lastActiveAt: "2026-10-20T10:05:00.000Z" }),
         occupant("thread-trip", { lastActiveAt: "2026-10-20T10:01:00.000Z" }),
         occupant("thread-hotels", { acting: true, lastActiveAt: "2026-10-20T09:00:00.000Z" }),
       ]),
@@ -62,10 +62,13 @@ describe("place agents", () => {
     expect(value.unnamedActing).toBe(false);
     expect(value.agents.map(({ threadId }) => threadId)).toEqual([
       "thread-hotels",
-      "thread-home",
+      "thread-notes",
       "thread-trip",
     ]);
-    expect(value.agents[1]).toMatchObject({ home: true, mark: null, title: "Chat" });
+    expect(value.agents[1]).toMatchObject({
+      mark: { icon: "document", color: null },
+      title: "Shopping list",
+    });
     expect(value.agents[0]?.mark).toEqual({ color: "purple", icon: "bed" });
     expect(placeAgentsWords(value)).toEqual({
       detail: "1 working",

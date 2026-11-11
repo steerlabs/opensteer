@@ -15,7 +15,7 @@ const runId = createId("run");
 const activity = {
   place,
   threadId,
-  home: false,
+
   runId,
   generation: 1,
   seq: 1,

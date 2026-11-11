@@ -8,7 +8,7 @@ export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
 
 type ThreadState = Pick<
   ThreadSummary,
-  "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt" | "workspaceId"
+  "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt"
 > & {
   readonly doneAt?: ThreadSummary["doneAt"] | undefined;
   readonly doneReason?: ThreadSummary["doneReason"] | undefined;
@@ -17,22 +17,21 @@ type ThreadState = Pick<
   readonly stateSequence: Sequence;
 };
 
-/** Each source supplies an absolute state at a Workspace sequence, never a delta. */
 export class ThreadStateProjection {
   readonly #loaded = new Map<string, ThreadState>();
   readonly #unloaded = new Map<string, ThreadState>();
-  // Sequences are Workspace-local. Each floor covers both snapshot gaps and eviction.
-  readonly #coverageFloor = new Map<string, Sequence>();
 
-  cover(workspaceId: string, sequence: Sequence): void {
-    const previous = this.#coverageFloor.get(workspaceId);
-    if (previous === undefined || compareSequence(sequence, previous) > 0)
-      this.#coverageFloor.set(workspaceId, sequence);
+  #coverageFloor: Sequence | null = null;
+
+  cover(sequence: Sequence): void {
+    const previous = this.#coverageFloor;
+    if (previous === null || compareSequence(sequence, previous) > 0)
+      this.#coverageFloor = sequence;
   }
 
-  needsRead(thread: Pick<ThreadSummary, "id" | "workspaceId">, sequence: Sequence): boolean {
-    const floor = this.#coverageFloor.get(thread.workspaceId);
-    if (floor === undefined || compareSequence(sequence, floor) >= 0) return false;
+  needsRead(thread: Pick<ThreadSummary, "id">, sequence: Sequence): boolean {
+    const floor = this.#coverageFloor;
+    if (floor === null || compareSequence(sequence, floor) >= 0) return false;
     const loaded = this.#loaded.get(thread.id);
     return loaded === undefined || compareSequence(loaded.stateSequence, floor) < 0;
   }
@@ -49,7 +48,6 @@ export class ThreadStateProjection {
     if (!state) return false;
     this.#accept(event.threadId, {
       ...state,
-      workspaceId: event.workspaceId,
       stateSequence: event.sequence,
       updatedAt: event.createdAt,
     });
@@ -130,7 +128,6 @@ export class ThreadStateProjection {
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused,
       pendingRequests: incoming.pendingRequests,
-      workspaceId: incoming.workspaceId,
       stateSequence: incoming.stateSequence,
       updatedAt:
         previous && previous.updatedAt > incoming.updatedAt
@@ -147,14 +144,28 @@ export class ThreadStateProjection {
     this.#unloaded.set(id, state);
     if (this.#unloaded.size > unloadedThreadLimit) {
       const [evictedId, evicted] = this.#unloaded.entries().next().value!;
-      this.cover(evicted.workspaceId, evicted.stateSequence);
+      this.cover(evicted.stateSequence);
       this.#unloaded.delete(evictedId);
     }
+  }
+
+  checkpoint() {
+    return {
+      coverage: this.#coverageFloor,
+      loaded: [...this.#loaded],
+      unloaded: [...this.#unloaded],
+    };
+  }
+  restore(checkpoint: ReturnType<ThreadStateProjection["checkpoint"]>): void {
+    this.clear();
+    this.#coverageFloor = checkpoint.coverage;
+    for (const [id, state] of checkpoint.loaded) this.#loaded.set(id, state);
+    for (const [id, state] of checkpoint.unloaded) this.#remember(id, state);
   }
 
   clear(): void {
     this.#loaded.clear();
     this.#unloaded.clear();
-    this.#coverageFloor.clear();
+    this.#coverageFloor = null;
   }
 }

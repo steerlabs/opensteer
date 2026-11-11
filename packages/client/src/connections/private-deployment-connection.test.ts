@@ -276,7 +276,6 @@ function accessRoute(
         algorithm: "Ed25519" as const,
       },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory" as const,
         kind: "personal" as const,
       },
     },
@@ -324,8 +323,7 @@ function selfHostedDiscovery(
 ): HostDiscoveryEnvelope {
   const keys = testHostAuthorityKeys();
   const deploymentShape = {
-    defaultWorkspaceBacking: "local-directory" as const,
-    kind: kind === "personal" ? ("personal" as const) : ("server" as const),
+    kind: kind === "personal" ? ("personal" as const) : ("team" as const),
   };
   const document: HostDiscoveryDocument = {
     canonicalOrigin,

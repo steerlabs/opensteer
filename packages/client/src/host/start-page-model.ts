@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "./deployment-policy.js";
 import { parseNavigationInput, webSearchUrl, type NavigationInput } from "./navigation-input.js";
 import {
   computerAppIdentityKey,
@@ -16,7 +15,7 @@ import type { BrowserHistoryEntry } from "@opensteer/protocol";
 import { placeList, placeSearchFields, type PlaceItem } from "./places.js";
 import { browserTabStrip } from "./browser-tab-strip.js";
 import { matchSearch, rankSearch, searchQuery, searchText, type SearchField } from "./search.js";
-import type { WorkspaceSurfaceDestination as SurfaceDestination } from "./surfaces.js";
+import type { PersonalSurfaceDestination as SurfaceDestination } from "./surfaces.js";
 
 export type BrowserIdentityChoice =
   { readonly kind: "profile"; readonly profileId: string } | { readonly kind: "guest" };
@@ -250,15 +249,7 @@ export function startPageIndex(input: {
   const groups: StartPageGroup[] = [];
   for (const app of input.approvedApps ?? []) {
     const machine = snapshot.machines.find((machine) => machine.id === app.machineId);
-    if (
-      !machine ||
-      (machine.ownership !== "mine" &&
-        !(
-          hostDeploymentPolicy(snapshot)?.deploymentComputerAccess === true &&
-          machine.ownership === "deployment"
-        ))
-    )
-      continue;
+    if (!machine) continue;
     const kind = app.target.kind === "phone" ? "phone" : "apps";
     const held = groups.findIndex(
       (group) => group.machineId === app.machineId && group.kind === kind,

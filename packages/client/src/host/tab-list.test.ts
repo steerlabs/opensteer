@@ -4,7 +4,6 @@
  * merely has no rows, or keeps narrowing to a device that left the Deployment while a tab it
  * kept still lists it; a label changes identity, redrawing its row, when its device did not. */
 import { describe, expect, it } from "vitest";
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PlaceItem } from "./places.js";
 import {
@@ -82,13 +81,13 @@ describe("the device each row names", () => {
       allowedModules: ["agents"],
     } as MachineSummary;
     const snapshot = {
-      deploymentPolicy: { deploymentOwnsMainComputer: true } as DeploymentClientPolicy,
+      can: null,
       deploymentShape: null,
       machines: [main, ...machines.slice(1)],
     };
     expect(tabListHomeId(snapshot, null)).toBe("mini");
     expect(tabListHomeId(snapshot, "studio")).toBe("studio");
-    expect(tabListHomeId({ ...snapshot, deploymentPolicy: undefined }, null)).toBeNull();
+    expect(tabListHomeId({ ...snapshot, machines: [] }, null)).toBeNull();
     const home = tabListHomeId(snapshot, null);
     expect([
       ...placeDeviceLabels(places, devicesElsewhere(snapshot.machines, home)).keys(),

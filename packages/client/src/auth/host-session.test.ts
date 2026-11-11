@@ -454,8 +454,7 @@ function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -479,7 +478,6 @@ function localPersonalConnection(): DeploymentConnection {
       ...base.authority.document,
       canonicalOrigin: origin,
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     }),

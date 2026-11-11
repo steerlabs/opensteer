@@ -5,6 +5,6 @@ export { mockBrowserSignInRequest } from "./mock-chrome-sign-ins.js";
 export { mockIphoneRunnerId, type MockPlaceScript } from "./mock-places.js";
 
 export * from "./mock-desktop-updates.js";
-export * from "./mock-team-access.js";
 
 export { mockSubagentScenes, type MockSubagentScene } from "./mock-subagent-scenes.js";
+export * from "./mock-personal-host.js";

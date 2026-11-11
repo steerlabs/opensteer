@@ -2,8 +2,8 @@ import {
   ScheduleAnchorInvalidation,
   type ScheduleAnchorState,
 } from "./schedule-anchor-invalidation.js";
-import type { TriggerSummary, TriggerSource } from "@opensteer/triggers";
-import { triggerOccurrenceErrorMessage } from "@opensteer/triggers";
+import type { TriggerSummary, TriggerSource } from "@opensteer/triggers/models";
+import { triggerOccurrenceErrorMessage } from "@opensteer/triggers/models";
 import {
   HostClientRequestError,
   type HostClient,
@@ -26,7 +26,7 @@ export interface ScheduleAnchor {
   readonly threadId: string;
   readonly title: string;
   readonly mark: TaskMark;
-  readonly home: boolean;
+
   /** A missing directory entry must not become a fabricated navigation target. */
   readonly visible: boolean;
 }
@@ -81,7 +81,6 @@ function scheduleItem(
 ): ScheduleItem {
   const thread =
     anchor === undefined ? threadInDirectory(summary.anchorThreadId, snapshot) : anchor;
-  const home = summary.anchorThreadId === snapshot.homeThreadId;
   return {
     id: summary.id,
     name: summary.name,
@@ -100,9 +99,8 @@ function scheduleItem(
     watch: summary.watch,
     anchor: {
       threadId: summary.anchorThreadId,
-      home,
-      visible: home || thread !== null,
-      title: home ? "Chat" : (thread?.title ?? "Unavailable thread"),
+      visible: thread !== null,
+      title: thread?.title ?? "Unavailable task",
       mark: thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot),
     },
   };
@@ -158,9 +156,7 @@ export function scheduleDetail(
         error: triggerOccurrenceErrorMessage(occurrence.error),
         outcome: runOutcome(
           occurrence,
-          reply
-            ? conversationName(reply.run.threadId, reply.threadTitle, snapshot.homeThreadId)
-            : null,
+          reply ? conversationName(reply.threadTitle) : null,
           reply?.run.status ?? null,
           now,
         ),
@@ -172,12 +168,7 @@ export function scheduleDetail(
 const loadingScheduleState = { status: "loading", data: null, error: null } as const;
 
 function scheduleReaderScope(snapshot: HostSnapshot): string {
-  return JSON.stringify([
-    snapshot.session,
-    snapshot.user?.id,
-    snapshot.deploymentId,
-    snapshot.homeWorkspaceId,
-  ]);
+  return JSON.stringify([snapshot.session, snapshot.user?.id, snapshot.deploymentId]);
 }
 
 /** A screen owns the subscription. No schedule read is part of attachment/bootstrap. */
@@ -312,11 +303,9 @@ export class ScheduleResource<Wire, Data> {
       void this.refresh().catch(() => undefined);
     } else if (this.#wire !== undefined && this.#state.status === "ready") {
       const projection = JSON.stringify([
-        s.homeThreadId,
         s.threads.map(({ id, title, icon, color }) => [id, title, icon, color]),
         s.tasks,
         s.activeTasks,
-        s.workspaceTasks,
       ]);
       if (projection === this.#projection) return;
       this.#projection = projection;
@@ -412,15 +401,14 @@ export class SchedulesClient {
   readonly #keys = new Map<string, string>();
   readonly #actions = new Map<string, Promise<ScheduleDetail>>();
   readonly client: HostClient;
-  readonly workspaceId: string | undefined;
-  constructor(client: HostClient, workspaceId?: string) {
+  readonly deploymentId: string | undefined;
+  constructor(client: HostClient, deploymentId?: string) {
     this.client = client;
-    this.workspaceId = workspaceId;
+    this.deploymentId = deploymentId;
     this.list = new ScheduleResource<readonly TriggerSummary[], readonly ScheduleItem[]>(
       client,
       async () =>
-        unwrapRpcResult(await client.rpc["triggers.list"](workspaceId ? { workspaceId } : {}))
-          .triggers,
+        unwrapRpcResult(await client.rpc["triggers.list"](deploymentId ? {} : {})).triggers,
       scheduleList,
       false,
       (summaries, snapshot) =>
@@ -514,17 +502,17 @@ export class SchedulesClient {
   }
 }
 const clients = new WeakMap<HostClient, Map<string, SchedulesClient>>();
-export function schedulesClient(client: HostClient, workspaceId?: string): SchedulesClient {
-  let workspaces = clients.get(client);
-  if (!workspaces) {
-    workspaces = new Map();
-    clients.set(client, workspaces);
+export function schedulesClient(client: HostClient, deploymentId?: string): SchedulesClient {
+  let scopes = clients.get(client);
+  if (!scopes) {
+    scopes = new Map();
+    clients.set(client, scopes);
   }
-  const key = workspaceId ?? "";
-  let schedules = workspaces.get(key);
+  const key = deploymentId ?? "";
+  let schedules = scopes.get(key);
   if (!schedules) {
-    schedules = new SchedulesClient(client, workspaceId);
-    workspaces.set(key, schedules);
+    schedules = new SchedulesClient(client, deploymentId);
+    scopes.set(key, schedules);
   }
   return schedules;
 }

@@ -1,5 +1,4 @@
 import { phoneTaskSession } from "./phone-tab.js";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 import type { PlaceItem } from "./places.js";
@@ -8,11 +7,10 @@ import { taskMark, type TaskMark } from "./task-marks.js";
 /** One agent in a tab, app or phone that the reader can open. */
 export interface PlaceAgent {
   readonly threadId: string;
-  /** Chat, which wears the product's orb rather than a task's mark. */
-  readonly home: boolean;
+
   readonly acting: boolean;
   readonly title: string;
-  /** The task's mark; null for Chat. */
+
   readonly mark: TaskMark | null;
   readonly lastActiveAt: string;
 }
@@ -33,7 +31,7 @@ export interface PlaceAgents {
 
 export type PlaceAgentSource = Pick<
   HostSnapshot,
-  "activeTasks" | "browserSessions" | "machines" | "tasks" | "threads" | "workspaceTasks"
+  "activeTasks" | "browserSessions" | "machines" | "tasks" | "threads"
 >;
 
 /**
@@ -47,18 +45,17 @@ export function placeAgents(
   const agents: PlaceAgent[] = [];
   let unnamedActing = false;
   for (const occupant of place.occupants) {
-    const thread = occupant.home ? null : threadInDirectory(occupant.threadId, snapshot);
-    if (!occupant.home && thread === null) {
+    const thread = threadInDirectory(occupant.threadId, snapshot);
+    if (thread === null) {
       unnamedActing ||= occupant.acting;
       continue;
     }
     agents.push({
       acting: occupant.acting,
-      home: occupant.home,
       lastActiveAt: occupant.lastActiveAt,
       mark: thread === null ? null : taskMark(thread),
       threadId: occupant.threadId,
-      title: thread?.title.trim() || (occupant.home ? CHAT_THREAD_TITLE : "Task"),
+      title: thread?.title.trim() || "Task",
     });
   }
   agents.sort(
@@ -121,7 +118,6 @@ export function samePlaceAgents(left: PlaceAgents, right: PlaceAgents): boolean 
       return (
         agent.threadId === other.threadId &&
         agent.acting === other.acting &&
-        agent.home === other.home &&
         agent.title === other.title &&
         agent.lastActiveAt === other.lastActiveAt &&
         agent.mark?.icon === other.mark?.icon &&

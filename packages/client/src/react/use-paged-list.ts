@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { PagedList, type PagedListState, type TeamPage } from "../host/team-paging.js";
+import { PagedList, type PagedListState, type KeysetPage } from "../team/paged-list.js";
 
 const idle: PagedListState<never, never> = {
   first: null,
@@ -16,7 +16,7 @@ const noSubscribe = () => () => {};
  * A paged team list for one screen. A new `key` (a change of person, a
  * committed command, a new search) starts over from the first page.
  */
-export function usePagedList<First extends TeamPage<unknown>>(
+export function usePagedList<First extends KeysetPage<unknown>>(
   read: ((cursor: string | null) => Promise<First>) | null,
   key: string,
 ) {

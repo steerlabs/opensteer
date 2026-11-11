@@ -6,7 +6,7 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/control-plane-protocol";
 import {
-  hostApiVersion,
+  teamApiVersion,
   hostKeyFingerprint,
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
@@ -140,7 +140,6 @@ describe("DeploymentCatalogStore", () => {
         authority: signDiscovery({
           ...initial.authority.document,
           deploymentShape: {
-            defaultWorkspaceBacking: "local-directory",
             kind: "personal" as const,
           },
         }),
@@ -583,7 +582,7 @@ describe("DeploymentCatalogStore", () => {
     });
   });
 
-  it("loads a schema-four catalog whose signed authority uses the legacy backing name", async () => {
+  it("rejects a catalog that adds a retired field to signed authority", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
     const current = persistedDeployment({ name: "Home" });
@@ -606,11 +605,7 @@ describe("DeploymentCatalogStore", () => {
     });
     files.put(catalogPath, serialized);
 
-    await expect(store.load()).resolves.toMatchObject({
-      deployments: [
-        { authority: { document: { deploymentShape: { backing: "local-directory" } } } },
-      ],
-    });
+    await expect(store.load()).rejects.toThrow("incompatible or corrupt");
     expect(files.text(catalogPath)).toBe(serialized);
   });
 
@@ -913,6 +908,7 @@ describe("Host endpoint verification", () => {
     const descriptorWithout = (epoch: number | undefined) =>
       new Response(
         JSON.stringify({
+          kind: "team",
           ...(epoch === undefined ? {} : { apiVersion: epoch }),
           authority: signDiscovery(discovery),
           bootstrapMethods: ["password"],
@@ -930,14 +926,14 @@ describe("Host endpoint verification", () => {
     ).rejects.toMatchObject({ code: "host-too-old" });
     await expect(
       verifyAccessEndpoint({
-        fetch: async () => descriptorWithout(hostApiVersion + 1),
+        fetch: async () => descriptorWithout(teamApiVersion + 1),
         kind: "canonical",
         origin: discovery.canonicalOrigin,
       }),
     ).rejects.toMatchObject({ code: "client-too-old" });
 
     const verified = await verifyAccessEndpoint({
-      fetch: async () => descriptorWithout(hostApiVersion),
+      fetch: async () => descriptorWithout(teamApiVersion),
       kind: "canonical",
       origin: discovery.canonicalOrigin,
     });
@@ -954,7 +950,8 @@ describe("Host endpoint verification", () => {
         expectedHostKeyFingerprint: discoveryFingerprint,
         fetch: async () =>
           Response.json({
-            apiVersion: hostApiVersion + 1,
+            kind: "team",
+            apiVersion: teamApiVersion + 1,
             authority: forged,
             bootstrapMethods: [],
             capabilities: [],
@@ -1064,8 +1061,7 @@ function deploymentInput(input: {
       hostInstanceId: input.hostInstanceId ?? createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -1148,7 +1144,6 @@ function thisDevicePersonalInput(name: string): DeploymentConnectionInput {
       ...base.authority.document,
       canonicalOrigin,
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     }),
@@ -1237,7 +1232,8 @@ function envelopeResponse(
 ): Response {
   return new Response(
     JSON.stringify({
-      apiVersion: hostApiVersion,
+      kind: "team",
+      apiVersion: teamApiVersion,
       authority: envelope,
       bootstrapMethods: ["password"],
       capabilities: [],

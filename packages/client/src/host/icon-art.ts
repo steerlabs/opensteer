@@ -1,17 +1,17 @@
-import type { WorkspaceIconName } from "@opensteer/core";
+import type { IconName } from "@opensteer/core";
 
 /**
  * One drawing primitive of a 24×24 stroke icon. Platforms render the same
  * list — web as SVG elements, mobile through react-native-svg — so an agent's
  * icon looks the same everywhere. Strokes use the surrounding text colour.
  */
-export type WorkspaceIconElement = readonly [
+export type IconElement = readonly [
   tag: "circle" | "ellipse" | "line" | "path" | "polyline" | "rect",
   attributes: Readonly<Record<string, string>>,
 ];
 
-export interface WorkspaceIconArt {
-  readonly elements: readonly WorkspaceIconElement[];
+export interface IconArt {
+  readonly elements: readonly IconElement[];
   readonly label: string;
 }
 
@@ -20,7 +20,7 @@ export interface WorkspaceIconArt {
  * names in `@opensteer/core`. The Record type makes a name without artwork a
  * compile error.
  */
-export const workspaceIconArt: Readonly<Record<WorkspaceIconName, WorkspaceIconArt>> = {
+export const iconArt: Readonly<Record<IconName, IconArt>> = {
   mail: {
     label: "Mail",
     elements: [

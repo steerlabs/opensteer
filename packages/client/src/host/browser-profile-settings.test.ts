@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { browserAccessHomeChoice, browserAccessResponse } from "./browser-access.js";
 import {
-  browserProfileAccessSummary,
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
   browserProfileSettingsRows,
@@ -29,16 +28,6 @@ describe("browser profile settings", () => {
     const mock = new MockHostClient({ latencyMs: 0 });
     try {
       const base = mock.getSnapshot();
-      const main = base.workspaces.find((workspace) => workspace.kind === "main")!;
-      const buyer = { ...main, id: "wsp_buyer", kind: "project" as const, name: "Buyer" };
-      const research = { ...buyer, id: "wsp_research", name: "Research" };
-      const grant = (id: string, profileId: string, workspaceId: string) => ({
-        access: "read-write" as const,
-        createdAt: "2026-10-30T12:00:00.000Z",
-        id,
-        profileId,
-        workspaceId,
-      });
       const rows = browserProfileSettingsRows(
         {
           ...base,
@@ -46,24 +35,13 @@ describe("browser profile settings", () => {
             { homeRunnerId: null, id: "bpr_work", name: "Work" },
             { homeRunnerId: null, id: "bpr_shopping", name: "Shopping" },
           ],
-          browserProfileGrants: [
-            grant("g1", "bpr_work", buyer.id),
-            grant("g2", "bpr_work", research.id),
-            // Main's inherited access is implied, never listed as a project.
-            grant("g3", "bpr_shopping", main.id),
-          ],
-          workspaces: [...base.workspaces, buyer, research],
         },
         null,
       );
 
       expect(rows.map((row) => row.profile.name)).toEqual(["Shopping", "Work"]);
-      expect(rows.map(browserProfileAccessSummary)).toEqual([
-        "Opensteer only",
-        "Opensteer, Buyer and Research",
-      ]);
       expect(browserProfileDeleteConsequence({ ...rows[1]!, tabs: 2 })).toBe(
-        "Its sign-ins and site data are erased from this Opensteer. Buyer and Research lose access. The 2 tabs using it close. This can’t be undone.",
+        "Its sign-ins and site data are erased from this Opensteer. The 2 tabs using it close. This can’t be undone.",
       );
       expect(browserProfileDeleteConsequence(rows[0]!)).toBe(
         "Its sign-ins and site data are erased from this Opensteer. This can’t be undone.",
@@ -136,17 +114,6 @@ describe("browser profile settings", () => {
       expect(choice(null)?.initial).toBe("Mac mini");
       // A device that can't hold profiles is no default, though the reader is at it.
       expect(choice(id("Pixel 7"))?.initial).toBe("Mac mini");
-      const server = { ...snapshot.deploymentShape!, kind: "server" as const };
-      expect(
-        choice(null, { ...snapshot, deploymentShape: server, deploymentPolicy: undefined })
-          ?.initial,
-      ).toBe("Alex's iPhone");
-      expect(
-        choice(null, {
-          ...snapshot,
-          deploymentPolicy: { ...snapshot.deploymentPolicy, deploymentOwnsMainComputer: false },
-        })?.initial,
-      ).toBe("Alex's iPhone");
       // Nothing to choose: one device, or a Host that does not say.
       expect(choice(null, { ...snapshot, browserProfileHomes: [id("Mac mini")] })).toBeNull();
       expect(choice(null, { ...snapshot, browserProfileHomes: undefined })).toBeNull();

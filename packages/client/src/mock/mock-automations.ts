@@ -1,12 +1,13 @@
+import { firstTriggerFireAt } from "@opensteer/triggers/schedule";
+import { WATCH_AUTO_PAUSE_REASON } from "@opensteer/triggers/limits";
+
 import { createId, RunSchema, type Run } from "@opensteer/core";
 import {
-  firstTriggerFireAt,
   triggerOccurrenceErrorMessage,
   TriggerOccurrenceSchema,
   TriggerRevisionSchema,
   TriggerSchema,
   TriggerWatchActivationSchema,
-  WATCH_AUTO_PAUSE_REASON,
   type Trigger,
   type TriggerOccurrence,
   type TriggerProgram,
@@ -14,7 +15,7 @@ import {
   type TriggerSource,
   type TriggerSummary,
   type TriggerWatchActivation,
-} from "@opensteer/triggers";
+} from "@opensteer/triggers/models";
 import type { ThreadSummary } from "../host/client.js";
 
 /** One Trigger as the preview keeps it: everything `triggers.get` answers. */
@@ -77,7 +78,7 @@ const reminderProgram: TriggerProgram = {
   await opensteer.callTool("thread_send", {
     delivery: "queue",
     message: "Reminder: it's time.",
-    threadId: "home",
+    threadId: "TASK_ID",
   });
 }`,
   toolContractVersion: 2,
@@ -93,7 +94,7 @@ export default async function ({ opensteer }) {
       delivery: "queue",
       message: \`New download: \${name}\`,
       observationId: name,
-      threadId: "home",
+      threadId: "TASK_ID",
     });
   });
   await new Promise(() => {});
@@ -108,12 +109,12 @@ export default async function ({ opensteer }) {
  * that is running and one Opensteer paused after it kept crashing.
  */
 export function seedMockAutomations(input: {
-  readonly homeThread: ThreadSummary;
+  readonly anchorThread: ThreadSummary;
   readonly now: Date;
   readonly userId: string;
   readonly workThread: ThreadSummary;
 }): readonly MockTriggerRecord[] {
-  const { homeThread, now, workThread } = input;
+  const { anchorThread, now, workThread } = input;
   const minutes = (count: number) => new Date(now.getTime() + count * 60_000);
   const atLocal = (days: number, hours: number, minute = 0) => {
     const date = new Date(now);
@@ -166,7 +167,6 @@ export function seedMockAutomations(input: {
       status,
       updatedAt: createdAt,
       webhookRouteKey: spec.source.kind === "webhook" ? `wh_${"m".repeat(32)}` : null,
-      workspaceId: spec.anchor.workspaceId,
     });
     const occurrences = (spec.occurrences ?? []).map((occurrence) =>
       mockOccurrence(trigger, revision, spec.anchor, occurrence),
@@ -192,22 +192,22 @@ export function seedMockAutomations(input: {
     };
   };
 
-  const chatReply = { ...homeThread, title: "Chat" };
+  const taskReply = anchorThread;
   return [
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 0,
       name: "Reminder: buy groceries",
       source: schedule({ at: roundedToMinute(minutes(134)).toISOString(), kind: "at" }),
     }),
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 2,
       name: "Reminder: call mom",
       source: schedule({ at: atLocal(1, 10).toISOString(), kind: "at" }),
     }),
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       consecutiveFailures: 1,
       createdDaysAgo: 3,
       name: "Reminder: renew passport",
@@ -222,18 +222,18 @@ export function seedMockAutomations(input: {
       source: schedule({ at: roundedToMinute(minutes(-95)).toISOString(), kind: "at" }),
     }),
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 40,
       name: "Morning email summary",
       occurrences: [
         {
           at: atLocal(-1, 8),
-          reply: chatReply,
+          reply: taskReply,
           source: "schedule",
           status: "succeeded",
           stdout: "3 unread from people you reply to; 41 newsletters skipped.",
         },
-        { at: atLocal(-2, 8), reply: chatReply, source: "schedule", status: "succeeded" },
+        { at: atLocal(-2, 8), reply: taskReply, source: "schedule", status: "succeeded" },
         {
           at: atLocal(-3, 8),
           error: "Gmail rate limit reached. Try again later.",
@@ -244,7 +244,7 @@ export function seedMockAutomations(input: {
       source: schedule({ expression: "0 8 * * 1-5", kind: "cron", timezone }),
     }),
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 12,
       name: "Price check: Sony A7 IV",
       occurrences: [
@@ -258,17 +258,17 @@ export function seedMockAutomations(input: {
       source: schedule({ expression: "0 * * * *", kind: "cron", timezone }),
     }),
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 30,
       id: mockNightlyTriggerId,
       name: "Nightly typecheck",
       occurrences: [
-        { at: atLocal(0, 2), reply: chatReply, source: "schedule", status: "succeeded" },
+        { at: atLocal(0, 2), reply: taskReply, source: "schedule", status: "succeeded" },
       ],
       source: schedule({ expression: "0 2 * * *", kind: "cron", timezone }),
     }),
     record({
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 60,
       name: "Weekly review",
       source: schedule({ expression: "0 18 * * 0", kind: "cron", timezone }),
@@ -286,12 +286,12 @@ export function seedMockAutomations(input: {
     }),
     record({
       activation: (trigger, revision) =>
-        mockActivation(trigger, revision, homeThread.environmentId, now, {
+        mockActivation(trigger, revision, anchorThread.environmentId, now, {
           observed: "running",
           restartCount: 0,
           stdoutTail: "watching ~/Downloads\n",
         }),
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 5,
       name: "Downloads folder",
       program: watchProgram,
@@ -299,7 +299,7 @@ export function seedMockAutomations(input: {
     }),
     record({
       activation: (trigger, revision) =>
-        mockActivation(trigger, revision, homeThread.environmentId, now, {
+        mockActivation(trigger, revision, anchorThread.environmentId, now, {
           desired: "stopped",
           lastError: "IMAP login failed: invalid credentials",
           observed: "stopped",
@@ -307,7 +307,7 @@ export function seedMockAutomations(input: {
           stderrTail:
             "Error: IMAP login failed: invalid credentials\n    at connect (inbox.ts:12:11)\n",
         }),
-      anchor: homeThread,
+      anchor: anchorThread,
       createdDaysAgo: 9,
       name: "Inbox watcher",
       pauseReason: WATCH_AUTO_PAUSE_REASON,
@@ -367,7 +367,6 @@ function mockOccurrence(
         anchorThreadId: trigger.anchorThreadId,
         id: trigger.id,
         revisionId: revision.id,
-        workspaceId: trigger.workspaceId,
       },
     },
     exitCode: spec.status === "succeeded" ? 0 : 1,
@@ -385,6 +384,7 @@ function mockOccurrence(
 function mockRun(thread: ThreadSummary, userId: string, at: Date): Run {
   const seed = createId("message");
   return RunSchema.parse({
+    teamRequestId: null,
     accessMode: thread.accessMode,
     activationInputId: seed,
     assignmentId: null,
@@ -436,7 +436,7 @@ function mockActivation(
     stdoutTail: "",
     triggerId: trigger.id,
     updatedAt: now.toISOString(),
-    workspaceId: trigger.workspaceId,
+
     ...state,
   });
 }

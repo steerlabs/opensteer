@@ -14,7 +14,6 @@ import {
   readBrowserSignInResult,
   passwordsOfferNeedHere,
   passwordSignInAccountList,
-  passwordSignInConsent,
   passwordSignInAllowRemembers,
   passwordSignInExpiry,
   passwordSignInNoAccount,
@@ -162,7 +161,6 @@ describe("passwordSignInOutcome", () => {
       sequence: "1",
       threadId: request.originatingThreadId,
       type: "request.resolved",
-      workspaceId: request.originatingWorkspaceId,
     } as AgentEvent;
     expect(foldTranscriptEvent([], event)).toEqual([
       expect.objectContaining({
@@ -180,11 +178,11 @@ describe("passwordSignInOutcome", () => {
 describe("sign-in consent copy", () => {
   it("names the site and account", () => {
     expect(passwordSignInPrivacy("https://github.com")).toBe(
-      "Opensteer fills your password into github.com for them — it never sends it to the agent, but the website page holds it once filled. Sign-ins can stay saved in the browser profile.",
+      "Your agents can type your saved login on github.com and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.",
     );
     expect(passwordSignInNoAccount("https://github.com")).toBe("No saved password for github.com.");
-    expect(passwordSignInAllowRemembers("Main", "alex@company.example")).toBe(
-      "Allow lets agents in Main sign in as alex@company.example from now on.",
+    expect(passwordSignInAllowRemembers("alex@company.example")).toBe(
+      "Allow lets your agents sign in as alex@company.example from now on.",
     );
   });
 });
@@ -214,7 +212,7 @@ describe("passwordsSettingsState", () => {
     vault: "needs-reset" | "not-set-up" | "ready" | "unsupported",
   ): DesktopPasswordsStatus => ({
     availability: "available",
-    broker: { agentSignIns: "on", vault },
+    broker: { agentSignIns: "on", personFill: "on", personSave: "on", vault },
     development: false,
   });
 
@@ -254,23 +252,24 @@ describe("passwordsSettingsState", () => {
     expect(
       passwordsSettingsState({
         availability: "available",
-        broker: { agentSignIns: "off", vault: "ready" },
+        broker: { agentSignIns: "off", personFill: "off", personSave: "off", vault: "ready" },
         development: true,
       }),
     ).toEqual({
       agentSignIns: "off",
-      personFill: null,
-      personSave: null,
+      personFill: "off",
+      personSave: "off",
+
       development: true,
       kind: "ready",
     });
     expect(
       passwordsSettingsState({
         availability: "available",
-        broker: { agentSignIns: "off", personFill: "on", personSave: "off", vault: "ready" },
+        broker: { agentSignIns: "off", personFill: "off", personSave: "off", vault: "ready" },
         development: false,
       }),
-    ).toMatchObject({ agentSignIns: "off", personFill: "on", personSave: "off", kind: "ready" });
+    ).toMatchObject({ agentSignIns: "off", personFill: "off", personSave: "off", kind: "ready" });
   });
 
   it("counts the sign-ins waiting in the chat", () => {
@@ -338,7 +337,7 @@ function passwordRequest(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: createId("workspace"),
+
     payload: {
       computerName: "Mac mini",
       expiresAt: "2026-10-11T12:15:00.000Z",
@@ -346,7 +345,8 @@ function passwordRequest(
       operationId: crypto.randomUUID(),
       reason: "Download the October invoice",
       runnerId,
-      sessionId: "bss_1",
+      scope: "personal",
+      permissionVersion: 6,
       site,
     },
     presentation: {
@@ -355,7 +355,7 @@ function passwordRequest(
       title: "Sign in to example.com",
     },
     requestedBy: createId("user"),
-    requiredActor: "workspace-owner",
+    requiredActor: "owner",
     resolvedAt: status === "pending" ? null : "2026-10-11T12:05:00.000Z",
     resolvedBy: status === "pending" ? null : createId("user"),
     response:
@@ -363,7 +363,6 @@ function passwordRequest(
         ? null
         : { kind: "external", value: response === null ? { decision: "declined" } : response },
     status,
-    targetWorkspaceId: createId("workspace"),
   } as Request;
 }
 
@@ -537,12 +536,3 @@ const amazon: readonly PasswordSignInAccount[] = [
     account({ host: host!, onPage: false, updatedAt: `${day}T12:00:00.000Z`, username: username! }),
   ),
 ];
-
-it("describes Workspace consent for v5 without changing v4 wording", () => {
-  expect(passwordSignInConsent("Main", "https://instagram.com", "a•••@example.com", 5)).toBe(
-    "Agents in Main want to use your saved login a•••@example.com for instagram.com. They can type it on this website and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.",
-  );
-  expect(passwordSignInConsent("Main", "https://instagram.com", "a•••@example.com")).toContain(
-    "Sign-ins can stay saved in the browser profile.",
-  );
-});

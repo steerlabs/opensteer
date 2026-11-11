@@ -1287,8 +1287,7 @@ function deploymentConnection(kind: "self-hosted" | "self-hosted"): DeploymentCo
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     }),
     bootstrapMethods: ["password"],

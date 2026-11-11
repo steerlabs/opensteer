@@ -21,7 +21,6 @@ describe("DirectHostRouteService", () => {
         algorithm: "Ed25519",
       },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     };

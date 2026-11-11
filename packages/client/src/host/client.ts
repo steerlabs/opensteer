@@ -44,13 +44,11 @@ import type {
   ThreadInputPolicy,
   ThreadInputQueue,
   ThreadReadState,
-  ThreadRole,
   ThreadStatus,
   ToolIdentity,
   ToolOutput,
   WaitingRequest,
-  WorkspaceBackingKind,
-  WorkspaceIconName,
+  IconName,
 } from "@opensteer/core";
 import type {
   ApprovedComputerApp,
@@ -73,10 +71,9 @@ import type {
   ShellSessionHistoryEntry,
   ThreadMessagePage,
   ThreadMessageWindow,
-  WorkspaceFilePreviewMetadata,
-  WorkspaceTabActivateResultSchema,
-  WorkspaceTabReopenResultSchema,
-  WorkspaceView,
+  FolderFilePreviewMetadata,
+  PersonalTabActivateResultSchema,
+  PersonalTabReopenResultSchema,
 } from "@opensteer/protocol";
 import type {
   BrowserBinaryFrameHeader,
@@ -93,7 +90,7 @@ import type {
   TriggerOccurrence,
   TriggerRevision,
   TriggerWatchActivation,
-} from "@opensteer/triggers";
+} from "@opensteer/triggers/models";
 import type { z } from "zod";
 import type { BrowserEditingStore } from "./browser-editing.js";
 import type { BrowserHistoryClient } from "./browser-history.js";
@@ -129,7 +126,7 @@ export interface BrowserTabOpenOptions {
   readonly viewport?: { readonly width: number; readonly height: number };
   readonly idempotencyKey?: string;
 }
-export interface WorkspaceTabActivationOptions {
+export interface PersonalTabActivationOptions {
   readonly opening: string;
 }
 export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
@@ -153,31 +150,6 @@ export interface ComputerViewMutationOptions {
 type TranscriptWindow = Omit<ThreadMessageWindow, "threadId"> & {
   threadId: string;
 };
-
-export interface WorkspaceSummary {
-  homeThreadId: string | null;
-  voiceThreadId: string | null;
-  description: string;
-  fileCount: number;
-  harnessLabel: string;
-  id: string;
-  /** "main" is the owner's implicit home; only "project" Workspaces are listed. */
-  kind: WorkspaceView["kind"];
-  /**
-   * The computer holding this Workspace's folder, by name. Null for shared
-   * storage and also for a computer whose name the Host does not know, so its
-   * absence says nothing about where the files are.
-   */
-  machineName: string | null;
-  name: string;
-  /** The chosen icon, or null to show the name's initials. */
-  icon: WorkspaceIconName | null;
-  runnerLabel: string;
-  storageIssue: WorkspaceView["storageIssue"];
-  color: MarkColor | null;
-  updatedAt: string;
-  status: WorkspaceView["status"];
-}
 
 /**
  * How a work location is reachable right now.
@@ -213,8 +185,8 @@ export interface EnvironmentSummary {
   providerStateModes: ("ambient" | "isolated")[];
   runnerId: string | null;
   status: EnvironmentStatus;
-  /** What this machine can hold, which is what a new-Workspace choice offers. */
-  workspaceBackings: WorkspaceBackingKind[];
+
+  can: { readonly executeTasks: boolean };
 }
 
 export type HarnessDriverSummary =
@@ -262,7 +234,7 @@ export interface ThreadSummary {
   doneAt: string | null;
   /** "quiet" when the Host moved it to Done because nothing touched it. */
   doneReason: ThreadDoneReason | null;
-  icon: WorkspaceIconName | null;
+  icon: IconName | null;
   color: MarkColor | null;
   providerSessionId: string | null;
   accessMode: ThreadAccessMode;
@@ -279,13 +251,14 @@ export interface ThreadSummary {
   modelSelection: ModelSelection;
   parentThreadId: string | null;
   pendingRequests: number;
-  role: ThreadRole;
+  purpose: import("@opensteer/core").TaskPurpose;
+  folder: import("@opensteer/core").TaskFolder;
+  teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   runnerLabel: string;
   status: ThreadStatus;
   title: string;
   unread: boolean;
   updatedAt: string;
-  workspaceId: string;
 }
 
 /**
@@ -311,10 +284,8 @@ export interface TaskEntry {
   readonly thread: ThreadSummary;
 }
 
-/** The key a Done list is held under in `doneTasks` without a Workspace: the reader's outside Projects. */
 export const mainDoneTasks = "*";
 
-/** The reader's tasks across every Workspace, as far as they have been read. */
 export interface TaskListState {
   readonly entries: readonly TaskEntry[];
   readonly window: DurableWindow;
@@ -367,7 +338,7 @@ export interface MessageEntry {
 
 export interface DelegationEntry {
   childRunId: string;
-  childThread: { id: string; title: string; workspaceId: string };
+  childThread: { id: string; title: string };
   createdAt: string;
   delegationId: string;
   delivery: DelegationDelivery;
@@ -636,10 +607,10 @@ export interface SelectionEntry {
   providerSessionId: string | null;
 }
 
-export interface WorkspaceFilePreview {
+export interface FolderFilePreview {
   /** Null when the bounded preview is binary or not safely decodable as UTF-8. */
   content: string | null;
-  metadata: WorkspaceFilePreviewMetadata;
+  metadata: FolderFilePreviewMetadata;
 }
 
 export interface BrowserTabSummary {
@@ -683,14 +654,6 @@ export interface BrowserPlacementSummary {
   runnerId: string;
   runtimeId: string | null;
   unavailableReason?: string | undefined;
-}
-
-export interface BrowserProfileGrantSummary {
-  access: "read" | "read-write";
-  createdAt: string;
-  id: string;
-  profileId: string;
-  workspaceId: string;
 }
 
 /**
@@ -751,7 +714,7 @@ export interface BrowserInventory {
   readonly inventoryRevision?: number | undefined;
 }
 
-export interface WorkspaceTabLineage {
+export interface PersonalTabLineage {
   readonly whole?: boolean;
   id: import("@opensteer/protocol").BrowserSessionId;
   revision: number;
@@ -779,7 +742,7 @@ export interface BrowserSessionSummary {
   /** Host freshness for bootstrap lifecycle reconciliation. */
   updatedAt?: string;
   navigationVersion?: 1 | undefined;
-  workspaceTabRestoreVersion?: 1 | undefined;
+  tabRestoreVersion?: 1 | undefined;
   opener?: BrowserSessionOpener;
   access: "read" | "read-write";
   /**
@@ -799,7 +762,7 @@ export interface BrowserSessionSummary {
   dialog: BrowserDialog | null;
   error: string | null;
   id: string;
-  origin: "agent" | "trigger" | "workspace";
+  origin: "agent" | "trigger" | "person";
   placement: { kind: "runner"; runnerId: string };
   /** A temporary session can be signed in without a saved profile. */
   profileId: string | null;
@@ -809,7 +772,6 @@ export interface BrowserSessionSummary {
   viewerState: "connecting" | "disconnected" | "synchronized";
   watchViewerError?: string | null;
   watchViewerState?: "connecting" | "disconnected" | "synchronized";
-  workspaceId: string;
 }
 
 /**
@@ -866,10 +828,9 @@ export interface HostSnapshot {
    */
   waitingRequests: readonly WaitingRequest[];
   runQueue: RunQueueEntry[];
-  browserProfileGrants: BrowserProfileGrantSummary[];
-  workspaceTabRestoreVersion?: 1 | undefined;
+  tabRestoreVersion?: 1 | undefined;
   /** Tab activation calls owned by this client, before the Host reports restoration. */
-  readonly activatingWorkspaceTabs?: readonly string[] | undefined;
+  readonly activatingPersonalTabs?: readonly string[] | undefined;
   browserTabGroups?: BrowserTabLayout | undefined;
   browserAvailable: boolean;
   browserPlacements: BrowserPlacementSummary[];
@@ -888,13 +849,16 @@ export interface HostSnapshot {
   connectionInterrupted: boolean;
   /** Reachability reported by the platform, distinct from Host availability. */
   network: ClientNetworkState;
-  /**
-   * The Deployment's declared axes. `defaultWorkspaceBacking` is what a new
-   * Workspace gets when nobody chooses, and whether shared storage is offered
-   * at all. Null until the first bootstrap lands.
-   */
+
   deploymentShape: DeploymentShape | null;
-  deploymentPolicy?: import("@opensteer/core").DeploymentClientPolicy | undefined;
+  personalSettings: import("@opensteer/core").PersonalSettings | null;
+  can: {
+    readonly createTasks: boolean;
+    readonly useVoice: boolean;
+    readonly manageComputers: boolean;
+    readonly managePrivateResources: boolean;
+  } | null;
+  needsYou: import("@opensteer/protocol").NeedsYouPage | null;
   environments: EnvironmentSummary[];
   /**
    * What this person chose last, as the Host remembers it for them in this
@@ -903,30 +867,14 @@ export interface HostSnapshot {
    */
   executionPreferences: ExecutionPreferences;
   harnesses: HarnessSummary[];
-  homeWorkspaceId: string | null;
-  homeThreadId: string | null;
   /** The person's Voice Thread, once it exists: their spoken manager. */
   voiceThreadId: string | null;
-  notificationMutes: string[];
   threadReadStates: Record<string, ThreadReadState>;
-  /**
-   * The reader's tasks across every Workspace they belong to, from the Host's
-   * task list and reread whenever it says they changed. Null until the first
-   * page lands. Read state for each lives in `threadReadStates`.
-   */
+
   tasks: TaskListState | null;
-  /** All listed running or waiting tasks, across every Workspace, independent of history paging. */
+
   activeTasks: readonly TaskEntry[];
-  /**
-   * One Workspace's tasks, for each Workspace whose own list a screen asked
-   * for with `loadWorkspaceTasks`; reread with `tasks` whenever they change.
-   */
-  workspaceTasks: Record<string, TaskListState>;
-  /**
-   * Done tasks newest Done first, for each Done list a screen asked for with
-   * `loadDoneTasks`: one Workspace's, or under `mainDoneTasks` the reader's
-   * outside Projects. Reread with `tasks` whenever they change.
-   */
+
   doneTasks: Record<string, TaskListState>;
   /** Days untouched before the reader's tasks move to Done; null until the Host says. */
   quietTaskDays: QuietTaskDays | null;
@@ -958,12 +906,11 @@ export interface HostSnapshot {
    * Thread started from a message is named by background work.
    */
   threadRenameAvailable: boolean;
-  /** The Host serves `task-marks-v1`: task icons and project colours can be chosen. */
+  /** The Host serves `task-marks-v1`: task icons and colours can be chosen. */
   taskMarksAvailable: boolean;
   integrationAppFinishAvailable?: boolean;
   /** The Host accepts a desktop app's return port on integration sign-in. */
   integrationAppReturnPortAvailable?: boolean;
-  sharedTaskDoneAvailable?: boolean;
   /**
    * The Host serves `quiet-tasks-v1`: it moves quiet tasks to Done, lists Done
    * newest Done first, and reopens a Done task when its writer may reopen it.
@@ -971,7 +918,7 @@ export interface HostSnapshot {
   quietTasksAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;
-  workspaceTabReopenAvailable?: boolean;
+  tabReopenAvailable?: boolean;
   /** The Host serves `browser-profile-manage-v1`: a person can rename and delete profiles. */
   browserProfileManageAvailable?: boolean;
   searchSuggestionsAvailable?: boolean;
@@ -979,18 +926,12 @@ export interface HostSnapshot {
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
-  /** The Host advertises team-administration-v1; every team screen and entry point waits for it. */
-  teamAdministrationAvailable?: boolean;
   threads: ThreadSummary[];
   transcriptWindows: Record<string, TranscriptWindow>;
   transcripts: Record<string, TranscriptEntry[]>;
   user: AuthenticatedUser | null;
   /** Recovery can replace the session with no other visible change, ending what was bound to it. */
   sessionId?: string;
-  /** Host-declared deployment capability; false for Personal deployments. */
-  workspaceSharingAvailable: boolean;
-  workspaceWindow: DurableWindow;
-  workspaces: WorkspaceSummary[];
 }
 
 /**
@@ -1000,7 +941,6 @@ export interface HostSnapshot {
  * behalf.
  */
 export interface CreateThreadInput {
-  home?: true;
   accessMode: ThreadAccessMode;
   environmentId: string;
   harnessInstanceId: string;
@@ -1018,12 +958,7 @@ export interface CreateThreadInput {
    * background naming to replace. Dropped for a Host without `thread-titles-v1`.
    */
   generateTitle?: true;
-  workspaceId: string;
-}
-
-export interface CreateWorkspaceInput {
-  icon?: WorkspaceIconName;
-  name: string;
+  folder?: import("@opensteer/core").TaskFolder;
 }
 
 export interface CreateHarnessInstanceInput {
@@ -1061,7 +996,7 @@ export interface CreateChannelConnectionInput {
   credentials: Readonly<Record<string, string>>;
   provider: string;
   routingMode: "dedicated" | "shared";
-  workspaceId: string;
+  deploymentId: string;
 }
 
 export interface CreatedChannelConnection {
@@ -1076,40 +1011,6 @@ export interface PasswordSignInInput {
 }
 
 export type PasswordSignUpInput = PasswordSignInInput;
-
-export interface WorkspaceMemberSummary {
-  displayName: string;
-  email: string;
-  emailVerified: boolean;
-  generation: number;
-  id: string;
-  invitedBy: string | null;
-  joinedAt: string;
-  role: "collaborator" | "owner";
-  state: "active" | "revoked";
-  userId: string;
-  workspaceId: string;
-}
-
-export interface WorkspaceInvitationSummary {
-  acceptedAt: string | null;
-  acceptedBy: string | null;
-  createdAt: string;
-  createdBy: string;
-  expiresAt: string;
-  id: string;
-  intendedEmail: string | null;
-  revokedAt: string | null;
-  role: "collaborator" | "owner";
-  selector: string;
-  type: "email" | "link";
-  workspaceId: string;
-}
-
-export interface WorkspaceSharingSnapshot {
-  invitations: WorkspaceInvitationSummary[];
-  members: WorkspaceMemberSummary[];
-}
 
 export type InitialOwnerClaimInput = PasswordSignInInput;
 
@@ -1131,11 +1032,6 @@ export interface CreatedTrigger {
   wasDuplicate: boolean;
   webhook?: { secret: string; url: string } | undefined;
 }
-
-type WorkspaceFileList = Extract<
-  Awaited<ReturnType<HostApiClient["workspace.files.list"]>>,
-  { readonly ok: true }
->["data"];
 
 /** One page of a computer's session history, newest session first. */
 export interface MachineAccessHistoryPage {
@@ -1203,7 +1099,6 @@ export interface HostClient {
   readonly browserWatchFrames: BrowserFrameStore;
   readonly rpc: HostApiClient;
   createAttachment(input: {
-    readonly workspaceId: string;
     readonly name: string;
     readonly mediaType: string;
     readonly sizeBytes: number;
@@ -1232,18 +1127,8 @@ export interface HostClient {
    */
   observeThread(threadId: string): () => void;
   watchNode(threadId: string, nodeId: string): import("./node-detail.js").NodeDetailSubscription;
-  /**
-   * How far this client has applied the Workspace's durable events, in the
-   * Host's own sequence; null until its channel has caught up. Later durable
-   * messages carry a greater `sequence`.
-   */
-  workspacePosition(workspaceId: string): import("@opensteer/core").Sequence | null;
-  activateWorkspace(workspaceId: string): void;
   /** Starts a Thread and remembers its selection and access mode as the person's latest choice. */
   createThread(input: CreateThreadInput): Promise<ThreadSummary>;
-  createHome(
-    input: Omit<CreateThreadInput, "parentThreadId" | "title" | "home">,
-  ): Promise<ThreadSummary>;
   /**
    * Names a Thread for good; its engine never renames it afterwards. Only
    * while `threadRenameAvailable`.
@@ -1275,40 +1160,20 @@ export interface HostClient {
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
   markThreadRead(threadId: string, throughSequence: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
-  setTaskDone(threadId: string, done: boolean): Promise<Thread>;
-  /** Reads the first page of one Workspace's tasks and keeps that list current from then on. */
-  loadWorkspaceTasks(workspaceId: string): Promise<void>;
-  /** Reads the next page of the reader's task list, or of one Workspace's. */
-  loadEarlierTasks(workspaceId?: string): Promise<void>;
-  /**
-   * Reads the first page of one Workspace's Done tasks, or of the reader's
-   * outside Projects, and keeps it current. Needs `quietTasksAvailable`.
-   */
-  loadDoneTasks(workspaceId?: string): Promise<void>;
-  loadEarlierDoneTasks(workspaceId?: string): Promise<void>;
+  setTaskDone(threadId: string, done: boolean): Promise<void>;
+
+  loadEarlierTasks(): Promise<void>;
+  loadEarlierNeedsYou(): Promise<void>;
+
+  loadDoneTasks(deploymentId?: string): Promise<void>;
+  loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
-  setWorkspaceNotificationMute(workspaceId: string, muted: boolean): Promise<void>;
-  /**
-   * Domain mutations, including `thread.icon.set` and `workspace.color.set`.
-   * Mark edits are optimistic and require `taskMarksAvailable`; a refused
-   * edit rolls back and rejects so its surface can show the Host's error.
-   */
+
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
   dispose(): void;
   getSnapshot(): HostSnapshot;
-  listWorkspaceFiles(
-    workspaceId: string,
-    input: {
-      readonly cursor?: string;
-      readonly knownRevision?: string;
-      readonly parentKey: string;
-      readonly retainedCursor?: string;
-    },
-    signal?: AbortSignal,
-  ): Promise<WorkspaceFileList>;
   load(): Promise<void>;
   loadEarlierTranscript(threadId: string): Promise<void>;
-  loadEarlierWorkspaces(): Promise<void>;
   /**
    * Takes back one of the reader's own queued messages before any Run picks
    * it up. The snapshot's queue drops it at once; a lost answer is retried
@@ -1327,11 +1192,6 @@ export interface HostClient {
     readonly limit: number;
     readonly runnerId: string;
   }): Promise<MachineAccessHistoryPage>;
-  previewWorkspaceFile(
-    workspaceId: string,
-    fileKey: string,
-    signal?: AbortSignal,
-  ): Promise<WorkspaceFilePreview>;
   readonly retainBrowserViewer: (
     sessionId: string,
     surfaceId: string,
@@ -1389,12 +1249,12 @@ export interface HostClient {
     target: string | BrowserTabOpenInput,
     options?: BrowserTabOpenOptions,
   ): Promise<BrowserTabOpenResult>;
-  readWorkspaceTabs?(sessionId: string): Promise<WorkspaceTabLineage | null>;
-  activateWorkspaceTab?(
+  readPersonalTabs?(sessionId: string): Promise<PersonalTabLineage | null>;
+  activatePersonalTab?(
     tabId: string,
-    options?: WorkspaceTabActivationOptions,
-  ): Promise<z.infer<typeof WorkspaceTabActivateResultSchema> | null>;
-  reopenWorkspaceTab?(): Promise<z.infer<typeof WorkspaceTabReopenResultSchema>>;
+    options?: PersonalTabActivationOptions,
+  ): Promise<z.infer<typeof PersonalTabActivateResultSchema> | null>;
+  reopenPersonalTab?(): Promise<z.infer<typeof PersonalTabReopenResultSchema>>;
   groupBrowserTabs(
     tabIds: readonly string[],
     target:
@@ -1411,7 +1271,7 @@ export interface HostClient {
       readonly collapsed?: boolean;
     },
   ): Promise<void>;
-  closeWorkspaceTabs(tabIds: readonly string[]): Promise<{
+  closePersonalTabs(tabIds: readonly string[]): Promise<{
     readonly closed: readonly string[];
     readonly failed: readonly { readonly tabId: string; readonly message: string }[];
   }>;
@@ -1453,7 +1313,7 @@ export interface HostClient {
   resumeThreadInputQueue(threadId: string): Promise<void>;
   sendBrowserCommand(sessionId: string, command: BrowserCommand): void;
   startBrowser(
-    workspaceId: string,
+    deploymentId: string,
     identity: BrowserStartIdentity,
     placement?: BrowserPlacementSummary,
     threadId?: string,
@@ -1487,7 +1347,6 @@ export interface HostClient {
     readonly policy: MachineAccessPolicy;
     readonly runnerId: string;
   }): Promise<MachineAccessUpdateOutcome>;
-  workspaceFileDownloadUrl(workspaceId: string, fileKey: string): string;
 }
 
 export class HostClientRequestError extends Error {

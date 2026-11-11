@@ -1,5 +1,5 @@
 import { defaultTaskSymbol } from "@opensteer/core";
-import type { MarkColor, WorkspaceIconName } from "@opensteer/core";
+import type { MarkColor, IconName } from "@opensteer/core";
 import type { HostSnapshot } from "./client.js";
 import { threadInDirectory } from "./host-snapshot-selectors.js";
 
@@ -33,19 +33,16 @@ export const markColorPaint: Readonly<
   magenta: { glyph: "#ea7dd5", cursor: "#b74ea5", tile: ["#995c8c", "#45273f"], wash: "#352031" },
 };
 
-/** Opensteer's own cursor, for Chat: the product's ember, deepened the same way. */
-export const homeCursorPaint = "#a46149";
-
 /**
  * What a task's mark draws: its symbol, with a presentation-only default while unnamed, and its colour.
  */
 export interface TaskMark {
-  readonly icon: WorkspaceIconName | null;
+  readonly icon: IconName | null;
   readonly color: MarkColor | null;
 }
 
 export function taskMark(thread: {
-  readonly icon: WorkspaceIconName | null;
+  readonly icon: IconName | null;
   readonly color?: MarkColor | null | undefined;
 }): TaskMark {
   return { icon: thread.icon ?? defaultTaskSymbol, color: thread.color ?? null };
@@ -57,7 +54,7 @@ export function taskMark(thread: {
  */
 export function threadMark(
   threadId: string,
-  snapshot: Pick<HostSnapshot, "threads" | "tasks" | "activeTasks" | "workspaceTasks">,
+  snapshot: Pick<HostSnapshot, "threads" | "tasks" | "activeTasks">,
 ): TaskMark {
   return taskMark(threadInDirectory(threadId, snapshot) ?? { icon: null, color: null });
 }

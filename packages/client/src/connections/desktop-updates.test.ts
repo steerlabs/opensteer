@@ -25,7 +25,7 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       canonicalOrigin: "http://127.0.0.1:4310",
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      deploymentShape: { kind: "personal" },
       hostKey: { algorithm: "Ed25519" },
     },
     keys,
@@ -63,6 +63,7 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
     updatedAt: now,
   });
   const descriptor = {
+    kind: "personal",
     apiVersion: epoch,
     authority,
     bootstrapMethods: ["connect-grant"],

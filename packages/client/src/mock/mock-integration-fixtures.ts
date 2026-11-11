@@ -2022,7 +2022,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         ownerUserId: ownerUserId,
         revokedAt: null,
         status: "active",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
       },
       {
         access: "read",
@@ -2035,7 +2034,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         ownerUserId: ownerUserId,
         revokedAt: null,
         status: "active",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
       },
       {
         access: "read",
@@ -2048,7 +2046,6 @@ export function createInitialIntegrationState(ownerUserId: UserId): MockIntegrat
         ownerUserId: ownerUserId,
         revokedAt: null,
         status: "active",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000003",
       },
     ],
     installations: [

@@ -23,14 +23,13 @@ describe("independent browser creation", () => {
         dialog: null,
         error: null,
         id: "original",
-        origin: "workspace",
+        origin: "person",
         placement: { kind: "runner", runnerId: "runner" },
         profileId: null,
         runtimeId: "runtime",
         state: "ready",
         viewerError: null,
         viewerState: "synchronized",
-        workspaceId: "shared",
       },
       undefined,
       [],
@@ -40,7 +39,6 @@ describe("independent browser creation", () => {
     const result = applyOptimisticCommandPatch(snapshot, {
       type: "browser.session.start",
       session: opened,
-      workspaceId: "shared",
     });
     expect(result.browserSessions.map((session) => session.id)).toEqual(["opened", "original"]);
     expect(result.browserSessions[1]).toBe(original);
@@ -51,17 +49,9 @@ describe("browser profile patches", () => {
   it("renames a profile in place and forgets a deleted one with its grants", () => {
     const work = { homeRunnerId: null, id: "bpr_work", name: "Work", revision: 3 };
     const shopping = { homeRunnerId: null, id: "bpr_shopping", name: "Shopping", revision: 1 };
-    const grant = (id: string, profileId: string) => ({
-      access: "read-write" as const,
-      createdAt: now,
-      id,
-      profileId,
-      workspaceId: "project",
-    });
     const snapshot = {
       ...baseSnapshot(),
       browserProfiles: [work, shopping],
-      browserProfileGrants: [grant("work-grant", work.id), grant("shopping-grant", shopping.id)],
     };
 
     const renamed = applyOptimisticCommandPatch(snapshot, {
@@ -75,7 +65,6 @@ describe("browser profile patches", () => {
       type: "browser.profile.delete",
     });
     expect(deleted.browserProfiles.map((profile) => profile.id)).toEqual([work.id]);
-    expect(deleted.browserProfileGrants.map((entry) => entry.id)).toEqual(["work-grant"]);
   });
 });
 
@@ -86,7 +75,7 @@ describe("task mark patches", () => {
       const base = mock.getSnapshot();
       const thread: ThreadSummary = { ...base.threads[1]!, icon: "hotel", color: "blue" };
       const entry = { thread, failure: null, lastReply: "Found it" };
-      const page = { entries: [entry], window: base.workspaceWindow };
+      const page = { entries: [entry], window: base.tasks!.window };
       const assignment = {
         workerThread: { id: thread.id, title: thread.title, icon: "hotel", color: "blue" },
         status: "completed",
@@ -96,7 +85,7 @@ describe("task mark patches", () => {
         threads: [thread],
         tasks: page,
         activeTasks: [entry],
-        workspaceTasks: { [thread.workspaceId]: page },
+
         assignments: { completed: assignment },
       };
       const result = withThreadNames(snapshot, (name) =>
@@ -110,7 +99,7 @@ describe("task mark patches", () => {
         updatedAt: thread.updatedAt,
       });
       expect(result.activeTasks[0]?.thread.icon).toBe("plane");
-      expect(result.workspaceTasks[thread.workspaceId]?.entries[0]?.thread.icon).toBe("plane");
+
       expect(result.assignments.completed?.workerThread.icon).toBe("plane");
       expect(result.tasks?.window).toBe(page.window);
     } finally {
@@ -223,6 +212,8 @@ function queuedItem(text: string): ThreadInputQueue["items"][number] {
     canMove: true,
     canSteer: true,
     input: {
+      teamRequestId: null,
+      teamSource: null,
       assignmentId: null,
       cancelReason: null,
       causalChainId: createId("causalChain"),
@@ -271,7 +262,7 @@ function baseSnapshot(): HostSnapshot {
     waitingRequests: [],
     browserAvailable: false,
     browserPlacements: [],
-    browserProfileGrants: [],
+
     browserProfiles: [],
     browserSessions: [],
     browserUses: [],
@@ -279,17 +270,20 @@ function baseSnapshot(): HostSnapshot {
     connectionInterrupted: false,
     deploymentShape: null,
     deploymentId: null,
+    personalSettings: null,
+    can: null,
+    needsYou: null,
+    sessionId: "session",
     environments: [],
     executionPreferences: emptyExecutionPreferences,
     harnesses: [],
-    homeWorkspaceId: null,
-    homeThreadId: null,
+
     voiceThreadId: null,
-    notificationMutes: [],
+
     threadReadStates: {},
     tasks: null,
     activeTasks: [],
-    workspaceTasks: {},
+
     identityConfig: null,
     inputQueues: {},
     machineRevision: 0,
@@ -307,14 +301,5 @@ function baseSnapshot(): HostSnapshot {
     transcripts: { [threadId]: [] },
     triggerRevision: 0,
     user: null,
-    workspaceSharingAvailable: false,
-    workspaceWindow: {
-      byteCount: 2,
-      hasMore: false,
-      itemCount: 0,
-      nextBefore: null,
-      totalItems: 0,
-    },
-    workspaces: [],
   };
 }

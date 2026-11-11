@@ -6,7 +6,6 @@ import { expect, it, vi } from "vitest";
 import type { HostSnapshot } from "./client.js";
 import { runPlaceDestination, runPlaceSessionId, RunPlaceStore } from "./run-place.js";
 
-const workspaceId = createId("workspace");
 const threadId = createId("thread");
 const runId = createId("run");
 function entered(sequence: string, id = runId) {
@@ -14,7 +13,7 @@ function entered(sequence: string, id = runId) {
     type: "place.entered",
     eventId: createId("event"),
     environmentId: createId("environment"),
-    workspaceId,
+
     threadId,
     runId: id,
     sequence,
@@ -82,10 +81,10 @@ it("a resync removes ended Runs without discarding places newer than its cut", (
   const store = new RunPlaceStore();
   const current = entered("10");
   store.accept(current);
-  store.reconcile(workspaceId, SequenceSchema.parse("9"), []);
+  store.reconcile(SequenceSchema.parse("9"), []);
   store.flush();
   expect(store.get(runId)).toBe(current);
-  store.reconcile(workspaceId, SequenceSchema.parse("11"), []);
+  store.reconcile(SequenceSchema.parse("11"), []);
   store.flush();
   expect(store.get(runId)).toBeNull();
   store.seed([current]);

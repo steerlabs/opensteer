@@ -1,8 +1,7 @@
 import { assignmentTitle, workerAssignment } from "./assignment-presentation.js";
 import {
-  CHAT_THREAD_TITLE,
   requestTitleText,
-  type WorkspaceIconName,
+  type IconName,
   type MarkColor,
   type WaitingRequest,
 } from "@opensteer/core";
@@ -19,16 +18,6 @@ import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
 import { isThreadUnread } from "./thread-read-state.js";
-
-/**
- * The reader's sidebar: Chat, then their tasks grouped by what each asks of
- * the reader — Working, with anything waiting on them first; Ready; and
- * Done, out of the way.
- *
- * A row is one line: its tone is a mark a reader sees without reading, and
- * `line` says the same in words for a screen reader or a tooltip. Web and
- * mobile both read this, so a task can never read differently on two screens.
- */
 
 /** What a task is doing, in the order a reader has to care. */
 export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finished";
@@ -47,9 +36,10 @@ export function taskMarkQuiet(row: Pick<TaskRow, "tone" | "unread">, done: boole
 
 export interface TaskRow {
   readonly threadId: string;
-  readonly workspaceId: string;
+  readonly folder: import("@opensteer/core").TaskFolder;
+  readonly teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   readonly title: string;
-  readonly icon: WorkspaceIconName | null;
+  readonly icon: IconName | null;
   readonly color: MarkColor | null;
   readonly tone: TaskTone;
   /** What is happening, in words: what it needs, where it works, why it stopped, what it said. */
@@ -72,7 +62,7 @@ export interface TaskRow {
   readonly askedAt: string;
 }
 
-export interface WorkspaceTaskList {
+export interface FolderTaskList {
   /**
    * Work under way: tasks waiting on the reader first, then the ones working
    * or waiting on someone else, each newest asked first.
@@ -88,14 +78,10 @@ export interface WorkspaceTaskList {
   readonly hasMore: boolean;
 }
 
-export interface TaskList extends WorkspaceTaskList {
-  /** The reader's Chat, once the task list has reported it. */
-  readonly chat: TaskRow | null;
-}
+export type TaskList = FolderTaskList;
 
 /** Everything a task list is drawn from, and nothing else. */
 const taskListSourceKeys = [
-  "sharedTaskDoneAvailable",
   "quietTasksAvailable",
   "doneTasks",
   "activeTasks",
@@ -104,12 +90,10 @@ const taskListSourceKeys = [
   "browserUses",
   "browserProfiles",
   "connection",
-  "homeThreadId",
   "machines",
   "tasks",
   "threadReadStates",
   "waitingRequests",
-  "workspaceTasks",
   "threads",
   "environments",
   "runQueue",
@@ -135,10 +119,9 @@ export interface TaskListOptions {
    * reading it would move it to Done under the reader who just opened it, so
    * while it is open it stays where that list showed it.
    */
-  readonly previous?: Pick<WorkspaceTaskList, "ready"> | null | undefined;
+  readonly previous?: Pick<FolderTaskList, "ready"> | null | undefined;
 }
 
-/** The reader's tasks across every Workspace, with their Chat apart. */
 export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
   return arrange(
     snapshot,
@@ -149,23 +132,20 @@ export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}
   );
 }
 
-/**
- * One Workspace's tasks, as `loadWorkspaceTasks` read them, by the same rules
- * as the reader's whole list. Chat is never one of them.
- */
-export function workspaceTaskList(
+export function folderTaskList(
   snapshot: TaskListSource,
-  workspaceId: string,
+  folder: import("@opensteer/core").TaskFolder,
   options: TaskListOptions = {},
-): WorkspaceTaskList {
-  const { chat: _chat, ...list } = arrange(
-    snapshot,
-    snapshot.workspaceTasks[workspaceId] ?? null,
-    snapshot.activeTasks.filter(({ thread }) => thread.workspaceId === workspaceId),
-    options,
-    snapshot.doneTasks[workspaceId]?.entries ?? [],
-  );
-  return list;
+): FolderTaskList {
+  const list = taskList(snapshot, options);
+  const matches = (row: TaskRow) =>
+    row.folder.computerId === folder.computerId && row.folder.path === folder.path;
+  return {
+    ...list,
+    working: list.working.filter(matches),
+    ready: list.ready.filter(matches),
+    done: list.done.filter(matches),
+  };
 }
 
 /**
@@ -173,34 +153,31 @@ export function workspaceTaskList(
  * conversation or a task list loaded it, so Done works on a task no list holds:
  * delegated work, or a Done task past the loaded pages.
  */
-export function heldThread(snapshot: TaskListSource, threadId: string): ThreadSummary | null {
+export function heldThread(
+  snapshot: Pick<HostSnapshot, "threads" | "tasks" | "activeTasks" | "doneTasks">,
+  threadId: string,
+): ThreadSummary | null {
   return (
     snapshot.threads.find(({ id }) => id === threadId) ??
     [
       ...snapshot.activeTasks,
       ...Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
       ...(snapshot.tasks?.entries ?? []),
-      ...Object.values(snapshot.workspaceTasks).flatMap(({ entries }) => entries),
     ].find(({ thread }) => thread.id === threadId)?.thread ??
     null
   );
 }
 
-/**
- * The row a list shows for a Thread: its own when it is listed, otherwise its
- * nearest listed ancestor's, Chat's for work under Chat. A helper has no row,
- * so the task it works for stands in for it. A chain this client cannot
- * follow, through a parent it does not hold or round a loop, leaves the
- * Thread itself, which then matches no row.
- */
-export function listedRowThreadId(snapshot: TaskListSource, threadId: string): string {
+export function listedRowThreadId(
+  snapshot: Pick<HostSnapshot, "threads" | "tasks" | "activeTasks" | "doneTasks">,
+  threadId: string,
+): string {
   const seen = new Set<string>();
   let current = heldThread(snapshot, threadId);
-  while (current !== null && !current.listed && current.id !== snapshot.homeThreadId) {
+  while (current !== null && !current.listed) {
     const parent = current.parentThreadId;
     if (parent === null || seen.has(current.id)) return threadId;
     seen.add(current.id);
-    if (parent === snapshot.homeThreadId) return parent;
     current = heldThread(snapshot, parent);
   }
   return current?.id ?? threadId;
@@ -227,28 +204,16 @@ export function threadRequester(snapshot: TaskListSource, threadId: string): Req
   return parent === null || parent === threadId ? null : requesterLink(snapshot, parent);
 }
 
-/** A Thread as a way back, when this reader can open it: Chat by name, else a Thread it holds. */
 export function requesterLink(snapshot: TaskListSource, threadId: string): RequesterLink | null {
-  if (threadId === snapshot.homeThreadId) return { threadId, title: CHAT_THREAD_TITLE };
   const held = heldThread(snapshot, threadId);
   return held === null ? null : { threadId, title: held.title };
 }
 
-/**
- * Whether a person may mark a Thread Done or reopen it: any work Thread that
- * is no Workspace's Chat. The Host also refuses an active channel
- * conversation, which a client cannot tell apart.
- */
 export function taskCanBeDone(
-  snapshot: Pick<HostSnapshot, "homeThreadId" | "workspaces" | "sharedTaskDoneAvailable">,
-  thread: Pick<ThreadSummary, "id" | "role">,
+  _snapshot: Pick<HostSnapshot, "quietTasksAvailable">,
+  thread: Pick<ThreadSummary, "purpose">,
 ): boolean {
-  return (
-    snapshot.sharedTaskDoneAvailable === true &&
-    thread.role === "work" &&
-    thread.id !== snapshot.homeThreadId &&
-    !snapshot.workspaces.some(({ homeThreadId }) => homeThreadId === thread.id)
-  );
+  return thread.purpose === "task";
 }
 
 /** Work that marking the task Done would stop, which a person confirms first. */
@@ -268,10 +233,9 @@ function arrange(
     isThreadUnread(snapshot.threadReadStates[thread.id]),
   );
   const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks, unreadDone).filter(
-    ({ thread }) => thread.listed || thread.id === snapshot.homeThreadId,
+    ({ thread }) => thread.listed && thread.purpose === "task",
   );
   const asks = attributedRequests(snapshot, entries);
-  let chat: TaskRow | null = null;
   const working: TaskRow[] = [];
   const ready: TaskRow[] = [];
   const done: TaskRow[] = [];
@@ -281,8 +245,7 @@ function arrange(
     previous?.ready.some(({ threadId, done }) => done && threadId === openThreadId) === true;
   for (const entry of entries) {
     const row = rowOf(snapshot, entry, asks.get(entry.thread.id) ?? []);
-    if (entry.thread.id === snapshot.homeThreadId) chat = row;
-    else if (row.done)
+    if (row.done)
       (row.unread || (holdOpen && row.threadId === openThreadId) ? ready : done).push(row);
     else if (row.stopped) ready.push(row);
     else working.push(row);
@@ -297,7 +260,6 @@ function arrange(
   ready.sort(newestAsked);
   done.sort(newestAsked);
   return {
-    chat,
     working,
     ready,
     done,
@@ -313,19 +275,13 @@ function newestAsked(left: TaskRow, right: TaskRow): number {
   );
 }
 
-/**
- * Each question, on exactly one row of a list: the first Thread the list
- * holds on the way from where it was asked up the work that handed it out,
- * innermost first. Chat therefore shows only what was asked in Chat or in
- * unlisted work under it, never what its tasks ask on their own rows.
- */
 function attributedRequests(
   snapshot: TaskListSource,
   entries: readonly TaskEntry[],
 ): ReadonlyMap<string, WaitingRequest[]> {
   const listed = new Set(
     entries
-      .filter(({ thread }) => thread.listed || thread.id === snapshot.homeThreadId)
+      .filter(({ thread }) => thread.listed && thread.purpose === "task")
       .map(({ thread }) => thread.id),
   );
   const byThread = new Map<string, WaitingRequest[]>();
@@ -349,11 +305,11 @@ function rowOf(
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
   const tone = taskTone(thread, asks);
-  const chat = thread.id === snapshot.homeThreadId;
-  const surface = tone === "working" && !chat ? workingSurface(snapshot, thread.id) : null;
+  const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
-    workspaceId: thread.workspaceId,
+    folder: thread.folder,
+    teamOrigin: thread.teamOrigin,
     title: held.title,
     icon: held.icon,
     color: held.color,
@@ -361,13 +317,13 @@ function rowOf(
     line:
       tone === "waiting"
         ? (taskWaitingReason(snapshot, thread.id)?.label ?? "Waiting")
-        : taskLine(entry, tone, asks, chat, surface),
+        : taskLine(entry, tone, asks, surface),
     place: surface === null ? null : placeName(surface),
-    done: snapshot.sharedTaskDoneAvailable === true && thread.doneAt !== null,
+    done: thread.doneAt !== null,
     doneAt: thread.doneAt,
     quietlyDone: thread.doneAt !== null && thread.doneReason === "quiet",
     // The Host also refuses an active channel conversation, which a client cannot tell apart.
-    canBeDone: !chat && snapshot.sharedTaskDoneAvailable === true && thread.role === "work",
+    canBeDone: thread.purpose === "task",
     unread: isThreadUnread(snapshot.threadReadStates[thread.id]),
     // A Stop pauses the queue: the task waits for the person alone, as a finished one does.
     stopped:
@@ -410,7 +366,6 @@ function taskLine(
   entry: TaskEntry,
   tone: TaskTone,
   asks: readonly WaitingRequest[],
-  chat: boolean,
   surface: SurfaceItem | null,
 ): string {
   switch (tone) {
@@ -421,7 +376,6 @@ function taskLine(
       return more > 0 ? `${title} · ${more} more` : title;
     }
     case "working":
-      if (chat) return "Replying";
       if (surface?.kind === "browser")
         return surface.site ? `On ${surface.site}` : `In ${surface.title}`;
       if (surface?.kind === "phone") return `Using ${surface.machine.name}`;
@@ -432,7 +386,7 @@ function taskLine(
     case "failed":
       return entry.failure ?? "Couldn’t finish";
     case "finished":
-      return entry.lastReply ?? (chat ? "Ask me anything to get started" : "Finished");
+      return entry.lastReply ?? "Finished";
   }
 }
 
@@ -450,30 +404,29 @@ export function taskTime(row: TaskRow, now: number): string | null {
  * shows, then what is happening. "Reply to Ana about the contract, needs you:
  * Approve sending the reply to Ana".
  */
-export function taskRowLabel(row: TaskRow, options: { readonly chat?: boolean } = {}): string {
-  const chat = options.chat === true;
-  const title = chat ? CHAT_THREAD_TITLE : row.title;
+export function taskRowLabel(row: TaskRow): string {
+  const title = row.title;
   const head = row.unread && row.tone !== "needs-you" ? `${title}, unread` : title;
-  const state = stateWord(row.tone, chat);
+  const state = stateWord(row.tone);
   if (state === null) return `${head}: ${row.line}`;
   return row.line.toLocaleLowerCase() === state.toLocaleLowerCase()
     ? `${head}, ${state}`
     : `${head}, ${state}: ${row.line}`;
 }
 
-function stateWord(tone: TaskTone, chat: boolean): string | null {
+function stateWord(tone: TaskTone): string | null {
   switch (tone) {
     case "needs-you":
       return "needs you";
     case "working":
-      return chat ? "replying" : "working";
+      return "working";
     case "waiting":
       // The line already says it.
       return null;
     case "failed":
       return "couldn’t finish";
     case "finished":
-      return chat ? null : "finished";
+      return "finished";
   }
 }
 
@@ -484,7 +437,11 @@ function stateWord(tone: TaskTone, chat: boolean): string | null {
 export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
   return (
     left.threadId === right.threadId &&
-    left.workspaceId === right.workspaceId &&
+    left.folder.computerId === right.folder.computerId &&
+    left.folder.path === right.folder.path &&
+    left.teamOrigin?.teamId === right.teamOrigin?.teamId &&
+    left.teamOrigin?.channelId === right.teamOrigin?.channelId &&
+    left.teamOrigin?.threadRootId === right.teamOrigin?.threadRootId &&
     left.title === right.title &&
     left.icon === right.icon &&
     left.color === right.color &&
@@ -516,7 +473,7 @@ export interface TaskAttention {
   /** The request's own short title: who proposed it stays on the request itself. */
   readonly title: string;
 }
-/** Distinct listed rows with a reader-actionable request, including Chat once. */
+
 export function taskAttention(snapshot: TaskListSource): readonly TaskAttention[] {
   const entries = mergeTaskEntries(snapshot.tasks?.entries ?? [], snapshot.activeTasks);
   const byThread = attributedRequests(snapshot, entries);
@@ -601,15 +558,9 @@ export interface DoneTaskList {
   readonly hasMore: boolean;
 }
 
-/**
- * One Done list as the Host keeps it, newest Done first: one Workspace's, or
- * without one the reader's outside Projects. Null until `loadDoneTasks` reads
- * it, and always on a Host without `quiet-tasks-v1`, whose Done work arrives
- * in the asked-ordered list instead (`TaskList.done`).
- */
-export function doneTaskList(snapshot: TaskListSource, workspaceId?: string): DoneTaskList | null {
+export function doneTaskList(snapshot: TaskListSource, deploymentId?: string): DoneTaskList | null {
   if (!snapshot.quietTasksAvailable) return null;
-  const list = snapshot.doneTasks[workspaceId ?? mainDoneTasks];
+  const list = snapshot.doneTasks[deploymentId ?? mainDoneTasks];
   if (!list) return null;
   const rows = list.entries
     .filter(({ thread }) => thread.listed && thread.doneAt !== null)

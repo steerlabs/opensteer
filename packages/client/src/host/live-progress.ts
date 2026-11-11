@@ -8,7 +8,6 @@ import {
   type RunId,
   type Sequence,
   type ThreadId,
-  type WorkspaceId,
 } from "@opensteer/core";
 
 /** One stream as the client draws it. */
@@ -25,7 +24,6 @@ export interface LiveRunView {
   readonly runId: RunId;
   readonly streams: readonly LiveStreamView[];
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
 
 /** What the Host sends: a Run's items, after the durable events they follow. */
@@ -35,7 +33,6 @@ export interface LiveProgressInput {
     readonly items: readonly LiveItemInput[];
     readonly runId: RunId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   };
 }
 
@@ -59,7 +56,6 @@ interface LiveRun {
   readonly threadId: ThreadId;
   /** Where each stream was last completed, so an older snapshot cannot reopen it. */
   readonly tombstones: Map<string, Sequence>;
-  readonly workspaceId: WorkspaceId;
 }
 
 const endedRunMemory = 512;
@@ -84,7 +80,7 @@ export class LiveStreamLedger {
   apply(input: LiveProgressInput): { readonly changed: LiveRunView | null; readonly gap: boolean } {
     const { progress } = input;
     if (this.#endedRuns.has(progress.runId)) return { changed: null, gap: false };
-    const run = this.#run(progress.runId, progress.threadId, progress.workspaceId);
+    const run = this.#run(progress.runId, progress.threadId);
     if (!run) return { changed: null, gap: false };
     const changed = new Set<string>();
     let gap = false;
@@ -147,7 +143,6 @@ export class LiveStreamLedger {
             : [];
         }),
         threadId: run.threadId,
-        workspaceId: run.workspaceId,
       },
       gap,
     };
@@ -184,7 +179,7 @@ export class LiveStreamLedger {
     // History read over HTTP can name a completion before any live frame of
     // its Run arrives; remembering it keeps a late frame from drawing the text
     // it replaced.
-    const run = this.#run(event.runId, event.threadId, event.workspaceId);
+    const run = this.#run(event.runId, event.threadId);
     if (!run) return;
     const id = liveStreamKeyId(key);
     const stream = run.streams.get(id);
@@ -197,10 +192,9 @@ export class LiveStreamLedger {
     }
   }
 
-  /** Forgets one Workspace's streams; a resubscription sends them whole again. */
-  resetWorkspace(workspaceId: WorkspaceId): void {
-    for (const [runId, run] of this.#runs) {
-      if (run.workspaceId === workspaceId) this.#runs.delete(runId);
+  reset(): void {
+    for (const [runId] of this.#runs) {
+      this.#runs.delete(runId);
     }
   }
 
@@ -228,23 +222,19 @@ export class LiveStreamLedger {
           tail: stream.tail,
         })),
         threadId: run.threadId,
-        workspaceId: run.workspaceId,
       }));
   }
 
-  #run(runId: RunId, threadId: ThreadId, workspaceId: WorkspaceId): LiveRun | undefined {
+  #run(runId: RunId, threadId: ThreadId): LiveRun | undefined {
     const existing = this.#runs.get(runId);
     if (existing) {
-      return existing.threadId === threadId && existing.workspaceId === workspaceId
-        ? existing
-        : undefined;
+      return existing.threadId === threadId ? existing : undefined;
     }
     const run: LiveRun = {
       runId,
       streams: new Map(),
       threadId,
       tombstones: new Map(),
-      workspaceId,
     };
     this.#runs.set(runId, run);
     return run;

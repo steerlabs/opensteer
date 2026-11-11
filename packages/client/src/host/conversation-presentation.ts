@@ -1,35 +1,13 @@
-import { CHAT_THREAD_TITLE, type MessageAuthor, type MessageKind } from "@opensteer/core";
+import { type MessageAuthor } from "@opensteer/core";
 import type { TranscriptGroup } from "./agent-activity-model.js";
 import type { MessageEntry } from "./client.js";
 import { formatClockTime } from "./thread-list-model.js";
 
-/**
- * What a reader calls a conversation. Their own Chat is Chat on every client —
- * the Host titles it so and never renames it — and Opensteer is the agent who
- * answers there, not the place. Any other conversation goes by its title.
- */
-export function conversationName(
-  threadId: string,
-  title: string,
-  homeThreadId: string | null,
-): string {
-  return threadId === homeThreadId ? CHAT_THREAD_TITLE : title;
+export function conversationName(title: string): string {
+  return title;
 }
-
-/**
- * Whom a message is from, as the reader is told. An agent's input carries the
- * name the Host gives its source conversation, which for the reader's own Chat
- * is Chat; the replies Opensteer writes there stay Opensteer's.
- */
-export function messageAuthorName(
-  author: MessageAuthor,
-  kind: MessageKind,
-  homeThreadId: string | null,
-): string {
-  if (author.kind === "platform") return "Opensteer";
-  if (author.kind === "agent" && kind === "input" && author.threadId === homeThreadId)
-    return CHAT_THREAD_TITLE;
-  return author.displayName;
+export function messageAuthorName(author: MessageAuthor): string {
+  return author.kind === "platform" ? "Opensteer" : author.displayName;
 }
 
 /**

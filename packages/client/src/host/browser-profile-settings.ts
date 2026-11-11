@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "./deployment-policy.js";
 import {
   computerGlyph,
   deviceElsewhere,
@@ -7,7 +6,7 @@ import {
   type ComputerGlyph,
   type DeviceElsewhere,
 } from "../computers/computers.js";
-import type { BrowserProfileSummary, HostSnapshot, WorkspaceSummary } from "./client.js";
+import type { BrowserProfileSummary, HostSnapshot } from "./client.js";
 import { placeList, type PlaceListSource } from "./places.js";
 import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.js";
 
@@ -15,11 +14,6 @@ import { browserIdentity, type PlaceBrowserIdentity } from "./start-page-model.j
 export interface BrowserProfileSettingsRow {
   readonly profile: BrowserProfileSummary;
   readonly identity: PlaceBrowserIdentity;
-  /** The projects allowed to use it, each with the grant that allows it. */
-  readonly projects: readonly {
-    readonly grantId: string;
-    readonly workspace: WorkspaceSummary;
-  }[];
   /** Its tabs, waiting ones included: deleting the profile closes them. */
   readonly tabs: number;
   /** The device it lives on, named only when that is not the one the reader is at. */
@@ -29,7 +23,7 @@ export interface BrowserProfileSettingsRow {
 }
 
 export type BrowserProfileSettingsSource = PlaceListSource &
-  Pick<HostSnapshot, "browserProfileGrants" | "browserProfileHomes" | "workspaces">;
+  Pick<HostSnapshot, "browserProfileHomes">;
 
 export function browserProfileSettingsRows(
   snapshot: BrowserProfileSettingsSource,
@@ -44,14 +38,6 @@ export function browserProfileSettingsRows(
       device: deviceElsewhere(snapshot.machines, profile.homeRunnerId, hereId),
       // An older Host says nothing of homes, so its profiles are not "unopened".
       unopened: profile.homeRunnerId === null && snapshot.browserProfileHomes !== undefined,
-      projects: snapshot.browserProfileGrants.flatMap((grant) => {
-        const workspace = snapshot.workspaces.find(
-          (candidate) => candidate.id === grant.workspaceId && candidate.kind === "project",
-        );
-        return grant.profileId === profile.id && workspace
-          ? [{ grantId: grant.id, workspace }]
-          : [];
-      }),
       tabs: places.filter(
         (place) => place.identity?.kind === "profile" && place.identity.profileId === profile.id,
       ).length,
@@ -81,10 +67,7 @@ export interface ProfileHomeChoice {
  * would put it instead: the computer that agent works on, else the main one.
  */
 export function profileHomeChoice(
-  snapshot: Pick<
-    HostSnapshot,
-    "browserProfileHomes" | "deploymentShape" | "deploymentPolicy" | "machines"
-  >,
+  snapshot: Pick<HostSnapshot, "browserProfileHomes" | "deploymentShape" | "can" | "machines">,
   hereId: string | null,
   asking?: { readonly runnerId: string | null },
 ): ProfileHomeChoice | null {
@@ -97,7 +80,7 @@ export function profileHomeChoice(
         here: machine.id === hereId,
         id: machine.id,
         name: machine.name,
-        main: hostsDeployment(machine, hostDeploymentPolicy(snapshot) ?? null),
+        main: hostsDeployment(machine),
       })),
     hereId,
   );
@@ -114,28 +97,9 @@ export function profileHomeChoice(
   };
 }
 
-/** The projects a profile can be given to, by name. */
-export function browserProfileProjects(
-  snapshot: Pick<HostSnapshot, "workspaces">,
-): WorkspaceSummary[] {
-  return snapshot.workspaces
-    .filter((workspace) => workspace.kind === "project")
-    .sort((left, right) => left.name.localeCompare(right.name));
-}
-
-/** Who may browse as a profile: Opensteer always, then each project allowed. */
-export function browserProfileAccessSummary(row: BrowserProfileSettingsRow): string {
-  if (row.projects.length === 0) return "Opensteer only";
-  return spokenList(["Opensteer", ...row.projects.map(({ workspace }) => workspace.name)]);
-}
-
 /** What deleting a profile takes with it, beyond its sign-ins and site data. */
 export function browserProfileDeleteConsequence(row: BrowserProfileSettingsRow): string {
   const sentences = ["Its sign-ins and site data are erased from this Opensteer."];
-  if (row.projects.length > 0) {
-    const names = row.projects.map(({ workspace }) => workspace.name);
-    sentences.push(`${spokenList(names)} ${names.length === 1 ? "loses" : "lose"} access.`);
-  }
   if (row.tabs > 0) {
     sentences.push(
       row.tabs === 1 ? "The tab using it closes." : `The ${row.tabs} tabs using it close.`,
@@ -143,12 +107,6 @@ export function browserProfileDeleteConsequence(row: BrowserProfileSettingsRow):
   }
   sentences.push("This can’t be undone.");
   return sentences.join(" ");
-}
-
-function spokenList(names: readonly string[]): string {
-  return names.length < 2
-    ? names.join("")
-    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 export function browserProfileDeletionRows(

@@ -1,11 +1,12 @@
+import type { MachineSummary } from "@opensteer/protocol";
+import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
 import { BrowserTabStore } from "./browser-tab-store.js";
-import { BrowserSnapshotDerivation, workspaceTabLineage } from "./browser-snapshot.js";
+import { BrowserSnapshotDerivation, personalTabLineage } from "./browser-snapshot.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
 import { executionNodeEntry } from "./subagent-model.js";
-import { hostDeploymentPolicy } from "./deployment-policy.js";
 import { AppTabSchema } from "@opensteer/protocol";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { invalidateScheduleAnchor } from "./schedule-anchor-invalidation.js";
@@ -20,7 +21,7 @@ import { BrowserPasskeys, type BrowserPasskeyPort } from "./browser-passkeys.js"
 import { emptySavedViewReadiness } from "./saved-host-view.js";
 import { BrowserEditingStore } from "./browser-editing.js";
 import { BrowserPreferences } from "./browser-preferences.js";
-import { WorkspaceTabActivations } from "./workspace-tab-activations.js";
+import { PersonalTabActivations } from "./personal-tab-activations.js";
 import { browserTabOrderTabs } from "./browser-tab-order.js";
 import { BrowserTabGroupClient } from "./browser-tab-groups.js";
 import type { HostCapability as AuthorityHostCapability } from "@opensteer/deployment-authority";
@@ -31,13 +32,13 @@ import { computerViewMethods } from "./computer-views.js";
 import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
+  DeploymentIdSchema,
   RunnerIdSchema,
   ExecutionNodeIdSchema,
   nodeDetailEventNodeId,
   type QuietTaskDays,
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,
-  CHAT_THREAD_TITLE,
   LiveItemViewSchema,
   LiveRunProgressViewSchema,
   RunIdSchema,
@@ -47,12 +48,10 @@ import {
   ThreadTitleSchema,
   ThreadViewSchema,
   TimeZoneSchema,
-  WorkspaceIdSchema,
   compareSequence,
   defaultTaskSymbol,
   emptyExecutionPreferences,
   eventDataSchemas,
-  harnessDisplayRank,
   liveProgressMaxItems,
   liveStreamKeyId,
   liveStreamKeyOf,
@@ -72,8 +71,7 @@ import {
   type ThreadInputQueue,
   type ThreadReadState,
   type WaitingRequest,
-  type WorkspaceIconName,
-  type WorkspaceNotificationPreference,
+  type IconName,
 } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -81,13 +79,12 @@ import {
   DisplaySourceSchema,
   HarnessModelSettingsMapSchema,
   HostToClientMessageSchema,
-  WorkspaceSnapshotSchema,
+  DeploymentSnapshotSchema,
   browserUsageRunBatchSize,
   hostApi,
   realtimeEnvelopeTypes,
   threadPageMaxItems,
-  workspaceFilePreviewMaxBytes,
-  workspaceSnapshotMaxThreads,
+  deploymentSnapshotMaxThreads,
   type BrowserSessionUsageProjection,
   type DurableWindow,
   type HostApiClient,
@@ -96,11 +93,9 @@ import {
   type HostApiCommandOutput,
   type HostToClientMessage,
   type MachineAccessPolicy,
-  type MachineSummary,
   type RealtimeFrameDiagnostic,
   type RpcResult,
-  type WorkspaceSnapshot,
-  type WorkspaceView,
+  type DeploymentSnapshot,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { BrowserWatchStore, browserCommandNeedsNoView } from "./browser-watch.js";
@@ -124,10 +119,8 @@ import type {
   TaskListState,
   ThreadSummary,
   TranscriptEntry,
-  WorkspaceFilePreview,
-  WorkspaceSummary,
-  WorkspaceTabActivationOptions,
-  WorkspaceTabLineage,
+  PersonalTabActivationOptions,
+  PersonalTabLineage,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
@@ -182,19 +175,17 @@ const historyScanMaxBytes = 2 * 1024 * 1024;
 const defaultReconnectBaseDelayMs = 300;
 /** How long a missed live frame waits before its Thread's streams are reread. */
 const liveRefreshDelayMs = 250;
-/** Progress one Workspace may hold for durable events still on their way. */
+
 const maxHeldLiveFrames = 256;
 
 const realtimeEventsSchema = z.object({
-  events: z.array(z.unknown()).min(1).max(2_000),
+  events: z.array(z.unknown()).max(2_000),
 });
 const realtimeEventPositionSchema = z.object({
   sequence: SequenceSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 const realtimeLiveEnvelopeSchema = z.object({
   afterSequence: SequenceSchema,
-  workspaceId: WorkspaceIdSchema,
   progress: LiveRunProgressViewSchema.extend({
     items: z.array(z.unknown()).min(1).max(liveProgressMaxItems),
   }),
@@ -210,7 +201,7 @@ const realtimeEventTypes = new Set<string>(
   AgentEventViewSchema.options.map((schema) => schema.shape.type.value),
 );
 const realtimeSnapshotFrameSchema = z.object({
-  snapshot: z.looseObject({ threads: z.array(z.unknown()).max(workspaceSnapshotMaxThreads) }),
+  snapshot: z.looseObject({ threads: z.array(z.unknown()).max(deploymentSnapshotMaxThreads) }),
 });
 const realtimeThreadStateEventSchema = AgentEventViewSchema.options[0]
   .omit({ type: true, data: true })
@@ -227,18 +218,16 @@ const realtimeThreadEventSchema = AgentEventViewSchema.options[0]
     type: z.enum(["thread.created", "thread.execution-updated", "thread.listed"]),
     data: z.object({
       thread: ThreadViewSchema.extend({ status: z.string().min(1) }),
-      home: z.literal(true).optional(),
     }),
   });
 const realtimeResyncSchema = z.object({
   type: z.literal("host.resync-required"),
-  workspaceId: WorkspaceIdSchema,
   // The reason explains the reset; every present or future reason requires it.
   reason: z.string().min(1),
 });
 type RealtimeMessage =
   | Exclude<HostToClientMessage, { type: "host.events" | "host.resync-required" }>
-  | { type: "host.events"; events: RealtimeEvent[] }
+  | { type: "host.events"; events: RealtimeEvent[]; throughSequence: Sequence }
   | z.infer<typeof realtimeResyncSchema>;
 
 const defaultReconnectMaxDelayMs = 12_000;
@@ -246,7 +235,6 @@ const defaultReconnectMaxDelayMs = 12_000;
 const realtimeReplayAttempts = 3;
 /** Each try can cost a whole snapshot over cellular, so a frame that keeps failing waits longest. */
 const unreadableFrameMaxDelayMs = 5 * 60_000;
-const workspacePrefetchDebounceMs = 150;
 /** Notification ids remembered after delivery, enough to cover every socket's copy. */
 const rememberedNotificationIds = 256;
 
@@ -286,8 +274,7 @@ function isSettledInputMutationError(error: unknown): boolean {
   return error instanceof HostClientRequestError && settledInputMutationCodes.has(error.code);
 }
 
-/** Frames a Workspace channel's own subscription sends, and the answer to its own probe. */
-function showsSubscriptionProgress(message: RealtimeMessage, channel: WorkspaceChannel): boolean {
+function showsSubscriptionProgress(message: RealtimeMessage, channel: DeploymentChannel): boolean {
   switch (message.type) {
     case "host.snapshot":
     case "host.events":
@@ -365,7 +352,7 @@ export interface WebSocketClient {
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
 }
 
-interface WorkspaceChannel {
+interface DeploymentChannel {
   refused: boolean;
   cursor: Sequence;
   /** The nonce of the liveness probe this channel is waiting on, if any. */
@@ -382,7 +369,7 @@ interface WorkspaceChannel {
   unreadableFrames: number;
   /** While frames are unreadable, when the next attempt may start. */
   unreadableRetryAt: number;
-  workspaceId: string;
+  deploymentId: string;
 }
 
 /** Whom a realtime socket was opened for. */
@@ -407,6 +394,7 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly streamCache?: PersonalStreamCache;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
   readonly viewerPlatform?: "mac" | "pc";
@@ -421,19 +409,14 @@ export interface HttpHostClientOptions {
   /** Absent means the platform reports nothing, and the client never suspends. */
   readonly lifecycle?: ClientLifecycle;
   readonly random?: () => number;
-  /** When a silent Workspace channel is questioned, and how long it has to answer. */
+
   readonly realtimeLiveness?: { readonly idleMs: number; readonly deadlineMs: number };
   readonly reconnectBaseDelayMs?: number;
   readonly reconnectMaxDelayMs?: number;
   readonly refreshIntervalMs?: number;
   /** Where a platform keeps a record of realtime frames this client could not read. */
   readonly reportRealtimeFrame?: (record: RealtimeFrameDiagnostic) => void;
-  /**
-   * Starts Home's history as soon as bootstrap names it. For a client that
-   * opens on Chat (the phone), activation follows at once and joins the read;
-   * elsewhere an unopened Home would be held outside the Workspace's Thread page.
-   */
-  readonly prefetchHome?: boolean;
+
   readonly webSocketFactory?: (url: string) => WebSocketClient;
 }
 
@@ -467,7 +450,12 @@ export class HttpHostClient {
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
-  readonly #channels = new Map<string, WorkspaceChannel>();
+  readonly #streamCache: PersonalStreamCache | undefined;
+  #checkpointWrite: Promise<void> = Promise.resolve();
+  #cacheLoaded = false;
+  #applyingSnapshot = false;
+  #restoredCursor: Sequence | null = null;
+  readonly #channels = new Map<string, DeploymentChannel>();
   readonly #fetch: Fetch;
   readonly #listeners = new Set<() => void>();
   readonly #messagePageLoads = new Map<string, { promise: Promise<void>; retired: boolean }>();
@@ -497,7 +485,7 @@ export class HttpHostClient {
    */
   readonly #presenceMarks = new Map<string, number>();
   #presenceCounter = 0;
-  #browserCarrier: WorkspaceChannel | null = null;
+  #browserCarrier: DeploymentChannel | null = null;
   #browserContinuation: string | undefined;
   readonly #browserWaiters = new Set<() => void>();
   readonly #browserTabs = new BrowserTabStore(
@@ -577,7 +565,6 @@ export class HttpHostClient {
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
       group?.state !== "ready" ||
-      this.#forbiddenWorkspaces.has(group.workspaceId) ||
       tab?.availability !== "ready" ||
       tab.state !== "live" ||
       tab.documentId === null
@@ -678,7 +665,6 @@ export class HttpHostClient {
   readonly markBrowserPagePresented = this.#pendingBrowserTabs.markPresented;
   readonly dismissPendingBrowserTab = this.#pendingBrowserTabs.dismiss;
   async openBrowserTab(target: string | BrowserTabOpenInput, options: BrowserTabOpenOptions = {}) {
-    // Authenticated RPC callers need not load a workspace's presentation first.
     if (!viewerScopeOf(this.#snapshot))
       return this.#openBrowserTab(
         typeof target === "string" ? { sessionId: target } : target,
@@ -715,7 +701,7 @@ export class HttpHostClient {
       }, options.signal);
     return result;
   }
-  async readWorkspaceTabs(sessionId: string): Promise<WorkspaceTabLineage | null> {
+  async readPersonalTabs(sessionId: string): Promise<PersonalTabLineage | null> {
     await this.#waitBrowser(() => {
       const groupId =
         this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
@@ -723,27 +709,26 @@ export class HttpHostClient {
     });
     const groupId =
       this.#browserTabs.group(sessionId)?.id ?? this.#browserTabs.groupForSession(sessionId);
-    return groupId ? workspaceTabLineage(this.#browserTabs, groupId) : null;
+    return groupId ? personalTabLineage(this.#browserTabs, groupId) : null;
   }
 
-  readonly #workspaceTabActivations: WorkspaceTabActivations;
-  activateWorkspaceTab(tabId: string, options?: WorkspaceTabActivationOptions) {
-    return this.#workspaceTabActivations.activate(tabId, options);
+  readonly #personalTabActivations: PersonalTabActivations;
+  activatePersonalTab(tabId: string, options?: PersonalTabActivationOptions) {
+    return this.#personalTabActivations.activate(tabId, options);
   }
 
-  async reopenWorkspaceTab() {
-    if (!this.#snapshot.workspaceTabReopenAvailable)
-      throw new Error("This Host cannot reopen closed tabs.");
+  async reopenPersonalTab() {
+    if (!this.#snapshot.tabReopenAvailable) throw new Error("This Host cannot reopen closed tabs.");
     const viewer = this.#viewer.generation;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
-        type: "workspace.tab.reopen",
+        type: "tab.reopen",
         idempotencyKey: mutationIdempotencyKey("reopen-tab"),
       }),
     );
     if (viewer !== this.#viewer.generation)
       throw new Error("The signed-in account changed while reopening the tab.");
-    if (result.type !== "workspace.tab.reopen") throw new Error("Unexpected tab reopen result.");
+    if (result.type !== "tab.reopen") throw new Error("Unexpected tab reopen result.");
     this.#update({ ...this.#snapshot, browserTabGroups: this.#tabGroups.receive(result.layout) });
     await this.#waitBrowser(() => this.#browserTabs.tab(result.groupId!, result.tabId));
     return result;
@@ -757,18 +742,18 @@ export class HttpHostClient {
     this.#tabGroups.ungroupBrowserTabs(ids);
   readonly updateBrowserTabGroup: OwnerViewHostClient["updateBrowserTabGroup"] = (id, update) =>
     this.#tabGroups.updateBrowserTabGroup(id, update);
-  readonly closeWorkspaceTabs: OwnerViewHostClient["closeWorkspaceTabs"] = async (tabIds) => {
+  readonly closePersonalTabs: OwnerViewHostClient["closePersonalTabs"] = async (tabIds) => {
     const viewer = this.#viewer.generation;
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
-        type: "workspace.tabs.close",
+        type: "tabs.close",
         tabIds: tabIds.map((id) => BrowserSurfaceIdSchema.parse(id)),
         idempotencyKey: mutationIdempotencyKey("close-tabs"),
       }),
     );
     if (viewer !== this.#viewer.generation)
       throw new Error("The signed-in account changed while closing tabs.");
-    if (result.type !== "workspace.tabs.close") throw new Error("Unexpected tabs close result.");
+    if (result.type !== "tabs.close") throw new Error("Unexpected tabs close result.");
     this.#tabGroups.removeClosed(result.closed);
     return result;
   };
@@ -779,14 +764,14 @@ export class HttpHostClient {
     if (tab?.documentId === null) {
       const result = unwrapRpcResult(
         await this.rpc["commands.dispatch"]({
-          type: "workspace.tab.close",
+          type: "tab.close",
           tabId: surfaceId,
           idempotencyKey: `close:${surfaceId}`,
         }),
       );
       if (viewer !== this.#viewer.generation)
         throw new Error("The signed-in account changed while closing the tab.");
-      if (result.type !== "workspace.tab.close") throw new Error("Unexpected tab close result.");
+      if (result.type !== "tab.close") throw new Error("Unexpected tab close result.");
       return {
         type: "browser.tab.close" as const,
         sessionId: BrowserSessionIdSchema.parse(sessionId),
@@ -831,18 +816,17 @@ export class HttpHostClient {
    * retry after a lost answer repeats the mutation instead of adding one.
    */
   readonly #threadInputMutationKeys = new Map<string, string>();
-  /** The Workspace head covered by each installed durable history page. */
+
   readonly #hydratedThreads = new Map<string, Sequence>();
   readonly #historicalThreads = new Set<string>();
   readonly #readStateLoads = new Set<Map<string, Sequence>>();
-  readonly #notificationPreferences = new Map<string, WorkspaceNotificationPreference>();
-  readonly #forbiddenWorkspaces = new Set<string>();
+
   /**
    * Assignments the Host refused this viewer (403 or 404). Nothing held for
    * them is shown, and no later event, page or read brings them back.
    */
   readonly #deniedAssignments = new Set<string>();
-  readonly #threadWorkspace = new Map<string, string>();
+  readonly #threadDeployment = new Map<string, string>();
   #viewerGeneration = 0;
   #savedViewReadiness = emptySavedViewReadiness();
   readonly #notificationListeners = new Set<(notification: NotificationView) => void>();
@@ -855,10 +839,7 @@ export class HttpHostClient {
   readonly #lifecycleListeners = new Set<
     (event: "background" | "foreground" | "network") => void
   >();
-  /**
-   * Notifications already handed to listeners, oldest first. The Host sends
-   * each to every socket of its recipient, one per subscribed Workspace.
-   */
+
   readonly #deliveredNotifications = new Set<string>();
   /**
    * The Deployment, viewer and time zone last reported, or being reported.
@@ -869,15 +850,8 @@ export class HttpHostClient {
   readonly #hydrationBuffers = new Map<string, AgentEvent[]>();
   readonly #threadState = new ThreadStateProjection();
   readonly #threadRenames = new Map<string, { readonly title: string; readonly token: symbol }>();
-  readonly #threadIcons = new Map<
-    string,
-    { readonly icon: WorkspaceIconName; readonly token: symbol }
-  >();
-  readonly #workspaceColors = new Map<string, Pick<WorkspaceSummary, "color" | "updatedAt">>();
-  readonly #workspaceColorEdits = new Map<
-    string,
-    { readonly color: WorkspaceSummary["color"]; readonly token: symbol }
-  >();
+  readonly #threadIcons = new Map<string, { readonly icon: IconName; readonly token: symbol }>();
+
   /** The authority for `snapshot.runQueue`, reconciled across events, reads and answers. */
   readonly #runQueue = new RunQueueProjection();
   readonly #nodeDetails = new NodeDetailStore({
@@ -899,11 +873,11 @@ export class HttpHostClient {
         throw new Error("Node event page mismatch.");
       return page;
     },
-    sendWatch: (workspaceId, nodeId) => {
-      const channel = this.#channels.get(workspaceId);
+    sendWatch: (deploymentId, nodeId) => {
+      const channel = this.#channels.get(deploymentId);
       if (!channel?.synchronized || channel.socket?.readyState !== 1) return false;
       try {
-        channel.socket.send(JSON.stringify({ type: "client.watch-node", workspaceId, nodeId }));
+        channel.socket.send(JSON.stringify({ type: "client.watch-node", nodeId }));
         return true;
       } catch {
         return false;
@@ -914,20 +888,12 @@ export class HttpHostClient {
   readonly #live = new LiveStreamLedger();
   /** Threads whose streams are reread whole, one read at a time per Thread. */
   readonly #liveRereads = new Map<string, LiveReread>();
-  /**
-   * Progress that follows durable events this client has not received yet,
-   * per Workspace. A reread answers over HTTP, ahead of the event stream, and
-   * is drawn only once the events it follows have been applied.
-   */
+
   readonly #heldLive = new Map<string, LiveProgressInput[]>();
-  /**
-   * Each Workspace subscription's generation. A resubscription starts the
-   * streams over, so a reread asked for under an older one is discarded.
-   */
+
   readonly #liveGenerations = new Map<string, number>();
   readonly #latestTranscriptLoads = new Map<string, Promise<void>>();
   #activeThreadId: string | null = null;
-  #activeWorkspaceId: string | null = null;
   #hostUnreachable = false;
   #interruptionTimer: ReturnType<typeof setTimeout> | null = null;
   readonly #random: () => number;
@@ -940,37 +906,33 @@ export class HttpHostClient {
   #lostFrameRereadAt = Number.NEGATIVE_INFINITY;
   #lostFrameRereadTimer: Timer | null = null;
   readonly #refreshIntervalMs: number;
-  readonly #prefetchHome: boolean;
+
   readonly #webSocketFactory: (url: string) => WebSocketClient;
   readonly #lifecycleDisposers: (() => void)[] = [];
   readonly #socketTrustWindowMs: number;
   #network: ClientNetworkState;
   #visibility: ClientVisibility;
   #backgroundedAt: number | null = null;
-  #workspacePageLoad: Promise<void> | null = null;
+
   #bootstrapPromise: Promise<void> | null = null;
   #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
-  /**
-   * Per task list — `null` for the reader's whole list, else a Workspace's —
-   * the first-page read in flight, and whether a notice during it owes one more.
-   */
+
   readonly #taskReads = new Map<string | null, { again: boolean; done: Promise<void> }>();
   /** Per task list, the one read of a later page in flight, for the viewer that asked. */
   readonly #taskPageLoads = new Map<
     string | null,
     { readonly generation: number; readonly promise: Promise<void> }
   >();
-  /** The Workspaces whose own task list a screen asked for, kept current from then on. */
-  // Workspace ids, and `done:` keys of Done lists (see `doneTaskScope`).
-  readonly #workspaceTaskScopes = new Set<string>();
+
   #disposed = false;
   #refreshTimer: Timer | null = null;
-  #workspacePrefetchTimer: Timer | null = null;
+
   #snapshot: HostSnapshot = emptySnapshot();
 
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
+    this.#streamCache = options.streamCache;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
     this.#readCapabilities =
@@ -998,7 +960,9 @@ export class HttpHostClient {
         });
       },
     });
-    this.#browserTabs.subscribe(() => this.#update(this.#snapshot));
+    this.#browserTabs.subscribe(() => {
+      if (!this.#applyingSnapshot) this.#update(this.#snapshot);
+    });
     this.#baseUrl = new URL(options.baseUrl);
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.rpc = createHttpHostApiClient({
@@ -1013,20 +977,19 @@ export class HttpHostClient {
       },
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
-    this.#workspaceTabActivations = new WorkspaceTabActivations({
+    this.#personalTabActivations = new PersonalTabActivations({
       snapshot: () => this.#snapshot,
       subscribe: (listener) => this.subscribe(listener),
       changed: () => this.#update(this.#snapshot),
       dispatch: async (tabId) => {
         const result = unwrapRpcResult(
           await this.rpc["commands.dispatch"]({
-            type: "workspace.tab.activate",
+            type: "tab.activate",
             tabId,
             idempotencyKey: `restore:${tabId}`,
           }),
         );
-        if (result.type !== "workspace.tab.activate")
-          throw new Error("Unexpected tab activation result.");
+        if (result.type !== "tab.activate") throw new Error("Unexpected tab activation result.");
         return result;
       },
       resolved: (result) => {
@@ -1059,7 +1022,6 @@ export class HttpHostClient {
     );
     this.#refreshIntervalMs = Math.max(0, options.refreshIntervalMs ?? defaultRefreshIntervalMs);
     this.#reportRealtimeFrame = options.reportRealtimeFrame;
-    this.#prefetchHome = options.prefetchHome === true;
     this.#webSocketFactory = options.webSocketFactory ?? ((url) => new globalThis.WebSocket(url));
     this.#socketTrustWindowMs = options.lifecycle?.socketTrustWindowMs ?? socketTrustWindowMs;
     const lifecycle = options.lifecycle?.getSnapshot();
@@ -1074,17 +1036,17 @@ export class HttpHostClient {
         this.#capabilities?.includes("integration-app-finish-v1") === true,
       integrationAppReturnPortAvailable:
         this.#capabilities?.includes("integration-app-return-port-v1") === true,
-      sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
+
       quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
-      workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
+      tabReopenAvailable: this.#capabilities?.includes("tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
-      teamAdministrationAvailable: this.#capabilities?.includes("team-administration-v1") === true,
+
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
     };
     this.#visibility = lifecycle?.visibility ?? "foreground";
@@ -1195,14 +1157,10 @@ export class HttpHostClient {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(
       browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
     );
-    if (parsedCommand.type === "thread.shared-done.set" && !this.#snapshot.sharedTaskDoneAvailable)
-      throw new Error("This Host does not support shared task Done.");
-    if (parsedCommand.type === "thread.icon.set" || parsedCommand.type === "workspace.color.set") {
+    if (parsedCommand.type === "thread.icon.set") {
       if (!this.#snapshot.taskMarksAvailable)
         throw new Error("This Host does not support task marks.");
-      return parsedCommand.type === "thread.icon.set"
-        ? this.#setThreadIcon(parsedCommand)
-        : this.#setWorkspaceColor(parsedCommand);
+      return this.#setThreadIcon(parsedCommand);
     }
     return this.#dispatchCommand(parsedCommand);
   }
@@ -1244,11 +1202,6 @@ export class HttpHostClient {
           }),
         );
         break;
-      case "browser.profile.grant":
-        this.#update(
-          applyOptimisticCommandPatch(this.#snapshot, { grant: result.grant, type: result.type }),
-        );
-        break;
       case "browser.profile.rename":
         this.#update(
           applyOptimisticCommandPatch(this.#snapshot, {
@@ -1267,16 +1220,6 @@ export class HttpHostClient {
                 result.deletion && result.deletion.state !== "deleted"
                   ? { ...result.deletion, state: result.deletion.state }
                   : undefined,
-              type: result.type,
-            }),
-          );
-        }
-        break;
-      case "browser.profileGrant.revoke":
-        if (commandIs(parsedCommand, result.type)) {
-          this.#update(
-            applyOptimisticCommandPatch(this.#snapshot, {
-              grantId: parsedCommand.grantId,
               type: result.type,
             }),
           );
@@ -1321,20 +1264,7 @@ export class HttpHostClient {
           await this.refresh();
         }
         break;
-      case "workspace.create":
-      case "workspace.delete":
-      case "workspace.deletion.recover":
-      case "workspace.icon.set":
-      case "workspace.color.set":
-      case "workspace.adoptRelocated":
-      case "workspace.storage.retry": {
-        const workspace = this.#toWorkspaceSummary(result.workspace);
-        this.#update(applyOptimisticCommandPatch(this.#snapshot, { type: result.type, workspace }));
-        if (result.type === "workspace.create") this.#ensureWorkspaceChannel(workspace.id);
-        break;
-      }
       case "thread.create":
-      case "thread.shared-done.set":
       case "thread.rename":
       case "thread.icon.set":
       case "thread.execution.update":
@@ -1372,13 +1302,11 @@ export class HttpHostClient {
             this.#snapshot.inputQueues[parsedCommand.threadId],
           );
           const run = result.run ? toRunQueueEntry(result.run) : null;
-          const workspaceId = this.#threadWorkspace.get(parsedCommand.threadId);
+          const deploymentId = this.#threadDeployment.get(parsedCommand.threadId);
           // The answer may arrive after the Run's own events; it never takes
           // back what they said, including that the Run already ended.
           const admitted =
-            run !== null &&
-            workspaceId !== undefined &&
-            this.#runQueue.acknowledge(run, workspaceId);
+            run !== null && deploymentId !== undefined && this.#runQueue.acknowledge(run);
           this.#update({
             ...applyOptimisticCommandPatch(this.#snapshot, {
               acceptedRunCreatedAt: result.run?.createdAt ?? null,
@@ -1452,7 +1380,7 @@ export class HttpHostClient {
   }
 
   async createAttachment(input: {
-    readonly workspaceId: string;
+    readonly deploymentId: string;
     readonly name: string;
     readonly mediaType: string;
     readonly sizeBytes: number;
@@ -1533,7 +1461,7 @@ export class HttpHostClient {
             appId,
             title: entry.entry.title,
             threadId: thread.id,
-            workspaceId: thread.workspaceId,
+
             latestVersion: entry.entry.version,
             openedAt: new Date().toISOString(),
           });
@@ -1545,7 +1473,6 @@ export class HttpHostClient {
             appId,
             title: app.title,
             threadId: app.threadId,
-            workspaceId: app.workspaceId,
             latestVersion: app.latestVersion,
             openedAt: new Date().toISOString(),
           };
@@ -1696,19 +1623,6 @@ export class HttpHostClient {
       throw new Error("Attachment discard response mismatch.");
   }
 
-  activateWorkspace(workspaceId: string): void {
-    if (!this.#snapshot.workspaces.some(({ id }) => id === workspaceId)) return;
-    this.#ensureWorkspaceChannel(workspaceId);
-    if (this.#activeWorkspaceId === workspaceId) return;
-    this.#activeWorkspaceId = workspaceId;
-    this.#recomputeConnection();
-    if (this.#workspacePrefetchTimer) globalThis.clearTimeout(this.#workspacePrefetchTimer);
-    this.#workspacePrefetchTimer = globalThis.setTimeout(() => {
-      this.#workspacePrefetchTimer = null;
-      void this.rpc["workspace.prefetch"]({ workspaceId }).catch(() => undefined);
-    }, workspacePrefetchDebounceMs);
-  }
-
   activateThread(threadId: string): void {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
     const opened = !this.#showsThread(threadId);
@@ -1722,7 +1636,7 @@ export class HttpHostClient {
     this.#ensureBrowserUsage(threadId, "missing");
     if (!thread) {
       // A deep link can reference a Thread the snapshot has not loaded yet.
-      // Durable history resolves it: every event names the workspace, and the
+
       // page includes thread.created.
       if (this.#snapshot.threadLookups[threadId] !== "loading") {
         this.#update({
@@ -1733,29 +1647,24 @@ export class HttpHostClient {
       this.#ensureThreadHydration(threadId);
       return;
     }
-    this.activateWorkspace(thread.workspaceId);
+    if (this.#snapshot.deploymentId) this.#ensureDeploymentChannel(this.#snapshot.deploymentId);
     this.#ensureThreadHydration(threadId);
     this.#ensureRequests(threadId);
   }
 
-  /**
-   * An observed Thread is held exactly like the active one — hydrated, its
-   * Workspace channel open, its Requests and assignments read — except that
-   * it never becomes the active conversation or moves a read marker. A
-   * Workspace channel it opened stays open like any other the reader visited,
-   * so observing it again, or reconnecting, resumes its stream.
-   */
-  workspacePosition(workspaceId: string): Sequence | null {
-    const channel = this.#channels.get(workspaceId);
+  deploymentPosition(): Sequence | null {
+    const channel = this.#snapshot.deploymentId
+      ? this.#channels.get(this.#snapshot.deploymentId)
+      : undefined;
     return channel?.synchronized ? channel.cursor : null;
   }
 
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
-    const workspaceId = this.#threadWorkspace.get(threadId);
-    if (!workspaceId) throw new Error("Open the conversation before its subagent.");
+    const deploymentId = this.#threadDeployment.get(threadId);
+    if (!deploymentId) throw new Error("Open the conversation before its subagent.");
     ExecutionNodeIdSchema.parse(nodeId);
     const releaseThread = this.observeThread(threadId);
-    const detail = this.#nodeDetails.open(threadId, nodeId, workspaceId);
+    const detail = this.#nodeDetails.open(threadId, nodeId, deploymentId);
     let held = true;
     const releaseThreadOnce = () => {
       if (!held) return;
@@ -1787,8 +1696,8 @@ export class HttpHostClient {
         threadLookups: { ...this.#snapshot.threadLookups, [threadId]: "loading" },
       });
     }
-    const workspaceId = this.#threadWorkspace.get(threadId);
-    if (workspaceId) this.#ensureWorkspaceChannel(workspaceId);
+    const deploymentId = this.#threadDeployment.get(threadId);
+    if (deploymentId) this.#ensureDeploymentChannel(deploymentId);
     this.#ensureThreadHydration(threadId);
     this.#ensureRequests(threadId);
     this.#ensureAssignments(threadId);
@@ -1877,13 +1786,6 @@ export class HttpHostClient {
       });
   }
 
-  /**
-   * A conversation's automations are known only while it is shown: no notice
-   * says what changed in one off screen, so it is read afresh each time it is
-   * opened (after any read still under way, which may predate the change),
-   * and a shown one again whenever its Workspace says triggers changed or its
-   * stream comes back. Shown again while unchanged, it is not reread.
-   */
   #ensureAutomations(threadId: string, again = false): void {
     if (
       this.#disposed ||
@@ -2020,31 +1922,18 @@ export class HttpHostClient {
     return threadId === this.#activeThreadId || this.#observedThreads.has(threadId);
   }
 
-  /** What a triggers notice, or a stream that may have missed one, means for one Workspace. */
-  #triggersChanged(workspaceId: string): void {
-    this.#refreshShownAutomations(workspaceId);
+  #triggersChanged(deploymentId: string): void {
+    this.#refreshShownAutomations(deploymentId);
     this.#update({ ...this.#snapshot, triggerRevision: this.#snapshot.triggerRevision + 1 });
   }
 
-  #refreshShownAutomations(workspaceId: string): void {
+  #refreshShownAutomations(deploymentId: string): void {
     for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
-      if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId)
+      if (threadId !== null && this.#threadDeployment.get(threadId) === deploymentId)
         this.#ensureAutomations(threadId, true);
     }
   }
 
-  /**
-   * Reads a shown conversation's browser usage. `full` rereads everything:
-   * the Host said it changed, or a reconnect may have missed that it did.
-   * `missing` reads only what this client has never read: the conversation
-   * the first time it is shown, or Runs that have appeared in it since — a
-   * history page, or a task's worker — whose pages a link may need. A bootstrap
-   * poll asks nothing; usage the Host announces is reread when it says so.
-   *
-   * A conversation is read once its Workspace stream is live, and not before:
-   * a notice sent between an earlier answer and the subscription would be
-   * lost, so that answer would have to be read again.
-   */
   #ensureBrowserUsage(threadId: string, mode: "full" | "missing"): void {
     if (
       this.#disposed ||
@@ -2053,8 +1942,8 @@ export class HttpHostClient {
       !this.#showsThread(threadId)
     )
       return;
-    const workspaceId = this.#threadWorkspace.get(threadId);
-    const channel = workspaceId === undefined ? undefined : this.#channels.get(workspaceId);
+    const deploymentId = this.#threadDeployment.get(threadId);
+    const channel = deploymentId === undefined ? undefined : this.#channels.get(deploymentId);
     if (channel && !channel.synchronized && !channel.refused) return;
     const pending = this.#browserUsageReads.get(threadId);
     if (pending) {
@@ -2362,7 +2251,7 @@ export class HttpHostClient {
     if (!this.#viewerStillCurrent(generation, userId)) return;
     if (page.threadId !== threadId) throw new Error("Thread event page mismatch.");
     this.#historicalThreads.add(threadId);
-    this.#acceptHomeWindow(threadId, page.thread.workspaceId, false);
+
     this.#update({
       ...this.#snapshot,
       assignments: withAssignmentsFrom(this.#snapshot.assignments, page.events),
@@ -2433,13 +2322,9 @@ export class HttpHostClient {
     return () => this.#personShowListeners.delete(listener);
   }
 
-  #applyReadStates(
-    incoming: readonly ThreadReadState[],
-    markers?: ReadonlyMap<string, Sequence>,
-  ): void {
+  #mergedReadStates(incoming: readonly ThreadReadState[], markers?: ReadonlyMap<string, Sequence>) {
     const states = { ...this.#snapshot.threadReadStates };
     for (const state of incoming) {
-      if (this.#forbiddenWorkspaces.has(this.#threadWorkspace.get(state.threadId) ?? "")) continue;
       const marker = markers?.get(state.threadId);
       const merged = mergeThreadReadState(states[state.threadId], state);
       states[state.threadId] =
@@ -2447,13 +2332,22 @@ export class HttpHostClient {
           ? { ...merged, readSequence: marker }
           : merged;
     }
-    this.#update({ ...this.#snapshot, threadReadStates: states });
+    return states;
+  }
+
+  #applyReadStates(
+    incoming: readonly ThreadReadState[],
+    markers?: ReadonlyMap<string, Sequence>,
+  ): void {
+    this.#update({
+      ...this.#snapshot,
+      threadReadStates: this.#mergedReadStates(incoming, markers),
+    });
   }
 
   #applyReadMarkers(markers: readonly { threadId: string; readSequence: Sequence }[]): void {
     const states = { ...this.#snapshot.threadReadStates };
     for (const { threadId, readSequence } of markers) {
-      if (this.#forbiddenWorkspaces.has(this.#threadWorkspace.get(threadId) ?? "")) continue;
       for (const pending of this.#readStateLoads) {
         pending.set(threadId, maxSequence(pending.get(threadId) ?? zeroSequence, readSequence));
       }
@@ -2462,21 +2356,6 @@ export class HttpHostClient {
         states[threadId] = { ...state, readSequence };
     }
     this.#update({ ...this.#snapshot, threadReadStates: states });
-  }
-
-  #applyNotificationPreferences(preferences: readonly WorkspaceNotificationPreference[]): void {
-    for (const preference of preferences) {
-      if (this.#forbiddenWorkspaces.has(preference.workspaceId)) continue;
-      const previous = this.#notificationPreferences.get(preference.workspaceId);
-      if (!previous || compareSequence(preference.revision, previous.revision) >= 0)
-        this.#notificationPreferences.set(preference.workspaceId, preference);
-    }
-    this.#update({
-      ...this.#snapshot,
-      notificationMutes: [...this.#notificationPreferences.values()]
-        .filter(({ muted }) => muted)
-        .map(({ workspaceId }) => workspaceId),
-    });
   }
 
   async markThreadRead(threadId: string, throughSequence: string): Promise<void> {
@@ -2493,21 +2372,6 @@ export class HttpHostClient {
     if (result.type !== "thread.read.mark") throw new Error("Read marker command mismatch.");
     if (!this.#viewerStillCurrent(generation, userId)) return;
     this.#applyReadStates([result.state]);
-  }
-
-  async setWorkspaceNotificationMute(workspaceId: string, muted: boolean): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const result = await this.dispatch({
-      type: "workspace.notifications.update",
-      idempotencyKey: mutationIdempotencyKey(`mute:${workspaceId}`),
-      workspaceId,
-      muted,
-    });
-    if (result.type !== "workspace.notifications.update")
-      throw new Error("Notification preference command mismatch.");
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    this.#applyNotificationPreferences([result]);
   }
 
   #ensureThreadHydration(threadId: string): void {
@@ -2592,8 +2456,8 @@ export class HttpHostClient {
       }
       if (overtaken())
         throw new Error("The connection changed while loading this conversation. Try again.");
-      const { history, page, window, complete } = latest;
-      this.#allowWorkspace(page.thread.workspaceId, generation);
+      const { history, page, window } = latest;
+
       const activeNodes = await this.#readActiveNodes(threadId);
       if (!this.#viewerStillCurrent(generation, userId)) return;
       let entries = history.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
@@ -2627,7 +2491,7 @@ export class HttpHostClient {
       const threads = this.#snapshot.threads.some(({ id }) => id === threadId)
         ? this.#snapshot.threads.map((thread) => (thread.id === threadId ? summary : thread))
         : [summary, ...this.#snapshot.threads];
-      const workspaceId = page.thread.workspaceId;
+      const deploymentId = this.#snapshot.deploymentId!;
       const threadLookups = { ...this.#snapshot.threadLookups };
       delete threadLookups[threadId];
       if (restoreLatest) this.#historicalThreads.delete(threadId);
@@ -2640,17 +2504,9 @@ export class HttpHostClient {
         transcripts: { ...this.#snapshot.transcripts, [threadId]: entries },
         transcriptWindows: { ...this.#snapshot.transcriptWindows, [threadId]: window },
       });
-      if (workspaceId) this.#ensureWorkspaceChannel(workspaceId);
+      if (deploymentId) this.#ensureDeploymentChannel(deploymentId);
       if (this.#observedThreads.has(threadId)) this.#ensureRequests(threadId);
       this.#applyReadStates([page.readState], markers);
-      if (
-        this.#acceptHomeWindow(
-          threadId,
-          workspaceId,
-          complete && !this.#historicalThreads.has(threadId),
-        )
-      )
-        this.#update(this.#snapshot);
     } catch (error) {
       // A worker the Host will not show this viewer takes its tasks with it.
       if (this.#viewerStillCurrent(generation, userId))
@@ -2711,7 +2567,7 @@ export class HttpHostClient {
       history,
       page,
       window,
-      // A capped read that still draws nothing must not replace a saved Home.
+
       complete: !window.hasMore || this.#drawnRowCount(thread, entries, assignments) > 0,
     };
   }
@@ -2733,7 +2589,7 @@ export class HttpHostClient {
 
   /** How many rows a Thread's transcript draws once its history is settled. */
   #drawnRowCount(
-    thread: Pick<ThreadSummary, "id" | "role" | "inputQueuePaused">,
+    thread: Pick<ThreadSummary, "id" | "purpose" | "inputQueuePaused">,
     entries: readonly TranscriptEntry[],
     assignments: HostSnapshot["assignments"],
   ): number {
@@ -2764,71 +2620,38 @@ export class HttpHostClient {
     return page;
   }
 
-  async loadEarlierWorkspaces(): Promise<void> {
-    if (this.#workspacePageLoad) return this.#workspacePageLoad;
-    const operation = this.#loadEarlierWorkspaces().finally(() => {
-      if (this.#workspacePageLoad === operation) this.#workspacePageLoad = null;
-    });
-    this.#workspacePageLoad = operation;
-    return operation;
-  }
-
-  async listWorkspaceFiles(
-    workspaceId: string,
-    input: {
-      readonly cursor?: string;
-      readonly knownRevision?: string;
-      readonly parentKey: string;
-      readonly retainedCursor?: string;
-    },
+  async listFolderFiles(
+    folder: import("@opensteer/core").TaskFolder,
+    input: { parentKey: string; cursor?: string; knownRevision?: string },
     signal?: AbortSignal,
   ) {
     return unwrapRpcResult(
-      await this.rpc["workspace.files.list"]({ ...input, workspaceId }, signal ? { signal } : {}),
+      await this.rpc["folder.files.list"]({ folder, ...input }, signal ? { signal } : {}),
     );
   }
 
-  async previewWorkspaceFile(
-    workspaceId: string,
+  async previewFolderFile(
+    folder: import("@opensteer/core").TaskFolder,
     fileKey: string,
     signal?: AbortSignal,
-  ): Promise<WorkspaceFilePreview> {
-    const { bytes, metadata } = unwrapRpcResult(
-      await this.rpc["workspace.files.preview"]({ fileKey, workspaceId }, signal ? { signal } : {}),
+  ) {
+    return unwrapRpcResult(
+      await this.rpc["folder.files.preview"]({ folder, fileKey }, signal ? { signal } : {}),
     );
-    if (bytes.byteLength > workspaceFilePreviewMaxBytes) {
-      throw new Error("File preview exceeded its byte limit.");
-    }
-    let content: string | null = null;
-    if (isTextContentType(metadata.contentType)) {
-      try {
-        content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      } catch {
-        // A declared text file may still contain arbitrary bytes. Navigation
-        // remains available; only the unsafe inline preview is withheld.
-      }
-    }
-    return { content, metadata };
-  }
-
-  workspaceFileDownloadUrl(workspaceId: string, fileKey: string): string {
-    const query = new URLSearchParams({ file: fileKey });
-    return this.#url(`/v1/workspaces/${encodeURIComponent(workspaceId)}/files/download?${query}`);
   }
 
   async startBrowser(
-    workspaceId: string,
+    deploymentId: string,
     identity: BrowserStartIdentity,
     placement?: BrowserPlacementSummary,
     threadId?: string,
     viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
   ): Promise<BrowserSessionSummary> {
-    // The Workspace may be an authorized delegation destination outside the
     // catalog page. Command admission, not this cache, checks access.
     if (!this.#snapshot.browserAvailable) {
       throw new Error("This Host does not have a connected Browser Runtime.");
     }
-    this.#ensureWorkspaceChannel(workspaceId);
+    this.#ensureDeploymentChannel(deploymentId);
     const result = await this.dispatch({
       idempotencyKey: mutationIdempotencyKey("browser"),
       input: {
@@ -2843,7 +2666,6 @@ export class HttpHostClient {
           : { profileId: identity.profileId }),
       },
       type: "browser.session.start",
-      workspaceId,
     });
     if (result.type !== "browser.session.start") {
       throw new Error("Browser session command mismatch.");
@@ -2928,51 +2750,31 @@ export class HttpHostClient {
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
-    const workspace = this.#snapshot.workspaces.find((item) => item.id === input.workspaceId);
-    if (!workspace) throw new Error("Workspace not found.");
-    if (workspace.status !== "ready") throw new Error("This Workspace is not ready yet.");
     const result = await this.dispatch({
+      type: "thread.create",
       accessMode: input.accessMode,
       environmentId: input.environmentId,
       harnessInstanceId: input.harnessInstanceId,
       idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
       modelSelection: input.modelSelection,
       ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.home ? { home: true } : {}),
-      ...(input.generateTitle && this.#snapshot.threadRenameAvailable
-        ? { generateTitle: true }
-        : {}),
-      title: input.title?.trim() || "Untitled thread",
-      type: "thread.create",
-      workspaceId: input.workspaceId,
+      ...(input.folder ? { folder: input.folder } : {}),
+      ...(input.generateTitle ? { generateTitle: true } : {}),
+      title: input.title?.trim() || "New task",
     });
     if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
-    const thread =
+    await this.#rememberQuietly({
+      accessMode: input.accessMode,
+      selection: {
+        environmentId: input.environmentId,
+        harnessInstanceId: input.harnessInstanceId,
+        modelSelection: input.modelSelection,
+      },
+    });
+    return (
       this.#snapshot.threads.find(({ id }) => id === result.thread.id) ??
-      toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses);
-    if (input.home)
-      this.#update({
-        ...this.#snapshot,
-        ...(thread.workspaceId === this.#snapshot.homeWorkspaceId
-          ? { homeThreadId: thread.id }
-          : {}),
-        workspaces: this.#snapshot.workspaces.map((item) =>
-          item.id === thread.workspaceId ? { ...item, homeThreadId: thread.id } : item,
-        ),
-      });
-    await this.#rememberQuietly(
-      input.home
-        ? { accessMode: input.accessMode }
-        : {
-            accessMode: input.accessMode,
-            selection: {
-              environmentId: input.environmentId,
-              harnessInstanceId: input.harnessInstanceId,
-              modelSelection: input.modelSelection,
-            },
-          },
+      toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses)
     );
-    return thread;
   }
 
   async rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
@@ -2989,22 +2791,11 @@ export class HttpHostClient {
     return result.preferences;
   }
 
-  createHome(
-    input: Omit<CreateThreadInput, "parentThreadId" | "title" | "home">,
-  ): Promise<ThreadSummary> {
-    return this.createThread({ ...input, home: true, title: CHAT_THREAD_TITLE });
-  }
-
   async renameThread(threadId: string, title: string): Promise<ThreadSummary> {
     if (!this.#snapshot.threadRenameAvailable)
       throw new Error("This Host does not support task renaming.");
     const trimmed = ThreadTitleSchema.parse(title);
     const thread = threadInDirectory(threadId, this.#snapshot);
-    if (
-      threadId === this.#snapshot.homeThreadId ||
-      this.#snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId)
-    )
-      throw new Error("Chat cannot be renamed.");
     if (thread) this.#threadState.reconcile(thread, zeroSequence);
     const generation = this.#viewerGeneration;
     const token = Symbol(threadId);
@@ -3049,11 +2840,6 @@ export class HttpHostClient {
     command: Extract<HostApiCommand, { type: "thread.icon.set" }>,
   ): Promise<HostApiCommandOutput> {
     const { threadId } = command;
-    if (
-      threadId === this.#snapshot.homeThreadId ||
-      this.#snapshot.workspaces.some(({ homeThreadId }) => homeThreadId === threadId)
-    )
-      throw new Error("Chat's icon cannot be changed.");
     const thread = threadInDirectory(threadId, this.#snapshot);
     if (thread) this.#threadState.reconcile(thread, zeroSequence);
     const generation = this.#viewerGeneration;
@@ -3068,26 +2854,6 @@ export class HttpHostClient {
         this.#threadIcons.get(threadId)?.token === token
       ) {
         this.#threadIcons.delete(threadId);
-        if (!this.#disposed) this.#update(this.#snapshot);
-      }
-    }
-  }
-
-  async #setWorkspaceColor(
-    command: Extract<HostApiCommand, { type: "workspace.color.set" }>,
-  ): Promise<HostApiCommandOutput> {
-    const generation = this.#viewerGeneration;
-    const token = Symbol(command.workspaceId);
-    this.#workspaceColorEdits.set(command.workspaceId, { color: command.color, token });
-    this.#update(this.#snapshot);
-    try {
-      return await this.#dispatchCommand(command);
-    } finally {
-      if (
-        generation === this.#viewerGeneration &&
-        this.#workspaceColorEdits.get(command.workspaceId)?.token === token
-      ) {
-        this.#workspaceColorEdits.delete(command.workspaceId);
         if (!this.#disposed) this.#update(this.#snapshot);
       }
     }
@@ -3114,7 +2880,7 @@ export class HttpHostClient {
       this.#snapshot.environments,
       this.#snapshot.harnesses,
     );
-    if (thread.id !== this.#snapshot.homeThreadId) {
+    {
       await this.#rememberQuietly({
         selection: {
           environmentId: thread.environmentId,
@@ -3378,8 +3144,8 @@ export class HttpHostClient {
     this.#clearAttachmentReads();
     this.#cancelLostFrameReread();
     this.browserHistory.dispose();
-    this.#workspaceTabActivations.dispose();
-    this.#snapshot = { ...this.#snapshot, activatingWorkspaceTabs: [] };
+    this.#personalTabActivations.dispose();
+    this.#snapshot = { ...this.#snapshot, activatingPersonalTabs: [] };
     this.#disposed = true;
     for (const check of this.#browserWaiters) check();
     this.#computerViews.clear();
@@ -3396,8 +3162,6 @@ export class HttpHostClient {
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
-    this.#workspaceColors.clear();
-    this.#workspaceColorEdits.clear();
     this.#runQueue.clear();
     this.#live.clear();
     this.#heldLive.clear();
@@ -3406,8 +3170,6 @@ export class HttpHostClient {
     if (this.#refreshTimer) globalThis.clearInterval(this.#refreshTimer);
     this.#refreshTimer = null;
     this.#stopLiveness();
-    if (this.#workspacePrefetchTimer) globalThis.clearTimeout(this.#workspacePrefetchTimer);
-    this.#workspacePrefetchTimer = null;
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
     this.#assignmentReads.clear();
@@ -3478,13 +3240,6 @@ export class HttpHostClient {
     void this.#bootstrap(reason, false, false, trigger).catch(() => undefined);
   }
 
-  /**
-   * Rereads what waits on this person. `host.requests-changed` names nothing,
-   * so the answer is always the whole list, and it is asked of the Host rather
-   * than pieced together from the Workspaces this client happens to follow.
-   * A notice during a read earns exactly one more, so the last read is never
-   * one that started before the change it was told about.
-   */
   #rereadWaitingRequests(): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
     if (this.#waitingRead !== "idle") {
@@ -3501,7 +3256,30 @@ export class HttpHostClient {
       });
   }
 
+  async loadEarlierNeedsYou(): Promise<void> {
+    const held = this.#snapshot.needsYou,
+      generation = this.#viewerGeneration;
+    if (!held?.window.hasMore || !held.window.nextBefore) return;
+    const page = unwrapRpcResult(
+      await this.rpc["needsYou.get"]({ before: held.window.nextBefore, limit: 50 }),
+    );
+    if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
+      return;
+    const ids = new Set(held.entries.map(({ request }) => request.id));
+    this.#update({
+      ...this.#snapshot,
+      needsYou: {
+        ...page,
+        entries: [...held.entries, ...page.entries.filter(({ request }) => !ids.has(request.id))],
+      },
+    });
+  }
+
   async #readWaitingRequests(): Promise<void> {
+    const needsGeneration = this.#viewerGeneration;
+    const needsYou = unwrapRpcResult(await this.rpc["needsYou.get"]({}));
+    if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
+    this.#update({ ...this.#snapshot, needsYou });
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
     const waitingRequests: WaitingRequest[] = [];
@@ -3523,13 +3301,6 @@ export class HttpHostClient {
     this.#update({ ...this.#snapshot, waitingRequests });
   }
 
-  /**
-   * Rebuilds the complete active set and the loaded history prefix of every
-   * task list this client holds: the reader's and each Workspace's a screen asked for.
-   * `host.tasks-changed` names nothing, and a bootstrap or a stream starting
-   * over may follow a notice this client missed. Hidden, it waits: coming to
-   * the foreground rereads anyway.
-   */
   #rereadTasks(): void {
     if (
       this.#disposed ||
@@ -3537,30 +3308,16 @@ export class HttpHostClient {
       this.#snapshot.session !== "authenticated"
     )
       return;
-    for (const scope of [null, ...this.#workspaceTaskScopes])
+    for (const scope of [null, "active", "done:*"])
       void this.#readFirstTaskPage(scope, "changed").catch(() => undefined);
   }
 
-  loadWorkspaceTasks(workspaceId: string): Promise<void> {
-    if (this.#disposed || this.#snapshot.session !== "authenticated") return Promise.resolve();
-    this.#workspaceTaskScopes.add(workspaceId);
-    return this.#readFirstTaskPage(workspaceId, "asked");
+  loadDoneTasks(): Promise<void> {
+    return this.#readFirstTaskPage("done:*", "asked");
   }
 
-  loadDoneTasks(workspaceId?: string): Promise<void> {
-    if (
-      this.#disposed ||
-      this.#snapshot.session !== "authenticated" ||
-      !this.#snapshot.quietTasksAvailable
-    )
-      return Promise.resolve();
-    const scope = doneTaskScope(workspaceId);
-    this.#workspaceTaskScopes.add(scope);
-    return this.#readFirstTaskPage(scope, "asked");
-  }
-
-  loadEarlierDoneTasks(workspaceId?: string): Promise<void> {
-    return this.#loadEarlier(doneTaskScope(workspaceId));
+  loadEarlierDoneTasks(): Promise<void> {
+    return this.#loadEarlier("done:*");
   }
 
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
@@ -3611,8 +3368,8 @@ export class HttpHostClient {
     return read.done;
   }
 
-  loadEarlierTasks(workspaceId?: string): Promise<void> {
-    return this.#loadEarlier(workspaceId ?? null);
+  loadEarlierTasks(): Promise<void> {
+    return this.#loadEarlier(null);
   }
 
   #loadEarlier(scope: string | null): Promise<void> {
@@ -3637,11 +3394,11 @@ export class HttpHostClient {
   }
 
   #heldTasks(scope: string | null): TaskListState | null {
-    if (scope === null) return this.#snapshot.tasks;
-    const done = doneListKey(scope);
-    return done === null
-      ? (this.#snapshot.workspaceTasks[scope] ?? null)
-      : (this.#snapshot.doneTasks[done] ?? null);
+    return scope === null
+      ? this.#snapshot.tasks
+      : scope === "active"
+        ? null
+        : (this.#snapshot.doneTasks[mainDoneTasks] ?? null);
   }
 
   /** Replaces a loaded prefix atomically, or appends one page after its cursor. */
@@ -3650,105 +3407,59 @@ export class HttpHostClient {
     cursor: string | null,
     minimumItems = 0,
   ): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const done = scope === null ? null : doneListKey(scope);
-    const workspaceId =
-      scope === null ? null : done === null ? scope : done === mainDoneTasks ? null : done;
+    const generation = this.#viewerGeneration,
+      userId = this.#snapshot.user?.id;
     const markers = new Map<string, Sequence>();
     this.#readStateLoads.add(markers);
     try {
-      const readStates: ThreadReadState[] = [];
-      const readPages = async (active: boolean): Promise<TaskListState | null> => {
-        let merged = active || cursor === null ? null : this.#heldTasks(scope);
-        let before = active ? null : cursor;
-        do {
-          const page = unwrapRpcResult(
-            await this.rpc["tasks.list"]({
-              ...(active ? { active: true } : {}),
-              ...(before ? { before } : {}),
-              ...(done === null ? {} : { done: true }),
-              limit: threadPageMaxItems,
-              ...(workspaceId === null ? {} : { workspaceId }),
-            }),
-          );
-          if (!this.#viewerStillCurrent(generation, userId)) return null;
-          if (scope !== null && !this.#workspaceTaskScopes.has(scope)) return null;
-          for (const { thread } of page.tasks) this.#allowWorkspace(thread.workspaceId, generation);
-          merged = mergeTasks(merged, {
-            entries: page.tasks.map((entry) => {
-              const thread = toThreadSummary(
-                entry.thread,
-                this.#snapshot.environments,
-                this.#snapshot.harnesses,
-              );
-              const readState = page.readStates.find(({ threadId }) => threadId === thread.id);
-              const name = readState
-                ? this.#threadState.name(
-                    this.#threadState.reconcile(thread, readState.asOfSequence),
-                  )
-                : thread;
-              return {
-                failure: entry.failure,
-                lastReply: entry.lastReply,
-                thread: { ...thread, ...name },
-              };
-            }),
-            window: page.window,
-          });
-          readStates.push(...page.readStates);
-          if (!page.window.hasMore || (!active && merged.entries.length >= minimumItems)) break;
-          const next = page.window.nextBefore;
-          if (!next || next === before)
-            throw new Error("Task page is missing its continuation cursor.");
-          before = next;
-        } while (before !== null);
-        return merged;
-      };
-      const [merged, active] = await Promise.all([
-        readPages(false),
-        scope === null && cursor === null ? readPages(true) : Promise.resolve(null),
-      ]);
+      let before = cursor,
+        merged = cursor ? this.#heldTasks(scope) : null;
+      const states: ThreadReadState[] = [];
+      for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+        const page = unwrapRpcResult(
+          await this.rpc["tasks.list"]({
+            ...(scope === "active" ? { active: true } : scope ? { done: true } : {}),
+            ...(before ? { before } : {}),
+            limit: threadPageMaxItems,
+          }),
+        );
+        if (!this.#viewerStillCurrent(generation, userId)) return;
+        const positions = new Map(
+          page.readStates.map((state) => [state.threadId, state.asOfSequence]),
+        );
+        merged = mergeTasks(merged, {
+          entries: page.tasks.map((entry) => ({
+            ...entry,
+            thread: this.#threadState.reconcile(
+              toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+              positions.get(entry.thread.id) ?? zeroSequence,
+            ),
+          })),
+          window: page.window,
+        });
+        states.push(...page.readStates);
+        if (!page.window.hasMore || (scope !== "active" && merged.entries.length >= minimumItems))
+          break;
+        if (!page.window.nextBefore || page.window.nextBefore === before)
+          throw new Error("Task page is missing its continuation cursor.");
+        before = page.window.nextBefore;
+      }
       if (!merged || !this.#viewerStillCurrent(generation, userId)) return;
-      if (scope !== null && !this.#workspaceTaskScopes.has(scope)) return;
-      const tasksWereReady = this.#savedViewReadiness.tasksReady;
-      if (scope === null)
-        this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: false };
+      if (!scope) this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
+      const threadReadStates = this.#mergedReadStates(states, markers);
       this.#update(
-        scope === null
-          ? { ...this.#snapshot, tasks: merged, ...(active ? { activeTasks: active.entries } : {}) }
-          : done !== null
-            ? { ...this.#snapshot, doneTasks: { ...this.#snapshot.doneTasks, [done]: merged } }
-            : {
-                ...this.#snapshot,
-                workspaceTasks: { ...this.#snapshot.workspaceTasks, [scope]: merged },
-              },
+        scope === "active"
+          ? { ...this.#snapshot, threadReadStates, activeTasks: merged.entries }
+          : scope
+            ? { ...this.#snapshot, threadReadStates, doneTasks: { [mainDoneTasks]: merged } }
+            : { ...this.#snapshot, threadReadStates, tasks: merged },
       );
-      this.#applyReadStates(readStates, markers);
-      if (
-        scope === null &&
-        (tasksWereReady || (cursor === null && active !== null)) &&
-        this.#viewerStillCurrent(generation, userId)
-      ) {
-        this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
-        this.#update(this.#snapshot);
-      }
-    } catch (error) {
-      if (
-        workspaceId !== null &&
-        this.#viewerStillCurrent(generation, userId) &&
-        error instanceof HostClientRequestError &&
-        (error.code === "forbidden" || error.code === "not_found")
-      ) {
-        this.#refuseWorkspace(workspaceId);
-      }
-      throw error;
     } finally {
       this.#readStateLoads.delete(markers);
     }
   }
 
-  async setTaskDone(threadId: string, done: boolean): Promise<Thread> {
+  async setTaskDone(threadId: string, done: boolean): Promise<void> {
     if (!ThreadIdSchema.safeParse(threadId).success) {
       throw new HostClientRequestError({
         code: "not_found",
@@ -3760,10 +3471,11 @@ export class HttpHostClient {
       done,
       idempotencyKey: mutationIdempotencyKey(`done:${threadId}`),
       threadId,
-      type: "thread.shared-done.set",
+      type: "thread.done.set",
     });
-    if (result.type !== "thread.shared-done.set") throw new Error("Done command mismatch.");
-    return result.thread;
+    if (result.type !== "thread.done.set") throw new Error("Done command mismatch.");
+    this.#applyReadStates([result.state]);
+    this.#rereadTasks();
   }
 
   #reverifyCapabilities(): void {
@@ -3793,15 +3505,14 @@ export class HttpHostClient {
       taskMarksAvailable: capabilities.includes("task-marks-v1"),
       integrationAppFinishAvailable: capabilities.includes("integration-app-finish-v1"),
       integrationAppReturnPortAvailable: capabilities.includes("integration-app-return-port-v1"),
-      sharedTaskDoneAvailable: capabilities.includes("shared-task-done-v1"),
+
       quietTasksAvailable: capabilities.includes("quiet-tasks-v1"),
       harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
-      workspaceTabReopenAvailable: capabilities.includes("workspace-tab-reopen-v1"),
+      tabReopenAvailable: capabilities.includes("tab-reopen-v1"),
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
       voiceAvailable: capabilities.includes("voice-run-v1"),
-      teamAdministrationAvailable: capabilities.includes("team-administration-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
     if (changed) {
@@ -3811,11 +3522,10 @@ export class HttpHostClient {
   }
 
   async #performBootstrap(reason: BootstrapReason, revalidateCapabilities: boolean): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const appTabMark = this.#appTabGeneration;
-    const presenceMark = this.#presenceCounter;
-    const ownerViewRevision = this.#ownerViews.revision;
-    // The interval's own read is no new attempt, so an outage reads one way.
+    let generation = this.#viewerGeneration;
+    const appTabMark = this.#appTabGeneration,
+      presenceMark = this.#presenceCounter,
+      ownerViewRevision = this.#ownerViews.revision;
     if (
       this.#snapshot.session === "checking" ||
       (this.#snapshot.connection === "offline" && reason !== "interval")
@@ -3829,25 +3539,11 @@ export class HttpHostClient {
     bootstrapReadDiagnostics.start(reason);
     const response = await this.rpc["bootstrap.get"]({});
     if (!response.ok && response.error.code === "unauthorized") {
-      if (this.#disposed || this.#snapshot.session !== "authentication-required") return;
-      const authGeneration = this.#viewerGeneration;
-      this.#stopRefresh();
-      for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
-      this.#channels.clear();
-      const identityConfig = unwrapRpcResult(await this.rpc["auth.config"]({}));
-      if (
-        this.#disposed ||
-        authGeneration !== this.#viewerGeneration ||
-        this.#snapshot.session !== "authentication-required"
-      )
-        return;
-      this.#update({
-        ...emptySnapshot(),
-        connection: "connected",
-        identityConfig,
-        revision: this.#snapshot.revision,
-        session: "authentication-required",
-      });
+      if (generation === this.#viewerGeneration) this.#expireSession();
+      const authGeneration = this.#viewerGeneration,
+        identityConfig = unwrapRpcResult(await this.rpc["auth.config"]({}));
+      if (authGeneration === this.#viewerGeneration && !this.#disposed)
+        this.#update({ ...this.#snapshot, identityConfig, connection: "connected" });
       return;
     }
     if (generation !== this.#viewerGeneration || this.#disposed) return;
@@ -3856,197 +3552,112 @@ export class HttpHostClient {
     if (this.#hostUnreachable) this.#update({ ...this.#snapshot, connection: "offline" });
     const payload = unwrapRpcResult(response);
     if (generation !== this.#viewerGeneration || this.#disposed) return;
-    // Reauthentication can replace the viewer without an intervening 401.
-    // Read markers and mute revisions belong to that viewer, not the Host.
     if (
       (this.#snapshot.user && this.#snapshot.user.id !== payload.user.id) ||
       (this.#snapshot.deploymentId && this.#snapshot.deploymentId !== payload.deploymentId)
-    )
+    ) {
       this.#expireSession();
-    for (const workspace of payload.workspaces) this.#allowWorkspace(workspace.id, generation);
-    if (payload.homeWorkspace) this.#allowWorkspace(payload.homeWorkspace.id, generation);
-    const environments = payload.environments.map((environment) => ({
-      ...environment,
-      harnessAuthenticationAllowed: environment.harnessAuthenticationAllowed,
-      harnessCatalogs: environment.harnessCatalogs.map((catalog) => ({ ...catalog })),
-      harnessDrivers: environment.harnessDrivers.map((driver) => ({ ...driver })),
-      status: environment.status,
-    }));
-    const harnesses = payload.harnesses.map(
-      ({
-        automaticEligible,
-        config,
-        driverKind,
-        enabled,
-        environmentId,
-        id,
-        isDefault,
-        name,
-        modelSettings,
-        runtimeRevision,
-        sourceId,
-        stateKind,
-      }) => ({
-        automaticEligible,
-        driverKind,
-        enabled,
-        environmentId,
-        id,
-        isDefault,
-        name,
-        modelSettings,
-        runtimeRevision,
-        ...harnessEndpoint(config),
-        sourceId,
-        stateKind,
-      }),
-    );
-    const catalogWorkspaces = payload.workspaces.map((workspace) =>
-      this.#reconcileWorkspaceColor(toWorkspaceSummary(workspace, environments, harnesses)),
-    );
-    const homeWorkspace = payload.homeWorkspace
-      ? this.#reconcileWorkspaceColor(
-          toWorkspaceSummary(payload.homeWorkspace, environments, harnesses),
-        )
-      : (catalogWorkspaces.find((workspace) => workspace.kind === "main") ?? null);
-    const bootstrappedWorkspaces = homeWorkspace
-      ? [homeWorkspace, ...catalogWorkspaces.filter(({ id }) => id !== homeWorkspace.id)]
-      : catalogWorkspaces;
-    const recentWorkspaceIds = new Set(bootstrappedWorkspaces.map(({ id }) => id));
-    const retainedWorkspaces = this.#snapshot.workspaces.filter(
-      ({ id }) => !recentWorkspaceIds.has(id),
-    );
-    const workspaces = [...bootstrappedWorkspaces, ...retainedWorkspaces];
-    const workspaceIds = new Set(workspaces.map(({ id }) => id));
-    for (const [workspaceId, channel] of this.#channels) {
-      if (workspaceIds.has(workspaceId)) continue;
-      this.#closeChannel(channel, false);
-      this.#channels.delete(workspaceId);
+      generation = this.#viewerGeneration;
     }
-    const threads = this.#snapshot.threads
-      .filter((thread) => workspaceIds.has(thread.workspaceId))
-      .map((thread) => ({
-        ...thread,
-        harnessLabel:
-          harnesses.find((harness) => harness.id === thread.harnessInstanceId)?.name ??
-          "Unavailable harness",
-        modelLabel: modelLabel(thread.modelSelection, environments),
-        modelSelection: thread.modelSelection,
-        runnerLabel:
-          environments.find((environment) => environment.id === thread.environmentId)?.name ??
-          "Unavailable work location",
-      }));
-    const retainedThreadIds = new Set(threads.map((thread) => thread.id));
-    const transcripts = Object.fromEntries(
-      Object.entries(this.#snapshot.transcripts).filter(([threadId]) =>
-        retainedThreadIds.has(threadId),
-      ),
-    );
-    const transcriptWindows = Object.fromEntries(
-      Object.entries(this.#snapshot.transcriptWindows).filter(([threadId]) =>
-        retainedThreadIds.has(threadId),
-      ),
-    );
-    const inputQueues = Object.fromEntries(
-      Object.entries(this.#snapshot.inputQueues).filter(([threadId]) =>
-        retainedThreadIds.has(threadId),
-      ),
-    );
-    // Browser authorization is the Host's answer. A session's Workspace may
-    // be outside the current catalog page but explicitly opened from a delegation.
+    const environments = payload.environments.map((environment) => ({ ...environment }));
+    const harnesses = payload.harnesses.map(({ config, ...harness }) => ({
+      ...harness,
+      ...harnessEndpoint(config),
+    }));
     const patchedSince = (sessionId: string) =>
       (this.#presenceMarks.get(sessionId) ?? 0) > presenceMark;
-    const bootstrapData: Partial<HostSnapshot> = {
-      browserProfileGrants: payload.browser.profileGrants.map((grant) => ({ ...grant })),
-      browserTabGroups: this.#tabGroups.receive(
-        payload.browser.tabGroupsVersion === 1 ? payload.browser.tabGroups : undefined,
-      ),
-      workspaceTabRestoreVersion: payload.browser.workspaceTabRestoreVersion,
-      browserAvailable: payload.browser.available,
-      browserPlacements: payload.browser.placements.map((placement) => ({ ...placement })),
-      browserProfiles: payload.browser.profiles.map((profile) => ({ ...profile })),
-      browserProfileHomes: payload.browser.profileHomes?.slice(),
-      browserProfileDeletions: payload.browser.profileDeletions?.map((deletion) => ({
-        ...deletion,
-      })),
-      ...this.#applyAppTabs(
-        appTabMark === this.#appTabGeneration
-          ? this.#overlayAppTabs(payload.appTabs ?? [])
-          : (this.#snapshot.appTabs ?? []),
-      ),
-      connection: workspaces.length ? this.#snapshot.connection : "connected",
-      deploymentShape: payload.deploymentShape,
-      deploymentPolicy: hostDeploymentPolicy(payload),
-      deploymentId: payload.deploymentId,
-      environments,
-      // Absence is the older Host saying nothing is remembered, not a gap to
-      // fill in: the protocol made the field optional, never defaulted.
-      executionPreferences: payload.executionPreferences ?? emptyExecutionPreferences,
-      quietTaskDays: payload.quietTaskDays ?? null,
-      harnesses,
-      homeWorkspaceId: homeWorkspace?.id ?? null,
-      homeThreadId: homeWorkspace?.homeThreadId ?? null,
-      voiceThreadId: homeWorkspace?.voiceThreadId ?? null,
-      identityConfig: payload.identityConfig,
-      machines: payload.machines.map((machine) =>
-        this.#ownerViews.reread(
-          withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
-          this.#snapshot.machines.find((current) => current.id === machine.id),
-          ownerViewRevision,
-        ),
-      ),
-      ownerName: payload.user.displayName,
-      session: "authenticated",
-      ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
-      sessionSurface: payload.sessionSurface ?? null,
-      threads,
-      user: payload.user,
-      workspaceSharingAvailable: payload.workspaceSharingAvailable,
-      // Home and retained pages supplement this list; only the catalog cursor
-      // can establish whether that catalog has been fully read.
-      workspaceWindow: payload.workspaceWindow,
-      workspaces,
-    };
+    const threads = this.#snapshot.threads.map((thread) => ({
+      ...thread,
+      harnessLabel:
+        harnesses.find((harness) => harness.id === thread.harnessInstanceId)?.name ??
+        "Unavailable harness",
+      runnerLabel:
+        environments.find((environment) => environment.id === thread.environmentId)?.name ??
+        "Unavailable work location",
+      modelLabel: modelLabel(thread.modelSelection, environments),
+    }));
     this.#update({
       ...this.#snapshot,
-      ...shareBootstrapData(this.#snapshot, bootstrapData),
-      inputQueues,
-      transcriptWindows,
-      transcripts,
+      ...shareBootstrapData(this.#snapshot, {
+        deploymentId: payload.deploymentId,
+        personalSettings: payload.personalSettings,
+        can: payload.can,
+        voiceThreadId: payload.personalSettings.voiceThreadId,
+        environments,
+        harnesses,
+        deploymentShape: { kind: "personal" },
+        browserAvailable: payload.browser.available,
+        browserPlacements: payload.browser.placements,
+        browserProfiles: payload.browser.profiles,
+        browserProfileHomes: payload.browser.profileHomes,
+        browserProfileDeletions: payload.browser.profileDeletions,
+        tabRestoreVersion: payload.browser.tabRestoreVersion,
+        browserTabGroups: this.#tabGroups.receive(payload.browser.tabGroups),
+        ...this.#applyAppTabs(
+          appTabMark === this.#appTabGeneration
+            ? this.#overlayAppTabs(payload.appTabs)
+            : (this.#snapshot.appTabs ?? []),
+        ),
+        executionPreferences: payload.executionPreferences,
+        quietTaskDays: payload.quietTaskDays,
+        identityConfig: payload.identityConfig,
+        threads,
+        machines: payload.machines.map((machine) =>
+          this.#ownerViews.reread(
+            withNewerComputerPresence(machine, this.#snapshot.machines, patchedSince),
+            this.#snapshot.machines.find((current) => current.id === machine.id),
+            ownerViewRevision,
+          ),
+        ),
+        ownerName: payload.user.displayName,
+        session: "authenticated",
+        sessionId: payload.sessionId,
+        sessionSurface: payload.sessionSurface,
+        user: payload.user,
+      }),
     });
-    // Warm Home through the hydration owner without claiming a conversation
-    // or marking it read. A later activation joins this same read.
-    if (this.#prefetchHome && this.#snapshot.homeThreadId)
-      this.#ensureThreadHydration(this.#snapshot.homeThreadId);
-    if (homeWorkspace?.kind === "main" && homeWorkspace.homeThreadId === null) {
-      this.#savedViewReadiness = {
-        ...this.#savedViewReadiness,
-        home: { status: "absent", workspaceId: homeWorkspace.id },
-      };
-      this.#update(this.#snapshot);
-    }
-    // A patch older than this read is already in what it answered.
-    for (const [sessionId, mark] of this.#presenceMarks) {
-      if (mark > presenceMark) continue;
-      this.#presenceMarks.delete(sessionId);
-    }
     if (this.#browserTabs.seed({ groups: payload.browser.groups, tabs: payload.browser.tabs }))
       this.#browserContinuation = payload.browser.continuation;
-    const initialWorkspace = homeWorkspace ?? workspaces[0];
-    if (initialWorkspace) this.#ensureWorkspaceChannel(initialWorkspace.id);
-    // Retry retained workspaces too: the open thread need not be in Main.
-    for (const workspaceId of this.#channels.keys()) this.#ensureWorkspaceChannel(workspaceId);
+    if (!this.#cacheLoaded && this.#streamCache) {
+      this.#cacheLoaded = true;
+      await this.#checkpointWrite.catch(() => undefined);
+      const cached = await this.#streamCache
+        .load({
+          deploymentId: payload.deploymentId,
+          userId: payload.user.id,
+          apiVersion: hostApiVersion,
+        })
+        .catch(() => null);
+      if (generation !== this.#viewerGeneration || this.#disposed) return;
+      if (
+        cached &&
+        cached.cursor.deploymentId === payload.deploymentId &&
+        cached.cursor.apiVersion === hostApiVersion &&
+        cached.scope.userId === payload.user.id &&
+        cached.scope.deploymentId === payload.deploymentId &&
+        cached.scope.apiVersion === hostApiVersion
+      ) {
+        this.#threadState.restore(cached.threadStates);
+        this.#savedViewReadiness = { tasksReady: true };
+        this.#update({
+          ...this.#snapshot,
+          threadReadStates: cached.snapshot.threadReadStates,
+          tasks: cached.snapshot.tasks,
+          activeTasks: cached.snapshot.activeTasks,
+          threads: cached.snapshot.threads,
+          transcripts: cached.snapshot.transcripts,
+          transcriptWindows: cached.snapshot.transcriptWindows,
+          requests: cached.snapshot.requests,
+          waitingRequests: cached.snapshot.waitingRequests,
+          needsYou: cached.snapshot.needsYou,
+        });
+        this.#restoredCursor = cached.cursor.afterSequence;
+      }
+    }
+    this.#ensureDeploymentChannel(payload.deploymentId);
     this.#recomputeConnection();
     this.#startRefresh();
-    this.#applyNotificationPreferences(payload.notificationPreferences);
-    // A notice missed while disconnected or hidden is answered here too.
-    this.#rereadWaitingRequests();
-    this.#rereadTasks();
     this.#reportTimeZone();
-    // Only a conversation never read is read here; a poll changes nothing.
-    if (this.#activeThreadId) this.#ensureBrowserUsage(this.#activeThreadId, "missing");
-    for (const threadId of this.#observedThreads.keys())
-      this.#ensureBrowserUsage(threadId, "missing");
   }
 
   #startRefresh(): void {
@@ -4095,14 +3706,6 @@ export class HttpHostClient {
     }
   }
 
-  /**
-   * Coming back, a socket the client still believes in may already be dead —
-   * mobile platforms close backgrounded sockets without delivering a close
-   * event. Under the trust window a correlated ping settles it; past it, or
-   * with no probe to run, the socket is replaced outright. Either way a
-   * Workspace channel resumes from its retained cursor, so the Host sends the
-   * delta rather than a fresh snapshot.
-   */
   #enterForeground(): void {
     if (this.#disposed || this.#visibility === "foreground") return;
     const backgroundedForMs = Date.now() - (this.#backgroundedAt ?? Date.now());
@@ -4143,7 +3746,7 @@ export class HttpHostClient {
     if (this.#disposed) return;
     if (state === "offline" && this.#network === "offline") return;
     if (path === "same" && state === this.#network) {
-      if (this.#workspaceReconnectSuspended()) return;
+      if (this.#deploymentReconnectSuspended()) return;
       for (const channel of this.#channels.values())
         this.#probeChannel(channel, socketProbeDeadlineMs, true);
       return;
@@ -4169,12 +3772,7 @@ export class HttpHostClient {
     return this.#visibility === "background" || this.#network === "offline";
   }
 
-  /**
-   * A client that shows the person's notifications keeps its Workspace sockets
-   * while hidden, because hidden is when a notification is worth showing. A
-   * client that leaves notifications to push, as a phone does, does not.
-   */
-  #workspaceReconnectSuspended(): boolean {
+  #deploymentReconnectSuspended(): boolean {
     return (
       this.#network === "offline" || (this.#reconnectSuspended() && !this.#notifiesWhileHidden())
     );
@@ -4185,7 +3783,7 @@ export class HttpHostClient {
   }
 
   #probeChannel(
-    channel: WorkspaceChannel,
+    channel: DeploymentChannel,
     deadlineMs = socketProbeDeadlineMs,
     followNetwork = false,
   ): void {
@@ -4208,7 +3806,7 @@ export class HttpHostClient {
       if (
         channel.socket !== socket ||
         channel.progressAt !== progressAt ||
-        this.#workspaceReconnectSuspended()
+        this.#deploymentReconnectSuspended()
       )
         return;
       if (follow) {
@@ -4228,7 +3826,7 @@ export class HttpHostClient {
     this.#watchLiveness();
   }
 
-  #clearProbe(channel: WorkspaceChannel): void {
+  #clearProbe(channel: DeploymentChannel): void {
     if (channel.probeTimer) globalThis.clearTimeout(channel.probeTimer);
     channel.probeTimer = null;
     channel.probeNonce = null;
@@ -4264,7 +3862,7 @@ export class HttpHostClient {
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      this.#workspaceReconnectSuspended()
+      this.#deploymentReconnectSuspended()
     ) {
       this.#stopLiveness();
       return;
@@ -4289,9 +3887,9 @@ export class HttpHostClient {
 
   /** Drops the current socket and opens its replacement at once, keeping the
    * cursor so the Host resumes the stream rather than restarting it. */
-  #replaceChannel(channel: WorkspaceChannel, reason = "Client closed"): void {
+  #replaceChannel(channel: DeploymentChannel, reason = "Client closed"): void {
     this.#closeChannel(channel, false, 1000, reason);
-    if (this.#workspaceReconnectSuspended()) return;
+    if (this.#deploymentReconnectSuspended()) return;
     if (this.#snapshot.session !== "authenticated") return;
     channel.reconnectAttempt = 0;
     this.#connect(channel);
@@ -4346,21 +3944,21 @@ export class HttpHostClient {
     this.#resyncBrowser(undefined, this.#browserContinuation);
     this.#browserContinuation = undefined;
   }
-  #releaseBrowserCarrier(channel: WorkspaceChannel): void {
+  #releaseBrowserCarrier(channel: DeploymentChannel): void {
     if (channel !== this.#browserCarrier) return;
     this.#browserCarrier = null;
     this.#browserTabs.disconnected();
     this.#electBrowserCarrier();
   }
 
-  #ensureWorkspaceChannel(workspaceId: string): void {
+  #ensureDeploymentChannel(deploymentId: string): void {
     if (this.#disposed || this.#snapshot.session !== "authenticated") return;
-    const existing = this.#channels.get(workspaceId);
+    const existing = this.#channels.get(deploymentId);
     if (existing?.socket || existing?.reconnectTimer) return;
     const channel =
       existing ??
       ({
-        cursor: zeroSequence,
+        cursor: this.#restoredCursor ?? zeroSequence,
         refused: false,
         probeFollowsNetwork: false,
         probeNonce: null,
@@ -4372,19 +3970,19 @@ export class HttpHostClient {
         synchronized: false,
         unreadableFrames: 0,
         unreadableRetryAt: 0,
-        workspaceId,
-      } satisfies WorkspaceChannel);
-    this.#channels.set(workspaceId, channel);
+        deploymentId,
+      } satisfies DeploymentChannel);
+    this.#channels.set(deploymentId, channel);
     this.#connect(channel);
   }
 
-  #connect(channel: WorkspaceChannel): void {
+  #connect(channel: DeploymentChannel): void {
     if (this.#disposed || channel.socket || channel.refused) return;
     // A bootstrap or refresh started before the app was hidden still resolves
-    // after it, and asking for a Workspace is not a reason to open a socket
+
     // nobody can read. The channel and its cursor stay, so the next foreground
     // or network signal opens the socket and resumes the stream.
-    if (this.#workspaceReconnectSuspended()) return;
+    if (this.#deploymentReconnectSuspended()) return;
     // Each try can cost a whole snapshot, and a phone reports its network often,
     // so only the person's Retry starts one before its time.
     const wait = channel.unreadableFrames > 0 ? channel.unreadableRetryAt - Date.now() : 0;
@@ -4415,10 +4013,10 @@ export class HttpHostClient {
         Date.now() + this.#retryDelay(channel.reconnectAttempt, channel.unreadableFrames);
     // A new socket is a new subscription: a stream reread asked for under the
     // old one answers about streams this one starts over.
-    this.#heldLive.delete(channel.workspaceId);
+    this.#heldLive.delete(channel.deploymentId);
     this.#liveGenerations.set(
-      channel.workspaceId,
-      (this.#liveGenerations.get(channel.workspaceId) ?? 0) + 1,
+      channel.deploymentId,
+      (this.#liveGenerations.get(channel.deploymentId) ?? 0) + 1,
     );
     channel.reconnectTimer = null;
     channel.synchronized = false;
@@ -4436,7 +4034,11 @@ export class HttpHostClient {
       try {
         socket.send(
           JSON.stringify({
-            afterSequence: channel.cursor,
+            cursor: {
+              deploymentId: channel.deploymentId,
+              apiVersion: hostApiVersion,
+              afterSequence: channel.cursor,
+            },
             // The realtime half of the same negotiation the rpc header carries:
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
@@ -4453,7 +4055,6 @@ export class HttpHostClient {
               : {}),
             threadId: null,
             type: "client.subscribe",
-            workspaceId: channel.workspaceId,
           }),
         );
         this.#electBrowserCarrier();
@@ -4490,13 +4091,13 @@ export class HttpHostClient {
       channel.socket = null;
       channel.synchronized = false;
       this.#releaseBrowserCarrier(channel);
-      this.#nodeDetails.disconnected(channel.workspaceId);
+      this.#nodeDetails.disconnected(channel.deploymentId);
       this.#scheduleReconnect(channel);
       this.#recomputeConnection();
     });
   }
 
-  #readRealtimeFrame(channel: WorkspaceChannel, frame: unknown): RealtimeMessage | null {
+  #readRealtimeFrame(channel: DeploymentChannel, frame: unknown): RealtimeMessage | null {
     if (typeof frame !== "string" || frame.length > maxInboundFrameCharacters) {
       throw new Error("Host protocol frame must be bounded JSON text.");
     }
@@ -4510,8 +4111,6 @@ export class HttpHostClient {
     if (type === "host.events") {
       const batch = realtimeEventsSchema.parse(value);
       const positions = batch.events.map((raw) => realtimeEventPositionSchema.parse(raw));
-      if (positions.some((position) => position.workspaceId !== channel.workspaceId))
-        throw new Error("Workspace event mismatch.");
       const ignoredIssues: z.ZodError["issues"] = [];
       const events = batch.events.map((raw, index): RealtimeEvent => {
         try {
@@ -4548,16 +4147,21 @@ export class HttpHostClient {
       });
       if (ignoredIssues.length > 0)
         this.#recordRealtimeFrame(frame, new z.ZodError(ignoredIssues), "ignored");
-      return { type: "host.events", events };
+      const throughSequence = z
+        .object({ throughSequence: SequenceSchema })
+        .parse(value).throughSequence;
+      if (events.some((event) => compareSequence(event.sequence, throughSequence) > 0))
+        throw new Error("Event exceeds the applied-through watermark.");
+      return { type: "host.events", events, throughSequence };
     }
     if (type === "host.snapshot") {
       const raw = realtimeSnapshotFrameSchema.parse(value).snapshot;
       const { snapshot } = z
-        .object({ snapshot: WorkspaceSnapshotSchema })
+        .object({ snapshot: DeploymentSnapshotSchema })
         .parse({ snapshot: { ...raw, threads: [] } });
-      if (snapshot.workspace.id !== channel.workspaceId)
-        throw new Error("Workspace snapshot mismatch.");
-      // One Thread this build cannot read costs that Thread, not the Workspace.
+      if (snapshot.deploymentId !== channel.deploymentId)
+        throw new Error("Deployment snapshot mismatch.");
+
       const ignoredIssues: z.ZodError["issues"] = [];
       const threads = raw.threads.flatMap((thread, index) => {
         const parsed = ThreadViewSchema.safeParse(thread);
@@ -4576,16 +4180,11 @@ export class HttpHostClient {
     }
     if (type === "host.resync-required") {
       const message = realtimeResyncSchema.parse(value);
-      if (message.workspaceId !== channel.workspaceId) throw new Error("Workspace mismatch.");
+
       return message;
     }
     if (type === "host.live") {
       const live = realtimeLiveEnvelopeSchema.parse(value);
-      if (
-        live.workspaceId !== channel.workspaceId ||
-        live.progress.workspaceId !== channel.workspaceId
-      )
-        throw new Error("Workspace live progress mismatch.");
       const items = live.progress.items.flatMap((raw, index) => {
         const kind = z.object({ stream: z.string().min(1), op: z.string().min(1) }).parse(raw);
         if (
@@ -4619,9 +4218,9 @@ export class HttpHostClient {
         message.type === "host.triggers-changed" ||
         message.type === "host.browser-usage-changed" ||
         message.type === "host.synchronized") &&
-      message.workspaceId !== channel.workspaceId
+      channel.deploymentId !== channel.deploymentId
     )
-      throw new Error("Workspace mismatch.");
+      throw new Error("Deployment mismatch.");
     return message;
   }
 
@@ -4644,7 +4243,7 @@ export class HttpHostClient {
    * acknowledged: the channel reconnects from the same cursor, or from a
    * snapshot when replay cannot resend it or get past what it cannot read.
    */
-  #loseRealtimeFrame(channel: WorkspaceChannel, frame: unknown, error: unknown): void {
+  #loseRealtimeFrame(channel: DeploymentChannel, frame: unknown, error: unknown): void {
     const loss = realtimeFrameLoss(realtimeEnvelopeType(frame));
     const reconnects = loss === "replay" || loss === "snapshot";
     this.#recordRealtimeFrame(frame, error, reconnects ? "rejected" : "ignored");
@@ -4677,7 +4276,7 @@ export class HttpHostClient {
         ]);
         return;
       case "triggers":
-        this.#triggersChanged(channel.workspaceId);
+        this.#triggersChanged(channel.deploymentId);
         return;
       case "machines":
         this.#update({ ...this.#snapshot, machineRevision: this.#snapshot.machineRevision + 1 });
@@ -4709,7 +4308,7 @@ export class HttpHostClient {
   }
 
   #applyRealtimeMessage(
-    channel: WorkspaceChannel,
+    channel: DeploymentChannel,
     viewer: SocketViewer,
     message: RealtimeMessage,
   ): void {
@@ -4723,8 +4322,7 @@ export class HttpHostClient {
         this.#snapshot.session !== "authenticated" ||
         viewer.userId === null ||
         this.#snapshot.user?.id !== viewer.userId ||
-        this.#snapshot.deploymentId !== viewer.deploymentId ||
-        this.#forbiddenWorkspaces.has(message.workspaceId)
+        this.#snapshot.deploymentId !== viewer.deploymentId
       )
         return;
       for (const listener of this.#personShowListeners) {
@@ -4744,7 +4342,6 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.notification") {
-      // Addressed to a person, not to this socket's Workspace: it arrives on
       // every socket they hold and moves no cursor.
       this.#deliverNotification(message.notification, viewer);
       return;
@@ -4764,7 +4361,6 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.read-states") {
-      if (this.#forbiddenWorkspaces.has(message.workspaceId)) return;
       this.#applyReadStates(message.states);
       return;
     }
@@ -4772,19 +4368,17 @@ export class HttpHostClient {
       this.#applyReadMarkers(message.markers);
       return;
     }
-    if (message.type === "host.notification-preferences") {
-      this.#applyNotificationPreferences(message.preferences);
-      return;
-    }
     if (message.type === "host.error") {
+      if (!message.error.retryable && message.error.code === "forbidden") {
+        this.#expireSession();
+        return;
+      }
       if (message.error.reason === "unsupported-version") this.#reverifyCapabilities();
       // The Host refused this channel. A retryable refusal is a transport
       // fault and takes the backoff; a final one leaves the channel down, and
       // the connection state is where a reader learns that.
       channel.refused = !message.error.retryable;
       this.#closeChannel(channel, message.error.retryable);
-      if (message.error.reason === "workspace-forbidden")
-        this.#refuseWorkspace(channel.workspaceId);
       this.#recomputeConnection();
       return;
     }
@@ -4796,30 +4390,31 @@ export class HttpHostClient {
       return;
     }
     if (message.type === "host.snapshot") {
+      this.#applyDeploymentSnapshot(message.snapshot);
       channel.cursor = message.snapshot.sequence;
-      this.#applyWorkspaceSnapshot(message.snapshot);
+      this.#persistCheckpoint(channel);
       return;
     }
     if (message.type === "host.node-watched") {
-      if (message.workspaceId === channel.workspaceId)
-        this.#nodeDetails.watched(message.workspaceId, message.nodeId, message.sequence);
+      this.#nodeDetails.watched(channel.deploymentId, message.nodeId, message.sequence);
       return;
     }
     if (message.type === "host.events") {
       this.#applyEvents(channel, message.events);
+      channel.cursor = maxSequence(channel.cursor, message.throughSequence);
+      this.#persistCheckpoint(channel);
       this.#sendAck(channel);
       this.#recomputeConnection();
       return;
     }
     if (message.type === "host.live") {
-      if (this.#forbiddenWorkspaces.has(message.workspaceId)) return;
       // Progress never moves the cursor and never acknowledges: it is not
       // durable, and nothing replays it.
       this.#applyLive(message);
       return;
     }
     if (message.type === "host.triggers-changed") {
-      this.#triggersChanged(message.workspaceId);
+      this.#triggersChanged(channel.deploymentId);
       return;
     }
     if (message.type === "host.browser-history-changed") {
@@ -4886,25 +4481,26 @@ export class HttpHostClient {
       return;
     }
     channel.cursor = maxSequence(channel.cursor, message.sequence);
+    this.#persistCheckpoint(channel);
     // A resubscription sends every open stream whole right after this, so what
     // the old connection streamed is forgotten rather than continued, and any
     // reread still in flight belongs to the old subscription.
-    this.#live.resetWorkspace(message.workspaceId);
-    this.#heldLive.delete(message.workspaceId);
+    this.#live.reset();
+    this.#heldLive.delete(channel.deploymentId);
     this.#liveGenerations.set(
-      message.workspaceId,
-      (this.#liveGenerations.get(message.workspaceId) ?? 0) + 1,
+      channel.deploymentId,
+      (this.#liveGenerations.get(channel.deploymentId) ?? 0) + 1,
     );
     // A stream the old connection drew that the new one does not carry would
     // otherwise stay on screen half-written; a reread says which are still open.
     for (const thread of this.#snapshot.threads) {
-      if (thread.workspaceId !== message.workspaceId) continue;
+      if (this.#snapshot.deploymentId! !== channel.deploymentId) continue;
       if (this.#snapshot.transcripts[thread.id]?.some((entry) => drawnLiveStream(entry) !== null))
-        this.#scheduleLiveRefresh(thread.id, message.workspaceId);
+        this.#scheduleLiveRefresh(thread.id, channel.deploymentId);
     }
     const reconnected = channel.reconnectAttempt > 0 || channel.unreadableFrames > 0;
     channel.synchronized = true;
-    this.#nodeDetails.connected(channel.workspaceId);
+    this.#nodeDetails.connected(channel.deploymentId);
     channel.reconnectAttempt = 0;
     channel.unreadableFrames = 0;
     this.#invalidatePersonalRemoteAccess();
@@ -4913,20 +4509,23 @@ export class HttpHostClient {
     this.#recomputeConnection();
     // A task notice sent while this socket was away is lost with it, and so is
     // a triggers notice.
-    this.#rereadTasks();
-    if (reconnected) this.#refreshShownAutomations(message.workspaceId);
+    if (reconnected) {
+      this.#rereadTasks();
+      this.#rereadWaitingRequests();
+    }
+    if (reconnected) this.#refreshShownAutomations(channel.deploymentId);
     // A usage notice sent while this socket was away is lost: a shown
-    // conversation of this Workspace that was read before is read again now,
+
     // and one not shown is read whole when it next is. One shown while the
     // stream was not live has waited for it, and is read for the first time;
     // a read already under way began before the stream and is read again.
     for (const threadId of this.#browserUsageRead.keys()) {
-      if (this.#threadWorkspace.get(threadId) !== message.workspaceId) continue;
+      if (this.#threadDeployment.get(threadId) !== channel.deploymentId) continue;
       if (this.#showsThread(threadId)) this.#ensureBrowserUsage(threadId, "full");
       else this.#browserUsageRead.delete(threadId);
     }
     for (const threadId of [this.#activeThreadId, ...this.#observedThreads.keys()]) {
-      if (!threadId || this.#threadWorkspace.get(threadId) !== message.workspaceId) continue;
+      if (!threadId || this.#threadDeployment.get(threadId) !== channel.deploymentId) continue;
       if (this.#browserUsageRead.has(threadId)) continue;
       this.#ensureBrowserUsage(
         threadId,
@@ -4935,10 +4534,9 @@ export class HttpHostClient {
     }
   }
 
-  #applyWorkspaceSnapshot(snapshot: WorkspaceSnapshot): void {
-    const workspace = this.#toWorkspaceSummary(snapshot.workspace);
-    if (snapshot.runPlaces)
-      this.#runPlaces.reconcile(workspace.id, snapshot.sequence, snapshot.runPlaces);
+  #applyDeploymentSnapshot(snapshot: DeploymentSnapshot): void {
+    if (snapshot.deploymentId !== this.#snapshot.deploymentId)
+      throw new Error("Snapshot Deployment mismatch.");
     const inFlight = [...this.#hydrationBuffers.keys()];
     const coversSnapshot = (threadId: string) => {
       const sequence = this.#hydratedThreads.get(threadId);
@@ -4948,23 +4546,20 @@ export class HttpHostClient {
       this.#historicalThreads.has(threadId) ||
       this.#showsThread(threadId) ||
       coversSnapshot(threadId);
-    this.#threadState.cover(workspace.id, snapshot.sequence);
+    this.#threadState.cover(snapshot.sequence);
     this.#runQueue.reconcile({
       runQueue: snapshot.runQueue,
       threads: new Map(snapshot.threads.map(({ id }) => [id, snapshot.sequence])),
-      wholeWorkspace: true,
-      workspaceId: workspace.id,
+      wholeDeployment: true,
     });
-    const transcripts: Record<string, TranscriptEntry[]> = { ...this.#snapshot.transcripts };
+    if (snapshot.runPlaces) this.#runPlaces.reconcile(snapshot.sequence, snapshot.runPlaces);
+    const transcripts = { ...this.#snapshot.transcripts };
     const transcriptWindows = { ...this.#snapshot.transcriptWindows };
     const requests = { ...this.#snapshot.requests };
     const inputQueues = { ...this.#snapshot.inputQueues };
-    const incomingThreadIds = new Set(snapshot.threads.map(({ id }) => id as string));
+    const incoming = new Set<string>(snapshot.threads.map(({ id }) => id));
     for (const existing of this.#snapshot.threads) {
-      if (existing.workspaceId !== workspace.id || incomingThreadIds.has(existing.id)) continue;
-      // An active conversation or open task detail stays outside the default
-      // visible Thread page; both were hydrated from durable history.
-      if (this.#showsThread(existing.id)) continue;
+      if (incoming.has(existing.id) || this.#showsThread(existing.id)) continue;
       this.#historicalThreads.delete(existing.id);
       this.#hydratedThreads.delete(existing.id);
       delete transcripts[existing.id];
@@ -4977,26 +4572,21 @@ export class HttpHostClient {
         (request) => request.originatingThreadId === thread.id,
       );
       this.#requestReads.delete(thread.id);
-      if (!retainsHistory(thread.id)) {
-        if (snapshot.messagesOmitted) {
-          delete transcripts[thread.id];
-          delete transcriptWindows[thread.id];
-        } else {
-          transcripts[thread.id] = [];
-        }
-        this.#hydratedThreads.delete(thread.id);
-      }
+      if (retainsHistory(thread.id)) continue;
+      if (snapshot.messagesOmitted) {
+        delete transcripts[thread.id];
+        delete transcriptWindows[thread.id];
+      } else transcripts[thread.id] = [];
+      this.#hydratedThreads.delete(thread.id);
     }
-    for (const window of snapshot.messageWindows) {
+    for (const window of snapshot.messageWindows)
       if (!retainsHistory(window.threadId)) transcriptWindows[window.threadId] = window;
-    }
     for (const message of snapshot.messages) {
       if (retainsHistory(message.threadId)) continue;
       const entry = toTranscriptEntry(message);
-      if (!entry) continue;
-      transcripts[message.threadId] = upsertEntry(transcripts[message.threadId] ?? [], entry);
+      if (entry)
+        transcripts[message.threadId] = upsertEntry(transcripts[message.threadId] ?? [], entry);
     }
-    const workspaceThreadIds = new Set(snapshot.threads.map((thread) => thread.id as string));
     const threads = [
       ...snapshot.threads.map((thread) =>
         this.#threadState.reconcile(
@@ -5006,80 +4596,65 @@ export class HttpHostClient {
         ),
       ),
       ...this.#snapshot.threads.filter(
-        (thread) =>
-          (thread.workspaceId !== workspace.id ||
-            (this.#showsThread(thread.id) && !incomingThreadIds.has(thread.id))) &&
-          !workspaceThreadIds.has(thread.id),
+        (thread) => !incoming.has(thread.id) && this.#showsThread(thread.id),
       ),
     ];
-    const next: HostSnapshot = {
-      ...this.#snapshot,
-      inputQueues,
-      requests,
-      runQueue: this.#runQueue.entries(),
-      threads,
-      transcriptWindows,
-      transcripts,
-      workspaces: [
-        workspace,
-        ...this.#snapshot.workspaces.filter((item) => item.id !== workspace.id),
-      ],
-    };
-    const home = this.#savedViewReadiness.home;
-    if (
-      home.status === "window" &&
-      (transcripts[home.threadId] !== this.#snapshot.transcripts[home.threadId] ||
-        transcriptWindows[home.threadId] !== this.#snapshot.transcriptWindows[home.threadId])
-    ) {
-      // The accepted answer certified the old window and its text, not this
-      // snapshot's replacement. Withdraw it before any observer can capture.
-      this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
-    }
-    this.#update({
-      ...next,
-      ...(workspace.id === next.homeWorkspaceId ? { homeThreadId: workspace.homeThreadId } : {}),
+    const taskPage = (page: import("@opensteer/protocol").TaskPage): TaskListState => ({
+      entries: page.tasks.map((entry) => ({
+        ...entry,
+        thread: toThreadSummary(
+          entry.thread,
+          this.#snapshot.environments,
+          this.#snapshot.harnesses,
+        ),
+      })),
+      window: page.window,
     });
-    this.#applyReadStates(snapshot.readStates);
-    if (workspace.kind === "main" && workspace.id === this.#snapshot.homeWorkspaceId) {
-      if (workspace.homeThreadId === null) {
-        this.#savedViewReadiness = {
-          ...this.#savedViewReadiness,
-          home: { status: "absent", workspaceId: workspace.id },
-        };
-        this.#update(this.#snapshot);
-      } else if (
-        !this.#historicalThreads.has(workspace.homeThreadId) &&
-        !this.#showsThread(workspace.homeThreadId) &&
-        snapshot.messageWindows.some(({ threadId }) => threadId === workspace.homeThreadId) &&
-        this.#acceptHomeWindow(workspace.homeThreadId, workspace.id, true)
-      ) {
-        this.#update(this.#snapshot);
-      }
+    this.#applyingSnapshot = true;
+    try {
+      this.#browserTabs.seed({
+        groups: snapshot.resources.browser.groups,
+        tabs: snapshot.resources.browser.tabs,
+      });
+    } finally {
+      this.#applyingSnapshot = false;
     }
-    this.#applyNotificationPreferences(snapshot.notificationPreferences);
-    // A snapshot stands in for whatever the stream said in between, and the
-    // queue reads follow that stream.
-    this.#refreshInputQueues(
-      threads.filter((thread) => thread.workspaceId === workspace.id).map(({ id }) => id),
-    );
-    // Include reads nobody shows yet, such as Home's prefetch. Request timing
-    // alone cannot say whether their database snapshot already covers this cut.
+    this.#savedViewReadiness = { tasksReady: true };
+    this.#update({
+      ...this.#snapshot,
+      threadReadStates: this.#mergedReadStates([
+        ...snapshot.readStates,
+        ...snapshot.tasks.recent.readStates,
+        ...snapshot.tasks.active.readStates,
+        ...snapshot.tasks.done.readStates,
+      ]),
+      threads,
+      transcripts,
+      transcriptWindows,
+      requests,
+      inputQueues,
+      runQueue: this.#runQueue.entries(),
+      tasks: taskPage(snapshot.tasks.recent),
+      activeTasks: taskPage(snapshot.tasks.active).entries,
+      doneTasks: { [mainDoneTasks]: taskPage(snapshot.tasks.done) },
+      needsYou: snapshot.needsYou,
+      browserAvailable: snapshot.resources.browser.available,
+      browserProfiles: snapshot.resources.browser.profiles,
+      browserProfileHomes: snapshot.resources.browser.profileHomes,
+      browserProfileDeletions: snapshot.resources.browser.profileDeletions,
+      browserPlacements: snapshot.resources.browser.placements,
+      ...this.#applyAppTabs(snapshot.resources.appTabs),
+    });
+    this.#refreshInputQueues(threads.map(({ id }) => id));
     for (const threadId of inFlight) {
-      if (this.#historicalThreads.has(threadId)) continue;
-      if (
-        this.#threadWorkspace.get(threadId) === workspace.id ||
-        workspace.homeThreadId === threadId
-      )
+      if (!this.#historicalThreads.has(threadId))
         this.#invalidatedHydrations.set(
           threadId,
           maxSequence(this.#invalidatedHydrations.get(threadId) ?? zeroSequence, snapshot.sequence),
         );
     }
-    // A page covering this snapshot already includes events missed while the
-    // stream was down. Older shown history stays readable until its replacement
-    // succeeds; assignments have no sequence coverage and must be read again.
     for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
-      if (threadId === null || this.#threadWorkspace.get(threadId) !== workspace.id) continue;
+      if (threadId === null) continue;
       if (!this.#historicalThreads.has(threadId) && !coversSnapshot(threadId)) {
         this.#hydratedThreads.delete(threadId);
         this.#ensureThreadHydration(threadId);
@@ -5087,30 +4662,32 @@ export class HttpHostClient {
       this.#ensureAssignments(threadId, true);
       this.#ensureAutomations(threadId, true);
     }
+    if (snapshot.tasks.active.window.hasMore)
+      void this.#readFirstTaskPage("active", "asked").catch(() => undefined);
   }
 
   #applyLive(input: LiveProgressInput): void {
-    const channel = this.#channels.get(input.progress.workspaceId);
+    const channel = this.#channels.get(this.#snapshot.deploymentId!);
     if (!channel) return;
     if (compareSequence(input.afterSequence, channel.cursor) > 0) {
-      const held = this.#heldLive.get(channel.workspaceId) ?? [];
+      const held = this.#heldLive.get(channel.deploymentId) ?? [];
       // Held progress is bounded; what is dropped is reread when it is missed.
       if (held.length >= maxHeldLiveFrames) held.shift();
       held.push(input);
-      this.#heldLive.set(channel.workspaceId, held);
+      this.#heldLive.set(channel.deploymentId, held);
       return;
     }
     this.#drawLive(input);
   }
 
   /** Draws held progress whose durable predecessors have now been applied. */
-  #releaseHeldLive(channel: WorkspaceChannel): void {
-    const held = this.#heldLive.get(channel.workspaceId);
+  #releaseHeldLive(channel: DeploymentChannel): void {
+    const held = this.#heldLive.get(channel.deploymentId);
     if (!held?.length) return;
     const ready = held.filter((input) => compareSequence(input.afterSequence, channel.cursor) <= 0);
     if (ready.length === 0) return;
     this.#heldLive.set(
-      channel.workspaceId,
+      channel.deploymentId,
       held.filter((input) => compareSequence(input.afterSequence, channel.cursor) > 0),
     );
     for (const input of ready) this.#drawLive(input);
@@ -5134,7 +4711,7 @@ export class HttpHostClient {
         },
       });
     }
-    if (gap) this.#scheduleLiveRefresh(threadId, input.progress.workspaceId);
+    if (gap) this.#scheduleLiveRefresh(threadId, this.#snapshot.deploymentId!);
   }
 
   /**
@@ -5144,7 +4721,7 @@ export class HttpHostClient {
    * owed, not dropped, since the read in flight may predate what prompted it;
    * a reply older than what the ledger holds is ignored there.
    */
-  #scheduleLiveRefresh(threadId: string, workspaceId: string): void {
+  #scheduleLiveRefresh(threadId: string, deploymentId: string): void {
     if (this.#disposed) return;
     const pending = this.#liveRereads.get(threadId);
     if (pending) {
@@ -5154,22 +4731,22 @@ export class HttpHostClient {
     const reread: LiveReread = { again: false, timer: null };
     reread.timer = globalThis.setTimeout(() => {
       reread.timer = null;
-      const generation = this.#liveGenerations.get(workspaceId) ?? 0;
+      const generation = this.#liveGenerations.get(deploymentId) ?? 0;
       const viewer = this.#viewerGeneration;
       void this.rpc["thread.live.get"]({ threadId })
         .then((result) => {
           if (this.#liveRereads.get(threadId) !== reread || !result.ok) return;
           if (viewer !== this.#viewerGeneration) return;
-          if ((this.#liveGenerations.get(workspaceId) ?? 0) !== generation) return;
+          if ((this.#liveGenerations.get(deploymentId) ?? 0) !== generation) return;
           for (const run of result.data.runs) this.#applyLive(run);
-          this.#sweepLive(threadId, workspaceId);
+          this.#sweepLive(threadId, deploymentId);
         })
         .catch(() => undefined)
         .finally(() => {
           // A read the session outlived is nobody's to settle or to repeat.
           if (this.#liveRereads.get(threadId) !== reread) return;
           this.#liveRereads.delete(threadId);
-          if (reread.again) this.#scheduleLiveRefresh(threadId, workspaceId);
+          if (reread.again) this.#scheduleLiveRefresh(threadId, deploymentId);
         });
     }, liveRefreshDelayMs);
     this.#liveRereads.set(threadId, reread);
@@ -5188,11 +4765,11 @@ export class HttpHostClient {
    * that nothing since has continued. The ledger is the authority for every
    * live entry, so anything else drawn is a stale partial stream.
    */
-  #sweepLive(threadId: string, workspaceId: string): void {
+  #sweepLive(threadId: string, deploymentId: string): void {
     const entries = this.#snapshot.transcripts[threadId];
     if (!entries || this.#historicalThreads.has(threadId)) return;
     const held = new Set<string>();
-    for (const input of this.#heldLive.get(workspaceId) ?? []) {
+    for (const input of this.#heldLive.get(deploymentId) ?? []) {
       if (input.progress.threadId !== threadId) continue;
       for (const item of input.progress.items) {
         held.add(`${input.progress.runId}:${liveStreamKeyId(liveStreamKeyOf(item))}`);
@@ -5209,19 +4786,20 @@ export class HttpHostClient {
     });
   }
 
-  #applyEvents(channel: WorkspaceChannel, events: readonly RealtimeEvent[]): void {
+  #applyEvents(channel: DeploymentChannel, events: readonly RealtimeEvent[]): void {
     let next = this.#snapshot;
+    let applied = channel.cursor;
     const touchedInputQueues = new Set<string>();
     for (const event of events) {
-      if (compareSequence(event.sequence, channel.cursor) <= 0) continue;
+      if (compareSequence(event.sequence, applied) <= 0) continue;
       if (event.type === null) {
-        channel.cursor = event.sequence;
+        applied = event.sequence;
         continue;
       }
       this.#nodeDetails.accept(event);
       if (nodeDetailEventNodeId(event)) {
         this.#live.complete(event);
-        channel.cursor = event.sequence;
+        applied = event.sequence;
         continue;
       }
       if (event.type === "place.entered") this.#runPlaces.accept(event, false);
@@ -5254,7 +4832,7 @@ export class HttpHostClient {
           ),
         };
       this.#live.complete(event);
-      channel.cursor = event.sequence;
+      applied = event.sequence;
       this.#hydrationBuffers.get(event.threadId)?.push(event);
       if (inputQueueEventTypes.has(event.type)) touchedInputQueues.add(event.threadId);
     }
@@ -5262,19 +4840,12 @@ export class HttpHostClient {
       this.#update(next);
       if (this.#activeThreadId) this.activateThread(this.#activeThreadId);
     }
+    channel.cursor = applied;
     this.#runPlaces.flush();
     this.#releaseHeldLive(channel);
     this.#refreshInputQueues(touchedInputQueues);
   }
 
-  /**
-   * The projection can only drop what an event names. What a Run admitted,
-   * what a refusal restored, and what may now be steered are the queue read's
-   * to say, so the Thread on screen is read again. Any other Thread's copy is
-   * let go instead, to be read afresh on its next activation: a Workspace
-   * streaming a busy turn must not charge a read per event for every Thread
-   * this person has visited.
-   */
   #refreshInputQueues(threadIds: Iterable<string>): void {
     const stale: string[] = [];
     for (const threadId of threadIds) {
@@ -5288,13 +4859,12 @@ export class HttpHostClient {
     this.#update({ ...this.#snapshot, inputQueues });
   }
 
-  #sendAck(channel: WorkspaceChannel): void {
+  #sendAck(channel: DeploymentChannel): void {
     if (!channel.socket || channel.socket.readyState !== 1) return;
     channel.socket.send(
       JSON.stringify({
         sequence: channel.cursor,
         type: "client.ack",
-        workspaceId: channel.workspaceId,
       }),
     );
   }
@@ -5311,8 +4881,8 @@ export class HttpHostClient {
     );
   }
 
-  #scheduleReconnect(channel: WorkspaceChannel): void {
-    if (this.#disposed || channel.reconnectTimer || this.#workspaceReconnectSuspended()) return;
+  #scheduleReconnect(channel: DeploymentChannel): void {
+    if (this.#disposed || channel.reconnectTimer || this.#deploymentReconnectSuspended()) return;
     const delay = this.#retryDelay(channel.reconnectAttempt++, channel.unreadableFrames);
     if (channel.unreadableFrames > 0) channel.unreadableRetryAt = Date.now() + delay;
     channel.reconnectTimer = globalThis.setTimeout(() => {
@@ -5322,7 +4892,7 @@ export class HttpHostClient {
   }
 
   #closeChannel(
-    channel: WorkspaceChannel,
+    channel: DeploymentChannel,
     reconnect: boolean,
     code = 1000,
     reason = "Client closed",
@@ -5334,7 +4904,7 @@ export class HttpHostClient {
     channel.socket = null;
     channel.synchronized = false;
     this.#releaseBrowserCarrier(channel);
-    this.#nodeDetails.disconnected(channel.workspaceId);
+    this.#nodeDetails.disconnected(channel.deploymentId);
     if (reconnect) this.#scheduleReconnect(channel);
     try {
       socket?.close(code, reason);
@@ -5348,17 +4918,13 @@ export class HttpHostClient {
       if (this.#network !== this.#snapshot.network) this.#update(this.#snapshot);
       return;
     }
-    // A Workspace nobody is reading retries quietly, and does not decide the
+
     // connection for the one being read. A refused one's own screen remains
     // unavailable, and it never decides for a client reading nothing yet.
     const channels = [...this.#channels.values()];
-    const read = channels.filter(({ workspaceId }) => this.#readsWorkspace(workspaceId));
+    const read = channels.filter(({ deploymentId }) => this.#readsDeployment(deploymentId));
     const pending = (
-      read.length > 0
-        ? read
-        : channels.filter(
-            (channel) => !channel.refused || !this.#forbiddenWorkspaces.has(channel.workspaceId),
-          )
+      read.length > 0 ? read : channels.filter((channel) => !channel.refused)
     ).filter((channel) => !channel.synchronized);
     if (pending.length === 0) this.#hostUnreachable = false;
     // Retrying a snapshot this client cannot read is no reconnection in
@@ -5378,12 +4944,8 @@ export class HttpHostClient {
     }
   }
 
-  #readsWorkspace(workspaceId: string): boolean {
-    if (workspaceId === (this.#activeWorkspaceId ?? this.#snapshot.homeWorkspaceId)) return true;
-    for (const threadId of new Set([this.#activeThreadId, ...this.#observedThreads.keys()])) {
-      if (threadId !== null && this.#threadWorkspace.get(threadId) === workspaceId) return true;
-    }
-    return false;
+  #readsDeployment(_deploymentId: string): boolean {
+    return true;
   }
 
   /**
@@ -5520,6 +5082,7 @@ export class HttpHostClient {
   }
 
   async #loadRequests(threadId: string): Promise<void> {
+    const generation = this.#viewerGeneration;
     const requests: Request[] = [];
     let before: string | null = null;
     do {
@@ -5534,6 +5097,7 @@ export class HttpHostClient {
           threadId,
         }),
       );
+      if (generation !== this.#viewerGeneration || this.#disposed) return;
       if (response.threadId !== threadId) throw new Error("Thread Request response mismatch.");
       requests.push(...response.requests);
       before = response.window.hasMore ? response.window.nextBefore : null;
@@ -5547,51 +5111,14 @@ export class HttpHostClient {
     });
   }
 
-  async #loadEarlierWorkspaces(): Promise<void> {
-    const generation = this.#viewerGeneration;
-    const userId = this.#snapshot.user?.id;
-    const currentWindow = this.#snapshot.workspaceWindow;
-    if (!currentWindow.hasMore) return;
-    const page = unwrapRpcResult(
-      await this.rpc["workspace.catalog.list"](
-        currentWindow.nextBefore ? { before: currentWindow.nextBefore } : {},
-      ),
-    );
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    for (const workspace of page.workspaces) this.#allowWorkspace(workspace.id, generation);
-    const existingIds = new Set(this.#snapshot.workspaces.map(({ id }) => id));
-    const additional = page.workspaces
-      .filter((workspace) => !existingIds.has(workspace.id))
-      .map((workspace) => this.#toWorkspaceSummary(workspace));
-    this.#update({
-      ...this.#snapshot,
-      workspaces: [...this.#snapshot.workspaces, ...additional],
-      workspaceWindow: page.window,
-    });
-    this.#applyNotificationPreferences(page.notificationPreferences);
-  }
-
-  #toWorkspaceSummary(workspace: WorkspaceView): WorkspaceSummary {
-    return this.#reconcileWorkspaceColor(
-      toWorkspaceSummary(workspace, this.#snapshot.environments, this.#snapshot.harnesses),
-    );
-  }
-
-  #reconcileWorkspaceColor(workspace: WorkspaceSummary): WorkspaceSummary {
-    const previous = this.#workspaceColors.get(workspace.id);
-    // Only Host records carry colour authority. Thread activity also advances
-    // the displayed Workspace timestamp without changing its colour.
-    if (!previous || workspace.updatedAt >= previous.updatedAt) {
-      this.#workspaceColors.set(workspace.id, {
-        color: workspace.color,
-        updatedAt: workspace.updatedAt,
-      });
-      return workspace;
-    }
-    return { ...workspace, color: previous.color };
-  }
-
   #expireSession(): void {
+    const cacheScope = this.#cacheScope();
+    if (cacheScope)
+      this.#checkpointWrite = this.#checkpointWrite
+        .catch(() => undefined)
+        .then(() => this.#streamCache?.remove(cacheScope));
+    this.#cacheLoaded = false;
+    this.#restoredCursor = null;
     this.#browserCarrier = null;
     this.#nodeDetails.clear();
     this.#clearAttachmentReads();
@@ -5613,16 +5140,13 @@ export class HttpHostClient {
     this.#threadState.clear();
     this.#threadRenames.clear();
     this.#threadIcons.clear();
-    this.#workspaceColors.clear();
-    this.#workspaceColorEdits.clear();
     // Another viewer may sign in next and open the same Threads; nothing this
     // one was streaming, nor any reread asked for it, may draw for them.
     this.#runQueue.clear();
     this.#live.clear();
     this.#heldLive.clear();
     this.#forgetLiveRereads();
-    this.#forbiddenWorkspaces.clear();
-    this.#threadWorkspace.clear();
+    this.#threadDeployment.clear();
     this.#assignmentReads.clear();
     this.#automationReads.clear();
     this.#readAutomations.clear();
@@ -5635,8 +5159,6 @@ export class HttpHostClient {
     this.#hydratedThreads.clear();
     this.#invalidatedHydrations.clear();
     this.#readStateLoads.clear();
-    this.#notificationPreferences.clear();
-    this.#workspaceTaskScopes.clear();
     this.#stopRefresh();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
@@ -5658,16 +5180,6 @@ export class HttpHostClient {
     );
   }
 
-  #allowWorkspace(workspaceId: string, generation: number): void {
-    if (generation !== this.#viewerGeneration || !this.#forbiddenWorkspaces.delete(workspaceId))
-      return;
-    const channel = this.#channels.get(workspaceId);
-    if (channel) {
-      channel.refused = false;
-      channel.cursor = zeroSequence;
-    }
-  }
-
   #browserTargetAuthorized(sessionId: string, surfaceId: string): boolean {
     const groupId = this.#browserTabs.groupForSession(sessionId);
     const group = groupId ? this.#browserTabs.group(groupId) : undefined;
@@ -5675,38 +5187,8 @@ export class HttpHostClient {
       !!group &&
       group.state !== "closed" &&
       group.state !== "failed" &&
-      !this.#forbiddenWorkspaces.has(group.workspaceId) &&
       (!this.#browserTabs.tabs(group.id).whole || !!this.#browserTabs.tab(group.id, surfaceId))
     );
-  }
-
-  #refuseWorkspace(workspaceId: string): void {
-    this.#nodeDetails.forgetWorkspace(workspaceId);
-    this.#savedViewReadiness = {
-      ...emptySavedViewReadiness(),
-      workspaceRefusal: this.#savedViewReadiness.workspaceRefusal + 1,
-    };
-    this.#viewerGeneration += 1;
-    this.#appTabPending.clear();
-    this.#browserUsageRead.clear();
-    this.#browserUsageReads.clear();
-    this.#browserUsageRunSources.clear();
-    this.#forbiddenWorkspaces.add(workspaceId);
-    const authorized = (sessionId: string, surfaceId: string) =>
-      this.#browserTargetAuthorized(sessionId, surfaceId);
-    this.#targetedControl.reconcile(undefined, authorized);
-    this.#targetedWatch.reconcile(undefined, authorized);
-    this.#notificationPreferences.delete(workspaceId);
-    this.#workspaceTaskScopes.delete(workspaceId);
-    this.#workspaceTaskScopes.delete(doneTaskScope(workspaceId));
-    for (const [threadId, ownerWorkspaceId] of this.#threadWorkspace) {
-      if (ownerWorkspaceId !== workspaceId) continue;
-      this.#historicalThreads.delete(threadId);
-      this.#hydratedThreads.delete(threadId);
-      this.#browserUses.delete(threadId);
-    }
-    if (this.#activeWorkspaceId === workspaceId) this.#activeWorkspaceId = null;
-    this.#update(this.#snapshot);
   }
 
   #url(path: string): string {
@@ -5730,8 +5212,7 @@ export class HttpHostClient {
       this.#snapshot.session !== "authenticated" ||
       viewer.userId === null ||
       this.#snapshot.user?.id !== viewer.userId ||
-      this.#snapshot.deploymentId !== viewer.deploymentId ||
-      this.#forbiddenWorkspaces.has(notification.workspaceId)
+      this.#snapshot.deploymentId !== viewer.deploymentId
     )
       return;
     if (this.#deliveredNotifications.has(notification.id)) return;
@@ -5777,18 +5258,61 @@ export class HttpHostClient {
     });
   }
 
-  #acceptHomeWindow(threadId: string, workspaceId: string, latest: boolean): boolean {
-    if (
-      this.#snapshot.homeThreadId !== threadId ||
-      this.#snapshot.homeWorkspaceId !== workspaceId ||
-      this.#snapshot.session !== "authenticated"
-    )
-      return false;
-    this.#savedViewReadiness = {
-      ...this.#savedViewReadiness,
-      home: { status: "window", threadId, workspaceId, latest },
+  #cacheScope(): PersonalCacheScope | null {
+    return this.#snapshot.deploymentId && this.#snapshot.user
+      ? {
+          deploymentId: this.#snapshot.deploymentId,
+          userId: this.#snapshot.user.id,
+          apiVersion: hostApiVersion,
+        }
+      : null;
+  }
+  #persistCheckpoint(channel: DeploymentChannel): void {
+    const scope = this.#cacheScope();
+    if (!scope || !this.#streamCache) return;
+    const generation = this.#viewerGeneration;
+    const {
+      threads,
+      tasks,
+      activeTasks,
+      transcripts,
+      transcriptWindows,
+      requests,
+      waitingRequests,
+      needsYou,
+      threadReadStates,
+    } = this.#snapshot;
+    const snapshot = {
+      threads,
+      tasks,
+      activeTasks,
+      transcripts,
+      transcriptWindows,
+      requests,
+      waitingRequests,
+      needsYou,
+      threadReadStates,
     };
-    return true;
+    const checkpoint = {
+      scope,
+      snapshot,
+      threadStates: this.#threadState.checkpoint(),
+      cursor: {
+        deploymentId: DeploymentIdSchema.parse(scope.deploymentId),
+        apiVersion: hostApiVersion,
+        afterSequence: channel.cursor,
+      },
+    };
+    this.#checkpointWrite = this.#checkpointWrite
+      .catch(() => undefined)
+      .then(() =>
+        new TextEncoder().encode(JSON.stringify(checkpoint)).byteLength <= 1_048_576
+          ? this.#streamCache!.commit(
+              checkpoint,
+              () => generation === this.#viewerGeneration && !this.#disposed,
+            )
+          : this.#streamCache!.remove(scope),
+      );
   }
 
   #update(snapshot: HostSnapshot): void {
@@ -5800,18 +5324,6 @@ export class HttpHostClient {
       Object.keys(snapshot.threadAutomations).length > 0
     )
       snapshot = { ...snapshot, threadAutomations: {} };
-    const home = this.#savedViewReadiness.home;
-    if (
-      (home.status === "window" &&
-        (home.threadId !== snapshot.homeThreadId ||
-          home.workspaceId !== snapshot.homeWorkspaceId ||
-          !snapshot.transcripts[home.threadId] ||
-          !snapshot.transcriptWindows[home.threadId])) ||
-      (home.status === "absent" &&
-        (snapshot.homeThreadId !== null || home.workspaceId !== snapshot.homeWorkspaceId))
-    ) {
-      this.#savedViewReadiness = { ...this.#savedViewReadiness, home: { status: "unknown" } };
-    }
     if (snapshot.session === "authenticated")
       snapshot = {
         ...snapshot,
@@ -5845,7 +5357,7 @@ export class HttpHostClient {
       this.#targetedControl.clear();
       this.#pendingBrowserTabs.clear();
       this.#clearAttachmentReads();
-      this.#workspaceTabActivations.clear(false);
+      this.#personalTabActivations.clear(false);
       this.#computerViews.clear();
       this.#ownerViews.clear();
       snapshot = {
@@ -5855,7 +5367,7 @@ export class HttpHostClient {
     }
     snapshot = {
       ...snapshot,
-      activatingWorkspaceTabs: this.#workspaceTabActivations.ids,
+      activatingPersonalTabs: this.#personalTabActivations.ids,
       pendingBrowserTabs: this.#pendingBrowserTabs.rows,
     };
     // A dropped connection pauses the views being watched; it does not end them.
@@ -5881,8 +5393,7 @@ export class HttpHostClient {
         browserTargetsChanged ||
         snapshot.appTabs !== this.#snapshot.appTabs ||
         snapshot.browserPlacements !== this.#snapshot.browserPlacements ||
-        snapshot.browserProfiles !== this.#snapshot.browserProfiles ||
-        snapshot.workspaces !== this.#snapshot.workspaces
+        snapshot.browserProfiles !== this.#snapshot.browserProfiles
       ) {
         const authorized = (sessionId: string, surfaceId: string) =>
           this.#browserTargetAuthorized(sessionId, surfaceId);
@@ -5911,99 +5422,14 @@ export class HttpHostClient {
         };
       }
     }
-    for (const thread of snapshot.threads) this.#threadWorkspace.set(thread.id, thread.workspaceId);
+    for (const thread of snapshot.threads)
+      this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
     for (const { thread } of snapshot.activeTasks)
-      this.#threadWorkspace.set(thread.id, thread.workspaceId);
-    for (const list of [
-      snapshot.tasks,
-      ...Object.values(snapshot.workspaceTasks),
-      ...Object.values(snapshot.doneTasks),
-    ])
+      this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
+    for (const list of [snapshot.tasks, ...Object.values(snapshot.doneTasks)])
       for (const { thread } of list?.entries ?? [])
-        this.#threadWorkspace.set(thread.id, thread.workspaceId);
+        this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
     const hiddenAssignments = new Set(this.#deniedAssignments);
-    if (this.#forbiddenWorkspaces.size > 0) {
-      const deniedThreads = new Set(
-        [...this.#threadWorkspace]
-          .filter(([, workspaceId]) => this.#forbiddenWorkspaces.has(workspaceId))
-          .map(([threadId]) => threadId),
-      );
-      const retainThread = ([threadId]: [string, unknown]) => !deniedThreads.has(threadId);
-      snapshot = {
-        ...snapshot,
-        threadAutomations: Object.fromEntries(
-          Object.entries(snapshot.threadAutomations).filter(retainThread),
-        ),
-      };
-      const deniedHome =
-        snapshot.homeWorkspaceId !== null &&
-        this.#forbiddenWorkspaces.has(snapshot.homeWorkspaceId);
-      // A task goes with either end of it: the Workspace it works in, or the
-      // conversation it reports to.
-      for (const assignment of heldAssignments(snapshot)) {
-        if (
-          this.#forbiddenWorkspaces.has(assignment.workerThread.workspaceId) ||
-          deniedThreads.has(assignment.parentThreadId)
-        )
-          hiddenAssignments.add(assignment.id);
-      }
-      snapshot = {
-        ...snapshot,
-        browserUses: snapshot.browserUses.filter((use) => !deniedThreads.has(use.threadId)),
-        browserSessions: snapshot.browserSessions.filter(
-          ({ workspaceId }) => !this.#forbiddenWorkspaces.has(workspaceId),
-        ),
-        homeThreadId: deniedHome ? null : snapshot.homeThreadId,
-        homeWorkspaceId: deniedHome ? null : snapshot.homeWorkspaceId,
-        inputQueues: Object.fromEntries(Object.entries(snapshot.inputQueues).filter(retainThread)),
-        notificationMutes: snapshot.notificationMutes.filter(
-          (workspaceId) => !this.#forbiddenWorkspaces.has(workspaceId),
-        ),
-        requests: Object.fromEntries(Object.entries(snapshot.requests).filter(retainThread)),
-        runQueue: snapshot.runQueue.filter(({ threadId }) => !deniedThreads.has(threadId)),
-        activeTasks: snapshot.activeTasks.filter(({ thread }) => !deniedThreads.has(thread.id)),
-        tasks: snapshot.tasks && {
-          ...snapshot.tasks,
-          entries: snapshot.tasks.entries.filter(({ thread }) => !deniedThreads.has(thread.id)),
-        },
-        workspaceTasks: Object.fromEntries(
-          Object.entries(snapshot.workspaceTasks).filter(
-            ([workspaceId]) => !this.#forbiddenWorkspaces.has(workspaceId),
-          ),
-        ),
-        doneTasks: Object.fromEntries(
-          Object.entries(snapshot.doneTasks)
-            .filter(([key]) => !this.#forbiddenWorkspaces.has(key))
-            .map(([key, list]) => [
-              key,
-              {
-                ...list,
-                entries: list.entries.filter(({ thread }) => !deniedThreads.has(thread.id)),
-              },
-            ]),
-        ),
-        threadLookups: Object.fromEntries([
-          ...Object.entries(snapshot.threadLookups).map(([threadId, state]) => [
-            threadId,
-            deniedThreads.has(threadId) ? "missing" : state,
-          ]),
-          ...(this.#activeThreadId && deniedThreads.has(this.#activeThreadId)
-            ? [[this.#activeThreadId, "missing"]]
-            : []),
-        ]),
-        threadReadStates: Object.fromEntries(
-          Object.entries(snapshot.threadReadStates).filter(retainThread),
-        ),
-        threads: snapshot.threads.filter(
-          ({ workspaceId }) => !this.#forbiddenWorkspaces.has(workspaceId),
-        ),
-        transcriptWindows: Object.fromEntries(
-          Object.entries(snapshot.transcriptWindows).filter(retainThread),
-        ),
-        transcripts: Object.fromEntries(Object.entries(snapshot.transcripts).filter(retainThread)),
-        workspaces: snapshot.workspaces.filter(({ id }) => !this.#forbiddenWorkspaces.has(id)),
-      };
-    }
     if (hiddenAssignments.size > 0) snapshot = withoutAssignments(snapshot, hiddenAssignments);
     this.#threadState.retainLoaded(snapshot.threads);
     snapshot = withThreadNames(snapshot, (thread) => ({
@@ -6013,13 +5439,6 @@ export class HttpHostClient {
         : {}),
       ...(this.#threadIcons.has(thread.id) ? { icon: this.#threadIcons.get(thread.id)!.icon } : {}),
     }));
-    const workspaces = snapshot.workspaces.map((workspace) => {
-      const mark =
-        this.#workspaceColorEdits.get(workspace.id) ?? this.#workspaceColors.get(workspace.id);
-      return mark && mark.color !== workspace.color
-        ? { ...workspace, color: mark.color }
-        : workspace;
-    });
     const threads = snapshot.threads.map((thread) => {
       const state = snapshot.threadReadStates[thread.id];
       if (!state) return thread;
@@ -6035,28 +5454,22 @@ export class HttpHostClient {
         this.#capabilities?.includes("integration-app-finish-v1") === true,
       integrationAppReturnPortAvailable:
         this.#capabilities?.includes("integration-app-return-port-v1") === true,
-      sharedTaskDoneAvailable: this.#capabilities?.includes("shared-task-done-v1") === true,
+
       quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
-      workspaceTabReopenAvailable: this.#capabilities?.includes("workspace-tab-reopen-v1") === true,
+      tabReopenAvailable: this.#capabilities?.includes("tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
-      teamAdministrationAvailable: this.#capabilities?.includes("team-administration-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       threads:
         threads.length === this.#snapshot.threads.length &&
         threads.every((thread, index) => thread === this.#snapshot.threads[index])
           ? this.#snapshot.threads
           : threads,
-      workspaces:
-        workspaces.length === this.#snapshot.workspaces.length &&
-        workspaces.every((workspace, index) => workspace === this.#snapshot.workspaces[index])
-          ? this.#snapshot.workspaces
-          : workspaces,
       network: this.#network,
       revision: this.#snapshot.revision + 1,
     };
@@ -6071,6 +5484,8 @@ export class HttpHostClient {
     this.#checkBrowserUsageRuns();
   }
 }
+
+// Only bootstrap's plain data is shared; live stores keep their own identities.
 
 // Only bootstrap's plain data is shared; live stores keep their own identities.
 function shareBootstrapData<T>(previous: unknown, next: T): T;
@@ -6105,6 +5520,32 @@ function shareBootstrapData(previous: unknown, next: unknown): unknown {
     return equal ? previous : shared;
   }
   return next;
+}
+
+function withNewerComputerPresence(
+  machine: MachineSummary,
+  previous: readonly MachineSummary[],
+  patchedSince: (sessionId: string) => boolean,
+): MachineSummary {
+  const computerUse = machine.computerUse;
+  if (!computerUse?.sessions.some((session) => patchedSince(session.sessionId))) {
+    return { ...machine };
+  }
+  const known = new Map(
+    previous.flatMap((candidate) =>
+      (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
+    ),
+  );
+  return {
+    ...machine,
+    computerUse: {
+      ...computerUse,
+      sessions: computerUse.sessions.map((session) => {
+        const patched = patchedSince(session.sessionId) ? known.get(session.sessionId) : undefined;
+        return patched ? { ...session, actingAppKeys: [...patched.actingAppKeys] } : session;
+      }),
+    },
+  };
 }
 
 export function unwrapRpcResult<Success>(
@@ -6152,7 +5593,7 @@ export function rpcErrorStatus(code: string): number {
             ? 409
             : code === "resource_exhausted" || code === "timeout"
               ? 429
-              : code === "runner_offline" || code === "workspace_unavailable"
+              : code === "runner_offline" || code === "folder_unavailable"
                 ? 503
                 : 500;
 }
@@ -6223,12 +5664,7 @@ function projectAgentEvent(
       const thread = toThreadSummary(event.data.thread, snapshot.environments, snapshot.harnesses);
       return {
         ...snapshot,
-        ...(event.data.home && event.workspaceId === snapshot.homeWorkspaceId
-          ? { homeThreadId: thread.id }
-          : {}),
-        ...(event.data.voice && event.workspaceId === snapshot.homeWorkspaceId
-          ? { voiceThreadId: thread.id }
-          : {}),
+        ...(event.data.voice ? { voiceThreadId: thread.id } : {}),
         requests: snapshot.requests[thread.id]
           ? snapshot.requests
           : { ...snapshot.requests, [thread.id]: [] },
@@ -6251,16 +5687,6 @@ function projectAgentEvent(
         transcripts: snapshot.transcripts[thread.id]
           ? snapshot.transcripts
           : { ...snapshot.transcripts, [thread.id]: [] },
-        workspaces: snapshot.workspaces.map((workspace) =>
-          workspace.id === event.workspaceId
-            ? {
-                ...workspace,
-                updatedAt: event.createdAt,
-                ...(event.data.home ? { homeThreadId: thread.id } : {}),
-                ...(event.data.voice ? { voiceThreadId: thread.id } : {}),
-              }
-            : workspace,
-        ),
       };
     }
     case "thread.execution-updated":
@@ -6316,11 +5742,6 @@ function projectAgentEvent(
       return {
         ...snapshot,
         threads: patchThread(snapshot.threads, event.threadId, { updatedAt: event.createdAt }),
-        workspaces: snapshot.workspaces.map((workspace) =>
-          workspace.id === event.workspaceId
-            ? { ...workspace, updatedAt: event.createdAt }
-            : workspace,
-        ),
       };
     case "thread.input-queue-updated": {
       const queue = snapshot.inputQueues[event.threadId];
@@ -6395,9 +5816,6 @@ function projectAgentEvent(
     transcripts: entries
       ? { ...snapshot.transcripts, [event.threadId]: entries }
       : snapshot.transcripts,
-    workspaces: snapshot.workspaces.map((workspace) =>
-      workspace.id === event.workspaceId ? { ...workspace, updatedAt: event.createdAt } : workspace,
-    ),
   };
 }
 
@@ -6426,14 +5844,6 @@ function withAssignmentsFrom(
         : [],
     ),
   );
-}
-
-/** Every assignment the snapshot mentions, whether as a summary or a transcript entry. */
-function* heldAssignments(snapshot: HostSnapshot): Iterable<AssignmentSummary> {
-  yield* Object.values(snapshot.assignments);
-  for (const entries of Object.values(snapshot.transcripts)) {
-    for (const entry of entries) if (entry.kind === "assignment") yield entry.assignment;
-  }
 }
 
 /** The snapshot without these assignments' summaries, cards or return rows. */
@@ -6467,19 +5877,14 @@ function knownPendingRequestCount(snapshot: HostSnapshot, threadId: string): num
     .length;
 }
 
-function doneTaskScope(workspaceId?: string): string {
-  return `done:${workspaceId ?? mainDoneTasks}`;
-}
-
-function doneListKey(scope: string): string | null {
-  return scope.startsWith("done:") ? scope.slice("done:".length) : null;
-}
-
 function emptySnapshot(): HostSnapshot {
   return {
+    personalSettings: null,
+    can: null,
+    needsYou: null,
     threadRenameAvailable: false,
     taskMarksAvailable: false,
-    sharedTaskDoneAvailable: false,
+
     quietTasksAvailable: false,
     harnessUpdateAvailable: false,
     iphoneAppsAvailable: false,
@@ -6488,7 +5893,7 @@ function emptySnapshot(): HostSnapshot {
     requests: {},
     waitingRequests: [],
     runQueue: [],
-    browserProfileGrants: [],
+
     browserAvailable: false,
     browserPlacements: [],
     browserProfiles: [],
@@ -6503,14 +5908,13 @@ function emptySnapshot(): HostSnapshot {
     executionPreferences: emptyExecutionPreferences,
     harnesses: [],
     savedViewReadiness: emptySavedViewReadiness(),
-    homeWorkspaceId: null,
-    homeThreadId: null,
+
     voiceThreadId: null,
-    notificationMutes: [],
+
     threadReadStates: {},
     tasks: null,
     activeTasks: [],
-    workspaceTasks: {},
+
     doneTasks: {},
     quietTaskDays: null,
     identityConfig: null,
@@ -6527,42 +5931,7 @@ function emptySnapshot(): HostSnapshot {
     transcriptWindows: {},
     transcripts: {},
     user: null,
-    workspaceSharingAvailable: false,
-    workspaceWindow: {
-      byteCount: 2,
-      hasMore: false,
-      itemCount: 0,
-      nextBefore: null,
-      totalItems: 0,
-    },
-    workspaces: [],
   };
-}
-
-function preferredEnvironment(
-  environments: readonly EnvironmentSummary[],
-): EnvironmentSummary | null {
-  return (
-    [...environments]
-      .filter((environment) => environment.connected)
-      .sort((left, right) => environmentRank(left) - environmentRank(right))[0] ?? null
-  );
-}
-
-function environmentRank(environment: EnvironmentSummary): number {
-  if (environment.kind === "main") return 0;
-  if (environment.kind === "managed") return 1;
-  return 2;
-}
-
-function preferredHarness(harnesses: readonly HarnessSummary[]): HarnessSummary | null {
-  return (
-    [...harnesses]
-      .filter((harness) => harness.enabled)
-      .sort(
-        (left, right) => harnessDisplayRank(left.driverKind) - harnessDisplayRank(right.driverKind),
-      )[0] ?? null
-  );
 }
 
 /** The wire record carries the driver configuration; the snapshot holds only
@@ -6619,59 +5988,6 @@ function sameKeys(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((key, index) => key === right[index]);
 }
 
-/** A machine as a bootstrap read it, keeping acting apps patched after the read began. */
-function withNewerComputerPresence(
-  machine: MachineSummary,
-  previous: readonly MachineSummary[],
-  patchedSince: (sessionId: string) => boolean,
-): MachineSummary {
-  const computerUse = machine.computerUse;
-  if (!computerUse?.sessions.some((session) => patchedSince(session.sessionId))) {
-    return { ...machine };
-  }
-  const known = new Map(
-    previous.flatMap((candidate) =>
-      (candidate.computerUse?.sessions ?? []).map((session) => [session.sessionId, session]),
-    ),
-  );
-  return {
-    ...machine,
-    computerUse: {
-      ...computerUse,
-      sessions: computerUse.sessions.map((session) => {
-        const patched = patchedSince(session.sessionId) ? known.get(session.sessionId) : undefined;
-        return patched ? { ...session, actingAppKeys: [...patched.actingAppKeys] } : session;
-      }),
-    },
-  };
-}
-
-function toWorkspaceSummary(
-  workspace: WorkspaceView,
-  environments: readonly EnvironmentSummary[],
-  harnesses: readonly HarnessSummary[],
-): WorkspaceSummary {
-  const environment = preferredEnvironment(environments) ?? environments[0];
-  const harness = preferredHarness(harnesses) ?? harnesses[0];
-  return {
-    description: workspaceDescription(workspace),
-    homeThreadId: workspace.homeThreadId,
-    voiceThreadId: workspace.voiceThreadId,
-    fileCount: 0,
-    harnessLabel: harness?.name ?? "No harness",
-    id: workspace.id,
-    kind: workspace.kind,
-    machineName: workspace.location.kind === "machine" ? workspace.location.name : null,
-    name: workspace.name,
-    icon: workspace.icon,
-    runnerLabel: environment?.name ?? "No work location",
-    status: workspace.status,
-    storageIssue: workspace.storageIssue,
-    color: workspace.color ?? null,
-    updatedAt: workspace.updatedAt,
-  };
-}
-
 function toThreadSummary(
   thread: Thread,
   environments: readonly EnvironmentSummary[],
@@ -6697,7 +6013,7 @@ function toThreadSummary(
     modelSelection: thread.modelSelection,
     parentThreadId: thread.parentThreadId,
     pendingRequests: thread.pendingRequests,
-    role: thread.role,
+    purpose: thread.purpose,
     runnerLabel: environment?.name ?? "Unavailable work location",
     status: thread.status,
     title: thread.title,
@@ -6705,7 +6021,8 @@ function toThreadSummary(
     color: thread.color ?? null,
     unread: false,
     updatedAt: thread.updatedAt,
-    workspaceId: thread.workspaceId,
+    folder: thread.folder,
+    teamOrigin: thread.teamOrigin,
   };
 }
 
@@ -6743,20 +6060,6 @@ function patchThread(
   );
 }
 
-function workspaceDescription(workspace: WorkspaceView): string {
-  const { status } = workspace;
-  if (status === "provisioning" && workspace.restoreProgressPermille !== undefined) {
-    return `Waking… (${Math.floor(workspace.restoreProgressPermille / 10)}%)`;
-  }
-  if (status === "provisioning") return "Opensteer is preparing this Workspace.";
-  if (status === "archiving") return "Being archived — it wakes when you use it again.";
-  if (status === "archived") return "Archived — it wakes when you use it again.";
-  if (status === "deleting") return "Scheduled for deletion during the retention window.";
-  if (status === "unavailable") return "This Workspace is temporarily unavailable.";
-  if (status === "failed") return "Workspace provisioning needs attention.";
-  return "A durable Workspace shared by every Thread.";
-}
-
 function maxSequence(left: Sequence, right: Sequence): Sequence {
   return compareSequence(left, right) >= 0 ? left : right;
 }
@@ -6772,23 +6075,6 @@ function deviceTimeZone(): string | undefined {
 
 export function mutationIdempotencyKey(prefix: string): string {
   return `${prefix}:${globalThis.crypto.randomUUID()}`;
-}
-
-function isTextContentType(value: string): boolean {
-  const mediaType = value.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-  return (
-    mediaType.startsWith("text/") ||
-    mediaType === "application/json" ||
-    mediaType === "application/javascript" ||
-    mediaType === "application/sql" ||
-    mediaType === "application/toml" ||
-    mediaType === "application/xml" ||
-    mediaType === "application/x-httpd-php" ||
-    mediaType === "application/x-sh" ||
-    mediaType === "application/x-yaml" ||
-    mediaType.endsWith("+json") ||
-    mediaType.endsWith("+xml")
-  );
 }
 
 export { HostClientRequestError as HostHttpError } from "./client.js";

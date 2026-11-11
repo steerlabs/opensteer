@@ -66,7 +66,7 @@ export function pluginTargetKey(target: PluginTarget): string {
     case "plugin":
       return JSON.stringify({ pluginId: target.pluginId });
     case "skill":
-      return JSON.stringify({ workspaceId: target.workspaceId, fullName: target.fullName });
+      return JSON.stringify({ fullName: target.fullName });
     case "specialist":
       return JSON.stringify({ pluginId: target.pluginId, ownerUserId: target.ownerUserId });
   }
@@ -113,16 +113,8 @@ export function pluginState(row: PluginRow): {
       : "On",
   };
 }
-export function pluginPlacementLabel(row: PluginRow, personal: boolean): string {
-  if (personal && row.placement.personalEverywhere) return "Everywhere";
-  return (
-    [
-      row.placement.mainIncluded ? "Main" : "",
-      row.placement.projectCount ? `${row.placement.projectCount} Projects` : "",
-    ]
-      .filter(Boolean)
-      .join(" and ") || "No places selected"
-  );
+export function pluginEnabledLabel(row: PluginRow): string {
+  return row.placement.enabled ? "On" : "Off";
 }
 export function pluginGroups(rows: readonly PluginRow[], query = "") {
   const result: Record<"Needs you" | "On" | "Turned off", PluginRow[]> = {

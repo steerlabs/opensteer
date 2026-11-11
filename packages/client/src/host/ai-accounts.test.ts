@@ -56,6 +56,7 @@ describe("endpointAccountName", () => {
 
 describe("engineGroups", () => {
   const environment: EnvironmentSummary = {
+    can: { executeTasks: true },
     capabilities: [],
     connected: true,
     harnessAuthenticationAllowed: true,
@@ -117,7 +118,6 @@ describe("engineGroups", () => {
     providerStateModes: ["ambient", "isolated"],
     runnerId: "runner-main",
     status: "connected",
-    workspaceBackings: ["local-directory"],
   };
   const account = (driverKind: string, name: string): HarnessSummary => ({
     driverKind,
@@ -350,6 +350,7 @@ describe("an AI engine row's actions", () => {
     stateKinds: ["isolated"],
   };
   const environment = {
+    can: { executeTasks: true },
     capabilities: [],
     connected: true,
     harnessAuthenticationAllowed: true,
@@ -361,7 +362,6 @@ describe("an AI engine row's actions", () => {
     providerStateModes: ["isolated"],
     runnerId: "runner-main",
     status: "connected",
-    workspaceBackings: ["local-directory"],
   } satisfies EnvironmentSummary;
   const profile: HarnessSummary = {
     driverKind: "opencode",

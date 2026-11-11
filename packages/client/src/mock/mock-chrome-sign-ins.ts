@@ -1,11 +1,5 @@
 import { browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
-import {
-  BrowserSourceIdSchema,
-  RequestSchema,
-  WorkspaceIdSchema,
-  createId,
-  type Request,
-} from "@opensteer/core";
+import { BrowserSourceIdSchema, RequestSchema, createId, type Request } from "@opensteer/core";
 import type {
   BrowserSignInOutcome,
   BrowserSiteGrant,
@@ -41,9 +35,6 @@ const siteTable: Readonly<Record<string, Readonly<Record<string, BrowserSourceSt
   "https://x.com": { [macName]: "limit" },
 };
 
-const mainWorkspaceId = WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001");
-const launchWorkspaceId = WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002");
-
 export class MockChromeSignIns {
   #sources: BrowserSourceSummary[];
   #sites: BrowserSiteGrant[];
@@ -78,21 +69,18 @@ export class MockChromeSignIns {
         lastSignedInAt: at(26),
         preferredSourceId: mac,
         site: "https://github.com",
-        workspaceId: mainWorkspaceId,
       },
       {
         createdAt: at(100),
         lastSignedInAt: at(50),
         preferredSourceId: mac,
         site: "https://github.com",
-        workspaceId: launchWorkspaceId,
       },
       {
         createdAt: at(30),
         lastSignedInAt: null,
         preferredSourceId: null,
         site: "https://linear.app",
-        workspaceId: launchWorkspaceId,
       },
       // Main last used the Work profile for linear.app, so it is offered first there.
       {
@@ -100,7 +88,6 @@ export class MockChromeSignIns {
         lastSignedInAt: at(4),
         preferredSourceId: work,
         site: "https://linear.app",
-        workspaceId: mainWorkspaceId,
       },
     ];
   }
@@ -158,17 +145,13 @@ export class MockChromeSignIns {
     );
   }
 
-  removeSite(workspaceId: string, site: string): void {
-    this.#sites = this.#sites.filter(
-      (grant) => !(grant.workspaceId === workspaceId && grant.site === site),
-    );
+  removeSite(_deploymentId: string, site: string): void {
+    this.#sites = this.#sites.filter((grant) => !(grant.site === site));
   }
 
   /** Allowing a Request remembers the site before Chrome has answered. */
-  remember(workspaceId: string, site: string, sourceId: string): void {
-    const existing = this.#sites.find(
-      (grant) => grant.workspaceId === workspaceId && grant.site === site,
-    );
+  remember(_deploymentId: string, site: string, sourceId: string): void {
+    const existing = this.#sites.find((grant) => grant.site === site);
     const preferredSourceId = BrowserSourceIdSchema.parse(sourceId);
     this.#sites = existing
       ? this.#sites.map((grant) => (grant === existing ? { ...grant, preferredSourceId } : grant))
@@ -179,7 +162,6 @@ export class MockChromeSignIns {
             lastSignedInAt: null,
             preferredSourceId,
             site,
-            workspaceId: WorkspaceIdSchema.parse(workspaceId),
           },
         ];
   }
@@ -189,7 +171,7 @@ export class MockChromeSignIns {
     readonly profileName: string | null;
     readonly site: string;
     readonly sourceId: string | null;
-    readonly workspaceId: string;
+    readonly deploymentId: string;
   }): BrowserSignInOutcome {
     const inspection = this.inspect(input.site);
     const problem = (
@@ -198,7 +180,7 @@ export class MockChromeSignIns {
     ): BrowserSignInOutcome => ({ problem, site: inspection.site, sourceName, status: "problem" });
     if (inspection.candidates.length === 0) return problem("no-chrome");
     const preferred = this.#sites.find(
-      (grant) => grant.workspaceId === input.workspaceId && grant.site === inspection.site,
+      (grant) => grant.site === inspection.site,
     )?.preferredSourceId;
     const available = inspection.candidates.filter((candidate) => candidate.status === "available");
     const chosen =
@@ -217,9 +199,7 @@ export class MockChromeSignIns {
     if (chosen.status === "offline") return problem("chrome-offline", chosen.name);
     if (chosen.status !== "available") return problem(chosen.status, chosen.name);
     const now = this.#now().toISOString();
-    const existing = this.#sites.find(
-      (grant) => grant.workspaceId === input.workspaceId && grant.site === inspection.site,
-    );
+    const existing = this.#sites.find((grant) => grant.site === inspection.site);
     this.#sites = existing
       ? this.#sites.map((grant) =>
           grant === existing
@@ -233,7 +213,6 @@ export class MockChromeSignIns {
             lastSignedInAt: now,
             preferredSourceId: chosen.sourceId,
             site: inspection.site,
-            workspaceId: WorkspaceIdSchema.parse(input.workspaceId),
           },
         ];
     return {
@@ -265,7 +244,7 @@ export function mockBrowserSignInRequest(site: string, index: number): Request {
     originatingOccurrenceId: null,
     originatingRunId: "run_00000000-0000-4000-8000-000000000004",
     originatingThreadId: mockSignInThreadId,
-    originatingWorkspaceId: mockSignInWorkspaceId,
+
     payload: {
       kind: "browser.sign-in",
       reason: `Download the August statement from ${domain} to finish the reconciliation.`,
@@ -278,14 +257,12 @@ export function mockBrowserSignInRequest(site: string, index: number): Request {
       title: `Sign in to ${domain}`,
     },
     requestedBy: "usr_0192f4a1-0000-4000-8000-000000000001",
-    requiredActor: "workspace-owner",
+    requiredActor: "owner",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: mockSignInWorkspaceId,
   });
 }
 
 const mockSignInThreadId = "thr_00000000-0000-4000-8000-000000000004";
-const mockSignInWorkspaceId = "wsp_00000000-0000-4000-8000-000000000003";

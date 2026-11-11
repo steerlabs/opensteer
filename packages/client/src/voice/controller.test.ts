@@ -85,17 +85,17 @@ describe("VoiceController", () => {
     expect(f.controller.call()).toBeNull();
     f.dispose();
   });
-  it("selects Chat's signed-in Codex subscription account, then the first eligible account", () => {
+  it("uses Voice's own signed-in Codex account, then the first eligible account", () => {
     const f = setup();
     const snapshot = f.host.getSnapshot();
     const selected = voiceAccount(snapshot)!;
     expect(selected).not.toBeNull();
-    const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+    const home = snapshot.threads[0]!;
     expect(selected).toEqual({
       environmentId: home.environmentId,
       harnessInstanceId: home.harnessInstanceId,
     });
-    expect(voiceAccount({ ...snapshot, homeThreadId: null })).not.toBeNull();
+    expect(voiceAccount({ ...snapshot })).not.toBeNull();
     const signedOut = {
       ...snapshot,
       environments: snapshot.environments.map((environment) => ({
@@ -245,7 +245,6 @@ describe("VoiceController", () => {
         .filter(({ id }) => id === environment.id)
         .map((item) => ({ ...item, harnessCatalogs: [...item.harnessCatalogs].reverse() })),
       harnesses: both.harnesses,
-      homeThreadId: null,
     });
     expect(voiceAccount(f.host.getSnapshot())?.harnessInstanceId).toBe(other);
     expect(f.controller.getSnapshot().phase).toBe("listening");
@@ -476,7 +475,7 @@ describe("what the person sees", () => {
 
     await f.controller.stop();
     f.controller.showed(message(first));
-    f.call.identity = voiceIdentity(first.workspaceId);
+    f.call.identity = voiceIdentity();
     await f.controller.start();
     f.controller.showed(message(first));
     expect(shown, "a replaced call still changed the screen").toHaveBeenCalledTimes(1);

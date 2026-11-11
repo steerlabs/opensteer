@@ -22,11 +22,11 @@ import {
   type ProfileName,
   type RequestLine,
 } from "./proxy.test-support.js";
-import { seedWorkspace, type SeedName } from "./fixture.test-support.js";
 import {
-  createMachineAccessDatabase,
-  startMachineAccessHost,
-} from "../../apps/host/src/runtime/machine-access.test-support.js";
+  seedPersonal,
+  type SeedName,
+  type MobileNetworkHostFactory,
+} from "./fixture.test-support.js";
 
 export const scenarios = [
   "cold-attach",
@@ -151,6 +151,7 @@ export function requestWaves(requests: readonly RpcRecord[]) {
 
 export async function runMobileNetworkSample(options: {
   readonly databaseUrl: string;
+  readonly startPersonal?: MobileNetworkHostFactory;
   readonly seed: SeedName;
   readonly profile: ProfileName;
   readonly link: LinkProfile;
@@ -158,31 +159,33 @@ export async function runMobileNetworkSample(options: {
   readonly scenarios: readonly Scenario[];
   readonly signal: AbortSignal;
   /** Receives each measurement as it completes, so a later failure keeps it. */
-  readonly onManifest?: (manifest: Awaited<ReturnType<typeof seedWorkspace>>["manifest"]) => void;
+  readonly onManifest?: (manifest: Awaited<ReturnType<typeof seedPersonal>>["manifest"]) => void;
   readonly onResult?: (result: ScenarioResult) => void;
 }) {
   const cleanup: (() => Promise<unknown>)[] = [];
   const errors: unknown[] = [];
   let outcome:
-    | { manifest: Awaited<ReturnType<typeof seedWorkspace>>["manifest"]; results: ScenarioResult[] }
+    | { manifest: Awaited<ReturnType<typeof seedPersonal>>["manifest"]; results: ScenarioResult[] }
     | undefined;
   try {
-    const database = await createMachineAccessDatabase(options.databaseUrl);
-    cleanup.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { logger: { level: "silent" } });
+    if (!options.startPersonal)
+      throw new Error(
+        "The mobile benchmark needs P/I/X's isolated Personal Host factory and hosting Runner ports.",
+      );
+    const host = await options.startPersonal(options.databaseUrl);
     cleanup.push(() => host.close());
     console.info(`Seeding ${options.seed}/${options.profile} run ${options.run}`);
-    const fixture = await seedWorkspace(host, options.seed, cleanup);
+    const fixture = await seedPersonal(host, options.seed, cleanup);
     const wholePage = await testRpcData(
       host.origin,
       "thread.events.list",
-      { threadId: fixture.homeThreadId, turns: 10 },
+      { threadId: fixture.historyThreadId, turns: 10 },
       { headers: host.ownerHeaders },
     );
     const previewPage = await testRpcData(
       host.origin,
       "thread.events.list",
-      { threadId: fixture.homeThreadId, turns: 10, toolOutputs: "preview" },
+      { threadId: fixture.historyThreadId, turns: 10, toolOutputs: "preview" },
       { headers: host.ownerHeaders },
     );
     const toolOutputHistoryBytes = {
@@ -199,7 +202,7 @@ export async function runMobileNetworkSample(options: {
     console.info("Tool output history bytes", toolOutputHistoryBytes);
     options.onManifest?.(fixture.manifest);
     console.info(
-      `Seeded ${fixture.manifest.tasks} tasks, ${fixture.manifest.homeMessages} Chat messages, ${fixture.manifest.tabs} tabs`,
+      `Seeded ${fixture.manifest.tasks} tasks, ${fixture.manifest.historyMessages} history messages, ${fixture.manifest.tabs} tabs`,
     );
     const proxy = await startShapingProxy(new URL(host.origin), options.link);
     cleanup.push(() => proxy.close());
@@ -272,8 +275,6 @@ export async function runMobileNetworkSample(options: {
       baseUrl: proxy.origin,
       fetch: measuredFetch,
       lifecycle,
-      // As apps/mobile's Host port configures the phone.
-      prefetchHome: true,
       random: () => 0.5,
       capabilities: async () => {
         const verified = await verifyAccessEndpoint({
@@ -292,15 +293,17 @@ export async function runMobileNetworkSample(options: {
           const data = JSON.parse(raw) as {
             type: string;
             afterSequence?: string;
+            cursor?: { afterSequence: string };
             events?: unknown[];
           };
           if (direction === "down") inspectPayload(data);
+          const position = data.cursor?.afterSequence ?? data.afterSequence;
           messages.push({
             atMs: performance.now(),
             direction,
             type: data.type,
             bytes: Buffer.byteLength(raw),
-            ...(data.afterSequence === undefined ? {} : { afterSequence: data.afterSequence }),
+            ...(position === undefined ? {} : { afterSequence: position }),
             ...(data.events ? { eventCount: data.events.length } : {}),
           });
           if (data.type === "host.synchronized") synchronized++;
@@ -331,10 +334,10 @@ export async function runMobileNetworkSample(options: {
       if (tasks.working.length + tasks.ready.length + tasks.done.length > 0)
         mark("taskListRenderable");
       if (
-        snapshot.transcriptWindows[fixture.homeThreadId] &&
-        (snapshot.transcripts[fixture.homeThreadId]?.length ?? 0) > 0
+        snapshot.transcriptWindows[fixture.historyThreadId] &&
+        (snapshot.transcripts[fixture.historyThreadId]?.length ?? 0) > 0
       )
-        mark("homeFirstPage");
+        mark("historyFirstPage");
       if (placeList(snapshot).length === fixture.manifest.tabs) mark("tabsLoaded");
     };
     const unsubscribe = client.subscribe(inspect);
@@ -387,8 +390,6 @@ export async function runMobileNetworkSample(options: {
       const priorSync = synchronized;
       if (scenario === "cold-attach") {
         const loading = client.load();
-        await wait("Home metadata", () => client.getSnapshot().homeThreadId !== null);
-        client.activateThread(fixture.homeThreadId);
         await loading;
         await wait("cold attach milestones", () =>
           [
@@ -396,7 +397,6 @@ export async function runMobileNetworkSample(options: {
             "authenticated",
             "synchronized",
             "taskListRenderable",
-            "homeFirstPage",
             "tabsLoaded",
           ].every((key) => milestones[key] !== undefined),
         );
@@ -445,15 +445,13 @@ export async function runMobileNetworkSample(options: {
         );
         mark("nodeReconnected");
       } else if (scenario === "open-task") {
-        const list = taskList(client.getSnapshot());
-        const task = list.ready[0] ?? list.working[0];
-        if (!task) throw new Error("No task to open");
-        client.activateThread(task.threadId);
+        const threadId = fixture.historyThreadId;
+        client.activateThread(threadId);
         await wait(
           "Task history",
           () =>
-            client.getSnapshot().threadLookups[task.threadId] === undefined &&
-            (client.getSnapshot().transcripts[task.threadId]?.length ?? 0) > 0,
+            client.getSnapshot().threadLookups[threadId] === undefined &&
+            (client.getSnapshot().transcripts[threadId]?.length ?? 0) > 0,
         );
         mark("taskFirstPage");
       } else {

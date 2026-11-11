@@ -3,13 +3,13 @@ import {
   MessageAuthorSchema,
   RequestSchema,
   type MarkColor,
-  type WorkspaceIconName,
+  type IconName,
 } from "@opensteer/core";
-import type { HostSnapshot, ThreadSummary, WorkspaceSummary } from "../host/client.js";
+import type { HostSnapshot, ThreadSummary } from "../host/client.js";
 
 /** The mock's one naming reply: an unclassified subject settles to `none`/document. */
-export function mockGeneratedTaskIcon(text: string): WorkspaceIconName {
-  const subjects: readonly [RegExp, WorkspaceIconName][] = [
+export function mockGeneratedTaskIcon(text: string): IconName {
+  const subjects: readonly [RegExp, IconName][] = [
     [/hotel|hyatt|room|booking/iu, "hotel"],
     [/table|restaurant|dinner/iu, "utensils"],
     [/flight|plane|airport/iu, "plane"],
@@ -33,40 +33,18 @@ export function mockGeneratedTaskIcon(text: string): WorkspaceIconName {
 
 /** Errands and projects that exercise task marks alongside the existing demo journeys. */
 export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snapshot): Snapshot {
-  const main = snapshot.workspaces[0]!;
   const template = snapshot.threads[0]!;
   const at = "2026-10-25T12:00:00.000Z";
-  const projects = [
-    [
-      "Travel",
-      "luggage",
-      "blue",
-      "Plans trips: flights, hotels and day-by-day plans. Knows your seat and loyalty preferences.",
-    ],
-    ["Home", "house", "green", "Furniture, repairs and anything for the apartment."],
-    ["Money", "wallet", "lime", "Expenses, receipts and monthly budget check-ins."],
-    ["Health", "health", "magenta", "Appointments, prescriptions and insurance claims."],
-  ] as const;
-  const workspaces: WorkspaceSummary[] = projects.map(
-    ([name, icon, color, description], index) => ({
-      ...main,
-      id: `wsp_00000000-0000-4000-8000-${String(800 + index).padStart(12, "0")}`,
-      kind: "project",
-      homeThreadId: null,
-      fileCount: 0,
-      name,
-      icon,
-      color,
-      description,
-      updatedAt: at,
-    }),
-  );
+  const folders = ["Travel", "Home", "Money", "Health"].map((name) => ({
+    ...template.folder,
+    path: `/Users/person/${name}`,
+  }));
   const specs: readonly {
     id: string;
     title: string;
-    icon: WorkspaceIconName | null;
+    icon: IconName | null;
     color: MarkColor;
-    project: number | null;
+    folderIndex: number | null;
     status: ThreadSummary["status"];
     unread?: boolean;
     paused?: boolean;
@@ -76,7 +54,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Hyatt Seoul booking",
       icon: "hotel",
       color: "blue",
-      project: 0,
+      folderIndex: 0,
       status: "waiting",
     },
     {
@@ -84,7 +62,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Tokyo flights in May",
       icon: "plane",
       color: "lime",
-      project: 0,
+      folderIndex: 0,
       status: "running",
     },
     {
@@ -92,7 +70,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Weekly inbox triage",
       icon: "inbox",
       color: "magenta",
-      project: null,
+      folderIndex: null,
       status: "running",
     },
     {
@@ -100,7 +78,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "find me a plumber who can come this week to fix the kitchen sink",
       icon: null,
       color: "teal",
-      project: null,
+      folderIndex: null,
       status: "running",
     },
     {
@@ -108,7 +86,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Dentist cleaning",
       icon: "stethoscope",
       color: "purple",
-      project: 3,
+      folderIndex: 3,
       status: "waiting",
       paused: true,
     },
@@ -117,7 +95,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Q3 expense report",
       icon: "receipt",
       color: "green",
-      project: 2,
+      folderIndex: 2,
       status: "failed",
     },
     {
@@ -125,7 +103,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Blue loveseat shortlist",
       icon: "sofa",
       color: "sky",
-      project: 1,
+      folderIndex: 1,
       status: "idle",
       unread: true,
     },
@@ -134,7 +112,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Mom's birthday gift ideas",
       icon: "gift",
       color: "blue",
-      project: null,
+      folderIndex: null,
       status: "idle",
     },
     {
@@ -142,7 +120,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Lisbon weekend plan",
       icon: "map",
       color: "lime",
-      project: 0,
+      folderIndex: 0,
       status: "idle",
     },
     {
@@ -150,7 +128,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Global Entry renewal",
       icon: "shield",
       color: "magenta",
-      project: 0,
+      folderIndex: 0,
       status: "idle",
     },
   ];
@@ -160,8 +138,8 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
     title: spec.title,
     icon: spec.icon,
     color: spec.color,
-    workspaceId: spec.project === null ? main.id : workspaces[spec.project]!.id,
-    role: "work",
+    folder: spec.folderIndex === null ? template.folder : folders[spec.folderIndex]!,
+    purpose: "task",
     listed: true,
     parentThreadId: null,
     pendingRequests: index === 0 ? 1 : 0,
@@ -182,8 +160,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
     ...requestTemplate,
     id: createId("request"),
     originatingThreadId: hotel.id,
-    originatingWorkspaceId: hotel.workspaceId,
-    targetWorkspaceId: hotel.workspaceId,
     originatingRunId: createId("run"),
     presentation: {
       kind: "choice",
@@ -198,12 +174,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
   });
   return {
     ...snapshot,
-    workspaces: [...snapshot.workspaces, ...workspaces],
-    workspaceWindow: {
-      ...snapshot.workspaceWindow,
-      itemCount: snapshot.workspaces.length + workspaces.length,
-      totalItems: snapshot.workspaces.length + workspaces.length,
-    },
+
     threads: [...snapshot.threads, ...threads],
     runQueue: [
       ...snapshot.runQueue,
@@ -240,8 +211,7 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
                     kind: "agent",
                     threadId: thread.id,
                     runId: createId("run"),
-                    workspaceId: thread.workspaceId,
-                    workspaceName: "Home",
+
                     displayName: thread.title,
                   }),
                 },

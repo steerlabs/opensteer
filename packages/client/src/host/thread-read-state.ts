@@ -13,11 +13,6 @@ export function isThreadUnread(state: ThreadReadState | null | undefined): boole
   );
 }
 
-/** Read positions advance independently of the workspace's content cut. A
- * cancellation can lower its unread candidate; an older HTTP response cannot
- * restore it. At one content cut, keeping the greatest candidate is safe
- * because the greatest read position suppresses candidates already read.
- */
 export function mergeThreadReadState(
   previous: ThreadReadState | undefined,
   incoming: ThreadReadState,

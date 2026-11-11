@@ -96,7 +96,6 @@ function browser(
       threadIds: usedBy,
       viewerError: null,
       viewerState: "synchronized",
-      workspaceId: template.workspaceId,
     },
     undefined,
     [],
@@ -150,7 +149,7 @@ function snapshot(
           ),
     ),
     machines: [],
-    tasks: { entries, window: base.workspaceWindow },
+    tasks: { entries, window: base.tasks!.window },
     waitingRequests: [],
   };
 }
@@ -248,7 +247,7 @@ describe("runPages", () => {
             : [
                 {
                   threadId: ThreadIdSchema.parse(threadId(1)),
-                  home: false,
+
                   holding: true,
                   acting: true,
                   lastActiveAt: "2026-10-15T10:03:00.000Z",

@@ -41,7 +41,7 @@ export interface ConnectCardAction {
 /** Presentation only: a browser return or an admitted command is never a connected account. */
 export function connectCard(input: {
   readonly loaded: LoadedAccessRequest;
-  readonly workspace: { readonly kind: "main" | "project"; readonly name: string };
+  readonly deploymentName: string;
   readonly selectedAccountId?: string | null;
   readonly allowChanges?: boolean;
   readonly agentProposed?: boolean;
@@ -55,15 +55,13 @@ export function connectCard(input: {
   readonly answered?: boolean;
   readonly repositories?: boolean;
 }) {
-  const { loaded, workspace } = input;
+  const { loaded, deploymentName } = input;
   const plan = accessPlan(loaded, input.selectedAccountId ?? null);
   const review = integrationInstallReview(loaded.request.manifest);
   const entry = loaded.platform.installations.find(
     ({ installation }) => installation.id === loaded.request.installationId,
   );
-  const definition =
-    plan?.definition ??
-    (loaded.request.manifest ? installationDefinition(loaded.request.manifest) : null);
+
   const name = plan?.integrationName ?? review?.name ?? entry?.installation.title ?? "Integration";
   const iconId =
     plan?.definition?.id ??
@@ -78,7 +76,6 @@ export function connectCard(input: {
       : grantedIntegrationAccess({
           allowChanges: input.allowChanges ?? false,
           plan,
-          workspaceKind: workspace.kind,
         });
   const accounts = plan?.accounts ?? [];
   const selected = plan?.selectedAccount ?? null;
@@ -111,32 +108,12 @@ export function connectCard(input: {
   const canConnectAnother =
     plan !== null && plan.requestedConnectionId === null && accountConnectable(plan);
   const canAllowChanges =
-    workspace.kind === "project" &&
     plan?.requestedAccess === "read" &&
     (plan.writeCount > 0 || plan.definition?.computerApp?.accessLevels.length === 2);
   const proposed = plan?.proposed === true || input.agentProposed === true;
-  // Said on the card's foot: where the access lands, or how much a project gets
-  // when the card offers no choice about it.
-  const scope =
-    workspace.kind === "main"
-      ? `All tasks in ${workspace.name}`
-      : canAllowChanges
-        ? null
-        : grantedAccess === "read-write"
-          ? "Read and write"
-          : "Read only";
-  // Behind the card's details control: the facts a person may want before
-  // deciding, none of which changes what the buttons do.
+  const scope = "All your tasks";
   const details = [
-    ...(workspace.kind === "project"
-      ? [`Only ${workspace.name} gets access.`]
-      : (
-            plan
-              ? plan.requirement.kind !== "computer"
-              : definition !== null && !definition.computerApp
-          )
-        ? [mainAccessDetail(workspace.name, name)]
-        : []),
+    ...(plan?.requirement.kind !== "computer" ? [mainAccessDetail(deploymentName, name)] : []),
     ...(plan
       ? [integrationAccessSummary(plan, grantedAccess)]
       : review?.provenance
@@ -229,15 +206,14 @@ export function connectCard(input: {
     ({ id }) => plan?.requestedConnectionId === null || id === plan?.requestedConnectionId,
   );
   // "Use" once there is an account to answer with; until then the card asks
-  // for a connection. A project's name is in the title because that is the
-  // whole of where the access goes.
+  // for a connection.
   const verb = selected || plan?.requirement.kind === "none" ? "Use" : "Connect";
   return {
     phase,
     proposed,
     name,
     iconId,
-    title: `${verb} ${name}${workspace.kind === "project" ? ` in ${workspace.name}` : ""}`,
+    title: `${verb} ${name}`,
     reason: loaded.request.reason,
     primary,
     secondary: "Not now" as const,
