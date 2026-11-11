@@ -1278,6 +1278,16 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
           path.join(root, "sleep-restore-results.json"),
           JSON.stringify(results, null, 2),
         );
+      } catch (error) {
+        results.push({
+          mode,
+          passed: false,
+          error: error instanceof Error ? (error.stack ?? error.message) : String(error),
+        });
+        writeFileSync(
+          path.join(root, "sleep-restore-results.json"),
+          JSON.stringify(results, null, 2),
+        );
       } finally {
         await runtime.shutdown();
         launcher.close();
@@ -1285,6 +1295,10 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
       }
     }
     writeFileSync(path.join(root, "sleep-restore-results.json"), JSON.stringify(results, null, 2));
+    assert(
+      results.every((result) => Reflect.get(result, "passed") === true),
+      "Restore mode failed",
+    );
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
