@@ -1,3 +1,4 @@
+import { isProjectDeploymentAuthority } from "@opensteer/database";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
@@ -3213,9 +3214,7 @@ function attachRunnerSocket(
   let runner: RunnerIdentity | undefined;
   const challenge = {
     ...authenticator.issueChallenge(),
-    ...(storageAuthority?.kind === "server" && storageAuthority.model === 2
-      ? { projectStorage: true as const }
-      : {}),
+    ...(isProjectDeploymentAuthority(storageAuthority) ? { projectStorage: true as const } : {}),
   };
   const challengeTimeout = setTimeout(
     () => {

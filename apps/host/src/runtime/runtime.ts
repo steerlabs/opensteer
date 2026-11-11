@@ -2551,6 +2551,11 @@ export async function createHostRuntime(
       {
         teamAdministration: new TeamAdministrationService({
           database,
+          provisionProject: async (id) => {
+            const workspace = await store.getWorkspace(id);
+            if (workspace && !["ready", "deleting", "deleted"].includes(workspace.status))
+              await workspaces.provision(workspace);
+          },
           identity,
           teamName: config.deploymentName ?? new URL(config.runtimeOrigin).hostname,
           runnerIsConnected: (runnerId) =>
