@@ -618,6 +618,7 @@ const resultBase = z.object({ accessRevision: RevisionSchema, commandId: Command
 export const TeamCommandResultSchema = z.discriminatedUnion("type", [
   resultBase.extend({
     type: z.literal("team.computer.replace"),
+    runnerImage: z.string().min(1).max(512).nullable().optional(),
     enrollmentId: z.string().min(1).max(256),
     token: z.string().min(16).max(4096),
     expiresAt: timestamp,
