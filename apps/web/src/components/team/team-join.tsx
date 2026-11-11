@@ -98,7 +98,8 @@ export function TeamJoinRoute({ hostClient }: { readonly hostClient: HostClient 
           <div className="team-join__app">
             <span className="field__label">Use the Opensteer app</span>
             <span className="field__hint">
-              In the app, choose Add a server by address, enter this address, and sign in as yourself.
+              In the app, choose Add a server by address, enter this address, and sign in as
+              yourself.
             </span>
             <div className="team-join__address">
               <code>{address}</code>
