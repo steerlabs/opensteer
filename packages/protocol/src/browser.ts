@@ -1090,12 +1090,6 @@ export const BrowserServerMessageSchema = z.union([
     surfaceId: BrowserSurfaceIdSchema,
     surface: BrowserViewerSurfaceSchema.nullable(),
   }),
-  z.strictObject({
-    ...browserBase,
-    surfaces: BrowserSurfacesSchema,
-    inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-    type: z.literal("browser.surfaces.changed"),
-  }),
   BaselineBrowserServerMessageSchema,
   PasskeyCeremonySchema,
   PasskeyRuntimeCancelSchema,

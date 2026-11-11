@@ -1446,7 +1446,7 @@ export class BrowserService {
   ): Promise<BrowserContextCandidate> {
     await this.#requireSession(ownerId, input.sessionId);
     const broker = this.#brokers.get(input.sessionId);
-    if (!broker?.live || !broker.targetedStreaming)
+    if (!broker?.live)
       throw new OpensteerError({
         code: "conflict",
         message: "Update the browser computer to read this page.",
@@ -1962,7 +1962,7 @@ export class BrowserService {
             "The original page outcome is unknown. Inspect the browser before opening another page.",
           );
         const broker = this.#brokers.get(record.id);
-        if (!broker?.live || !broker.targetedStreaming)
+        if (!broker?.live)
           throw this.#tabOpenRefusal(
             "browser-session-unavailable",
             "This browser is not ready to open a page. Try again shortly.",
@@ -2086,7 +2086,7 @@ export class BrowserService {
       }
       await this.#requireSession(ownerId, command.sessionId);
       const broker = this.#brokers.get(command.sessionId);
-      if (!broker?.live || !broker.targetedStreaming)
+      if (!broker?.live)
         throw new OpensteerError({
           code: "conflict",
           message: "The browser computer is unavailable or needs an update.",
@@ -3391,9 +3391,7 @@ export class BrowserService {
       // its actor. A Run ending during admission still fences that command.
       const actorToken =
         nativeAttachment?.actorToken ??
-        (broker.targetedStreaming && !bindingWasEnded
-          ? await this.#actorToken(input, record.id)
-          : undefined);
+        (!bindingWasEnded ? await this.#actorToken(input, record.id) : undefined);
       if (!fillAllowed()) return expired;
       assertAttached(bindingWasEnded);
       const admitted = await this.#admitAgentBackend(input, "cdp");
@@ -3597,7 +3595,7 @@ export class BrowserService {
         code: "not_found",
         message: "The sign-in page is no longer available.",
       });
-    if (input.targetId && broker?.live && broker.targetedStreaming) {
+    if (input.targetId && broker?.live) {
       const response = await broker.requestCdp({
         type: "cdp.command",
         requestId: randomUUID(),
@@ -4915,7 +4913,10 @@ class HostedBrowserBroker {
       timer: NodeJS.Timeout | null;
     }
   >();
-  readonly #latestFrames = new Map<string, { frame: Buffer; header: BrowserBinaryFrameHeader }>();
+  readonly #latestFrames = new Map<
+    string,
+    { frame: Buffer; header: BrowserBinaryFrameHeader; documentId: string }
+  >();
   readonly #frameIds = new Map<string, number>();
   readonly #onPageChanged: () => void;
   #pageNoticeTimer: NodeJS.Timeout | null = null;
@@ -4936,11 +4937,6 @@ class HostedBrowserBroker {
     BrowserSurfaceId,
     Extract<BrowserServerMessage, { type: "browser.editing" }>
   >();
-  /**
-   * Viewers that sent this runtime a key it cannot attribute back to them,
-   * for the life of its one connection, including viewers since detached.
-   */
-  readonly #unaddressedKeySenders = new Set<string>();
   #answeredOlderDialogId: string | null = null;
   readonly #actionListeners = new Map<string, (event: BrowserActionEvent) => void>();
   readonly #pendingActions = new Map<
@@ -4971,16 +4967,8 @@ class HostedBrowserBroker {
   #commandTail = Promise.resolve();
   #runtimeFrameTail = Promise.resolve();
   #stateImportTail = Promise.resolve();
-  #lastFrameId = -1;
-  /**
-   * The newest picture of the active tab while the Runtime streams. A viewer
-   * that subscribes to a page that is not repainting gets it at once instead
-   * of waiting for the page to change.
-   */
-  #latestFrame: { readonly frame: Buffer; readonly header: BrowserBinaryFrameHeader } | null = null;
   #streamReconcileTail = Promise.resolve();
   #runtimeReady = false;
-  #runtimeStreaming = false;
   #protocolFailed = false;
   /** The first thing that broke this session's runtime connection. */
   #failure: string | null = null;
@@ -5028,12 +5016,7 @@ class HostedBrowserBroker {
               userId: outlet.userId,
               fullControl: outlet.mode === "control",
               mode: outlet.passkeys,
-              surfaceId:
-                outlet.subscription === null
-                  ? null
-                  : (outlet.surfaceId ??
-                    this.#surfaces.find((surface) => surface.active)?.id ??
-                    null),
+              surfaceId: outlet.subscription === null ? null : outlet.surfaceId,
               live: outlet.peer.isOpen(),
               authorized: outlet.authorized,
               send: (message) => {
@@ -5106,9 +5089,6 @@ class HostedBrowserBroker {
     return this.#runtimeReady && !this.#settled;
   }
 
-  get targetedStreaming(): boolean {
-    return this.#snapshot?.targetedStreamingVersion === 1;
-  }
   get groupId(): BrowserSessionId {
     return this.#groupId;
   }
@@ -5591,39 +5571,27 @@ class HostedBrowserBroker {
       if (decoded.header.watchToken) {
         throw new Error("Browser Runtime sent a Host-only Watch token.");
       }
-      const activeSurface = this.#surfaces.find(
-        (surface) =>
-          surface.id === decoded.header.surfaceId && (this.targetedStreaming || surface.active),
-      );
-      // A cast from the tab just deactivated can arrive after its surface
-      // update. It is old output, not a new image for the selected tab.
+      const targetSurface = this.#tabs.rows.get(decoded.header.surfaceId);
       if (
-        !activeSurface ||
-        decoded.header.surfaceId !== activeSurface.id ||
-        decoded.header.frameId <=
-          (this.targetedStreaming
-            ? (this.#frameIds.get(decoded.header.surfaceId) ?? -1)
-            : this.#lastFrameId)
+        !targetSurface ||
+        decoded.header.frameId <= (this.#frameIds.get(decoded.header.surfaceId) ?? -1)
       )
         return false;
-      if (
-        this.targetedStreaming &&
-        decoded.header.geometryRevision !== activeSurface.geometryRevision
-      )
-        return false;
+      if (decoded.header.geometryRevision !== targetSurface.geometryRevision) return false;
       if (
         ![...this.#consumers.values()].some(
           (consumer) =>
-            consumer.subscription === "frames" &&
-            (consumer.surfaceId === null
-              ? activeSurface.active
-              : consumer.surfaceId === decoded.header.surfaceId),
+            consumer.subscription === "frames" && consumer.surfaceId === decoded.header.surfaceId,
         )
       )
         return false;
       this.#frameIds.set(decoded.header.surfaceId, decoded.header.frameId);
       this.#latestFrames.delete(decoded.header.surfaceId);
-      this.#latestFrames.set(decoded.header.surfaceId, { frame, header: decoded.header });
+      this.#latestFrames.set(decoded.header.surfaceId, {
+        frame,
+        header: decoded.header,
+        documentId: targetSurface.documentId,
+      });
       let retainedBytes = [...this.#latestFrames.values()].reduce(
         (sum, entry) => sum + entry.frame.byteLength,
         0,
@@ -5633,15 +5601,8 @@ class HostedBrowserBroker {
         this.#latestFrames.delete(id);
         retainedBytes -= entry.frame.byteLength;
       }
-      this.#lastFrameId = decoded.header.frameId;
-      if (activeSurface.active) this.#latestFrame = { frame, header: decoded.header };
       for (const consumer of this.#consumers.values()) {
-        if (
-          consumer.subscription === "frames" &&
-          (consumer.surfaceId === null
-            ? activeSurface.active
-            : consumer.surfaceId === decoded.header.surfaceId)
-        )
+        if (consumer.subscription === "frames" && consumer.surfaceId === decoded.header.surfaceId)
           consumer.sendFrame(frame, decoded.header);
       }
       return false;
@@ -5769,6 +5730,8 @@ class HostedBrowserBroker {
       if (this.#snapshot) throw new Error("Browser Runtime sent a duplicate snapshot.");
       if (message.sessionId !== this.#sessionId) throw new Error("Browser session ID mismatch.");
       if (message.access !== "read-write") throw new Error("Browser access negotiation failed.");
+      if (message.targetedStreamingVersion !== 1)
+        throw new Error("Browser Runtime requires targeted streaming version 1.");
       if (
         message.editingVersion !== undefined &&
         (message.editingVersion !== this.editing ||
@@ -5802,7 +5765,6 @@ class HostedBrowserBroker {
               }
             : message.stream;
       const previousPage = this.page;
-      const previousActive = this.#tabs.meta?.activeId ?? null;
       let changed:
         { added: string[]; updated: string[]; removed: string[]; structural: boolean } | undefined;
       const unsubscribe = this.#tabs.onChange((value) => {
@@ -5872,20 +5834,18 @@ class HostedBrowserBroker {
       const page = this.page;
       if (previousPage?.title !== page?.title || previousPage?.url !== page?.url)
         this.#noticePage();
-      if (this.targetedStreaming) void this.#reconcileStreaming().catch(() => undefined);
-      if (this.#latestFrame && this.#latestFrame.header.surfaceId !== active)
-        this.#latestFrame = null;
+      void this.#reconcileStreaming().catch(() => undefined);
       for (const [id, frame] of this.#latestFrames)
-        if (this.#tabs.rows.get(id)?.geometryRevision !== frame.header.geometryRevision) {
+        if (
+          this.#tabs.rows.get(id)?.geometryRevision !== frame.header.geometryRevision ||
+          this.#tabs.rows.get(id)?.documentId !== frame.documentId
+        ) {
           this.#latestFrames.delete(id);
           this.#frameIds.delete(id);
         }
-      if (this.targetedStreaming)
-        this.#latestFrame = active ? (this.#latestFrames.get(active) ?? null) : null;
       const changedIds = new Set([...changes.added, ...changes.updated, ...changes.removed]);
       for (const consumer of this.#consumers.values()) {
-        if (consumer.surfaceId === null && previousActive !== active) consumer.resetSubscription();
-        consumer.dropPendingOutside(consumer.surfaceId ?? active);
+        consumer.dropPendingOutside(consumer.surfaceId);
         if (consumer.surfaceId && changedIds.has(consumer.surfaceId))
           this.#sendViewerSurface(consumer);
       }
@@ -5907,14 +5867,13 @@ class HostedBrowserBroker {
       if (!this.#snapshot) throw new Error("Browser Runtime snapshot is unavailable.");
       if (message.state === "closing") {
         this.#runtimeReady = false;
-        this.#latestFrame = null;
+        this.#latestFrames.clear();
         await this.#onState("closing");
       }
       if (message.state === "closed") this.#runtimeReady = false;
     }
 
     if (message.type === "browser.editing") this.#editingContexts.set(message.surfaceId, message);
-    const [unaddressedAuthor, ...otherSenders] = this.#unaddressedKeySenders;
     for (const consumer of this.#consumers.values()) {
       if (
         message.type.startsWith("browser.autofill.") &&
@@ -5929,8 +5888,7 @@ class HostedBrowserBroker {
         message.type === "browser.cursor" &&
         (consumer.mode !== "control" ||
           consumer.clipboardToken !== message.consumerToken ||
-          message.surfaceId !==
-            (consumer.surfaceId ?? this.#surfaces.find((surface) => surface.active)?.id))
+          message.surfaceId !== consumer.surfaceId)
       )
         continue;
       if (
@@ -5962,10 +5920,7 @@ class HostedBrowserBroker {
         message.consumerToken === consumer.clipboardToken
       ) {
         const projected = consumer.legacyClipboard.read(message);
-        if (
-          projected &&
-          (consumer.surfaceId === null || consumer.surfaceId === projected.surfaceId)
-        )
+        if (projected && consumer.surfaceId === projected.surfaceId)
           void consumer.sendText(JSON.stringify(projected)).catch(() => undefined);
       }
       if (
@@ -6021,9 +5976,7 @@ class HostedBrowserBroker {
       // targeted viewer would take the active surface's editing for its own.
       if (
         message.type === "browser.editing" &&
-        (consumer.subscription === null ||
-          message.surfaceId !==
-            (consumer.surfaceId ?? this.#surfaces.find((surface) => surface.active)?.id))
+        (consumer.subscription === null || message.surfaceId !== consumer.surfaceId)
       )
         continue;
       if (
@@ -6032,29 +5985,12 @@ class HostedBrowserBroker {
         consumer.clipboardToken !== message.consumerToken
       )
         continue;
-      // A runtime too old to stamp keys returns copies without a token. Their
-      // author is known only while one viewer has ever sent it such keys; once
-      // two have, or that one left, the text goes nowhere rather than into
-      // someone else's clipboard.
-      if (
-        message.type === "clipboard.data" &&
-        !message.consumerToken &&
-        (otherSenders.length > 0 || consumer.clipboardToken !== unaddressedAuthor)
-      )
-        continue;
+      if (message.type === "clipboard.data" && !message.consumerToken) continue;
       if (
         (message.type === "browser.dialog.changed" || message.type === "clipboard.data") &&
-        consumer.surfaceId !== null &&
         (message.surfaceId ??
           (message.type === "browser.dialog.changed" ? message.dialog?.surfaceId : null)) !==
           consumer.surfaceId
-      )
-        continue;
-      if (
-        message.type === "browser.dialog.changed" &&
-        consumer.surfaceId === null &&
-        message.surfaceId &&
-        message.surfaceId !== this.#surfaces.find((surface) => surface.active)?.id
       )
         continue;
       void consumer
@@ -6278,18 +6214,18 @@ class HostedBrowserBroker {
             : "frames"
           : null;
       const surfaceId = message.type === "stream.subscribe" ? (message.surfaceId ?? null) : null;
+      if (subscription !== null && !surfaceId)
+        return Promise.reject(
+          new OpensteerError({
+            code: "bad_request",
+            message: "A viewer subscription requires a surface.",
+          }),
+        );
       if (subscription === "control" && outlet.mode !== "control")
         return Promise.reject(
           new OpensteerError({
             code: "forbidden",
             message: "Only control viewers may observe a target without pictures.",
-          }),
-        );
-      if (subscription === "control" && !surfaceId)
-        return Promise.reject(
-          new OpensteerError({
-            code: "bad_request",
-            message: "A control-only subscription requires a surface.",
           }),
         );
       if (subscription === "control" && !this.targetControl) {
@@ -6303,13 +6239,6 @@ class HostedBrowserBroker {
           throw new OpensteerError(error);
         });
       }
-      if (surfaceId && !this.targetedStreaming)
-        return Promise.reject(
-          new OpensteerError({
-            code: "conflict",
-            message: "Update the browser computer for targeted viewing.",
-          }),
-        );
       if (surfaceId && !this.#surfaces.some((surface) => surface.id === surfaceId))
         return Promise.reject(
           new OpensteerError({ code: "not_found", message: "Browser tab not found." }),
@@ -6350,9 +6279,7 @@ class HostedBrowserBroker {
       const shown =
         subscription === null
           ? undefined
-          : this.#surfaces.find((surface) =>
-              surfaceId ? surface.id === surfaceId : surface.active,
-            );
+          : this.#surfaces.find((surface) => surface.id === surfaceId);
       const context = shown && this.#editingContexts.get(shown.id);
       if (
         (outlet.editing || outlet.basicInput) &&
@@ -6367,7 +6294,7 @@ class HostedBrowserBroker {
       this.#sendViewerSurface(outlet);
       // Already streaming for someone else: this viewer starts from the
       // current picture rather than a blank until the page next paints.
-      const latest = surfaceId ? this.#latestFrames.get(surfaceId) : this.#latestFrame;
+      const latest = surfaceId ? this.#latestFrames.get(surfaceId) : undefined;
       if (subscription === "frames" && latest) outlet.sendFrame(latest.frame, latest.header);
       if (subscription !== null && surfaceId) {
         const dialog = this.#dialogs.get(surfaceId) ?? null;
@@ -6451,9 +6378,7 @@ class HostedBrowserBroker {
         );
     }
     const addressedSurface =
-      "surfaceId" in message && message.surfaceId
-        ? message.surfaceId
-        : (outlet.surfaceId ?? this.#surfaces.find((surface) => surface.active)?.id);
+      "surfaceId" in message && message.surfaceId ? message.surfaceId : outlet.surfaceId;
     if (
       addressedSurface &&
       message.type !== "input.cancel" &&
@@ -6513,19 +6438,18 @@ class HostedBrowserBroker {
       }
     }
     if (
-      this.targetedStreaming &&
-      (message.type === "input.key" ||
-        message.type === "clipboard.paste" ||
-        message.type === "input.command" ||
-        message.type === "input.compose" ||
-        message.type === "input.text" ||
-        message.type === "clipboard.copy" ||
-        message.type === "clipboard.cut" ||
-        message.type === "clipboard.paste-data" ||
-        message.type === "input.pointer" ||
-        message.type === "input.wheel")
+      message.type === "input.key" ||
+      message.type === "clipboard.paste" ||
+      message.type === "input.command" ||
+      message.type === "input.compose" ||
+      message.type === "input.text" ||
+      message.type === "clipboard.copy" ||
+      message.type === "clipboard.cut" ||
+      message.type === "clipboard.paste-data" ||
+      message.type === "input.pointer" ||
+      message.type === "input.wheel"
     )
-      message = { ...message, targeted: outlet.surfaceId !== null };
+      message = { ...message, targeted: true };
     if (message.type === "input.cancel" && this.#snapshot?.inputLanesVersion !== 1)
       return Promise.resolve();
     // A consumer can advance only its own generation, never choose its identity.
@@ -6555,15 +6479,6 @@ class HostedBrowserBroker {
         );
       outlet.clipboardOperations.set(message.operationId, message.surfaceId);
     }
-    // The complement of the stamping below for keys: the runtime cannot say
-    // whose copy follows a key it received without a token.
-    if (
-      message.type === "input.key" &&
-      !this.targetedStreaming &&
-      this.#snapshot?.editingVersion === undefined &&
-      !outlet.editing
-    )
-      this.#unaddressedKeySenders.add(outlet.clipboardToken);
     let navigationId: string | undefined;
     if (message.type === "navigation.go") {
       // Consumers cannot choose an attribution id, even if they know another viewer's id.
@@ -6572,19 +6487,16 @@ class HostedBrowserBroker {
             outlet.userId,
             message.typed === true,
             BrowserSurfaceIdSchema.optional().parse(
-              message.surfaceId ??
-                outlet.surfaceId ??
-                this.#surfaces.find((surface) => surface.active)?.id,
+              message.surfaceId ?? outlet.surfaceId ?? undefined,
             ),
           )
         : undefined;
       message = { ...message, navigationId };
     }
     return this.#sendCommand(
-      (message.type === "input.key" && this.targetedStreaming) ||
+      message.type === "input.key" ||
         ((this.#snapshot?.editingVersion !== undefined || outlet.editing || outlet.basicInput) &&
           (message.type === "input.pointer" ||
-            message.type === "input.key" ||
             message.type === "input.command" ||
             message.type === "clipboard.copy" ||
             message.type === "clipboard.cut" ||
@@ -6610,11 +6522,6 @@ class HostedBrowserBroker {
             : [],
         ),
       );
-      const legacy = [...this.#consumers.values()].some(
-        (consumer) => consumer.subscription === "frames" && consumer.surfaceId === null,
-      );
-      const active = this.#surfaces.find((surface) => surface.active)?.id;
-      if (this.targetedStreaming && legacy && active) targets.add(active);
       const admitted = new Set([...targets].slice(0, browserCaptureMaxTargets));
       // Picture demand wins for a shared surface; observation consumes no capture slot.
       const wanted = new Map([...admitted].map((target) => [target, true]));
@@ -6647,7 +6554,7 @@ class HostedBrowserBroker {
           });
           this.#runtimeTargets.set(target, frames);
         }
-      if (this.rasterDemand && this.targetedStreaming) {
+      if (this.rasterDemand) {
         for (const [target, frames] of wanted) {
           let raster = this.#runtimeRaster.get(target);
           if (!raster) {
@@ -6663,10 +6570,7 @@ class HostedBrowserBroker {
           }
           let density: BrowserRasterDensity = 0.75;
           for (const viewer of this.#consumers.values())
-            if (
-              viewer.subscription === "frames" &&
-              (viewer.surfaceId === target || (viewer.surfaceId === null && active === target))
-            )
+            if (viewer.subscription === "frames" && viewer.surfaceId === target)
               density = Math.max(density, viewer.rasterDensity) as BrowserRasterDensity;
           const now = performance.now();
           if (density !== raster.wanted) {
@@ -6696,12 +6600,6 @@ class HostedBrowserBroker {
       }
       for (const target of this.#frameIds.keys())
         if (!admitted.has(target)) this.#frameIds.delete(target);
-      if (!legacy) {
-        for (const target of this.#latestFrames.keys())
-          if (!admitted.has(target)) this.#latestFrames.delete(target);
-        if (this.#latestFrame && !admitted.has(this.#latestFrame.header.surfaceId))
-          this.#latestFrame = null;
-      }
       for (const consumer of this.#consumers.values())
         if (consumer.subscription === "frames" && consumer.surfaceId)
           void consumer
@@ -6713,22 +6611,6 @@ class HostedBrowserBroker {
               }),
             )
             .catch(() => undefined);
-      if (this.targetedStreaming) {
-        this.#runtimeStreaming = legacy;
-        return;
-      }
-      const streaming = [...this.#consumers.values()].some(
-        (consumer) => consumer.subscription === "frames" && consumer.surfaceId === null,
-      );
-      if (streaming !== this.#runtimeStreaming) {
-        await this.#sendCommand({
-          type: streaming ? "stream.subscribe" : "stream.unsubscribe",
-          ...(streaming && this.captureRegion ? { captureRegion: true } : {}),
-        });
-        this.#runtimeStreaming = streaming;
-        // A stopped screencast leaves no picture that is still current.
-        if (!streaming) this.#latestFrame = null;
-      }
     });
     this.#streamReconcileTail = operation.catch(() => undefined);
     return operation;
@@ -6799,22 +6681,6 @@ class HostedBrowserBroker {
               const { geometryRevision: _revision, modifiers: _modifiers, ...wheel } = legacy;
               compatible = wheel;
             }
-          }
-          // Released relays parse strict messages before routing them; one
-          // unknown field would disconnect every browser on that computer.
-          if (!this.targetedStreaming && "targeted" in compatible) {
-            const {
-              targeted: _targeted,
-              producerId: _producerId,
-              inputGeneration: _inputGeneration,
-              inputSequence: _inputSequence,
-              inputSequenceStart: _inputSequenceStart,
-              ...released
-            } = compatible;
-            if (this.#snapshot?.editingVersion === undefined && "consumerToken" in released) {
-              const { consumerToken: _consumerToken, ...legacy } = released;
-              compatible = legacy;
-            } else compatible = released;
           }
           let runtimeMessage: object = compatible;
           if (!this.sharedControl) {

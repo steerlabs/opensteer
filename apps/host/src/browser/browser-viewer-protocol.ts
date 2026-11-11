@@ -43,12 +43,13 @@ export function browserViewerMessage(
         ? {
             ...baseline,
             surfaces: [],
+            dialog: null,
             editingVersion: message.editingVersion,
             ...(message.clipboard === undefined ? {} : { clipboard: message.clipboard }),
           }
         : editing === 1
-          ? { ...baseline, surfaces: [], editingVersion: 1 }
-          : { ...baseline, surfaces: [] };
+          ? { ...baseline, surfaces: [], dialog: null, editingVersion: 1 }
+          : { ...baseline, surfaces: [], dialog: null };
     if (negotiation.basicInput && message.type === "browser.snapshot")
       message = { ...message, basicInput: 1 };
     if (negotiation.surfaceState && message.type === "browser.snapshot")

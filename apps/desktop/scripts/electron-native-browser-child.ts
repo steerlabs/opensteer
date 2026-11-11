@@ -759,7 +759,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
             artifacts.event("host.incoming", {
               type: kind.success ? kind.data.type : "unknown",
               ...(kind.success &&
-              ["browser.snapshot", "browser.surfaces.changed", "browser.dialog.changed"].includes(
+              ["browser.snapshot", "browser.surface", "browser.dialog.changed"].includes(
                 kind.data.type,
               )
                 ? { message: parsed }

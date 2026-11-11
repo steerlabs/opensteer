@@ -390,9 +390,8 @@ it.each([64, 500])(
       expect(body.browser).not.toHaveProperty("sessions");
       expect(body.browser).not.toHaveProperty("workspaceTabs");
       expect(errors).toEqual([]);
-      console.info(
-        "stage2b5-browser-bytes",
-        JSON.stringify({
+      await writeRealtimeEvidence(
+        {
           tabs: count,
           groups: groups.length,
           browserSection: keyedStreamBytes(body.browser),
@@ -401,7 +400,8 @@ it.each([64, 500])(
           bytesUntilWhole,
           titleBytes,
           handoverBytes,
-        }),
+        },
+        `browser-bytes-${count}.json`,
       );
     } finally {
       client.dispose();
@@ -457,7 +457,6 @@ describe("browser carrier and derivation", () => {
         return json({
           sessionId: payload.sessionId,
           outcome: "tab-closed",
-          catalog: { generation: 0, revision: 2, tabs: [] },
         });
       return json(body);
     });
@@ -3072,7 +3071,7 @@ describe("HttpHostClient durable realtime", () => {
       return { body, client, fetch, group, socket, workspace };
     }
 
-    it("keeps stream state through stale bootstrap and ignores legacy catalog notices", async () => {
+    it("keeps stream state through stale bootstrap", async () => {
       const f = await fixture();
       try {
         const tabId = f.group.tabs![0]!.id;
@@ -3093,16 +3092,6 @@ describe("HttpHostClient durable realtime", () => {
         const current = { ...f.group, tabs: [{ ...f.group.tabs![0]!, title: "Checkout" }] };
         publishBrowser(f.socket, { workspaceTabs: [current] });
         const before = f.client.getSnapshot();
-        f.socket.receiveRaw({
-          type: "host.browser-tabs-changed",
-          sessionId: f.group.session.id,
-          catalog: { generation: 9, revision: 9, tabs: [] },
-        });
-        f.socket.receiveRaw({
-          type: "host.browser-sessions-changed",
-          workspaceId: f.workspace.id,
-          group: f.group,
-        });
         expect(f.client.getSnapshot()).toBe(before);
         await f.client.refresh();
         expect(f.client.getSnapshot().workspaceTabs).toBe(before.workspaceTabs);
@@ -12900,26 +12889,27 @@ describe("HttpHostClient owner views", () => {
             if (payload.type === "browser.tab.open" && socket?.readyState === 0) socket.open();
             const response = await answer(payload);
             host.commandReplies++;
+            const fixture = asObject(await response.clone().json());
+            const { sourceCatalog, ...result } = fixture;
             if (
               host.commandRows &&
               payload.type === "browser.tab.open" &&
               response.ok &&
               socket?.readyState === 1
             ) {
-              const result = asObject(await response.clone().json());
               if (result.session) {
                 const session = browserSessionFixture(result.session);
                 publishBrowser(socket, {
                   sessions: [
                     {
                       ...session,
-                      tabCatalog: result.catalog as NonNullable<typeof session.tabCatalog>,
+                      tabCatalog: sourceCatalog as NonNullable<typeof session.tabCatalog>,
                     },
                   ],
                 });
               }
             }
-            return response;
+            return json(result, response.status);
           }
         }
         return host.bootstrap();
@@ -12954,8 +12944,9 @@ describe("HttpHostClient owner views", () => {
       });
       return {
         ...result,
-        catalog: mock.getSnapshot().browserSessions.find((value) => value.id === result.sessionId)!
-          .tabCatalog!,
+        sourceCatalog: mock
+          .getSnapshot()
+          .browserSessions.find((value) => value.id === result.sessionId)!.tabCatalog!,
       };
     } finally {
       mock.dispose();
@@ -12973,7 +12964,7 @@ describe("HttpHostClient owner views", () => {
       const options = { url: "https://pending.example/", idempotencyKey: "before-load" };
       const opening = host.client.openBrowserTab(target, options);
       expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
-      const { catalog: _catalog, ...receipt } = opened;
+      const { sourceCatalog: _catalog, ...receipt } = opened;
       await expect(opening).resolves.toEqual(receipt);
       expect(host.commands).toEqual([{ type: "browser.tab.open", ...target, ...options }]);
       expect(host.client.getSnapshot().pendingBrowserTabs ?? []).toEqual([]);
@@ -13123,10 +13114,10 @@ describe("HttpHostClient owner views", () => {
               {
                 ...opened.session,
                 tabCatalog: {
-                  ...opened.catalog,
-                  revision: opened.catalog.revision + 1,
+                  ...opened.sourceCatalog,
+                  revision: opened.sourceCatalog.revision + 1,
                   inventoryRevision:
-                    (opened.catalog.inventoryRevision ?? opened.catalog.revision) + 1,
+                    (opened.sourceCatalog.inventoryRevision ?? opened.sourceCatalog.revision) + 1,
                 },
               },
             ],
@@ -13148,7 +13139,7 @@ describe("HttpHostClient owner views", () => {
         expect(
           host.client.getSnapshot().browserSessions.find((value) => value.id === opened.sessionId)
             ?.tabCatalog?.revision,
-        ).toBe(opened.catalog.revision + 1);
+        ).toBe(opened.sourceCatalog.revision + 1);
         expect(host.client.getSnapshot().pendingBrowserTabs).toEqual([]);
       } finally {
         gate.resolve();
@@ -13167,7 +13158,7 @@ describe("HttpHostClient owner views", () => {
           return json({
             sessionId: opened.sessionId,
             outcome: "tab-closed",
-            catalog: opened.catalog,
+            sourceCatalog: opened.sourceCatalog,
           });
         await withTimeout(gate.promise, 2_000, {
           timeoutError: () => new Error("The delayed browser command was never released."),
@@ -13199,7 +13190,7 @@ describe("HttpHostClient owner views", () => {
       expect(close).toHaveBeenCalledExactlyOnceWith(
         opened.sessionId,
         opened.tabId,
-        expect.objectContaining({ inventoryRevision: opened.catalog.inventoryRevision }),
+        expect.objectContaining({ inventoryRevision: opened.sourceCatalog.inventoryRevision }),
       );
     } finally {
       gate.resolve();
@@ -13272,7 +13263,7 @@ describe("HttpHostClient owner views", () => {
           return json({
             sessionId: opened.sessionId,
             outcome: "tab-closed",
-            catalog: opened.catalog,
+            sourceCatalog: opened.sourceCatalog,
           });
         }
         await withTimeout(openingGate.promise, 2_000, {
@@ -13620,12 +13611,12 @@ describe("HttpHostClient owner views", () => {
         return json({
           sessionId,
           tabId: "page-1",
-          catalog: {
+          sourceCatalog: {
             generation: 1,
             revision: 1,
             tabs: [
               {
-                id: "page-1",
+                id: BrowserSurfaceIdSchema.parse("page-1"),
                 title: "Example",
                 site: "https://example.com",
                 iconRef: null,
@@ -14860,23 +14851,6 @@ describe("realtime protocol recovery journey", () => {
       f.sockets.at(-1)!.open();
       readableSnapshot(f, f.sockets.at(-1)!, "12");
       expect(f.client.getSnapshot().connection).toBe("connected");
-    } finally {
-      f.client.dispose();
-    }
-  });
-
-  it("ignores unreadable legacy catalogs without rereading bootstrap", async () => {
-    const f = await synchronizedClient();
-    try {
-      const reads = f.bootstrapReads();
-      f.sockets[0]!.receiveRaw({
-        type: "host.browser-tabs-changed",
-        catalog: { generation: -1 },
-        sessionId: createBrowserSessionId(),
-      });
-      await vi.advanceTimersByTimeAsync(0);
-      expect(f.bootstrapReads()).toBe(reads);
-      expect(f.sockets[0]!.closeEvents).toEqual([]);
     } finally {
       f.client.dispose();
     }

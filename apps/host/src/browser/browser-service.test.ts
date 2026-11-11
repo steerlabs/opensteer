@@ -1572,6 +1572,12 @@ describe("BrowserService", () => {
     });
     const send = (attachment: typeof baseline, message: object) =>
       attachment.handle(Buffer.from(JSON.stringify(message)), false);
+    await send(baseline, { type: "stream.subscribe", surfaceId: "page-1" });
+    expect(await runtime.nextCommand()).toMatchObject({
+      type: "stream.subscribe",
+      surfaceId: "page-1",
+    });
+    await send(editing, { type: "stream.subscribe", surfaceId: "page-1" });
     for (const [index, operation] of ["copy", "cut", "copy"].entries()) {
       const text = `native-${index}`;
       let command: Record<string, unknown>;
@@ -1602,7 +1608,7 @@ describe("BrowserService", () => {
           modifiers: ["meta"],
         });
       }
-      await send(baseline, { type: "navigation.reload" });
+      await send(baseline, { type: "navigation.reload", surfaceId: "page-1" });
       expect(await runtime.nextCommand()).toMatchObject({ type: "navigation.reload" });
       runtime.sendServer({
         type: "clipboard.result",
@@ -1742,7 +1748,10 @@ describe("BrowserService", () => {
           expect(snapshot.editingVersion).toBe(expected);
           expect(snapshot).toEqual(expect.objectContaining(expected === 2 ? { clipboard } : {}));
           if (expected !== 2) expect(snapshot).not.toHaveProperty("clipboard");
-          await attachment.handle(Buffer.from(JSON.stringify({ type: "stream.subscribe" })), false);
+          await attachment.handle(
+            Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+            false,
+          );
           if (version)
             runtime.sendServer({
               type: "browser.editing",
@@ -1922,7 +1931,10 @@ describe("BrowserService", () => {
       Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-integration" })),
       false,
     );
-    await attachments[1]!.handle(Buffer.from(JSON.stringify({ type: "stream.subscribe" })), false);
+    await attachments[1]!.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-download" })),
+      false,
+    );
     await flush();
     expect(editing(targeted)).toEqual(["page-integration"]);
     expect(editing(workspace)).toEqual(["page-download"]);
@@ -1935,10 +1947,8 @@ describe("BrowserService", () => {
     for (const attachment of attachments) attachment.close();
   });
 
-  it("sends an unattributed copy only to the one viewer who could have made it", async () => {
+  it("drops unaddressed copies even when only one viewer sent copy keys", async () => {
     const keys = generateKeyPairSync("ed25519");
-    // A Browser Runtime from before targeted streaming and editing: keys go
-    // unstamped and its copies come back without a consumer token.
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
     const ownerId = createId("user"),
       workspaceId = createId("workspace");
@@ -2003,10 +2013,10 @@ describe("BrowserService", () => {
     await copierAttachment.handle(copyKey, false);
     const forwarded = await runtime.nextCommand();
     expect(forwarded).toMatchObject({ type: "input.key", key: "c" });
-    expect(forwarded).not.toHaveProperty("consumerToken");
+    expect(forwarded).toMatchObject({ consumerToken: expect.any(String), targeted: true });
     runtime.sendServer({ type: "clipboard.data", surfaceId: "page-integration", text: "own" });
     await flush([copier, other]);
-    expect(copies(copier)).toEqual(["own"]);
+    expect(copies(copier)).toEqual([]);
     expect(copies(other)).toEqual([]);
 
     // The other viewer types too; then the copier copies and leaves before
@@ -2108,7 +2118,7 @@ describe("BrowserService", () => {
     newcomerAttachment.close();
   });
 
-  it("stamps editing activation independently of targeted streaming", async () => {
+  it("targets editing activation and replaces forged consumer identities", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { editing: true });
     const ownerId = createId("user"),
@@ -2150,7 +2160,7 @@ describe("BrowserService", () => {
       );
       const key = await runtime.nextCommand();
       expect(key.type).toBe("input.key");
-      expect(key).not.toHaveProperty("targeted");
+      expect(key.targeted).toBe(true);
       expect(key.consumerToken).not.toBe(forgedToken);
       expect(key.consumerToken).toBeTypeOf("string");
       evidence.push({ editing, key });
@@ -2192,6 +2202,11 @@ describe("BrowserService", () => {
     });
     const send = (message: object) =>
       attachment.handle(Buffer.from(JSON.stringify(message)), false);
+    await send({ type: "stream.subscribe", surfaceId: "page-1" });
+    expect(await runtime.nextCommand()).toMatchObject({
+      type: "stream.subscribe",
+      surfaceId: "page-1",
+    });
     const operationId = randomUUID();
     await send({
       type: "clipboard.paste-data",
@@ -2206,7 +2221,7 @@ describe("BrowserService", () => {
       type: "clipboard.part",
       part: { operationId, index: 0, data: Buffer.from("x").toString("base64") },
     });
-    await send({ type: "navigation.reload" });
+    await send({ type: "navigation.reload", surfaceId: "page-1" });
     expect(await runtime.nextCommand()).toMatchObject({ type: "navigation.reload" });
     runtime.sendServer({
       type: "clipboard.result",
@@ -2215,8 +2230,12 @@ describe("BrowserService", () => {
       consumerToken: paste.consumerToken,
       outcome: "stale",
     });
-    runtime.sendServer({ type: "browser.dialog.changed", dialog: null });
-    await waitFor(() => peer.text().some((m) => m.type === "browser.dialog.changed"));
+    const dialogsBefore = peer.text().filter((m) => m.type === "browser.dialog.changed").length;
+    runtime.sendServer({ type: "browser.dialog.changed", surfaceId: "page-1", dialog: null });
+    await waitFor(
+      () =>
+        peer.text().filter((m) => m.type === "browser.dialog.changed").length === dialogsBefore + 1,
+    );
     expect(peer.text().filter((m) => m.type === "clipboard.result")).toHaveLength(1);
     expect(peer.closed).toBeNull();
     const evidence = `${editingEvidenceRoot}/host-malformed-parts`;
@@ -2251,7 +2270,8 @@ describe("BrowserService", () => {
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
       workspaceTabs: {
-        ...{ groupIds: async () => [], read: async () => [], openTabs: async () => [] },
+        groupIds: async () => [],
+        openTabs: async () => [],
         close,
         session: async () => repository.session(sessionId),
         lineageForSession: async () => groupId,
@@ -2540,7 +2560,8 @@ describe("BrowserService", () => {
         }),
         targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: capable }),
         workspaceTabs: {
-          ...{ groupIds: async () => [], read: async () => [], openTabs: async () => [] },
+          read: async () => [],
+          openTabs: async () => [],
           list: async () => [],
           groupIds: async () => [],
           recordChanges: async (sessionId: BrowserSessionId) => ({
@@ -2583,7 +2604,7 @@ describe("BrowserService", () => {
       }
     },
   );
-  it("delivers only the subscribed viewer surface on record and icon changes", async () => {
+  it.each([64, 500])("delivers only the subscribed viewer surface among %s tabs", async (count) => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
@@ -2627,10 +2648,16 @@ describe("BrowserService", () => {
       },
     ]);
     const own = { id: "page-1", title: "Example", url: "about:blank" };
+    const neighbors = Array.from({ length: count - 2 }, (_, index) => ({
+      id: `neighbor-${index}`,
+      title: `Page ${index}`,
+      url: `https://sibling.example/private/${index}`,
+    }));
     runtime.publishTabs({
       surfaces: [
         own,
         { id: "page-2", title: "Private sibling", url: "https://sibling.example/private" },
+        ...neighbors,
       ],
     });
     await vi.waitFor(() =>
@@ -2644,8 +2671,12 @@ describe("BrowserService", () => {
       title: "Changed sibling",
       url: "https://sibling.example/private",
     };
-    runtime.publishTabs({ surfaces: [own, sibling] });
     const siblingFrames = peer.textFrames.length;
+    const bytesBeforeSibling = peer.textFrames.reduce(
+      (sum, frame) => sum + Buffer.byteLength(frame),
+      0,
+    );
+    runtime.publishTabs({ surfaces: [own, sibling, ...neighbors] });
     await vi.waitFor(() =>
       expect(
         service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.title,
@@ -2653,21 +2684,41 @@ describe("BrowserService", () => {
     );
     expect(peer.textFrames).toHaveLength(siblingFrames);
     expect(updates()).toHaveLength(1);
-    const favicon = "data:image/png;base64,aWNvbg==";
-    runtime.publishTabs({ surfaces: [{ ...own, title: "Changed", favicon }, sibling] });
+    const siblingTitleBytes =
+      peer.textFrames.reduce((sum, frame) => sum + Buffer.byteLength(frame), 0) -
+      bytesBeforeSibling;
+    const bytesBeforeOwn = peer.textFrames.reduce(
+      (sum, frame) => sum + Buffer.byteLength(frame),
+      0,
+    );
+    runtime.publishTabs({ surfaces: [{ ...own, title: "Changed" }, sibling, ...neighbors] });
     await vi.waitFor(() => expect(updates()).toHaveLength(2));
-    expect(updates()[1]).toMatchObject({
+    const ownTitleBytes =
+      peer.textFrames.reduce((sum, frame) => sum + Buffer.byteLength(frame), 0) - bytesBeforeOwn;
+    expect(siblingTitleBytes).toBe(0);
+    expect(ownTitleBytes).toBeGreaterThan(0);
+    await mkdir(editingEvidenceRoot, { recursive: true });
+    await writeFile(
+      `${editingEvidenceRoot}/viewer-bytes-${count}.json`,
+      JSON.stringify({ tabs: count, siblingTitleBytes, ownTitleBytes }),
+    );
+    const favicon = "data:image/png;base64,aWNvbg==";
+    runtime.publishTabs({
+      surfaces: [{ ...own, title: "Changed", favicon }, sibling, ...neighbors],
+    });
+    await vi.waitFor(() => expect(updates()).toHaveLength(3));
+    expect(updates()[2]).toMatchObject({
       surfaceId: "page-1",
       surface: { title: "Changed", favicon },
     });
     const replacementIcon = "data:image/png;base64,aWNvbjI=";
     runtime.publishTabs({
-      surfaces: [{ ...own, title: "Changed", favicon: replacementIcon }, sibling],
+      surfaces: [{ ...own, title: "Changed", favicon: replacementIcon }, sibling, ...neighbors],
     });
     await vi.waitFor(() =>
-      expect(updates(), "The viewer did not receive its replacement icon.").toHaveLength(3),
+      expect(updates(), "The viewer did not receive its replacement icon.").toHaveLength(4),
     );
-    expect(updates()[2]).toMatchObject({ surface: { title: "Changed", favicon: replacementIcon } });
+    expect(updates()[3]).toMatchObject({ surface: { title: "Changed", favicon: replacementIcon } });
     expect(JSON.stringify(updates())).not.toContain("sibling.example");
     runtime.publishTabs({ surfaces: [{ id: "page-2", title: "Sibling" }] });
     await vi.waitFor(() =>
@@ -2678,6 +2729,65 @@ describe("BrowserService", () => {
       }),
     );
     attachment.close();
+  });
+
+  it("keeps a tab's bounded last picture across target switches until its document changes", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+    const ownerId = createId("user"),
+      workspaceId = createId("workspace");
+    const service = freshService({
+      keys,
+      runtime,
+      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    });
+    const opened = await service.openAgentSession({
+      ownerId,
+      workspaceId,
+      fresh: true,
+      agentBindingId: "return-picture",
+    });
+    const own = { id: "page-1", title: "Own", documentId: "document-1", geometryRevision: 0 };
+    const sibling = { id: "page-2", title: "Sibling" };
+    runtime.publishTabs({ surfaces: [own, sibling] });
+    await vi.waitFor(() =>
+      expect(
+        service.clientStreams.source.ports.live(opened.session.id)?.records.has("page-2"),
+      ).toBe(true),
+    );
+    const peer = new RecordingPeer("return-picture");
+    const viewer = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
+    const select = async (surfaceId: string, previous?: string) => {
+      await viewer.handle(
+        Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId })),
+        false,
+      );
+      if (previous)
+        expect(await runtime.nextCommand()).toMatchObject({
+          type: "stream.unsubscribe",
+          surfaceId: previous,
+        });
+      expect(await runtime.nextCommand()).toMatchObject({ type: "stream.subscribe", surfaceId });
+    };
+    await select("page-1");
+    runtime.sendFrame(browserFrame(1));
+    await vi.waitFor(() => expect(peer.binaryFrames).toHaveLength(1));
+    await select("page-2", "page-1");
+    await select("page-1", "page-2");
+    await vi.waitFor(() =>
+      expect(peer.binaryFrames, "The same document lost its last picture.").toHaveLength(2),
+    );
+    await select("page-2", "page-1");
+    runtime.publishTabs({ surfaces: [{ ...own, documentId: "document-2" }, sibling] });
+    await vi.waitFor(() =>
+      expect(
+        service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-1")
+          ?.documentId,
+      ).toBe("document-2"),
+    );
+    await select("page-1", "page-2");
+    expect(peer.binaryFrames).toHaveLength(2);
+    viewer.close();
   });
 
   it("coalesces a slow viewer's surface updates", async () => {
@@ -3029,10 +3139,15 @@ describe("BrowserService", () => {
     }
     await send({ type: "stream.subscribe", surfaceId: "page-1" });
     expect(await runtime.nextCommand()).toEqual({ type: "stream.subscribe", surfaceId: "page-1" });
-    // No cached picture from before control-only is replayed.
-    expect(peer.binaryFrames).toHaveLength(1);
+    expect(peer.binaryFrames).toHaveLength(2);
+    const replayed = decodeBrowserFrameEnvelope(peer.binaryFrames[1]!).header;
+    expect(replayed.frameId).toBe(1);
+    expect(replayed.watchToken).not.toBe(
+      decodeBrowserFrameEnvelope(peer.binaryFrames[0]!).header.watchToken,
+    );
+    await send({ type: "stream.ack", token: replayed.watchToken });
     runtime.sendFrame(browserFrame(3));
-    await waitFor(() => peer.binaryFrames.length === 2);
+    await waitFor(() => peer.binaryFrames.length === 3);
     await send({ type: "stream.unsubscribe" });
     expect(await runtime.nextCommand()).toEqual({
       type: "stream.unsubscribe",
@@ -3104,18 +3219,23 @@ describe("BrowserService", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {
       const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
-      await expect(
-        attachment.handle(
-          Buffer.from(JSON.stringify({ type: "stream.subscribe", frames: false })),
-          false,
-        ),
-      ).rejects.toMatchObject({ code: "bad_request" });
+      for (const frames of [undefined, true, false])
+        await expect(
+          attachment.handle(
+            Buffer.from(JSON.stringify({ type: "stream.subscribe", frames })),
+            false,
+          ),
+        ).rejects.toMatchObject({ code: "bad_request" });
       const watch = await service.attach(
         ownerId,
         opened.session.id,
         new RecordingPeer("watch-control"),
         { ...consumerOptions(), mode: "watch" },
       );
+      for (const frames of [undefined, true, false])
+        await expect(
+          watch.handle(Buffer.from(JSON.stringify({ type: "stream.subscribe", frames })), false),
+        ).rejects.toMatchObject({ code: "bad_request" });
       await expect(
         watch.handle(
           Buffer.from(
@@ -4014,7 +4134,10 @@ describe("BrowserService", () => {
     );
     recordsBeforePublish.mockRestore();
     expect(peer.binaryFrames).toHaveLength(0);
-    await attachment.handle(Buffer.from(JSON.stringify({ type: "stream.subscribe" })), false);
+    await attachment.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+      false,
+    );
     await expect(runtime.nextCommand()).resolves.toMatchObject({ type: "stream.subscribe" });
 
     runtime.sendFrame(browserFrame(2));
@@ -4083,7 +4206,10 @@ describe("BrowserService", () => {
     );
     // Joining a stream already under way starts from its current picture
     // (frame 2) rather than a blank until the page next paints.
-    await slowAttachment.handle(Buffer.from(JSON.stringify({ type: "stream.subscribe" })), false);
+    await slowAttachment.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+      false,
+    );
     await waitFor(() => slowPeer.binaryFrames.length === 1);
     runtime.sendFrame(browserFrame(3));
     runtime.sendFrame(browserFrame(4));
@@ -4336,34 +4462,41 @@ describe("BrowserService", () => {
     expect(peer.text().map((message) => message.type)).toEqual(["browser.snapshot"]);
   });
 
-  it("rejects a Runtime that emits any event before its initial snapshot", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      beforeInitialSnapshot: [{ state: "closing", type: "browser.status" }],
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const service = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      connectTimeoutMs: 2_000,
-      repository,
-      signer: new BrowserAttachTicketSigner({
-        keyId: "host-primary",
-        privateKey: keys.privateKey,
-      }),
-      targetResolver: runnerTarget({ url: runtime.url }),
-    });
-    cleanups.push(async () => service.close());
+  it.each(["event before snapshot", "missing targeted streaming"] as const)(
+    "rejects a Runtime with %s",
+    async (invalid) => {
+      const keys = generateKeyPairSync("ed25519");
+      const runtime = await startFakeRuntime(
+        keys.publicKey,
+        "host-primary",
+        invalid === "event before snapshot"
+          ? { beforeInitialSnapshot: [{ state: "closing", type: "browser.status" }] }
+          : { targetedStreaming: false },
+      );
+      const ownerId = createId("user");
+      const workspaceId = createId("workspace");
+      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const service = new BrowserService({
+        ...nativeProfileOptions(),
+        ...profileStateOptions,
+        connectTimeoutMs: 2_000,
+        repository,
+        signer: new BrowserAttachTicketSigner({
+          keyId: "host-primary",
+          privateKey: keys.privateKey,
+        }),
+        targetResolver: runnerTarget({ url: runtime.url }),
+      });
+      cleanups.push(async () => service.close());
 
-    await expect(service.start({ fresh: true, ownerId, workspaceId })).rejects.toMatchObject({
-      code: "workspace_unavailable",
-    });
-    expect(await repository.listBrowserSessions(ownerId)).toEqual([
-      expect.objectContaining({ state: "failed" }),
-    ]);
-  });
+      await expect(service.start({ fresh: true, ownerId, workspaceId })).rejects.toMatchObject({
+        code: "workspace_unavailable",
+      });
+      expect(await repository.listBrowserSessions(ownerId)).toEqual([
+        expect.objectContaining({ state: "failed" }),
+      ]);
+    },
+  );
 
   it("rejects a Runtime snapshot whose dialog references an unknown surface", async () => {
     const keys = generateKeyPairSync("ed25519");
@@ -6716,7 +6849,7 @@ async function startFakeRuntime(
             : {}),
           ...(claims.personFillVersion === 1 ? { personFillVersion: 1 } : {}),
           ...(options.inputLanes ? { inputLanesVersion: 1 } : {}),
-          ...(options.targetedStreaming ? { targetedStreamingVersion: 1 } : {}),
+          ...(options.targetedStreaming !== false ? { targetedStreamingVersion: 1 } : {}),
           ...(options.editing && claims.editingVersion
             ? {
                 editingVersion: claims.editingVersion,
@@ -7204,14 +7337,14 @@ it.each([true, false])(
         surfaceId: "page-1",
         density: 2,
       });
-      // A legacy picture holder stays at the released density.
+      // A holder without density demand stays at the default density.
       const legacy = await service.attach(
         ownerId,
         opened.session.id,
-        new RecordingPeer("legacy"),
+        new RecordingPeer("default-density"),
         consumerOptions(),
       );
-      await send(legacy, { type: "stream.subscribe" });
+      await send(legacy, { type: "stream.subscribe", surfaceId: "page-1" });
       await send(desktop, { type: "stream.demand", surfaceId: "page-1", density: 1 });
       await send(legacy, { type: "stream.unsubscribe" });
       expect(await runtime.nextCommand()).toEqual({
@@ -7268,6 +7401,14 @@ it("delivers cursor hints only to their controller and refuses Watch cursor quer
     mode: "watch",
   });
   try {
+    await controller.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-1" })),
+      false,
+    );
+    expect(await runtime.nextCommand()).toMatchObject({
+      type: "stream.subscribe",
+      surfaceId: "page-1",
+    });
     await controller.handle(
       Buffer.from(
         JSON.stringify({
@@ -7501,7 +7642,9 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
     targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: true }),
     workspaceTabs: {
-      ...{ groupIds: async () => [], read: async () => [], openTabs: async () => [] },
+      groupIds: async () => [],
+      read: async () => [],
+      openTabs: async () => [],
       recordChanges,
       suspend: async () => undefined,
     } as unknown as WorkspaceTabStore,

@@ -250,9 +250,12 @@ async function watchBrowserSession(
     return socket;
   };
   try {
+    const surfaceId = (await browserInventory(stack, BrowserSessionIdSchema.parse(sessionId)))
+      .tabs[0]?.id;
+    if (!surfaceId) throw new Error("The browser has no target tab.");
     const watch = await open("watch");
     const firstFrame = waitForBrowserFrame(watch);
-    watch.send(JSON.stringify({ type: "stream.subscribe" }));
+    watch.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
     const first = await firstFrame;
     expect(first.header.watchToken).toBeDefined();
     expect(first.jpeg.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
@@ -291,7 +294,7 @@ async function watchBrowserSession(
 
     const control = await open("control");
     const creditedFrame = waitForBrowserFrame(watch);
-    control.send(JSON.stringify({ type: "navigation.reload" }));
+    control.send(JSON.stringify({ type: "navigation.reload", surfaceId }));
     const second = await creditedFrame;
     expect(second.header.frameId).toBeGreaterThan(first.header.frameId);
     expect(second.header.viewportWidth).toBe(first.header.viewportWidth);
@@ -299,7 +302,7 @@ async function watchBrowserSession(
     // The page navigates while that picture is still unacknowledged: its new
     // title and address are the same tab, so the acknowledgement still counts
     // and Watch carries on.
-    control.send(JSON.stringify({ type: "navigation.reload" }));
+    control.send(JSON.stringify({ type: "navigation.reload", surfaceId }));
     await new Promise((resolve) => setTimeout(resolve, 750));
     const afterNavigation = waitForBrowserFrame(watch);
     watch.send(JSON.stringify({ type: "stream.ack", token: second.header.watchToken }));
@@ -312,7 +315,7 @@ async function watchBrowserSession(
     const uncredited = await open("watch");
     const noAckFrame = waitForBrowserFrame(uncredited);
     const noAckClose = waitForBrowserClose(uncredited, 25_000);
-    uncredited.send(JSON.stringify({ type: "stream.subscribe" }));
+    uncredited.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
     const pending = await noAckFrame;
     expect(pending.header.watchToken).toBeDefined();
     const noAckStartedAt = Date.now();
@@ -323,7 +326,7 @@ async function watchBrowserSession(
     expect(noAckElapsedMs).toBeLessThan(25_000);
 
     const controlFrame = waitForBrowserFrame(control);
-    control.send(JSON.stringify({ type: "stream.subscribe" }));
+    control.send(JSON.stringify({ type: "stream.subscribe", surfaceId }));
     const usable = await controlFrame;
     expect(usable.header.frameId).toBeGreaterThan(second.header.frameId);
     const result = {
@@ -451,9 +454,7 @@ export async function openBrowserView(
         if (message.type !== "browser.snapshot") return;
         clearTimeout(timeout);
         socket.off("message", onMessage);
-        const active = message.surfaces?.find((surface) => surface.active);
-        if (active) resolve(message);
-        else reject(new Error("The session shows no page."));
+        resolve(message);
       };
       socket.on("message", onMessage);
     },
@@ -467,8 +468,10 @@ export async function openBrowserView(
       if (header.watchToken)
         socket.send(JSON.stringify({ type: "stream.ack", token: header.watchToken }));
     });
+  const first = (await browserInventory(stack, sessionId)).tabs[0];
+  if (!first) throw new Error("The session has no target tab.");
   return {
-    activeSurfaceId: snapshot.surfaces.find((surface) => surface.active)!.id,
+    activeSurfaceId: first.id,
     snapshot,
     socket,
   };
@@ -707,9 +710,8 @@ export function describeViewerEntry(entry: ViewerEntry, names: Record<string, st
     return `frame ${name(entry.header.surfaceId)} ${entry.header.viewportWidth}x${entry.header.viewportHeight}`;
   }
   const { message } = entry;
-  if (message.type === "browser.surfaces.changed") {
-    return `${message.type} [${message.surfaces.map((surface) => `${name(surface.id)}${surface.active ? "*" : ""}`).join(", ")}]`;
-  }
+  if (message.type === "browser.surface")
+    return `${message.type} ${name(message.surfaceId)} ${message.surface ? "live" : "closed"}`;
   if (message.type === "browser.dialog.changed") {
     return `${message.type} ${message.dialog ? `${name(message.dialog.surfaceId)} ${message.dialog.type}` : "none"}`;
   }

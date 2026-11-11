@@ -5,7 +5,12 @@ it("projects negotiated input capabilities without a session-wide surface list",
   const snapshot = BrowserServerMessageSchema.parse({
     type: "browser.snapshot",
     access: "read-write",
-    dialog: null,
+    dialog: {
+      id: "e2799da2-9fe9-438e-a160-47e275ee2703",
+      type: "confirm",
+      message: "Private dialog",
+      surfaceId: "phone-page",
+    },
     sessionId: "bsn_e2799da2-9fe9-438e-a160-47e275ee2703",
     state: "ready",
     basicInput: 1,
@@ -26,7 +31,9 @@ it("projects negotiated input capabilities without a session-wide surface list",
     basicInput: 1,
     surfaceState: 1,
     surfaces: [],
+    dialog: null,
   });
+  expect(BrowserServerMessageSchema.safeParse(modern).success).toBe(true);
   expect(modern).not.toHaveProperty("editingVersion");
   expect(modern).not.toHaveProperty("clipboard");
 });

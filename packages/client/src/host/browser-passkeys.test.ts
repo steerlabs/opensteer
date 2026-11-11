@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema, BrowserViewerSurfaceSchema } from "@opensteer/protocol/browser";
 import { expect, it, vi } from "vitest";
 import { BrowserPasskeys, passkeyNotice } from "./browser-passkeys.js";
 const requestId = "e2799da2-9fe9-438e-a160-47e275ee2703";
@@ -58,5 +59,35 @@ it("ignores messages without opt-in, clears on disconnect and scopes requests to
   store.receive("session", "tab", offer);
   expect(store.get("session", "tab")).toMatchObject({ kind: "notice" });
   expect(listener).toHaveBeenCalledTimes(1);
+  const surface = BrowserViewerSurfaceSchema.parse({
+    favicon: null,
+    id: "tab",
+    title: "Page",
+    url: "https://example.test/",
+    state: "live",
+    documentId: "first",
+    geometryRevision: 1,
+    loading: false,
+    navigationFailed: false,
+    sizedByAgent: false,
+  });
+  store.receive("session", "tab", {
+    type: "browser.surface",
+    surfaceId: BrowserSurfaceIdSchema.parse("tab"),
+    surface,
+  });
+  store.receive("session", "tab", offer);
+  store.receive("session", "tab", {
+    type: "browser.surface",
+    surfaceId: BrowserSurfaceIdSchema.parse("other"),
+    surface: { ...surface, id: BrowserSurfaceIdSchema.parse("other"), documentId: "other" },
+  });
+  expect(store.get("session", "tab")).toMatchObject({ kind: "notice" });
+  store.receive("session", "tab", {
+    type: "browser.surface",
+    surfaceId: BrowserSurfaceIdSchema.parse("tab"),
+    surface: { ...surface, documentId: "second" },
+  });
+  expect(store.get("session", "tab")).toBeNull();
   store.disconnect("session", "tab");
 });
