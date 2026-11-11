@@ -33,6 +33,13 @@ const roots: readonly string[] = [
 /** Every non-test source in `packages/client`, which is client-only by definition. */
 const clientPackageRoots = sourcesUnder("packages/client/src");
 
+/** The phone app's own runtime sources, which run nowhere but Hermes. */
+const mobileSources = [
+  "apps/mobile/index.ts",
+  ...sourcesUnder("apps/mobile/src"),
+  ...sourcesUnder("apps/mobile/modules").filter((file) => !/\/(?:tests|journey)\//u.test(file)),
+];
+
 /** Bare specifiers that only resolve inside a Node runtime. */
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 
@@ -66,16 +73,25 @@ function subpathSearchStart(specifier: string): number {
  * The standard-library members Hermes — the engine the phone runs on — does
  * not have. A browser and Node have all of them, so this is the one class of
  * mistake that passes every test and every typecheck and then throws on a
- * device: sort a copy in place instead of `toSorted`, and group with a `Map`
- * instead of `Object.groupBy`.
+ * device: sort a copy in place instead of `toSorted`, group with a `Map`
+ * instead of `Object.groupBy`, and keep to the three `Intl` constructors.
  *
- * The list is what the engine this tree ships actually answered when asked
- * (`hermesvm` 250829098.0.17, React Native 0.86), not what a compatibility
- * table says: `toReversed`, `toSpliced`, `Array.prototype.with`, `findLast`,
- * `findLastIndex` and `Promise.withResolvers` are all present there, and only
- * these two are missing. Re-ask the engine before editing this.
+ * This is what the engine this tree ships actually answered, not what a
+ * compatibility table says: `toReversed`, `toSpliced`, `Array.prototype.with`,
+ * `findLast`, `findLastIndex` and `Promise.withResolvers` are present
+ * (`hermesvm` 250829098.0.17, React Native 0.86), and React Native 0.88's
+ * `hermesvm` registers only `Collator`, `DateTimeFormat` and `NumberFormat`
+ * under `Intl`, so `Intl` is an allowlist: `Intl.Segmenter` and the rest are
+ * undefined there. Re-ask the engine before editing this.
  */
-const missingInHermes = /\.toSorted\s*\(|\bObject\s*\.\s*groupBy\s*\(/u;
+const missingInHermes =
+  /\.toSorted\s*\(|\bObject\s*\.\s*groupBy\s*\(|\bIntl\s*\.\s*(?!(?:Collator|DateTimeFormat|NumberFormat)\b)\w+\s*[(.]/u;
+
+/** Everything the phone evaluates that this repository writes. */
+const hermesSources = () => [
+  ...reachableFiles([...roots, ...clientPackageRoots]),
+  ...mobileSources,
+];
 
 const workspaceManifests = readWorkspaceManifests();
 
@@ -110,8 +126,8 @@ describe("client import boundaries", () => {
     );
   });
 
-  it("keeps the members Hermes does not have out of the client-reachable graph", () => {
-    const offenders = reachableFiles([...roots, ...clientPackageRoots]).filter((file) =>
+  it("keeps the members Hermes does not have out of everything the phone runs", () => {
+    const offenders = hermesSources().filter((file) =>
       missingInHermes.test(readFileSync(path.join(repositoryRoot, file), "utf8")),
     );
 
@@ -125,6 +141,10 @@ describe("client import boundaries", () => {
         "const ordered = rows\n  .toSorted();",
         "const grouped = Object.groupBy(rows, pick);",
         "const grouped = Object . groupBy (rows, pick);",
+        'const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });',
+        'const list = new Intl.ListFormat("en").format(names);',
+        "const rules = Intl . PluralRules (locale);",
+        "const locales = Intl.Segmenter.supportedLocalesOf(locale);",
       ].filter((sample) => !missingInHermes.test(sample)),
     ).toEqual([]);
 
@@ -138,6 +158,12 @@ describe("client import boundaries", () => {
         "const { promise, resolve } = Promise.withResolvers();",
         "const grouped = groupBy(rows, pick);",
         "rows.toSortedByName();",
+        'const date = new Intl.DateTimeFormat("en", { month: "short" });',
+        "const total = Intl.NumberFormat(locale).format(count);",
+        "const order = new Intl.Collator(locale).compare;",
+        'const zones = Intl.DateTimeFormat.supportedLocalesOf("en");',
+        'const options: Intl.DateTimeFormatOptions = { hour: "numeric" };',
+        'type Part = Intl.DateTimeFormatPartTypes | "literal";',
       ].filter((sample) => missingInHermes.test(sample)),
     ).toEqual([]);
   });
@@ -149,7 +175,7 @@ describe("client import boundaries", () => {
     // asked to stand in for. A digest that has to run on a phone is taken with
     // `@noble/hashes`, the way `hostKeyFingerprint` already takes one.
     const forbidden = /\bcrypto\s*\.\s*subtle\b/u;
-    const offenders = reachableFiles([...roots, ...clientPackageRoots]).filter((file) =>
+    const offenders = hermesSources().filter((file) =>
       forbidden.test(readFileSync(path.join(repositoryRoot, file), "utf8")),
     );
 
