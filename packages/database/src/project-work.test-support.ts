@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue, principalIdForUser } from "./store-primitives.js";
 import { testModelSelection } from "./store.integration.test-support.js";
@@ -109,7 +110,7 @@ export async function insertProjectRunFixture(
   const runId = createId("run");
   const messageId = createId("message");
   const providerSessionId = createId("providerSession");
-  const runnerBootId = `boot-${suffix}`;
+  const runnerBootId = `rbt_${randomUUID()}`;
   const result = await database.transaction().execute(async (transaction) => {
     const membership = await transaction
       .selectFrom("workspaceMemberships")

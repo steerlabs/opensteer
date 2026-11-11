@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { RunnerConnectionFenceSchema } from "@opensteer/protocol";
 import { ProjectRunBindingSchema, createId } from "@opensteer/core";
 import { expect } from "vitest";
 import { describeStore } from "./store.integration.test-support.js";
@@ -5,7 +7,7 @@ import {
   createProjectIdentityFixture,
   insertProjectRunFixture,
 } from "./project-work.test-support.js";
-import { ProjectExecutionStore } from "./project-execution-store.js";
+import { ProjectExecutionStore, ProjectControlDeliveryStore } from "./project-execution-store.js";
 
 describeStore("Project durable controls", (it) => {
   it("retains the original disposition across replays and root loss, refuses identity changes, and rolls back with its caller", async ({
@@ -114,6 +116,144 @@ describeStore("Project durable controls", (it) => {
     expect(
       stored.every((row) => row.status === "pending" && row.originatingGrantId === grant.id),
     ).toBe(true);
+    let attached = false;
+    const delivery = new ProjectControlDeliveryStore(database, {
+      currentPeerIsProjectCapable: () => true,
+      runnerIsAttached: () => attached,
+      async canContinue() {
+        return false;
+      },
+    });
+    const pendingInterrupt = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("type", "=", "run.control.project")
+      .where("payload", "@>", JSON.stringify({ control: { kind: "run.interrupt" } }))
+      .executeTakeFirstOrThrow();
+    expect(await delivery.claim(pendingInterrupt.id, "host-before-restart")).toMatchObject({
+      state: "offline",
+    });
+    attached = true;
+    await database
+      .updateTable("runs")
+      .set({ status: "failed", completedAt: new Date() })
+      .where("id", "=", binding.runId)
+      .execute();
+    const firstDelivery = await delivery.claim(pendingInterrupt.id, "host-before-restart");
+    expect(firstDelivery).toMatchObject({
+      state: "ready",
+      binding,
+      control: { kind: "run.interrupt" },
+    });
+    const afterRestart = new ProjectControlDeliveryStore(database, {
+      currentPeerIsProjectCapable: () => true,
+      runnerIsAttached: () => true,
+      async canContinue() {
+        return false;
+      },
+    });
+    expect(await afterRestart.claim(pendingInterrupt.id, "host-after-restart")).toEqual(
+      firstDelivery,
+    );
+    if (firstDelivery.state !== "ready") throw new Error("Control was not ready for delivery");
+    const peer = RunnerConnectionFenceSchema.parse({
+      runnerId: binding.runnerId,
+      bootId: binding.runnerBootId,
+      connectionGeneration: 1,
+      connectionId: `rcn_${randomUUID()}`,
+      connectionLeaseId: `rls_${randomUUID()}`,
+    });
+    const receipt = {
+      ...peer,
+      type: "runner.project.control-result",
+      binding,
+      commandId: pendingInterrupt.id,
+      correlationId: firstDelivery.correlationId,
+      result: { status: "accepted" },
+    };
+    await expect(
+      afterRestart.recordResult(peer, { ...receipt, connectionGeneration: 2 }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(await afterRestart.recordResult(peer, receipt)).toEqual({
+      state: "recorded",
+      replayed: false,
+    });
+    expect(await afterRestart.recordResult(peer, receipt)).toEqual({
+      state: "recorded",
+      replayed: true,
+    });
+    await expect(
+      afterRestart.recordResult(peer, {
+        ...receipt,
+        result: { status: "uncertain", message: "Lost result" },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await afterRestart.claim(pendingInterrupt.id, "host-after-restart")).toMatchObject({
+      state: "settled",
+      status: "succeeded",
+    });
+    const refused = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("type", "=", "run.control.project")
+      .where("payload", "@>", JSON.stringify({ control: { kind: "request.refuse" } }))
+      .executeTakeFirstOrThrow();
+    expect(await afterRestart.claim(refused.id, "host-after-restart")).toMatchObject({
+      state: "disposed",
+    });
+    expect(await database.transaction().execute((tx) => store.find(tx, input))).toEqual(control);
+    expect(
+      await database
+        .selectFrom("commands")
+        .select(["id", "status"])
+        .where("id", "in", [pendingInterrupt.id, refused.id])
+        .orderBy("id")
+        .execute(),
+    ).toEqual(
+      [
+        { id: pendingInterrupt.id, status: "succeeded" },
+        { id: refused.id, status: "failed" },
+      ].sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    await database
+      .transaction()
+      .execute((tx) =>
+        store.enqueue(tx, {
+          binding,
+          idempotencyKey: "uncertain-control",
+          control: { kind: "run.interrupt" },
+        }),
+      );
+    const uncertainRow = await database
+      .selectFrom("commands")
+      .select("id")
+      .where("type", "=", "run.control.project")
+      .where("id", "not in", [pendingInterrupt.id, refused.id])
+      .executeTakeFirstOrThrow();
+    const uncertainDelivery = await afterRestart.claim(uncertainRow.id, "host-after-restart");
+    if (uncertainDelivery.state !== "ready")
+      throw new Error("Uncertain control was not queued for delivery");
+    const uncertainReceipt = {
+      ...receipt,
+      commandId: uncertainRow.id,
+      correlationId: uncertainDelivery.correlationId,
+      result: { status: "uncertain", message: "Engine acceptance could not be proved" },
+    };
+    expect(await afterRestart.recordResult(peer, uncertainReceipt)).toEqual({
+      state: "recorded",
+      replayed: false,
+    });
+    expect(await afterRestart.recordResult(peer, uncertainReceipt)).toEqual({
+      state: "recorded",
+      replayed: true,
+    });
+    expect(await afterRestart.claim(uncertainRow.id, "host-restarted-again")).toMatchObject({
+      state: "uncertain",
+      binding,
+    });
+    await expect(
+      afterRestart.recordResult(peer, { ...uncertainReceipt, result: { status: "accepted" } }),
+    ).rejects.toMatchObject({ code: "conflict" });
     await expect(
       database
         .updateTable("commands")

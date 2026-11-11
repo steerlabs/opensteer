@@ -1,3 +1,9 @@
+import {
+  ProjectRunnerToHostMessageSchema,
+  RunnerConnectionFenceSchema,
+  sameRunnerConnectionFence,
+  type RunnerConnectionFence,
+} from "@opensteer/protocol";
 import { type Kysely } from "kysely";
 import {
   CommandIdSchema,
@@ -691,4 +697,232 @@ async function claimProjectRunInputBatch(
       }),
     );
   return events;
+}
+
+export class ProjectControlDeliveryStore {
+  readonly database: Kysely<DatabaseSchema>;
+  readonly dependencies: {
+    readonly currentPeerIsProjectCapable: (peer: RunnerConnectionFence) => boolean;
+    readonly runnerIsAttached: (runnerId: RunnerId, runnerBootId: string) => boolean;
+    readonly canContinue: (
+      transaction: Transaction<DatabaseSchema>,
+      requestId: import("@opensteer/core").RequestId,
+    ) => Promise<boolean>;
+  };
+
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    dependencies: ProjectControlDeliveryStore["dependencies"],
+  ) {
+    this.database = database;
+    this.dependencies = dependencies;
+  }
+
+  async claim(commandId: import("@opensteer/core").CommandId, dispatcherId: string) {
+    CommandIdSchema.parse(commandId);
+    z.string().min(1).max(255).parse(dispatcherId);
+    await assertProjectAuthority(this.database);
+    return withDatabaseTransaction(this.database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("commands")
+        .selectAll()
+        .where("id", "=", commandId)
+        .where("type", "=", "run.control.project")
+        .executeTakeFirst();
+      if (!observed) return { state: "absent" as const };
+      const stored = StoredProjectControlSchema.parse(observed.payload);
+      const run = await transaction
+        .selectFrom("runs")
+        .select(["id", "status"])
+        .where("id", "=", stored.binding.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      await lockWorkspaceRow(transaction, stored.binding.workspaceId);
+      const request =
+        stored.control.kind === "request.resolve"
+          ? await transaction
+              .selectFrom("requests")
+              .select("id")
+              .where("id", "=", stored.control.requestId)
+              .where("originatingRunId", "=", stored.binding.runId)
+              .forNoKeyUpdate()
+              .executeTakeFirst()
+          : null;
+      const command = await transaction
+        .selectFrom("commands")
+        .selectAll()
+        .where("id", "=", commandId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!command) return { state: "absent" as const };
+      if (["succeeded", "failed"].includes(command.status))
+        return { state: "settled" as const, status: command.status };
+      if (command.status === "unknown")
+        return { state: "uncertain" as const, binding: stored.binding, control: stored.control };
+      const dispose = async (reason: string) => {
+        await transaction
+          .updateTable("commands")
+          .set({
+            status: "failed",
+            lastError: jsonValue({ code: "project_control_unavailable", message: reason }),
+            updatedAt: new Date(),
+          })
+          .where("id", "=", commandId)
+          .execute();
+        return {
+          state: "disposed" as const,
+          reason,
+          binding: stored.binding,
+          control: stored.control,
+        };
+      };
+      if (stored.control.kind === "request.resolve" && !request)
+        return dispose("The original Project Request is unavailable");
+      const durable = await readProjectRunBinding(transaction, {
+        runId: stored.binding.runId,
+        grantId: stored.binding.grantId,
+      });
+      if (!run || !durable || !isDeepStrictEqual(durable.binding, stored.binding))
+        return dispose("The original Project control binding is unavailable");
+      if (
+        stored.control.kind !== "run.interrupt" &&
+        ["completed", "failed", "interrupted"].includes(run.status)
+      )
+        return dispose("The Project Run ended before this control could be delivered");
+      if (!this.dependencies.runnerIsAttached(stored.binding.runnerId, stored.binding.runnerBootId))
+        return { state: "offline" as const, binding: stored.binding };
+      const stopping =
+        stored.control.kind === "run.interrupt" || stored.control.kind === "request.refuse";
+      if (!stopping) {
+        try {
+          await assertActiveProjectBinding(transaction, stored.binding, this.dependencies);
+        } catch (error) {
+          if (!(error instanceof OpensteerError)) throw error;
+          return dispose(error.message);
+        }
+        const thread = await transaction
+          .selectFrom("threads")
+          .select("status")
+          .where("id", "=", stored.binding.threadId)
+          .executeTakeFirst();
+        if (thread?.status === "archived") return dispose("The Project Thread was archived");
+        if (
+          stored.control.kind === "request.resolve" &&
+          !(await this.dependencies.canContinue(transaction, stored.control.requestId))
+        )
+          return dispose("The original Project Request continuation is no longer permitted");
+      }
+      await transaction
+        .updateTable("commands")
+        .set((eb) => ({
+          status: "dispatched",
+          dispatcherId,
+          attempts: eb("attempts", "+", 1),
+          updatedAt: new Date(),
+        }))
+        .where("id", "=", command.id)
+        .execute();
+      return { state: "ready" as const, commandId: command.id, ...stored };
+    });
+  }
+
+  async recordResult(peerInput: RunnerConnectionFence, raw: unknown) {
+    const peer = RunnerConnectionFenceSchema.parse(peerInput);
+    if (!this.dependencies.currentPeerIsProjectCapable(peer))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Project control peer is not authenticated and capable",
+      });
+    const frame = ProjectRunnerToHostMessageSchema.parse(raw);
+    if (frame.type !== "runner.project.control-result" || !sameRunnerConnectionFence(peer, frame))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Project control receipt does not match its authenticated connection",
+      });
+    await assertProjectAuthority(this.database);
+    return withDatabaseTransaction(this.database, async (transaction) => {
+      const run = await transaction
+        .selectFrom("runs")
+        .select("id")
+        .where("id", "=", frame.binding.runId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!run)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Project control receipt has no original Run",
+        });
+      const original = await readProjectRunBinding(transaction, {
+        runId: frame.binding.runId,
+        grantId: frame.binding.grantId,
+      });
+      if (!original || !isDeepStrictEqual(original.binding, frame.binding))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Project control receipt does not match its original address",
+        });
+      await lockWorkspaceRow(transaction, frame.binding.workspaceId);
+      const command = await transaction
+        .selectFrom("commands")
+        .selectAll()
+        .where("id", "=", frame.commandId)
+        .where("type", "=", "run.control.project")
+        .where("runId", "=", frame.binding.runId)
+        .where("originatingGrantId", "=", frame.binding.grantId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!command)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Project control receipt has no original command",
+        });
+      const stored = StoredProjectControlSchema.parse(command.payload);
+      if (
+        !isDeepStrictEqual(stored.binding, frame.binding) ||
+        stored.correlationId !== frame.correlationId
+      )
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Project control receipt does not match its original address",
+        });
+      const status =
+        frame.result.status === "accepted"
+          ? "succeeded"
+          : frame.result.status === "rejected"
+            ? "failed"
+            : "unknown";
+      const disposition =
+        frame.result.status === "accepted" ? null : { projectControlResult: frame.result };
+      if (["succeeded", "failed", "unknown"].includes(command.status)) {
+        if (command.status === status && isDeepStrictEqual(command.lastError, disposition))
+          return { state: "recorded" as const, replayed: true };
+        if (
+          command.status === "failed" &&
+          command.lastError !== null &&
+          typeof command.lastError === "object" &&
+          "code" in command.lastError
+        )
+          return { state: "disposed" as const, replayed: true };
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Project control receipt changed an existing disposition",
+        });
+      }
+      if (command.status !== "dispatched")
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Project control has not been delivered",
+        });
+      await transaction
+        .updateTable("commands")
+        .set({
+          status,
+          lastError: disposition === null ? null : jsonValue(disposition),
+          updatedAt: new Date(),
+        })
+        .where("id", "=", command.id)
+        .execute();
+      return { state: "recorded" as const, replayed: false };
+    });
+  }
 }
