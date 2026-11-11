@@ -21,7 +21,7 @@ describe("BrowserRuntime", () => {
   it("receives Host session state before releasing an agent's page and drops its timer on detach", async () => {
     vi.useFakeTimers();
     const context = new FakeContext([new FakePage()]);
-    const claims = freshClaims({ workspaceTabRestoreVersion: 1 });
+    const claims = freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 });
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
       runtimeId: "runtime_test",
@@ -31,6 +31,9 @@ describe("BrowserRuntime", () => {
     const sink = new FakeSink();
     try {
       const attachment = await runtime.attach("fresh-ticket", sink);
+      expect(sink.messages.find((message) => message.type === "browser.snapshot")).toMatchObject({
+        surfaceState: 1,
+      });
       await attachment.handle(
         JSON.stringify({
           type: "cdp.command",

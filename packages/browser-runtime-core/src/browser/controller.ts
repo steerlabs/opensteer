@@ -553,6 +553,7 @@ export class BrowserController {
       state: "ready",
       targetedStreamingVersion: 1,
       inputLanesVersion: 1,
+      ...(this.claims.surfaceState === 1 ? { surfaceState: 1 } : {}),
       ...(this.personAuthority ? { personFillVersion: 1 } : {}),
       ...(this.claims.navigationAttributionVersion === 1
         ? { navigationAttributionVersion: 1 }
