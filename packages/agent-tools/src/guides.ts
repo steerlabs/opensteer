@@ -31,6 +31,7 @@ const routingGuide = `Routing:
 const helpersGuide = `Helpers:
 - Your engine's own subagents work inside this Run, under its authority, and end with it.
 - \`delegate_task\` starts a task: independent work in its own Thread that outlives your turn. Its result returns to you by itself, waking you if your turn ended, unless you read it first with \`thread_wait\` or \`task_status\`.
+- A task's ordinary question reaches its assigner, which may answer with \`pending_request\` when the answer follows from the task or the person's instructions, and otherwise leaves it for the person. Approvals are the person's alone.
 - \`thread_wait\` blocks for at most 100 seconds, so it suits work that short; longer work reaches you through its return, with nothing to poll. A timeout stops nothing.
 - \`orchestrator_capabilities\` lists engines, models and limits.`;
 

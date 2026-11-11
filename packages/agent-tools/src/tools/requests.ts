@@ -1,5 +1,5 @@
 import { defineAgentTool } from "../registry.js";
-import { RequestIdSchema } from "@opensteer/core";
+import { RequestIdSchema, RequestResponseSchema } from "@opensteer/core";
 
 import { z } from "zod";
 
@@ -7,24 +7,40 @@ import { OperationKeySchema, CursorSchema } from "./inputs.js";
 import { RequestListOutputSchema, RequestWithdrawOutputSchema } from "./outputs.js";
 export const pending_request = defineAgentTool({
   name: "pending_request",
-  title: "Inspect Requests",
+  title: "Read or answer Requests",
   description:
-    "Inspect reachable Requests. list: outgoing Thread/incoming Workspace Requests, newest first. read: one requestId, with status and safe details. Pending is not permission; this tool cannot answer or approve.",
+    "Inspect reachable Requests. list: outgoing Thread/incoming Workspace Requests, newest first. read: one requestId, with status and ordinary question details. respond: answer an ordinary question using its response shape and expectedRevision from read; Run-only, with write access to its conversation. This cannot approve a permission request. Pending is not permission.",
   input: z
     .strictObject({
-      action: z.enum(["list", "read"]).default("list"),
+      action: z.enum(["list", "read", "respond"]).default("list"),
       requestId: RequestIdSchema.optional(),
+      response: RequestResponseSchema.optional(),
+      expectedRevision: z.string().min(1).max(128).optional(),
+      operationKey: OperationKeySchema.optional(),
       before: CursorSchema.optional(),
       limit: z.number().int().min(1).max(100).default(50),
     })
     .superRefine((input, context) => {
-      if ((input.action === "read") !== !!input.requestId)
-        context.addIssue({ code: "custom", message: "read requires requestId; list omits it" });
-      if (input.action === "read" && input.before)
+      if ((input.action !== "list") !== !!input.requestId)
+        context.addIssue({
+          code: "custom",
+          message: "read and respond require requestId; list omits it",
+        });
+      if (input.action !== "list" && input.before)
         context.addIssue({ code: "custom", message: "before is for list" });
+      if (
+        input.action === "respond"
+          ? !input.response || !input.expectedRevision
+          : input.response !== undefined || input.expectedRevision !== undefined
+      )
+        context.addIssue({
+          code: "custom",
+          message: "respond requires response and expectedRevision; other actions omit them",
+        });
     }),
   output: z.union([RequestListOutputSchema, RequestWithdrawOutputSchema]),
-  access: "read",
+  access: "write",
+  readsOnly: (input) => input.action !== "respond",
   callers: ["run", "program", "connection"] as const,
 });
 

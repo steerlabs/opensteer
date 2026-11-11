@@ -185,8 +185,15 @@ Unconsumed results stay in the return outbox for reconciliation. An empty result
 parent Assignment needs it, but a waiter still receives its settlement. Bounded waits subscribe
 before reading, pin their observed Run and recheck live authority on wakes and before return; a
 timeout cancels no work. Cancellation follows Assignments, not Thread lineage.
-Pending Requests are scoped to who may answer; a question docked in another conversation is answered
-through its own Thread's authority. Done is shared and needs active membership plus the task's
+An ordinary question is answerable by any agent whose live reach, access ceiling and membership
+allow writing to the conversation that asked it, except the asking Run itself. The direct assigner
+alone receives a Host-authored notice, unless its wait already delivers the question; program tasks
+and native engine subagents send no such notice. A person can always answer too, and the first answer
+wins. Native engine subagent questions, secret fields, approvals, access, sign-ins, credentials and
+other consent remain human-only. Agent answers
+name the answering Run and conversation, never the person. An accepted answer outlives the Run that
+gave it: delivery rechecks the person's membership, reach and access and the Request's revision, not
+that the answering Run is still live. Done is shared and needs active membership plus the task's
 creator or a Workspace owner; Chat and active channel conversations cannot be Done. Done stops the
 open Assignment subtree, withdraws actionable inputs and Requests, pauses anchored Triggers and
 revokes grants; Reopen starts nothing. A person's own message reopens a Done task they could reopen
@@ -205,7 +212,7 @@ to resubmit, since an unassigned queue may already have started a Run.
 ## Reading another Thread's work
 
 The platform gives agents tools to get context and the agent decides what it needs. Nothing about a
-task's progress is injected or pushed; only its final result returns on its own.
+task's progress is injected or pushed; its final result and ordinary questions reach its assigner.
 
 The `activity` view of `thread_read` is summary-first. Events give one ordering, and message text
 comes from published rows, so waiting inputs never appear. Tool text is clipped and arguments are

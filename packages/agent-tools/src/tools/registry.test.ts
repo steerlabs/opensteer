@@ -61,7 +61,7 @@ describe("Opensteer tool registry", () => {
       }),
     ).not.toHaveProperty("surpriseSecret");
   });
-  it("refuses task placement, ambiguous waits and Request answers", () => {
+  it("refuses task placement, ambiguous waits and unobserved Request answers", () => {
     expect(
       delegate_task.input.safeParse({ task: "Inspect", environmentId: "env_any" }).success,
     ).toBe(false);
@@ -74,6 +74,14 @@ describe("Opensteer tool registry", () => {
     ).toBe(false);
     expect(pending_request.input.safeParse({ action: "read" }).success).toBe(false);
     expect(pending_request.input.safeParse({ action: "respond" }).success).toBe(false);
+    expect(
+      pending_request.input.safeParse({
+        action: "respond",
+        requestId: "req_11111111-1111-4111-8111-111111111111",
+        expectedRevision: "seen",
+        response: { kind: "form", answers: { answer: ["42"] } },
+      }).success,
+    ).toBe(true);
   });
   it("strips wait metadata and refuses access-mode changes through configure", () => {
     expect(

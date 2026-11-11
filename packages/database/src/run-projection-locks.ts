@@ -1,5 +1,5 @@
 import type { AssignmentId, CausalChainId, RunId, ThreadId, RequestId } from "@opensteer/core";
-import type { Transaction } from "kysely";
+import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 type ProjectionScope = {
@@ -76,12 +76,22 @@ export async function lockThreadProjectionParents(
     .orderBy("id", "asc")
     .forNoKeyUpdate()
     .execute();
-  if (runIds.length || input.requestIds?.length) {
+  {
     await transaction
       .selectFrom("requests")
       .select("id")
       .where((eb) =>
         eb.or([
+          eb(
+            "id",
+            "in",
+            eb
+              .selectFrom("threadInputs")
+              .select(sql<RequestId>`authority_source->>'referenceId'`.as("requestId"))
+              .where("threadId", "in", [...input.threadIds])
+              .where(sql<boolean>`authority_source->>'cause' = 'task-question'`)
+              .where("state", "in", ["pending", "claimed"]),
+          ),
           ...(runIds.length ? [eb("originatingRunId", "in", runIds)] : []),
           ...(input.requestIds?.length ? [eb("id", "in", [...input.requestIds])] : []),
         ]),

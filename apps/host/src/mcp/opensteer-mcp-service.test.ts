@@ -1008,6 +1008,16 @@ describe("Opensteer MCP spine", () => {
   it.each([
     ["pending_request", {}, "Try once more"],
     [
+      "pending_request",
+      {
+        action: "respond",
+        requestId: "req_11111111-1111-4111-8111-111111111111",
+        expectedRevision: "seen",
+        response: { kind: "form", answers: { answer: ["42"] } },
+      },
+      "It may have taken effect, so check before retrying.",
+    ],
+    [
       "thread_send",
       { delivery: "queue", message: "Hello" },
       "It may have taken effect, so check before retrying.",

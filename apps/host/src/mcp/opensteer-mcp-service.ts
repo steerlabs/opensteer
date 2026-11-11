@@ -445,7 +445,12 @@ export class OpensteerMcpService {
           }
           return agentToolRecordResult(result, pendingRequest ? requestPendingGuidance : undefined);
         } catch (error) {
-          const failure = agentToolFailure(error, tool.access);
+          const parsed = tool.input.safeParse(args);
+          const access =
+            parsed.success && "readsOnly" in tool && tool.readsOnly?.(parsed.data as never)
+              ? "read"
+              : tool.access;
+          const failure = agentToolFailure(error, access);
           if (failure.code === internalToolFailureCode && !signal.aborted)
             this.options.onToolError?.(error, tool.name);
           return agentToolFailureResult(failure);

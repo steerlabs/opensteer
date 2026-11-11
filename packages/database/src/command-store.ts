@@ -4,6 +4,13 @@ import {
   type ThreadCallerAuthority,
 } from "./thread-caller.js";
 import { recordPersonWaited } from "./run-visibility.js";
+import { taskQuestionNoticeIsPending } from "./task-question-notices.js";
+import {
+  AgentRequestResponderSchema,
+  assertAgentRequestAnswer,
+  assertAgentRequestTarget,
+} from "./request-agent-response.js";
+import type { z } from "zod";
 import { readRequestSettlementActor, requestSettlementActor } from "./request-settlement.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { withDatabaseTransaction } from "./connection.js";
@@ -35,6 +42,7 @@ import {
   type Request,
   RequestIdSchema,
   RequestSettlementProvenanceSchema,
+  RequestAgentAnswererSchema,
   UserIdSchema,
   RequestResponseSchema,
   hasSecretRequestFields,
@@ -105,6 +113,7 @@ export type RunnerControlInput =
       readonly idempotencyKey: string;
       readonly requestId: RequestId;
       readonly settlementSessionId?: string;
+      readonly agentResponder?: z.infer<typeof AgentRequestResponderSchema>;
       readonly requestedBy: UserId;
       readonly response: RequestResponse;
       readonly sealedResponse: {
@@ -334,6 +343,10 @@ async function claimObservedCommand(
   }
   if (run && observed.type === "run.execute") {
     await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+    if (!terminalFailure && !(await taskQuestionNoticeIsPending(transaction, run.seedInputId))) {
+      terminalFailure = "The task question was already answered or withdrawn.";
+      terminalFailureInput = "seed-input";
+    }
   }
   let claim = transaction
     .updateTable("commands")
@@ -497,7 +510,10 @@ async function succeedCommandInTransaction(
       .updateTable("requests")
       .set({
         resolvedAt: now,
-        resolvedBy: responsePayload.requestedBy,
+        resolvedBy:
+          responsePayload.settlementProvenance && "kind" in responsePayload.settlementProvenance
+            ? null
+            : responsePayload.requestedBy,
         settlementProvenance: responsePayload.settlementProvenance
           ? jsonValue(responsePayload.settlementProvenance)
           : null,
@@ -512,7 +528,8 @@ async function succeedCommandInTransaction(
       .returningAll()
       .executeTakeFirst();
     if (!resolved) return none;
-    await recordPersonWaited(transaction, observed.runId);
+    if (!responsePayload.settlementProvenance || !("kind" in responsePayload.settlementProvenance))
+      await recordPersonWaited(transaction, observed.runId);
     const events: AgentEvent[] = [
       await appendHostWorkspaceEvent(transaction, {
         data: { request: requestFromRow(resolved) },
@@ -723,6 +740,9 @@ function canonicalRunnerControlInput(input: RunnerControlInput): Readonly<Record
         idempotencyKey: input.idempotencyKey,
         requestedBy: input.requestedBy,
         responseFingerprint: input.sealedResponse.requestFingerprint,
+        ...(input.agentResponder
+          ? { agentResponder: AgentRequestResponderSchema.parse(input.agentResponder) }
+          : {}),
         runId: input.runId,
         threadId: input.threadId,
         type: input.type,
@@ -752,7 +772,8 @@ function requestResponseCommandPayload(payload: unknown): {
   readonly requestId: RequestId;
   readonly requestedBy: UserId;
   readonly response: RequestResponse;
-  readonly settlementProvenance?: { sessionId: string; deviceLabel: string };
+  readonly settlementProvenance?:
+    z.infer<typeof RequestAgentAnswererSchema> | z.infer<typeof RequestSettlementProvenanceSchema>;
 } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new OpensteerError({ code: "internal", message: "Request response command is invalid" });
@@ -761,7 +782,9 @@ function requestResponseCommandPayload(payload: unknown): {
   return {
     ...(value.settlementProvenance
       ? {
-          settlementProvenance: RequestSettlementProvenanceSchema.parse(value.settlementProvenance),
+          settlementProvenance: RequestAgentAnswererSchema.or(
+            RequestSettlementProvenanceSchema,
+          ).parse(value.settlementProvenance),
         }
       : {}),
     requestId: RequestIdSchema.parse(value.requestId),
@@ -796,6 +819,8 @@ export async function enqueueRunnerControl(
   readonly wasDuplicate: boolean;
 }> {
   if (input.type === "request.respond") {
+    if (input.agentResponder && input.agentResponder.authority.userId !== input.requestedBy)
+      throw new OpensteerError({ code: "forbidden", message: "Request is unavailable" });
     requireBoundedIdentity(
       input.sealedResponse.requestFingerprint,
       "Request response fingerprint",
@@ -817,6 +842,8 @@ export async function enqueueRunnerControlInTransaction(
   await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
   if (input.type === "run.interrupt")
     await lockThreadCaller(transaction, input.authority, [input.runId]);
+  if (input.type === "request.respond" && input.agentResponder)
+    await lockThreadCaller(transaction, input.agentResponder.authority, [input.runId]);
   const existing = await findCommandByIdempotency(
     transaction,
     input.requestedBy,
@@ -845,6 +872,8 @@ export async function enqueueRunnerControlInTransaction(
     if (input.type === "run.interrupt") {
       await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
     }
+    if (input.type === "request.respond" && input.agentResponder)
+      await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
     return { command: existing, events: [], revokedGrants: [], wasDuplicate: true };
   }
   const thread = await transaction
@@ -873,9 +902,21 @@ export async function enqueueRunnerControlInTransaction(
     await transaction
       .selectFrom("workspaces")
       .select("id")
-      .where("id", "=", thread.workspaceId)
+      .where(
+        "id",
+        "in",
+        [
+          ...new Set([
+            thread.workspaceId,
+            ...(input.type === "request.respond" && input.agentResponder
+              ? [input.agentResponder.authority.scope.workspaceId]
+              : []),
+          ]),
+        ].sort(),
+      )
+      .orderBy("id", "asc")
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .execute();
     const membership = await requireActiveWorkspaceMembership(
       transaction,
       thread.workspaceId,
@@ -904,6 +945,8 @@ export async function enqueueRunnerControlInTransaction(
   }
   if (input.type === "run.interrupt")
     await assertThreadCaller(transaction, input.authority, { threadId: input.threadId });
+  if (input.type === "request.respond" && input.agentResponder)
+    await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
   const controlEvents: AgentEvent[] = [];
   // A Run the dispatcher has not bound yet has never reached a Runner, and
   // under this lock it never will: binding requires `starting`. It ends
@@ -997,19 +1040,28 @@ export async function enqueueRunnerControlInTransaction(
       thread.workspaceId,
       input.requestedBy,
     );
-    if (request.requiredActor === "requester" && request.requestedBy !== input.requestedBy) {
+    if (input.agentResponder) assertAgentRequestAnswer(request, input.agentResponder);
+    if (
+      !input.agentResponder &&
+      request.requiredActor === "requester" &&
+      request.requestedBy !== input.requestedBy
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Only the member this Request targets may answer it",
       });
     }
-    if (request.requiredActor === "workspace-owner" && membership.role !== "owner") {
+    if (
+      !input.agentResponder &&
+      request.requiredActor === "workspace-owner" &&
+      membership.role !== "owner"
+    ) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Only a Workspace owner may answer this Request",
       });
     }
-    if (request.requiredActor === "administrator") {
+    if (!input.agentResponder && request.requiredActor === "administrator") {
       const actor = await transaction
         .selectFrom("users")
         .select("instanceRole")
@@ -1031,10 +1083,16 @@ export async function enqueueRunnerControlInTransaction(
   }
   const command = await persistRunnerControlCommand(transaction, {
     actorPrincipalId,
-    authoritySource: jsonValue({
-      kind: "workspace-membership",
-      userId: input.requestedBy,
-    }),
+    authoritySource: jsonValue(
+      input.type === "request.respond" && input.agentResponder
+        ? {
+            kind: "thread-agent",
+            runId: input.agentResponder.authority.scope.runId,
+            threadId: input.agentResponder.authority.scope.threadId,
+            userId: input.requestedBy,
+          }
+        : { kind: "workspace-membership", userId: input.requestedBy },
+    ),
     dispatcherId: null,
     environmentId: thread.environmentId,
     id: createId("command"),
@@ -1045,11 +1103,25 @@ export async function enqueueRunnerControlInTransaction(
         ? {
             ...controlPayload,
             response: reservedRequest.response,
-            settlementProvenance: await readRequestSettlementActor(
-              transaction,
-              input.requestedBy,
-              input.type === "request.respond" ? input.settlementSessionId : undefined,
-            ),
+            settlementProvenance:
+              input.type === "request.respond" && input.agentResponder
+                ? {
+                    kind: "agent",
+                    runId: input.agentResponder.authority.scope.runId,
+                    threadId: input.agentResponder.authority.scope.threadId,
+                    title: (
+                      await transaction
+                        .selectFrom("threads")
+                        .select("title")
+                        .where("id", "=", input.agentResponder.authority.scope.threadId)
+                        .executeTakeFirstOrThrow()
+                    ).title,
+                  }
+                : await readRequestSettlementActor(
+                    transaction,
+                    input.requestedBy,
+                    input.type === "request.respond" ? input.settlementSessionId : undefined,
+                  ),
           }
         : controlPayload,
     ),
@@ -1114,6 +1186,8 @@ export async function enqueueRunnerControlInTransaction(
       input.requestedBy,
       input.type === "request.respond" ? input.settlementSessionId : undefined,
     );
+  if (input.type === "request.respond" && input.agentResponder)
+    await assertAgentRequestTarget(transaction, input.agentResponder.authority, input.threadId);
   return { command, events: controlEvents, revokedGrants, wasDuplicate: false };
 }
 
@@ -1199,6 +1273,7 @@ export async function dispatchRequestResponse(
         .innerJoin("requests", "requests.responseCommandId", "commands.id")
         .select([
           "commands.requestedBy as respondingUserId",
+          "commands.payload as responsePayload",
           "commands.runId",
           "commands.threadId",
           "requests.id as requestId",
@@ -1218,7 +1293,14 @@ export async function dispatchRequestResponse(
       ) {
         throw requestResponseDispatchConflict();
       }
-
+      const payload = observed.responsePayload as Readonly<Record<string, unknown>>;
+      const agentResponder = payload.agentResponder
+        ? AgentRequestResponderSchema.parse(payload.agentResponder)
+        : undefined;
+      if (agentResponder && agentResponder.authority.userId !== observed.respondingUserId)
+        throw requestResponseDispatchConflict();
+      if (agentResponder)
+        await lockThreadCaller(transaction, agentResponder.authority, [observed.runId], true);
       const run = await transaction
         .selectFrom("runs")
         .select(["requestedBy", "status", "threadId"])
@@ -1233,12 +1315,23 @@ export async function dispatchRequestResponse(
       ) {
         throw requestResponseDispatchConflict();
       }
-      const workspace = await transaction
+      const workspaces = await transaction
         .selectFrom("workspaces")
-        .select("status")
-        .where("id", "=", observed.originatingWorkspaceId)
+        .select(["id", "status"])
+        .where(
+          "id",
+          "in",
+          [
+            ...new Set([
+              observed.originatingWorkspaceId,
+              ...(agentResponder ? [agentResponder.authority.scope.workspaceId] : []),
+            ]),
+          ].sort(),
+        )
+        .orderBy("id", "asc")
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .execute();
+      const workspace = workspaces.find(({ id }) => id === observed.originatingWorkspaceId);
       if (!workspace || workspace.status !== "ready") throw requestResponseDispatchConflict();
       const membership = await requireActiveWorkspaceMembership(
         transaction,
@@ -1246,6 +1339,10 @@ export async function dispatchRequestResponse(
         observed.respondingUserId,
         true,
       );
+      if (agentResponder)
+        await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
+          admitted: true,
+        });
       await lockThreadRow(transaction, observed.threadId);
       await lockRunProjectionRows(transaction, {
         runIds: [observed.runId],
@@ -1282,13 +1379,22 @@ export async function dispatchRequestResponse(
       }
 
       const request = requestFromRow(requestRow);
-      if (request.requiredActor === "requester" && request.requestedBy !== command.requestedBy) {
+      if (agentResponder) assertAgentRequestAnswer(request, agentResponder);
+      if (
+        !agentResponder &&
+        request.requiredActor === "requester" &&
+        request.requestedBy !== command.requestedBy
+      ) {
         throw requestResponseDispatchConflict();
       }
-      if (request.requiredActor === "workspace-owner" && membership.role !== "owner") {
+      if (
+        !agentResponder &&
+        request.requiredActor === "workspace-owner" &&
+        membership.role !== "owner"
+      ) {
         throw requestResponseDispatchConflict();
       }
-      if (request.requiredActor === "administrator") {
+      if (!agentResponder && request.requiredActor === "administrator") {
         const actor = await transaction
           .selectFrom("users")
           .select("instanceRole")
@@ -1304,6 +1410,10 @@ export async function dispatchRequestResponse(
       });
       void sendPromise.catch(accepted.reject);
       await accepted.promise;
+      if (agentResponder)
+        await assertAgentRequestTarget(transaction, agentResponder.authority, observed.threadId, {
+          admitted: true,
+        });
       const succeeded = await succeedCommandInTransaction(transaction, commandId);
       if (succeeded.events.filter((event) => event.type === "request.resolved").length !== 1) {
         throw new OpensteerError({
