@@ -7,7 +7,7 @@ export function toolReference(callable: CallableIntegrationTool): string {
 }
 
 /**
- * The session operations of one computer connection this Workspace may call.
+ * The session operations of one computer connection this task may call.
  * A phone also has `release`; a Mac's app does not, because a Mac's sessions
  * hold one app among the person's own and need no letting go to share it.
  */
@@ -89,7 +89,7 @@ export function pendingOnComputerNextAction(machine: string): string {
 export const pendingPhoneAccessNextAction =
   "Approval is pending; the owner can allow or decline from any Opensteer app. Pending grants no access; do not poll, repeat or route around the Request.";
 
-export const pendingWorkspaceGrantNextAction =
+export const pendingPersonalGrantNextAction =
   "Approval is pending; the person can approve it from anywhere. Pending grants no access; do not poll, repeat or route around the Request.";
 
 /** What discovery knows about one app on one Mac, gathered by the caller. */
@@ -100,12 +100,12 @@ export interface ComputerAppDiscoveryFacts {
     readonly status: "approved" | "blocked";
     readonly access: IntegrationAccess;
   } | null;
-  /** This Workspace holds the app's observe tool. */
+  /** The person holds the app's observe tool. */
   readonly callable: boolean;
   /** A setup request for this app on this Mac awaits its owner. */
   readonly pendingOnMac: boolean;
-  /** An ordinary grant request for this app's connection awaits approval for this Workspace. */
-  readonly pendingWorkspaceGrant: boolean;
+  /** An ordinary grant request for this app's connection awaits approval for this task. */
+  readonly pendingPersonalGrant: boolean;
   /** Another Run on this Host holds the app, with its Thread's title when known. */
   readonly heldByAnotherRun: { readonly threadTitle: string | null } | null;
 }
@@ -117,7 +117,7 @@ export interface ComputerAppDiscoveryFacts {
  */
 export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
   readonly status: "approved" | "blocked" | "not-approved";
-  readonly pending?: "mac" | "workspace";
+  readonly pending?: "mac" | "personal";
   readonly inUse?: true;
   readonly nextAction: string;
 } {
@@ -129,8 +129,8 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
     };
   if (facts.pendingOnMac)
     return { status, pending: "mac", nextAction: pendingOnComputerNextAction(facts.machine.name) };
-  if (facts.pendingWorkspaceGrant)
-    return { status, pending: "workspace", nextAction: pendingWorkspaceGrantNextAction };
+  if (facts.pendingPersonalGrant)
+    return { status, pending: "personal", nextAction: pendingPersonalGrantNextAction };
   if (facts.heldByAnotherRun) {
     const title = facts.heldByAnotherRun.threadTitle;
     return {
@@ -161,14 +161,14 @@ export interface PhoneDiscoveryFacts {
   readonly phone: { readonly name: string; readonly state: string };
   /** The phone's approved connection, when it has one. */
   readonly connection: { readonly access: IntegrationAccess } | null;
-  /** This Workspace holds the phone's observe tool. */
+  /** The person holds the phone's observe tool. */
   readonly callable: boolean;
-  /** This Workspace also holds its act tool: its grant is read-write, not only read. */
+  /** The person also holds its act tool: its grant is read-write, not only read. */
   readonly canAct: boolean;
   /** An access Request for this phone awaits its owner. */
   readonly pendingPhoneAccess: boolean;
-  /** An ordinary grant request for the phone's connection awaits approval for this Workspace. */
-  readonly pendingWorkspaceGrant: boolean;
+  /** An ordinary grant request for the phone's connection awaits approval for this task. */
+  readonly pendingPersonalGrant: boolean;
   /** Another Run on this Host holds the phone, with its Thread's title when known. */
   readonly heldByAnotherRun: { readonly threadTitle: string | null } | null;
 }
@@ -185,13 +185,13 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): {
   readonly nextAction: string;
 } {
   const inUse = facts.heldByAnotherRun !== null;
-  if (facts.pendingPhoneAccess || facts.pendingWorkspaceGrant)
+  if (facts.pendingPhoneAccess || facts.pendingPersonalGrant)
     return {
       approval: "pending",
       inUse,
       nextAction: facts.pendingPhoneAccess
         ? pendingPhoneAccessNextAction
-        : pendingWorkspaceGrantNextAction,
+        : pendingPersonalGrantNextAction,
     };
   const approval = facts.connection ? "approved" : "not-approved";
   const unusable = unusablePhoneNextAction(facts.phone);

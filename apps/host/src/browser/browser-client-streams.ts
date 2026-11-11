@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserSessionId, UserId } from "@opensteer/core";
-import type { BrowserGroupFacts, WorkspaceTabStreamRow } from "@opensteer/database";
+import type { BrowserGroupFacts, PersonalTabStreamRow } from "@opensteer/database";
 import {
   browserPageSite,
   type BrowserGroupRow,
@@ -42,7 +42,7 @@ export interface BrowserRowPorts {
     userId: UserId,
     groupIds: readonly BrowserSessionId[],
   ): Promise<readonly BrowserGroupFacts[]>;
-  readTabs(groupIds: readonly BrowserSessionId[]): Promise<readonly WorkspaceTabStreamRow[]>;
+  readTabs(groupIds: readonly BrowserSessionId[]): Promise<readonly PersonalTabStreamRow[]>;
   groupId(sessionId: BrowserSessionId): Promise<BrowserSessionId | null>;
   live(sessionId: BrowserSessionId): BrowserLiveRows | undefined;
   occupants(userId: UserId, sessionId: BrowserSessionId, tabId: string): BrowserTabRow["occupants"];
@@ -92,7 +92,7 @@ function prefix<Row extends { id: string }>(
 
 export class BrowserRowSource {
   readonly #projections = new Map<UserId, Projection>();
-  readonly #durable = new Map<BrowserSessionId, Map<string, WorkspaceTabStreamRow>>();
+  readonly #durable = new Map<BrowserSessionId, Map<string, PersonalTabStreamRow>>();
   readonly #tabReads = new Map<BrowserSessionId, Promise<void>>();
   readonly #readingGroups = new Map<BrowserSessionId, number>();
   readonly #tabVersions = new Map<BrowserSessionId, number>();
@@ -191,7 +191,7 @@ export class BrowserRowSource {
         const versions = new Map(ids.map((id) => [id, this.#tabVersions.get(id) ?? 0]));
         const rows = await this.ports.readTabs(ids);
         if (this.#closed) return;
-        const maps = new Map(ids.map((id) => [id, new Map<string, WorkspaceTabStreamRow>()]));
+        const maps = new Map(ids.map((id) => [id, new Map<string, PersonalTabStreamRow>()]));
         for (const row of rows) maps.get(row.groupId)?.set(row.id, row);
         for (const [id, tabs] of maps)
           if (versions.get(id) === (this.#tabVersions.get(id) ?? 0)) this.#durable.set(id, tabs);
@@ -346,7 +346,7 @@ export class BrowserRowSource {
   }
   tabsWritten(
     groupId: BrowserSessionId,
-    rows: readonly WorkspaceTabStreamRow[],
+    rows: readonly PersonalTabStreamRow[],
     closedIds: readonly string[],
   ): void {
     if (!rows.length && !closedIds.length) return;

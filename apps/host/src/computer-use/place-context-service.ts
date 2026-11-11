@@ -5,7 +5,6 @@ import {
   type Thread,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import type { IntegrationStore, OpensteerStore } from "@opensteer/database";
 import { computerAppIdentitiesEqual } from "@opensteer/integration-core";
@@ -41,7 +40,6 @@ export class PlaceContextService {
     readonly ownerId: UserId;
     readonly parts: readonly ContentPart[];
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   }): Promise<void> {
     const pages = input.parts.filter((part) => part.type === "browser-page");
     if (pages.length) await this.#dependencies.browser.assertPagesUsable({ ...input, pages });
@@ -57,9 +55,8 @@ export class PlaceContextService {
   async assertUsable(input: {
     readonly ownerId: UserId;
     readonly parts: readonly ContentPart[];
-    /** For a new child, its parent's ID supplies the child's unchanged Main lineage. */
+    /** For a new child, its parent's ID supplies the child's owner identity. */
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
     /** Null for a new child: its parent's phone holding is not the child's. */
     readonly busyThreadId?: ThreadId | null;
   }): Promise<void> {
@@ -71,11 +68,10 @@ export class PlaceContextService {
     if (!native.length) return;
     const inventory = await this.#dependencies.computerUse.eligibleInventory(input.ownerId);
     const connections = await this.#dependencies.connections.listConnections(input.ownerId);
-    // This uses the target Workspace's grants and the target Thread's Main lineage.
+    // Re-read the owner's grants for the target task and current Run.
     const tools = await this.#dependencies.integrations.listCallableTools({
       ownerUserId: input.ownerId,
       threadId: input.threadId,
-      workspaceId: input.workspaceId,
     });
     for (const part of native) {
       const machine = this.#assertNamed(inventory, part);
@@ -117,7 +113,7 @@ export class PlaceContextService {
         throw new OpensteerError({
           code: "forbidden",
           message:
-            "This conversation's Workspace cannot see the included app or phone. Its task must obtain access through its own explicit request before it can use this reference.",
+            "This task cannot see the included app or phone. Its task must obtain access through its own explicit request before it can use this reference.",
         });
       }
     }
@@ -149,7 +145,6 @@ export class PlaceContextService {
     readonly parent: Thread;
     readonly parts: readonly PlaceContentPart[];
     readonly targetThread?: Thread;
-    readonly workspaceId: WorkspaceId;
   }): Promise<void> {
     for (const part of input.parts) {
       if (await this.#dependencies.store.hasHumanIncludedPlace(input.parent.id, part)) continue;
@@ -158,7 +153,6 @@ export class PlaceContextService {
         ownerId: input.ownerId,
         parts: [part],
         threadId: input.parent.id,
-        workspaceId: input.parent.workspaceId,
       });
     }
     await this.assertUsable({
@@ -166,7 +160,6 @@ export class PlaceContextService {
       parts: input.parts,
       threadId: input.targetThread?.id ?? input.parent.id,
       busyThreadId: input.targetThread?.id ?? null,
-      workspaceId: input.workspaceId,
     });
   }
 }

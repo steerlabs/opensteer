@@ -10,7 +10,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import {
   ComputerAppNotOfferedError,
@@ -61,7 +60,7 @@ import {
   computerToolRefs,
   pendingOnComputerNextAction,
   pendingPhoneAccessNextAction,
-  pendingWorkspaceGrantNextAction,
+  pendingPersonalGrantNextAction,
   unknownComputerUseMac,
   unknownPhone,
 } from "./computer-use-discovery.js";
@@ -156,7 +155,6 @@ export interface ComputerAppApprovalServiceOptions {
   >;
   readonly computerUse: ComputerUseApprovalGateway | null;
   readonly definitions: readonly IntegrationDefinition[];
-  readonly deploymentName: string | null;
   /** Materialises a catalog definition an administrator's first approval needs. */
   readonly installCatalogDefinition: (input: {
     readonly settlementSessionId?: string | undefined;
@@ -201,7 +199,6 @@ export class ComputerAppApprovalService {
   readonly #computerApps: ComputerAppApprovalServiceOptions["computerApps"];
   readonly #computerUse: ComputerUseApprovalGateway | null;
   readonly #definitions: readonly IntegrationDefinition[];
-  readonly #deploymentName: string | null;
   readonly #installCatalogDefinition: ComputerAppApprovalServiceOptions["installCatalogDefinition"];
   readonly #listCallableTools: ComputerAppApprovalServiceOptions["listCallableTools"];
   readonly #listConnections: ComputerAppApprovalServiceOptions["listConnections"];
@@ -216,7 +213,6 @@ export class ComputerAppApprovalService {
     this.#computerApps = options.computerApps;
     this.#computerUse = options.computerUse;
     this.#definitions = options.definitions;
-    this.#deploymentName = options.deploymentName;
     this.#installCatalogDefinition = options.installCatalogDefinition;
     this.#listCallableTools = options.listCallableTools;
     this.#listConnections = options.listConnections;
@@ -296,10 +292,10 @@ export class ComputerAppApprovalService {
     /** Allowing a server: what the owner entered for the secrets its launch declares. */
     readonly secrets?: Readonly<Record<string, string>> | undefined;
     readonly actorUserId: UserId;
-    readonly isAdministrator: boolean;
     readonly requestId: string;
     readonly authorize: () => Promise<void>;
   }): Promise<void> {
+    await this.#store.connections.assertOwner(input.actorUserId);
     const request = await this.#store.getComputerAppSetupRequest({
       setupRequestId: input.setupRequestId,
     });
@@ -378,7 +374,6 @@ export class ComputerAppApprovalService {
         setupRequestId: request.id,
         settlementSessionId: input.settlementSessionId,
         actorUserId: input.actorUserId,
-        isAdministrator: input.isAdministrator,
         requestId: input.requestId,
       },
       {
@@ -519,11 +514,11 @@ export class ComputerAppApprovalService {
     input: ComputerConnectionChange & {
       readonly settlementSessionId?: string | undefined;
       readonly actorUserId: UserId;
-      readonly isAdministrator: boolean;
       readonly requestId: string;
     },
     options: ComputerApprovalAuthorization = {},
   ) {
+    await this.#store.connections.assertOwner(input.actorUserId);
     if (
       input.kind === "app" &&
       input.definitionId === androidPhoneDefinitionId &&
@@ -554,12 +549,6 @@ export class ComputerAppApprovalService {
         candidate.provenance.definitionDigest === digest,
     );
     if (!installed) {
-      if (!input.isAdministrator) {
-        throw new OpensteerError({
-          code: "forbidden",
-          message: `Ask an administrator to add ${definition.name} to ${this.#deploymentName ?? "this Deployment"}.`,
-        });
-      }
       await options.authorize?.();
       await this.#installCatalogDefinition({
         settlementSessionId: input.settlementSessionId,
@@ -946,7 +935,6 @@ export class ComputerAppApprovalService {
     readonly originatingRunId: RunId;
     readonly runnerId: RunnerId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   }) {
     const computerUse = this.#computerUse;
     if (!computerUse) {
@@ -1024,7 +1012,6 @@ export class ComputerAppApprovalService {
     const scope = {
       ownerUserId: input.ownerUserId,
       threadId: input.threadId,
-      workspaceId: input.workspaceId,
     };
     if (
       connection?.computer &&
@@ -1090,7 +1077,6 @@ export class ComputerAppApprovalService {
         await this.#listCallableTools({
           ownerUserId: input.ownerUserId,
           threadId: input.threadId,
-          workspaceId: input.workspaceId,
         }),
         connection.id,
       );
@@ -1118,7 +1104,6 @@ export class ComputerAppApprovalService {
     const scope = {
       ownerUserId: input.ownerUserId,
       threadId: input.threadId,
-      workspaceId: input.workspaceId,
     };
     // Read before the admission turn: nothing else waiting on this computer
     // should wait on this Thread's name.
@@ -1140,7 +1125,6 @@ export class ComputerAppApprovalService {
         threadId: input.threadId,
         threadTitle,
         tools: (connectionId) => computerAppTools(definition, input.access, connectionId),
-        workspaceId: input.workspaceId,
       });
     });
     this.#publishRequestEvents(decision.requestEvents);
@@ -1151,12 +1135,12 @@ export class ComputerAppApprovalService {
           status: "fulfilled" as const,
           toolRefs: computerToolRefs(await this.#listCallableTools(scope), decision.connection.id),
         };
-      case "workspace-grant":
+      case "personal-grant":
         return {
           status: "pending" as const,
           request: decision.request,
           replayed: decision.replayed,
-          nextAction: pendingWorkspaceGrantNextAction,
+          nextAction: pendingPersonalGrantNextAction,
         };
       case "computer":
         this.#onConnectionsChanged();

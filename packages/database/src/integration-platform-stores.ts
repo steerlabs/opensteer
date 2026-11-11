@@ -1,7 +1,7 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
-  lockAdministrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { replaceSecrets, type LocalMcpSecretsUpdate } from "./local-mcp-server-store.js";
@@ -15,12 +15,8 @@ import {
 } from "./integration-account-binding.js";
 import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
 import { runnerIntegrationsCompatibilityReason } from "@opensteer/protocol";
-import { withDatabaseTransaction } from "./connection.js";
-import {
-  discoverInstallationRequestWorkspaces,
-  lockRequestWorkspaces,
-  withRequestWorkspaceLocks,
-} from "./request-workspace-locks.js";
+
+import { assertPersonalOwner } from "./private-resource-owner.js";
 import { revokeChannelConnectionsInTransaction } from "./channel-deliveries.js";
 import { jsonValue } from "./store-primitives.js";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
@@ -90,7 +86,6 @@ import {
   type RequestId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
   type RunnerId,
 } from "@opensteer/core";
 import { type Kysely, type Selectable, type Transaction, sql } from "kysely";
@@ -104,8 +99,8 @@ import type {
 } from "./schema.js";
 import { cancelPending } from "./request-cancellation.js";
 import {
-  fulfillPendingMainIntegrationAccessRequestsInTransaction,
-  pendingMainIntegrationAccessRequests,
+  fulfillPendingIntegrationAccessRequestsInTransaction,
+  pendingIntegrationAccessRequests,
 } from "./integration-request-fulfillment.js";
 import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
 import { machineOwnershipIn } from "./machine-ownership.js";
@@ -122,7 +117,6 @@ import {
 import {
   askForComputerAppApprovalInTransaction,
   computerUsePolicyInTransaction,
-  discoverComputerRequestWorkspaces,
   declineComputerAppAccessRequestsInTransaction,
   emptyComputerAppAccessSettlement,
   lockComputerApprovalScopeInTransaction,
@@ -183,13 +177,9 @@ export interface IntegrationToolSchemas {
   readonly status: "active" | "disabled";
 }
 
-/**
- * Integration authority always names a Thread or approved connection. Main
- * inheritance belongs to that identity; a Workspace alone grants none.
- */
+/** Integration authority names an owned task or a live approved connection. */
 export type IntegrationRequester = {
   readonly ownerUserId: UserId;
-  readonly workspaceId: WorkspaceId;
 } & (
   | { readonly threadId: ThreadId; readonly connectionId?: never }
   | { readonly connectionId: string; readonly threadId?: undefined }
@@ -202,13 +192,6 @@ export type IntegrationDiscoveryRequester = IntegrationRequester & {
     readonly connectionId: IntegrationConnectionId | null;
   };
 };
-
-/**
- * How an asking Thread stands to its owner's Main: `inherited` reaches every
- * connection the owner has; `withheld` runs in that Main but below it, with
- * no inherited authority and none it may ask to add.
- */
-export type MainAccess = "inherited" | "withheld";
 
 export interface SetComputerConnectionInput {
   readonly settlementSessionId?: string | undefined;
@@ -344,6 +327,10 @@ abstract class IntegrationPlatformStoreBase {
     this.database = database;
   }
 
+  async assertOwner(ownerId: UserId): Promise<void> {
+    await assertPersonalOwner(this.database, ownerId);
+  }
+
   protected async authoritySnapshot(
     ownerUserId: UserId,
     providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>,
@@ -410,13 +397,11 @@ abstract class IntegrationPlatformStoreBase {
 
   protected async activeGrants(input: {
     readonly ownerUserId: UserId;
-    readonly workspaceId: WorkspaceId;
   }): Promise<readonly IntegrationGrant[]> {
     const rows = await this.database
       .selectFrom("integrationGrants")
       .selectAll()
       .where("ownerUserId", "=", input.ownerUserId)
-      .where("workspaceId", "=", input.workspaceId)
       .where("revokedAt", "is", null)
       .orderBy("installationId", "asc")
       .orderBy("isDefault", "desc")
@@ -428,7 +413,7 @@ abstract class IntegrationPlatformStoreBase {
   async connectionDiscoveryScope(userId: UserId, connectionId: string) {
     const connection = await this.database
       .selectFrom("agentConnections")
-      .select(["workspaceId"])
+      .select("id")
       .where("id", "=", connectionId)
       .where("userId", "=", userId)
       .where("revokedAt", "is", null)
@@ -437,23 +422,8 @@ abstract class IntegrationPlatformStoreBase {
       .executeTakeFirst();
     if (!connection)
       throw new OpensteerError({ code: "forbidden", message: "Connection is unavailable" });
-    const workspaceId =
-      connection.workspaceId ??
-      (
-        await this.database
-          .selectFrom("workspaces")
-          .select("id")
-          .where("kind", "=", "main")
-          .where("createdBy", "=", userId)
-          .executeTakeFirst()
-      )?.id;
-    if (!workspaceId)
-      throw new OpensteerError({ code: "not_found", message: "Workspace is unavailable" });
-    return { workspaceId, connectionId, requestedBy: userId };
-  }
-
-  async mainAccess(input: IntegrationRequester): Promise<MainAccess | null> {
-    return (await resolveResourceAccess(this.database, input)).mainAccess;
+    await assertPersonalOwner(this.database, userId);
+    return { connectionId, requestedBy: userId };
   }
 
   protected async specialistTurnedOff(input: IntegrationRequester): Promise<boolean> {
@@ -545,33 +515,11 @@ export interface RevokeComputerConnectionsMutation {
 
 export type { ComputerAppAccessSettlement } from "./computer-app-approvals.js";
 
-async function discoverComputerRemovalWorkspaces(
-  database: Kysely<DatabaseSchema>,
-  selector: RevokeComputerConnectionSelector,
-): Promise<readonly WorkspaceId[]> {
-  if ("installationId" in selector)
-    return discoverInstallationRequestWorkspaces(database, { id: selector.installationId });
-  if ("runnerId" in selector) return discoverComputerRequestWorkspaces(database, selector.runnerId);
-  const connection = await database
-    .selectFrom("integrationConnections")
-    .select("runnerId")
-    .where("id", "=", selector.connectionId)
-    .where("ownerUserId", "=", selector.ownerUserId)
-    .executeTakeFirst();
-  return connection?.runnerId
-    ? discoverComputerRequestWorkspaces(database, connection.runnerId)
-    : [];
-}
-
 /** The one credential-free removal path for computer connections. */
 export async function revokeComputerConnectionsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   selector: RevokeComputerConnectionSelector,
 ): Promise<RevokeComputerConnectionsMutation> {
-  await lockRequestWorkspaces(
-    transaction,
-    await discoverComputerRemovalWorkspaces(transaction, selector),
-  );
   let query = transaction
     .selectFrom("integrationConnections")
     .innerJoin(
@@ -818,10 +766,6 @@ export async function uninstallIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: UninstallIntegrationInput,
 ): Promise<UninstallIntegrationMutation> {
-  await lockRequestWorkspaces(
-    transaction,
-    await discoverInstallationRequestWorkspaces(transaction, { id: input.installationId }),
-  );
   const existing = await transaction
     .selectFrom("integrationInstallations")
     .selectAll()
@@ -1021,7 +965,6 @@ export async function uninstallIntegrationInTransaction(
       requestId: input.requestId,
       targetId: installation.id,
       targetType: "integration-installation",
-      workspaceId: null,
     })
     .executeTakeFirstOrThrow();
   return {
@@ -1110,10 +1053,6 @@ export async function installIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: InstallIntegrationInput,
 ): Promise<InstallIntegrationMutation> {
-  await lockRequestWorkspaces(
-    transaction,
-    await discoverInstallationRequestWorkspaces(transaction, input.installation),
-  );
   const adapterSnapshot = validateAdapterInstallation(input);
   await lockIntegrationInstallationIdentityInTransaction(transaction, input.installation);
   const current = await transaction
@@ -1359,7 +1298,6 @@ export async function installIntegrationInTransaction(
       requestId: input.requestId,
       targetId: installation.id,
       targetType: "integration-installation",
-      workspaceId: null,
     })
     .executeTakeFirstOrThrow();
   return { installation: installationFromRow(installation), requestEvents };
@@ -1375,31 +1313,22 @@ function exactCatalogDefinitionId(
 
 export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
   async install(input: InstallIntegrationInput): Promise<InstallIntegrationMutation> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      (transaction) => discoverInstallationRequestWorkspaces(transaction, input.installation),
-      async (transaction) =>
-        administrationCommand(transaction, input.administration, async () => {
-          await input.beforeInstall?.(transaction);
-          const mutation = await installIntegrationInTransaction(transaction, input);
-          if (input.actorUserId !== null)
-            await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
-          return mutation;
-        }),
-      (transaction) => lockAdministrationCommand(transaction, input.administration),
+    return withPersonalTransaction(this.database, async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        await input.beforeInstall?.(transaction);
+        const mutation = await installIntegrationInTransaction(transaction, input);
+        if (input.actorUserId !== null)
+          await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
+        return mutation;
+      }),
     );
   }
 
   async uninstall(input: UninstallIntegrationInput): Promise<UninstallIntegrationMutation> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      (transaction) =>
-        discoverInstallationRequestWorkspaces(transaction, { id: input.installationId }),
-      (transaction) =>
-        administrationCommand(transaction, input.administration, () =>
-          uninstallIntegrationInTransaction(transaction, input),
-        ),
-      (transaction) => lockAdministrationCommand(transaction, input.administration),
+    return withPersonalTransaction(this.database, (transaction) =>
+      administrationCommand(transaction, input.administration, () =>
+        uninstallIntegrationInTransaction(transaction, input),
+      ),
     );
   }
 
@@ -1424,7 +1353,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .execute();
     let repaired = 0;
     for (const { id } of candidates) {
-      repaired += await withDatabaseTransaction(this.database, async (transaction) => {
+      repaired += await withPersonalTransaction(this.database, async (transaction) => {
         const row = await transaction
           .selectFrom("integrationInstallations")
           .selectAll()
@@ -1502,7 +1431,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       .orderBy("id", "asc")
       .execute();
     for (const { id } of candidates) {
-      await withDatabaseTransaction(this.database, async (transaction) => {
+      await withPersonalTransaction(this.database, async (transaction) => {
         const row = await transaction
           .selectFrom("integrationInstallations")
           .select(["manifest", "adapterSnapshot"])
@@ -1571,7 +1500,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     const failures: { error: unknown; serverId: IntegrationServerId }[] = [];
     for (const { id, installationId } of candidates) {
       try {
-        await withDatabaseTransaction(this.database, async (transaction) => {
+        await withPersonalTransaction(this.database, async (transaction) => {
           await transaction
             .selectFrom("integrationInstallations")
             .select("id")
@@ -1641,7 +1570,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       } catch (error) {
         failures.push({ error, serverId: id });
         // Only what nothing else holds unavailable, so clearing this reason restores exactly it.
-        await withDatabaseTransaction(this.database, async (transaction) => {
+        await withPersonalTransaction(this.database, async (transaction) => {
           const now = new Date();
           await transaction
             .updateTable("integrationInstallations")
@@ -1666,7 +1595,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     installationId: IntegrationInstallationId,
     reason: string,
   ): Promise<void> {
-    await withDatabaseTransaction(this.database, (transaction) =>
+    await withPersonalTransaction(this.database, (transaction) =>
       markNeedsAttentionInTransaction(transaction, installationId, reason),
     );
   }
@@ -1719,7 +1648,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     readonly serverId: IntegrationServerId;
     readonly catalog: IntegrationToolCatalog;
   }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) => {
+    await withPersonalTransaction(this.database, async (transaction) => {
       const server = await transaction
         .selectFrom("integrationServers")
         .selectAll()
@@ -1787,7 +1716,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
       readonly tools: readonly IntegrationTool[];
     }[]
   > {
-    const [installations, authority, grants, mainAccess] = await Promise.all([
+    const [installations, authority, grants] = await Promise.all([
       this.database
         .selectFrom("integrationInstallations")
         .selectAll()
@@ -1795,22 +1724,14 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
         .limit(1_000)
         .execute(),
       this.authoritySnapshot(input.ownerUserId, input.providerAuthorizations),
-      this.activeGrants({ ownerUserId: input.ownerUserId, workspaceId: input.workspaceId }),
-      this.mainAccess(input),
+      this.activeGrants({ ownerUserId: input.ownerUserId }),
     ]);
     const policySettings = await this.database
       .selectFrom("pluginOwnerSettings")
       .selectAll()
       .where("ownerUserId", "=", input.ownerUserId)
       .execute();
-    const policyWorkspace = await this.database
-      .selectFrom("workspaces")
-      .select("kind")
-      .where("id", "=", input.workspaceId)
-      .executeTakeFirst();
-    const deniedSettings = policySettings.filter(
-      (s) => !s.enabled || (policyWorkspace?.kind === "main" && !s.mainIncluded),
-    );
+    const deniedSettings = policySettings.filter((s) => !s.enabled);
     const deniedDefinitions = new Set(
       deniedSettings.flatMap((s) =>
         s.target.kind === "service" || s.target.kind === "device-app"
@@ -1821,21 +1742,13 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
     const deniedPlugins = new Set(
       deniedSettings.flatMap((s) => (s.target.kind === "plugin" ? [s.target.pluginId] : [])),
     );
-    const inheritedMainAccess = mainAccess === "inherited";
     const activeGrants = grants.filter(({ status }) => status === "active");
-    // A lineage below its owner's Main sees only what this Workspace was
-    // granted explicitly: the owner's personal accounts are neither usable
-    // nor requestable there, so they are not listed either.
-    let connections =
-      mainAccess === "withheld"
-        ? authority.connections.filter(({ id }) =>
-            activeGrants.some(({ connectionId }) => connectionId === id),
-          )
-        : authority.connections;
+    let connections = authority.connections;
     connections = connections.filter(
       (c) => !c.definitionId || !deniedDefinitions.has(c.definitionId),
     );
-    const specialistOff = await this.specialistTurnedOff(input);
+    const requesterAccess = await resolveResourceAccess(this.database, input);
+    const specialistOff = !requesterAccess.specialistAllowed;
     if (specialistOff) connections = [];
     return Promise.all(
       installations
@@ -1879,23 +1792,24 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
             connectionId: IntegrationConnectionId | null,
             requiredAccess: IntegrationAccess,
           ) => {
-            if (specialistOff) return false;
+            if (
+              specialistOff ||
+              !integrationAccessCovers(requesterAccess.runAccess, requiredAccess)
+            )
+              return false;
             const connection =
               connectionId === null
                 ? null
                 : (installationConnections.find(({ id }) => id === connectionId) ?? null);
-            return (
-              (inheritedMainAccess &&
-                (requiredAccess === "read" ||
-                  effectiveIntegrationAccess("read-write", connection) === "read-write")) ||
-              activeGrants.some(
-                (grant) =>
-                  grant.installationId === installation.id &&
-                  grant.connectionId === connectionId &&
-                  (requiredAccess === "read" ||
-                    effectiveIntegrationAccess(grant.access, connection) === "read-write"),
-              )
-            );
+            return activeGrants.some((grant) => {
+              const access = effectiveIntegrationAccess(grant.access, connection);
+              return (
+                grant.installationId === installation.id &&
+                grant.connectionId === connectionId &&
+                access !== null &&
+                integrationAccessCovers(access, requiredAccess)
+              );
+            });
           };
           const readinessFor = (
             server: IntegrationServer,
@@ -1928,11 +1842,7 @@ export class IntegrationInstallStore extends IntegrationPlatformStoreBase {
                   candidate.connectionId === connection.id,
               );
               return {
-                access: inheritedMainAccess
-                  ? effectiveIntegrationAccess("read-write", connection)
-                  : grant
-                    ? effectiveIntegrationAccess(grant.access, connection)
-                    : null,
+                access: grant ? effectiveIntegrationAccess(grant.access, connection) : null,
                 account: integrationAccountLabel(connection),
                 connectionId: connection.id,
                 isDefault: grant?.isDefault ?? false,
@@ -2090,7 +2000,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly appApproval: "ask" | "automatic";
     readonly revision: number;
   }> {
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
       await this.#lockComputerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
       const policy = await computerUsePolicyInTransaction(
         transaction,
@@ -2135,88 +2045,81 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         }
     ),
   ): Promise<{ readonly appApproval: "ask" | "automatic"; readonly revision: number }> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        await this.#lockComputerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
-        const now = new Date();
-        const deployment = await transaction
-          .selectFrom("deployments")
-          .select("id")
-          .where("singletonKey", "=", "primary")
-          .executeTakeFirstOrThrow();
-        if (input.appApproval === "automatic") {
-          const pending = await transaction
-            .selectFrom("computerAppSetupRequests")
-            .selectAll()
-            .where("id", "=", input.setupRequestId)
-            .where("deploymentId", "=", deployment.id)
-            .where("runnerId", "=", input.runnerId)
-            .where("ownerUserId", "=", input.ownerUserId)
-            .where("kind", "=", "policy")
-            .where("policyAppApproval", "=", "automatic")
-            .where("definitionDigest", "=", input.definitionDigest)
-            .where("expiresAt", ">", now)
-            // FOR UPDATE: Consuming the policy approval deletes this setup request.
-            .forUpdate()
-            .executeTakeFirst();
-          if (!pending)
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "This approval changed or is no longer waiting.",
-            });
-        }
-        const previous = await computerUsePolicyInTransaction(
-          transaction,
-          input.runnerId,
-          input.ownerUserId,
-        );
-        const revision = previous.revision + 1;
-        await transaction
-          .insertInto("computerUsePolicies")
-          .values({
-            deploymentId: deployment.id,
-            runnerId: input.runnerId,
-            ownerUserId: input.ownerUserId,
-            appApproval: input.appApproval,
-            revision,
-            updatedAt: now,
-          })
-          .onConflict((conflict) =>
-            conflict.columns(["deploymentId", "runnerId", "ownerUserId"]).doUpdateSet({
-              appApproval: input.appApproval,
-              revision,
-              updatedAt: now,
-            }),
-          )
-          .execute();
-        await transaction
-          .deleteFrom("computerAppSetupRequests")
+    return withPersonalTransaction(this.database, async (transaction) => {
+      await this.#lockComputerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
+      const now = new Date();
+      const deployment = await transaction
+        .selectFrom("deployments")
+        .select("id")
+        .where("singletonKey", "=", "primary")
+        .executeTakeFirstOrThrow();
+      if (input.appApproval === "automatic") {
+        const pending = await transaction
+          .selectFrom("computerAppSetupRequests")
+          .selectAll()
+          .where("id", "=", input.setupRequestId)
+          .where("deploymentId", "=", deployment.id)
           .where("runnerId", "=", input.runnerId)
           .where("ownerUserId", "=", input.ownerUserId)
           .where("kind", "=", "policy")
-          .execute();
-        await transaction
-          .insertInto("securityAudit")
-          .values({
-            action: "integration.computer-policy.updated",
-            actorSessionId: null,
-            actorUserId: input.ownerUserId,
-            id: createId("securityAudit"),
-            metadata: jsonValue({ appApproval: input.appApproval, revision }),
-            requestId: input.requestId,
-            targetId: input.runnerId,
-            targetType: "runner",
-            workspaceId: null,
-          })
-          .execute();
-        await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
-        return { appApproval: input.appApproval, revision };
-      },
-    );
+          .where("policyAppApproval", "=", "automatic")
+          .where("definitionDigest", "=", input.definitionDigest)
+          .where("expiresAt", ">", now)
+          // FOR UPDATE: Consuming the policy approval deletes this setup request.
+          .forUpdate()
+          .executeTakeFirst();
+        if (!pending)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "This approval changed or is no longer waiting.",
+          });
+      }
+      const previous = await computerUsePolicyInTransaction(
+        transaction,
+        input.runnerId,
+        input.ownerUserId,
+      );
+      const revision = previous.revision + 1;
+      await transaction
+        .insertInto("computerUsePolicies")
+        .values({
+          deploymentId: deployment.id,
+          runnerId: input.runnerId,
+          ownerUserId: input.ownerUserId,
+          appApproval: input.appApproval,
+          revision,
+          updatedAt: now,
+        })
+        .onConflict((conflict) =>
+          conflict.columns(["deploymentId", "runnerId", "ownerUserId"]).doUpdateSet({
+            appApproval: input.appApproval,
+            revision,
+            updatedAt: now,
+          }),
+        )
+        .execute();
+      await transaction
+        .deleteFrom("computerAppSetupRequests")
+        .where("runnerId", "=", input.runnerId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .where("kind", "=", "policy")
+        .execute();
+      await transaction
+        .insertInto("securityAudit")
+        .values({
+          action: "integration.computer-policy.updated",
+          actorSessionId: null,
+          actorUserId: input.ownerUserId,
+          id: createId("securityAudit"),
+          metadata: jsonValue({ appApproval: input.appApproval, revision }),
+          requestId: input.requestId,
+          targetId: input.runnerId,
+          targetType: "runner",
+        })
+        .execute();
+      await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
+      return { appApproval: input.appApproval, revision };
+    });
   }
 
   async listComputerAppSetupRequests(
@@ -2239,13 +2142,14 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
    * Whether this person administers the Deployment, for an answer that arrives
    * on a Mac's Runner stream rather than with a session that already says so.
    */
-  async isAdministrator(userId: UserId): Promise<boolean> {
-    const user = await this.database
-      .selectFrom("users")
-      .select("instanceRole")
-      .where("id", "=", userId)
-      .executeTakeFirst();
-    return user?.instanceRole === "administrator";
+  async isPersonalOwner(userId: UserId): Promise<boolean> {
+    try {
+      await assertPersonalOwner(this.database, userId);
+      return true;
+    } catch (error) {
+      if (error instanceof OpensteerError) return false;
+      throw error;
+    }
   }
 
   /** One waiting approval on one Mac, which that Mac is answering. */
@@ -2307,60 +2211,21 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           }
         : requestInput;
     assertComputerAppPresence(input);
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        const runner = await lockComputerApprovalScopeInTransaction(transaction, {
-          runnerId: input.runnerId,
+    return withPersonalTransaction(this.database, async (transaction) => {
+      const runner = await lockComputerApprovalScopeInTransaction(transaction, {
+        runnerId: input.runnerId,
+      });
+      const ownership =
+        runner.revokedAt === null ? await machineOwnershipIn(transaction, runner.id) : null;
+      if (ownership?.effectiveOwner !== input.actorUserId) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only this computer’s owner can request app setup.",
         });
-        const ownership =
-          runner.revokedAt === null ? await machineOwnershipIn(transaction, runner.id) : null;
-        if (ownership?.effectiveOwner !== input.actorUserId) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only this computer’s owner can request app setup.",
-          });
-        }
-        const now = new Date();
-        if (input.kind !== "policy") {
-          const { row, settlement } = await askForComputerAppApprovalInTransaction(transaction, {
-            access: input.access,
-            app: input.app,
-            definitionDigest: input.definitionDigest,
-            definitionId: input.definitionId,
-            now,
-            ownerUserId: input.actorUserId,
-            runnerId: input.runnerId,
-            task: null,
-          });
-          return { request: computerAppSetupRequestFromRow(row), settlement };
-        }
-        // The policy approval has no Requests waiting on it, so replacing it
-        // only has to mint the new id that invalidates older decisions.
-        const scope = computerAppScopeOf(input);
-        const existing = await lockComputerAppSetupRequestInTransaction(transaction, scope);
-        if (
-          existing &&
-          computerAppSetupRequestMatches(existing, {
-            access: input.access,
-            app: input.app,
-            definitionDigest: input.definitionDigest,
-            now,
-            ownerUserId: input.actorUserId,
-          })
-        ) {
-          return {
-            request: computerAppSetupRequestFromRow(existing),
-            settlement: emptyComputerAppAccessSettlement,
-          };
-        }
-        await deleteComputerAppSetupRequestsInTransaction(transaction, scope);
-        const row = await insertComputerAppSetupRequestInTransaction(transaction, {
-          kind: "policy",
-          policyAppApproval: "automatic",
+      }
+      const now = new Date();
+      if (input.kind !== "policy") {
+        const { row, settlement } = await askForComputerAppApprovalInTransaction(transaction, {
           access: input.access,
           app: input.app,
           definitionDigest: input.definitionDigest,
@@ -2368,13 +2233,46 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
           now,
           ownerUserId: input.actorUserId,
           runnerId: input.runnerId,
+          task: null,
         });
+        return { request: computerAppSetupRequestFromRow(row), settlement };
+      }
+      // The policy approval has no Requests waiting on it, so replacing it
+      // only has to mint the new id that invalidates older decisions.
+      const scope = computerAppScopeOf(input);
+      const existing = await lockComputerAppSetupRequestInTransaction(transaction, scope);
+      if (
+        existing &&
+        computerAppSetupRequestMatches(existing, {
+          access: input.access,
+          app: input.app,
+          definitionDigest: input.definitionDigest,
+          now,
+          ownerUserId: input.actorUserId,
+        })
+      ) {
         return {
-          request: computerAppSetupRequestFromRow(row),
+          request: computerAppSetupRequestFromRow(existing),
           settlement: emptyComputerAppAccessSettlement,
         };
-      },
-    );
+      }
+      await deleteComputerAppSetupRequestsInTransaction(transaction, scope);
+      const row = await insertComputerAppSetupRequestInTransaction(transaction, {
+        kind: "policy",
+        policyAppApproval: "automatic",
+        access: input.access,
+        app: input.app,
+        definitionDigest: input.definitionDigest,
+        definitionId: input.definitionId,
+        now,
+        ownerUserId: input.actorUserId,
+        runnerId: input.runnerId,
+      });
+      return {
+        request: computerAppSetupRequestFromRow(row),
+        settlement: emptyComputerAppAccessSettlement,
+      };
+    });
   }
 
   /** The owner taking the ask back, which declines whatever Threads were waiting on it. */
@@ -2383,49 +2281,37 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly requestId: string;
     readonly ownerUserId: UserId;
   }): Promise<ComputerAppAccessSettlement & { readonly runnerId: RunnerId | null }> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => {
-        const request = await transaction
-          .selectFrom("computerAppSetupRequests")
-          .select("runnerId")
-          .where("id", "=", input.requestId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .executeTakeFirst();
-        return request ? discoverComputerRequestWorkspaces(transaction, request.runnerId) : [];
-      },
-      async (transaction) => {
-        const request = await transaction
-          .selectFrom("computerAppSetupRequests")
-          .select("runnerId")
-          .where("id", "=", input.requestId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .executeTakeFirst();
-        if (!request) return { ...emptyComputerAppAccessSettlement, runnerId: null };
-        // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
-        await this.#lockComputerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
-        const settlementActor = await readRequestSettlementActor(
-          transaction,
-          input.ownerUserId,
-          input.settlementSessionId,
-        );
-        const removed = await transaction
-          .deleteFrom("computerAppSetupRequests")
-          .where("id", "=", input.requestId)
-          .where("ownerUserId", "=", input.ownerUserId)
-          .returning("id")
-          .execute();
-        const settlement = await declineComputerAppAccessRequestsInTransaction(transaction, {
-          setupRequestIds: removed.map(({ id }) => id),
-          settlementActor,
-        });
-        await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
-        return {
-          ...settlement,
-          runnerId: request.runnerId,
-        };
-      },
-    );
+    return withPersonalTransaction(this.database, async (transaction) => {
+      const request = await transaction
+        .selectFrom("computerAppSetupRequests")
+        .select("runnerId")
+        .where("id", "=", input.requestId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .executeTakeFirst();
+      if (!request) return { ...emptyComputerAppAccessSettlement, runnerId: null };
+      // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
+      await this.#lockComputerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
+      const settlementActor = await readRequestSettlementActor(
+        transaction,
+        input.ownerUserId,
+        input.settlementSessionId,
+      );
+      const removed = await transaction
+        .deleteFrom("computerAppSetupRequests")
+        .where("id", "=", input.requestId)
+        .where("ownerUserId", "=", input.ownerUserId)
+        .returning("id")
+        .execute();
+      const settlement = await declineComputerAppAccessRequestsInTransaction(transaction, {
+        setupRequestIds: removed.map(({ id }) => id),
+        settlementActor,
+      });
+      await requestSettlementActor(transaction, input.ownerUserId, input.settlementSessionId);
+      return {
+        ...settlement,
+        runnerId: request.runnerId,
+      };
+    });
   }
 
   /**
@@ -2454,24 +2340,18 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     const requestIds: RequestId[] = [];
     const runnerIds: RunnerId[] = [];
     for (const { runnerId } of expiring) {
-      const settled = await withRequestWorkspaceLocks(
-        this.database,
-        async (transaction) => [
-          ...(await discoverComputerRequestWorkspaces(transaction, runnerId)),
-        ],
-        async (transaction) => {
-          await lockComputerApprovalScopeInTransaction(transaction, { runnerId });
-          const expired = await transaction
-            .deleteFrom("computerAppSetupRequests")
-            .where("runnerId", "=", runnerId)
-            .where("expiresAt", "<=", now)
-            .returning("id")
-            .execute();
-          return declineComputerAppAccessRequestsInTransaction(transaction, {
-            setupRequestIds: expired.map(({ id }) => id),
-          });
-        },
-      );
+      const settled = await withPersonalTransaction(this.database, async (transaction) => {
+        await lockComputerApprovalScopeInTransaction(transaction, { runnerId });
+        const expired = await transaction
+          .deleteFrom("computerAppSetupRequests")
+          .where("runnerId", "=", runnerId)
+          .where("expiresAt", "<=", now)
+          .returning("id")
+          .execute();
+        return declineComputerAppAccessRequestsInTransaction(transaction, {
+          setupRequestIds: expired.map(({ id }) => id),
+        });
+      });
       grants.push(...settled.grants);
       requestEvents.push(...settled.requestEvents);
       requestIds.push(...settled.requestIds);
@@ -2495,86 +2375,70 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
   async setComputerConnection(
     input: SetComputerConnectionInput,
   ): Promise<SetComputerConnectionResult> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        const runner = await lockComputerOwnerInTransaction(transaction, {
-          ...input,
-          workspaceIds: [],
+    return withPersonalTransaction(this.database, async (transaction) => {
+      const runner = await lockComputerOwnerInTransaction(transaction, {
+        ...input,
+      });
+      const descriptor = await transaction
+        .selectFrom("runners")
+        .select(["device", "moduleDescriptors", "allowedModules", "kind"])
+        .where("id", "=", runner.id)
+        .executeTakeFirstOrThrow();
+      const phone = input.definitionId === "android-phone";
+      if (
+        phone &&
+        (input.app !== null ||
+          descriptor.kind !== "local" ||
+          descriptor.device?.form !== "phone" ||
+          descriptor.device.platform !== "android" ||
+          !descriptor.allowedModules.includes("integrations") ||
+          descriptor.moduleDescriptors.integrations?.platform !== "android" ||
+          runnerIntegrationsCompatibilityReason(descriptor.moduleDescriptors.integrations) !== null)
+      ) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This Runner is not an eligible Android phone.",
         });
-        const descriptor = await transaction
-          .selectFrom("runners")
-          .select(["device", "moduleDescriptors", "allowedModules", "kind"])
-          .where("id", "=", runner.id)
-          .executeTakeFirstOrThrow();
-        const phone = input.definitionId === "android-phone";
-        if (
-          phone &&
-          (input.app !== null ||
-            descriptor.kind !== "local" ||
-            descriptor.device?.form !== "phone" ||
-            descriptor.device.platform !== "android" ||
-            !descriptor.allowedModules.includes("integrations") ||
-            descriptor.moduleDescriptors.integrations?.platform !== "android" ||
-            runnerIntegrationsCompatibilityReason(descriptor.moduleDescriptors.integrations) !==
-              null)
-        ) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "This Runner is not an eligible Android phone.",
-          });
-        }
-        if (input.setupRequestId && (phone || descriptor.device?.platform === "android")) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Allow phone access from any Opensteer app.",
-          });
-        }
-        const target = await computerConnectionTargetInTransaction(transaction, input);
-        return input.setupRequestId
-          ? consumeComputerAppApprovalInTransaction(transaction, {
-              ...input,
-              setupRequestId: input.setupRequestId,
-              runner,
-              target,
-            })
-          : reviseComputerConnectionInTransaction(transaction, { ...input, runner, target });
-      },
-    );
+      }
+      if (input.setupRequestId && (phone || descriptor.device?.platform === "android")) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Allow phone access from any Opensteer app.",
+        });
+      }
+      const target = await computerConnectionTargetInTransaction(transaction, input);
+      return input.setupRequestId
+        ? consumeComputerAppApprovalInTransaction(transaction, {
+            ...input,
+            setupRequestId: input.setupRequestId,
+            runner,
+            target,
+          })
+        : reviseComputerConnectionInTransaction(transaction, { ...input, runner, target });
+    });
   }
 
   /** A task's ask for a new app on a Mac whose owner allows any app automatically. */
   async approveComputerAppAutomatically(
     input: AutomaticComputerAppApprovalInput,
   ): Promise<SetComputerConnectionResult> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [
-        input.workspaceId,
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        const runner = await lockComputerOwnerInTransaction(transaction, {
-          ...input,
-          workspaceIds: [input.workspaceId],
+    return withPersonalTransaction(this.database, async (transaction) => {
+      const runner = await lockComputerOwnerInTransaction(transaction, {
+        ...input,
+      });
+      const policy = await computerUsePolicyInTransaction(
+        transaction,
+        input.runnerId,
+        input.actorUserId,
+      );
+      if (policy.appApproval !== "automatic") {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Automatic app approval is not enabled on this Mac.",
         });
-        const policy = await computerUsePolicyInTransaction(
-          transaction,
-          input.runnerId,
-          input.actorUserId,
-        );
-        if (policy.appApproval !== "automatic") {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Automatic app approval is not enabled on this Mac.",
-          });
-        }
-        return approveComputerAppAutomaticallyInTransaction(transaction, { ...input, runner });
-      },
-    );
+      }
+      return approveComputerAppAutomaticallyInTransaction(transaction, { ...input, runner });
+    });
   }
 
   async blockComputerApp(input: {
@@ -2583,56 +2447,51 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<RevokeComputerConnectionsMutation> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [...(await discoverComputerRemovalWorkspaces(transaction, input))],
-      async (transaction) =>
-        administrationCommand(transaction, input.administration, async () => {
-          const connection = await transaction
-            .selectFrom("integrationConnections")
-            .select(["runnerId", "computerApp"])
-            .where("id", "=", input.connectionId)
-            .where("ownerUserId", "=", input.ownerUserId)
-            .where("connectionKind", "=", "computer")
-            .where("status", "!=", "revoked")
-            .executeTakeFirst();
-          if (!connection?.runnerId || !connection.computerApp) {
-            throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-          }
-          await lockComputerApprovalScopeInTransaction(transaction, {
-            runnerId: connection.runnerId,
+    return withPersonalTransaction(this.database, async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const connection = await transaction
+          .selectFrom("integrationConnections")
+          .select(["runnerId", "computerApp"])
+          .where("id", "=", input.connectionId)
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("connectionKind", "=", "computer")
+          .where("status", "!=", "revoked")
+          .executeTakeFirst();
+        if (!connection?.runnerId || !connection.computerApp) {
+          throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
+        }
+        await lockComputerApprovalScopeInTransaction(transaction, {
+          runnerId: connection.runnerId,
+        });
+        const ownership = await machineOwnershipIn(transaction, connection.runnerId);
+        if (ownership?.effectiveOwner !== input.ownerUserId) {
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Only this computer’s owner can block its apps.",
           });
-          const ownership = await machineOwnershipIn(transaction, connection.runnerId);
-          if (ownership?.effectiveOwner !== input.ownerUserId) {
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Only this computer’s owner can block its apps.",
-            });
-          }
-          const mutation = await revokeComputerConnectionsInTransaction(transaction, input);
-          const now = new Date();
-          await transaction
-            .updateTable("integrationConnections")
-            .set({ computerBlockedAt: now, status: "paused", updatedAt: now })
-            .where("id", "=", input.connectionId)
-            .execute();
-          await transaction
-            .insertInto("securityAudit")
-            .values({
-              action: "integration.computer-app.blocked",
-              actorSessionId: null,
-              actorUserId: input.ownerUserId,
-              id: createId("securityAudit"),
-              metadata: jsonValue({}),
-              requestId: input.requestId,
-              targetId: input.connectionId,
-              targetType: "integration-connection",
-              workspaceId: null,
-            })
-            .execute();
-          return mutation;
-        }),
-      (transaction) => lockAdministrationCommand(transaction, input.administration),
+        }
+        const mutation = await revokeComputerConnectionsInTransaction(transaction, input);
+        const now = new Date();
+        await transaction
+          .updateTable("integrationConnections")
+          .set({ computerBlockedAt: now, status: "paused", updatedAt: now })
+          .where("id", "=", input.connectionId)
+          .execute();
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "integration.computer-app.blocked",
+            actorSessionId: null,
+            actorUserId: input.ownerUserId,
+            id: createId("securityAudit"),
+            metadata: jsonValue({}),
+            requestId: input.requestId,
+            targetId: input.connectionId,
+            targetType: "integration-connection",
+          })
+          .execute();
+        return mutation;
+      }),
     );
   }
 
@@ -2642,45 +2501,40 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<RevokeComputerConnectionsMutation> {
-    return withRequestWorkspaceLocks(
-      this.database,
-      async (transaction) => [...(await discoverComputerRemovalWorkspaces(transaction, input))],
-      async (transaction) =>
-        administrationCommand(transaction, input.administration, async () => {
-          const named = await transaction
-            .selectFrom("integrationConnections")
-            .select("runnerId")
-            .where("id", "=", input.connectionId)
-            .where("ownerUserId", "=", input.ownerUserId)
-            .where("connectionKind", "=", "computer")
-            .executeTakeFirst();
-          if (named?.runnerId) {
-            await lockComputerApprovalScopeInTransaction(transaction, { runnerId: named.runnerId });
-          }
-          const mutation = await revokeComputerConnectionsInTransaction(transaction, {
-            connectionId: input.connectionId,
-            ownerUserId: input.ownerUserId,
-          });
-          if (mutation.connectionIds.length === 0) {
-            throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
-          }
-          await transaction
-            .insertInto("securityAudit")
-            .values({
-              action: "integration.computer-connection.revoked",
-              actorSessionId: null,
-              actorUserId: input.ownerUserId,
-              id: createId("securityAudit"),
-              metadata: jsonValue({ cancelledRequests: mutation.cancelledRequestIds.length }),
-              requestId: input.requestId,
-              targetId: input.connectionId,
-              targetType: "integration-connection",
-              workspaceId: null,
-            })
-            .executeTakeFirstOrThrow();
-          return mutation;
-        }),
-      (transaction) => lockAdministrationCommand(transaction, input.administration),
+    return withPersonalTransaction(this.database, async (transaction) =>
+      administrationCommand(transaction, input.administration, async () => {
+        const named = await transaction
+          .selectFrom("integrationConnections")
+          .select("runnerId")
+          .where("id", "=", input.connectionId)
+          .where("ownerUserId", "=", input.ownerUserId)
+          .where("connectionKind", "=", "computer")
+          .executeTakeFirst();
+        if (named?.runnerId) {
+          await lockComputerApprovalScopeInTransaction(transaction, { runnerId: named.runnerId });
+        }
+        const mutation = await revokeComputerConnectionsInTransaction(transaction, {
+          connectionId: input.connectionId,
+          ownerUserId: input.ownerUserId,
+        });
+        if (mutation.connectionIds.length === 0) {
+          throw new OpensteerError({ code: "not_found", message: "Computer app not found" });
+        }
+        await transaction
+          .insertInto("securityAudit")
+          .values({
+            action: "integration.computer-connection.revoked",
+            actorSessionId: null,
+            actorUserId: input.ownerUserId,
+            id: createId("securityAudit"),
+            metadata: jsonValue({ cancelledRequests: mutation.cancelledRequestIds.length }),
+            requestId: input.requestId,
+            targetId: input.connectionId,
+            targetType: "integration-connection",
+          })
+          .executeTakeFirstOrThrow();
+        return mutation;
+      }),
     );
   }
 
@@ -2808,7 +2662,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly serverId: IntegrationServerId;
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) => {
+    await withPersonalTransaction(this.database, async (transaction) => {
       if (input.accountBinding)
         await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
       await transaction
@@ -3085,7 +2939,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) =>
+    await withPersonalTransaction(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const now = new Date();
         const connection = await transaction
@@ -3122,7 +2976,6 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
             requestId: input.requestId,
             targetId: connection.id,
             targetType: "integration-connection",
-            workspaceId: null,
           })
           .executeTakeFirstOrThrow();
       }),
@@ -3135,7 +2988,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly ownerUserId: UserId;
     readonly statusDetail: string;
   }): Promise<boolean> {
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
       const current = await transaction
         .selectFrom("integrationConnections")
         .select("id")
@@ -3176,11 +3029,10 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   >();
 
   async createGrant(input: CreateIntegrationGrantInput): Promise<IntegrationGrant> {
-    return withDatabaseTransaction(this.database, async (transaction) => {
+    return withPersonalTransaction(this.database, async (transaction) => {
       // Standalone grants have no Request/approval transaction to fence their
       // parents. Hold those fences before the grant scope, then validate current
       // membership and resource state in createGrantInTransaction.
-      await lockRequestWorkspaces(transaction, [input.workspaceId]);
       await transaction
         .selectFrom("integrationInstallations")
         .select("id")
@@ -3221,15 +3073,11 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     return writeIntegrationGrantInTransaction(transaction, input);
   }
 
-  async listGrants(input: {
-    readonly ownerUserId: UserId;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<readonly IntegrationGrant[]> {
+  async listGrants(input: { readonly ownerUserId: UserId }): Promise<readonly IntegrationGrant[]> {
     const rows = await this.database
       .selectFrom("integrationGrants")
       .selectAll()
       .where("ownerUserId", "=", input.ownerUserId)
-      .where("workspaceId", "=", input.workspaceId)
       .where("revokedAt", "is", null)
       .orderBy("installationId", "asc")
       .orderBy("isDefault", "desc")
@@ -3286,9 +3134,8 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     readonly grantId: IntegrationGrant["id"];
     readonly ownerUserId: UserId;
     readonly requestId: string;
-    readonly workspaceId: WorkspaceId;
   }): Promise<void> {
-    await withDatabaseTransaction(this.database, async (transaction) =>
+    await withPersonalTransaction(this.database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const row = await transaction
           .updateTable("integrationGrants")
@@ -3300,7 +3147,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
           })
           .where("id", "=", input.grantId)
           .where("ownerUserId", "=", input.ownerUserId)
-          .where("workspaceId", "=", input.workspaceId)
           .where("revokedAt", "is", null)
           .returning(["id", "installationId"])
           .executeTakeFirst();
@@ -3317,7 +3163,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
             requestId: input.requestId,
             targetId: row.id,
             targetType: "integration-grant",
-            workspaceId: input.workspaceId,
           })
           .executeTakeFirstOrThrow();
       }),
@@ -3334,22 +3179,26 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         left.localeCompare(right),
       ),
     );
-    const inheritsMain = (await this.mainAccess(input)) === "inherited";
+    const authority = await resolveResourceAccess(this.database, input);
+    const permitted = (tools: readonly CallableIntegrationTool[]) =>
+      tools.filter(
+        (tool) =>
+          authority.runAccess === "read-write" ||
+          integrationToolEffect(tool.tool.annotations) === "read",
+      );
     const scope = {
       authorityFingerprint,
-      inheritsMain,
       ownerUserId: input.ownerUserId,
-      workspaceId: input.workspaceId,
     };
     for (;;) {
       const generation = await this.authorityGeneration(input.ownerUserId);
       const cached = this.#callableToolsCache.get({ ...scope, generation });
-      if (cached) return (await this.specialistTurnedOff(input)) ? [] : cached;
-      const resolved = await this.resolveCallableTools({ ...input, inheritsMain });
+      if (cached) return (await this.specialistTurnedOff(input)) ? [] : permitted(cached);
+      const resolved = await this.resolveCallableTools(input);
       const verifiedGeneration = await this.authorityGeneration(input.ownerUserId);
       if (verifiedGeneration !== generation) continue;
       this.#callableToolsCache.set({ ...scope, generation }, resolved);
-      return (await this.specialistTurnedOff(input)) ? [] : resolved;
+      return (await this.specialistTurnedOff(input)) ? [] : permitted(resolved);
     }
   }
 
@@ -3420,15 +3269,12 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
   }
 
   private async resolveCallableTools(input: {
-    readonly inheritsMain: boolean;
     readonly ownerUserId: UserId;
     readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    readonly workspaceId: WorkspaceId;
   }): Promise<readonly CallableIntegrationTool[]> {
     const grants = await this.listGrants(input);
-    const inheritedMainAccess = input.inheritsMain;
     const activeGrants = grants.filter(({ status }) => status === "active");
-    if (!inheritedMainAccess && activeGrants.length === 0) return [];
+    if (activeGrants.length === 0) return [];
     const rows = await this.database
       .selectFrom("integrationTools")
       .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
@@ -3480,14 +3326,7 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
       .selectAll()
       .where("ownerUserId", "=", input.ownerUserId)
       .execute();
-    const workspace = await this.database
-      .selectFrom("workspaces")
-      .select("kind")
-      .where("id", "=", input.workspaceId)
-      .executeTakeFirst();
-    const denied = settings.filter(
-      (s) => !s.enabled || (workspace?.kind === "main" && !s.mainIncluded),
-    );
+    const denied = settings.filter((s) => !s.enabled);
     const blockedDefinitions = new Set(
       denied.flatMap((s) =>
         s.target.kind === "service" || s.target.kind === "device-app"
@@ -3522,7 +3361,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
     );
     const resolved = resolveEffectiveGrants({
       connections: connections.filter((c) => !blockedConnectionIds.has(c.id)),
-      inheritedMainAccess,
       installations: [...installationById.values()],
       ownerUserId: input.ownerUserId,
       storedGrants: grants,
@@ -3534,7 +3372,6 @@ export class IntegrationGrantStore extends IntegrationPlatformStoreBase {
         installationId: row.joinedInstallationId,
         serverStatus: row.joinedServerStatus,
       })),
-      workspaceId: input.workspaceId,
     });
     return resolved.tools
       .filter(({ tool }) => {
@@ -3859,27 +3696,23 @@ function serverFromJoinedRow(row: JoinedServerRow): IntegrationServer {
 export type AutomaticComputerAppApprovalInput = Omit<
   SetComputerConnectionInput,
   "setupRequestId" | "createIfMissing"
-> & {
-  readonly workspaceId: WorkspaceId;
-};
+> & {};
 
 interface LockedComputer {
   readonly id: RunnerId;
   readonly name: string;
 }
 
-/** The computer's fence, taken after Workspaces, and the owner check under it. */
+/** The computer's fence, taken after deployment events, and the owner check under it. */
 async function lockComputerOwnerInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly actorUserId: UserId;
     readonly runnerId: RunnerId;
-    readonly workspaceIds: readonly WorkspaceId[];
   },
 ): Promise<LockedComputer> {
   const runner = await lockComputerApprovalScopeInTransaction(transaction, {
     runnerId: input.runnerId,
-    workspaceIds: input.workspaceIds,
   });
   if (runner.revokedAt !== null) {
     throw new OpensteerError({ code: "not_found", message: "Computer not found" });
@@ -4174,16 +4007,7 @@ export async function approveComputerAppAutomaticallyInTransaction(
       message: "Approve this access in Opensteer on the computer that provides the app.",
     });
   }
-  const workspace = await transaction
-    .selectFrom("workspaces")
-    .select(["kind", "status"])
-    .where("id", "=", input.workspaceId)
-    .where("createdBy", "=", input.actorUserId)
-    .forNoKeyUpdate()
-    .executeTakeFirst();
-  if (!workspace || workspace.status !== "ready") {
-    throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-  }
+  await assertPersonalOwner(transaction, input.actorUserId);
   const now = new Date();
   const row = await writeComputerConnectionInTransaction(transaction, {
     access: connectionAccess,
@@ -4197,10 +4021,7 @@ export async function approveComputerAppAutomaticallyInTransaction(
     ...input,
     actorSessionId: undefined,
     recordProvenance: false,
-    // Main inherits the owner's authority and needs no row.
-    ...(workspace.kind === "main"
-      ? {}
-      : { alsoGrant: { access: input.access, workspaceId: input.workspaceId } }),
+    alsoGrant: { access: input.access },
     connectionAccess,
     consumedSetupRequestId: null,
     created: current === undefined,
@@ -4278,7 +4099,7 @@ async function writeComputerConnectionInTransaction(
 /**
  * Everything a connection change owes after its row is written: the tools
  * its access exposes, the generation bump that makes callers re-read them,
- * the Main Requests it satisfies, the `computer.app.access` Requests it
+ * the personal Requests it satisfies, the `computer.app.access` Requests it
  * answers, and the audit record — one transaction, exactly as an
  * `integration.access` answer is.
  */
@@ -4289,7 +4110,7 @@ async function finishComputerConnectionChangeInTransaction(
     readonly recordProvenance: boolean;
     readonly access: IntegrationAccess;
     readonly actorUserId: UserId;
-    readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
+    readonly alsoGrant?: { readonly access: IntegrationAccess };
     readonly connectionAccess: IntegrationAccess;
     readonly consumedSetupRequestId: string | null;
     readonly created: boolean;
@@ -4320,9 +4141,9 @@ async function finishComputerConnectionChangeInTransaction(
     .where("toolGeneration", "=", installed.toolGeneration)
     .executeTakeFirstOrThrow();
   const app = storedComputerApp(input.row);
-  const mainRequests =
+  const pendingRequests =
     input.created || input.widened
-      ? await pendingMainIntegrationAccessRequests(transaction, {
+      ? await pendingIntegrationAccessRequests(transaction, {
           access: input.connectionAccess,
           connectionId,
           installationId: installed.installationId,
@@ -4332,7 +4153,7 @@ async function finishComputerConnectionChangeInTransaction(
       : [];
   const settlement = await settleComputerAppApprovalInTransaction(transaction, {
     settlementActor,
-    additionalRequestIds: mainRequests.map(({ id }) => id),
+    additionalRequestIds: pendingRequests.map(({ id }) => id),
     ...(input.alsoGrant ? { alsoGrant: input.alsoGrant } : {}),
     connection: {
       access: input.connectionAccess,
@@ -4347,9 +4168,9 @@ async function finishComputerConnectionChangeInTransaction(
     reissueWaiting: input.reissueWaiting,
     scope,
   });
-  const mainRequestEvents =
+  const pendingRequestEvents =
     input.created || input.widened
-      ? await fulfillPendingMainIntegrationAccessRequestsInTransaction(transaction, {
+      ? await fulfillPendingIntegrationAccessRequestsInTransaction(transaction, {
           settlementActor,
           access: input.connectionAccess,
           connectionId,
@@ -4386,7 +4207,6 @@ async function finishComputerConnectionChangeInTransaction(
       requestId: input.requestId,
       targetId: connectionId,
       targetType: "integration-connection",
-      workspaceId: null,
     })
     .executeTakeFirstOrThrow();
   await requestSettlementActor(transaction, input.actorUserId, input.actorSessionId);
@@ -4396,7 +4216,7 @@ async function finishComputerConnectionChangeInTransaction(
     fulfilledRequestIds: settlement.requestIds,
     grants: settlement.grants,
     reissuedSetupRequestId: settlement.reissuedSetupRequestId,
-    requestEvents: [...mainRequestEvents, ...settlement.requestEvents],
+    requestEvents: [...pendingRequestEvents, ...settlement.requestEvents],
   };
 }
 

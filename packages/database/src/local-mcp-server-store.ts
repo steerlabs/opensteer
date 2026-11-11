@@ -1,5 +1,6 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { requestSettlementActor } from "./request-settlement.js";
-import { withDatabaseTransaction } from "./connection.js";
+
 import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import {
   IntegrationServerTransportSchema,
@@ -111,7 +112,7 @@ export class LocalMcpServerStore {
       if (server.runnerId === null || server.status === "disabled") continue;
       if (server.approvedLaunchDigest === server.launchDigest) continue;
       const runnerId = server.runnerId;
-      const asked = await withDatabaseTransaction(this.#database, async (transaction) => {
+      const asked = await withPersonalTransaction(this.#database, async (transaction) => {
         // The computer, then the server, then the request: the order every
         // server approval takes them in, and the one computer apps use.
         await lockComputer(transaction, runnerId);
@@ -131,14 +132,8 @@ export class LocalMcpServerStore {
           .selectFrom("integrationInstallations")
           .innerJoin("plugins", "plugins.id", "integrationInstallations.pluginId")
           .innerJoin("threads", "threads.id", "plugins.setupThreadId")
-          .innerJoin(
-            "workspaceMemberships",
-            "workspaceMemberships.workspaceId",
-            "threads.workspaceId",
-          )
-          .where("workspaceMemberships.userId", "=", owner)
-          .where("workspaceMemberships.state", "=", "active")
-          .select(["threads.id as threadId", "threads.title as threadTitle", "threads.workspaceId"])
+          .where("threads.createdBy", "=", owner)
+          .select(["threads.id as threadId", "threads.title as threadTitle"])
           .where("integrationInstallations.id", "=", locked.installationId)
           .executeTakeFirst();
         const waiting = await transaction
@@ -157,7 +152,6 @@ export class LocalMcpServerStore {
           // A task's generated title replaces its first line soon after it starts; a
           // retitle must not replace an approval someone may be reviewing.
           waiting.threadId === (setup?.threadId ?? null) &&
-          waiting.workspaceId === (setup?.workspaceId ?? null) &&
           waiting.expiresAt > now
         ) {
           return false;
@@ -218,7 +212,7 @@ export class LocalMcpServerStore {
     readonly setupRequestId: string;
   }): Promise<{ readonly launchDigest: string; readonly serverId: IntegrationServerId }> {
     const now = input.now ?? new Date();
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const { request, server } = await answeredRequest(transaction, { ...input, now });
       await transaction
         .deleteFrom("computerAppSetupRequests")
@@ -259,7 +253,7 @@ export class LocalMcpServerStore {
       throw new OpensteerError({ code: "not_found", message: "That server isn't installed." });
     }
     const runnerId = named.runnerId;
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       await lockComputer(transaction, runnerId);
       await lockServer(transaction, input.serverId);
       const server = (await records(transaction, await serverRows(transaction, input.serverId)))[0];
@@ -327,7 +321,7 @@ export class LocalMcpServerStore {
     readonly setupRequestId: string;
   }): Promise<void> {
     const now = input.now ?? new Date();
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withPersonalTransaction(this.#database, async (transaction) => {
       const { request, server } = await answeredRequest(transaction, { ...input, now });
       await transaction
         .deleteFrom("computerAppSetupRequests")
@@ -349,7 +343,7 @@ export class LocalMcpServerStore {
     readonly tools: readonly IntegrationToolMaterial[];
   }): Promise<boolean> {
     const now = input.now ?? new Date();
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const server = await lockedApproved(transaction, input.serverId, input.launchDigest);
       if (!server) return false;
       await replaceServerToolsInTransaction(transaction, {
@@ -378,7 +372,7 @@ export class LocalMcpServerStore {
     readonly now?: Date;
     readonly serverId: IntegrationServerId;
   }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withPersonalTransaction(this.#database, async (transaction) => {
       if (!(await lockedApproved(transaction, input.serverId, input.launchDigest))) return;
       await setStatus(
         transaction,

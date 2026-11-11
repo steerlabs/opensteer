@@ -125,7 +125,7 @@ integration("Durable tab icons", () => {
         targetedStreaming: true,
         navigation: true,
         navigationAttribution: true,
-        workspaceTabs: true,
+        personalTabs: true,
       },
     );
     cleanups.push(() => runtime.close());
@@ -687,7 +687,7 @@ integration("Durable tab icons", () => {
         idempotencyKey: "icon-browser",
         name: "Icon browser",
       }),
-      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+      { agentReady: true, targetedStreaming: true, personalTabs: true },
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
@@ -706,7 +706,7 @@ integration("Durable tab icons", () => {
     const sessionId = opened.session.id;
     let db = host.store.database;
     const row = (id: string) =>
-      db.selectFrom("workspaceTabs").selectAll().where("id", "=", id).executeTakeFirst();
+      db.selectFrom("personalTabs").selectAll().where("id", "=", id).executeTakeFirst();
     const revision = async () =>
       (
         await db
@@ -922,10 +922,10 @@ integration("Durable tab icons", () => {
     const closedTab = await testRpcData(
       host.origin,
       "commands.dispatch",
-      { type: "workspace.tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
+      { type: "tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
       { headers: host.ownerHeaders },
     );
-    expect(closedTab.type).toBe("workspace.tab.close");
+    expect(closedTab.type).toBe("tab.close");
     const revoked = await fetchIcon(host.ownerHeaders);
     const revokedBody = await revoked.text();
     expect(revokedBody).not.toContain("data:image");

@@ -31,7 +31,7 @@ import { BrowserTabGroupStore } from "./browser-tab-group-store.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { jsonValue } from "./store-primitives.js";
 import { OpensteerStore } from "./store.js";
-import { WorkspaceTabStore } from "./workspace-tab-store.js";
+import { PersonalTabStore } from "./personal-tab-store.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -79,7 +79,7 @@ integration.sequential("durable workspace tabs", () => {
       return { database, close: () => database.destroy() };
     });
     const store = new OpensteerStore(database);
-    const tabs = new WorkspaceTabStore(database);
+    const tabs = new PersonalTabStore(database);
     async function fixture() {
       const ownerId = await store.createUser("Tab owner");
       const strangerId = await store.createUser("Stranger");
@@ -204,7 +204,7 @@ integration.sequential("durable workspace tabs", () => {
           .where("id", "=", f.groupId)
           .execute();
         await transaction
-          .selectFrom("workspaceTabs")
+          .selectFrom("personalTabs")
           .select("id")
           .where("id", "in", [a, b])
           .orderBy("id")
@@ -212,7 +212,7 @@ integration.sequential("durable workspace tabs", () => {
           .execute();
         for (const id of [b, a])
           await transaction
-            .updateTable("workspaceTabs")
+            .updateTable("personalTabs")
             .set({ closedAt: new Date(Date.now() - browserTabOpenReplayWindowMs - 1000) })
             .where("id", "=", id)
             .execute();
@@ -283,7 +283,7 @@ integration.sequential("durable workspace tabs", () => {
         await barrier.reached;
         deleting =
           path === "prune"
-            ? new WorkspaceTabStore(deletingDatabase).prune()
+            ? new PersonalTabStore(deletingDatabase).prune()
             : new OpensteerStore(deletingDatabase).markWorkspaceDeleted({
                 workspaceId: f.session.workspaceId,
               });
@@ -329,7 +329,7 @@ integration.sequential("durable workspace tabs", () => {
       }
       expect(outcomes.map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
       expect(barrier.conflicts).toEqual([]);
-      expect(await database.selectFrom("workspaceTabs").select("id").execute()).toEqual([]);
+      expect(await database.selectFrom("personalTabs").select("id").execute()).toEqual([]);
       expect(await database.selectFrom("browserTabGroupMembers").selectAll().execute()).toEqual([]);
       expect((await new BrowserTabGroupStore(database).layout(f.ownerId)).groups).toEqual([]);
     },
@@ -367,7 +367,7 @@ integration.sequential("durable workspace tabs", () => {
     await tabs.recordChanges(f.groupId, [], [extra[0]!.id]);
     const statements: Array<{ sql: string; rows: number; writes: bigint }> = [];
     const queries = new Map<object, string>();
-    const measured = new WorkspaceTabStore(
+    const measured = new PersonalTabStore(
       database.withPlugin({
         transformQuery({ node, queryId }) {
           queries.set(queryId, new PostgresQueryCompiler().compileQuery(node, queryId).sql);
@@ -504,7 +504,7 @@ integration.sequential("durable workspace tabs", () => {
       )
       .execute();
     await database
-      .insertInto("workspaceTabs")
+      .insertInto("personalTabs")
       .values(
         newer.map((group) => ({
           ...f.second,
@@ -581,7 +581,7 @@ integration.sequential("durable workspace tabs", () => {
       )
       .execute();
     await database
-      .insertInto("workspaceTabs")
+      .insertInto("personalTabs")
       .values(
         dormant.map((group) => ({
           ...f.first,
@@ -632,7 +632,7 @@ integration.sequential("durable workspace tabs", () => {
     const replacement = createBrowserSessionId();
     await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
     const profile = await store.createBrowserProfile({
-      idempotencyKey: "workspace-tab-store.integration.test-browser-profile-1",
+      idempotencyKey: "personal-tab-store.integration.test-browser-profile-1",
       name: "Saved Guest",
       ownerId: f.ownerId,
     });
@@ -831,7 +831,7 @@ integration.sequential("durable workspace tabs", () => {
     await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }, f.second], []);
     await tabs.close(f.ownerId, f.first.id);
     await database
-      .updateTable("workspaceTabs")
+      .updateTable("personalTabs")
       .set({ closedAt: new Date(Date.now() - 1000) })
       .where("id", "=", f.first.id)
       .execute();
@@ -859,7 +859,7 @@ integration.sequential("durable workspace tabs", () => {
     cascadeEvidence.push({
       reopened: [second, first],
       source: await database
-        .selectFrom("workspaceTabs")
+        .selectFrom("personalTabs")
         .selectAll()
         .where("closedAt", "is not", null)
         .execute(),
@@ -885,7 +885,7 @@ integration.sequential("durable workspace tabs", () => {
       originals.map(() =>
         tabs.reopen(f.ownerId, async (source, transaction) => {
           expect(
-            await new WorkspaceTabStore(transaction).session(f.ownerId, source.groupId),
+            await new PersonalTabStore(transaction).session(f.ownerId, source.groupId),
           ).not.toBeNull();
         }),
       ),
@@ -935,14 +935,14 @@ integration.sequential("durable workspace tabs", () => {
       code: "not_found",
     });
     await database
-      .updateTable("workspaceTabs")
+      .updateTable("personalTabs")
       .set({ closedAt: new Date(Date.now() - browserTabOpenReplayWindowMs - 1000) })
       .where("id", "=", third.id)
       .execute();
     await tabs.prune();
     expect(
       await database
-        .selectFrom("workspaceTabs")
+        .selectFrom("personalTabs")
         .select("id")
         .where("id", "=", third.id)
         .executeTakeFirst(),
@@ -984,7 +984,7 @@ integration.sequential("durable workspace tabs", () => {
       const id = offset === 0 ? f.groupId : createBrowserSessionId();
       if (offset) await store.createBrowserSession({ ...f.session, id });
       await database
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values(
           descriptors.slice(offset, offset + 64).map((tab, order) => ({
             ...tab,

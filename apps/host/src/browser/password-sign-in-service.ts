@@ -9,7 +9,7 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
+  type DeploymentId,
 } from "@opensteer/core";
 import type { RequestStore } from "@opensteer/database";
 import {
@@ -66,7 +66,7 @@ interface Call {
   readonly reason: string;
   readonly runId: RunId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
+  readonly deploymentId: DeploymentId;
 }
 type Operation = OperationShared &
   (
@@ -108,7 +108,7 @@ export type PasswordSignInContinuationState =
 
 export interface PasswordLoginLease {
   readonly loginRef: string;
-  readonly workspaceId: WorkspaceId;
+  readonly deploymentId: DeploymentId;
   readonly site: string;
   readonly account: string;
   readonly publicCard?: { brand: string; lastFour: string };
@@ -127,7 +127,7 @@ export class PasswordSignInService {
   readonly #onPendingBrowserPins: PasswordSignInServiceOptions["onPendingBrowserPins"];
   readonly #onError: (error: unknown) => void;
   readonly #onRequestResolved: () => void;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #leases = new Map<string, PasswordLoginLease>();
   readonly #operations = new Map<string, Operation>();
   readonly #calls = new Map<string, Operation>();
@@ -162,20 +162,13 @@ export class PasswordSignInService {
             .slice(0, 200)
             .replace(/\p{Cs}/gu, "")
             .trim() || "An agent",
-        workspaceName:
-          description.workspaceName
-            .replace(/[\p{Cc}\p{Cf}]/gu, " ")
-            .trim()
-            .slice(0, 120)
-            .replace(/\p{Cs}/gu, "")
-            .trim() || "Workspace",
       };
     };
     this.#now = options.now ?? Date.now;
     this.#onPendingBrowserPins = options.onPendingBrowserPins;
     this.#onError = options.onError ?? (() => undefined);
     this.#onRequestResolved = options.onRequestResolved;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#requests = options.requests;
     this.#unsubscribe = this.#authority.onPasswordSignIn((runnerId, event) => {
       void this.#onAuthorityEvent(runnerId, event).catch(this.#onError);
@@ -201,7 +194,7 @@ export class PasswordSignInService {
             response: {
               outcome:
                 request.payload.kind === "browser.password-sign-in" &&
-                request.payload.scope === "workspace"
+                request.payload.scope === "personal"
                   ? "interrupted"
                   : "session-closed",
             },
@@ -272,13 +265,13 @@ export class PasswordSignInService {
 
   async seal(
     input: LoginText & {
-      readonly workspaceId: WorkspaceId;
+      readonly deploymentId: DeploymentId;
       readonly receiver: LoginReceiverKey;
       readonly binding: LoginEnvelopeBinding;
     },
   ): Promise<LoginSealResult> {
     const lease = this.#liveLease(input.loginRef);
-    if (!lease || lease.workspaceId !== input.workspaceId || input.binding.field !== input.field)
+    if (!lease || lease.deploymentId !== input.deploymentId || input.binding.field !== input.field)
       return { type: "login.seal.result", status: "denied" };
     const operation = this.#operations.get(lease.operationId);
     if (!operation || input.binding.expiresAt <= this.#now())
@@ -344,9 +337,9 @@ export class PasswordSignInService {
     };
   }
 
-  validateLease(input: { loginRef: string; workspaceId: WorkspaceId }): boolean {
+  validateLease(input: { loginRef: string; deploymentId: DeploymentId }): boolean {
     const lease = this.#liveLease(input.loginRef);
-    return lease !== null && lease.workspaceId === input.workspaceId;
+    return lease !== null && lease.deploymentId === input.deploymentId;
   }
 
   #liveLease(loginRef: string): PasswordLoginLease | null {
@@ -375,13 +368,13 @@ export class PasswordSignInService {
   }
 
   #ready(
-    workspaceId: WorkspaceId,
+    deploymentId: DeploymentId,
     site: string,
     credential?: "card",
   ): AgentBrowserSignInResult | null {
     for (const lease of this.#leases.values()) {
       if (
-        lease.workspaceId === workspaceId &&
+        lease.deploymentId === deploymentId &&
         lease.site === site &&
         Boolean(lease.publicCard) === (credential === "card") &&
         this.#liveLease(lease.loginRef)
@@ -393,7 +386,7 @@ export class PasswordSignInService {
 
   /**
    * A call answered from a live lease joins that lease's operation, so reusing
-   * its call ID for another Workspace or site is refused like any joined call.
+   * its call ID for another deployment or site is refused like any joined call.
    */
   #bindToLease(result: AgentBrowserSignInResult, call: Call): void {
     if (result.status !== "ready") return;
@@ -413,7 +406,7 @@ export class PasswordSignInService {
   join(input: Call & { readonly site: string }): Promise<AgentBrowserSignInResult> | null {
     const own = this.#calls.get(callKey(input));
     if (own) this.#assertScope(own, input);
-    const ready = this.#ready(input.workspaceId, input.site, input.credential);
+    const ready = this.#ready(input.deploymentId, input.site, input.credential);
     if (ready) {
       this.#bindToLease(ready, input);
       return Promise.resolve(ready);
@@ -421,10 +414,10 @@ export class PasswordSignInService {
     if (own?.settlement?.status === "fulfilled" && own.settlement.response.outcome === "authorized")
       return null;
     const operation =
-      own ?? this.#bySite.get(siteKey(input.workspaceId, input.site, input.credential));
+      own ?? this.#bySite.get(siteKey(input.deploymentId, input.site, input.credential));
     if (!operation) return null;
     this.#assertScope(operation, input);
-    if (operation.starter.workspaceId !== input.workspaceId)
+    if (operation.starter.deploymentId !== input.deploymentId)
       return Promise.resolve(unavailable(input.site, "busy"));
     const recorded = operation.answers.get(callKey(input));
     if (recorded) return Promise.resolve(recorded);
@@ -440,12 +433,12 @@ export class PasswordSignInService {
       readonly cardRunnerId?: RunnerId;
     },
   ): Promise<AgentBrowserSignInResult> {
-    const key = siteKey(input.workspaceId, input.site, input.credential);
+    const key = siteKey(input.deploymentId, input.site, input.credential);
     const prior = this.#admissions.get(key) ?? Promise.resolve();
     const admitted = prior.then(async (): Promise<Operation | AgentBrowserSignInResult> => {
       const own = this.#calls.get(callKey(input));
       if (own) this.#assertScope(own, input);
-      const ready = this.#ready(input.workspaceId, input.site, input.credential);
+      const ready = this.#ready(input.deploymentId, input.site, input.credential);
       if (ready) {
         this.#bindToLease(ready, input);
         return ready;
@@ -456,7 +449,7 @@ export class PasswordSignInService {
           : own) ?? this.#bySite.get(key);
       if (existing) {
         this.#assertScope(existing, input);
-        if (existing.starter.workspaceId !== input.workspaceId)
+        if (existing.starter.deploymentId !== input.deploymentId)
           return unavailable(input.site, "busy");
         this.#recordCall(existing, input);
         return existing;
@@ -474,8 +467,13 @@ export class PasswordSignInService {
       const description = await this.#describe({
         ownerId: input.ownerId,
         threadId: input.threadId,
-        workspaceId: input.workspaceId,
+        deploymentId: input.deploymentId,
       });
+      if (description.deploymentId !== input.deploymentId)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Sign-in authority belongs to another personal deployment.",
+        });
       const requester = PasswordSignInRequesterSchema.parse({
         ...description,
         reason: input.reason,
@@ -520,7 +518,7 @@ export class PasswordSignInService {
           operationId: operation.id,
           site: input.site,
           requester,
-          workspaceId: input.workspaceId,
+          deploymentId: input.deploymentId,
         })
         .then(async (result) => {
           if (result.type !== "login.authorize.started")
@@ -551,7 +549,7 @@ export class PasswordSignInService {
     if (!(await this.#requests.hasDurablePasswordSignInRequestAuthority(input)))
       throw new OpensteerError({
         code: "forbidden",
-        message: "This sign-in no longer has Workspace authority.",
+        message: "This sign-in no longer has personal authority.",
       });
     const operation = this.#operations.get(
       request.payload.kind === "browser.password-sign-in" ? request.payload.operationId : "",
@@ -638,7 +636,7 @@ export class PasswordSignInService {
       )
         throw new OpensteerError({
           code: "forbidden",
-          message: "This sign-in no longer has Workspace authority.",
+          message: "This sign-in no longer has personal authority.",
         });
       await input.revalidate();
       operation.settlementSessionId = input.sessionId;
@@ -654,7 +652,7 @@ export class PasswordSignInService {
               loginId: input.decision.loginId,
               revision: input.decision.revision,
               remember: input.decision.remember,
-              permissionVersion: 5 as const,
+              permissionVersion: 6 as const,
             };
       const result = await this.#authority.sendPasswordSignIn(operation.target.runnerId, {
         type: "login.approve",
@@ -793,7 +791,7 @@ export class PasswordSignInService {
       operation.settlement.response.outcome === "authorized"
     )
       return (
-        this.#ready(call.workspaceId, operation.site, call.credential) ??
+        this.#ready(call.deploymentId, operation.site, call.credential) ??
         unavailable(operation.site, "expired")
       );
     return operation.result ?? directResult(operation.site, operation.settlement ?? interrupted());
@@ -802,7 +800,7 @@ export class PasswordSignInService {
   async #openRequest(operation: Operation): Promise<void> {
     if (operation.settlement) return;
     try {
-      // The store holds live Run and Workspace fences through the insert.
+      // The store holds live Run and deployment fences through the insert.
       const created = await this.#requests.openPasswordSignIn({
         ...requestInput(operation, operation.starter),
         joinedCallIds: [...operation.calls.values()]
@@ -810,7 +808,7 @@ export class PasswordSignInService {
           .map((call) => call.callId),
       });
       operation.requestId = created.request.id;
-      for (const event of created.events) this.#onWorkspaceEvent(event);
+      for (const event of created.events) this.#onDeploymentEvent(event);
       if (operation.settlement) await this.#finish(operation, operation.settlement);
       else if (created.request.status !== "pending")
         await this.#cancel(operation, "authority-lost");
@@ -927,7 +925,7 @@ export class PasswordSignInService {
           ? { publicCard: operation.publicCard }
           : {}),
         expiresAt,
-        workspaceId: operation.starter.workspaceId,
+        deploymentId: operation.starter.deploymentId,
         site: operation.site,
         operationId: operation.id,
       };
@@ -1037,7 +1035,7 @@ export class PasswordSignInService {
     const mine = operation.settlement === null || operation.settlement === settlement;
     operation.settlement ??= settlement;
     const key = siteKey(
-      operation.starter.workspaceId,
+      operation.starter.deploymentId,
       operation.site,
       operation.starter.credential,
     );
@@ -1194,7 +1192,7 @@ export class PasswordSignInService {
       reason: call.reason,
       runId: call.runId,
       threadId: call.threadId,
-      workspaceId: call.workspaceId,
+      deploymentId: call.deploymentId,
     };
     operation.calls.set(callKey(call), identity);
     this.#calls.set(callKey(call), operation);
@@ -1202,19 +1200,19 @@ export class PasswordSignInService {
   }
   #assertScope(operation: Operation, input: Call & { readonly site: string }): void {
     if (
-      operation.starter.workspaceId !== input.workspaceId ||
+      operation.starter.deploymentId !== input.deploymentId ||
       operation.site !== input.site ||
       operation.starter.credential !== input.credential ||
       operation.starter.ownerId !== input.ownerId
     ) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Sign-in call identity belongs to another Workspace or site.",
+        message: "Sign-in call identity belongs to another deployment or site.",
       });
     }
   }
   #announce(result: { readonly events: readonly AgentEvent[] }): void {
-    for (const event of result.events) this.#onWorkspaceEvent(event);
+    for (const event of result.events) this.#onDeploymentEvent(event);
     this.#onRequestResolved();
   }
 }
@@ -1232,12 +1230,11 @@ export interface PasswordSignInServiceOptions {
   readonly describe: (input: {
     readonly ownerId: UserId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
   }) => Promise<{
     readonly deploymentId: string;
     readonly deploymentName: string;
     readonly threadTitle: string;
-    readonly workspaceName: string;
   }>;
   readonly now?: () => number;
   readonly onPendingBrowserPins?: (
@@ -1246,12 +1243,12 @@ export interface PasswordSignInServiceOptions {
   ) => void;
   readonly onError?: (error: unknown) => void;
   readonly onRequestResolved: () => void;
-  readonly onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly onDeploymentEvent: (event: AgentEvent) => void;
   readonly requests: PasswordSignInRequests;
 }
 
-function siteKey(workspaceId: WorkspaceId, site: string, credential?: "card"): string {
-  return `${credential ?? "login"}\0${workspaceId}\0${site}`;
+function siteKey(deploymentId: DeploymentId, site: string, credential?: "card"): string {
+  return `${credential ?? "login"}\0${deploymentId}\0${site}`;
 }
 function callKey(call: Pick<Call, "runId" | "callId">): string {
   return `${call.runId}\0${call.callId}`;
@@ -1260,9 +1257,7 @@ function authority(call: Call) {
   return {
     originatingRunId: call.runId,
     originatingThreadId: call.threadId,
-    originatingWorkspaceId: call.workspaceId,
     requestedBy: call.ownerId,
-    targetWorkspaceId: call.workspaceId,
   };
 }
 function requestInput(
@@ -1285,8 +1280,8 @@ function requestInput(
       operationId: operation.id,
       reason: operation.starter.reason,
       runnerId: computer.runnerId,
-      scope: "workspace",
-      permissionVersion: 5,
+      scope: "personal",
+      permissionVersion: 6,
       site: operation.site,
     },
     presentation: {

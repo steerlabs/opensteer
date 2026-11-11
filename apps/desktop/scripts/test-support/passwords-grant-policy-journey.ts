@@ -18,20 +18,18 @@ const Snapshot = z.object({
   grants: z.array(
     z.object({
       deploymentId: z.string(),
-      workspaceId: z.string(),
       site: z.string(),
       permissionVersion: z.number(),
       revision: z.number(),
       loginId: z.string(),
       deploymentName: z.string(),
-      workspaceName: z.string(),
     }),
   ),
   presenceReasons: z.array(z.string()),
   headSeq: z.number(),
 });
 
-/** Real encrypted-vault consent policy and authenticated production v4/v5 IPC. */
+/** Real encrypted-vault consent policy and authenticated production protocol 10 IPC. */
 export async function runPasswordsGrantPolicyJourney(
   evidence: PasswordsJourneyEvidence,
   fields: { username: string; password: string },
@@ -42,10 +40,8 @@ export async function runPasswordsGrantPolicyJourney(
   const observations: Record<string, unknown> = {};
   const site = "https://passwords-fixture.test";
   const scope = {
-    deploymentId: "personal",
+    deploymentId: createId("deployment"),
     deploymentName: "Acceptance",
-    workspaceId: createId("workspace"),
-    workspaceName: "Synthetic workspace",
     threadTitle: "Consent policy",
     reason: "Sign in to the fixture app",
     site,
@@ -86,78 +82,75 @@ export async function runPasswordsGrantPolicyJourney(
       return Snapshot.parse(JSON.parse(await waitForFile(filename)));
     };
     const bundle = path.resolve("native/passwords/dist/Opensteer Passwords.app");
-    const client = (version: 4 | 5) => {
-      const value = new PasswordsBrokerClient({
-        appVersion: "1",
-        development: true,
-        protocolVersion: version,
-        brokerAppPath: bundle,
-        verifierAppPath: bundle,
-        socketPath: path.join(root, "ipc.sock"),
-        lockPath: path.join(root, `client-${version}.lock`),
-      });
-      clients.push(value);
-      return value;
-    };
-    const legacy = client(4);
-    const id = randomUUID();
-    const legacyDecision = await legacy.request({
-      ...scope,
-      transactionId: id,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      runtimeId: "desktop-policy",
-      sessionId: "legacy-policy",
+    const current = new PasswordsBrokerClient({
+      appVersion: "1",
+      development: true,
+      protocolVersion: 10,
+      brokerAppPath: bundle,
+      verifierAppPath: bundle,
+      socketPath: path.join(root, "ipc.sock"),
+      lockPath: path.join(root, "client.lock"),
     });
-    assert.equal(legacyDecision.decision, "approve");
-    if (legacyDecision.decision !== "approve") throw new Error("No legacy approval card");
-    const account = legacyDecision.accounts[0];
+    clients.push(current);
+    const request = (transactionId: string, deploymentId = scope.deploymentId) =>
+      current.request({
+        ...scope,
+        deploymentId,
+        transactionId,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        protocolVersion: 10,
+        permissionVersion: 6,
+      });
+    const id = randomUUID();
+    const first = await request(id);
+    if (first.decision !== "approve") throw new Error("No personal approval card");
+    const account = first.accounts[0];
     assert(account);
     assert.equal(
       (
-        await legacy.approve({
+        await current.approve({
           transactionId: id,
           loginId: account.id,
           revision: account.revision,
           remember: true,
-          permissionVersion: 5 as const,
+          permissionVersion: 6,
         })
       ).decision,
       "authorized",
     );
-    await legacy.cancel(id);
+    assert.equal(
+      (await current.release({ transactionId: id, field: "password", kind: "app" })).released,
+      false,
+      "commit is required before app release",
+    );
+    assert.equal((await current.commit({ transactionId: id })).committed, true);
+    const released = await current.release({ transactionId: id, field: "password", kind: "app" });
+    assert.equal(released.released && released.value === fields.password, true);
+    await current.cancel(id);
     const before = await snapshot();
     observations.before = before;
     assert.equal(before.grants.length, 1);
-    assert.equal(before.grants[0]!.permissionVersion, 4);
-    const modern = client(5);
-    const request = (transactionId: string) =>
-      modern.request({
-        ...scope,
-        transactionId,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        protocolVersion: 6,
-        permissionVersion: 5,
-      });
-    const modernId = randomUUID();
-    const modernDecision = await request(modernId);
-    assert.equal(
-      modernDecision.decision,
-      "approve",
-      "a stored v4 grant never authorizes an app transaction",
-    );
-    if (modernDecision.decision !== "approve") throw new Error("No expanded consent card");
+    assert.equal(before.grants[0]!.permissionVersion, 6);
+    assert.equal(before.grants[0]!.deploymentId, scope.deploymentId);
+    assert.equal(before.grants[0]!.revision, account.revision);
+    const otherDeploymentId = createId("deployment"),
+      onceId = randomUUID();
+    const once = await request(onceId, otherDeploymentId);
+    assert.equal(once.decision, "approve", "a different personal Deployment needs consent");
     assert.equal(
       (
-        await modern.approve({
-          transactionId: modernId,
+        await current.approve({
+          transactionId: onceId,
           loginId: account.id,
           revision: account.revision,
           remember: false,
-          permissionVersion: 5 as const,
+          permissionVersion: 6,
         })
       ).decision,
       "authorized",
     );
+    await current.commit({ transactionId: onceId });
+    await current.cancel(onceId);
     const after = await snapshot();
     observations.afterOneTimeApproval = after;
     assert.deepEqual(
@@ -166,28 +159,12 @@ export async function runPasswordsGrantPolicyJourney(
       "Only this time leaves every persisted grant field unchanged",
     );
     assert.equal(after.headSeq, before.headSeq);
-    assert.equal(after.presenceReasons.length, before.presenceReasons.length + 1);
-    assert.match(after.presenceReasons.at(-1)!, /websites and in apps/u);
-    assert.match(after.presenceReasons.at(-1)!, /tricked agent/u);
-    const released = await modern.release({
-      transactionId: modernId,
-      field: "password",
-      kind: "app",
-    });
-    assert.equal(
-      released.released && released.value === fields.password,
-      true,
-      "one-time v5 approval really releases the selected saved password to an app",
-    );
-    observations.appReleaseMatches = true;
-    await modern.cancel(modernId);
     const againId = randomUUID();
-    assert.equal(
-      (await request(againId)).decision,
-      "approve",
-      "one-time consent did not upgrade the remembered v4 grant",
-    );
-    await modern.cancel(againId);
+    assert.equal((await request(againId, otherDeploymentId)).decision, "approve");
+    await current.cancel(againId);
+    const rememberedId = randomUUID();
+    assert.equal((await request(rememberedId)).decision, "authorized");
+    await current.cancel(rememberedId);
     observations.afterReRequest = await snapshot();
   } finally {
     for (const client of clients) await client.close();

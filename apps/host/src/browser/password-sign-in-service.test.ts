@@ -6,7 +6,7 @@ import {
   RunIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
+  DeploymentIdSchema,
   type Request,
 } from "@opensteer/core";
 import {
@@ -62,7 +62,7 @@ describe("Passwords wait authority", () => {
           loginId: "00000000-0000-4000-8000-000000000001",
           revision: 1,
           remember: false,
-          permissionVersion: 5,
+          permissionVersion: 6,
         },
       });
       await vi.advanceTimersByTimeAsync(1);
@@ -102,11 +102,11 @@ function harness() {
     reason: "Read the page",
     runId: RunIdSchema.parse("run_00000000-0000-4000-8000-000000000001"),
     threadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
-    workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
+    deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001"),
   };
   const target = {
     sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001"),
-    workspaceId: call.workspaceId,
+    deploymentId: call.deploymentId,
     computer: {
       name: "Test Mac",
       runnerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-000000000001"),
@@ -255,13 +255,12 @@ function harness() {
     declineAnswerMs: 50,
     reconcileIntervalMs: 10_000,
     describe: async () => ({
-      deploymentId: "deployment",
+      deploymentId: call.deploymentId,
       deploymentName: "Test",
       threadTitle: "Test",
-      workspaceName: "Test",
     }),
     onRequestResolved: resolved,
-    onWorkspaceEvent: () => undefined,
+    onDeploymentEvent: () => undefined,
   });
   services.push(service);
   return {
@@ -274,7 +273,7 @@ function harness() {
     requests,
     resolved,
     request: () => request!,
-    revokeWorkspace: () => {
+    revokedeployment: () => {
       workspaceActive = false;
     },
     completeRun: () => {
@@ -300,8 +299,8 @@ function harness() {
   };
 }
 
-describe("Workspace login leases", () => {
-  it("reserves a ref without a browser and reuses it only in its Workspace", async () => {
+describe("deployment login leases", () => {
+  it("reserves a ref without a browser and reuses it only in its deployment", async () => {
     vi.useFakeTimers();
     const h = harness();
     const started = h.start();
@@ -321,17 +320,17 @@ describe("Workspace login leases", () => {
       loginRef: h.loginRef(),
     });
     expect(
-      h.service.validateLease({ loginRef: h.loginRef(), workspaceId: h.call.workspaceId }),
+      h.service.validateLease({ loginRef: h.loginRef(), deploymentId: h.call.deploymentId }),
     ).toBe(true);
     expect(
       h.service.validateLease({
         loginRef: h.loginRef(),
-        workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002"),
+        deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000002"),
       }),
     ).toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(
-      h.service.validateLease({ loginRef: h.loginRef(), workspaceId: h.call.workspaceId }),
+      h.service.validateLease({ loginRef: h.loginRef(), deploymentId: h.call.deploymentId }),
     ).toBe(false);
   });
   it("never republishes an automatic lease after its authority ends", async () => {
@@ -353,7 +352,7 @@ describe("Workspace login leases", () => {
     h.end();
     expect(h.service.leaseForOperation(h.operationId())).toBeNull();
     expect(
-      h.service.validateLease({ loginRef: h.loginRef(), workspaceId: h.call.workspaceId }),
+      h.service.validateLease({ loginRef: h.loginRef(), deploymentId: h.call.deploymentId }),
     ).toBe(false);
   });
   it("never accepts an authority substituting another reference", async () => {
@@ -373,7 +372,7 @@ describe("Workspace login leases", () => {
     expect(await started).toMatchObject({ status: "unavailable" });
     expect(h.service.leaseForOperation(h.operationId())).toBeNull();
   });
-  it("opens a Workspace-scoped v5 Request on approval", async () => {
+  it("opens a personal v6 Request on approval", async () => {
     vi.useFakeTimers();
     const h = harness();
     const started = h.start();
@@ -381,8 +380,8 @@ describe("Workspace login leases", () => {
     h.event({ kind: "needs", need: "approval" });
     await started;
     expect(h.requests.openPasswordSignIn.mock.calls[0]?.[0].payload).toMatchObject({
-      scope: "workspace",
-      permissionVersion: 5,
+      scope: "personal",
+      permissionVersion: 6,
     });
     expect(h.requests.openPasswordSignIn.mock.calls[0]?.[0].payload).not.toHaveProperty(
       "sessionId",
@@ -405,7 +404,7 @@ describe("human Passwords settlement", () => {
     loginId: "00000000-0000-4000-8000-000000000001",
     revision: 3,
     remember: true,
-    permissionVersion: 5,
+    permissionVersion: 6,
   } as const;
   function answer(h: Awaited<ReturnType<typeof pending>>, revalidate = async () => {}) {
     return h.service.respond({
@@ -450,18 +449,18 @@ describe("human Passwords settlement", () => {
     expect(h.service.leaseForOperation(h.operationId())?.loginRef).toBe(h.loginRef());
     expect(h.requests.hasActiveRunPasswordSignInAuthority).toHaveBeenCalledTimes(liveChecks);
   });
-  it("refuses chooser reads and approval after the completed Run loses Workspace authority", async () => {
+  it("refuses chooser reads and approval after the completed Run loses deployment authority", async () => {
     const h = await pending();
     h.completeRun();
     await expect(
       h.service.get({ ownerId: h.call.ownerId, requestId: h.request().id }),
     ).resolves.toEqual({ stage: "gone" });
     const commandsBeforeRevocation = h.hub.sendPasswordSignIn.mock.calls.length;
-    h.revokeWorkspace();
+    h.revokedeployment();
     await expect(
       h.service.get({ ownerId: h.call.ownerId, requestId: h.request().id }),
-    ).rejects.toThrow("This sign-in no longer has Workspace authority.");
-    await expect(answer(h)).rejects.toThrow("This sign-in no longer has Workspace authority.");
+    ).rejects.toThrow("This sign-in no longer has personal authority.");
+    await expect(answer(h)).rejects.toThrow("This sign-in no longer has personal authority.");
     expect(
       h.hub.sendPasswordSignIn.mock.calls
         .slice(commandsBeforeRevocation)
@@ -841,7 +840,7 @@ describe("human Passwords settlement", () => {
   });
 });
 
-describe("card Workspace lifecycle", () => {
+describe("card personal lifecycle", () => {
   it("settles a fresh Request before committing and publishing the reusable card lease", async () => {
     vi.useFakeTimers();
     const h = harness();
@@ -856,7 +855,7 @@ describe("card Workspace lifecycle", () => {
     h.event({ kind: "needs", need: "approval" });
     await vi.advanceTimersByTimeAsync(1);
     expect(await first).toMatchObject({ status: "pending" });
-    expect(h.request().payload).toMatchObject({ credential: "card", permissionVersion: 5 });
+    expect(h.request().payload).toMatchObject({ credential: "card", permissionVersion: 6 });
     expect(h.service.leaseForOperation(h.operationId())).toBeNull();
     h.hub.sendPasswordSignIn.mockImplementationOnce(async () => ({
       type: "login.approve.result",
@@ -873,7 +872,7 @@ describe("card Workspace lifecycle", () => {
           loginId: "00000000-0000-4000-8000-000000000001",
           revision: 1,
           remember: false,
-          permissionVersion: 5,
+          permissionVersion: 6,
         },
       }),
     ).rejects.toThrow("requires card approval");
@@ -922,7 +921,7 @@ describe("card Workspace lifecycle", () => {
       lastFour: "4242",
     });
     expect(
-      h.service.validateLease({ workspaceId: createId("workspace"), loginRef: h.loginRef() }),
+      h.service.validateLease({ deploymentId: createId("deployment"), loginRef: h.loginRef() }),
     ).toBe(false);
     expect(JSON.stringify(h.request())).not.toContain(h.loginRef());
     h.end();
@@ -931,7 +930,7 @@ describe("card Workspace lifecycle", () => {
       loginRef: undefined,
     });
     expect(
-      h.service.validateLease({ workspaceId: h.call.workspaceId, loginRef: h.loginRef() }),
+      h.service.validateLease({ deploymentId: h.call.deploymentId, loginRef: h.loginRef() }),
     ).toBe(false);
   });
   it("refuses capability and different-computer mismatches before sending a card command", async () => {

@@ -98,11 +98,7 @@ describe("BrowserController", () => {
   });
 
   it("lists suspended tabs within a byte budget, resumes explicitly, and closes by their old target", async () => {
-    const controller = createController(
-      undefined,
-      {},
-      validClaims({ workspaceTabRestoreVersion: 1 }),
-    );
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
     const id = ledger.snapshot()[0]!.id;
     const targetId = await page.targetId();
@@ -146,11 +142,7 @@ describe("BrowserController", () => {
     }
   });
   it("refuses an existing attachment as suspended, invalidates it after wake, and forgets closed tabs", async () => {
-    const controller = createController(
-      undefined,
-      {},
-      validClaims({ workspaceTabRestoreVersion: 1 }),
-    );
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
     const id = ledger.snapshot()[0]!.id;
     const command = async (
@@ -323,11 +315,7 @@ describe("BrowserController", () => {
     }
   });
   it("keeps sleeping siblings when the last live tab closes", async () => {
-    const controller = createController(
-      undefined,
-      {},
-      validClaims({ workspaceTabRestoreVersion: 1 }),
-    );
+    const controller = createController(undefined, {}, validClaims({ tabRestoreVersion: 1 }));
     await controller.start();
     const sleeping = ledger.snapshot()[0]!.id;
     try {
@@ -1498,7 +1486,7 @@ describe("BrowserController", () => {
   it("restores a durable URL beyond the public open limit only with a negotiated stable ID", async () => {
     const controller = new BrowserController({
       cdpRouter,
-      claims: validClaims({ workspaceTabRestoreVersion: 1 }),
+      claims: validClaims({ tabRestoreVersion: 1 }),
       files,
       ledger,
       replaceSiteCookies,
@@ -1545,7 +1533,7 @@ describe("BrowserController", () => {
   it("disposes a durable exact ID despite inventory churn and makes repeated disposal harmless", async () => {
     const controller = new BrowserController({
       cdpRouter,
-      claims: validClaims({ workspaceTabRestoreVersion: 1 }),
+      claims: validClaims({ tabRestoreVersion: 1 }),
       files,
       ledger,
       replaceSiteCookies,

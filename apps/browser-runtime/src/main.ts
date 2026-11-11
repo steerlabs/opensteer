@@ -210,7 +210,7 @@ async function startBrowserRelay(options: {
           targetControl: 1,
           navigationVersion: 1,
           navigationAttributionVersion: 1,
-          workspaceTabRestoreVersion: 1,
+          tabRestoreVersion: 1,
           surfaceState: 1,
           popupFollowVersion: 1,
           captureRegion: 1,

@@ -2398,7 +2398,7 @@ export class IntegrationService {
       });
     }
     throw new OpensteerError({
-      code: "workspace_unavailable",
+      code: "runner_offline",
       message: `The provider token refresh did not complete${reported}; this may be temporary — retry.`,
       retryable: true,
     });

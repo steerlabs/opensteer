@@ -31,7 +31,7 @@ import { hostApiVersion } from "@opensteer/deployment-authority";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol/browser";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { sql } from "kysely";
-import { WorkspaceTabStore } from "@opensteer/database";
+import { PersonalTabStore } from "@opensteer/database";
 import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -299,7 +299,7 @@ integration("Browser presence and conversation usage", () => {
         idempotencyKey: "keyed-browser",
         name: "Keyed browser",
       }),
-      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+      { agentReady: true, targetedStreaming: true, personalTabs: true },
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5000 });
@@ -515,7 +515,7 @@ integration("Browser presence and conversation usage", () => {
     cdp.close();
     await run.complete();
     await Promise.all([a.close(), b.close(), c.close()]);
-    const tabs = new WorkspaceTabStore(host.store.database);
+    const tabs = new PersonalTabStore(host.store.database);
     const dormant = Array.from({ length: 142 }, (_, index) => ({
       id: createBrowserSessionId(),
       index,
@@ -544,7 +544,7 @@ integration("Browser presence and conversation usage", () => {
         )
         .execute();
       await tx
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values(
           dormant.flatMap(({ id, index }) =>
             Array.from({ length: index < 80 ? 11 : 10 }, (_, order) => ({
@@ -565,7 +565,7 @@ integration("Browser presence and conversation usage", () => {
     });
     expect(await tabs.groupIds(host.ownerId)).toHaveLength(150);
     expect(await tabs.openTabs(await tabs.groupIds(host.ownerId))).toHaveLength(2000);
-    const reads = vi.spyOn(WorkspaceTabStore.prototype, "openTabs");
+    const reads = vi.spyOn(PersonalTabStore.prototype, "openTabs");
     const large = await host.runtime.browser.bootstrap(host.ownerId);
     expect(large.groups?.complete).toBe(false);
     expect(large.tabs?.at(-1)?.complete).toBe(false);
@@ -580,7 +580,7 @@ integration("Browser presence and conversation usage", () => {
       large: {
         after: keyedStreamBytes({ groups: large.groups, tabs: large.tabs }),
         additiveTotal: keyedStreamBytes(large),
-        legacyFields: ["sessions", "workspaceTabs"].filter((key) => key in large),
+        legacyFields: ["sessions", "personalTabs"].filter((key) => key in large),
         groupPrefix: keyedStreamBytes(large.groups),
         tabPrefix: keyedStreamBytes(large.tabs),
       },
@@ -656,7 +656,7 @@ integration("Browser presence and conversation usage", () => {
         idempotencyKey: "voice-browser",
         name: "Voice browser",
       }),
-      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+      { agentReady: true, targetedStreaming: true, personalTabs: true },
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true));
@@ -1098,7 +1098,7 @@ integration("Browser presence and conversation usage", () => {
         idempotencyKey: "catalog-browser",
         name: "Catalog browser",
       }),
-      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+      { agentReady: true, targetedStreaming: true, personalTabs: true },
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));

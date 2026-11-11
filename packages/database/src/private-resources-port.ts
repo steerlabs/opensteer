@@ -16,21 +16,26 @@ export interface PrivateResourceActor {
   readonly runId: RunId | null;
 }
 export interface PrivateIntegrationGrant {
-  readonly connectionId: string;
+  readonly connectionId: string | null;
+  readonly installationId: string;
+  readonly isDefault: boolean;
   readonly access: "read" | "read-write";
   readonly alias: string | null;
 }
 export interface PrivateBrowserProfile {
   readonly id: BrowserProfileId;
   readonly homeComputerId: RunnerId;
-  readonly storageBindingVersion: number;
+  readonly storageBindingVersion: number | null;
   readonly archived: boolean;
 }
 export interface PrivateResourceStorePort {
   assertOwner(actor: PrivateResourceActor): Promise<void>;
   integrationGrants(actor: PrivateResourceActor): Promise<readonly PrivateIntegrationGrant[]>;
   setIntegrationGrant(actor: PrivateResourceActor, grant: PrivateIntegrationGrant): Promise<void>;
-  revokeIntegrationGrant(actor: PrivateResourceActor, connectionId: string): Promise<void>;
+  revokeIntegrationGrant(
+    actor: PrivateResourceActor,
+    grant: Pick<PrivateIntegrationGrant, "installationId" | "connectionId">,
+  ): Promise<void>;
   browserProfiles(actor: PrivateResourceActor): Promise<readonly PrivateBrowserProfile[]>;
   assertBrowserProfile(
     actor: PrivateResourceActor,

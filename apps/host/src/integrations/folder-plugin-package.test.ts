@@ -1,21 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
-import type { WorkspaceFilesAdmission } from "@opensteer/database";
-import { withWorkspacePluginPackage } from "./workspace-plugin-package.js";
+import { createId } from "@opensteer/core";
+import { withFolderPluginPackage } from "./folder-plugin-package.js";
 
-describe("Workspace plugin package", () => {
+describe("Folder plugin package", () => {
   it.each(["../outside", "/etc", "folder/../../other", "folder/../other", "a\\b"])(
     "refuses path %s before reading",
     async (directory) => {
       const list = vi.fn();
       const install = vi.fn();
       await expect(
-        withWorkspacePluginPackage({
+        withFolderPluginPackage({
           directory,
-          admission: {} as WorkspaceFilesAdmission,
+          folder: { computerId: createId("runner"), path: "/tmp/agent-home" },
           files: { list, download: vi.fn() },
           install,
         }),
-      ).rejects.toThrow("inside this Workspace");
+      ).rejects.toThrow("inside the task folder");
       expect(list).not.toHaveBeenCalled();
       expect(install).not.toHaveBeenCalled();
     },
@@ -23,9 +23,9 @@ describe("Workspace plugin package", () => {
   it("refuses a symlink before installing", async () => {
     const install = vi.fn();
     await expect(
-      withWorkspacePluginPackage({
+      withFolderPluginPackage({
         directory: "package",
-        admission: {} as WorkspaceFilesAdmission,
+        folder: { computerId: createId("runner"), path: "/tmp/agent-home" },
         files: {
           list: vi.fn(async () => ({
             cursor: null,

@@ -18,10 +18,13 @@ export function requireSession(context: HostApiServerContext) {
   return context.session;
 }
 
-export function requireAdministrator(context: HostApiServerContext): void {
-  if (requireSession(context).user.instanceRole !== "administrator") {
-    throw new OpensteerError({ code: "forbidden", message: "Administrator access required" });
-  }
+export async function requirePersonalSession(
+  context: HostApiServerContext,
+  store: { assertOwner(ownerId: import("@opensteer/core").UserId): Promise<void> },
+) {
+  const session = requireSession(context);
+  await store.assertOwner(session.user.id);
+  return session;
 }
 
 export function requireSurface(

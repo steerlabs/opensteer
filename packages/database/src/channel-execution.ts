@@ -170,7 +170,15 @@ export async function channelInputAuthorityIsCurrent(
     .executeTakeFirst();
   if (!row || row.status !== "active" || row.revision !== source.bindingRevision) return false;
   const binding = ChannelBindingSchema.parse({
-    ...row,
+    id: row.id,
+    accountId: row.accountId,
+    createdBy: row.createdBy,
+    selector: row.selector,
+    executionPolicy: row.executionPolicy,
+    accessPolicy: row.accessPolicy,
+    revision: row.revision,
+    status: row.status,
+    folder: { computerId: row.folderComputerId, path: row.folderPath },
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });
@@ -194,7 +202,6 @@ export async function channelInputAuthorityIsCurrent(
   return (
     authority !== null &&
     authority.userId === input.requestedBy &&
-    authority.membershipGeneration === Number(input.membershipGeneration) &&
     isDeepStrictEqual(authority.source, source.access)
   );
 }

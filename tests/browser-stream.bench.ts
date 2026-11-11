@@ -158,24 +158,11 @@ it(
               { agentReady: true, editing: true, runtimeUrl: producer.runtimeUrl, keepAlive: true },
             );
             cleanup.push(() => relay.close());
-            const workspace = await testRpcData(
-              host.origin,
-              "commands.dispatch",
-              {
-                type: "workspace.create",
-                idempotencyKey: "browser-bench-workspace",
-                name: "Browser benchmark",
-              },
-              { headers: host.ownerHeaders },
-            );
-            if (workspace.type !== "workspace.create")
-              throw new Error("Workspace command mismatch");
             const opened = await testRpcData(
               host.origin,
               "commands.dispatch",
               {
                 type: "browser.session.start",
-                workspaceId: workspace.workspace.id,
                 idempotencyKey: "browser-bench-session",
                 input: { fresh: true, reuseExisting: false },
               },

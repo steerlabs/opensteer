@@ -306,7 +306,7 @@ const ChannelExecutionPolicyViewSchema = z
 /** Admission is independent of the external identity's optional Opensteer link. */
 export const ChannelSenderPolicySchema = z.strictObject({
   allowedExternalUserIds: z.array(ExternalIdSchema).max(500).default([]),
-  mode: z.enum(["off", "owner", "approved", "linked-members", "anyone"]),
+  mode: z.enum(["off", "owner", "approved", "anyone"]),
 });
 const ChannelSenderPolicyViewSchema = z.object(ChannelSenderPolicySchema.shape);
 export type ChannelSenderPolicy = z.infer<typeof ChannelSenderPolicySchema>;

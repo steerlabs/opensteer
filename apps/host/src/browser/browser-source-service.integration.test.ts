@@ -1,4 +1,4 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { createTestdeployment } from "@opensteer/database/test-support/workspace";
 import websocket from "@fastify/websocket";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
@@ -12,7 +12,7 @@ import {
   type RequestId,
   type RunnerId,
   type UserId,
-  type WorkspaceId,
+  type DeploymentId,
 } from "@opensteer/core";
 import {
   BrowserSourceStore,
@@ -397,7 +397,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     deploymentId: "dep_test",
     deploymentName: "Test",
     threadTitle: "Test thread",
-    workspaceName: "Main",
+    removeddeploymentName: "Main",
   };
   const passwordListeners = new Set<
     (runnerId: RunnerId, event: PasswordSignInAuthorityEvent | { type: "authority-lost" }) => void
@@ -437,7 +437,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   const browser = new BrowserService({
     connectTimeoutMs: 2_000,
     onSessionsChanged: () => {},
-    onWorkspaceEvent: () => {},
+    onDeploymentEvent: () => {},
     hostOrigin: new URL(sourceOrigin),
     repository: store,
     signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
@@ -505,7 +505,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     onRequestResolved: () => {
       resolvedRequests += 1;
     },
-    onWorkspaceEvent: () => {},
+    onDeploymentEvent: () => {},
     requests: {
       hasActiveRunPasswordSignInAuthority: store.requests.hasActiveRunPasswordSignInAuthority.bind(
         store.requests,
@@ -545,7 +545,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     onRequestResolved: () => {
       resolvedRequests += 1;
     },
-    onWorkspaceEvent: () => {},
+    onDeploymentEvent: () => {},
     onLoginSaved: async (offer) => {
       if (wakeFault) throw wakeFault;
       savedLogins.push(offer);
@@ -571,7 +571,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       deploymentId: "dep_test",
       deploymentName: "Test",
       threadTitle: "Test thread",
-      workspaceName: "Main",
+      removeddeploymentName: "Main",
     };
     settleFaults = 0;
     passwordSignInErrors.length = 0;
@@ -662,7 +662,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
 
   async function runningRun(
     ownerId: UserId,
-    workspaceId: WorkspaceId,
+    deploymentId: DeploymentId,
     existingRunnerId?: RunnerId,
   ) {
     const suffix = randomUUID();
@@ -755,7 +755,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         providerId: "openai",
       }),
       title: "Browser sign-in",
-      workspaceId,
+      deploymentId,
     });
     const admitted = await store.enqueueThreadInput({
       content: [{ text: "Start", type: "text" }],
@@ -791,7 +791,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       runId: admitted.run.id,
       threadId: thread.id,
       type: "run.started",
-      workspaceId,
+      deploymentId,
     };
     await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
     return {
@@ -825,15 +825,15 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     } as unknown as PersonalHostAccessRouteEnvelope;
   }
 
-  /** An owner, a project Workspace, a running agent in it, and a live fresh session. */
+  /** An owner, a project deployment, a running agent in it, and a live fresh session. */
   async function scene() {
     const ownerId = await store.createUser("Chrome owner");
     await store.ensureDeployment({
       canonicalOrigin: sourceOrigin,
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+      deploymentShape: { defaultdeploymentBacking: "local-directory", kind: "server" },
       hostInstanceId: createId("hostInstance"),
     });
-    const workspace = await createTestWorkspace(store, {
+    const workspace = await createTestdeployment(store, {
       kind: "project",
       backing: {
         kind: "local-directory",
@@ -854,7 +854,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       fresh: true,
       ownerId,
       placement: { kind: "runner", runnerId: run.runnerId },
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     });
     const connection = runtime.connections.at(-1);
     if (!connection) throw new Error("Expected a runtime connection");
@@ -867,13 +867,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         sessionId: opened.session.id,
         targetId: "target-1",
         threadId: run.threadId,
-        workspaceId: workspace.id,
+        deploymentId: workspace.id,
       },
       connection,
       complete: run.complete,
       ownerId,
       sessionId: opened.session.id,
-      workspaceId: workspace.id,
+      deploymentId: workspace.id,
     };
   }
 
@@ -954,7 +954,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         loginId: "00000000-0000-4000-8000-000000000001",
         revision: 1,
         remember: true,
-        permissionVersion: 5,
+        permissionVersion: 6,
       },
     });
   }
@@ -1019,7 +1019,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     await expect(
       service.agentSignIn({ ...ready.agent, callId: calls[0]!, site: "https://different.test" }),
     ).rejects.toMatchObject({ code: "conflict" });
-    expect(ready.connection.signInStarts()[0]).toMatchObject({ workspaceId: ready.workspaceId });
+    expect(ready.connection.signInStarts()[0]).toMatchObject({ deploymentId: ready.deploymentId });
     expect(ready.connection.received.find((m) => m.type === "signin.probe")).toEqual({
       type: "signin.probe",
       site: "https://autonomous.test",
@@ -1144,7 +1144,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
 
   it("preserves another Run's open Request", async () => {
     const ready = await startedPasswordSignIn("https://cross-run.test");
-    const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
+    const other = await runningRun(ready.ownerId, ready.deploymentId, runtime.runnerId!);
     expect(
       await service.agentSignIn({
         ...ready.agent,
@@ -1168,7 +1168,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     "lets another Run join unattended work until $0",
     async (outcome) => {
       const ready = await passwordScene();
-      const other = await runningRun(ready.ownerId, ready.workspaceId, runtime.runnerId!);
+      const other = await runningRun(ready.ownerId, ready.deploymentId, runtime.runnerId!);
       const site = "https://joining-runtime.test";
       const started = Promise.withResolvers<string>();
       ready.connection.onStart = (message) => started.resolve(message.operationId);
@@ -1353,7 +1353,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       ...description,
       deploymentName: "D".repeat(118) + "\u0000🫡",
       threadTitle: "Thread\n\u200b".repeat(40),
-      workspaceName: "Work\tspace\u202e".repeat(20),
+      removeddeploymentName: "Work\tspace\u202e".repeat(20),
     };
     expect(
       (
@@ -1367,9 +1367,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const requester = ready.connection.signInStarts()[0]!.requester;
     expect(requester.deploymentName.length).toBeLessThanOrEqual(120);
     expect(requester.threadTitle.length).toBeLessThanOrEqual(200);
-    expect(requester.workspaceName.length).toBeLessThanOrEqual(120);
+    expect(requester.removeddeploymentName.length).toBeLessThanOrEqual(120);
     expect(JSON.stringify(requester)).not.toMatch(/\\[nt]|\\u0000|[\u202e\u200b]/u);
-    for (const name of [requester.deploymentName, requester.threadTitle, requester.workspaceName]) {
+    for (const name of [
+      requester.deploymentName,
+      requester.threadTitle,
+      requester.removeddeploymentName,
+    ]) {
       expect(name).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}]/u);
     }
     expect(ready.connection.readyState).toBe(WebSocket.OPEN);
@@ -1498,7 +1502,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     try {
       await sourceStore.upsertGrant({
         ownerId: ready.ownerId,
-        workspaceId: ready.workspaceId,
+        deploymentId: ready.deploymentId,
         preferredSourceId: paired.sourceId,
         site,
       });
@@ -1523,7 +1527,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     try {
       await sourceStore.upsertGrant({
         ownerId: ready.ownerId,
-        workspaceId: ready.workspaceId,
+        deploymentId: ready.deploymentId,
         preferredSourceId: paired.sourceId,
         site,
       });
@@ -1766,12 +1770,12 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     ).toMatchObject({ live: true });
   });
 
-  it("refuses a Workspace whose membership disappeared before the lazy open", async () => {
+  it("refuses a deployment whose membership disappeared before the lazy open", async () => {
     const ready = await passwordScene();
     beforeOpen = async () => {
       await database
         .deleteFrom("workspaceMemberships")
-        .where("workspaceId", "=", ready.workspaceId)
+        .where("deploymentId", "=", ready.deploymentId)
         .where("userId", "=", ready.ownerId)
         .execute();
     };
@@ -1829,13 +1833,17 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       computerName: "Test Mac",
       kind: "browser.password-sign-in",
       operationId: start.operationId,
-      scope: "workspace",
-      permissionVersion: 5,
+      scope: "personal",
+      permissionVersion: 6,
       site,
     });
     expect(payload).not.toHaveProperty("sessionId");
     expect(start).toMatchObject({
-      requester: { deploymentName: "Test", threadTitle: "Test thread", workspaceName: "Main" },
+      requester: {
+        deploymentName: "Test",
+        threadTitle: "Test thread",
+        removeddeploymentName: "Main",
+      },
       site,
     });
     expect(Date.parse(start.expiresAt) - Date.now()).toBeGreaterThan(59 * 60_000);
@@ -2096,7 +2104,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(
       passwords.validateLease({
         loginRef: first.loginRef,
-        workspaceId: ready.workspaceId,
+        deploymentId: ready.deploymentId,
       }),
     ).toBe(true);
     try {
@@ -2104,7 +2112,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       expect(
         passwords.validateLease({
           loginRef: first.loginRef,
-          workspaceId: ready.workspaceId,
+          deploymentId: ready.deploymentId,
         }),
       ).toBe(false);
       ready.connection.onStart = (message) =>
@@ -2140,10 +2148,10 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         deploymentId: "dep_test",
         deploymentName: "Test",
         threadTitle: "Test thread",
-        workspaceName: "Main",
+        removeddeploymentName: "Main",
       }),
       onRequestResolved: () => {},
-      onWorkspaceEvent: () => {},
+      onDeploymentEvent: () => {},
       requests: store.requests,
     });
     try {
@@ -2448,7 +2456,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("signs a live session in, replays by invocation, and fences a Chrome revoked mid-transfer", async () => {
-    const { agent, connection, ownerId, sessionId, workspaceId } = await scene();
+    const { agent, connection, ownerId, sessionId, deploymentId } = await scene();
     const paired = await pairChrome(ownerId, "Chrome on Mac");
     const chrome = await connectChrome(paired);
     const site = "https://example.test";
@@ -2466,7 +2474,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       expect.objectContaining({ cookies: chrome.cookiesFor(site), site, type: "state.import" }),
     ]);
     expect(await service.listState({ ownerId })).toMatchObject({
-      sites: [{ preferredSourceId: paired.sourceId, site, workspaceId }],
+      sites: [{ preferredSourceId: paired.sourceId, site, deploymentId }],
       sources: [{ connected: true, id: paired.sourceId, name: "Chrome on Mac" }],
     });
 
@@ -2516,7 +2524,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("completes an allowed Request by itself when Chrome reconnects as a new connection", async () => {
-    const { agent, connection, ownerId, workspaceId, complete } = await scene();
+    const { agent, connection, ownerId, deploymentId, complete } = await scene();
     const first = await pairChrome(ownerId, "Chrome A");
     const chromeA = await connectChrome(first);
     const site = "https://example.test";
@@ -2546,12 +2554,12 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       }),
     ).toEqual({ problem: "chrome-offline", site, sourceName: "Chrome A", status: "problem" });
     expect(await store.requests.get(asked.requestId)).toMatchObject({ status: "pending" });
-    expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).toMatchObject({
+    expect(await sourceStore.getGrant({ ownerId, site, deploymentId })).toMatchObject({
       preferredSourceId: first.sourceId,
     });
 
     const second = await pairChrome(ownerId, "Chrome A again", first);
-    expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).toMatchObject({
+    expect(await sourceStore.getGrant({ ownerId, site, deploymentId })).toMatchObject({
       preferredSourceId: second.sourceId,
     });
     const chromeB = await connectChrome(second);
@@ -2599,14 +2607,14 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(connection.imports()).toHaveLength(1);
 
     // Disconnect in Chrome ends the connection like Disconnect in Opensteer;
-    // the sites the Workspace allowed stay allowed.
+    // the sites the deployment allowed stay allowed.
     chromeB.socket.send(JSON.stringify({ type: "source.disconnect" }));
     await chromeB.closed;
     expect(await sourceStore.list(ownerId)).toEqual([]);
     expect(
       await sourceStore.authenticate(createHash("sha256").update(second.token).digest("hex")),
     ).toBeNull();
-    expect(await sourceStore.getGrant({ ownerId, site, workspaceId })).not.toBeNull();
+    expect(await sourceStore.getGrant({ ownerId, site, deploymentId })).not.toBeNull();
     await complete();
     expect(
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
@@ -2736,7 +2744,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       ownerId,
       placement: { kind: "runner", runnerId: runtime.runnerId! },
       reuseExisting: false,
-      workspaceId: agent.workspaceId,
+      deploymentId: agent.deploymentId,
     });
     expect(outdated.session.id).not.toBe(sessionId);
     expect(
@@ -2778,7 +2786,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
    * storable end to end.
    */
   it("refuses shared suffixes and Opensteer's own sites before asking anyone", async () => {
-    const { agent, connection, ownerId, sessionId, workspaceId } = await scene();
+    const { agent, connection, ownerId, sessionId, deploymentId } = await scene();
     const paired = await pairChrome(ownerId, "Chrome on Mac");
     const chrome = await connectChrome(paired);
     const ask = (site: string) => service.agentSignIn({ ...agent, callId: randomUUID(), site });
@@ -2841,7 +2849,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       status: "problem",
     });
     expect(
-      await sourceStore.getGrant({ ownerId, site: "https://later-remote.test", workspaceId }),
+      await sourceStore.getGrant({ ownerId, site: "https://later-remote.test", deploymentId }),
     ).toBeNull();
     expect(await store.requests.get(later.requestId)).toMatchObject({ status: "pending" });
     expect(chrome.exports).toBe(0);
@@ -2967,7 +2975,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
    * signed in, or a removed site is reported as Chrome not being connected.
    */
   it("never signs in for a Request declined or a site removed while Chrome exports", async () => {
-    const { agent, connection, ownerId, workspaceId } = await scene();
+    const { agent, connection, ownerId, deploymentId } = await scene();
     const paired = await pairChrome(ownerId, "Chrome on Mac");
     const chrome = await connectChrome(paired);
     const open = async (site: string) => {
@@ -3023,7 +3031,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const removed = await open("https://removed.test");
     const removing = allow(removed);
     await waitFor(() => chrome.held.length === 1);
-    await service.removeSite({ ownerId, site: "https://removed.test", workspaceId });
+    await service.removeSite({ ownerId, site: "https://removed.test", deploymentId });
     chrome.releaseExports();
     expect(await removing).toEqual({
       problem: "site-removed",
@@ -3043,7 +3051,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
    * delivers it until Chrome happens to reconnect.
    */
   it("completes allowed Requests past any backlog, and on the agent's next call", async () => {
-    const { agent, connection, ownerId, sessionId, workspaceId } = await scene();
+    const { agent, connection, ownerId, sessionId, deploymentId } = await scene();
     const paired = await pairChrome(ownerId, "Chrome on Mac");
     let chrome = await connectChrome(paired);
     for (let index = 0; index < 70; index += 1) {
@@ -3054,7 +3062,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         mode: "durable",
         originatingRunId: agent.runId,
         originatingThreadId: agent.threadId,
-        originatingWorkspaceId: workspaceId,
+        originatingDeploymentId: deploymentId,
         payload: { kind: "browser.sign-in", reason: "Backlog", sessionId, site },
         presentation: {
           detail: "Backlog",
@@ -3064,7 +3072,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         },
         requestedBy: ownerId,
         requiredActor: "requester",
-        targetWorkspaceId: workspaceId,
+        targetDeploymentId: deploymentId,
       });
     }
     const asked = await service.agentSignIn({

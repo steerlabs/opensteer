@@ -1,4 +1,4 @@
-import { createId, type RunnerId, type UserId } from "@opensteer/core";
+import { createId, type UserId } from "@opensteer/core";
 import type { HostToClientMessage, ShellSessionSummary } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { machineAccessNotifier } from "./machine-access-events.js";
@@ -21,7 +21,7 @@ function notifierFor(input: {
   readonly connected: readonly UserId[];
   readonly ownerKind: "deployment" | "user";
   readonly effectiveOwner: UserId | null;
-  readonly administrators?: readonly UserId[];
+  readonly disabled?: boolean;
 }) {
   const delivered: { readonly message: HostToClientMessage; readonly userIds: UserId[] }[] = [];
   const notifier = machineAccessNotifier({
@@ -35,52 +35,46 @@ function notifierFor(input: {
         effectiveOwner: input.effectiveOwner,
         ownerKind: input.ownerKind,
       }),
-      userById: async (userId: UserId) => ({
-        disabledAt: null,
-        instanceRole: input.administrators?.includes(userId) ? "administrator" : "user",
-      }),
+      userById: async () => ({ disabledAt: input.disabled ? new Date() : null }),
     } as never,
   });
   return { delivered, notifier };
 }
 
 describe("machine access session notifications", () => {
-  it("reaches administrators only for a computer the Deployment itself owns", async () => {
-    const administrator = createId("user");
-    const member = createId("user");
-    const runnerId: RunnerId = createId("runner");
-    const owned = notifierFor({
-      administrators: [administrator],
-      connected: [administrator, member],
-      effectiveOwner: null,
-      ownerKind: "deployment",
-    });
-    const someonesMachine = notifierFor({
-      administrators: [administrator],
-      connected: [administrator, member],
-      effectiveOwner: member,
+  it.each(["deployment", "user"] as const)(
+    "notifies only the personal owner for a %s computer",
+    async (ownerKind) => {
+      const owner = createId("user"),
+        other = createId("user"),
+        runnerId = createId("runner");
+      const fixture = notifierFor({ connected: [owner, other], effectiveOwner: owner, ownerKind });
+      const session = summary();
+      await fixture.notifier.ended({ endReason: "run-ended", runnerId, session });
+      expect(fixture.delivered).toEqual([
+        {
+          userIds: [owner],
+          message: {
+            endReason: "run-ended",
+            runnerId,
+            session,
+            type: "host.machine.access.session.ended",
+          },
+        },
+      ]);
+    },
+  );
+  it("does not disclose a machine session after the owner is disabled", async () => {
+    const owner = createId("user");
+    const fixture = notifierFor({
+      connected: [owner],
+      effectiveOwner: owner,
       ownerKind: "user",
+      disabled: true,
     });
-    const session = summary();
-
-    owned.notifier.ended({ endReason: "run-ended", runnerId, session });
-    someonesMachine.notifier.ended({ endReason: "run-ended", runnerId, session });
-    await vi.waitFor(() => {
-      expect(owned.delivered).toHaveLength(1);
-      expect(someonesMachine.delivered).toHaveLength(1);
-    });
-
-    expect(owned.delivered[0]?.userIds).toEqual([administrator]);
-    expect(owned.delivered[0]?.message).toEqual({
-      endReason: "run-ended",
-      runnerId,
-      session,
-      type: "host.machine.access.session.ended",
-    });
-    // An administrator manages nobody else's computer, whatever their role.
-    expect(someonesMachine.delivered[0]?.userIds).toEqual([member]);
+    await fixture.notifier.started({ runnerId: createId("runner"), session: summary() });
+    expect(fixture.delivered).toEqual([]);
   });
-
   it("sends nothing when a revoked machine has no ownership left to check", async () => {
     const sendToUsers = vi.fn();
     const notifier = machineAccessNotifier({
@@ -89,8 +83,7 @@ describe("machine access session notifications", () => {
       store: { effectiveMachineOwner: async () => null, userById: async () => null } as never,
     });
 
-    notifier.started({ runnerId: createId("runner"), session: summary() });
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await notifier.started({ runnerId: createId("runner"), session: summary() });
 
     expect(sendToUsers).not.toHaveBeenCalled();
   });

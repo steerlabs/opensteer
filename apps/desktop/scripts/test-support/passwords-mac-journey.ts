@@ -47,7 +47,7 @@ const fields = {
   code: "028491",
 };
 const cases = [
-  "workspace-consent-before-helper",
+  "personal-consent-before-helper",
   "v4-reapproval-one-time-v5",
   "username-password-code",
   "concurrent-fields",
@@ -118,7 +118,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
   };
   const policy = { hasTOTP: true, approvalCount: 0 };
   const broker: PasswordsBrokerSession = {
-    protocolVersion: 6,
+    protocolVersion: 10,
     commit: async () => ({ committed: true }),
     probe: async () => ({ passwords: "has-login" }),
     request: async (params) => {
@@ -202,12 +202,11 @@ export async function runPasswordsMacJourney(): Promise<void> {
         operationId,
         loginRef,
         site: "https://passwords-fixture.test",
-        workspaceId: createId("workspace"),
+        deploymentId,
         expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
         requester: {
-          deploymentId: "personal",
+          deploymentId,
           deploymentName: "Acceptance",
-          workspaceName: "Synthetic workspace",
           threadTitle: "Sign in",
           reason: "Sign in to the fixture app",
         },
@@ -219,7 +218,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
         loginId: login.id,
         revision: login.revision,
         remember: false,
-        permissionVersion: 5,
+        permissionVersion: 6,
       });
       await control({ type: "login.commit", operationId });
       await until(async () =>
@@ -231,7 +230,7 @@ export async function runPasswordsMacJourney(): Promise<void> {
         ),
       );
     };
-    await evidence.run("workspace-consent-before-helper", async () => {
+    await evidence.run("personal-consent-before-helper", async () => {
       const capabilities = z
         .object({ authority: z.literal(2), receiver: z.null() })
         .parse(await request("passwords.capabilities", {}));

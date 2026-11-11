@@ -4,3 +4,4 @@ export * from "./ids.js";
 export * from "./models.js";
 export * from "./routing.js";
 export * from "./text.js";
+export { channelAllowsPersonalContext } from "./personal-context.js";

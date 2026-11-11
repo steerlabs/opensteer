@@ -1,15 +1,21 @@
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
-import { refused } from "@opensteer/core";
-import type { WorkspaceFilesAdmission } from "@opensteer/database";
-import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
+import { refused, type TaskFolder } from "@opensteer/core";
+import type { FolderDirectoryPage } from "@opensteer/protocol";
+import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 
 /** Read through the owning Runner's no-follow file operations, never a Host path. */
-export async function withWorkspacePluginPackage<T>(input: {
+export async function withFolderPluginPackage<T>(input: {
   directory: string;
-  admission: WorkspaceFilesAdmission;
-  files: Pick<WorkspaceFilesService, "list" | "download">;
+  folder: TaskFolder;
+  files: {
+    list(
+      folder: TaskFolder,
+      input: { parentKey: string; limit: number; cursor?: string },
+    ): Promise<FolderDirectoryPage>;
+    download(folder: TaskFolder, key: string): Promise<Response>;
+  };
   install: (directory: string) => Promise<T>;
 }): Promise<T> {
   const segments = input.directory.replace(/^\.\//u, "").split("/");
@@ -19,7 +25,7 @@ export async function withWorkspacePluginPackage<T>(input: {
   )
     throw refused(
       "bad_request",
-      "Plugin directory must be a relative folder inside this Workspace",
+      "Plugin directory must be a relative folder inside the task folder",
     );
   const temporary = await mkdtemp(join(tmpdir(), "opensteer-plugin-"));
   let count = 0;
@@ -28,7 +34,7 @@ export async function withWorkspacePluginPackage<T>(input: {
     const parentKey = Buffer.from(parts.join("\0")).toString("base64url");
     let cursor: string | undefined;
     do {
-      const page = await input.files.list(input.admission, {
+      const page = await input.files.list(input.folder, {
         parentKey,
         limit: 500,
         ...(cursor ? { cursor } : {}),
@@ -54,9 +60,14 @@ export async function withWorkspacePluginPackage<T>(input: {
           bytes += entry.sizeBytes;
           if (bytes > 24 * 1024 * 1024)
             throw refused("bad_request", "Plugin package exceeds installation limit");
-          const response = await input.files.download(input.admission, entry.key);
+          const response = await input.files.download(input.folder, entry.key);
           if (!response.ok) throw refused("conflict", "Could not read plugin file");
-          const content = Buffer.from(await response.arrayBuffer());
+          const content = Buffer.from(
+            await readBoundedResponse(response, {
+              maximumBytes: entry.sizeBytes,
+              sizeError: () => refused("conflict", "Plugin changed during installation"),
+            }),
+          );
           if (content.length !== entry.sizeBytes)
             throw refused("conflict", "Plugin changed during installation");
           await writeFile(destination, content, { mode: entry.mode & 0o777, flag: "wx" });

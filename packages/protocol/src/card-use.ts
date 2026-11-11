@@ -1,5 +1,5 @@
-import { BrowserSiteSchema, RequestIdSchema } from "@opensteer/core";
 import { z } from "zod";
+import { BrowserSiteSchema, RequestIdSchema } from "@opensteer/core";
 
 export const cardUseLifetimeMs = 30 * 60_000;
 export const CardRefSchema = z.string().regex(/^crd_[0-9a-f]{32}$/u);
@@ -74,9 +74,8 @@ export const UseCardResultSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("ready"),
     site: BrowserSiteSchema,
-    cardRef: z.string().regex(/^crd_[0-9a-f]{32}$/u),
-    brand: z.string().min(1).max(64),
-    lastFour: z.string().regex(/^\d{4}$/u),
+    cardRef: CardRefSchema,
+    ...CardPublicSchema.shape,
   }),
   z.strictObject({
     status: z.literal("pending"),

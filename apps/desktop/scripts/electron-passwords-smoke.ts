@@ -13,7 +13,7 @@ import {
   SurfaceLedger,
   type LaunchedBrowser,
 } from "@opensteer/browser-runtime-core";
-import { WorkspaceIdSchema } from "@opensteer/core";
+import { DeploymentIdSchema } from "@opensteer/core";
 import {
   BrowserAttachTicketClaimsSchema,
   BrowserClientMessageSchema,
@@ -139,7 +139,7 @@ interface Journey {
   error?: string;
 }
 const journeys: Journey[] = [
-  ["0", "Workspace authorization before any browser; phone, Mac and browser reuse"],
+  ["0", "Personal authorization before any browser; phone, Mac and browser reuse"],
   ["1", "SPA bank and server-verified identity"],
   ["2", "Identifier first"],
   ["3", "Wrong site"],
@@ -234,7 +234,7 @@ interface Lease {
   operationId: string;
   loginRef: string;
 }
-async function harness(options: { profile?: string; workspaceLease?: boolean } = {}) {
+async function harness(options: { profile?: string; personalLease?: boolean } = {}) {
   setupHealthy = false;
   // Leave room for the production broker path in macOS's 104-byte sun_path.
   const home = mkdtempSync(`${tmpdir()}/`);
@@ -343,15 +343,15 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       onEvent: () => () => undefined,
       readinessPermissions: async () => {
         helperCalls++;
-        throw new Error("Workspace authorization must not start a helper");
+        throw new Error("Personal authorization must not start a helper");
       },
       readinessDataGrants: async () => {
         helperCalls++;
-        throw new Error("Workspace authorization must not start a helper");
+        throw new Error("Personal authorization must not start a helper");
       },
       request: async () => {
         helperCalls++;
-        throw new Error("Workspace authorization must not start a helper");
+        throw new Error("Personal authorization must not start a helper");
       },
     },
     ownership: new ComputerUseSessionOwnership(),
@@ -375,7 +375,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
     traffic.push(JSON.stringify({ direction: "personal-bridge-result", result }));
     return result;
   };
-  const authorizeWorkspace = async (): Promise<Lease> => {
+  const authorizePersonal = async (): Promise<Lease> => {
     const operationId = randomUUID();
     const loginRef = `lgn_${randomBytes(16).toString("hex")}`;
     const result = await control({
@@ -383,25 +383,24 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       operationId,
       loginRef,
       site: "https://bank.test",
-      workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
+      deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001"),
       expiresAt: new Date(Date.now() + passwordLoginLifetimeMs).toISOString(),
       requester: {
-        deploymentId: "dep_personal",
+        deploymentId: "dep_00000000-0000-4000-8000-000000000001",
         deploymentName: "E2E",
-        workspaceName: "Synthetic workspace",
         threadTitle: "Password journey",
         reason: "Verify synthetic account",
       },
     });
     check("sessionless control starts", result.type === "login.authorize.started");
-    await waitFor("v5 broker authorization", () =>
+    await waitFor("v10 broker authorization", () =>
       broker.held("signin.request").some((call) => call.params.transactionId === operationId),
     );
     const request = broker
       .held("signin.request")
       .find((call) => call.params.transactionId === operationId)!;
     check(
-      "Workspace consent carries no browser identity",
+      "Personal consent carries no browser identity",
       !Object.hasOwn(request.params, "sessionId") &&
         !Object.hasOwn(request.params, "runtimeId") &&
         request.params.permissionVersion === 5,
@@ -410,7 +409,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       decision: "authorized",
       login: { ...login, hasTOTP: policy.hasTOTP },
     });
-    await waitFor("Workspace lease", () =>
+    await waitFor("Personal lease", () =>
       controlEvents.some(
         (event) => event.type === "login.result" && event.operationId === operationId,
       ),
@@ -427,8 +426,8 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
     );
     return { operationId, loginRef };
   };
-  const initialWorkspaceLease = options.workspaceLease ? await authorizeWorkspace() : undefined;
-  if (options.workspaceLease)
+  const initialPersonalLease = options.personalLease ? await authorizePersonal() : undefined;
+  if (options.personalLease)
     check(
       "authorization opens neither browser nor helper",
       browser === undefined && helperCalls === 0,
@@ -657,11 +656,9 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
       type: "login.authorize",
       operationId,
       site,
-      workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
       requester: {
-        deploymentId: "dep_personal",
+        deploymentId: "dep_00000000-0000-4000-8000-000000000001",
         deploymentName: "E2E",
-        workspaceName: "Synthetic workspace",
         threadTitle: "Password journey",
         reason: "Verify synthetic account",
       },
@@ -740,7 +737,7 @@ async function harness(options: { profile?: string; workspaceLease?: boolean } =
     fill,
     screenshot,
     observe,
-    initialWorkspaceLease,
+    initialPersonalLease,
     control,
     peer,
   };
@@ -925,12 +922,12 @@ async function run(): Promise<void> {
   record("fixture-certificate", { fingerprint });
   await journey(
     "0",
-    "Workspace authorization before any browser; cross-surface reuse survives browser close",
+    "Personal authorization before any browser; cross-surface reuse survives browser close",
     async () => {
-      const h = await harness({ workspaceLease: true });
-      const lease = h.initialWorkspaceLease;
+      const h = await harness({ personalLease: true });
+      const lease = h.initialPersonalLease;
       check("reference authorized before browser launch", lease !== undefined);
-      if (!lease) throw new Error("Missing Workspace lease");
+      if (!lease) throw new Error("Missing Personal lease");
       const phone = h.peer("phone");
       const mac = h.peer("mac");
       await Promise.all([phone(lease, "username"), mac(lease, "password")]);
@@ -1060,7 +1057,7 @@ async function run(): Promise<void> {
       const released = Promise.withResolvers<void>();
       const resume = Promise.withResolvers<void>();
       const broker: PasswordsBrokerSession & PasswordsBrokerCardSession = {
-        protocolVersion: 7,
+        protocolVersion: 10,
         probe: async () => ({ passwords: "unavailable" }),
         request: async () => {
           throw new Error("Login refused");
@@ -1101,11 +1098,10 @@ async function run(): Promise<void> {
             operationId,
             cardRef,
             site: "https://bank.test",
-            workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
+            deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001"),
             requester: {
-              deploymentId: "synthetic",
+              deploymentId: "dep_00000000-0000-4000-8000-000000000001",
               deploymentName: "Synthetic",
-              workspaceName: "Main",
               threadTitle: "Payment",
               reason: "Test payment field",
             },
@@ -1396,7 +1392,7 @@ async function finish(error?: unknown): Promise<void> {
     startupError: error ? scrub(error instanceof Error ? error.message : "Unknown failure") : null,
     journeys,
     coverageGaps: [
-      "Host Workspace admission requires the Host-owned integration journey. No Host or Runner is started by this runtime smoke.",
+      "Host personal admission requires the Host-owned integration journey. No Host or Runner is started by this runtime smoke.",
     ],
     electron: process.versions.electron,
   };

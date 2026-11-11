@@ -132,7 +132,7 @@ run("Browser Sessions through a whole deployment", () => {
       const replay = await stack.api["commands.dispatch"](command);
       const record = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
       const rows = await stack.host.store.database
-        .selectFrom("workspaceTabs")
+        .selectFrom("personalTabs")
         .select(["id", "closedAt", "state"])
         .where("sessionId", "=", sessionId)
         .orderBy("id")
@@ -173,7 +173,7 @@ run("Browser Sessions through a whole deployment", () => {
       expect(replay).toEqual(opening);
       expect(
         await stack.host.store.database
-          .selectFrom("workspaceTabs")
+          .selectFrom("personalTabs")
           .select(["id", "closedAt", "state"])
           .where("sessionId", "=", sessionId)
           .orderBy("id")
@@ -1205,7 +1205,7 @@ run("Browser Sessions through a whole deployment", () => {
         // Closing the popup returns them to the opener, which is as it was.
         const closedFrom = viewer.entries.length;
         const closed = await stack.api["commands.dispatch"]({
-          type: "workspace.tab.close",
+          type: "tab.close",
           tabId: popup,
           idempotencyKey: randomUUID(),
         });

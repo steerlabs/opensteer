@@ -771,16 +771,14 @@ run("Browser Sessions through a whole deployment", () => {
     expect(launches).toBe(launchesAtRestart);
     await browserAvailable(stack);
     const restored = await stack.api["commands.dispatch"]({
-      type: "workspace.tab.activate",
+      type: "tab.activate",
       tabId: tabs[0]!.tabId,
       idempotencyKey: randomUUID(),
     });
     expect(restored, JSON.stringify(restored)).toMatchObject({ ok: true });
     const restoredCatalog = await browserInventory(
       stack,
-      restored.ok && restored.data.type === "workspace.tab.activate"
-        ? restored.data.session.id
-        : sessionId,
+      restored.ok && restored.data.type === "tab.activate" ? restored.data.session.id : sessionId,
     );
     expect(restoredCatalog.tabs.filter((tab) => tab.documentId !== null)).toEqual([
       expect.objectContaining({

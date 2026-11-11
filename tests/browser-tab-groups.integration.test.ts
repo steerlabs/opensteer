@@ -46,7 +46,7 @@ import {
 } from "../packages/core/src/index.js";
 import {
   BrowserTabGroupStore,
-  WorkspaceTabStore,
+  PersonalTabStore,
   createDatabase,
 } from "../packages/database/src/index.js";
 import { pauseAfterLock } from "../packages/database/src/lock-race.test-support.js";
@@ -232,7 +232,7 @@ integration("personal tab order", () => {
     const b = await open(stack);
     const db = stack.host.store.database;
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const recorder = new WorkspaceTabStore(db);
+    const recorder = new PersonalTabStore(db);
     const child = () => ({
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
       title: "Link",
@@ -291,7 +291,7 @@ integration("personal tab order", () => {
     });
     if (hidden.type !== "browser.tab.open") throw new Error("Wrong tab result");
     await stack.host.browser.flushPendingTabDescriptors();
-    const hiddenTabs = (await new WorkspaceTabStore(db).read(owner.id, session.session.id))!.tabs!;
+    const hiddenTabs = (await new PersonalTabStore(db).read(owner.id, session.session.id))!.tabs!;
     expect(hiddenTabs).toHaveLength(2);
     const group = await command(stack, {
       type: "workspace.tabs.group",
@@ -436,7 +436,7 @@ integration("personal tab order", () => {
       );
       try {
         await barrier.reached;
-        await new WorkspaceTabStore(db).close(owner.id, closed === "source" ? a.tabId : b.tabId);
+        await new PersonalTabStore(db).close(owner.id, closed === "source" ? a.tabId : b.tabId);
       } finally {
         barrier.release();
       }
@@ -472,7 +472,7 @@ integration("personal tab order", () => {
     });
     for (let start = 1; start <= 9999; start += 1000)
       await db
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values(
           Array.from({ length: Math.min(1000, 10000 - start) }, (_, index) =>
             seed(`surface_cap_${start + index}`, start + index),
@@ -486,7 +486,7 @@ integration("personal tab order", () => {
       idempotencyKey: randomUUID(),
     });
     expect(first.order).toHaveLength(10000);
-    await db.insertInto("workspaceTabs").values(seed("surface_cap_extra", 10000)).execute();
+    await db.insertInto("personalTabs").values(seed("surface_cap_extra", 10000)).execute();
     await expect(
       groups.move(owner.id, {
         item: { tabIds: [a.tabId] },
@@ -500,7 +500,7 @@ integration("personal tab order", () => {
     });
     expect(await groups.layout(owner.id)).toEqual(first);
     await db
-      .updateTable("workspaceTabs")
+      .updateTable("personalTabs")
       .set({ closedAt: new Date() })
       .where("id", "=", "surface_cap_1")
       .execute();
@@ -859,7 +859,7 @@ integration("agent organization and durable ownership", () => {
     });
     if (saved.type !== "browser.tab.open") throw new Error("Wrong tab-open result");
     const inventory = () =>
-      stack.host.store.database.selectFrom("workspaceTabs").selectAll().orderBy("id").execute();
+      stack.host.store.database.selectFrom("personalTabs").selectAll().orderBy("id").execute();
     const sessions = () =>
       stack.host.store.database
         .selectFrom("browserSessions")
@@ -881,7 +881,7 @@ integration("agent organization and durable ownership", () => {
           .toBe(true);
       } else if (state === "opening") {
         // Hold both durable rows at the restore boundary without starting a browser.
-        const tabs = new WorkspaceTabStore(stack.host.store.database);
+        const tabs = new PersonalTabStore(stack.host.store.database);
         await tabs.bind(guest.sessionId, guest.sessionId, guest.tabId);
         await tabs.bind(saved.sessionId, saved.sessionId, saved.tabId);
       }
@@ -1004,7 +1004,7 @@ integration("agent organization and durable ownership", () => {
       });
       const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
       seedIds.push(tabId);
-      await new WorkspaceTabStore(db).recordChanges(
+      await new PersonalTabStore(db).recordChanges(
         id,
         [
           {
@@ -1017,7 +1017,7 @@ integration("agent organization and durable ownership", () => {
         ],
         [],
       );
-      await new WorkspaceTabStore(db).suspend(id);
+      await new PersonalTabStore(db).suspend(id);
       await db
         .updateTable("browserSessions")
         .set({ state: "closed" })
@@ -1104,7 +1104,7 @@ integration("agent organization and durable ownership", () => {
         .map((p) => BrowserTabReadResultSchema.parse(p))
         .flatMap((p) => p.groups),
     ).toContainEqual(expect.objectContaining({ createdBy: "another-task", tabCount: 1 }));
-    expect(await new WorkspaceTabStore(db).get(owner.id, outsideTab.tabId)).not.toBeNull();
+    expect(await new PersonalTabStore(db).get(owner.id, outsideTab.tabId)).not.toBeNull();
     const moves = await agent(stack, stack.mainWorkspaceId, {
       calls: [
         {
@@ -1264,11 +1264,11 @@ integration("agent organization and durable ownership", () => {
       },
     );
     await regroupLocked.promise;
-    const closing = stack.host.browser.closeWorkspaceTab(owner.id, first.tabId);
+    const closing = stack.host.browser.closePersonalTab(owner.id, first.tabId);
     releaseRegroup.resolve();
     await Promise.all([regroup, closing]);
     expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
-    expect((await new WorkspaceTabStore(db).get(owner.id, second.tabId))?.closedAt).toBeNull();
+    expect((await new PersonalTabStore(db).get(owner.id, second.tabId))?.closedAt).toBeNull();
 
     const third = await command(stack, {
       type: "browser.tab.open",
@@ -1296,7 +1296,7 @@ integration("agent organization and durable ownership", () => {
     );
     try {
       await barrier.reached;
-      await stack.host.browser.closeWorkspaceTab(owner.id, third.tabId);
+      await stack.host.browser.closePersonalTab(owner.id, third.tabId);
     } finally {
       barrier.release();
     }
@@ -1499,8 +1499,8 @@ integration("tab group deletion and response bounds", () => {
         groupId: grouped.groupId,
         idempotencyKey: randomUUID(),
       }),
-      stack.host.browser.closeWorkspaceTab(owner.id, first.tabId),
-      stack.host.browser.activateWorkspaceTab(owner.id, second.tabId),
+      stack.host.browser.closePersonalTab(owner.id, first.tabId),
+      stack.host.browser.activatePersonalTab(owner.id, second.tabId),
       command(stack, {
         type: "workspace.delete",
         workspaceId: workspace.id,
@@ -1534,12 +1534,12 @@ integration("tab group deletion and response bounds", () => {
     ).toEqual([]);
     expect(
       await stack.host.store.database
-        .selectFrom("workspaceTabs")
+        .selectFrom("personalTabs")
         .selectAll()
         .where("id", "in", [first.tabId, second.tabId])
         .execute(),
     ).toEqual([]);
-    await expect(stack.host.browser.activateWorkspaceTab(owner.id, second.tabId)).rejects.toThrow();
+    await expect(stack.host.browser.activatePersonalTab(owner.id, second.tabId)).rejects.toThrow();
     evidence.push({
       assertions: [
         "lock checker sees regroup/close/restore/delete race",
@@ -1576,7 +1576,7 @@ integration("tab group deletion and response bounds", () => {
     expect(
       (
         await stack.host.store.database
-          .selectFrom("workspaceTabs")
+          .selectFrom("personalTabs")
           .select("closedAt")
           .where("id", "=", first.tabId)
           .executeTakeFirstOrThrow()
@@ -1633,7 +1633,7 @@ integration("tab group deletion and response bounds", () => {
       openerId: null,
       closedAt: new Date(),
     }));
-    await db.insertInto("workspaceTabs").values(closed).execute();
+    await db.insertInto("personalTabs").values(closed).execute();
     const deadGroups = Array.from({ length: 199 }, () => ({
       id: createId("browserTabGroup"),
       ownerId: owner.id,
@@ -1732,7 +1732,7 @@ integration("tab group deletion and response bounds", () => {
         })
         .execute();
       await db
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values({
           id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
           groupId: id,
@@ -1805,7 +1805,7 @@ integration("tab group deletion and response bounds", () => {
         BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
       );
       await db
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values(
           tabIds.map((id, order) => ({
             id,
@@ -1917,7 +1917,7 @@ integration("naturally idempotent tab operations", () => {
       tabIds: [first.tabId, second.tabId],
       idempotencyKey: randomUUID(),
     };
-    const closeTab = vi.spyOn(stack.host.browser, "closeWorkspaceTab");
+    const closeTab = vi.spyOn(stack.host.browser, "closePersonalTab");
     const closed = await command(stack, closeInput);
     expect(closed).toMatchObject({ closed: [first.tabId, second.tabId], failed: [] });
     expect(closeTab).toHaveBeenCalledTimes(2);
@@ -1932,17 +1932,17 @@ integration("naturally idempotent tab operations", () => {
       .selectFrom("users")
       .select("id")
       .executeTakeFirstOrThrow();
-    const tabs = new WorkspaceTabStore(stack.host.store.database);
+    const tabs = new PersonalTabStore(stack.host.store.database);
     expect((await tabs.get(owner.id, third.tabId))?.closedAt).toBeNull();
     expect(
       (await new BrowserTabGroupStore(stack.host.store.database).layout(owner.id)).groups,
     ).toEqual([]);
     await stack.restartHost();
-    const restartedClose = vi.spyOn(stack.host.browser, "closeWorkspaceTab");
+    const restartedClose = vi.spyOn(stack.host.browser, "closePersonalTab");
     expect(await command(stack, closeInput)).toEqual(closed);
     expect(restartedClose).toHaveBeenCalledTimes(2);
     expect(
-      (await new WorkspaceTabStore(stack.host.store.database).get(owner.id, third.tabId))?.closedAt,
+      (await new PersonalTabStore(stack.host.store.database).get(owner.id, third.tabId))?.closedAt,
     ).toBeNull();
     restartedClose.mockRestore();
     await stack.restartRunner();
@@ -1963,7 +1963,7 @@ integration("naturally idempotent tab operations", () => {
         input: { action: "close", tabIds: [third.tabId] },
       },
     ];
-    const agentClose = vi.spyOn(stack.host.browser, "closeWorkspaceTab");
+    const agentClose = vi.spyOn(stack.host.browser, "closePersonalTab");
     const throughTools = await agent(stack, stack.mainWorkspaceId, {
       calls: inputs.flatMap((input) => [input, input]),
     });

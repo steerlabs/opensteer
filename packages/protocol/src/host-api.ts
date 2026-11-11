@@ -888,6 +888,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     provider: z.string().min(1),
     routingMode: z.enum(["dedicated", "shared"]),
+    folder: TaskFolderSchema,
     type: z.literal("channel.connection.create"),
   }),
   z.strictObject({
@@ -906,6 +907,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     ownerHandles: z.array(z.string().trim().min(3).max(320)).min(1).max(8),
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
+    folder: TaskFolderSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
   z.strictObject({
@@ -914,6 +916,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     executionPolicy: ChannelExecutionPolicySchema,
     idempotencyKey: idempotencyKeySchema,
     selector: ChannelRouteSelectorSchema,
+    folder: TaskFolderSchema,
     type: z.literal("channel.binding.create"),
   }),
   z.strictObject({
