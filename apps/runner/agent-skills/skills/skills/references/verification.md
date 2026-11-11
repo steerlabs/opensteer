@@ -14,5 +14,4 @@ Summarize material capability changes or remaining blockers without narrating ev
 
 Files alone do not grant access, create a Trigger, or keep a process alive. If recurring work was
 requested, any agent can use `opensteer:triggers` to establish it within its authority and verify
-the returned state. An agent that lacks the required authority passes the concrete requirement to
-Main or its parent.
+the returned state. An agent that lacks the required authority reports the concrete requirement to its assigner or the person through its task.

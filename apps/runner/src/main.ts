@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolveAppWorkspaceRoot } from "./apps/app-workspace-root.js";
+
 import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -14,7 +14,6 @@ import { ensurePrivateDirectory } from "@opensteer/shared/privateFiles";
 import type { EnvironmentId, RunnerId } from "@opensteer/core";
 import { harnessRuntimeBoundaryForRunner } from "@opensteer/harness";
 import { RunnerBootIdSchema, type RunnerDescriptor } from "@opensteer/protocol";
-import { LocalWorkspaceAuthority } from "@opensteer/workspace-local";
 import {
   consumeRunnerApplicationConfig,
   parseAgentExecutionConfig,
@@ -32,9 +31,7 @@ import {
 } from "@opensteer/runner-client";
 import { cacheRunPlugins, prunePluginCache } from "./skills/plugin-cache.js";
 import { JsonRunnerLogger } from "./runtime/logger.js";
-import { RunWorkspaceManager, type RunWorkspaceManagerOptions } from "./workspace/mount-manager.js";
-import { LocalWorkspaceService } from "./workspace/local-workspace-service.js";
-import { NativeFsHelper } from "./runtime/native-fs-helper.js";
+import { TaskFolderManager } from "./folders/task-folder.js";
 import { verifyNodeExecutable } from "./runtime/node-executable.js";
 import { RunnerRuntime, type RunnerRuntimeOptions } from "./runtime/runtime.js";
 import { ExecutionContainment } from "./runtime/execution-containment.js";
@@ -200,7 +197,7 @@ export async function runRunnerDaemon(
 }
 
 /**
- * A computer that runs agents: its work location, Workspace storage, harnesses
+ * A computer that runs agents: its task folders, harnesses
  * and skills, plus the shell it offers.
  *
  * Shell degrades here rather than stopping the Runner, because a machine that
@@ -215,7 +212,7 @@ async function startAgentsRunner(input: {
   readonly logger: JsonRunnerLogger;
   readonly signal: AbortSignal;
 }): Promise<StartedRunner> {
-  const { applicationConfig, bootId, config, environment, identity, logger, signal } = input;
+  const { applicationConfig, bootId, config, environment, identity, logger } = input;
   await verifyNodeExecutable(config.nodeExecutable, { environment });
   const shellModule = config.modules.includes("shell")
     ? await prepareShellModule({
@@ -248,16 +245,7 @@ async function startAgentsRunner(input: {
   if (!environmentId) {
     throw new Error("This Runner's saved identity has no work location");
   }
-  const localWorkspace = localWorkspaceAccess(
-    config,
-    environmentId,
-    applicationConfig.nativeFsHelperBinary,
-    applicationConfig.localWorkspaceLegacyRegistryPath,
-    logger,
-  );
-  const workspaceManager = new RunWorkspaceManager({ local: localWorkspace });
-  const preflight = await workspaceManager.preflight(signal);
-  const advertisedBackings = preflight.workspaceBackings;
+  const folderManager = new TaskFolderManager(identity.runnerId);
   const execution = parseAgentExecutionConfig(environment);
   const attachmentBase = join(homedir(), ".cache", "opensteer", "runner-attachments");
   await ensurePrivateDirectory(attachmentBase);
@@ -270,19 +258,9 @@ async function startAgentsRunner(input: {
     const path = relative(parent, child);
     return path === "" || (!path.startsWith("..") && !isAbsolute(path));
   };
-  const excludedRoots = [
-    privateRoot,
-    await realpath(tmpdir()),
-    ...(await Promise.all(
-      [config.localWorkspaceRoot]
-        .filter((root): root is string => root !== undefined)
-        .map((root) => realpath(root)),
-    )),
-  ];
+  const excludedRoots = [privateRoot, await realpath(tmpdir())];
   if (excludedRoots.some((root) => overlaps(root, cacheRoot) || overlaps(cacheRoot, root))) {
-    throw new Error(
-      "Runner attachment cache must be outside private, Workspace and temporary roots",
-    );
+    throw new Error("Runner attachment cache must be outside private and temporary roots");
   }
   const attachmentCache = new AttachmentCache({
     root: cacheRoot,
@@ -298,8 +276,6 @@ async function startAgentsRunner(input: {
     deploymentKind: config.deploymentShape.kind,
     runnerKind: config.runnerKind,
   });
-  // A shared Linux Runner does not run agents without the boundary that keeps
-  // one user's Run out of the Runner's keys and every other profile's state.
   const harnessSandbox = harnessSandboxRequired(process.platform, harnessRuntimeBoundary)
     ? await HarnessSandbox.create({
         attachmentRoot: attachmentCache.root,
@@ -310,9 +286,7 @@ async function startAgentsRunner(input: {
           ),
         ),
         stateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
-        workspaceRoots: [
-          config.workspaceNamespace === "owner-scoped" ? config.localWorkspaceRoot : undefined,
-        ].filter((root): root is string => root !== undefined),
+        workspaceRoots: [],
       })
     : undefined;
   if (harnessSandbox)
@@ -342,17 +316,8 @@ async function startAgentsRunner(input: {
   pluginPruner.unref();
   const runtime = new RunnerRuntime({
     agentSkills,
-    ...(localWorkspace
-      ? {
-          resolveAppWorkspaceRoot: (binding, signal) =>
-            resolveAppWorkspaceRoot(
-              localWorkspace.authority,
-              localWorkspace.filesystem,
-              binding,
-              signal,
-            ),
-        }
-      : {}),
+    resolveAppFolder: async (folder, signal) =>
+      (await folderManager.prepare({ location: { folder, agentHome: folder }, signal })).path,
     attachmentCache,
     browserHarnessExecutable: execution.browserHarnessExecutable,
     bootId,
@@ -375,35 +340,16 @@ async function startAgentsRunner(input: {
     nodeExecutable: config.nodeExecutable,
     privateStateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
     projectContinuationIdentity: providerContinuationIdentityProjector(identity.privateKey),
-    workspaceManager,
+    folderManager,
   });
   return {
     agents: {
       earlierBootsContained: earlierBoots === "proven",
-      // What this build can serve, whether or not a Host has the trial on; a bundle without it starts anyway.
-      ...(agentSkills.paths["opensteer:knowledge"] ? { knowledgeSkill: true as const } : {}),
-      ...(localWorkspace
-        ? {
-            localWorkspaces: {
-              // Re-read on every connect, so a reconnect reconciles against
-              // what the disk holds now rather than what it held at startup.
-              inventory: () => localWorkspace.authority.inventory(signal),
-              service: new LocalWorkspaceService({
-                relocate: (workspaceId, move) => runtime.relocateWorkspace(workspaceId, move),
-                removeSpecialist: (id, remove) => runtime.removeSpecialist(id, remove),
-                appServers: runtime.appServers,
-                authority: localWorkspace.authority,
-                filesystem: localWorkspace.filesystem,
-              }),
-            },
-          }
-        : {}),
       runtime,
       runFileOptions: {
         dataDirectory: config.dataDirectory,
         helperBinary: applicationConfig.nativeFsHelperBinary,
       },
-      workspaceBackings: advertisedBackings,
     },
     close: async () => {
       clearInterval(pluginPruner);
@@ -419,7 +365,7 @@ async function startAgentsRunner(input: {
 
 /**
  * A reach-only computer has only the auxiliary modules its platform can
- * actually serve. Nothing else starts — no work location, Workspace storage,
+ * actually serve. Nothing else starts — no task folders,
  * harnesses or skills.
  *
  * Preparation cannot degrade every requested module away: that Runner would
@@ -493,56 +439,6 @@ export function machineAccessRuntimeOptions(
   };
 }
 
-function localWorkspaceAccess(
-  config: ReturnType<typeof parseRunnerConfig>,
-  environmentId: EnvironmentId,
-  helperBinary: string,
-  legacyRegistryFilePath: string | undefined,
-  logger: JsonRunnerLogger,
-): NonNullable<RunWorkspaceManagerOptions["local"]> & {
-  readonly authority: LocalWorkspaceAuthority;
-  readonly filesystem: NativeFsHelper;
-} {
-  const visibleRootPath = required(config.localWorkspaceRoot, "local Workspace root");
-  const registryFilePath = required(
-    config.localWorkspaceRegistryPath,
-    "local Workspace registry path",
-  );
-  const workspaceInstructionReader = new NativeFsHelper({
-    binary: helperBinary,
-    rootPolicy: "managed-local",
-  });
-  const authority = new LocalWorkspaceAuthority({
-    filesystemAuthority: workspaceInstructionReader,
-    ...(legacyRegistryFilePath ? { legacyRegistryFilePath } : {}),
-    namespace:
-      config.workspaceNamespace === "single-owner"
-        ? { kind: "single-owner", ownerEnvironmentId: environmentId }
-        : { kind: "owner-scoped" },
-    registryFilePath,
-    visibleRootPath,
-  });
-  return {
-    authority,
-    environmentId,
-    filesystem: workspaceInstructionReader,
-    namespace: config.workspaceNamespace,
-    preflight: async (signal) => {
-      const result = await workspaceInstructionReader.preflight(
-        visibleRootPath,
-        signal ?? new AbortController().signal,
-      );
-      logger.info("Managed local filesystem containment preflight passed", {
-        containment: result.containment,
-        helperVersion: result.binaryVersion,
-      });
-    },
-    resolver: authority,
-    root: visibleRootPath,
-    workspaceInstructionReader,
-  };
-}
-
 async function main(): Promise<void> {
   const shutdown = new AbortController();
   let receivedSignal = false;
@@ -586,9 +482,4 @@ if (entryPath && import.meta.url === pathToFileURL(entryPath).href) {
     );
     process.exitCode = 1;
   });
-}
-
-function required<Value>(value: Value | undefined, label: string): Value {
-  if (value === undefined) throw new Error(`Runner configuration is missing ${label}`);
-  return value;
 }

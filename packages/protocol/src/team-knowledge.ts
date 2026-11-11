@@ -32,6 +32,7 @@ export const TeamFactSchema = TeamFactInputSchema.extend({
   writtenAt: IsoDateTimeSchema,
 });
 export const TeamSqlInputSchema = z.strictObject({
+  mode: z.enum(["read", "write"]).default("read"),
   sql: z.string().min(1).max(32768).optional(),
   parameters: z.array(z.json()).max(100).default([]),
   operationId: z.uuid().optional(),

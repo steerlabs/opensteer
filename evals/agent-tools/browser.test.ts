@@ -66,7 +66,7 @@ describe("browser profile corpus", () => {
     expect(grade(testCase.expect, calls, incorrect).every((check) => check.pass)).toBe(false);
   });
 
-  it.each(["native-runtime-update-refusal", "workspace-profile-update-no-guest"])(
+  it.each(["native-runtime-update-refusal", "folder-profile-update-no-guest"])(
     "rejects Guest, replacement profiles and silent failure in %s",
     (id) => {
       const testCase = cases.find((testCase) => testCase.id === id)!;

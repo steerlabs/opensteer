@@ -98,7 +98,7 @@ describe("MCP connection audience", () => {
       label: "Agent",
       clientName: "Client",
       accessMode: "auto" as const,
-      reach: { kind: "user" as const },
+
       createdAt: new Date().toISOString(),
       lastUsedAt: null,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -111,7 +111,6 @@ describe("MCP connection audience", () => {
       connectionId: record.id,
       userId: owner,
       accessMode: "auto",
-      reach: { kind: "user" },
     });
     await expect(
       connections.authenticate(credential, origin + mcpResourcePath),

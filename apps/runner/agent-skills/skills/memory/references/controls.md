@@ -32,22 +32,22 @@ otherwise arrange the continuation below before ending this Run.
 If they still have not stopped, read the existing `opensteer:triggers` reminders reference
 (`references/reminders.md`), then call `trigger_write` action `create` for a one-shot reminder
 named `Reminder: finish deleting memory`,
-anchored to `home`, a few minutes later using the person's context time zone and an ISO-8601 instant
+anchored to this task, a few minutes later using the person's context time zone and an ISO-8601 instant
 with its date's offset. Declare `toolContractVersion: 3`; its program is:
 
 ```ts
-export default async function ({ opensteer }) {
+export default async function ({ event, opensteer }) {
   await opensteer.callTool("thread_send", {
     delivery: "queue",
     message: "Finish deleting memory",
-    threadId: "home",
+    threadId: event.trigger.anchorThreadId,
   });
 }
 ```
 
-Confirm `nextFireAt` with `trigger_read`, then tell the person deletion is pending and Chat will
+Confirm `nextFireAt` with `trigger_read`, then tell the person deletion is pending and this task will
 recheck and finish then. That continuation repeats the pause and Done steps, then rechecks both workers before deleting; if still busy,
-arrange another one-shot follow-up. Never claim erasure before deletion. If Chat lacks full access
+arrange another one-shot follow-up. Never claim erasure before deletion. If this task lacks full access
 to create the reminder (or creation fails), keep the pending line and files, explain that automatic
 follow-up could not be arranged, and tell the person to say "finish deleting memory". If the context
 time zone is unknown, ask for it as the reminders reference requires; do not promise a scheduled

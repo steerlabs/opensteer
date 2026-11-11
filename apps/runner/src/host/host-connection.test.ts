@@ -41,7 +41,6 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
-  type RunnerAgentsConnection,
   CausallyOrderedRunnerSink,
   WebSocketMessageSink,
   ReconnectingHostConnection,
@@ -55,8 +54,7 @@ import {
 } from "@opensteer/runner-client";
 
 const serverDeploymentShape = {
-  defaultWorkspaceBacking: "local-directory",
-  kind: "server" as const,
+  kind: "personal" as const,
 } as const;
 const testAgentSkills = {
   paths: {
@@ -164,7 +162,7 @@ describe("CausallyOrderedRunnerSink", () => {
 });
 
 describe("WebSocketMessageSink", () => {
-  it("sends storage replies with only their nested fence and keeps ordinary reports fenced", async () => {
+  it("sends app replies with only their nested fence and keeps ordinary reports fenced", async () => {
     const { server, socket, peer } = await connectedSocketPair();
     const fence: RunnerConnectionFence = {
       bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
@@ -177,15 +175,17 @@ describe("WebSocketMessageSink", () => {
     ledger.adopt(fence, new Date(Date.now() + 60_000).toISOString());
     const sink = new WebSocketMessageSink(socket, ledger);
     const reply = {
-      error: { code: "configuration-invalid", message: "Test storage failure", retryable: false },
+      appId: "app_test",
+      ok: false,
+      error: "Test app failure",
       fence: {
         ...fence,
+        bindingGeneration: 1,
         environmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
       },
-      operationId: "workspace:test:provision:v1:1",
+
       requestId: randomUUID(),
-      type: "runner.workspace.local.error",
+      type: "runner.app.result",
     } satisfies RunnerOperationalReport;
     const receive = () =>
       withTimeout(
@@ -475,7 +475,7 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-full-access-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "f".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
@@ -490,9 +490,9 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
+
         workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
       identity,
       identityStore: {
@@ -612,7 +612,7 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-browser-agents-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => {
           throw new Error("not used");
         },
@@ -628,8 +628,6 @@ describe("runnerWebSocketUrl", () => {
       runtimeVersion: "test",
       agents: {
         runtime,
-        workspaceBackings: ["local-directory"],
-        localWorkspaces: localStorageFixture(environmentId),
       },
       browserBridge: config.browserBridge,
     });
@@ -676,7 +674,7 @@ describe("runnerWebSocketUrl", () => {
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const harness = {
-      config: {},
+      config: {} as unknown as RunnerConfig,
       driverKind: "native",
       id: createId("harnessInstance"),
       name: "Native",
@@ -686,10 +684,6 @@ describe("runnerWebSocketUrl", () => {
     } as const;
     const otherHarness = { ...harness, id: createId("harnessInstance"), name: "Other" } as const;
     const abort = new AbortController();
-    let finishSkillScan!: () => void;
-    const skillScan = new Promise<void>((resolve) => {
-      finishSkillScan = resolve;
-    });
     let finishInspection!: () => void;
     const inspection = new Promise<readonly []>((resolve) => {
       finishInspection = () => resolve([]);
@@ -773,7 +767,6 @@ describe("runnerWebSocketUrl", () => {
             }),
           );
         } else if (message.type === "runner.command-rejected") {
-          finishSkillScan();
           finishInspection();
         } else if (message.type === "runner.harness-catalog") {
           if (message.requestId === "overtaking-catalog") return;
@@ -811,7 +804,7 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-runner-connection-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => Promise.reject(new Error("not used")),
         writableRoots: () => ["/runner/workspaces"],
       },
@@ -854,9 +847,9 @@ describe("runnerWebSocketUrl", () => {
       nodeExecutable: process.execPath,
       runnerId,
       runnerKind: "main",
-      workspaceBackings: ["local-directory"],
+
       workspaceNamespace: "owner-scoped",
-    };
+    } as unknown as RunnerConfig;
     const pair = generateKeyPairSync("ed25519");
     const identity = {
       createdAt: new Date().toISOString(),
@@ -870,19 +863,7 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
-        knowledgeSkill: true,
-        localWorkspaces: (() => {
-          const local = localStorageFixture(environmentId);
-          local.service.scanSkills = async () => {
-            await withTimeout(skillScan, 1_000, {
-              timeoutError: () => new Error("Command waited behind the initial skill scan"),
-            });
-            return { status: "complete", skills: [], warnings: [] };
-          };
-          return local;
-        })(),
         runtime,
-        workspaceBackings: ["local-directory"],
       },
       bootId,
       config,
@@ -924,13 +905,8 @@ describe("runnerWebSocketUrl", () => {
             agents: {
               environmentIds: [environmentId],
               computerTool: 1,
-              knowledgeSkill: 1,
+
               harnessDrivers: [],
-              localStorage: expect.objectContaining({
-                bindings: [expect.objectContaining({ state: "ready" })],
-                truncated: false,
-              }),
-              workspaceBackings: ["local-directory"],
             },
           },
           runnerId,
@@ -1113,7 +1089,7 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-reach-only-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "r".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
@@ -1128,9 +1104,9 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
+
         workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1356,7 +1332,7 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-integrations-reconnect-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "i".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
@@ -1371,9 +1347,9 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
+
         workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1566,7 +1542,7 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-lease-expiry-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "r".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
@@ -1581,9 +1557,9 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
+
         workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1723,7 +1699,7 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-revoked-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "v".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
@@ -1738,9 +1714,9 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
+
         workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: { acceptHostConnection: async () => identity },
       logger: { error: () => undefined, info: () => undefined },
@@ -1848,7 +1824,7 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-runner-reenroll-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => Promise.reject(new Error("not used")),
         writableRoots: () => ["/runner/workspaces"],
       },
@@ -1867,9 +1843,7 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
-        localWorkspaces: localStorageFixture(),
         runtime,
-        workspaceBackings: ["local-directory"],
       },
       bootId,
       config: {
@@ -1891,9 +1865,9 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-        workspaceBackings: ["local-directory"],
+
         workspaceNamespace: "owner-scoped",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1927,7 +1901,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       const host = await fakeAgentsHost();
       const runner = engineRecheckRunner(host.url, () => false);
       const first = {
-        config: {},
+        config: {} as unknown as RunnerConfig,
         driverKind,
         id: createId("harnessInstance"),
         name: "First",
@@ -2026,7 +2000,6 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       runId: createId("run"),
       terminal: false,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     };
     vi.spyOn(runner.runtime, "attachInventory").mockReturnValue([heldRun]);
     const abort = new AbortController();
@@ -2201,7 +2174,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       privateStateDirectory: "/tmp/opensteer-engine-recheck-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => Promise.reject(new Error("not used")),
         writableRoots: () => ["/runner/workspaces"],
       },
@@ -2220,9 +2193,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     const errors: string[] = [];
     const connection = new ReconnectingHostConnection({
       agents: {
-        localWorkspaces: localStorageFixture(),
         runtime,
-        workspaceBackings: ["local-directory"],
       },
       bootId,
       config: {
@@ -2243,9 +2214,9 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-        workspaceBackings: ["local-directory"],
+
         workspaceNamespace: "owner-scoped",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -2424,33 +2395,7 @@ function terminalEvent(ids: {
       runId: ids.runId,
       threadId: ids.threadId,
       type: "run.interrupted",
-      workspaceId: createId("workspace"),
     },
     type: "runner.event",
-  };
-}
-
-function localStorageFixture(
-  environmentId?: EnvironmentId,
-): NonNullable<RunnerAgentsConnection["localWorkspaces"]> {
-  const storageAuthorityId = createId("storageAuthority");
-  return {
-    inventory: async () => ({
-      bindings: environmentId
-        ? [
-            {
-              bindingId: createId("workspaceBinding"),
-              generation: 1,
-              workspaceId: createId("workspace"),
-              state: "ready" as const,
-            },
-          ]
-        : [],
-      storageAuthorityId,
-      truncated: false,
-    }),
-    service: {
-      scanSkills: async () => ({ status: "complete", skills: [], warnings: [] }),
-    } as unknown as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
   };
 }

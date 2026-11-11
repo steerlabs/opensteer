@@ -52,19 +52,18 @@ import {
   placeIdentityKey,
   ThreadIdSchema,
   MessageIdSchema,
-  WorkspaceIdSchema,
   type AgentEvent,
   AgentEventSchema,
   type PlaceContentPart,
   type PlaceIdentity,
+  type DeploymentId,
   type EnvironmentId,
   type UserId,
   type HarnessId,
   type Message,
   type Thread,
   type ThreadAccessMode,
-  type Workspace,
-  type WorkspaceBackingKind,
+  type TaskFolder,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
@@ -86,10 +85,9 @@ import { delegationPlacement } from "../../agents/delegation-placement.js";
 import { environmentDiscovery } from "../../agents/environment-discovery.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
-import type { AgentWorkspaceMountService } from "../../agents/agent-workspace-mount-service.js";
 import type { MemoryPassService } from "../../agents/memory-pass-service.js";
 import { callerThread, type AgentCaller } from "../agent-caller.js";
-import type { ToolCall } from "./index.js";
+import type { ToolCall } from "./types.js";
 import {
   sealRequestResponse,
   type RequestResponseVault,
@@ -97,7 +95,6 @@ import {
 import {
   assertMutableTarget,
   messageSource,
-  assertTarget,
   callerContext,
   callerListScope,
   delegationOrigin,
@@ -110,14 +107,12 @@ import {
   threadCallerAuthority,
 } from "../operations.js";
 
-interface AgentWorkspaceCreator {
-  projectPath(workspace: Workspace): Promise<string>;
-  create(input: {
-    readonly createdBy: RunToolScope["requestedBy"];
-    readonly idempotencyKey: string;
-    readonly kind: "project";
-    readonly name: string;
-  }): Promise<Workspace>;
+export interface AgentTaskFolders {
+  resolve(
+    ownerId: UserId,
+    folder?: TaskFolder,
+  ): Promise<{ readonly folder: TaskFolder; readonly environmentId: EnvironmentId }>;
+  canExecute(environmentId: EnvironmentId): boolean;
 }
 
 interface ConnectionTask {
@@ -131,6 +126,7 @@ const unknownEnvironment = "Selected execution environment does not exist";
 const chooseExecutionNext = "See the current choices with orchestrator_capabilities.";
 
 export class ProductToolHandlers {
+  readonly #deploymentId: DeploymentId;
   readonly #threads: ThreadService;
   readonly #realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
   readonly #computerUse:
@@ -148,7 +144,7 @@ export class ProductToolHandlers {
     | "drainRunPlaces"
     | "closeAgentSession"
     | "listAgentSessions"
-    | "listGrantedProfiles"
+    | "listAgentProfiles"
     | "openAgentSession"
     | "requestAccess"
   >;
@@ -161,19 +157,16 @@ export class ProductToolHandlers {
   readonly #commands: CommandService;
   readonly #requestResponseVault: RequestResponseVault | undefined;
   readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
-  readonly #environmentWorkspaceBackings: (
-    environmentId: EnvironmentId,
-  ) => readonly WorkspaceBackingKind[];
+  readonly #folders: AgentTaskFolders;
   readonly #isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly #onEvent: (event: AgentEvent) => void;
   readonly #store: OpensteerStore;
   readonly #onBrowserUsage: ((credits: readonly BrowserUsageCredit[]) => void) | undefined;
   readonly #placeContext: Pick<PlaceContextService, "assertDelegated"> | undefined;
-  readonly #workspaceMounts: AgentWorkspaceMountService;
   readonly #memoryPasses: Pick<MemoryPassService, "admissionSelection"> | undefined;
-  readonly #workspaces: AgentWorkspaceCreator;
 
   constructor(options: {
+    readonly deploymentId: DeploymentId;
     readonly threads: ThreadService;
     readonly realtime: Pick<RealtimeHub, "observe" | "sendToUsers">;
     readonly computerUse?: Pick<ComputerUseService, "sessionsForRunner" | "authorizeDisplay">;
@@ -191,7 +184,7 @@ export class ProductToolHandlers {
       | "drainRunPlaces"
       | "closeAgentSession"
       | "listAgentSessions"
-      | "listGrantedProfiles"
+      | "listAgentProfiles"
       | "openAgentSession"
       | "requestAccess"
     >;
@@ -205,19 +198,15 @@ export class ProductToolHandlers {
     readonly commands: CommandService;
     readonly requestResponseVault?: RequestResponseVault;
     readonly questionNotices?: Pick<TaskQuestionNotices, "wait">;
-    readonly defaultWorkspaceBacking: WorkspaceBackingKind;
-    readonly environmentWorkspaceBackings: (
-      environmentId: EnvironmentId,
-    ) => readonly WorkspaceBackingKind[];
+    readonly folders: AgentTaskFolders;
     readonly isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
     readonly memoryPasses?: Pick<MemoryPassService, "admissionSelection">;
-    readonly onWorkspaceEvent: (event: AgentEvent) => void;
+    readonly onEvent: (event: AgentEvent) => void;
     readonly store: OpensteerStore;
     readonly onBrowserUsage?: (credits: readonly BrowserUsageCredit[]) => void;
     readonly placeContext?: Pick<PlaceContextService, "assertDelegated">;
-    readonly workspaceMounts: AgentWorkspaceMountService;
-    readonly workspaces: AgentWorkspaceCreator;
   }) {
+    this.#deploymentId = options.deploymentId;
     this.#threads = options.threads;
     this.#memoryPasses = options.memoryPasses;
     this.#realtime = options.realtime;
@@ -233,14 +222,12 @@ export class ProductToolHandlers {
     this.#commands = options.commands;
     this.#requestResponseVault = options.requestResponseVault;
     this.#questionNotices = options.questionNotices;
-    this.#environmentWorkspaceBackings = options.environmentWorkspaceBackings;
+    this.#folders = options.folders;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onEvent = options.onEvent;
     this.#store = options.store;
     this.#placeContext = options.placeContext;
     this.#onBrowserUsage = options.onBrowserUsage;
-    this.#workspaceMounts = options.workspaceMounts;
-    this.#workspaces = options.workspaces;
   }
 
   async #readableMessages(
@@ -292,7 +279,6 @@ export class ProductToolHandlers {
           ? await this.#store.getThreadForOwner(run.threadId, claims.requestedBy)
           : null;
         if (!thread) throw forbidden("Run is unavailable to this user");
-        assertTarget(caller, thread);
       }
       await this.#browser.drainRunPlaces(targetRunId);
       const current = await this.#store.latestRunPlace(targetRunId);
@@ -338,7 +324,6 @@ export class ProductToolHandlers {
         {
           kind: "agent",
           ownerId: claims.requestedBy,
-          workspaceId: claims.workspaceId,
           threadId: claims.threadId,
           agentBindingId: `run:${claims.runId}`,
         },
@@ -347,7 +332,6 @@ export class ProductToolHandlers {
     } else if ("threadId" in target) {
       const targetThread = await this.#store.getThreadForOwner(target.threadId, claims.requestedBy);
       if (!targetThread) throw forbidden("Thread is unavailable to this user");
-      assertTarget(caller, targetThread);
     }
     return target;
   }
@@ -365,7 +349,6 @@ export class ProductToolHandlers {
       ? 0
       : await this.#personShow(claims.requestedBy, {
           type: "host.show",
-          workspaceId: claims.workspaceId,
           threadId: claims.threadId,
           runId: claims.runId,
           target,
@@ -396,25 +379,10 @@ export class ProductToolHandlers {
   async orchestrator_capabilities({ caller, input }: ToolCall<"orchestrator_capabilities">) {
     const currentThread = caller.kind === "connection" ? undefined : callerThread(caller);
     const claims = { requestedBy: caller.userId };
-    const workspaceId =
-      input.workspaceId ??
-      currentThread?.workspaceId ??
-      (caller.reach.kind === "workspace" ? caller.reach.workspaceId : undefined);
-    const workspace = workspaceId
-      ? await this.#store.getWorkspaceForOwner(workspaceId, caller.userId)
-      : null;
-    if (input.workspaceId && !workspace) throw forbidden("Workspace is unavailable");
-    if (
-      workspace &&
-      caller.reach.kind !== "user" &&
-      workspace.id !==
-        (caller.reach.kind === "workspace" ? caller.reach.workspaceId : currentThread?.workspaceId)
-    )
-      throw forbidden("Workspace is outside the caller's reach");
-    const environmentId =
-      workspace?.backing.kind === "local-directory"
-        ? workspace.backing.ownerEnvironmentId
-        : currentThread?.environmentId;
+    const { folder, environmentId } = await this.#folders.resolve(
+      caller.userId,
+      input.folder ?? currentThread?.folder,
+    );
     const result = await environmentDiscovery({
       store: this.#store,
       userId: claims.requestedBy,
@@ -461,6 +429,7 @@ export class ProductToolHandlers {
       ...(result.delegationDefault ? { delegationDefault: result.delegationDefault } : {}),
       harnesses,
       ...(result.harnessesNextCursor ? { harnessesNextCursor: result.harnessesNextCursor } : {}),
+      folder,
       accessCeiling: caller.accessMode,
       limits: {
         maxDepth: caller.kind === "connection" ? null : agentDelegationMaxDepth,
@@ -494,84 +463,9 @@ export class ProductToolHandlers {
         name,
         capabilities,
         connected: this.#isEnvironmentConnected(id),
-        workspaceBackings: this.#environmentWorkspaceBackings(id),
+        can: { executeTasks: this.#folders.canExecute(id) },
       })),
       ...(rows.length > 64 ? { environmentsNextCursor: environments[63]!.id } : {}),
-    };
-  }
-
-  async project_list({ caller, input }: ToolCall<"project_list">) {
-    const claims = { requestedBy: caller.userId };
-
-    if (caller.reach.kind !== "user") {
-      const workspaceId =
-        caller.reach.kind === "workspace"
-          ? caller.reach.workspaceId
-          : callerThread(caller).workspaceId;
-      const workspace = await this.#store.getWorkspaceForOwner(workspaceId, caller.userId);
-      const projects =
-        !input.before && workspace?.kind === "project"
-          ? [
-              {
-                id: workspace.id,
-                kind: workspace.kind,
-                name: workspace.name,
-                status: workspace.status,
-              },
-            ]
-          : [];
-      return {
-        projects,
-        window: {
-          byteCount: new TextEncoder().encode(JSON.stringify(projects)).byteLength,
-          hasMore: false,
-          itemCount: projects.length,
-          nextBefore: null,
-          totalItems: projects.length,
-        },
-      };
-    }
-    const page = await this.#store.workspacePageForOwner({
-      ownerId: claims.requestedBy,
-      maxBytes: 64 * 1_024,
-      maxItems: input.limit,
-      ...(input.before ? { before: input.before } : {}),
-    });
-    return {
-      projects: page.workspaces
-        .filter(({ kind }) => kind === "project")
-        .map(({ id, kind, name, status }) => ({ id, kind, name, status })),
-      window: page.window,
-    };
-  }
-
-  async project_create({ caller, input, operationKey }: ToolCall<"project_create">) {
-    if (caller.reach.kind !== "user") throw forbidden("Creating a Project requires user reach");
-    const claims = { requestedBy: caller.userId };
-    const requestId = operationId(caller, operationKey, "project_create");
-
-    const workspace = await this.#workspaces.create({
-      createdBy: claims.requestedBy,
-      ...(input.icon ? { icon: input.icon } : {}),
-      ...(input.color ? { color: input.color } : {}),
-      idempotencyKey: idempotencyKey(caller, requestId, "workspace"),
-      kind: "project",
-      name: input.name,
-    });
-    this.#realtime.sendToUsers([caller.userId], { type: "host.plugins-changed" });
-    return {
-      id: workspace.id,
-      slug: workspace.slug,
-      path:
-        caller.kind !== "run"
-          ? await this.#workspaces.projectPath(workspace)
-          : (
-              await this.#workspaceMounts.mount({
-                requestId: requestId,
-                scope: requireRun(caller).claims,
-                workspace,
-              })
-            ).path,
     };
   }
 
@@ -579,17 +473,6 @@ export class ProductToolHandlers {
     const claims = { requestedBy: caller.userId };
 
     const scope = callerListScope(caller);
-    if (input.workspaceId) {
-      const workspace = await this.#store.getWorkspaceForOwner(
-        input.workspaceId,
-        claims.requestedBy,
-      );
-      if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
-      if (scope.kind === "workspace" && workspace.id !== scope.workspaceId) {
-        throw forbidden("Caller can list Threads only in its Workspace");
-      }
-    }
-
     if (input.parentThreadId === "self" && caller.kind === "connection")
       throw badRequest("Connected agents must name parentThreadId; self needs an anchor Thread");
     const parentThreadId =
@@ -597,7 +480,6 @@ export class ProductToolHandlers {
     if (parentThreadId) {
       const parent = await this.#store.getThreadForOwner(parentThreadId, caller.userId);
       if (!parent) throw forbidden("Parent Thread is unavailable");
-      assertTarget(caller, parent);
     }
     const page = await this.#store.agentThreadPageForOwner({
       ...(parentThreadId ? { parentThreadId } : {}),
@@ -608,7 +490,7 @@ export class ProductToolHandlers {
       ...(input.query ? { query: input.query } : {}),
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
-      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      ...(input.folder ? { folder: input.folder } : {}),
     });
     const response = {
       threads: page.threads.map((summary) => ({
@@ -623,8 +505,7 @@ export class ProductToolHandlers {
         doneAt: summary.doneAt,
         title: summary.title,
         updatedAt: summary.updatedAt,
-        workspaceId: summary.workspaceId,
-        workspaceName: summary.workspaceName,
+        folder: summary.folder,
       })),
       hasMore: page.window.hasMore,
       nextBefore: page.window.nextBefore,
@@ -636,16 +517,9 @@ export class ProductToolHandlers {
   async thread_read({ caller, input }: ToolCall<"thread_read">) {
     if (input.subagentId) return this.#readSubagent(caller, input);
     const claims = { requestedBy: caller.userId };
-    const threadId =
-      input.threadId === "home"
-        ? (await this.#store.findMainWorkspaceForOwner(caller.userId))?.homeThreadId
-        : input.threadId === "self"
-          ? this.#targetThreadId(caller)
-          : input.threadId;
-    if (!threadId) throw conflict("Chat has not been started yet");
+    const threadId = input.threadId === "self" ? this.#targetThreadId(caller) : input.threadId;
     const thread = await this.#store.getThreadForOwner(threadId, claims.requestedBy);
     if (!thread) throw forbidden("Thread is unavailable to this user");
-    assertTarget(caller, thread);
 
     const recent = await readAgentThreadRecent(this.#store.database, {
       threadId: thread.id,
@@ -723,7 +597,6 @@ export class ProductToolHandlers {
     const thread = await this.#store.getThreadForOwner(node.threadId, caller.userId);
     if (!thread) throw missing();
     try {
-      assertTarget(caller, thread);
     } catch {
       throw missing();
     }
@@ -745,7 +618,7 @@ export class ProductToolHandlers {
     );
     const starts = calls.length
       ? await this.#store.database
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .selectAll()
           .where("nodeDetailId", "=", node.id)
           .where("type", "=", "tool.started")
@@ -1067,12 +940,12 @@ export class ProductToolHandlers {
     if (!assignment) throw forbidden("Assignment is unavailable");
     const worker = await this.#store.getThreadForOwner(assignment.workerThreadId, caller.userId);
     if (!worker) throw forbidden("Thread is unavailable");
-    assertTarget(caller, worker);
+
     const read = await readAssignmentResult(this.#store.database, {
       assignmentId: input.assignmentId,
       authority: threadCallerAuthority(caller),
     });
-    for (const event of read.events) this.#onWorkspaceEvent(event);
+    for (const event of read.events) this.#onEvent(event);
     return taskItem(read.assignment, read.result);
   }
 
@@ -1134,7 +1007,6 @@ export class ProductToolHandlers {
         userId: caller.userId,
         limit: input.limit,
         ...(input.before ? { before: input.before } : {}),
-        ...(caller.reach.kind === "workspace" ? { workspaceId: caller.reach.workspaceId } : {}),
       });
       return { ...page, requests: page.requests.map(agentRequest) };
     }
@@ -1144,7 +1016,6 @@ export class ProductToolHandlers {
       ...(input.before ? { before: input.before } : {}),
       limit: input.limit,
       originatingThreadId: claims.threadId,
-      targetWorkspaceId: claims.workspaceId,
     });
     return { requests: page.requests.map(agentRequest), window: page.window };
   }
@@ -1157,7 +1028,7 @@ export class ProductToolHandlers {
       threadId: claims.threadId,
       withdrawnBy: claims.requestedBy,
     });
-    for (const event of withdrawn.events) this.#onWorkspaceEvent(event);
+    for (const event of withdrawn.events) this.#onEvent(event);
     return { request: agentRequest(withdrawn.request) };
   }
 
@@ -1170,35 +1041,24 @@ export class ProductToolHandlers {
     if (input.threadId && !existingThread) throw forbidden("Target Thread is unavailable");
     if (existingThread) {
       assertMutableTarget(caller, existingThread);
-      if (existingThread.role !== "work" || existingThread.id === currentThread.id) {
+      if (existingThread.purpose !== "task" || existingThread.id === currentThread.id) {
         throw badRequest("Choose another work Thread for the assignment");
       }
     }
-    const targetWorkspaceId =
-      existingThread?.workspaceId ?? input.workspaceId ?? currentThread.workspaceId;
-    const workspace = await this.#store.getWorkspaceForOwner(targetWorkspaceId, claims.requestedBy);
-    if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
-    if (caller.reach.kind !== "user" && workspace.id !== currentThread.workspaceId) {
-      throw forbidden("Caller can delegate only inside its Workspace");
-    }
+    const { folder, environmentId } = await this.#folders.resolve(
+      claims.requestedBy,
+      existingThread?.folder ?? input.folder ?? currentThread.folder,
+    );
     const specialist = await resolveDelegationSpecialist(
       this.#store,
       claims.requestedBy,
-      workspace.id,
       input.specialist,
       existingThread,
     );
     if (specialist && (input.model || input.harnessInstanceId))
       throw badRequest("Specialist execution is selected by its registration");
-    const environmentId = existingThread?.environmentId ?? workspace.backing.ownerEnvironmentId;
     const environment = await this.#store.getEnvironment(environmentId);
     if (!environment) throw badRequest(unknownEnvironment, chooseExecutionNext);
-    if (
-      workspace.backing.kind === "local-directory" &&
-      workspace.backing.ownerEnvironmentId !== environment.id
-    ) {
-      throw badRequest("A local-directory Workspace can run only in its owning environment");
-    }
     const placement =
       specialist && !existingThread
         ? await this.#specialistPlacement({
@@ -1216,7 +1076,7 @@ export class ProductToolHandlers {
             parent: currentThread,
           });
 
-    return { existingThread, workspace, specialist, environment, placement };
+    return { existingThread, folder, specialist, environment, placement };
   }
   async authorizeDelegation(call: ToolCall<"delegate_task">) {
     if (call.caller.kind === "connection") {
@@ -1247,7 +1107,7 @@ export class ProductToolHandlers {
     if (!prior) return null;
     const requested = prior.payload as Readonly<Record<string, unknown>>;
     const asked = {
-      ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+      ...(input.folder === undefined ? {} : { folder: input.folder }),
       ...(input.harnessInstanceId === undefined
         ? {}
         : { harnessInstanceId: input.harnessInstanceId }),
@@ -1255,13 +1115,7 @@ export class ProductToolHandlers {
       ...(input.title === undefined ? {} : { title: input.title }),
     };
     const specialist = input.specialist
-      ? await resolveDelegationSpecialist(
-          this.#store,
-          caller.userId,
-          WorkspaceIdSchema.parse(requested.workspaceId),
-          input.specialist,
-          null,
-        )
+      ? await resolveDelegationSpecialist(this.#store, caller.userId, input.specialist, null)
       : null;
     if (
       prior.type !== "thread.create" ||
@@ -1287,7 +1141,7 @@ export class ProductToolHandlers {
   ): Promise<ConnectionTask> {
     const {
       existing,
-      workspace,
+      folder,
       environmentId,
       harnessInstanceId,
       harnessRevision,
@@ -1301,7 +1155,7 @@ export class ProductToolHandlers {
       caller,
       {
         type: "thread.create",
-        workspaceId: workspace.id,
+        folder,
         environmentId,
         harnessInstanceId,
         modelSelection,
@@ -1357,7 +1211,7 @@ export class ProductToolHandlers {
         result: null,
         pendingRequests: thread.pendingRequests,
         parentThreadId: null,
-        workspaceId: thread.workspaceId,
+        folder: thread.folder,
         environmentId: thread.environmentId,
         createdAt: thread.createdAt,
         finishedAt: null,
@@ -1383,7 +1237,7 @@ export class ProductToolHandlers {
       claims.requestedBy,
       idempotencyKey(caller, requestId, "delegate"),
       async () => {
-        const { existingThread, workspace, specialist, environment, placement } =
+        const { existingThread, folder, specialist, environment, placement } =
           await this.prepareDelegation({ caller, input, operationKey });
         const delegateInput = {
           ...(specialist ? { specialistId: specialist.id } : {}),
@@ -1405,7 +1259,7 @@ export class ProductToolHandlers {
           task: [{ text: input.task, type: "text" }, ...(input.places ?? [])],
           title: input.title ?? provisionalThreadTitle(input.task),
           titleSource: input.title === undefined ? "provisional" : "chosen",
-          workspaceId: workspace.id,
+          folder,
         } as const;
         const replayed = await this.#store.findDelegatedThreadByIdempotency(delegateInput);
         if (replayed) {
@@ -1418,14 +1272,8 @@ export class ProductToolHandlers {
             parent: currentThread,
             parts: input.places,
             ...(existingThread ? { targetThread: existingThread } : {}),
-            workspaceId: workspace.id,
+            folder,
           });
-        }
-        if (workspace.status !== "ready") {
-          throw conflict(
-            "Target Workspace filesystem is not ready",
-            workspace.status === "provisioning" || workspace.status === "unavailable",
-          );
         }
         if (!this.#isEnvironmentConnected(environment.id))
           throw conflict("Selected execution environment is not connected", true);
@@ -1459,17 +1307,14 @@ export class ProductToolHandlers {
   async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
     const claims = callerContext(caller);
 
-    const profiles = await this.#browser.listGrantedProfiles(
-      claims.requestedBy,
-      claims.workspaceId,
-      caller.key,
-    );
+    const profiles = await this.#browser.listAgentProfiles(claims.requestedBy);
     return { profiles };
   }
 
   async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
     const claims = requireRun(caller).claims;
     return await this.#browserSources.agentUseCard({
+      deploymentId: this.#deploymentId,
       callId: operationId(caller, operationKey, "use_card"),
       ownerId: claims.requestedBy,
       reason: input.reason,
@@ -1477,7 +1322,6 @@ export class ProductToolHandlers {
       sessionId: input.sessionId,
       site: input.site,
       threadId: claims.threadId,
-      workspaceId: claims.workspaceId,
     });
   }
 
@@ -1486,6 +1330,7 @@ export class ProductToolHandlers {
     const requestId = operationId(caller, operationKey, "sign_in");
 
     const result = await this.#browserSources.agentSignIn({
+      deploymentId: this.#deploymentId,
       loginFill: this.#supportsLoginFill(claims),
       callId: requestId,
       ownerId: claims.requestedBy,
@@ -1496,7 +1341,6 @@ export class ProductToolHandlers {
         : { sessionId: BrowserSessionIdSchema.parse(input.sessionId) }),
       site: input.site,
       threadId: claims.threadId,
-      workspaceId: claims.workspaceId,
     });
     const guidance = passwordsOfferGuidance(result);
     return guidance === null ? result : { ...result, guidance };
@@ -1526,20 +1370,13 @@ export class ProductToolHandlers {
     const claims = requireRun(caller).claims;
     const requestId = operationId(caller, operationKey, "browser_profile_request");
 
-    const workspaceId = input.workspaceId ?? claims.workspaceId;
-    if (caller.reach.kind !== "user" && workspaceId !== claims.workspaceId) {
-      throw forbidden("Caller can request a browser profile only for its Workspace");
-    }
-
     return await this.#browser.requestAccess({
       callId: requestId,
-      originatingWorkspaceId: claims.workspaceId,
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
       suggestion: input.suggestion,
       threadId: claims.threadId,
-      workspaceId,
     });
   }
 
@@ -1552,7 +1389,6 @@ export class ProductToolHandlers {
     const actor = {
       kind: "agent" as const,
       ownerId: claims.requestedBy,
-      workspaceId: claims.workspaceId,
       threadId: claims.threadId,
       agentBindingId,
     };
@@ -1569,7 +1405,6 @@ export class ProductToolHandlers {
     const actor = {
       kind: "agent" as const,
       ownerId: claims.requestedBy,
-      workspaceId: claims.workspaceId,
       threadId: claims.threadId,
       agentBindingId,
     };
@@ -1590,7 +1425,6 @@ export class ProductToolHandlers {
       sessions: await this.#browser.listAgentSessions({
         agentBindingId,
         ownerId: claims.requestedBy,
-        workspaceId: claims.workspaceId,
       }),
     };
   }
@@ -1620,7 +1454,6 @@ export class ProductToolHandlers {
       ownerId: claims.requestedBy,
       ...(input.profileId ? { profileId: input.profileId } : {}),
       ...(input.sessionId ? { sessionId: BrowserSessionIdSchema.parse(input.sessionId) } : {}),
-      workspaceId: claims.workspaceId,
     });
     return { session: opened.session, wasExisting: opened.wasExisting };
   }
@@ -1636,7 +1469,6 @@ export class ProductToolHandlers {
         agentBindingId,
         ownerId: claims.requestedBy,
         sessionId: BrowserSessionIdSchema.parse(input.sessionId),
-        workspaceId: claims.workspaceId,
       }),
     };
   }
@@ -1645,11 +1477,7 @@ export class ProductToolHandlers {
     const anchor = caller.kind === "connection" ? null : callerThread(caller);
     const requestId = operationId(caller, operationKey, "thread_send");
     const observationId = input.observationId ?? requestId;
-    const destination =
-      input.threadId === "home"
-        ? (await this.#store.findMainWorkspaceForOwner(caller.userId))?.homeThreadId
-        : ThreadIdSchema.parse(input.threadId);
-    if (!destination) throw conflict("Chat has not been started yet");
+    const destination = ThreadIdSchema.parse(input.threadId);
     if (destination === anchor?.id && caller.kind === "run")
       throw badRequest("An agent cannot message its own active Thread");
     const thread = await this.#store.getThreadForOwner(destination, caller.userId);
@@ -1658,7 +1486,6 @@ export class ProductToolHandlers {
     if (thread.specialistId && input.delivery !== "report")
       await new SpecialistStore(this.#store.database).assertRunnable(
         thread.specialistId,
-        thread.workspaceId,
         caller.userId,
       );
     const memoryPass =
@@ -1691,25 +1518,18 @@ export class ProductToolHandlers {
     caller: Extract<AgentCaller, { kind: "connection" }>,
     input: ToolCall<"delegate_task">["input"],
   ) {
-    if (!input.workspaceId && !input.threadId)
-      throw badRequest("A connected agent must name workspaceId or threadId");
     if (input.places?.length) throw badRequest("Connected agents cannot forward place references");
     const existing = input.threadId
       ? await this.#threads.assertTarget(caller, input.threadId)
       : null;
-    if (existing && existing.role !== "work") throw badRequest("Choose a work Thread");
-    const workspaceId = existing?.workspaceId ?? input.workspaceId!;
-    if (
-      caller.reach.kind !== "user" &&
-      (caller.reach.kind !== "workspace" || caller.reach.workspaceId !== workspaceId)
-    )
-      throw forbidden("Target Thread is outside the caller's reach");
-    const workspace = await this.#store.getWorkspaceForOwner(workspaceId, caller.userId);
-    if (!workspace) throw forbidden("Target Workspace is unavailable to this user");
+    if (existing && existing.purpose !== "task") throw badRequest("Choose a work Thread");
+    const { folder, environmentId } = await this.#folders.resolve(
+      caller.userId,
+      existing?.folder ?? input.folder,
+    );
     const specialist = await resolveDelegationSpecialist(
       this.#store,
       caller.userId,
-      workspace.id,
       input.specialist,
       existing,
     );
@@ -1725,7 +1545,6 @@ export class ProductToolHandlers {
       if (assignment) throw conflict("Thread already has an open Assignment");
     }
     const preferences = await this.#store.getExecutionPreferences(caller.userId);
-    const environmentId = existing?.environmentId ?? workspace.backing.ownerEnvironmentId;
     if (specialist && !existing) {
       const environment = await this.#store.getEnvironment(environmentId);
       if (!environment) throw badRequest(unknownEnvironment, chooseExecutionNext);
@@ -1735,7 +1554,7 @@ export class ProductToolHandlers {
         accessMode: caller.accessMode,
         specialist,
       });
-      return { existing, workspace, environmentId, ...placement, specialist };
+      return { existing, folder, environmentId, ...placement, specialist };
     }
     const preferred = preferences.history.find((entry) => entry.environmentId === environmentId);
     const named =
@@ -1755,7 +1574,7 @@ export class ProductToolHandlers {
     if (!modelSelection) throw badRequest("Choose a model for the new task", chooseExecutionNext);
     return {
       existing,
-      workspace,
+      folder,
       environmentId,
       harnessInstanceId,
       harnessRevision: undefined,
@@ -1940,19 +1759,13 @@ export class ProductToolHandlers {
             )
               wake();
           });
-          const detachMembership = this.#store.onWorkspaceMembershipChanged((membership) => {
-            if (membership.userId === caller.userId) wake();
-          });
-          return () => {
-            detach();
-            detachMembership();
-          };
+          return detach;
         },
         read: async () => {
           await call.checkLive?.();
           const thread = await this.#store.getThreadForOwner(threadId, caller.userId);
           if (!thread) throw forbidden("Thread is unavailable");
-          assertTarget(caller, thread);
+
           await this.#assertWaitTarget(caller, threadId);
           await withDatabaseTransaction(this.#store.database, (tx) =>
             assertThreadCaller(tx, threadCallerAuthority(caller)),
@@ -2012,7 +1825,7 @@ export class ProductToolHandlers {
       await call.checkLive?.();
       const target = await this.#store.getThreadForOwner(threadId, caller.userId);
       if (!target) throw forbidden("Thread is unavailable");
-      assertTarget(caller, target);
+
       await withDatabaseTransaction(this.#store.database, (tx) =>
         assertThreadCaller(tx, threadCallerAuthority(caller), { threadId, readOnly: true }),
       );
@@ -2026,7 +1839,7 @@ export class ProductToolHandlers {
               ...(call.signal ? { signal: call.signal } : {}),
             })
           : undefined;
-      if (task) for (const event of task.events) this.#onWorkspaceEvent(event);
+      if (task) for (const event of task.events) this.#onEvent(event);
       // Oldest first, so the last item is where the next wait resumes.
       const items = boundedThreadItems(
         result.messages.map((message) => messageItem(message, 20_000)),
@@ -2044,7 +1857,7 @@ export class ProductToolHandlers {
         const events = await withoutDatabaseOperationSignal(() =>
           endAssignmentResultWait(this.#store.database, { assignmentId: held, waitId }),
         );
-        for (const event of events) this.#onWorkspaceEvent(event);
+        for (const event of events) this.#onEvent(event);
       }
     }
   }
@@ -2098,7 +1911,7 @@ export class ProductToolHandlers {
       caller.userId,
     );
     if (!thread) throw forbidden("Thread is unavailable");
-    assertTarget(caller, thread);
+
     return thread;
   }
   #targetThreadId(caller: AgentCaller, threadId?: Thread["id"]) {
@@ -2134,7 +1947,6 @@ function agentRequest(request: Request) {
     title: requestTitleText(request.presentation),
     reason: "reason" in request.payload ? request.payload.reason : null,
     originatingThreadId: request.originatingThreadId,
-    targetWorkspaceId: request.targetWorkspaceId,
     createdAt: request.createdAt,
     revision: requestRevision(request),
     settlementProvenance: request.settlementProvenance

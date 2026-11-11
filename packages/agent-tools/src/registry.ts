@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Reads stay within reach; writes also enforce the caller's access ceiling.
+/** Writes enforce the caller's access ceiling.
  * Settings require full access as well as write authority. */
 export const AgentToolAccessSchema = z.enum(["read", "write", "settings"]);
 export type AgentToolAccess = z.infer<typeof AgentToolAccessSchema>;
@@ -27,9 +27,8 @@ export interface AgentToolSpec<
   readonly access: AgentToolAccess;
   /** A call that only reads, so it needs read access whatever the tool's own. */
   readsOnly?(input: z.output<Input>): boolean;
-  readonly minimumReach?: "workspace" | "user";
-  /** Offered only where the Host serves the knowledge trial. */
-  readonly knowledge?: true;
+  /** Present for the lifetime of a task bound to a team thread. */
+  readonly team?: true;
   /** Overrides the schema derived from `input` when a union reads poorly to models. */
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
   readonly callers: readonly AgentCallerKind[];

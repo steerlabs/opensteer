@@ -21,8 +21,8 @@ describe("Opensteer tool inputs", () => {
       }).success,
     ).toBe(false);
   });
-  it("reads Chat by its home alias", () => {
-    expect(tool("thread_read").input.safeParse({ threadId: "home", limit: 1 }).success).toBe(true);
+  it("refuses the removed home alias", () => {
+    expect(tool("thread_read").input.safeParse({ threadId: "home", limit: 1 }).success).toBe(false);
   });
   it("names exactly one conversation, subagent or task target", () => {
     const subagentId = createId("executionNode");
@@ -41,10 +41,10 @@ describe("Opensteer tool inputs", () => {
   it("requires itemId for text offsets and refuses removed history fields", () => {
     const schema = tool("thread_read").input;
     expect(schema.safeParse({ threadId: "home", textOffset: 2 }).success).toBe(false);
-    expect(schema.safeParse({ threadId: "home", itemId: "item", textOffset: 2 }).success).toBe(
+    expect(schema.safeParse({ threadId: "self", itemId: "item", textOffset: 2 }).success).toBe(
       true,
     );
-    expect(schema.safeParse({ threadId: "home", itemId: "item", before: "cursor" }).success).toBe(
+    expect(schema.safeParse({ threadId: "self", itemId: "item", before: "cursor" }).success).toBe(
       false,
     );
     expect(schema.safeParse({ threadId: "home", maxMessages: 1 }).success).toBe(false);
@@ -116,7 +116,7 @@ describe("Opensteer tool inputs", () => {
     expect(schema).toContain('"toolContractVersion"');
     for (const requirement of [
       "Timing controls require anchor access no higher than yours",
-      "archiving require full-access within reach",
+      "archiving require full-access",
       "set_status: triggerId, status",
       "set_next_fire: triggerId, future ISO nextFireAt",
       "run: non-archived schedule/webhook triggerId",

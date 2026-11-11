@@ -1,10 +1,10 @@
+import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
 import { z } from "zod";
 import {
   AppIdSchema,
   AssignmentIdSchema,
   AssignmentStatusSchema,
   BrowserProfileIdSchema,
-  BrowserSiteSchema,
   DelegationModelChoiceSchema,
   EnvironmentIdSchema,
   ExecutionEnvironmentKindSchema,
@@ -30,9 +30,7 @@ import {
   TriggerOccurrenceIdSchema,
   ThreadSchema,
   ThreadAccessModeSchema,
-  WorkspaceBackingKindSchema,
-  WorkspaceIdSchema,
-  WorkspaceKindSchema,
+  TaskFolderSchema,
 } from "@opensteer/core";
 import {
   TriggerViewSchema,
@@ -70,9 +68,7 @@ const EnvironmentSummarySchema = z.object({
   id: EnvironmentIdSchema,
   kind: ExecutionEnvironmentKindSchema,
   name: z.string().min(1).max(120),
-  // An agent choosing where a new Workspace should live needs to know which
-  // machines can hold a directory of their own and which cannot.
-  workspaceBackings: z.array(WorkspaceBackingKindSchema).max(2),
+  can: z.object({ executeTasks: z.boolean() }),
 });
 
 const EnvironmentModelOptionSchema = z.union([
@@ -133,6 +129,7 @@ export const EnvironmentDiscoverySchema = z.object({
 });
 export type EnvironmentDiscovery = z.infer<typeof EnvironmentDiscoverySchema>;
 export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
+  folder: TaskFolderSchema,
   accessCeiling: ThreadAccessModeSchema,
   limits: z.object({
     maxDepth: z.number().int().nullable(),
@@ -161,8 +158,9 @@ export const ThreadDetailSchema = z.object({
   id: thread.id,
   title: thread.title,
   status: thread.status,
-  role: thread.role,
-  workspaceId: thread.workspaceId,
+  purpose: thread.purpose,
+  folder: thread.folder,
+  teamOrigin: thread.teamOrigin,
   environmentId: thread.environmentId,
   harnessInstanceId: thread.harnessInstanceId,
   modelSelection: thread.modelSelection,
@@ -186,8 +184,7 @@ export const ThreadSummarySchema = z.object({
   taskStatus: AssignmentStatusSchema.nullable(),
   title: z.string().nullable(),
   updatedAt: thread.updatedAt,
-  workspaceId: WorkspaceIdSchema,
-  workspaceName: z.string(),
+  folder: TaskFolderSchema,
 });
 export const ThreadListOutputSchema = z.object({
   threads: z.array(ThreadSummarySchema).max(50),
@@ -206,7 +203,7 @@ export const TaskSchema = z.object({
   result: z.string().nullable(),
   pendingRequests: thread.pendingRequests,
   parentThreadId: ThreadIdSchema.nullable(),
-  workspaceId: WorkspaceIdSchema,
+  folder: TaskFolderSchema,
   environmentId: EnvironmentIdSchema,
   createdAt: thread.createdAt,
   finishedAt: z.string().nullable(),
@@ -224,21 +221,6 @@ export const ThreadUpdateOutputSchema = z.object({
   title: thread.title,
   doneAt: thread.doneAt,
   doneWhenRunEnds: z.boolean(),
-});
-export const ProjectSummarySchema = z.object({
-  id: WorkspaceIdSchema,
-  kind: WorkspaceKindSchema,
-  name: z.string(),
-  status: z.string(),
-});
-export const ProjectListOutputSchema = z.object({
-  projects: z.array(ProjectSummarySchema),
-  window: WindowSchema,
-});
-export const ProjectCreateOutputSchema = z.object({
-  id: WorkspaceIdSchema,
-  slug: z.string(),
-  path: z.string(),
 });
 export const AppPublishOutputSchema = z.object({
   appId: AppIdSchema,
@@ -290,7 +272,6 @@ export const RequestOutputSchema = z.object({
   status: RequestStatusSchema,
   reason: z.string().nullable().optional(),
   originatingThreadId: ThreadIdSchema.nullable().optional(),
-  targetWorkspaceId: WorkspaceIdSchema.nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string().optional(),
   title: z.string().optional(),
@@ -313,8 +294,6 @@ export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string(),
   home: z.object({ runnerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() }).nullable(),
-  grantId: z.string().optional(),
-  access: z.enum(["read", "read-write"]).optional(),
 });
 export const BrowserProfileListOutputSchema = z.object({
   profiles: z.array(BrowserProfileOutputSchema),
@@ -337,27 +316,7 @@ export const SignInOutputSchema = z.object({
   waitingFor: z.string().optional(),
   guidance: z.string().optional(),
 });
-export const BrowserSessionSchema = z.object({
-  id: z.string(),
-  access: z.enum(["read", "read-write"]),
-  createdAt: z.string(),
-  origin: z.enum(["agent", "trigger", "workspace"]),
-  placement: z.object({
-    environmentId: EnvironmentIdSchema.optional(),
-    runtimeId: z.string().optional(),
-    runnerId: z.string().optional(),
-    label: z.string().optional(),
-    kind: z.string().optional(),
-  }),
-  profileId: BrowserProfileIdSchema.nullable(),
-  runtimeId: z.string(),
-  state: z.string(),
-  updatedAt: z.string(),
-  workspaceId: WorkspaceIdSchema,
-  activeAttachmentCount: z.number(),
-  attached: z.boolean(),
-  profileName: z.string().nullable(),
-});
+export const BrowserSessionSchema = AgentBrowserSessionSummarySchema;
 export const BrowserSessionListOutputSchema = z.object({ sessions: z.array(BrowserSessionSchema) });
 export const BrowserSessionOpenOutputSchema = z.object({
   session: BrowserSessionSchema,
@@ -527,43 +486,5 @@ export const ThreadReadOutputSchema = z
     "Thread history exceeds the agent output byte limit",
   );
 
-export const UseCardOutputSchema = z.discriminatedUnion("status", [
-  z.strictObject({
-    status: z.literal("ready"),
-    site: BrowserSiteSchema,
-    cardRef: z.string().regex(/^crd_[0-9a-f]{32}$/u),
-    brand: z.string().min(1).max(64),
-    lastFour: z.string().regex(/^\d{4}$/u),
-  }),
-  z.strictObject({
-    status: z.literal("pending"),
-    site: BrowserSiteSchema,
-    requestId: RequestIdSchema,
-  }),
-  z.strictObject({
-    status: z.enum(["resolved", "declined", "needs-approval"]),
-    site: BrowserSiteSchema,
-    guidance: z.string().optional(),
-  }),
-  z.strictObject({
-    status: z.literal("unavailable"),
-    site: BrowserSiteSchema,
-    reason: z.enum([
-      "unsupported",
-      "runtime-outdated",
-      "main-browser-required",
-      "session-closed",
-      "not-allowed",
-      "rate-limited",
-      "busy",
-      "stopped",
-      "expired",
-      "interrupted",
-      "no-saved-card",
-      "passwords-off",
-      "passwords-not-set-up",
-      "passwords-not-responding",
-    ]),
-  }),
-]);
-export type UseCardOutput = z.infer<typeof UseCardOutputSchema>;
+export { UseCardResultSchema as UseCardOutputSchema } from "@opensteer/protocol";
+export type { UseCardResult as UseCardOutput } from "@opensteer/protocol";

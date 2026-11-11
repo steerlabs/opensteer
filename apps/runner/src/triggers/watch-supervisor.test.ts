@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunnerMessageSink } from "../runtime/runtime.js";
-import type { WorkspaceAccessManager } from "../workspace/mount-manager.js";
+import type { FolderAccessManager } from "../folders/task-folder.js";
 import { WatchSupervisor } from "./watch-supervisor.js";
 
 describe("WatchSupervisor", () => {
@@ -35,7 +35,7 @@ describe("WatchSupervisor", () => {
       // it; the Host side records what reached it.
       source:
         'export default async ({ opensteer }) => { console.log("holds:" + opensteer.capabilities().mcp.token); await new Promise(() => setInterval(() => { const { mcp } = opensteer.capabilities(); void fetch(mcp.url, { body: "{}", headers: { accept: "application/json, text/event-stream", authorization: "Bearer " + mcp.token, "content-type": "application/json" }, method: "POST" }).catch(() => undefined); }, 30)); }',
-      toolContractVersion: 1,
+      toolContractVersion: 3,
     } as const;
     let fetchCount = 0;
     const toolAuthorizations: string[] = [];
@@ -71,10 +71,10 @@ describe("WatchSupervisor", () => {
         messages.push(message);
       },
     };
-    const workspaceManager: WorkspaceAccessManager = {
+    const folderManager: FolderAccessManager = {
       async prepare() {
         await mkdir(workspace, { recursive: true });
-        return { instructions: undefined, path: workspace };
+        return { agentHomePath: workspace, instructions: undefined, path: workspace };
       },
       writableRoots() {
         return [workspace];
@@ -85,7 +85,6 @@ describe("WatchSupervisor", () => {
     const anchorThreadId = createId("thread");
     const revisionId = createId("triggerRevision");
     const triggerId = createId("trigger");
-    const workspaceId = createId("workspace");
     await mkdir(workspace, { recursive: true });
     const staleWorkspaceProgram = join(workspace, `.opensteer-watch-${activationId}.mjs`);
     await writeFile(staleWorkspaceProgram, "stale program from a killed Runner", { mode: 0o600 });
@@ -108,7 +107,7 @@ describe("WatchSupervisor", () => {
       privateStateDirectory: join(root, "private"),
       terminate: async () => undefined,
       transport: { mode: "development" },
-      workspaceManager,
+      folderManager,
     });
     const command = (
       reconcileGeneration: number,
@@ -121,6 +120,10 @@ describe("WatchSupervisor", () => {
       desired: desired
         ? [
             {
+              location: {
+                folder: { computerId: createId("runner"), path: workspace },
+                agentHome: { computerId: createId("runner"), path: workspace },
+              },
               activationId,
               anchorThreadId,
               capabilities: {
@@ -131,15 +134,6 @@ describe("WatchSupervisor", () => {
               executionGeneration: 1,
               revisionId,
               triggerId,
-              workspaceAccess: {
-                bindingId: createId("workspaceBinding"),
-                generation: 1,
-                kind: "local-directory",
-                ownerEnvironmentId: environmentId,
-                storageAuthorityId: createId("storageAuthority"),
-                workspaceId,
-              },
-              workspaceId,
             },
           ]
         : [],
@@ -347,7 +341,7 @@ async function watchHarness(source: string): Promise<{
   const root = await mkdtemp(join(tmpdir(), "opensteer-watch-harness-"));
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
-  const program = { language: "javascript", source, toolContractVersion: 1 } as const;
+  const program = { language: "javascript", source, toolContractVersion: 3 } as const;
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "application/json");
     response.end(JSON.stringify(program));
@@ -360,7 +354,6 @@ async function watchHarness(source: string): Promise<{
   const anchorThreadId = createId("thread");
   const revisionId = createId("triggerRevision");
   const triggerId = createId("trigger");
-  const workspaceId = createId("workspace");
   const expiresAt = new Date(Date.now() + 60_000).toISOString();
   const baseUrl = `http://127.0.0.1:${address.port}/mcp`;
   const messages: RunnerOperationalReport[] = [];
@@ -369,9 +362,9 @@ async function watchHarness(source: string): Promise<{
       messages.push(message);
     },
   };
-  const workspaceManager: WorkspaceAccessManager = {
+  const folderManager: FolderAccessManager = {
     async prepare() {
-      return { instructions: undefined, path: workspace };
+      return { agentHomePath: workspace, instructions: undefined, path: workspace };
     },
     writableRoots() {
       return [workspace];
@@ -384,7 +377,7 @@ async function watchHarness(source: string): Promise<{
     privateStateDirectory: join(root, "private"),
     terminate: async () => undefined,
     transport: { mode: "development" },
-    workspaceManager,
+    folderManager,
   });
   const command = (
     reconcileGeneration: number,
@@ -393,6 +386,10 @@ async function watchHarness(source: string): Promise<{
     correlationId: CorrelationIdSchema.parse(`watch-harness:${crypto.randomUUID()}`),
     desired: [
       {
+        location: {
+          folder: { computerId: createId("runner"), path: workspace },
+          agentHome: { computerId: createId("runner"), path: workspace },
+        },
         activationId,
         anchorThreadId,
         capabilities: {
@@ -403,15 +400,6 @@ async function watchHarness(source: string): Promise<{
         executionGeneration: 1,
         revisionId,
         triggerId,
-        workspaceAccess: {
-          bindingId: createId("workspaceBinding"),
-          generation: 1,
-          kind: "local-directory",
-          ownerEnvironmentId: environmentId,
-          storageAuthorityId: createId("storageAuthority"),
-          workspaceId,
-        },
-        workspaceId,
       },
     ],
     environmentId,

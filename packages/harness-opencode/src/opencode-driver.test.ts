@@ -1150,7 +1150,6 @@ describe("OpenCode child transcripts", () => {
         originatingNodeId: order === "nested-ask" ? grandId : childId,
         originatingRunId: input.runId,
         originatingThreadId: fixture.context.threadId,
-        originatingWorkspaceId: fixture.context.workspaceId,
       });
       expect(
         observer.events.filter(
@@ -2047,7 +2046,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     },
     threadId: createId("thread"),
     threadStateDirectory,
-    workspaceId: createId("workspace"),
     workspacePath: directory,
     wrapProcessLaunch: (launch) => launch,
     writableRoots: [directory],

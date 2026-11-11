@@ -18,7 +18,8 @@
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/triggers": "workspace:*",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@opensteer/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
