@@ -1,8 +1,9 @@
 # Opensteer Passwords
 
 Saved logins let agents fill websites or type into permitted Mac and Android apps, and let the
-person fill Opensteer browser pages themselves ([Filling for people](#filling-for-people)); saved
-cards work only in websites. Website fills work only in the Personal main computer's browser, never
+person fill Opensteer browser pages themselves ([Filling for people](#filling-for-people)) and keep
+a login they typed there ([Saving for people](#saving-for-people)); saved cards work only in
+websites. Website fills work only in the Personal main computer's browser, never
 a browser on another computer or phone; the Host refuses an agent's fill there with
 `main-browser-required`. The Personal Mac
 owns the vault; the requester can approve a sign-in from any signed-in device. Cookie reuse is
@@ -131,6 +132,35 @@ after a password page needs no second check on that device. The setting and the 
 log live apart from the agent records so an older broker after a channel downgrade neither loses
 them nor misreads agent sign-ins. Activity records a release, not a successful sign-in.
 
+## Saving for people
+
+When a person signs in by hand on a page in the Personal main computer's browser, the viewer they
+typed from offers to keep that login. Saving follows fill's locality: a page on any other browser
+is never read, so a saved login is always one Opensteer can fill. Version 1 adds new logins only;
+a changed password, a different username for a saved one, and a form with two different
+passwords are not offered.
+
+A password counts only from a trusted edit into the field while it was empty, and only while every
+edit to it followed one viewer's input with no agent command between them. Edits are judged by
+when the page made them, because a report can arrive after later input; the
+[ledger](../packages/browser-runtime-core/src/browser/surface-ledger.ts) keeps a short timeline for
+that. A script write taints the field. An agent's earlier listener can still change the value after
+the person typed, as it can read it ([Promise and limits](#promise-and-limits)); Save adds at most
+one wrong login, which the person sees. The private world reads the values once at a submit and the
+broker holds them from then; desktop main keeps only the transaction ID.
+
+The offer goes only to the viewer that typed, as fill's does, and only that viewer can answer it,
+once. Whether the sign-in worked decides only when to ask, never authority: the form left the page
+or the frame moved on, and no password field came back. Any agent command before the offer shows
+ends it. The site is the submitting frame's committed origin; loopback and the Deployment's own
+sites are refused like any sign-in.
+
+The broker adds the login it holds, built inside the broker, with no grant, after checking in the
+same commit that no login for that site has the username. It never edits or deletes anything, and
+it drops what it holds on expiry, a closed connection, the setting turning off, a reset, lock or
+sleep. Before Passwords is set up, only a person typing on the Mac itself is told how to set it up,
+once each launch; nothing else asks.
+
 ## Typing in apps
 
 The Host resolves saved references for the calling Workspace and seals every field before any action
@@ -189,7 +219,8 @@ Setup, Start Fresh, opening saved logins, changing a login's websites, login pag
 person's own fill from the Mac's page each need fresh device-owner authentication (Touch ID or the
 Mac password), never an earlier unlock. Agent sign-in consent never prompts on the vault Mac. An authenticated window visit covers adding,
 editing, deleting and importing, and ends on close, lock, sleep or idle; every change checks the
-live visit. Prompts use the broker's own wording, never agent text. Unreadable settings fail off.
+live visit. The one write without a visit is a person's save: adding exactly the login the broker
+holds for them, never a change, deletion or grant ([Saving for people](#saving-for-people)). Prompts use the broker's own wording, never agent text. Unreadable settings fail off.
 Transactions belong to their connection, and queued work rechecks after every wait.
 
 Keep vault work on one actor and close each unlocked vault right after selection or commit. Swift
