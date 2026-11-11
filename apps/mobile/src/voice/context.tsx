@@ -38,12 +38,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
         const route = navigationRef.getCurrentRoute();
         const params = route?.params as RouteParams;
         return {
-          threadId:
-            route?.name === "Home"
-              ? hostClient.getSnapshot().homeThreadId
-              : route?.name === "Thread"
-                ? (params?.threadId ?? null)
-                : null,
+          threadId: route?.name === "Thread" ? (params?.threadId ?? null) : null,
           tabId: route?.name === "WorkspaceBrowser" ? (params?.tabId ?? null) : null,
         };
       },
@@ -64,13 +59,7 @@ export function VoiceProvider({ children }: { readonly children: ReactNode }): R
         {
           foreground: AppState.currentState === "active",
           call: created.call(),
-          threadId: !here
-            ? null
-            : route?.name === "Home"
-              ? snapshot.homeThreadId
-              : route?.name === "Thread"
-                ? (params?.threadId ?? null)
-                : null,
+          threadId: here && route?.name === "Thread" ? (params?.threadId ?? null) : null,
         },
         (target) => show(client.getSnapshot().selection.deploymentId, target),
       );

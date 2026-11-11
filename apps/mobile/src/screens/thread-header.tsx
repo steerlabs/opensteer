@@ -124,9 +124,8 @@ export function useThreadHeader(props: {
               >
                 <AppText role="title">{fallbackTitle}</AppText>
                 <ThreadSubtitle
-                  workspaceName={null}
-                  workspaceColor={null}
-                  workspaceIcon={null}
+                  placeKind={null}
+                  placeName={null}
                   connectionLabel={savedSubtitle.label}
                   onRetry={savedSubtitle.onRetry}
                   task={null}
@@ -320,7 +319,6 @@ export function ThreadTitlePill(
       title={props.title}
       icon={props.icon}
       color={props.color}
-      isHome={props.isHome}
       isVoice={props.isVoice}
     />
   );
@@ -330,11 +328,10 @@ export function ThreadTitlePill(
       deploymentId={deploymentId}
       extraActions={props.extraActions ?? []}
       hostClient={props.hostClient}
-      isHome={props.isHome}
       maxWidth={maxWidth}
       onFind={props.onFind}
       onOpenThread={props.onOpenThread}
-      projectName={props.workspaceName}
+      placeName={props.placeName}
       task={props.task}
       threadId={threadId}
       title={props.title}
@@ -358,10 +355,9 @@ export function ThreadTitlePill(
               {props.connectionLabel === null ? null : (
                 <ThreadSubtitle
                   connectionLabel={props.connectionLabel}
+                  placeKind={null}
+                  placeName={null}
                   task={null}
-                  workspaceColor={null}
-                  workspaceIcon={null}
-                  workspaceName={null}
                 />
               )}
             </View>
@@ -379,9 +375,8 @@ export function ThreadTitlePill(
         <View style={styles.words} {...measure("words")}>
           {name}
           <ThreadSubtitle
-            workspaceName={props.workspaceName}
-            workspaceColor={props.workspaceColor}
-            workspaceIcon={props.workspaceIcon}
+            placeName={props.placeName}
+            placeKind={props.placeKind}
             connectionLabel={props.connectionLabel}
             // iOS says "Completed" in the menu's heading and its accessible
             // name, so the bar keeps one line for the title. Android's menu

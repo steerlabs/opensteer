@@ -1,10 +1,8 @@
 import { Pressable, StyleSheet, View, type StyleProp, type TextStyle } from "react-native";
-import { taskMark, type ThreadSummary, type WorkspaceSummary } from "@opensteer/client/host";
+import { taskMark, type ThreadSummary } from "@opensteer/client/host";
 import { color, headerFontScaleLimit, space, touchTarget } from "../theme.js";
 import { barNameFloor } from "../ui/bar-title.js";
 import { AppText } from "../ui/primitives.js";
-import { WorkspaceMark } from "../ui/workspace-mark.js";
-import { AgentOrb } from "../team/team-marks.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { TaskStatus, type TaskHeading } from "./task-status.js";
@@ -18,12 +16,10 @@ export function ThreadName(props: {
   readonly title: string;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
-  readonly isHome: boolean;
   readonly isVoice?: boolean;
 }) {
-  const mark = props.isHome ? (
-    <AgentOrb size={22} />
-  ) : props.isVoice === true ? (
+  const mark =
+    props.isVoice === true ? (
     <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
   ) : (
     <TaskMark mark={taskMark(props)} size={22} />
@@ -63,29 +59,27 @@ export function ThreadName(props: {
   );
 }
 
-/** Project attribution and state stay separate from the task's subject mark. */
+/** Where the task works (or the channel that asked) and its state, apart from its mark. */
 export function ThreadSubtitle(props: {
-  readonly workspaceName: string | null;
-  readonly workspaceColor: WorkspaceSummary["color"];
-  readonly workspaceIcon: WorkspaceSummary["icon"];
+  readonly placeName: string | null;
+  readonly placeKind: "folder" | "team" | null;
   readonly connectionLabel: string | null;
   readonly onRetry?: (() => void) | undefined;
   readonly task: Pick<TaskHeading, "moving" | "tone" | "word"> | null;
 }) {
   const { task } = props;
-  if (props.workspaceName === null && props.connectionLabel === null && task === null) return null;
+  if (props.placeName === null && props.connectionLabel === null && task === null) return null;
   return (
     <View accessibilityLiveRegion="polite" style={styles.row}>
       {task !== null && props.connectionLabel === null ? (
         <TaskStatus moving={task.moving} tone={task.tone} word={task.word} />
       ) : null}
-      {props.workspaceName === null ? null : (
+      {props.placeName === null ? null : (
         <View style={[styles.row, styles.workspace]}>
-          <WorkspaceMark
-            color={props.workspaceColor}
-            icon={props.workspaceIcon}
-            name={props.workspaceName}
-            size="mini"
+          <Symbol
+            name={props.placeKind === "team" ? "number" : "folder"}
+            size={11}
+            tint={color.muted}
           />
           <AppText
             maxFontSizeMultiplier={headerFontScaleLimit}
@@ -94,7 +88,7 @@ export function ThreadSubtitle(props: {
             tone="muted"
             style={styles.workspace}
           >
-            {props.workspaceName}
+            {props.placeName}
           </AppText>
         </View>
       )}

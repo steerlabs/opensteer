@@ -179,7 +179,7 @@ function ScheduleView(props: {
       }
       navigation.dispatch(StackActions.push("Thread", params));
     },
-    [deploymentId, homeThreadId, navigation],
+    [deploymentId, navigation],
   );
 
   return (

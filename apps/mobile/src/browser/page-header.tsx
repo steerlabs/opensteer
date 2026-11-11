@@ -21,7 +21,7 @@ import { opensteerAppGlyph } from "./agent-surface.js";
 import { ToolbarMenu } from "./toolbar.js";
 
 /** Where Ask starts work about the page. */
-export type AskTarget = "chat" | "task" | "thread";
+export type AskTarget = "task" | "thread";
 
 /**
  * The product's orb at a bar item's size, in its own colours: UIKit would
@@ -68,7 +68,6 @@ export function usePageHeader(props: {
   /** Ask goes to the Thread that made this place, with no choice to offer. */
   readonly asksThread: boolean;
   /** Chat exists to ask in; before its first message, only a task can be started. */
-  readonly chat: boolean;
   /** The page's own bar has Ask in its More, beside a Thread, so the native bar offers none. */
   readonly noAsk: boolean;
   readonly onAsk: (target: AskTarget) => void;
@@ -82,7 +81,7 @@ export function usePageHeader(props: {
   const glass = useLiquidGlass();
   const latest = useRef(props);
   latest.current = props;
-  const { agents, asksThread, chat, noAsk, title, verticalBar } = props;
+  const { agents, asksThread, noAsk, title, verticalBar } = props;
   const isApp = props.app !== null;
   const appClosable = props.app?.closable === true;
   const appLive = props.app?.live === true;
@@ -95,7 +94,7 @@ export function usePageHeader(props: {
   useLayoutEffect(() => {
     const ask = (target: AskTarget) => latest.current.onAsk(target);
     const open = (threadId: string) => latest.current.onOpenAgent(threadId);
-    const choices = askChoices({ asksThread: false, chat, onAsk: ask });
+    const choices = askChoices({ asksThread: false, onAsk: ask });
     const here = isApp ? [] : agentChoices(agents, open);
     // Over nothing, in the vertical bar: no row, so no title and no ground over the page.
     const noRow = verticalBar && !isApp;
@@ -109,7 +108,7 @@ export function usePageHeader(props: {
             onReload: () => latest.current.app?.onReload(),
             onReport: () => latest.current.app?.onReport(),
           },
-          askChoices({ asksThread, chat, onAsk: ask }),
+          askChoices({ asksThread, onAsk: ask }),
         )
       : null;
     const askControl = asksThread ? (
@@ -214,7 +213,6 @@ export function usePageHeader(props: {
     appLive,
     appOpensThread,
     asksThread,
-    chat,
     glass,
     isApp,
     navigation,
@@ -234,7 +232,6 @@ const threadHint = "Opens the conversation that made this app";
  */
 export function askChoices(props: {
   readonly asksThread: boolean;
-  readonly chat: boolean;
   readonly onAsk: (target: AskTarget) => void;
 }): readonly NativeMenuOption[] {
   const { onAsk } = props;
@@ -246,12 +243,7 @@ export function askChoices(props: {
     label: "New task",
     onPress: () => onAsk("task"),
   };
-  return props.chat
-    ? [
-        { icon: "bubble.left", id: "chat", label: "Ask in Chat", onPress: () => onAsk("chat") },
-        newTask,
-      ]
-    : [newTask];
+  return [newTask];
 }
 
 /** Who is here, as menu rows that open their Threads. */
@@ -400,11 +392,10 @@ const askMarks = 2;
 export const PageAsk = memo(function PageAsk(props: {
   readonly agents: PlaceAgents;
   /** Chat exists to ask in; before its first message, only a task can be started. */
-  readonly chat: boolean;
   readonly onAsk: (target: AskTarget) => void;
   readonly onOpenAgent: (threadId: string) => void;
 }): ReactNode {
-  const { agents, chat, onAsk, onOpenAgent } = props;
+  const { agents, onAsk, onOpenAgent } = props;
   const words = placeAgentsWords(agents);
   return (
     <ToolbarMenu
@@ -419,7 +410,7 @@ export const PageAsk = memo(function PageAsk(props: {
         )
       }
       label={words === null ? "Ask" : `${words.label}. Ask`}
-      sections={[agentChoices(agents, onOpenAgent), askChoices({ asksThread: false, chat, onAsk })]}
+      sections={[agentChoices(agents, onOpenAgent), askChoices({ asksThread: false, onAsk })]}
       title="Ask about this page"
     />
   );

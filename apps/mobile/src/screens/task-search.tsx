@@ -87,7 +87,6 @@ export function TaskSearchScreen(props: TaskSearchScreenProps): ReactNode {
           onOpenTask={openTask}
           onSignIn={signIn}
           query={query}
-          workspaceId={null}
         />
       </View>
     </Screen>

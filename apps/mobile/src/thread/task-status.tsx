@@ -82,9 +82,7 @@ export function sameTaskHeading(left: TaskHeading | null, right: TaskHeading | n
 
 function openableRequester(assignment: AssignmentSummary, snapshot: HostSnapshot): string | null {
   const parent = assignment.parentThreadId;
-  return parent === snapshot.homeThreadId || snapshot.threads.some(({ id }) => id === parent)
-    ? parent
-    : null;
+  return snapshot.threads.some(({ id }) => id === parent) ? parent : null;
 }
 
 /**

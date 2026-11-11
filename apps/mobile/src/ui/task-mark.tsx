@@ -3,7 +3,7 @@ import { markColorPaint, type TaskMark as TaskMarkValue } from "@opensteer/clien
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color } from "../theme.js";
-import { WorkspaceIconGlyph } from "./workspace-mark.js";
+import { IconGlyph } from "./icon-glyph.js";
 
 /**
  * A task's subject, independent of its state, unread status or project: a
@@ -35,7 +35,7 @@ export function TaskMark(props: {
         props.quiet ? styles.quiet : null,
       ]}
     >
-      <WorkspaceIconGlyph
+      <IconGlyph
         color={paint?.glyph ?? color.muted}
         icon={icon ?? defaultTaskSymbol}
         size={tile.glyph}

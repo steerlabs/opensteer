@@ -1379,7 +1379,7 @@ function SubscribedNewThread(props: {
         if (mounted.current) setApplyingKey(null);
       });
     },
-    [chosen, client, props.deploymentId, props.home, props.hostClient],
+    [chosen, client, props.deploymentId, props.hostClient],
   );
 
   const chooseModel = useCallback(

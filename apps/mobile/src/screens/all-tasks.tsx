@@ -25,6 +25,7 @@ import type { RootParamList } from "../navigation.js";
 import { useSidebarMenu } from "../navigation-header.js";
 import { allTasks, allTasksFilters, type AllTasksFilter } from "../sidebar/live-tasks.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
+import { folderLabel } from "../home/folder-label.js";
 import { color, controlFontScaleLimit, material, radius, space, type } from "../theme.js";
 import { setTaskDone, TaskRowView } from "../threads/task-row.js";
 import { AppText } from "../ui/primitives.js";
@@ -166,9 +167,7 @@ export function taskDetail(
   const where =
     row.teamOrigin !== null
       ? `#${channels.get(row.teamOrigin.channelId) ?? "channel"} · thread`
-      : home !== null && row.folder.computerId === home.computerId && row.folder.path === home.path
-        ? "Agent home"
-        : (row.folder.path.split("/").filter(Boolean).at(-1) ?? row.folder.path);
+      : folderLabel(row.folder, home);
   return row.line === "" ? where : `${where} · ${row.line}`;
 }
 

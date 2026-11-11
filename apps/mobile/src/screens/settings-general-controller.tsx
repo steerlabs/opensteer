@@ -1,7 +1,7 @@
 import type { QuietTaskDays } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import Constants from "expo-constants";
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Linking } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import type { NotificationPreferences } from "../notifications/push-registration.js";

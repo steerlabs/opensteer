@@ -230,7 +230,7 @@ function HeldThreadMark(props: {
   const { threadId } = props;
   const mark = useHostSelector(
     props.hostClient,
-    (snapshot) => (snapshot.homeThreadId === threadId ? null : threadMark(threadId, snapshot)),
+    (snapshot) => threadMark(threadId, snapshot),
     sameMark,
   );
   return mark === null ? <AgentOrb size={16} /> : <TaskMark mark={mark} size={16} />;
@@ -330,7 +330,7 @@ function TaskCardRow(props: {
           compact={props.compact === true}
           noun={props.noun === true}
           onAccessibilityAction={onAccessibilityAction}
-          owner={taskOwner(assignment, snapshot)}
+          owner={taskOwner(assignment)}
         />
       </MenuView>
     </>
@@ -449,12 +449,12 @@ function HeldDelegationLine(props: {
   return <DelegationLineFrom {...props} snapshot={snapshot} />;
 }
 
-const nothingHeld = { activeTasks: [], tasks: null, threads: [], workspaceTasks: {} };
+const nothingHeld = { activeTasks: [], tasks: null, threads: [] };
 
 function DelegationLineFrom(props: {
   readonly delegation: DelegationEntry;
   readonly onOpenThread: (threadId: string) => void;
-  readonly snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads" | "workspaceTasks">;
+  readonly snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads">;
 }): ReactNode {
   const { delegation, snapshot } = props;
   const presentation = delegationPresentation(delegation, snapshot);

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Alert } from "react-native";
 import { taskFolderKey } from "@opensteer/client/host";
 import { useAttachedHost } from "../screens/deployment-gate.js";
-import { folderLabel } from "../screens/home.js";
+import { folderLabel } from "./folder-label.js";
 import { Screen } from "../ui/screen.js";
 import { FolderBrowserBody, FolderSheetBody } from "./folder-sheet.js";
 import type { FolderChoiceView, FolderEntryView } from "./home-models.js";

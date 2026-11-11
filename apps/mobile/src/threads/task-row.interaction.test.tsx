@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { taskList, markColorPaint, taskMark, type TaskRow } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { workspaceIconNames } from "@opensteer/core";
+import { iconNames } from "@opensteer/core";
 import { color } from "../theme.js";
 
 /* Interaction failures: identity disappears behind state; unread replaces state;
@@ -359,7 +359,7 @@ it("offers all 130 searchable icons with accessible selected states and a distin
   const choose = vi.fn();
   render(<IconChoices task color="blue" value="plane" onChange={choose} />);
   expect(container.querySelectorAll('button[role="radio"]').length).toBe(
-    workspaceIconNames.length + 1,
+    iconNames.length + 1,
   );
   expect(button("Plane").getAttribute("aria-checked")).toBe("true");
   await act(async () => button("Use default").click());

@@ -1,15 +1,15 @@
-import { markColorPaint, workspaceIconArt, workspaceMonogram } from "@opensteer/client/host";
+import { markColorPaint, iconArt, folderMonogram } from "@opensteer/client/host";
 import {
   markColors,
-  workspaceIconNames,
+  iconNames,
   type MarkColor,
-  type WorkspaceIconName,
+  type IconName,
 } from "@opensteer/core";
 import { useMemo, useState, type ReactNode } from "react";
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { AppText, Field } from "./primitives.js";
-import { WorkspaceIconGlyph, WorkspaceMark } from "./workspace-mark.js";
+import { IconGlyph } from "./icon-glyph.js";
 import { Symbol } from "./symbol.js";
 
 const target = Platform.OS === "android" ? 48 : touchTarget;
@@ -55,16 +55,16 @@ export function IconChoices(props: {
   readonly color: MarkColor | null;
   readonly disabled?: boolean;
   readonly name?: string;
-  readonly onChange: (icon: WorkspaceIconName | null) => void;
-  readonly value: WorkspaceIconName | null;
+  readonly onChange: (icon: IconName | null) => void;
+  readonly value: IconName | null;
   readonly task?: boolean;
   readonly horizontal?: boolean;
 }): ReactNode {
   const [query, setQuery] = useState("");
   const icons = useMemo(() => {
     const search = query.trim().toLowerCase();
-    return workspaceIconNames.filter((icon) =>
-      `${workspaceIconArt[icon].label} ${icon}`.toLowerCase().includes(search),
+    return iconNames.filter((icon) =>
+      `${iconArt[icon].label} ${icon}`.toLowerCase().includes(search),
     );
   }, [query]);
   const ink =
@@ -97,10 +97,10 @@ export function IconChoices(props: {
         ]}
       >
         {props.task ? (
-          <WorkspaceIconGlyph color={color.muted} icon="document" size={20} />
+          <IconGlyph color={color.muted} icon="document" size={20} />
         ) : (
           <Text allowFontScaling={false} style={{ color: ink }}>
-            {workspaceMonogram(props.name ?? "") || "Aa"}
+            {folderMonogram(props.name ?? "") || "Aa"}
           </Text>
         )}
         <AppText role="secondary">{props.task ? "Use default" : "Initials"}</AppText>
@@ -127,7 +127,7 @@ export function IconChoices(props: {
         }
         renderItem={({ item }) => (
           <Pressable
-            accessibilityLabel={workspaceIconArt[item].label}
+            accessibilityLabel={iconArt[item].label}
             accessibilityRole="radio"
             accessibilityState={{
               checked: props.value === item && !(props.task && item === "document"),
@@ -141,11 +141,7 @@ export function IconChoices(props: {
               props.disabled && styles.disabled,
             ]}
           >
-            {props.task ? (
-              <WorkspaceIconGlyph color={ink} icon={item} size={22} />
-            ) : (
-              <WorkspaceMark color={props.color} icon={item} name={props.name ?? ""} />
-            )}
+            <IconGlyph color={ink} icon={item} size={22} />
           </Pressable>
         )}
       />

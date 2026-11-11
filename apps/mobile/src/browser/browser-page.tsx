@@ -165,8 +165,6 @@ export function BrowserPage(props: {
   /** This browser's tabs, as a sheet. */
   readonly onShowTabs: () => void;
   readonly onClosed: () => void;
-  /** The browser's Workspace, whose agents may use a site once it is signed in. */
-  readonly workspaceName: string;
   /** Which way the page came from another tab, by tab order; 0 when it opened here. */
   readonly arrival?: -1 | 0 | 1;
   /** The device the page runs on, where that is not this one. */
@@ -1141,7 +1139,6 @@ export function BrowserPage(props: {
                       tabId={tabId}
                       site={signInSite}
                       url={tab.url}
-                      workspaceName={props.workspaceName}
                     />
                   </View>
                   <Pressable

@@ -9,6 +9,7 @@ import {
   type HostSnapshot,
 } from "@opensteer/client/host";
 import type { TaskFolder } from "@opensteer/core";
+import { folderLabel } from "../home/folder-label.js";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -148,7 +149,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
         ...folders.map((candidate) =>
           button(
             taskFolderKey(candidate),
-            `${sameFolder(candidate, folder) ? "✓ " : ""}${folderName(candidate, agentHome)}`,
+            `${sameFolder(candidate, folder) ? "✓ " : ""}${folderLabel(candidate, agentHome)}`,
             () => setFolder(candidate),
           ),
         ),
@@ -251,7 +252,7 @@ function Messaging({ host }: { readonly host: HostClient }) {
         ...folders.map((candidate) =>
           button(
             `place:${taskFolderKey(candidate)}`,
-            `${sameFolder(candidate, folder) ? "✓ " : ""}${folderName(candidate, agentHome)}`,
+            `${sameFolder(candidate, folder) ? "✓ " : ""}${folderLabel(candidate, agentHome)}`,
             () => setFolder(candidate),
           ),
         ),
@@ -473,9 +474,4 @@ function bridgeFolders(snapshot: HostSnapshot): readonly TaskFolder[] {
 
 function sameFolder(left: TaskFolder, right: TaskFolder | null): boolean {
   return right !== null && taskFolderKey(left) === taskFolderKey(right);
-}
-
-function folderName(folder: TaskFolder, home: TaskFolder | null): string {
-  if (home !== null && sameFolder(folder, home)) return "Agent home";
-  return folder.path.split("/").filter(Boolean).at(-1) ?? folder.path;
 }

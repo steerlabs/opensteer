@@ -13,15 +13,6 @@ export function conversationRoute() {
 export function show(deploymentId: string | null, target: VoiceTarget): boolean {
   if (!deploymentId || !navigationRef.isReady()) return false;
   const route = navigationRef.getCurrentRoute();
-  if (target.kind === "chat") {
-    if (
-      route?.name === "Home" &&
-      (route.params as { deploymentId?: string } | undefined)?.deploymentId === deploymentId
-    )
-      return false;
-    navigationRef.dispatch(StackActions.popTo("Home", { deploymentId }));
-    return true;
-  }
   const current = route?.params as Record<string, unknown> | undefined;
   if (
     target.kind === "place" &&

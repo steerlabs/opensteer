@@ -2,14 +2,13 @@ import {
   mutationIdempotencyKey,
   threadMark,
   type HostClient,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
-import type { MarkColor, WorkspaceIconName } from "@opensteer/core";
+import type { IconName } from "@opensteer/core";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { KeyboardAvoidingView, Modal, Platform, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
-import { ColorChoices, IconChoices } from "./mark-choices.js";
+import { IconChoices } from "./mark-choices.js";
 import { AppText, SecondaryButton } from "./primitives.js";
 
 function PickerSheet(props: {
@@ -77,7 +76,7 @@ export function TaskIconPicker(props: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
-  const choose = async (icon: WorkspaceIconName | null) => {
+  const choose = async (icon: IconName | null) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setSaving(true);
@@ -116,77 +115,6 @@ export function TaskIconPicker(props: {
   );
 }
 
-export function ProjectMarkPicker(props: {
-  readonly hostClient: HostClient;
-  readonly workspace: WorkspaceSummary;
-  readonly editable: boolean;
-  readonly onClose: () => void;
-  readonly onDismiss: () => void;
-  readonly onRefused: () => void;
-}): ReactNode {
-  const { snapshot } = useHostSnapshot(props.hostClient);
-  const workspace =
-    snapshot.workspaces.find(({ id }) => id === props.workspace.id) ?? props.workspace;
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-  const choose = async (
-    change: { readonly icon: WorkspaceIconName | null } | { readonly color: MarkColor },
-  ) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setSaving(true);
-    setError(null);
-    try {
-      await props.hostClient.dispatch(
-        "icon" in change
-          ? {
-              type: "workspace.icon.set",
-              workspaceId: workspace.id,
-              icon: change.icon,
-              idempotencyKey: mutationIdempotencyKey("workspace-icon"),
-            }
-          : {
-              type: "workspace.color.set",
-              workspaceId: workspace.id,
-              color: change.color,
-              idempotencyKey: mutationIdempotencyKey("workspace-color"),
-            },
-      );
-    } catch (failure) {
-      props.onRefused();
-      setError(failure instanceof Error ? failure.message : "The project could not be changed.");
-    } finally {
-      inFlight.current = false;
-      setSaving(false);
-    }
-  };
-  return (
-    <PickerSheet
-      title="Project appearance"
-      closing={!props.editable}
-      error={error}
-      onClose={props.onClose}
-      onDismiss={props.onDismiss}
-    >
-      <AppText role="secondaryMedium" tone="soft">
-        Colour
-      </AppText>
-      <ColorChoices
-        value={workspace.color}
-        disabled={saving || !props.editable}
-        onChange={(color) => void choose({ color })}
-      />
-      <IconChoices
-        color={workspace.color}
-        name={workspace.name}
-        value={workspace.icon}
-        disabled={saving || !props.editable}
-        onChange={(icon) => void choose({ icon })}
-      />
-    </PickerSheet>
-  );
-}
 
 const styles = StyleSheet.create({
   keyboard: { flex: 1 },

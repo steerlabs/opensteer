@@ -109,7 +109,6 @@ export function ChromeSignInAction(props: {
   readonly site: string;
   readonly url: string;
   /** The session's Workspace, whose agents may use the site once it is signed in. */
-  readonly workspaceName: string;
 }): ReactNode {
   const { hostClient, sessionId, tabId, url } = props;
   const [busy, setBusy] = useState(false);
@@ -238,7 +237,7 @@ export function ChromeSignInAction(props: {
         {busy ? <ActivityIndicator color={color.ember} /> : null}
       </Pressable>
       <AppText role="caption" tone="muted">
-        {`Agents in ${props.workspaceName} will be able to use ${domain} as you.`}
+        {`Your agent will be able to use ${domain} as you.`}
       </AppText>
       {result === null ? null : result.kind === "signed-in" ? (
         <AppText role="caption" tone="soft">

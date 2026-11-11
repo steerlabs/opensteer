@@ -1,13 +1,11 @@
 import type { HostClient } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
 import {
   StackActions,
-  useIsFocused,
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";

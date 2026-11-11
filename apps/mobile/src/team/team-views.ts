@@ -268,7 +268,7 @@ function threadSummary(
 /** A structured mention, in the reader's words. */
 export function mentionView(
   mention: TeamMessage["mentions"][number],
-  message: Pick<TeamMessage, "authorKind" | "authorUserId">,
+  message: { readonly authorKind: TeamMessage["authorKind"]; readonly authorUserId: string },
   viewerId: string,
   members: MemberDirectory,
 ): MentionView {

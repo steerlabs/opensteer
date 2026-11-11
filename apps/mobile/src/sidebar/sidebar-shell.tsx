@@ -50,7 +50,6 @@ import {
 import { color } from "../theme.js";
 import {
   useHostUserId,
-  useMobileClient,
   useSelectedHostClient,
 } from "../ui/mobile-client-context.js";
 import { appear, exit } from "../ui/motion.js";

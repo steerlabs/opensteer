@@ -25,13 +25,12 @@ interface ThreadMenuProps {
   /** What the place drawing the title adds, after everything the conversation offers. */
   readonly extraActions?: readonly NativeMenuOption[];
   readonly hostClient: HostClient;
-  /** Chat's name says nothing the menu needs to repeat. */
-  readonly isHome?: boolean;
   /** The native menu sizes its trigger to its content; a width keeps long titles inside the bar. */
   readonly maxWidth: number;
   readonly onFind: () => void;
   readonly onOpenThread: (threadId: string) => void;
-  readonly projectName?: string | null;
+  /** Where the task works or the channel that asked, under its name in the menu's heading. */
+  readonly placeName?: string | null;
   readonly task: TaskHeading | null;
   readonly threadId: string;
   readonly title: string;
@@ -75,9 +74,7 @@ function Menu(
   const ownName = useHostSelector(
     hostClient,
     (snapshot) =>
-      snapshot.homeThreadId !== threadId &&
-      snapshot.voiceThreadId !== threadId &&
-      !snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId),
+      snapshot.voiceThreadId !== threadId,
   );
   const canRename =
     useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable) && ownName;
@@ -146,7 +143,7 @@ function Menu(
       ]
     : [];
   const state = props.connectionLabel ?? task?.word ?? null;
-  const label = [title, props.projectName, state].filter(Boolean).join(", ");
+  const label = [title, props.placeName, state].filter(Boolean).join(", ");
   return (
     <>
       {props.stop?.sheet}
@@ -180,7 +177,7 @@ function Menu(
           stopAction,
           props.extraActions ?? [],
         ]}
-        {...(props.isHome === true ? {} : { title: menuHeading(props) })}
+        title={menuHeading(props)}
         triggerRef={trigger}
         triggerStyle={[styles.trigger, { maxWidth: props.maxWidth }]}
       >
@@ -193,10 +190,10 @@ function Menu(
 
 /** Where the bar shortens things: the whole name or who asked, the project, and any blocker. */
 function menuHeading(props: ThreadMenuProps): string {
-  const { projectName, task, title } = props;
+  const { placeName, task, title } = props;
   return [
     task === null ? title : `From ${task.requester} · ${task.word}`,
-    projectName,
+    placeName,
     task?.detail,
   ]
     .filter(Boolean)

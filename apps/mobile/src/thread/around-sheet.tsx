@@ -120,9 +120,7 @@ function Around(props: {
     hostClient,
     useCallback(
       (snapshot: HostSnapshot) =>
-        from === null || from.threadId === snapshot.homeThreadId
-          ? null
-          : threadMark(from.threadId, snapshot),
+        from === null ? null : threadMark(from.threadId, snapshot),
       [from],
     ),
     sameTaskMark,
@@ -171,14 +169,10 @@ function Around(props: {
     },
     [deploymentId, navigation],
   );
-  // Chat is the root under every stack, so it is returned to; a conversation
-  // directly under this one is gone back to rather than opened a second time.
+  // A conversation directly under this one is gone back to rather than
+  // opened a second time.
   const openThread = useCallback(
     (id: string) => {
-      if (id === hostClient.getSnapshot().homeThreadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
-        return;
-      }
       const under = navigation.getState()?.routes.at(-3);
       if (
         under?.name === "Thread" &&

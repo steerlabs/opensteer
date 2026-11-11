@@ -484,6 +484,7 @@ async function stage(
   }
   return stageAttachment(client, {
     attachmentId,
+    deploymentId: scope.deploymentId,
     mediaType: item.mediaType,
     name: item.name,
     onReserved,

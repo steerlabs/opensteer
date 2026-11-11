@@ -34,7 +34,6 @@ import {
   type WorkEntry,
   type WorkRow,
   type WorkSummary,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
 import { replyParts, type ReplyPart } from "@opensteer/shared/markdown";
@@ -123,12 +122,9 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly spacingTop: number;
   /** When this row was said, where a pause has passed in a conversation. */
   readonly time?: string | null;
-  /** The reader's own Home, which its messages name as Home rather than as whose it is. */
-  readonly homeThreadId: string | null;
   readonly viewerUserId: string | null;
   /** The Voice Thread, where the words that open a call stand for the call. */
   readonly voiceThread?: boolean;
-  readonly workspaces: readonly WorkspaceSummary[];
 }): ReactNode {
   const { group } = props;
   return (
@@ -150,8 +146,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
             onOpenReplyUnderWay={props.onOpenReplyUnderWay}
             onReply={props.onReply}
             onOpenThread={props.onOpenThread}
-            workspaces={props.workspaces}
-            homeThreadId={props.homeThreadId}
             turn={group.turn}
             turnKey={group.key}
           />
@@ -180,14 +174,12 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           continued={props.continued === true}
           conversation={props.conversation === true}
           joinedRun={props.conversation !== true && group.joinedRun === true}
-          homeThreadId={props.homeThreadId}
           onReply={props.onReply}
           onToggle={() => props.onToggleOpen(group.key, props.open === true)}
           open={props.open === true}
           message={group.entry}
           onOpenThread={props.onOpenThread}
           viewerUserId={props.viewerUserId}
-          workspaces={props.workspaces}
         />
       )}
     </View>
@@ -336,8 +328,6 @@ export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyM
  */
 function ConversationTurn(props: {
   readonly onOpenThread: (threadId: string) => void;
-  readonly workspaces: readonly WorkspaceSummary[];
-  readonly homeThreadId: string | null;
   readonly activityKey: string | null;
   readonly continued: boolean;
   readonly live: boolean;
@@ -386,8 +376,6 @@ function ConversationTurn(props: {
         <TurnSource
           source={turn.source}
           onOpenThread={props.onOpenThread}
-          workspaces={props.workspaces}
-          homeThreadId={props.homeThreadId}
         />
       ) : null}
       <ChatAgents live={props.live} turn={turn} />
@@ -1289,7 +1277,6 @@ export function Message(props: {
   readonly queued?: boolean;
   readonly joinedRun?: boolean;
   readonly conversation: boolean;
-  readonly homeThreadId: string | null;
   readonly onReply: ((message: MessageEntry) => void) | undefined;
   readonly message: MessageEntry;
   /** Whether the reader opened the folded words, which the pane keeps across scrolling. */
@@ -1297,7 +1284,6 @@ export function Message(props: {
   readonly onToggle: () => void;
   readonly onOpenThread: (threadId: string) => void;
   readonly viewerUserId: string | null;
-  readonly workspaces: readonly WorkspaceSummary[];
 }): ReactNode {
   const { message, open } = props;
   const preview = useMemo(() => incomingMessagePreview(message), [message]);
@@ -1323,7 +1309,6 @@ export function Message(props: {
     return (
       <RecoveryNote
         author={author}
-        homeThreadId={props.homeThreadId}
         message={message}
         onToggle={props.onToggle}
         open={props.open}
@@ -1332,10 +1317,6 @@ export function Message(props: {
   }
   const mine = author.kind === "human" && author.userId === props.viewerUserId;
   const update = props.conversation && !mine;
-  const workspace =
-    author.kind === "agent"
-      ? (props.workspaces.find(({ id }) => id === author.workspaceId) ?? null)
-      : null;
 
   const fold = (
     <MessageFold
@@ -1382,10 +1363,8 @@ export function Message(props: {
               <Symbol name="bolt" size={13} tint={color.muted} />
             ) : null
           }
-          name={messageAuthorName(author, message.messageKind, props.homeThreadId)}
-          // Only a Thread the reader can open is a way there: someone else's
-          // Chat, behind a Workspace they are not in, is named and left at that.
-          {...(author.kind === "agent" && workspace !== null
+          name={messageAuthorName(author)}
+          {...(author.kind === "agent"
             ? { onOpen: () => props.onOpenThread(author.threadId) }
             : {})}
         />
@@ -1489,16 +1468,10 @@ function MessageFold(props: {
 function TurnSource(props: {
   readonly source: NonNullable<Turn["source"]>;
   readonly onOpenThread: (threadId: string) => void;
-  readonly workspaces: readonly WorkspaceSummary[];
-  readonly homeThreadId: string | null;
 }): ReactNode {
   const { author, task, createdAt } = props.source;
-  const name = task?.workerThread.title ?? messageAuthorName(author, "input", props.homeThreadId);
-  const threadId =
-    task?.workerThread.id ??
-    (author.kind === "agent" && props.workspaces.some(({ id }) => id === author.workspaceId)
-      ? author.threadId
-      : null);
+  const name = task?.workerThread.title ?? messageAuthorName(author);
+  const threadId = task?.workerThread.id ?? (author.kind === "agent" ? author.threadId : null);
   const content = (
     <View style={styles.updateLineHead}>
       <Symbol
@@ -1525,7 +1498,6 @@ function TurnSource(props: {
 /** What Opensteer noted when it recovered a Run: one line naming it, opening in place to what was said. */
 function RecoveryNote(props: {
   readonly author: Extract<MessageEntry["author"], { readonly kind: "platform" }>;
-  readonly homeThreadId: string | null;
   readonly message: MessageEntry;
   /** Whether the reader opened it, which the pane keeps across scrolling. */
   readonly open: boolean;
@@ -1533,7 +1505,7 @@ function RecoveryNote(props: {
 }): ReactNode {
   const { author, message, open } = props;
   const said = incomingMessageAction(message);
-  const name = messageAuthorName(author, message.messageKind, props.homeThreadId);
+  const name = messageAuthorName(author);
   return (
     <View style={styles.updateLine}>
       <View style={styles.updateLineHead}>

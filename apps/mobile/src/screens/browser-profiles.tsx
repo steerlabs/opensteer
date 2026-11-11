@@ -30,7 +30,7 @@ import { color, material, space, touchTarget } from "../theme.js";
 import { Symbol } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
-import { AppText, Field, Notice, RowGroup, SecondaryButton, SwitchRow } from "../ui/primitives.js";
+import { AppText, Field, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 
 export type BrowserProfilesDestination = { readonly deploymentId: string };

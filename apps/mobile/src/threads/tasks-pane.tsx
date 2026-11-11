@@ -5,13 +5,11 @@ import {
   doneTaskList,
   doneTime,
   filterThreads,
-  groupTasksByProject,
   mainDoneTasks,
   sameTaskListSource,
   taskAttention,
   taskList,
   taskTime,
-  workspaceTaskList,
   type HostClient,
   type HostSnapshot,
   type TaskRow,
@@ -75,9 +73,8 @@ export function TasksPane(props: {
   /** What the screen's search bar holds; the pane shows matches while it is not empty. */
   readonly query: string;
   /** The Workspace this list is about, or null for every task on the Deployment. */
-  readonly workspaceId: string | null;
 }): ReactNode {
-  const { hostClient, query, workspaceId } = props;
+  const { hostClient, query } = props;
   const doneOnly = props.done === true;
   const insets = useListContentInsets(space[32]);
   const { loadError, snapshot } = useHostSnapshot(hostClient, samePaneSource);
@@ -90,45 +87,26 @@ export function TasksPane(props: {
   const authenticated = snapshot.session === "authenticated";
   // A Host that keeps Done newest Done first lists it apart; an older one
   // leaves it in the asked-ordered list.
-  const keepsDone = snapshot.quietTasksAvailable === true && (doneOnly || workspaceId !== null);
-  const listWorkspace = workspaceId ?? undefined;
-
-  // A project's own list is read when its page opens, and kept current by
-  // the Host client from then on.
-  useEffect(() => {
-    if (workspaceId === null || !authenticated) return;
-    let live = true;
-    void hostClient.loadWorkspaceTasks(workspaceId).catch((error: unknown) => {
-      if (live) setFailure(operationDetail(error, "This project’s tasks could not be loaded."));
-    });
-    return () => {
-      live = false;
-    };
-  }, [authenticated, hostClient, workspaceId]);
+  const keepsDone = snapshot.quietTasksAvailable === true && doneOnly;
 
   useEffect(() => {
     if (!keepsDone || !authenticated) return;
     let live = true;
-    void hostClient.loadDoneTasks(listWorkspace).catch((error: unknown) => {
+    void hostClient.loadDoneTasks().catch((error: unknown) => {
       if (live) setFailure(operationDetail(error, "Done tasks could not be loaded."));
     });
     return () => {
       live = false;
     };
-  }, [authenticated, listWorkspace, hostClient, keepsDone]);
+  }, [authenticated, hostClient, keepsDone]);
 
   const now = Date.now();
-  const read =
-    workspaceId === null ? snapshot.tasks : (snapshot.workspaceTasks[workspaceId] ?? null);
-  const list = workspaceId === null ? taskList(snapshot) : workspaceTaskList(snapshot, workspaceId);
-  const doneList = keepsDone ? doneTaskList(snapshot, listWorkspace) : null;
+  const read = snapshot.tasks;
+  const list = taskList(snapshot);
+  const doneList = keepsDone ? doneTaskList(snapshot) : null;
   const doneAlone = doneOnly && keepsDone;
   const loaded = doneAlone ? doneList !== null : read !== null;
-  const doneRows = keepsDone
-    ? (doneList?.rows ?? [])
-    : doneOnly && workspaceId === null
-      ? groupTasksByProject(snapshot, list).main.done
-      : list.done;
+  const doneRows = keepsDone ? (doneList?.rows ?? []) : list.done;
   const moreAsked = !doneAlone && list.hasMore;
   const moreDone = doneList?.hasMore === true;
   const searching = query.trim() !== "";
@@ -138,9 +116,8 @@ export function TasksPane(props: {
         filterThreads(
           [
             ...(read?.entries ?? []),
-            ...(snapshot.doneTasks[listWorkspace ?? mainDoneTasks]?.entries ?? []),
+            ...(snapshot.doneTasks[mainDoneTasks]?.entries ?? []),
           ].map(({ thread }) => thread),
-          snapshot.workspaces,
           query,
           taskAttention(snapshot),
         ).map(({ id }) => id),
@@ -209,10 +186,7 @@ export function TasksPane(props: {
       });
     } else {
       rows.push({
-        detail:
-          workspaceId === null
-            ? "Bigger jobs run here as tasks, side by side. Opensteer starts them for you."
-            : "Tasks started here use this project’s files, instructions and access.",
+        detail: "Ask your agent for something and it runs here as a task.",
         key: "nothing",
         kind: "nothing",
         signIn: false,
@@ -240,8 +214,8 @@ export function TasksPane(props: {
     setLoadingEarlier(true);
     setFailure(null);
     void Promise.all([
-      ...(moreAsked ? [hostClient.loadEarlierTasks(listWorkspace)] : []),
-      ...(moreDone ? [hostClient.loadEarlierDoneTasks(listWorkspace)] : []),
+      ...(moreAsked ? [hostClient.loadEarlierTasks()] : []),
+      ...(moreDone ? [hostClient.loadEarlierDoneTasks()] : []),
     ])
       .catch((error: unknown) => {
         setFailure(operationDetail(error, "Earlier tasks could not be loaded."));
@@ -402,14 +376,10 @@ export function TasksPane(props: {
   );
 }
 
-/**
- * What the pane reads: the task list's own sources, the Workspaces a search
- * matches names against, and what the connection line says.
- */
+/** What the pane reads: the task list's own sources and what the connection line says. */
 function samePaneSource(previous: HostSnapshot, next: HostSnapshot): boolean {
   return (
     sameTaskListSource(previous, next) &&
-    previous.workspaces === next.workspaces &&
     previous.session === next.session &&
     previous.network === next.network
   );

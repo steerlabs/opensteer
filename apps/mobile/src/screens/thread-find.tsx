@@ -1,5 +1,4 @@
 import { formatRelativeTime, messageAuthorName, type HostClient } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
 import type { ThreadMessagePage } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useRef, useState, type ReactNode } from "react";
@@ -62,7 +61,6 @@ function ThreadFind(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const listInsets = useListContentInsets(space[24]);
-  const { snapshot } = useHostSnapshot(props.hostClient);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly FoundMessage[] | null>(null);
   const [nextBefore, setNextBefore] = useState<string | null>(null);

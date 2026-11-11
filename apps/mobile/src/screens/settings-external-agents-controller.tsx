@@ -41,7 +41,6 @@ export function ExternalAgentsSettingsController(): ReactNode {
     if (selection.deploymentId)
       navigation.navigate("SettingsRemoteAccess", { deploymentId: selection.deploymentId });
   };
-  const workspaces = snapshot?.workspaces ?? [];
   const remove = (connectionId: string) => {
     const connection = connections?.find((row) => row.id === connectionId);
     if (!connection || pending.current !== null) return;
@@ -90,7 +89,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
           connections={(connections ?? []).map((connection) => ({
             id: connection.id,
             title: connection.label,
-            detail: connectionDetail(connection, workspaces),
+            detail: connectionDetail(connection),
             removing: agents.pending === connection.id,
           }))}
           addDisabled={connections === null || reach.kind !== "ready"}

@@ -13,6 +13,7 @@ import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NewTaskPane } from "./new-task.js";
 import { useNotificationsIntro } from "./notifications-intro.js";
+import { folderLabel } from "../home/folder-label.js";
 
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -73,11 +74,3 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
 
 const agentHome = (snapshot: { readonly personalSettings: { readonly agentHome: TaskFolder } | null }) =>
   snapshot.personalSettings?.agentHome ?? null;
-
-/** "Agent home", or a folder's last path part. */
-export function folderLabel(folder: TaskFolder | null, home: TaskFolder | null): string {
-  if (folder === null) return "Agent home";
-  if (home !== null && folder.computerId === home.computerId && folder.path === home.path)
-    return "Agent home";
-  return folder.path.split("/").filter(Boolean).at(-1) ?? folder.path;
-}
