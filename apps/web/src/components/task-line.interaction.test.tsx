@@ -166,64 +166,58 @@ function askingAbout(
   });
 }
 
-const lines = (node: HTMLElement) => [...node.querySelectorAll<HTMLElement>(".agent-row")];
+const lines = (node: HTMLElement) => [
+  ...node.querySelectorAll<HTMLElement>('.agent-step[data-agent-key^="task:"]'),
+];
+const secondLine = (line: HTMLElement) => line.querySelector(".agent-step__l2")?.textContent;
 
-// Ways a task's line can fail the reader: two states read alike, a working
+// Ways a task's row can fail the reader: two states read alike, a working
 // task stops showing it is moving (or one that is not pulses), a question
 // waiting on the reader is not said where the task is, a failure reads as an
-// ending like any other, or the line stops opening the task.
-describe("a task's card in the conversation that handed it out", () => {
+// ending like any other, or the row stops opening the task.
+describe("a task's row in the conversation that handed it out", () => {
   it.each([
-    ["working", { currentRunStatus: "running" as const }, "Working", "working", "working", true],
-    ["done", settled("completed"), "Finished", "finished", "completed", false],
-    ["failed", settled("failed"), "Couldn’t finish", "failed", "failed", false],
-    ["stopped", settled("cancelled"), "Stopped", "stopped", "stopped", false],
-  ] as const)(
-    "reads a %s task as its word and dot",
-    async (_, change, word, tone, dotTone, moving) => {
-      const { node } = await chatWith((seeded) => [variant(seeded, 0, change)]);
-      const [line] = lines(node);
-      expect(lines(node)).toHaveLength(1);
-      expect(line!.dataset.tone).toBe(tone);
-      expect(line!.querySelector(".task-line__state")?.textContent).toBe(word);
-      const dot = line!.querySelector<HTMLElement>(".task-dot")!;
-      expect(dot.dataset.tone).toBe(dotTone);
-      expect(dot.dataset.moving === "true").toBe(moving);
-      // The row is the task's own mark, title and state, and it opens the task.
-      expect(line!.querySelector(".agent-row__mark .task-mark")).not.toBeNull();
-      expect(line!.querySelector(".agent-kind")?.textContent).toBe("Task");
-      const open = line!.querySelector<HTMLAnchorElement>("a.agent-row__open")!;
-      expect(open.getAttribute("aria-label")).toMatch(/\. Open task$/u);
-      const title = open.textContent!;
-      await act(async () => open.click());
-      expect(node.querySelector(".conv-header__name")?.textContent).toBe(title);
-    },
-  );
+    ["working", { currentRunStatus: "running" as const }, "working", "working"],
+    ["done", settled("completed"), "finished", undefined],
+    ["failed", settled("failed"), "failed", "failed"],
+    ["stopped", settled("cancelled"), "stopped", "stopped"],
+  ] as const)("reads a %s task in words and by its dot", async (_, change, tone, dot) => {
+    const { node } = await chatWith((seeded) => [variant(seeded, 0, change)]);
+    const [line] = lines(node);
+    expect(lines(node)).toHaveLength(1);
+    expect(line!.dataset.tone).toBe(tone);
+    expect(line!.querySelector<HTMLElement>(".agent-mark")?.dataset.dot).toBe(dot);
+    // A lone row says what it is, and the row is the task's own mark and title.
+    expect(line!.querySelector(".agent-step__noun")?.textContent).toBe("Task");
+    expect(line!.querySelector(".agent-mark .task-mark")).not.toBeNull();
+    if (tone === "failed")
+      expect(line!.querySelector('[data-tone="failed"]')?.textContent).toContain("Couldn't finish");
+    const open = line!.querySelector<HTMLAnchorElement>("a.agent-step__head")!;
+    expect(open.getAttribute("aria-label")).toMatch(/^Task .+\. Open the task$/u);
+    const title = line!.querySelector(".agent-step__title")!.textContent;
+    await act(async () => open.click());
+    expect(node.querySelector(".conv-header__name")?.textContent).toBe(title);
+  });
 
-  it("asks a decision's question on the card's line", async () => {
+  it("says a task asked a question, which is answered above the composer", async () => {
     const { node } = await chatWith(
       (seeded) => [variant(seeded, 0, { currentRunStatus: "waiting" })],
       ([task]) => [askingAbout(clients[0]!, task!, "Book the 7:00 PM table at Adda?")],
     );
     const [line] = lines(node);
     expect(line!.dataset.tone).toBe("needs-you");
-    expect(line!.querySelector(".task-line__state")?.textContent).toBe("Needs you");
-    const note = line!.querySelector<HTMLElement>(".agent-row__line")!;
-    expect(note.dataset.kind).toBe("question");
-    expect(note.lastChild?.textContent).toBe("Book the 7:00 PM table at Adda?");
-    // Answered where Chat docks its tasks' questions, not on the line.
-    expect(line!.querySelectorAll("button:not(.agent-row__more)")).toHaveLength(0);
-    expect(line!.querySelector("a.agent-row__open")?.getAttribute("aria-label")).toContain(
-      "Book the 7:00 PM table at Adda?",
-    );
+    expect(secondLine(line!)).toBe("Task·Asked you a question");
+    expect(line!.querySelector('[data-tone="attention"]')).not.toBeNull();
+    // Answered where Chat docks its tasks' questions, never on the row.
+    expect(line!.textContent).not.toContain("Book the 7:00 PM table at Adda?");
   });
 });
 
 // Ways it can fail: tasks one turn handed out hide behind a count the reader
-// has to open, one that needs the reader is not said on its own line, or a
+// has to open, one that needs the reader is not said on its own row, or a
 // task that ends is announced twice or not at all.
 describe("tasks one turn handed out together", () => {
-  it("read as a row each in one group, every one saying where it stands and opening its task", async () => {
+  it("read as a row each under one group row, every one opening its task", async () => {
     const { node } = await chatWith(
       (seeded) => [
         variant(seeded, 0, settled("completed")),
@@ -232,15 +226,16 @@ describe("tasks one turn handed out together", () => {
       ],
       ([, asking]) => [askingAbout(clients[0]!, asking!, "Which quarter should I use?")],
     );
-    expect(lines(node).map((line) => line.querySelector(".task-line__state")?.textContent)).toEqual(
-      ["Finished", "Needs you", "Working"],
-    );
-    expect(lines(node)[1]!.querySelector(".agent-row__line")?.lastChild?.textContent).toBe(
-      "Which quarter should I use?",
-    );
-    expect(node.querySelectorAll("a.agent-row__open")).toHaveLength(3);
-    expect(node.querySelector(".agent-group__head")?.textContent).toContain(
-      "3 tasks · 1 needs you · 1 working · 1 finished",
+    expect(lines(node).map((line) => line.dataset.tone)).toEqual([
+      "finished",
+      "needs-you",
+      "working",
+    ]);
+    expect(secondLine(lines(node)[1]!)).toBe("Asked you a question");
+    expect(node.querySelectorAll("a.agent-step__head")).toHaveLength(3);
+    const group = node.querySelector<HTMLButtonElement>("button.agent-step__head[aria-expanded]")!;
+    expect(group.getAttribute("aria-label")).toBe(
+      "3 tasks: 1 needs you, 1 working, 1 finished. Hide tasks",
     );
   });
 
@@ -259,9 +254,9 @@ describe("tasks one turn handed out together", () => {
   });
 });
 
-// Ways the line's menu can fail: the quieter line loses the way to stop a
+// Ways the row's menu can fail: the quieter row loses the way to stop a
 // task, Stop acts without asking, or a finished task still offers it.
-describe("a task card's menu", () => {
+describe("a task row's menu", () => {
   it("stops an open task from a right click, after asking once", async () => {
     const { client, node, tasks } = await chatWith((seeded) => [
       variant(seeded, 0, { currentRunStatus: "running" }),
@@ -271,7 +266,7 @@ describe("a task card's menu", () => {
     await act(async () =>
       line.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })),
     );
-    expect(line.classList.contains("agent-row--menu")).toBe(true);
+    expect(line.querySelector(".agent-step__more")?.getAttribute("aria-expanded")).toBe("true");
     const stop = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
       (item) => item.textContent?.includes("Stop task…"),
     )!;
@@ -286,7 +281,7 @@ describe("a task card's menu", () => {
 
   it("offers only Open for a finished task", async () => {
     const { node } = await chatWith((seeded) => [variant(seeded, 0, settled("completed"))]);
-    await act(async () => node.querySelector<HTMLButtonElement>(".agent-row__more")!.click());
+    await act(async () => node.querySelector<HTMLButtonElement>(".agent-step__more")!.click());
     expect(
       [...document.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent),
     ).toEqual(["Open task"]);

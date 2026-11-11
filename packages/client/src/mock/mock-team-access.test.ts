@@ -47,6 +47,64 @@ function client(team: MockTeamScenario) {
 }
 
 describe("the shared team mock", () => {
+  it("shares a read-only task card without counting it or accepting its answer", async () => {
+    const host = client("member");
+    try {
+      const request = Object.values(host.getSnapshot().requests)
+        .flat()
+        .find(
+          (row) =>
+            row.status === "pending" &&
+            row.answer?.allowed === false &&
+            row.answer.reason === "requester-only",
+        );
+      if (!request || request.presentation.kind !== "choice")
+        throw new Error("Missing shared read-only question fixture");
+      const option = request.presentation.options[0];
+      if (!option) throw new Error("Question has no option");
+      const page = await host.rpc["thread.requests.list"]({
+        threadId: request.originatingThreadId,
+      });
+      expect(page.ok ? page.data.requests : null).toContainEqual(request);
+      const needsYou = await host.rpc["requests.list"]({});
+      expect(
+        needsYou.ok ? needsYou.data.requests.some((row) => row.request.id === request.id) : true,
+      ).toBe(false);
+      const refused = await host.rpc["commands.dispatch"]({
+        type: "request.respond",
+        idempotencyKey: "read-only-answer",
+        requestId: request.id,
+        response: { kind: "choice", optionId: option.id },
+      });
+      expect(refused, JSON.stringify(refused)).toMatchObject({
+        ok: false,
+        error: { code: "forbidden", reason: "requester-only" },
+      });
+      expect(
+        host
+          .getSnapshot()
+          .requests[request.originatingThreadId]?.find((row) => row.id === request.id)?.status,
+      ).toBe("pending");
+      const own = Object.values(host.getSnapshot().requests)
+        .flat()
+        .find(
+          (row) =>
+            row.status === "pending" && row.requiredActor === "requester" && row.answer?.allowed,
+        );
+      if (!own || own.presentation.kind !== "choice" || !own.presentation.options[0])
+        throw new Error("Missing answerable question fixture");
+      const answered = await host.rpc["commands.dispatch"]({
+        type: "request.respond",
+        idempotencyKey: "own-answer",
+        requestId: own.id,
+        response: { kind: "choice", optionId: own.presentation.options[0].id },
+      });
+      expect(answered, JSON.stringify(answered)).toMatchObject({ ok: true });
+    } finally {
+      host.dispose();
+    }
+  });
+
   it.each(mockTeamScenarios)(
     "answers every team read in the %s scenario with the real schemas",
     async (scenario) => {

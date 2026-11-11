@@ -705,3 +705,19 @@
 .team-task__runtime {
   color: var(--text-soft);
 }
+
+.action-panel__readonly {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  margin: 0;
+  padding: 0 var(--space-14) var(--space-10);
+  color: var(--text-soft);
+  list-style: none;
+}
+
+.action-panel__readonly li {
+  padding: var(--space-6) var(--space-10);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+}

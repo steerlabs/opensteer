@@ -76,7 +76,6 @@ function AskedRequest(props: {
         hostClient={hostClient}
         key={surface.request.id}
         showQueue={false}
-        subagentTitle={waiting?.subagent?.title ?? null}
         surface={surface}
         userId={user.id}
       />

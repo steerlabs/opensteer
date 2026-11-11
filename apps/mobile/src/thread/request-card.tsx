@@ -30,7 +30,7 @@ import {
 import { AppText, monoFontFamily, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
-import { AskedBySubagent } from "./asked-by-subagent.js";
+import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import { requestTitle } from "./docked-requests.js";
 import { IntegrationConnectCard } from "./integration-connect-sheet.js";
@@ -74,8 +74,8 @@ export interface RequestCardProps {
   readonly onSettle: () => void;
   /** Lists what else is waiting. Voice says that in its own words. */
   readonly showQueue?: boolean;
-  /** The subagent that asked, by its title; absent or null when the Run's own agent did. */
-  readonly subagentTitle?: string | null;
+  /** Names the subagent that asked; off in that subagent's own view, which already is it. */
+  readonly asker?: boolean;
   readonly surface: SurfaceModel;
 }
 
@@ -164,6 +164,16 @@ function AnswerCard(props: RequestCardProps): ReactNode {
     ),
   );
   const answerNote = requestAnswerNote(request, projectName);
+  const asked = useRequestAsker(props.hostClient, request);
+  const asker = props.asker === false ? null : asked;
+  const queue =
+    props.showQueue === false ? null : (
+      <WaitingMenu
+        deploymentId={deploymentId}
+        hostClient={props.hostClient}
+        requestId={request.id}
+      />
+    );
   const risky = answers.kind === "approve" && answers.highRisk;
 
   // Nothing about a card that hasn't been measured yet says it fits, so its
@@ -228,10 +238,22 @@ function AnswerCard(props: RequestCardProps): ReactNode {
 
   return (
     <View style={[styles.card, props.highlighted && styles.cardHighlighted]}>
+      {asker === null ? null : (
+        <View style={styles.asker}>
+          <AskerByline
+            asker={asker}
+            hostClient={props.hostClient}
+            onOpen={() =>
+              pushSubagent({ deploymentId, nodeId: asker.nodeId, threadId: asker.threadId })
+            }
+            trailing={queue}
+          />
+        </View>
+      )}
       <View style={[styles.clip, { maxHeight: limit }]}>
         <View
           onLayout={(event) => setBodyHeight(Math.ceil(event.nativeEvent.layout.height))}
-          style={styles.body}
+          style={[styles.body, asker !== null && styles.bodyAfterAsker]}
         >
           <View style={styles.head}>
             {risky ? (
@@ -239,16 +261,16 @@ function AnswerCard(props: RequestCardProps): ReactNode {
                 <Symbol name="exclamationmark.triangle.fill" size={13} tint={color.red} />
               </View>
             ) : null}
-            <AppText role="secondaryMedium" style={styles.question}>
+            <AppText
+              {...(asker === null
+                ? {}
+                : { accessibilityLabel: `${asker.title} asks: ${question}` })}
+              role="secondaryMedium"
+              style={styles.question}
+            >
               {question}
             </AppText>
-            {props.showQueue === false ? null : (
-              <WaitingMenu
-                deploymentId={deploymentId}
-                hostClient={props.hostClient}
-                requestId={request.id}
-              />
-            )}
+            {asker === null ? queue : null}
           </View>
           {context === null ? null : (
             <AppText role="caption" tone="soft">
@@ -265,19 +287,6 @@ function AnswerCard(props: RequestCardProps): ReactNode {
               {answerNote}
             </AppText>
           )}
-          {props.subagentTitle && request.originatingNodeId !== undefined ? (
-            <AskedBySubagent
-              onOpen={() => {
-                if (request.originatingNodeId === undefined) return;
-                pushSubagent({
-                  deploymentId,
-                  nodeId: request.originatingNodeId,
-                  threadId: request.originatingThreadId,
-                });
-              }}
-              title={props.subagentTitle}
-            />
-          ) : null}
           {signInLine === null ? null : (
             <View style={styles.signInLine}>
               <StatusDot live={signInLine.live} tone={signInLine.tone} />
@@ -351,6 +360,25 @@ function CardAnswers(props: {
   readonly takesReason: boolean;
 }): ReactNode {
   const { answers, locked, onReview, onSend, overflows, pendingId, request, settled } = props;
+  if (answers.kind === "none" && props.denied !== null && "answer" in request && request.answer) {
+    // A team's card is read by everyone who can open the task; the line above says whose it is.
+    const presentation = request.presentation;
+    const items =
+      presentation.kind === "choice"
+        ? presentation.options.map(({ id, label }) => ({ id, text: label }))
+        : presentation.kind === "form"
+          ? presentation.fields.map(({ id, prompt }) => ({ id, text: prompt }))
+          : [];
+    return (
+      <View accessibilityLabel="Its options" style={styles.waiting}>
+        {items.map(({ id, text }) => (
+          <AppText key={id} role="secondary" tone="soft">
+            {`• ${text}`}
+          </AppText>
+        ))}
+      </View>
+    );
+  }
   if (answers.kind === "none") {
     return (
       <View style={styles.waiting}>
@@ -541,7 +569,9 @@ const styles = StyleSheet.create({
   // The last pill ends where the composer's send circle does, and its leading
   // slot stands over the `+`, whatever the difference in their rims.
   answers: { paddingBottom: 2, paddingLeft: 1, paddingRight: 6 },
+  asker: { paddingHorizontal: space[14] - controlBorderWidth, paddingTop: space[10] - 1 },
   body: { gap: 1, paddingHorizontal: space[14] - controlBorderWidth, paddingTop: space[10] - 1 },
+  bodyAfterAsker: { paddingTop: space[4] },
   card: { ...material.attention, borderRadius: radius.xxl, overflow: "hidden" },
   cardHighlighted: { backgroundColor: material.selected.backgroundColor },
   clip: { overflow: "hidden" },

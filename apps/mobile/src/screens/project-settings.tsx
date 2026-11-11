@@ -40,6 +40,7 @@ import { memberInitials } from "./project-settings-model.js";
 import { useTeam } from "@opensteer/client/react";
 import {
   TeamMarker,
+  TeamProjectDelete,
   TeamProjectSection,
   useTeamProjectAccess,
 } from "../team/team-project-section.js";
@@ -189,6 +190,11 @@ function ProjectSettings(props: {
             hostClient={hostClient}
             viewerId={userId}
           />
+          <TeamProjectDelete
+            access={teamAccess}
+            deploymentId={deploymentId}
+            hostClient={hostClient}
+          />
         </ScrollView>
       </Screen>
     );
@@ -312,8 +318,16 @@ function ProjectSettings(props: {
             workspace={project}
           />
         ) : null}
+        {/* A destructive action goes last. */}
+        {teamProject ? (
+          <TeamProjectDelete
+            access={teamAccess}
+            deploymentId={deploymentId}
+            hostClient={hostClient}
+          />
+        ) : null}
         {/* The Host lets only an active owner delete a Project. */}
-        {project.status === "ready" && owner ? (
+        {!teamProject && project.status === "ready" && owner ? (
           <DeleteSection
             connected={connected}
             hostClient={hostClient}

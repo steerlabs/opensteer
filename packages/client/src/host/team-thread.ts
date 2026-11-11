@@ -29,24 +29,31 @@ export function taskStarterLine(startedBy: TaskStartedBy, viewerId: string | nul
   }
 }
 
+/**
+ * Why a task stopped. The Host can't know that anyone left: the same access
+ * change stops work when a role or level changes while the person stays. So
+ * the starter is named from `startedBy`, and only as whose access changed.
+ */
 export function taskStoppedText(
   stopped: TaskStopped,
   place: { readonly project: string; readonly team: string },
+  starter?: { readonly startedBy?: TaskStartedBy | undefined; readonly viewerId: string | null },
 ): { readonly short: string; readonly long: string } {
-  const kept = `Its files and results so far stay in ${place.project}.`;
   if (stopped.reason === "no-eligible-manager")
     return {
-      short: `Stopped · ${place.project} has no manager`,
-      long: `Stopped because ${place.project} has no manager to answer its questions. Ask an admin of ${place.team} to appoint one.`,
+      short: "Stopped · no manager is left to answer",
+      long: `Stopped because no manager of ${place.project} is left to answer its questions. Ask an admin of ${place.team} to appoint one.`,
     };
-  if (stopped.starterName)
-    return {
-      short: `Stopped · ${stopped.starterName} is no longer in ${place.team}`,
-      long: `Stopped because ${stopped.starterName} left ${place.team}. ${kept}`,
-    };
+  const person = starter?.startedBy?.kind === "person" ? starter.startedBy : null;
+  const whose =
+    person === null
+      ? "its starter’s"
+      : person.userId === starter?.viewerId
+        ? "your"
+        : `${person.name}’s`;
   return {
-    short: `Stopped · its starter can no longer use ${place.project}`,
-    long: `Stopped because the person who started it can no longer use ${place.project}. ${kept}`,
+    short: `Stopped · ${whose} access changed`,
+    long: `Stopped because ${whose} access changed.`,
   };
 }
 
@@ -70,32 +77,40 @@ export function requestWaitLines(
   return more > 0 ? [...lines, `${more} more waiting.`] : lines;
 }
 
+/**
+ * How a past question ended, for where its own title isn't shown. A
+ * cancellation's name is whose question it was, never that they left.
+ */
 export function requestOutcomeLine(
-  outcome: ThreadRequestOutcome,
-  place: { readonly project: string; readonly team: string },
+  outcome: ThreadRequestOutcome & { readonly class?: "question" | "approval" | undefined },
 ): string {
-  if (outcome.status !== "cancelled")
-    return `${{ fulfilled: "Answered", declined: "Declined", withdrawn: "Withdrawn" }[outcome.status]} by ${outcome.resolvedByName}`;
-  const name = outcome.cancelledFor?.name;
-  switch (outcome.reason) {
-    case "no-eligible-manager":
-      return `Cancelled: ${place.project} has no manager to answer it. The task stopped.`;
-    case "membership-revoked":
-      return name
-        ? `Cancelled: ${name} is no longer in ${place.team}. The task stopped.`
-        : "Cancelled: the person it waited on is no longer here. The task stopped.";
-    case "authority-revoked":
-      return name
-        ? `Cancelled: ${name} can no longer use ${place.project}. The task stopped.`
-        : `Cancelled: the person it waited on can no longer use ${place.project}. The task stopped.`;
-    default:
-      return "Cancelled";
+  const kind = outcome.class === "approval" ? "approval" : "question";
+  if (outcome.status !== "cancelled") {
+    const how = { fulfilled: "Answered", declined: "Declined", withdrawn: "Withdrawn" }[
+      outcome.status
+    ];
+    return outcome.class
+      ? `${kind === "approval" ? "An approval" : "A question"} · ${how} by ${outcome.resolvedByName}`
+      : `${how} by ${outcome.resolvedByName}`;
   }
+  return requestCancelledLine(outcome.reason, outcome.cancelledFor?.name ?? null, kind);
+}
+
+/** A cancelled question, from its reason and, when the Host names one, whose question it was. */
+export function requestCancelledLine(
+  reason: string,
+  forName: string | null,
+  kind: "question" | "approval" = "question",
+): string {
+  if (reason === "no-eligible-manager") return "Cancelled: no manager is left to answer it.";
+  if (forName && (reason === "membership-revoked" || reason === "authority-revoked"))
+    return `This was ${forName}’s ${kind}. It was cancelled when ${forName}’s access changed.`;
+  return "Cancelled";
 }
 
 /**
- * The one line above an answerable card that says why this person is the one
- * asked. Only the Host's `answer` and `waitingOn` decide it.
+ * The one line on a card that says whose question it is: why this reader is
+ * asked, or who answers instead. Only the Host's `answer` and `waitingOn` decide it.
  */
 export function requestAnswerNote(
   request: {
@@ -105,9 +120,13 @@ export function requestAnswerNote(
   },
   project: string,
 ): string | null {
-  if (request.answer?.allowed !== true || !request.waitingOn) return null;
-  if (request.waitingOn.kind === "person") return "Only you can answer: you started this task.";
+  if (request.answer === undefined || !request.waitingOn) return null;
   const anyManager = `Any manager of ${project} can answer.`;
+  if (!request.answer.allowed)
+    return request.waitingOn.kind === "person"
+      ? `Only ${request.waitingOn.name} can answer.`
+      : anyManager;
+  if (request.waitingOn.kind === "person") return "Only you can answer: you started this task.";
   return request.source ? `${request.source.name} is asking. ${anyManager}` : anyManager;
 }
 

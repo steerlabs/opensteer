@@ -16,7 +16,6 @@ import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ProjectsPage } from "./components/projects-page.js";
 import { ProjectSettingsRoute } from "./components/project-settings.js";
 import { ThreadRoute } from "./components/thread-view.js";
-import { SubagentRoute } from "./components/subagent-view.js";
 import { InviteRoute } from "./components/invitation-onboarding.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
@@ -563,7 +562,6 @@ export function App({
             <Route index element={<PlaceHomeRoute />} />
             <Route path="new" element={<PlaceNewTaskRoute />} />
             <Route path="threads/:threadId" element={<ThreadRoute />} />
-            <Route path="threads/:threadId/subagents/:nodeId" element={<SubagentRoute />} />
             <Route path="live" element={<LiveRedirect />} />
             <Route path="projects" element={<ProjectsPage />} />
             <Route path="get-started" element={<SetupPage />} />

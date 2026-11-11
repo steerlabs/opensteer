@@ -1583,7 +1583,7 @@ describe("HttpHostClient authentication and onboarding", () => {
       ],
       audience,
       startedBy: { kind: "watch" as const, name: "Inbox" },
-      stopped: { reason: "authority-revoked" as const, starterName: "Sam" },
+      stopped: { reason: "authority-revoked" as const },
     };
     const thread = { ...makeThread(workspace.id), ...facts };
     const client = createHttpHostClient({

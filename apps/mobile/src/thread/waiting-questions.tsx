@@ -78,7 +78,6 @@ export function WaitingQuestions(props: {
         drafts={props.drafts}
         hostClient={props.hostClient}
         key={surface.request.id}
-        subagentTitle={focused?.subagent?.title ?? null}
         surface={surface}
         userId={props.user.id}
       />
@@ -94,7 +93,8 @@ export function QuestionCard(props: {
   readonly hostClient: HostClient;
   /** Off where voice says what else is waiting in its own words. */
   readonly showQueue?: boolean;
-  readonly subagentTitle: string | null;
+  /** Off in the asking subagent's own view, which already is the asker. */
+  readonly asker?: boolean;
   readonly surface: SurfaceModel;
   readonly userId: string;
 }): ReactNode {
@@ -120,7 +120,7 @@ export function QuestionCard(props: {
         onPresent={() => undefined}
         onSettle={() => undefined}
         {...(props.showQueue === undefined ? {} : { showQueue: props.showQueue })}
-        subagentTitle={props.subagentTitle}
+        {...(props.asker === undefined ? {} : { asker: props.asker })}
         surface={props.surface}
       />
     </View>

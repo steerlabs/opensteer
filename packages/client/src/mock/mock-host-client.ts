@@ -1,5 +1,6 @@
 import { previewToolOutput } from "@opensteer/core";
 import { seedMockSubagents } from "./mock-subagents.js";
+import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 import { hostDeploymentPolicy } from "../host/deployment-policy.js";
 import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
@@ -1934,7 +1935,8 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
-  subagents?: "seeded" | "absent";
+  /** `seeded`, or one task holding a single scene of the subagent design. */
+  subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
   /** Plugins an agent made in Main, from a folder in that Workspace. */
@@ -4816,6 +4818,11 @@ export class MockHostClient implements HostClient {
     this.#state.activateWorkspace(workspaceId);
   }
 
+  /** A running subagent reports a new step, as the Host relays its progress line. */
+  mockSubagentProgress(threadId: string, nodeId: string, progress: string): void {
+    this.#state.mockSubagentProgress(threadId, nodeId, progress);
+  }
+
   async cancelThreadInput(threadId: string, messageId: string): Promise<void> {
     await this.dispatch({
       idempotencyKey: `mock-input-cancel:${crypto.randomUUID()}`,
@@ -6691,6 +6698,16 @@ class MockHostState {
     }
     if (
       !firstRun &&
+      options.subagents !== undefined &&
+      options.subagents !== "seeded" &&
+      options.subagents !== "absent" &&
+      !teamPlace
+    ) {
+      const fixture = seedMockSubagentScene(this.snapshot, options.subagents, this.now());
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+    } else if (
+      !firstRun &&
       options.initialHome !== "absent" &&
       options.subagents !== "absent" &&
       !teamPlace
@@ -6960,6 +6977,21 @@ class MockHostState {
             }
           : machine,
       ),
+    });
+  }
+
+  mockSubagentProgress(threadId: string, nodeId: string, progress: string): void {
+    const entries = this.snapshot.transcripts[threadId] ?? [];
+    this.update({
+      ...this.snapshot,
+      transcripts: {
+        ...this.snapshot.transcripts,
+        [threadId]: entries.map((entry) =>
+          entry.kind === "node" && entry.nodeId === nodeId && entry.status === "running"
+            ? { ...entry, progress }
+            : entry,
+        ),
+      },
     });
   }
 
@@ -12069,7 +12101,16 @@ class MockHostState {
    * choice of an option that rejects or cancels, declines it; any other answer
    * fulfils it. Its receipt is then derived as the Host's event would be.
    */
-  #resolvedRequest(request: Request, response: RequestResponse) {
+  #resolvedRequest(request: RequestView, response: RequestResponse) {
+    const {
+      answer: _answer,
+      waitingOn: _waitingOn,
+      source: _source,
+      resolvedByName: _resolvedByName,
+      cancelledFor: _cancelledFor,
+      settlementProvenance: _settlementProvenance,
+      ...record
+    } = request;
     const option =
       response.kind === "choice" && request.presentation.kind === "choice"
         ? request.presentation.options.find(({ id }) => id === response.optionId)
@@ -12078,7 +12119,7 @@ class MockHostState {
       (response.kind === "external" && response.value?.["decision"] === "declined") ||
       (option !== undefined && requestOptionDeclines(option));
     return ResolvedRequestSchema.parse({
-      ...request,
+      ...record,
       resolvedAt: this.now().toISOString(),
       resolvedBy: mockUserId,
       response,
@@ -12110,6 +12151,7 @@ class MockHostState {
                 ...(thread.requestOutcomes ?? []),
                 {
                   requestId: request.id,
+                  class: "approval" as const,
                   status: "fulfilled" as const,
                   at,
                   resolvedByName: "Dev Patel",
@@ -12119,7 +12161,28 @@ class MockHostState {
           : thread,
       ),
     };
-    this.snapshot = { ...this.snapshot, waitingRequests: this.waitingRequests() };
+    // The question stays where it was asked, now with how it ended.
+    this.snapshot = {
+      ...this.snapshot,
+      transcripts: {
+        ...this.snapshot.transcripts,
+        [request.originatingThreadId]: [
+          ...(this.snapshot.transcripts[request.originatingThreadId] ?? []),
+          {
+            createdAt: at,
+            id: `request:${request.id}`,
+            kind: "request",
+            outcome: "Fulfilled · Publish",
+            requestId: request.id,
+            requestKind: request.kind,
+            resolvedByName: "Dev Patel",
+            runId: null,
+            title: requestTitleText(request.presentation),
+          },
+        ],
+      },
+      waitingRequests: this.waitingRequests(),
+    };
     this.emit();
     return new HostClientRequestError({
       code: "conflict",
@@ -12135,6 +12198,13 @@ class MockHostState {
       .find((candidate) => candidate.id === input.requestId);
     if (!request) throw new Error("The mock Host does not have that pending Request.");
     if (request.status !== "pending") throw new Error("The mock Request is no longer pending.");
+    if (request.answer?.allowed === false)
+      throw new HostClientRequestError({
+        code: "forbidden",
+        message: "This question is waiting for someone else.",
+        ...(request.answer.reason ? { reason: request.answer.reason } : {}),
+        status: 403,
+      });
     if (request.id === mockTeamManagersRequestId) throw this.answeredFirstByAnotherManager(request);
     if (request.kind === "harness.approval" && this.openAssignmentOf(request.originatingThreadId)) {
       this.resolveTaskRequest(request, input.response);
@@ -13394,16 +13464,54 @@ function teamPlaceWorld(snapshot: HostSnapshot, team: MockTeamAccess): HostSnaps
 function withTeamFacts(snapshot: HostSnapshot, team: MockTeamAccess): HostSnapshot {
   const manages = (workspaceId: string) => team.audience(workspaceId)?.myLevel === "manage";
   const launch = snapshot.threads.find(({ id }) => id === mockTeamThreads.launch);
-  const added = launch ? mockTeamAddedThreads(launch, manages(launch.workspaceId)) : [];
+  const added = launch ? mockTeamAddedThreads(launch) : [];
   const threads = [...added.map(({ thread }) => thread), ...snapshot.threads].map((thread) => {
     const audience = team.audience(thread.workspaceId);
     return { ...thread, ...(audience ? { audience } : {}), ...mockTeamTaskFacts[thread.id] };
   });
+  // Each past question stays where it was asked, for everyone who can open the task.
+  const cancelled = (
+    threadId: string,
+    requestId: string,
+    title: string,
+    reason: string,
+    forName: string | null,
+    at: string,
+  ): TranscriptEntry[] => [
+    ...(snapshot.transcripts[threadId] ?? []),
+    {
+      createdAt: at,
+      id: `request:${requestId}`,
+      kind: "request",
+      outcome: `Cancelled · ${reason}`,
+      ...(forName ? { cancelledFor: { name: forName } } : {}),
+      requestId,
+      requestKind: "harness.approval",
+      runId: null,
+      title,
+    },
+  ];
   const next = {
     ...snapshot,
     threads,
     transcripts: {
       ...snapshot.transcripts,
+      [mockTeamThreads.reconcile]: cancelled(
+        mockTeamThreads.reconcile,
+        "req_0192f4a1-1111-4000-8000-0000000000a7",
+        "Post the August adjustments to the ledger?",
+        "membership-revoked",
+        "Leo Park",
+        "2026-11-08T16:20:00.000Z",
+      ),
+      [mockTeamThreads.download]: cancelled(
+        mockTeamThreads.download,
+        "req_0192f4a1-1111-4000-8000-0000000000a6",
+        "Sign in to the card portal to download the statements?",
+        "no-eligible-manager",
+        null,
+        "2026-11-09T11:05:00.000Z",
+      ),
       ...Object.fromEntries(added.map(({ thread, transcript }) => [thread.id, transcript])),
     },
     transcriptWindows: {
@@ -13432,8 +13540,6 @@ function withTeamFacts(snapshot: HostSnapshot, team: MockTeamAccess): HostSnapsh
  */
 function mockTeamAddedThreads(
   launch: ThreadSummary,
-  /** A manager may read the managers' questions, so their history shows where each was asked. */
-  managesLaunch: boolean,
 ): { thread: ThreadSummary; transcript: TranscriptEntry[] }[] {
   const at = "2026-11-10T09:12:00.000Z";
   const maya = {
@@ -13510,21 +13616,17 @@ function mockTeamAddedThreads(
           "Draft tonight’s release notes from the changes merged today, and ask before publishing them.",
           "2026-11-09T07:00:00.000Z",
         ),
-        ...(managesLaunch
-          ? [
-              {
-                createdAt: "2026-11-09T07:04:00.000Z",
-                id: "request:req_0192f4a1-1111-4000-8000-0000000000a8",
-                kind: "request" as const,
-                outcome: "Fulfilled · Publish",
-                requestId: "req_0192f4a1-1111-4000-8000-0000000000a8",
-                requestKind: "harness.approval" as const,
-                resolvedByName: "Dev Patel",
-                runId: null,
-                title: "Publish last night’s release notes to the changelog?",
-              },
-            ]
-          : []),
+        {
+          createdAt: "2026-11-09T07:04:00.000Z",
+          id: "request:req_0192f4a1-1111-4000-8000-0000000000a8",
+          kind: "request" as const,
+          outcome: "Fulfilled · Publish",
+          requestId: "req_0192f4a1-1111-4000-8000-0000000000a8",
+          requestKind: "harness.approval" as const,
+          resolvedByName: "Dev Patel",
+          runId: null,
+          title: "Publish last night’s release notes to the changelog?",
+        },
         message(
           "msg_00000000-0000-4000-8000-0000000009c2",
           {
@@ -13589,6 +13691,7 @@ const mockTeamTaskFacts: Readonly<Record<string, ThreadDisplayFacts>> = {
     requestOutcomes: [
       {
         requestId: RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-0000000000a8"),
+        class: "approval",
         status: "fulfilled",
         at: "2026-11-09T07:04:00.000Z",
         resolvedByName: "Dev Patel",
@@ -13601,10 +13704,11 @@ const mockTeamTaskFacts: Readonly<Record<string, ThreadDisplayFacts>> = {
       userId: UserIdSchema.parse("usr_00000000-0000-4000-8000-0000000000a7"),
       name: "Leo Park",
     },
-    stopped: { reason: "membership-revoked", starterName: "Leo Park" },
+    stopped: { reason: "membership-revoked" },
     requestOutcomes: [
       {
         requestId: RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-0000000000a7"),
+        class: "approval",
         status: "cancelled",
         at: "2026-11-08T16:20:00.000Z",
         reason: "membership-revoked",
@@ -13618,6 +13722,7 @@ const mockTeamTaskFacts: Readonly<Record<string, ThreadDisplayFacts>> = {
     requestOutcomes: [
       {
         requestId: RequestIdSchema.parse("req_0192f4a1-1111-4000-8000-0000000000a6"),
+        class: "approval",
         status: "cancelled",
         at: "2026-11-09T11:05:00.000Z",
         reason: "no-eligible-manager",
@@ -13627,8 +13732,7 @@ const mockTeamTaskFacts: Readonly<Record<string, ThreadDisplayFacts>> = {
 };
 
 /**
- * The Requests a team Host lets this person read: only the ones they may
- * answer, each saying so. Everyone else learns of a wait from the Thread.
+ * Task readers receive the questions; their Host-authored Can decides who may answer.
  */
 function teamPlaceRequests(
   snapshot: HostSnapshot,
@@ -13645,7 +13749,33 @@ function teamPlaceRequests(
   }
   const own = requests[mockTeamThreads.launch]?.find(({ status }) => status === "pending");
   const review = snapshot.threads.find(({ id }) => id === mockTeamThreads.review);
-  if (own && own.status === "pending" && review && manages(review.workspaceId)) {
+  const mayas = snapshot.threads.find(({ id }) => id === mockTeamThreads.mayas);
+  // Everyone who can open a task reads its questions; only their audience may answer.
+  if (own && own.status === "pending" && mayas)
+    out[mockTeamThreads.mayas] = [
+      {
+        ...own,
+        id: RequestIdSchema.parse("req_4891d2c1-64d9-4305-b5d1-dcdc42502cb3"),
+        createdAt: "2026-11-09T14:12:00.000Z",
+        originatingThreadId: ThreadIdSchema.parse(mockTeamThreads.mayas),
+        originatingWorkspaceId: mayas.workspaceId as RequestView["originatingWorkspaceId"],
+        requestedBy: UserIdSchema.parse(mockTeamMaya),
+        requiredActor: "requester",
+        presentation: {
+          kind: "choice",
+          options: [
+            { hint: "allow-once", id: "fifteen", label: "15% off annual" },
+            { hint: "allow-once", id: "twenty", label: "20% off annual" },
+          ],
+          risk: "low",
+          title: "Which annual discount should the pricing page show?",
+        },
+        answer: { allowed: false, reason: "requester-only" },
+        waitingOn: { kind: "person", name: "Maya Chen" },
+      },
+    ];
+  if (own && own.status === "pending" && review) {
+    const answers = manages(review.workspaceId);
     out[mockTeamThreads.review] = [
       {
         ...own,
@@ -13665,7 +13795,7 @@ function teamPlaceRequests(
           title: "Publish tonight’s release notes to the changelog?",
         },
         source: { kind: "trigger", name: "Nightly release notes" },
-        answer: { allowed: true },
+        answer: answers ? { allowed: true } : { allowed: false, reason: "manager-only" },
         waitingOn: { kind: "managers" },
       },
     ];

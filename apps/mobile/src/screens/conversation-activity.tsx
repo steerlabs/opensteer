@@ -26,7 +26,8 @@ import {
   type TranscriptSurfaces,
 } from "../thread/surface-chips.js";
 import { ConversationSteps } from "../thread/transcript.js";
-import { AgentMemoryContext } from "../thread/agent-cards.js";
+import { AgentEngine, AgentGround, threadEngine } from "../thread/agent-mark.js";
+import { AgentMemoryContext } from "../thread/subagent-rows.js";
 import { TaskScopeContext, type TaskScope } from "../thread/task-line.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
@@ -101,6 +102,7 @@ function ReplyActivity(props: {
     [groups, turnKey],
   );
   const environment = snapshot.environments.find(({ id }) => id === thread?.environmentId);
+  const engine = threadEngine(snapshot, threadId);
   const live = showsHostLive(snapshot) && environment?.status === "connected";
   const openStep = useCallback(
     (entryId: string) => navigation.navigate("ThreadStep", { deploymentId, entryId, threadId }),
@@ -158,37 +160,41 @@ function ReplyActivity(props: {
   }
   return (
     <TaskScopeContext value={scope}>
-      <AgentMemoryContext value={memory}>
-        <TranscriptHostClientContext value={hostClient}>
-          <Frame
-            status={
-              activity.live
-                ? "Now"
-                : activity.reply === null
-                  ? null
-                  : formatClockTime(activity.reply.createdAt)
-            }
-          >
-            <TranscriptSurfacesContext.Provider value={surfaces}>
-              <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
-            </TranscriptSurfacesContext.Provider>
-            {activity.steps.length === 0 ? (
-              <AppText role="secondary" tone="muted">
-                {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
-              </AppText>
-            ) : (
-              <ConversationSteps
-                reveal={props.messageId}
-                entries={activity.steps}
-                highlightRequestId={null}
-                live={live}
-                onOpenStep={openStep}
-                turn={activity.turn}
-              />
-            )}
-          </Frame>
-        </TranscriptHostClientContext>
-      </AgentMemoryContext>
+      <AgentEngine value={engine}>
+        <AgentGround value={color.surfaceElevated}>
+          <AgentMemoryContext value={memory}>
+            <TranscriptHostClientContext value={hostClient}>
+              <Frame
+                status={
+                  activity.live
+                    ? "Now"
+                    : activity.reply === null
+                      ? null
+                      : formatClockTime(activity.reply.createdAt)
+                }
+              >
+                <TranscriptSurfacesContext.Provider value={surfaces}>
+                  <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
+                </TranscriptSurfacesContext.Provider>
+                {activity.steps.length === 0 ? (
+                  <AppText role="secondary" tone="muted">
+                    {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
+                  </AppText>
+                ) : (
+                  <ConversationSteps
+                    reveal={props.messageId}
+                    entries={activity.steps}
+                    highlightRequestId={null}
+                    live={live}
+                    onOpenStep={openStep}
+                    turn={activity.turn}
+                  />
+                )}
+              </Frame>
+            </TranscriptHostClientContext>
+          </AgentMemoryContext>
+        </AgentGround>
+      </AgentEngine>
     </TaskScopeContext>
   );
 }

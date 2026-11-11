@@ -97,19 +97,26 @@ export function TeamTaskFacts({
         </div>
       ) : null}
       {outcomes.length > 0 ? (
-        <ul aria-label="Earlier questions" className="team-task__earlier">
+        <ul aria-label="How earlier questions ended" className="team-task__earlier">
           {outcomes.map((outcome) => (
             <li className="team-task__outcome" key={outcome.requestId}>
               <Icon name="check-circle" />
               <span>
-                Earlier question · {requestOutcomeLine(outcome, place)} · {formatWhen(outcome.at)}
+                {requestOutcomeLine(outcome)} · {formatWhen(outcome.at)}
               </span>
             </li>
           ))}
         </ul>
       ) : null}
       {thread.stopped ? (
-        <p className="team-task__stopped">{taskStoppedText(thread.stopped, place).long}</p>
+        <p className="team-task__stopped">
+          {
+            taskStoppedText(thread.stopped, place, {
+              startedBy: thread.startedBy,
+              viewerId: snapshot.user?.id ?? null,
+            }).long
+          }
+        </p>
       ) : null}
       {waits.map((line) => (
         <p className="team-task__wait" key={line}>

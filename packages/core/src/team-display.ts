@@ -57,7 +57,6 @@ export const ProjectWorkStopReasonSchema = z.enum([
 ]);
 export const TaskStoppedSchema = z.object({
   reason: ProjectWorkStopReasonSchema,
-  starterName: name.optional(),
 });
 export const RequestWaitingOnSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("person"), name }),

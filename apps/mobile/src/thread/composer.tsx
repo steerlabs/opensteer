@@ -793,11 +793,6 @@ export function Composer(props: {
             hostClient={props.hostClient}
             key={surface.request.id}
             mutationGate={props.mutationGate}
-            subagentTitle={
-              surface.request.originatingNodeId === undefined
-                ? null
-                : (props.subagentTitles.get(surface.request.originatingNodeId) ?? null)
-            }
             surface={surface}
           />
         </Animated.View>
