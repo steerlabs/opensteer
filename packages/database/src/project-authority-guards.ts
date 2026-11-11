@@ -43,6 +43,25 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
              old.requested_by, old.required_actor, old.call_id, old.kind, old.mode, old.originating_node_id) then
         raise exception 'Project Request origin and audience are immutable' using errcode = '23514';
       end if;
+      if old.status <> 'pending' and row(new.status, new.response, new.resolved_by, new.resolved_at, new.cancellation_reason)
+         is distinct from row(old.status, old.response, old.resolved_by, old.resolved_at, old.cancellation_reason) then
+        raise exception 'A settled Project Request is immutable' using errcode = '23514';
+      end if;
+      if old.status = 'pending' and new.status in ('fulfilled', 'declined', 'withdrawn') and not exists (
+        select 1 from public.grants g join public.runs r on r.id = g.run_id
+        join public.workspace_memberships m on m.workspace_id = new.originating_workspace_id
+        join public.users u on u.id = m.user_id
+        where g.id = new.originating_grant_id and g.status = 'active'
+          and g.binding_generation = r.binding_generation and r.status in ('starting', 'running', 'waiting')
+          and u.id = new.resolved_by and u.disabled_at is null
+          and u.member_state = 'active' and u.admitted_at is not null and m.state = 'active'
+          and public.opensteer_project_work_is_valid(r.thread_id, r.actor_principal_id,
+            r.requested_by, r.membership_generation, r.initiator_generation, r.origin_connection_id, r.authority_source)
+          and ((r.requested_by is not null and u.id = r.requested_by)
+            or (r.requested_by is null and m.role = 'owner' and u.member_kind = 'full'))
+      ) then
+        raise exception 'Project Request resolver is outside its live audience' using errcode = '23514';
+      end if;
       return new;
     end if;
     if new.originating_grant_id is null then
@@ -62,6 +81,9 @@ export const PROJECT_AUTHORITY_GUARDS_SQL = String.raw`
       cross join public.opensteer_stored_execution_authority() d
       where g.id = new.originating_grant_id and g.run_id = new.originating_run_id
         and g.status = 'active' and g.binding_generation = r.binding_generation
+        and r.status in ('starting', 'running', 'waiting')
+        and public.opensteer_project_work_is_valid(r.thread_id, r.actor_principal_id,
+          r.requested_by, r.membership_generation, r.initiator_generation, r.origin_connection_id, r.authority_source)
         and p.kind = 'project' and p.workspace_id = t.workspace_id
         and d.model = 2 and d.kind = 'server'
         and new.originating_workspace_id = t.workspace_id
