@@ -28,17 +28,19 @@ import { PersonFillPresenceSchema } from "./person-fill.js";
  */
 export const passwordsBrokerProtocolVersion = 4;
 /**
- * Current authorities explicitly negotiate 8, and 7 with a broker that has no
- * person fill; legacy read/release callers retain their scope.
+ * Current authorities explicitly negotiate 9, which adds saving a login a
+ * person typed; 8 with a broker that has only person fill, and 7 with one that
+ * has neither. Legacy read/release callers retain their scope.
  */
-export const passwordsBrokerLatestProtocolVersion = 8;
-export const passwordsBrokerSupportedProtocolVersions = [8, 7, 6, 5, 4] as const;
+export const passwordsBrokerLatestProtocolVersion = 9;
+export const passwordsBrokerSupportedProtocolVersions = [9, 8, 7, 6, 5, 4] as const;
 export const PasswordsBrokerProtocolVersionSchema = z.union([
   z.literal(4),
   z.literal(5),
   z.literal(6),
   z.literal(7),
   z.literal(8),
+  z.literal(9),
 ]);
 export const PasswordsPermissionVersionSchema = z.union([z.literal(4), z.literal(5)]);
 export const passwordsBrokerMaxFrameBytes = 256 * 1_024;
@@ -51,6 +53,9 @@ export const PasswordsBrokerMethodSchema = z.enum([
   "fill.accounts",
   "fill.begin",
   "hello",
+  "save.begin",
+  "save.commit",
+  "save.cancel",
   "status",
   "window.open",
   "signin.probe",
@@ -115,10 +120,14 @@ export const PasswordsVaultStateSchema = z.enum([
 ]);
 export type PasswordsVaultState = z.infer<typeof PasswordsVaultStateSchema>;
 
-/** `personFill` is sent only on protocol 8 connections; absent, the broker has no person fill. */
+/**
+ * `personFill` is sent only from protocol 8 and `personSave` only from 9;
+ * absent, the broker has no person fill or no saving.
+ */
 export const PasswordsBrokerStatusSchema = z.strictObject({
   agentSignIns: z.enum(["on", "off"]),
   personFill: z.enum(["on", "off"]).optional(),
+  personSave: z.enum(["on", "off"]).optional(),
   vault: PasswordsVaultStateSchema,
 });
 export type PasswordsBrokerStatus = z.infer<typeof PasswordsBrokerStatusSchema>;
@@ -391,6 +400,48 @@ export const PasswordsBrokerFillBeginResultSchema = z.discriminatedUnion("decisi
   }),
 ]);
 
+/** The vault's own limits, in UTF-8 bytes. */
+const utf8Within = (max: number) => (value: string) =>
+  new TextEncoder().encode(value).byteLength <= max;
+export const passwordsLoginUsernameMaxBytes = 1_024;
+export const passwordsLoginPasswordMaxBytes = 4_096;
+
+/**
+ * A login a person just typed into a page on this Mac, held by the broker in
+ * memory until `save.commit`, `save.cancel` or `expiresAt`. Never prompts and
+ * writes nothing. See docs/passwords.md#saving-for-people.
+ */
+export const PasswordsBrokerSaveBeginParamsSchema = z.strictObject({
+  transactionId: z.uuid(),
+  origin: PasswordsOriginSchema,
+  username: z.string().min(1).refine(utf8Within(passwordsLoginUsernameMaxBytes)),
+  password: z.string().min(1).refine(utf8Within(passwordsLoginPasswordMaxBytes)),
+});
+/**
+ * `offer`: nothing saved for this site has the username, so the person may be
+ * asked. `skip` never asks: `saved` (the site already has the username),
+ * `off`, `not-set-up`, `unsaveable` (the site rules refuse the origin) or
+ * `unavailable` (locked since restart, busy or needing reset).
+ */
+export const PasswordsBrokerSaveBeginResultSchema = z.discriminatedUnion("decision", [
+  z.strictObject({
+    decision: z.literal("offer"),
+    expiresAt: z.iso.datetime({ offset: true }),
+  }),
+  z.strictObject({
+    decision: z.literal("skip"),
+    reason: z.enum(["saved", "off", "not-set-up", "unsaveable", "unavailable"]),
+  }),
+]);
+/** Adds exactly the held login, once; nothing else is ever changed. */
+export const PasswordsBrokerSaveCommitResultSchema = z.discriminatedUnion("saved", [
+  z.strictObject({ saved: z.literal(true) }),
+  z.strictObject({
+    saved: z.literal(false),
+    reason: z.enum(["saved", "ended", "off", "unavailable"]),
+  }),
+]);
+
 /** Each method's parameters, as Electron main sends them. */
 export const passwordsBrokerRequests = {
   "card.probe": PasswordsBrokerEmptySchema,
@@ -400,6 +451,9 @@ export const passwordsBrokerRequests = {
   "fill.accounts": PasswordsBrokerFillAccountsParamsSchema,
   "fill.begin": PasswordsBrokerFillBeginParamsSchema,
   hello: PasswordsBrokerHelloParamsSchema,
+  "save.begin": PasswordsBrokerSaveBeginParamsSchema,
+  "save.commit": PasswordsBrokerTransactionParamsSchema,
+  "save.cancel": PasswordsBrokerTransactionParamsSchema,
   "signin.approve": PasswordsBrokerSignInApproveParamsSchema,
   "signin.commit": PasswordsBrokerTransactionParamsSchema,
   "signin.cancel": PasswordsBrokerTransactionParamsSchema,
@@ -425,6 +479,9 @@ export const passwordsBrokerResults = {
   "fill.accounts": PasswordsBrokerFillAccountsResultSchema,
   "fill.begin": PasswordsBrokerFillBeginResultSchema,
   hello: PasswordsBrokerHelloResultSchema,
+  "save.begin": PasswordsBrokerSaveBeginResultSchema,
+  "save.commit": PasswordsBrokerSaveCommitResultSchema,
+  "save.cancel": PasswordsBrokerEmptySchema,
   "signin.approve": PasswordsBrokerSignInApproveResultSchema,
   "signin.commit": z.strictObject({ committed: z.boolean() }),
   "signin.cancel": PasswordsBrokerEmptySchema,

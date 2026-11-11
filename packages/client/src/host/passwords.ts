@@ -447,6 +447,10 @@ export const passwordsAgentSignInsDetail = "Turn this off or on in the Passwords
 export const passwordsPersonFillLabel = "Fill passwords for me in Opensteer";
 export const passwordsPersonFillWindowDetail =
   "Offers your saved logins when you click a sign-in field in Opensteer’s browser, on this Mac or another device.";
+/** The Passwords window's switch for offering to save a person's own sign-ins; pinned by CopyParityTests. */
+export const passwordsPersonSaveLabel = "Offer to save passwords in Opensteer";
+export const passwordsPersonSaveWindowDetail =
+  "After you sign in by hand in Opensteer’s browser, on this Mac or another device, asks to keep that login on this Mac.";
 export const passwordsWaitingLabel = "Waiting for you";
 export const passwordsDeclineAllAction = "Don’t allow all";
 export const passwordsDecliningAllAction = "Not allowing…";
