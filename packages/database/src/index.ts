@@ -90,3 +90,5 @@ export {
 } from "./execution-authority.js";
 
 export { loadProjectRunDispatchContext } from "./execution-store.js";
+
+export { readProjectRunThreadState } from "./run-thread-state.js";
