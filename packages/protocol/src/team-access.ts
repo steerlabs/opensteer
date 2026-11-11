@@ -589,6 +589,10 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     name,
     color: MarkColorSchema,
   }),
+  MutationBaseSchema.extend({
+    type: z.literal("team.project.delete"),
+    workspaceId: WorkspaceIdSchema,
+  }),
   MutationBaseSchema.extend({ type: z.literal("team.access.apply"), changes: AccessChangesSchema }),
   MutationBaseSchema.extend({
     type: z.literal("team.access.selfGrant"),
@@ -618,6 +622,7 @@ export const TeamCommandResultSchema = z.discriminatedUnion("type", [
     expiresAt: timestamp,
   }),
   resultBase.extend({ type: z.literal("team.project.create"), projectId: WorkspaceIdSchema }),
+  resultBase.extend({ type: z.literal("team.project.delete") }),
   resultBase.extend({
     type: z.literal("team.access.apply"),
     transitions: z.array(MembershipTransitionSchema).max(2048),
